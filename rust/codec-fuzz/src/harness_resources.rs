@@ -260,23 +260,106 @@ fn residency(previous: ModelCacheResidency) {
     }
 }
 
-// Exercise the public wrapper as well as its scalar protocol reducer. Full
-// result references distinguish two Ready outcomes with the same completion.
-fn snapshot_transitions(snapshot: &e::Snapshot) {
+// Mutate the actual writer's completion field, then compare public transitions
+// with both the wire contract and the production scalar reducer.
+fn snapshot_completions(original: &Value, body: &e::SummaryRef) {
+    use e::protocol::{Completion, Demand, Refusal};
+    for prior in [
+        None,
+        Some(e::SummaryOutcome::Failed),
+        Some(e::SummaryOutcome::Ready(body.clone())),
+    ] {
+        let mut wire = original.clone();
+        wire["snapshot"]["pending"]["completion"] = serde_json::to_value(&prior).unwrap();
+        let mut record = envelope().clone();
+        record.value = serde_json::to_vec(&wire).unwrap().into();
+        let before = e::Snapshot::decode(&record, &source(), u64::MAX).unwrap();
+        let summary = before.state().pending().unwrap().summary;
+        let expected_demand = match &prior {
+            None => Demand::Await(summary),
+            Some(e::SummaryOutcome::Failed) => Demand::Failed(summary),
+            Some(e::SummaryOutcome::Ready(_)) => Demand::Swap(summary),
+        };
+        assert_eq!(
+            before.state().demand(),
+            expected_demand,
+            "snapshot terminal demand changed"
+        );
+        for desired in [
+            e::SummaryOutcome::Failed,
+            e::SummaryOutcome::Ready(body.clone()),
+        ] {
+            let accepted = prior.is_none() || prior.as_ref() == Some(&desired);
+            let completion = match &desired {
+                e::SummaryOutcome::Failed => Completion::Failed,
+                e::SummaryOutcome::Ready(_) => Completion::Ready,
+            };
+            let mut state = before.state();
+            assert_eq!(
+                state.complete(summary, completion),
+                if accepted {
+                    Ok(())
+                } else {
+                    Err(Refusal::Contradiction)
+                },
+                "producer completion admission changed",
+            );
+            let mut changed = before.clone();
+            let result = changed.complete(summary, desired.clone());
+            if accepted {
+                result.unwrap();
+                wire["snapshot"]["pending"]["completion"] = serde_json::to_value(&desired).unwrap();
+                record.value = serde_json::to_vec(&wire).unwrap().into();
+                let expected = e::Snapshot::decode(&record, &source(), u64::MAX).unwrap();
+                assert_eq!(
+                    changed, expected,
+                    "completed snapshot lost producer custody"
+                );
+                assert_eq!(
+                    state,
+                    expected.state(),
+                    "completion reducer lost producer custody"
+                );
+                assert_eq!(
+                    state.demand(),
+                    match desired {
+                        e::SummaryOutcome::Failed => Demand::Failed(summary),
+                        e::SummaryOutcome::Ready(_) => Demand::Swap(summary),
+                    },
+                    "snapshot terminal demand changed"
+                );
+            } else {
+                assert!(
+                    matches!(
+                        result,
+                        Err(e::SnapshotError::Transition(Refusal::Contradiction))
+                    ),
+                    "snapshot completion admission changed"
+                );
+                assert_eq!(
+                    changed, before,
+                    "refused completion changed snapshot custody"
+                );
+                assert_eq!(
+                    state,
+                    before.state(),
+                    "refused completion changed producer custody"
+                );
+            }
+        }
+    }
+}
+
+// Full result references distinguish two Ready outcomes with the same completion.
+fn snapshot_transitions(snapshot: &e::Snapshot, wire: &Value) {
     let Some(pending) = snapshot.state().pending() else {
         return;
     };
     let Some(e::SummaryOutcome::Ready(body)) = snapshot.outcome() else {
         return;
     };
+    snapshot_completions(wire, body);
     let mut replay = snapshot.clone();
-    replay
-        .complete(pending.summary, e::SummaryOutcome::Ready(body.clone()))
-        .unwrap();
-    assert_eq!(
-        replay, *snapshot,
-        "terminal snapshot replay changed custody"
-    );
 
     // Change only the immutable revision in the admitted producer's canonical
     // reference. This is a metadata mutation, never authenticated file content.
@@ -515,7 +598,6 @@ pub(super) fn check(bytes: &[u8]) {
         return;
     };
     epoch(snapshot.epoch());
-    snapshot_transitions(&snapshot);
     snapshot_confirmation(&record);
     let state = snapshot.state();
     assert!(
@@ -548,6 +630,7 @@ pub(super) fn check(bytes: &[u8]) {
     // Serde also admits positional struct fields. Mutate the same writer's
     // canonical object spelling instead of assuming the admitted input's shape.
     let original: Value = serde_json::from_slice(&written).unwrap();
+    snapshot_transitions(&snapshot, &original);
     record.value = written.into();
     assert_eq!(
         e::Snapshot::decode(&record, &source(), u64::MAX).unwrap(),
