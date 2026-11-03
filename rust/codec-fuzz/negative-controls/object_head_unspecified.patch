@@ -1,0 +1,11 @@
+--- a/rust/crates/objects/src/convert.rs
++++ b/rust/crates/objects/src/convert.rs
+@@ -126,7 +126,7 @@
+         kind: match wire::Kind::try_from(value.kind).map_err(|_| invalid())? {
+             wire::Kind::Blob => Kind::Blob,
+             wire::Kind::Manifest => Kind::Manifest,
+-            wire::Kind::Unspecified => return Err(invalid()),
++            wire::Kind::Unspecified => Kind::Blob,
+         },
+         length: value.length,
+         references: digests(&value.references)?,

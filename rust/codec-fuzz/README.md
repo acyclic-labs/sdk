@@ -825,3 +825,11 @@ changes a production outcome, `object_delete_unspecified.patch` admits an unspec
 status, and `object_delete_references.patch` drops the non-deletion reference
 guard. The same writer property must catch each actual production mutation.
 Reference framing, physical reclamation and distributed deletion remain open.
+
+HEAD and GET share one independent metadata projection for explicit kind,
+logical length and ordered reference bytes. The retained head and list writers
+supply derived kind/reference combinations, not new provider captures.
+`object_head_kind.patch`, `object_head_unspecified.patch` and
+`object_head_references.patch` change the actual shared production converter;
+the same writer property must catch each defect. Complete manifest producer
+coverage, reference framing, physical custody and remote topology remain open.
