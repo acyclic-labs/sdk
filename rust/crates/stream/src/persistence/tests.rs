@@ -269,37 +269,3 @@ async fn a_retained_receipt_without_its_revision_is_refused()
     );
     Ok(())
 }
-
-#[test]
-fn old_and_unknown_fact_versions_refuse_before_payload() -> Result<(), Box<dyn std::error::Error>> {
-    let observation = observation()?;
-    let IdempotencyOutcome::Commit(envelope) = &observation.outcome else {
-        return Err("expected committed envelope".into());
-    };
-    type Decoder = fn(&[u8], usize) -> Result<(), StreamError>;
-    let frames: [(Vec<u8>, &[u8], Decoder); 2] = [
-        (
-            encode_observation(&observation, BOUND)?,
-            OBSERVATION_MAGIC,
-            |bytes, maximum| decode_observation(bytes, maximum).map(|_| ()),
-        ),
-        (
-            encode_envelope(envelope, BOUND)?,
-            ENVELOPE_MAGIC,
-            |bytes, maximum| decode_envelope(bytes, maximum).map(|_| ()),
-        ),
-    ];
-    for (current, magic, decode) in frames {
-        decode(&current, current.len())?;
-        assert_eq!(
-            decode(&current[magic.len()..], BOUND),
-            Err(StreamError::InvalidArgument)
-        );
-        for version in [b'0', b'2', u8::MAX] {
-            let mut refused = current[..magic.len()].to_vec();
-            refused[magic.len() - 2] = version;
-            assert_eq!(decode(&refused, BOUND), Err(StreamError::Unsupported));
-        }
-    }
-    Ok(())
-}

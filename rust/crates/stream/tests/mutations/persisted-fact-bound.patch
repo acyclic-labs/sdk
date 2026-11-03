@@ -2,7 +2,7 @@
 +++ b/rust/crates/stream/src/persistence.rs
 @@ -97,7 +97,8 @@
  }
- 
+
  fn bound(length: usize, maximum: usize) -> Result<(), StreamError> {
 -    if maximum == 0 || length > maximum {
 +    let exclusive = std::env::var("ACYCLIC_CODEC_FACT_FAULT").as_deref() == Ok("exclusive");
