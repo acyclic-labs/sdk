@@ -16,6 +16,7 @@ export const gateQualifications = [
   { args: ["--e2e-progress"] }, { args: ["--native-progress"] },
   { args: ["--native-signal"] }, { args: ["--native-wake"] },
   { args: ["--native-owner"] },
+  { args: ["--native-host"] },
   { args: ["--timer"] }, { args: ["--guest"] },
   { args: ["--fs-binding", "--all-features"] },
   { args: ["--fs-policy"] },
@@ -160,6 +161,13 @@ export function qualifyNativeOwnerLoom(run = runCommand) {
   });
 }
 
+export function qualifyNativeHostLoom(run = runCommand) {
+  return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
+    kind: "--lib", targetCfg: [], env: loomEnvironment(),
+    suites: [["testing::host::models::", 7], ["testing::executor::models::", 7]],
+  });
+}
+
 export function qualifyFsBindingLoom(features = [], run = runCommand) {
   return qualifyLoom("acyclic-fs", "main", features, run, {
     targetCfg: ["--", "--cfg", "loom"], suites: [["native_binding_model::", 5]],
@@ -267,6 +275,7 @@ function qualifyLoom(crate, target, features, run, options = {}) {
 const fixedModels = {
   "--native-progress": qualifyNativeProgressLoom, "--timer": qualifyTimerLoom,
   "--native-signal": qualifyNativeSignalLoom,
+  "--native-host": qualifyNativeHostLoom,
   "--native-wake": qualifyNativeWakeLoom,
   "--native-owner": qualifyNativeOwnerLoom,
   "--guest": qualifyGuestLoom,
