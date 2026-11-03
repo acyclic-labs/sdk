@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export function sha256(payload) {
   return createHash("sha256").update(payload).digest("hex");
@@ -132,6 +132,30 @@ export function copyWasmArtifacts(source, output) {
   mkdirSync(output, { recursive: true });
   cpSync(source, output, { recursive: true });
   return artifacts;
+}
+
+/** Retain a temporary build separately and return the original output unchanged. */
+export function preserveWasmArtifacts(output, recovery) {
+  let directory, before, archive;
+  try {
+    mkdirSync(dirname(output), { recursive: true });
+    directory = mkdtempSync(join(dirname(output), ".wasm-qualification-"));
+    before = join(directory, "before");
+    archive = join(directory, "wasm");
+    if (existsSync(output)) renameSync(output, before);
+  }
+  catch (error) { throw new Error(`WASM artifact preservation failed: ${error.message}; recovery: ${recovery}`, { cause: error }); }
+  return {
+    directory, archive,
+    restore() {
+      try {
+        try { if (existsSync(output)) renameSync(output, archive); }
+        finally { if (existsSync(before)) renameSync(before, output); }
+      } catch (error) {
+        throw new Error(`WASM artifact restoration failed: ${error.message}; originals retained at ${before}; recovery: ${recovery}`, { cause: error });
+      }
+    },
+  };
 }
 
 export function wasmArtifactInventory(files) {

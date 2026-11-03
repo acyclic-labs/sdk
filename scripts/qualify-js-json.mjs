@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { preserveWasmArtifacts } from "./archive-utils.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const args = process.argv.slice(2);
@@ -30,8 +32,10 @@ if (args.some(arg => !["--red", "--retirement", "--bytes", "--quoted", "--metada
 }
 
 const production = new URL("../rust/crates/harness/src/wasm/json.rs", import.meta.url);
+const generated = "typescript/packages/harness/generated/wasm";
 let original;
 let mutation;
+let artifactsCustody;
 try {
   if ((bytes || metadata) && red) {
     try { original = readFileSync(production, "utf8"); }
@@ -52,6 +56,10 @@ try {
       original_sha256: createHash("sha256").update(original).digest("hex"),
       planted_sha256: createHash("sha256").update(planted).digest("hex"),
     };
+    artifactsCustody = preserveWasmArtifacts(fileURLToPath(new URL(`../${generated}`, import.meta.url)),
+      "node scripts/build-wasm.mjs harness");
+    try { writeFileSync(join(artifactsCustody.directory, "json.rs"), planted); }
+    catch (error) { fail("retain planted admission source", String(error)); }
     try { writeFileSync(production, planted); }
     catch (error) { fail("plant production admission defect", String(error)); }
   }
@@ -101,10 +109,20 @@ try {
       if (path.isFile()) artifacts.push(`${path.parentPath}/${path.name}`.slice(root.length).replaceAll("\\", "/"));
     }
   } catch (error) { fail("generated module dependencies", String(error)); }
+  const retainedPath = path => {
+    if (!artifactsCustody) return path;
+    const retained = path === "rust/crates/harness/src/wasm/json.rs"
+      ? join(artifactsCustody.directory, "json.rs")
+      : path.startsWith(`${generated}/`) ? join(artifactsCustody.archive, path.slice(generated.length + 1)) : undefined;
+    return retained === undefined ? path : relative(root, retained).replaceAll("\\", "/");
+  };
   const receipt = `${JSON.stringify({
     source: git("HEAD"), tree: git("HEAD^{tree}"), build, test: ["bun", ...parameters],
     result: red ? "expected semantic red" : "pass", mutation,
-    artifacts: artifacts.map(path => ({ path, sha256: hash(path) })),
+    artifacts: artifacts.map(path => ({
+      path: retainedPath(path),
+      sha256: hash(path),
+    })),
   }, null, 2)}\n`;
   const receiptName = metadata ? `javascript-json-metadata-${red ? "red" : "fixed"}.json`
     : bytes ? `javascript-json-bytes-${quoted ? "quoted-" : ""}${red ? "red" : "fixed"}.json`
@@ -115,12 +133,14 @@ try {
   console.log(red ? "PASS: original JSON admission defect reached the unchanged semantic assertion."
     : "PASS: generated JSON admission control passed.");
 } finally {
-  if (original !== undefined) {
-    try {
-      writeFileSync(production, original);
-      if (readFileSync(production, "utf8") !== original) fail("restore original admission source", "restored bytes differ");
-      console.log("PASS: original admission source restored byte-exact.");
+  try {
+    if (original !== undefined) {
+      try {
+        writeFileSync(production, original);
+        if (readFileSync(production, "utf8") !== original) fail("restore original admission source", "restored bytes differ");
+        console.log("PASS: original admission source restored byte-exact.");
+      }
+      catch (error) { fail("restore original admission source", String(error)); }
     }
-    catch (error) { fail("restore original admission source", String(error)); }
-  }
+  } finally { artifactsCustody?.restore(); }
 }
