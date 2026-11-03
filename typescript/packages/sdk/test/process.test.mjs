@@ -16,7 +16,6 @@ import {fuzz} from './process-completion.fuzz.mjs';
 
 const signalMutations = new Map([
   ['omit-release', ['process.removeListener(name, handler)', 'void handler']],
-  ['omit-await', ['await action(stop.signal)', 'action(stop.signal)']],
   ['omit-abort', ['stop.signal.throwIfAborted();', '']],
   ['omit-reason', ['stop.abort(reason(name))',
     'stop.abort(Object.assign(new Error(`process signal ${name}`), {signal: name}))']],
@@ -354,6 +353,8 @@ async function processSignalControls() {
     for (const ownership of ['caller', 'aborted-caller', 'process']) for (const fails of [false, true]) {
       const stop = new AbortController(), cause = new Error('original caller signal');
       if (ownership === 'aborted-caller') stop.abort(cause);
+      let release;
+      const pending = new Promise(resolve => { release = resolve; });
       const action = signal => {
         if (ownership !== 'process') {
           assert.equal(signal, stop.signal, 'the action must retain its original caller signal');
@@ -361,11 +362,18 @@ async function processSignalControls() {
             'caller-owned cancellation must not borrow process handlers');
         }
         if (fails) throw cause;
-        return cause;
+        return pending.then(() => cause);
       };
       const completed = run(action, {signal: ownership === 'process' ? undefined : stop.signal});
-      if (fails) await assert.rejects(completed, error => error === cause);
-      else assert.equal(await completed, cause);
+      const outcome = fails ? assert.rejects(completed, error => error === cause)
+        : completed.then(value => assert.equal(value, cause));
+      try {
+        if (ownership === 'process' && !fails) {
+          assert.deepEqual(['SIGINT', 'SIGTERM'].map(name => process.listeners(name).length),
+            before.map(listeners => listeners.length + 1),
+            'pending action must retain its owned signal handlers');
+        }
+      } finally { release(); await outcome; }
       assert.deepEqual(['SIGINT', 'SIGTERM'].map(name => process.listeners(name)), before,
         'every original result must release its owned signal handlers');
     }
@@ -377,6 +385,12 @@ async function processSignalControls() {
   const {withProcessSignals: mutant} = await import(`data:text/javascript;base64,${Buffer.from(planted).toString('base64')}`);
   await assert.rejects(() => scopeOutcomes(mutant), {
     code: 'ERR_ASSERTION', message: /the action must retain its original caller signal/,
+  });
+  const unjoined = production.replace('await action(stop.signal)', 'action(stop.signal)');
+  assert.notEqual(unjoined, production, 'production signal scope must await its action');
+  const {withProcessSignals: earlyRelease} = await import(`data:text/javascript;base64,${Buffer.from(unjoined).toString('base64')}`);
+  await assert.rejects(() => scopeOutcomes(earlyRelease), {
+    code: 'ERR_ASSERTION', message: /pending action must retain its owned signal handlers/,
   });
   if (process.platform !== 'win32') {
     await signalControls('original');
