@@ -256,40 +256,30 @@ fn checkout_then_projection_order_cannot_deadlock() {
     assert!(diagnostic.contains("deadlock; threads ="), "{diagnostic}");
 }
 
-fn scope(
-    slot: &StateArc<AsyncMutex<Option<u8>>>,
-    users: &StateArc<SyncMutex<usize>>,
-    broken: bool,
-) {
+fn scope(slot: &StateArc<AsyncMutex<Option<u8>>>, users: &StateArc<SyncMutex<usize>>) {
     let entered = complete(enter(slot, users, async || Ok(7))).unwrap();
     assert!(
         complete(lock_owned(slot.clone())).is_some(),
         "projection retired under a running command"
     );
-    if broken {
-        // The faulty exit retires without consulting other scopes.
-        drop(entered);
-        *complete(lock_owned(slot.clone())) = None;
-    } else {
-        complete(leave(slot, users, entered, async |slot, retire| {
-            if retire {
-                *slot = None;
-            }
-            Ok(())
-        }))
-        .unwrap();
-    }
+    complete(leave(slot, users, entered, async |slot, retire| {
+        if retire {
+            *slot = None;
+        }
+        Ok(())
+    }))
+    .unwrap();
 }
 
 // Initial admission has its own exhaustive model above. Start with one live
 // scope so this model explores only competing admission versus retirement.
-fn scoped_retirement(broken: bool) {
+fn scoped_retirement() {
     let slot = StateArc::new(AsyncMutex::new(None));
     let users = StateArc::new(SyncMutex::new(0));
     let entered = complete(enter(&slot, &users, async || Ok(7))).unwrap();
     let worker = {
         let (slot, users) = (slot.clone(), users.clone());
-        thread::spawn(move || scope(&slot, &users, broken))
+        thread::spawn(move || scope(&slot, &users))
     };
     // Finish the other command while this original claim is still live.
     // The retirement check must observe that overlap directly, rather than
@@ -311,13 +301,10 @@ fn scoped_retirement(broken: bool) {
 
 #[test]
 fn the_last_execution_scope_alone_retires_the_projection() {
-    checked(
-        scoped_retirement,
-        "projection retired under a running command",
-    );
+    loom::model(scoped_retirement);
 }
 
-fn publication(broken: bool) {
+fn publication() {
     let slot = StateArc::new(AsyncMutex::new(None));
     let users = StateArc::new(SyncMutex::new(0));
     let a = complete(enter(&slot, &users, async || Ok(0))).unwrap();
@@ -326,9 +313,7 @@ fn publication(broken: bool) {
     // B already holds its claim when A completes. A must publish even though
     // B keeps the native namespace attached.
     complete(leave(&slot, &users, a, async |slot, retire| {
-        if !broken || retire {
-            published += 1;
-        }
+        published += 1;
         if retire {
             *slot = None;
         }
@@ -349,7 +334,7 @@ fn publication(broken: bool) {
 
 #[test]
 fn every_completed_command_publishes_before_its_acknowledgement() {
-    checked(publication, "successful command skipped publication");
+    loom::model(publication);
 }
 
 fn competing_completions(broken: bool) {

@@ -115,6 +115,30 @@ export function qualifyProjectionInitializationMutationsLoom(run = runCommand) {
   }, run);
 }
 
+export function qualifyProjectionLifetimeMutationsLoom(run = runCommand) {
+  const recovery = "node scripts/qualify-mcp-loom.mjs --projection-lifetime-mutations";
+  const prefix = "local::workspace::projection::tests::";
+  const oracles = {
+    "projection retired under a running command": `${prefix}the_last_execution_scope_alone_retires_the_projection`,
+    "successful command skipped publication": `${prefix}every_completed_command_publishes_before_its_acknowledgement`,
+  };
+  const qualify = (run, expectedFailure) => qualifyLoom("acyclic-harness", "acyclic_harness",
+    ["--all-features"], run, {
+      kind: "--lib", env: loomEnvironment(), targetCfg: [], expectedFailure, recovery,
+      filters: expectedFailure ? [oracles[expectedFailure]] : Object.values(oracles),
+    });
+  return qualifySourceMutationsLoom({
+    name: "Projection lifetime", recovery,
+    source: "../rust/crates/harness/src/local/workspace/projection.rs",
+    model: "../rust/crates/harness/src/local/workspace/projection/tests.rs",
+    mutations: [
+      ["== 0;", ">= 0;", "projection retired under a running command"],
+      ["publish(&mut slot, retire).await", "if retire { publish(&mut slot, retire).await } else { Ok(()) }", "successful command skipped publication"],
+    ],
+    qualify, restored: run => qualify(run),
+  }, run);
+}
+
 // Each control changes an exact entrance in the included production source;
 // the model and its semantic assertion stay byte-identical across the build.
 function qualifySourceMutationsLoom({ name, source, model, mutations, qualify, restored, recovery }, run) {
@@ -351,6 +375,7 @@ const fixedModels = {
   "--provider-refresh-mutations": qualifyProviderRefreshMutationsLoom,
   "--skill-materializer-mutations": qualifySkillMaterializerMutationsLoom,
   "--projection-initialization-mutations": qualifyProjectionInitializationMutationsLoom,
+  "--projection-lifetime-mutations": qualifyProjectionLifetimeMutationsLoom,
   "--fs-policy": qualifyFsPolicyLoom,
 };
 const selectableModels = {
