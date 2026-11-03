@@ -7,9 +7,7 @@ repository root, the explicit compiler routing is:
 RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream-models --features model-checking --test session_model
 ```
 
-On Linux, pass the wrapper explicitly through `the shell` as
-`--env RUSTC_WORKSPACE_WRAPPER=/work/src/scripts/loom-rustc.sh`. An ordinary Rust
-compile without that routing deliberately refuses this model target. Compiling
+An ordinary Rust compile without that routing deliberately refuses this model target. Compiling
 the target does not execute or qualify its schedules or negative controls.
 
 The model target requires the existing `model-checking` feature. Ordinary
@@ -34,6 +32,7 @@ Stream owner at `b5899587789ad2152b29beaab1ee85e843a25645`:
 | Atomic anchored resume cut; split-observation and initial-anchor negatives | Both `consume_record` and `consume_progress` race `fence` and `subscription`. Sequence and preceding immutable commit must move together; both stale consumption methods must refuse, then the new generation must advance the same cut. This single race subsumes the former duplicate `checked::moving`; the generated checked-history fold remains distinct. |
 | Conflated latest movement | `tests/client_pool_loom.rs` runs the production `session::verify_latest_progress` model and its generation-split negative control. The standalone target does not repeat that same pair. |
 | Cancellation of a queued Open | `tests/client_pool_loom.rs` races the actual cursor drop with `Pool::command` and the original removal event. It checks route retirement, pending membership, the cancellation fence and the last interest count. The former standalone `installed` boolean did not execute the dispatcher or receiver closure. |
+| Initial EOF retry yield | `client/pool/retry_model.rs` calls the real `Pool::reconnect`, polls its dial, then applies completion after cancellation. Its test clock holds the original executor delay; its typed `Welcome` is internal model input, not captured transport evidence. |
 
 The former child-only opaque-consumption model called the removed
 `consume_opaque`. The product retired child subscriptions: `session.proto`
@@ -50,9 +49,23 @@ source wake/recheck models remain distinct from these admission histories.
 
 The record and progress split-observation controls are independent test functions,
 so either expected panic cannot prevent the other control from reaching its pair
-assertion. These source changes have not executed either control.
+assertion.
 
 The source-admission fixtures use `binding = None`. They establish that fixture's
 credit/consumption contract; authority-bound non-call follows retain their actual
 bounded lookahead and are not qualified by this fixture as never polling after
 credit removal.
+
+The retry clock's bypass control alone does not establish that the oracle detects
+removing the production delay. The kept source mutation exercises that boundary:
+
+```sh
+git apply rust/crates/stream/models/mutations/initial_retry_delay.patch
+RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream --no-default-features --features grpc,model-checking --test main client_pool_loom::initial_eof_retry_yields_to_deadline_and_cancellation -- --exact --nocapture
+git apply --reverse rust/crates/stream/models/mutations/initial_retry_delay.patch
+```
+
+The mutated source must fail at `initial retry must yield before another physical
+RPC`; restore it before running the same command as the positive control. This
+checks scheduling at the executor entrance, not physical RPC timing, wire refusal
+metadata, membership changes or transport retirement.
