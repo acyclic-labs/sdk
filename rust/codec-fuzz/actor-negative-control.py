@@ -31,11 +31,26 @@ def run(step, expected, diagnostic="invocation writer must be admitted", entry=N
     return output
 
 
+def writer_admission(oracle):
+    admission = (b"    static WRITERS: std::sync::LazyLock<()> = std::sync::LazyLock::new(|| {\n"
+                 b'        actor_seeds().expect("Actors decoders must admit their production writers");\n'
+                 b"    });\n    std::sync::LazyLock::force(&WRITERS);\n")
+    if b"\r\n" in oracle:
+        admission = admission.replace(b"\n", b"\r\n")
+    if oracle.count(admission) != 1:
+        raise RuntimeError("writer admission anchor changed; recovery: inspect actor_codecs "
+                           "before python3 actor-negative-control.py"
+                           f" {' '.join(sys.argv[1:])}")
+    return admission
+
+
 def main():
     if sys.argv[1:] == ["--capture"]:
         return capture()
     if sys.argv[1:] == ["--alarms"]:
         return alarms()
+    if sys.argv[1:] == ["--guest-wire"]:
+        return guest_wire()
     if sys.argv[1:] == ["--reservation-book"]:
         return reservation_book()
     if sys.argv[1:] == ["--persisted-alarms"]:
@@ -55,7 +70,7 @@ def main():
     if sys.argv[1:] == ["--socket-ledger"]:
         return socket_ledger()
     if sys.argv[1:]:
-        raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms|--persisted-alarms|--reservation-book|--call-records|--call-schedules|--replay-diagnostics|--sockets|--socket-inputs|--socket-metadata|--socket-ledger|--capture]")
+        raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms|--guest-wire|--persisted-alarms|--reservation-book|--call-records|--call-schedules|--replay-diagnostics|--sockets|--socket-inputs|--socket-metadata|--socket-ledger|--capture]")
     original = {path: path.read_bytes() for path in (PRODUCTION, ORACLE)}
     needle = b"Ok(Self::decode_bound(record)?.map(|(_, invocation)| invocation))"
     source = original[PRODUCTION]
@@ -63,15 +78,8 @@ def main():
         raise RuntimeError("production mutation anchor changed; recovery: inspect "
                            "Invocation::decode and update actor-negative-control.py")
     mutant = source.replace(needle, b"Ok(None)")
-    admission = (b"    static WRITERS: std::sync::LazyLock<()> = std::sync::LazyLock::new(|| {\n"
-                 b'        actor_seeds().expect("Actors decoders must admit their production writers");\n'
-                 b"    });\n    std::sync::LazyLock::force(&WRITERS);\n")
     oracle = original[ORACLE]
-    if b"\r\n" in oracle:
-        admission = admission.replace(b"\n", b"\r\n")
-    if oracle.count(admission) != 1:
-        raise RuntimeError("oracle admission anchor changed; recovery: inspect actor_codecs "
-                           "and update actor-negative-control.py")
+    admission = writer_admission(oracle)
     try:
         for label, value in (("production", source), ("mutant", mutant), ("oracle", oracle)):
             print(f"{label} sha256={hashlib.sha256(value).hexdigest()}", flush=True)
@@ -82,6 +90,43 @@ def main():
         run("same oracle with writer admission detects same mutant", "rejected")
         PRODUCTION.write_bytes(source)
         run("original production writers and retained corpus", "accepted")
+    finally:
+        for path, value in original.items():
+            path.write_bytes(value)
+
+
+def guest_wire():
+    production = ROOT.parent / "crates/actors/src/guest/wire.rs"
+    original = {path: path.read_bytes() for path in (production, ORACLE)}
+    source, oracle = original[production], original[ORACLE]
+    admission = writer_admission(oracle)
+    plants = []
+    for kind in ("manifest", "delivery"):
+        anchor = (f'    let wire: {kind.title()}Wire = canonical(bytes, "{kind}", '
+                  f'{kind.upper()}_DOMAIN)?;').encode()
+        diagnostic = f"{kind} admission negative control"
+        if source.count(anchor) != 1:
+            raise RuntimeError(f"guest {kind} mutation anchor changed; recovery: inspect "
+                               f"decode_{kind} before python3 actor-negative-control.py --guest-wire")
+        replacement = anchor + f'\n    if !bytes.is_empty() {{ return Err(invalid("{diagnostic}")); }}'.encode()
+        plants.append((anchor, replacement, diagnostic))
+    try:
+        for label, value in (("guest wire production", source), ("guest wire oracle", oracle)):
+            print(f"{label} sha256={hashlib.sha256(value).hexdigest()}", flush=True)
+        mutant = source
+        for anchor, replacement, _ in plants:
+            mutant = mutant.replace(anchor, replacement)
+        production.write_bytes(mutant)
+        ORACLE.write_bytes(oracle.replace(admission, b""))
+        run("conditional guest wire oracle misses both production refusals", "accepted")
+        ORACLE.write_bytes(oracle)
+        for anchor, replacement, diagnostic in plants:
+            production.write_bytes(source.replace(anchor, replacement))
+            run("same writer oracle rejects production " + diagnostic, "rejected",
+                'Actors decoders must admit their production writers: '
+                f'Decode("non-canonical guest {diagnostic}")')
+        production.write_bytes(source)
+        run("restored guest wire writers and retained corpus", "accepted")
     finally:
         for path, value in original.items():
             path.write_bytes(value)

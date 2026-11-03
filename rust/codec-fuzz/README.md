@@ -40,6 +40,13 @@ also demonstrates that conditional round trips alone miss that mutation and
 restores both source files on exit. Corpus replay does not establish instrumented
 fuzz coverage or distributed recovery guarantees.
 
+`python3 actor-negative-control.py --guest-wire` plants refusals in the actual
+manifest and delivery decoders. The conditional oracle must miss both, then the
+unchanged positive writer oracle must reject each independently. Exact source
+restoration replays the retained corpus. This reuses the original manifest and
+delivery producers, corpus and provenance; it does not qualify complete branch
+coverage or physical guest transport.
+
 The `call_record` target drives `call::model::check` through the original commit
 builders, provider and journal. The `actor_codecs` target feeds committed Stream wire envelopes to
 `Entry::decode`, `fence` and `Journal::apply`. Its positive records are captured
