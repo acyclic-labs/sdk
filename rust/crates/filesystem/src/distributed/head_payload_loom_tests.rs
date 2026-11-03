@@ -88,7 +88,7 @@ impl ModelStream {
         let result = future.await;
         if let Some(writer) = writer {
             assert!(matches!(
-                writer.join().unwrap().unwrap(),
+                (*writer.join().unwrap()).unwrap(),
                 CommitOutcome::Committed(_)
             ));
             self.completed.store(true, Ordering::SeqCst);
@@ -98,8 +98,13 @@ impl ModelStream {
 }
 
 #[inline(never)]
-fn ready<F: Future>(create: impl FnOnce() -> F) -> F::Output {
-    loom::future::block_on(crate::heap_future::in_heap(create))
+fn ready<F: Future>(create: impl FnOnce() -> F) -> Box<F::Output> {
+    let future = crate::heap_future::in_heap(create);
+    // Keep the returned provider/error value out of every enclosing poll and
+    // thread-return frame as well as keeping the future itself on the heap.
+    loom::future::block_on(crate::heap_future::in_heap(|| async {
+        Box::new(future.await)
+    }))
 }
 
 #[async_trait::async_trait]
@@ -313,10 +318,15 @@ fn check(change: Change, broken: bool, cut: Option<usize>, calls: Arc<CallCount>
         )),
         Change::Cancel => None,
     };
+    // The scheduler retains the fixture across permutations; its immutable
+    // request bodies need not occupy each coroutine's call frame.
+    let initial = Box::new(initial);
+    let first = Box::new(first);
+    let second = Box::new(second);
     loom::model(move || {
         let inner = MemoryStream::default();
         assert!(matches!(
-            ready(|| inner.commit(initial.clone())).unwrap(),
+            (*ready(|| inner.commit((*initial).clone()))).unwrap(),
             CommitOutcome::Committed(_)
         ));
         let cancellation = CancellationToken::new();
@@ -333,7 +343,7 @@ fn check(change: Change, broken: bool, cut: Option<usize>, calls: Arc<CallCount>
         });
         if cut == Some(0) {
             assert!(matches!(
-                ready(|| provider.commit(change_request.clone().unwrap())).unwrap(),
+                (*ready(|| provider.commit(change_request.clone().unwrap()))).unwrap(),
                 CommitOutcome::Committed(_)
             ));
         }
@@ -378,7 +388,7 @@ fn check(change: Change, broken: bool, cut: Option<usize>, calls: Arc<CallCount>
             reader.join().unwrap()
         };
         calls.fetch_max(provider.calls.load(Ordering::Relaxed), Ordering::Relaxed);
-        match result {
+        match *result {
             Ok(((head, Some(payload)), allocation)) => {
                 assert!(
                     !provider.retired_at_record_read.load(Ordering::Relaxed),
@@ -389,9 +399,9 @@ fn check(change: Change, broken: bool, cut: Option<usize>, calls: Arc<CallCount>
                     "cancelled payload escaped admission"
                 );
                 let expected = if head.sequence == first.sequence {
-                    &first
+                    &*first
                 } else {
-                    &second
+                    &*second
                 };
                 assert_eq!(head.sequence, expected.sequence);
                 assert_eq!(head.digest, expected.digest);

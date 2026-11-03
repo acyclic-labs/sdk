@@ -31,14 +31,20 @@ fn work() -> Result<Box<NativeMaterializationWork>, NativeMountError> {
 fn remount(
     destination: &Path,
     kernel: &kernel::Kernel,
-) -> Result<MountDestinationGuard, NativeMountError> {
+) -> Result<Box<Option<MountDestinationGuard>>, NativeMountError> {
     let work = work()?;
-    let mut guard = None;
+    // Recovery runs while this owner remains live. Keep both its construction
+    // slot and return value off the coroutine stack, without releasing custody.
+    let mut guard = Box::new(None);
     // The startup path's actual acquisition, including registry, physical fence
     // files and work accounting. Only the subsequent mount syscall is fake.
     MountDestinationGuard::acquire_with_work(destination, true, &work, &mut guard, false)?;
     kernel.mount();
-    guard.ok_or(NativeMountError::ControlPending)
+    if guard.is_some() {
+        Ok(guard)
+    } else {
+        Err(NativeMountError::ControlPending)
+    }
 }
 
 #[inline(never)]
