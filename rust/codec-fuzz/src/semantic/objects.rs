@@ -192,6 +192,11 @@ fn batch(bytes: &[u8]) {
             assert!(results.iter().all(|result| result == &Err(unavailable.clone())));
         } else {
             let reply = wire::PutBlobsResponse::decode(packet).expect("admitted batch wire");
+            assert_eq!(
+                reply.results.len(),
+                2,
+                "batch reply count matches the original request"
+            );
             for ((result, item), expected) in results.iter().zip(reply.results).zip([
                 (digest(), BODY.len() as u64),
                 (Digest::of(BATCH_BODY), BATCH_BODY.len() as u64),
@@ -698,6 +703,18 @@ mod tests {
         )
         .expect("retained original protobuf batch writer");
         super::check("acyclic.objects.v1.PutBlobsResponse", &captured[8..]);
+        let captured = acyclic_proto_build::golden::frame(
+            "corpus/protobuf/acyclic.objects.v1.PutBlobsResponse-batch",
+        )
+        .expect("retained original service batch writer");
+        let mut extra = super::wire::PutBlobsResponse::decode(&captured[8..])
+            .expect("original service batch wire");
+        // An extra reply is a derived adversarial operand, not a writer capture.
+        extra.results.push(extra.results[0].clone());
+        super::check(
+            "acyclic.objects.v1.PutBlobsResponse",
+            &extra.encode_to_vec(),
+        );
         let captured = acyclic_proto_build::golden::frame(
             "corpus/protobuf/acyclic.objects.v1.BlobInfo-selected",
         )

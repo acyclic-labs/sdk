@@ -823,3 +823,10 @@ invalid-frame and EOF example; producer ownership, selected wakeups and reconnec
 checks remain distinct. The producer incarnation is random, so it is not added
 to repeatable exports. A retained valid feed corpus, current branch coverage,
 producer-loss schedules and remote topology qualification remain open.
+
+The same batch property also derives an extra member from the retained populated
+service reply and checks decoded cardinality before zip-based comparisons.
+`negative-controls/object_batch_extra_member.patch` weakens the production count
+guard to reject only missing replies; the unchanged property must reject its
+extra reply. The earlier count-guard control still covers missing members.
+This is a derived adversarial input, not an additional captured service packet.
