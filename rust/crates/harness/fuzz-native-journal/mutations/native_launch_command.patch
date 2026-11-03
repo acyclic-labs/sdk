@@ -1,0 +1,25 @@
+--- a/rust/crates/harness/src/local/host_process/launch.rs
++++ b/rust/crates/harness/src/local/host_process/launch.rs
+@@ -195,6 +195,6 @@
+         "codex" => {
+             arguments.extend(policy);
+-            arguments.extend(["exec", "--json", "--cd"].into_iter().map(OsString::from));
+-            arguments.push(cwd.into());
++            arguments.extend(["exec", "--text", "--cd"].into_iter().map(OsString::from));
++            arguments.push(OsString::from("/wrong-native-root"));
+             if let Some(id) = session {
+                 arguments.extend(["resume", id].into_iter().map(OsString::from));
+@@ -204,5 +204,5 @@
+         "claude-code" => {
+             arguments.extend(
+-                ["-p", "--output-format", "stream-json", "--verbose"]
++                ["-p", "--output-format", "stream-text", "--verbose"]
+                     .into_iter()
+                     .map(OsString::from),
+@@ -214,5 +214,5 @@
+         }
+         _ => {
+-            arguments.extend(["--mode", "json", "-p"].into_iter().map(OsString::from));
++            arguments.extend(["--kind", "text", "-p"].into_iter().map(OsString::from));
+             arguments.extend(policy);
+             if let Some(file) = session {

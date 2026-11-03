@@ -116,34 +116,42 @@ fn policy(host: &str, flags: &[String], cwd: &Path, reference: &str) {
         inherited,
         "native policy decoder changed root argument vector"
     );
-    let expected = inherited.iter().map(OsString::from).collect::<Vec<_>>();
-    let offset = match host {
-        "codex" => 0,
-        "claude-code" => 4,
-        _ => 3,
-    };
     for session in [None, Some(reference)] {
         let arguments = launch::child_arguments(host, &inherited, cwd, session)
             .expect("admitted inherited policy was refused");
-        assert_eq!(
-            arguments.get(offset..offset + expected.len()),
-            Some(expected.as_slice()),
-            "native child changed the inherited root policy"
-        );
-        if let Some(reference) = session {
-            let suffix = match host {
-                "codex" => vec!["resume", reference, "-"],
-                "claude-code" => vec!["--resume", reference],
-                _ => vec!["--session", reference],
-            }
-            .into_iter()
+        let (prefix, suffix): (&[&str], Vec<OsString>) = match host {
+            "codex" => (
+                &[],
+                vec!["exec".into(), "--json".into(), "--cd".into(), cwd.into()],
+            ),
+            "claude-code" => (
+                &["-p", "--output-format", "stream-json", "--verbose"],
+                vec![],
+            ),
+            _ => (&["--mode", "json", "-p"], vec![]),
+        };
+        let mut expected = prefix
+            .iter()
+            .copied()
             .map(OsString::from)
+            .chain(inherited.iter().map(OsString::from))
+            .chain(suffix)
             .collect::<Vec<_>>();
-            assert!(
-                arguments.ends_with(&suffix),
-                "native child changed the admitted resume reference"
-            );
+        if let Some(reference) = session {
+            let option = match host {
+                "codex" => "resume",
+                "claude-code" => "--resume",
+                _ => "--session",
+            };
+            expected.extend([option, reference].into_iter().map(OsString::from));
         }
+        if host == "codex" {
+            expected.push("-".into());
+        }
+        assert_eq!(
+            arguments, expected,
+            "native child changed the complete command vector"
+        );
     }
     assert!(
         matches!(

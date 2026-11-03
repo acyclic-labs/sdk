@@ -145,6 +145,15 @@ inline-settings example in the physical path test. The retained
 branch classify every value as a local path; it must fail at
 `native launch changed non-path policy bytes`.
 
+Fresh and resumed child commands use one complete-vector assertion, including
+the native event-mode flags, Codex's cwd argument, inherited policy, resume
+reference and stdin marker. The retained `mutations/native_launch_command.patch`
+changes all three hosts' fixed event-mode arguments and the Codex cwd while
+preserving policy placement, resume suffixes and allocation counts. The former
+partial policy/suffix oracle accepts that defect; the complete-vector oracle
+must fail at `native child changed the complete command vector`. This checks
+argument construction, not native CLI execution or process cwd application.
+
 The separate `native_child_arguments_allocate_only_the_returned_vector_and_strings`
 unit measures actual allocation counts for fresh and resumed arguments of all
 three hosts, including Pi's empty policy. It requires exactly one result vector
