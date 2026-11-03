@@ -23,16 +23,19 @@ From the repository root, replay the corpus with:
 cargo test --locked -p acyclic-sdk-fuzz --no-default-features --features local-hotpath-options --test local_hotpath_options
 ```
 
-From this directory, run instrumented mutation with:
+From the repository root, run instrumented mutation with an installed nightly:
 
 ```sh
-cargo fuzz run local_hotpath_options --no-default-features --features local-hotpath-options -- -runs=4096
+cargo +nightly fuzz run --dev --fuzz-dir rust/fuzz local_hotpath_options --no-default-features --features local-hotpath-options -- -runs=4096
 ```
 
 The retained negative patch removes the production duplicate-operation guard.
-Apply it from the repository root and run the same corpus check; the unchanged
-oracle must fail. Restore the patch before running the positive check.
+Apply it with `git apply rust/fuzz/local_hotpath_options/omit-duplicate-operation.patch`
+from the repository root and run the same corpus check; the unchanged oracle must
+fail. Restore the parser with `git apply -R rust/fuzz/local_hotpath_options/omit-duplicate-operation.patch`
+before running the positive check.
 
-Runtime corpus, instrumented coverage and production-mutation qualification are
-pending. This target covers argument parsing; native shell execution of recovery
+The retained corpus passes with the original parser. Removing its duplicate guard
+fails the shared oracle on duplicate operations. Instrumented source coverage and
+the instrumented mutant result remain pending. This target covers argument parsing; native shell execution of recovery
 commands and non-UTF-8 OS argument conversion require their own controls.
