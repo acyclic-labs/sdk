@@ -16,7 +16,8 @@ def fail(step, detail):
 
 
 def run(step, corpus, artifacts, runs):
-    command = ["cargo", "+nightly", "fuzz", "run", "--dev", "--sanitizer", "none",
+    command = ["cargo", "+nightly", "fuzz", "run", "--fuzz-dir", str(root),
+               "--dev", "--sanitizer", "none",
                "--features", "fuzz-targets", "git_markers", str(corpus), "--",
                f"-runs={runs}", "-seed=1", "-print_final_stats=1",
                f"-artifact_prefix={artifacts}/"]
