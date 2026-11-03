@@ -84,7 +84,7 @@ struct Terminals {
 }
 
 struct Storage {
-    buffers: Mutex<Vec<Box<[u8]>>>,
+    buffers: Mutex<Vec<Vec<u8>>>,
     terminals: Terminals,
 }
 
@@ -153,7 +153,16 @@ impl TextOutput {
         let output = Self {
             delivery,
             buffers: Arc::new(Storage {
-                buffers: Mutex::new(buffers),
+                buffers: Mutex::new(
+                    buffers
+                        .into_iter()
+                        .map(|bytes| {
+                            let mut bytes = bytes.into_vec();
+                            bytes.clear();
+                            bytes
+                        })
+                        .collect(),
+                ),
                 terminals: Terminals::default(),
             }),
             failure,
@@ -203,16 +212,18 @@ impl TextOutput {
         })?;
         // The semaphore and this stack are the same inventory. Neither a
         // formatter nor user destruction runs while its mutex is held.
-        let bytes = self
+        let Some(bytes) = self
             .buffers
             .buffers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .pop()
-            .expect("admitted diagnostic storage");
+        else {
+            self.delivery.full();
+            return Err(OutputRefusal::Full);
+        };
         let mut buffer = Buffer {
-            bytes: Some(bytes),
-            length: 0,
+            bytes,
             overflow: false,
             disposition: Disposition::Unpublished,
             pool: self.buffers.clone(),
@@ -223,13 +234,10 @@ impl TextOutput {
             return Err(OutputRefusal::Full);
         }
         if formatted.is_err() {
-            retain_failure(&self.failure, || OutputFailure::Formatting);
-            return Err(OutputRefusal::Failed(
-                self.failure
-                    .borrow()
-                    .clone()
-                    .expect("retained format failure"),
-            ));
+            return Err(OutputRefusal::Failed(retain_failure(
+                &self.failure,
+                OutputFailure::Formatting,
+            )));
         }
         buffer.disposition = Disposition::Queued;
         self.buffers
@@ -301,25 +309,23 @@ enum Disposition {
 }
 
 struct Buffer {
-    bytes: Option<Box<[u8]>>,
-    length: usize,
+    bytes: Vec<u8>,
     overflow: bool,
     disposition: Disposition,
     pool: Arc<Storage>,
 }
 impl fmt::Write for Buffer {
     fn write_str(&mut self, text: &str) -> fmt::Result {
-        let bytes = self.bytes.as_mut().expect("live diagnostic storage");
-        let Some(end) = self
-            .length
+        if self
+            .bytes
+            .len()
             .checked_add(text.len())
-            .filter(|end| *end <= bytes.len())
-        else {
+            .is_none_or(|end| end > self.bytes.capacity())
+        {
             self.overflow = true;
             return Err(fmt::Error);
         };
-        bytes[self.length..end].copy_from_slice(text.as_bytes());
-        self.length = end;
+        self.bytes.extend_from_slice(text.as_bytes());
         Ok(())
     }
 }
@@ -337,11 +343,12 @@ impl Drop for Buffer {
         }
         // The stack retains its original capacity: each live record owns one
         // removed entry, and return occurs before its shared permit retires.
+        self.bytes.clear();
         self.pool
             .buffers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push(self.bytes.take().expect("original diagnostic storage"));
+            .push(std::mem::take(&mut self.bytes));
     }
 }
 
@@ -350,7 +357,7 @@ pub struct TextRecord(DeliveryRecord<Buffer>);
 impl TextRecord {
     /// Borrows initialized bytes. This is not a receipt of consumer acceptance.
     pub fn bytes(&self) -> &[u8] {
-        &self.0.value.bytes.as_ref().expect("live record")[..self.0.value.length]
+        &self.0.value.bytes
     }
 
     /// Makes one write attempt through the original writer, retaining storage
@@ -421,7 +428,7 @@ impl TextReceiver {
     /// At that terminal, queued text is discarded and any pending write is
     /// incomplete, never certified delivered. The original result is preserved.
     ///
-    /// The supplied AsyncWrite must retain no borrowed bytes after its pending
+    /// The supplied `AsyncWrite` must retain no borrowed bytes after its pending
     /// future is dropped. Synchronous inherited sinks require their original
     /// owned-write completion instead; this method cannot establish that custody.
     pub async fn observe<F, W>(
@@ -499,18 +506,20 @@ impl TextReceiver {
     /// original host; closing supplies no physical-output completion guarantee.
     pub fn close(&mut self) {
         self.receiver.close();
-        retain_failure(&self.failure, || OutputFailure::ConsumerClosed);
+        retain_failure(&self.failure, OutputFailure::ConsumerClosed);
     }
 
     /// Retains the original first write failure and closes admission. Formatting
     /// failure cannot be replaced by a later generic output error, or vice versa.
     pub fn fail(&mut self, error: io::Error) -> OutputFailure {
-        retain_failure(&self.failure, || OutputFailure::Write(Arc::new(error)));
-        self.close();
-        self.failure
+        let error = self
+            .failure
             .borrow()
             .clone()
-            .expect("retained output failure")
+            .unwrap_or_else(|| OutputFailure::Write(Arc::new(error)));
+        let error = retain_failure(&self.failure, error);
+        self.close();
+        error
     }
 }
 
@@ -522,16 +531,18 @@ impl Drop for TextReceiver {
 
 fn retain_failure(
     sender: &watch::Sender<Option<OutputFailure>>,
-    make: impl FnOnce() -> OutputFailure,
-) {
+    mut error: OutputFailure,
+) -> OutputFailure {
     sender.send_if_modified(|first| {
-        if first.is_none() {
-            *first = Some(make());
-            true
-        } else {
+        if let Some(first) = first {
+            error = first.clone();
             false
+        } else {
+            *first = Some(error.clone());
+            true
         }
     });
+    error
 }
 
 async fn failed(mut receiver: watch::Receiver<Option<OutputFailure>>) -> OutputFailure {
