@@ -8,6 +8,8 @@ publish = false
 cargo-fuzz = true
 
 [dependencies]
+flate2 = "1"
+tar = "0.4"
 libfuzzer-sys = "0.4"
 toml = "=0.9.8"
 serde = { version = "1", features = ["derive"] }

@@ -16,6 +16,9 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+#[path = "../fuzz/archive_members.rs"]
+mod archive_members_oracle;
 mod generation;
 pub mod historical;
 mod release_manifest;
