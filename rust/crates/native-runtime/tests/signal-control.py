@@ -250,12 +250,12 @@ qualificationMain([process.argv[1]], (command, args, options) => spawnSync(comma
     elif mode == "--executor-source":
         mutations = [
             ("ready-task", executor,
-             b"            state.ready.insert(id);\n            state.drivers()",
-             b"            state.drivers()",
+             b"            if !state.live.contains(&id) {\n                return;\n            }\n            state.ready.insert(id);\n            state.drivers()",
+             b"            if !state.live.contains(&id) {\n                return;\n            }\n            state.drivers()",
              "ready task was lost", "testing::executor::models::ready_publication_cannot_lose_a_task_or_driver_wake"),
             ("driver-wake", executor,
-             b"            state.ready.insert(id);\n            state.drivers()",
-             b"            state.ready.insert(id);\n            Drivers::default()",
+             b"            if !state.live.contains(&id) {\n                return;\n            }\n            state.ready.insert(id);\n            state.drivers()",
+             b"            if !state.live.contains(&id) {\n                return;\n            }\n            state.ready.insert(id);\n            Drivers::default()",
              "driver wake was lost", "testing::executor::models::ready_publication_cannot_lose_a_task_or_driver_wake"),
             ("completion-latch", executor,
              b"        *lock(&self.ready) = true;", b"        *lock(&self.ready) = false;",
