@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-client/src/command.rs
++++ b/rust/crates/harness-client/src/command.rs
+@@ -444,7 +444,7 @@
+                 }
+                 let mut unique = std::collections::BTreeSet::new();
+                 for path in paths {
+-                    if !unique.insert(path) {
++                    if unique.insert(path) && path.is_empty() {
+                         return Err(CommandError::Invalid);
+                     }
+                     acyclic_harness_core::conversation::validate_content_path(path, &mut None)
