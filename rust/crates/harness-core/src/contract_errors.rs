@@ -1445,3 +1445,43 @@ mod cleanup_tests {
         assert_eq!(Error::after_cleanup(Ok(7), Ok(())).unwrap(), 7);
     }
 }
+
+#[cfg(test)]
+mod boundary_tests {
+    #[test]
+    fn every_wire_code_and_original_reason_survive_boundary_conversion() {
+        let pool = prost_reflect::DescriptorPool::decode(crate::FILE_DESCRIPTOR_SET).unwrap();
+        let codes = pool
+            .get_enum_by_name("acyclic.harness.v2.ErrorCode")
+            .unwrap();
+        let reason = "the caller's original reason";
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let original = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(16_384, 16 * 1024 * 1024),
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .unwrap();
+        for value in codes.values() {
+            let code = crate::wire::ErrorCode::try_from(value.number()).unwrap();
+            let portable = crate::store::guarded_boundary(&None, code, reason);
+            let encoded = crate::encode_error(&portable);
+            assert_eq!(encoded.code, value.number(), "{portable:?}");
+            assert!(encoded.message.contains(reason), "{portable:?}");
+            assert!(!portable.is_native_failure(), "{portable:?}");
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            {
+                let io = crate::filesystem::PreparationIo::from_native_work(&original).unwrap();
+                let mut history = &io;
+                let native = crate::store::guarded_boundary(&Some(&mut history), code, reason);
+                assert!(
+                    matches!(&native, super::Error::NativeBoundary { code: actual, reason: cause }
+                    if *actual == code && *cause == reason)
+                );
+                assert!(native.is_native_failure(), "{native:?}");
+                let encoded = crate::encode_error(&native);
+                assert_eq!(encoded.code, value.number());
+                assert_eq!(encoded.message, reason);
+            }
+        }
+    }
+}
