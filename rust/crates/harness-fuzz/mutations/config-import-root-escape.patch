@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/config/evaluate.rs b/rust/crates/harness-core/src/config/evaluate.rs
+--- a/rust/crates/harness-core/src/config/evaluate.rs
++++ b/rust/crates/harness-core/src/config/evaluate.rs
+@@ -300,7 +300,7 @@
+             if let Some(after) = rest.strip_prefix("./") {
+                 rest = after;
+             } else if let Some(after) = rest.strip_prefix("../") {
+-                directory.pop().ok_or_else(refuse)?;
++                directory.pop();
+                 rest = after;
+             } else {
+                 break;
