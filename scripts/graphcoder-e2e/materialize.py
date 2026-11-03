@@ -31,10 +31,10 @@ def native_path(path):
     """Use one absolute spelling for native I/O and ownership comparisons."""
     if os.name != "nt":
         return path
-    path = path.absolute()
     name = str(path)
     if name.startswith("\\\\?\\"):
         return path
+    name = os.path.abspath(name)
     return Path("\\\\?\\UNC\\" + name[2:] if name.startswith("\\\\") else "\\\\?\\" + name)
 
 

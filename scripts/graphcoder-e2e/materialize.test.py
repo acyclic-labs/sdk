@@ -21,6 +21,7 @@ class Materialization(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name) / "qualification" / "artifacts"
         self.root.mkdir(parents=True)
+        (self.root / "argument").mkdir()
         if os.name == "nt":
             scratch = patch.dict(os.environ, {"E2E_SCRATCH_ROOT": str(self.root)})
             scratch.start()
@@ -43,7 +44,10 @@ class Materialization(unittest.TestCase):
         self.digest = hashlib.sha256(self.archive.read_bytes()).hexdigest()
 
     def prepare(self, **options):
-        return module.materialize(self.archive, self.digest, self.inventory, self.root, **options)
+        # Ordinary caller paths may contain parent traversal; the archive's
+        # members still obey the separate strict relative-member contract.
+        parent = self.root / "argument" / ".."
+        return module.materialize(parent / self.archive.name, self.digest, self.inventory, parent, **options)
 
     def test_every_payload_write_follows_the_complete_physical_reservation(self):
         reserved = []
