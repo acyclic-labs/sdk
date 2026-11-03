@@ -343,6 +343,11 @@ proptest::proptest! {
                 #[cfg(not(target_arch = "wasm32"))]
                 WriteMode::PendingBatch,
             ] {
+            for winner_mode in [
+                WriteMode::Serial,
+                #[cfg(not(target_arch = "wasm32"))]
+                WriteMode::Batched,
+            ] {
             for inside in [false, true] {
             for observe_directory in [false, true] {
                 for replace_prefix in [false, true] {
@@ -391,7 +396,7 @@ proptest::proptest! {
                         unbounded!(other, remove("/shared/nested"))?;
                         other.write_text("/shared/nested", "replacement").await?;
                     }
-                    match mode {
+                    match winner_mode {
                         WriteMode::Serial => {
                             unbounded!(other, write(&sibling, OwnedBytes::copy_from_slice(&payload)))?;
                         }
@@ -406,7 +411,7 @@ proptest::proptest! {
                         assert!(matches!(outcome, TransactionCommit::Conflict { .. }));
                         assert!(matches!(unbounded!(pending, rebase(1))?, TransactionRebase::Conflicted { .. }));
                     } else {
-                        assert!(matches!(outcome, TransactionCommit::Committed(_)), "mode={mode:?} inside={inside}");
+                        assert!(matches!(outcome, TransactionCommit::Committed(_)), "mode={mode:?} winner={winner_mode:?} inside={inside}");
                         assert_eq!(unbounded!(workspace, read("/shared/nested/local", 16))?.as_ref(), b"local");
                         #[cfg(not(target_arch = "wasm32"))]
                         if matches!(mode, WriteMode::PendingBatch) {
@@ -415,6 +420,7 @@ proptest::proptest! {
                     }
                     assert_eq!(unbounded!(workspace, read(&sibling, 32))?.as_ref(), payload.as_slice());
                 }
+            }
             }
             }
             }
