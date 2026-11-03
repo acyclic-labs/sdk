@@ -29,6 +29,7 @@ async fn cold_append_recovery_measurements() -> Result<()> {
         )?
         .await?;
     let mut count = 0;
+    let mut native_ledgers = Vec::new();
     for target in [1, 100, 1_000] {
         // Grow one real history. Each cold append becomes part of the next
         // case's prefix; neither accounting mode rebuilds an identical prefix.
@@ -107,15 +108,22 @@ async fn cold_append_recovery_measurements() -> Result<()> {
                 0,
                 "recovered index retained custody after drop"
             );
+            drop(io);
             if native {
-                assert_eq!(
-                    work.live_allocation_bytes(),
-                    native_baseline,
-                    "recovered index retained original native allocations"
-                );
+                native_ledgers.push((work, native_baseline));
             }
             count += 1;
         }
+    }
+    // The shared producer also owns its host's funded immutable views.
+    // Retire every alias before checking each original native ledger.
+    drop(original);
+    for (work, baseline) in native_ledgers {
+        assert_eq!(
+            work.live_allocation_bytes(),
+            baseline,
+            "recovered index retained original native allocations"
+        );
     }
     Ok(())
 }
