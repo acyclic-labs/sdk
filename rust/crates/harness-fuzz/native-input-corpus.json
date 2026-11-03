@@ -298,10 +298,31 @@
     }
   ],
   "read_failure_control": {
-    "result": "qualification pending",
+    "result": "pass at original source",
     "oracle": "Once per target process, a real write-only file is read through the shipped plugin input::read_json. Its io::Error kind and raw OS error must match the original native read on the same file.",
     "negative_control": "Omit propagation of the actual read_to_end failure; the unchanged typed OS-error assertion must fail.",
     "features": "native-input now enables its existing optional tempfile dependency for the owned native failure fixture; production features and parser are unchanged.",
-    "scope": "Native decoder read-error branch only. Installed stdin dispatch, partial-read failures, downstream effects, union source controls and other platforms retain their separate admission status."
+    "scope": "Original native decoder read-error branch only; qualification stays bound to its recorded source, features and oracle. Current composed source, installed stdin dispatch, partial-read failures, downstream effects, union source controls and other platforms retain their separate status.",
+    "qualification": {
+      "source_commit": "e70c71f54649dc237cd27b6f0cbb9fbeccf89905",
+      "source_tree": "be1ad2e3ac3ffd48a939f877a9295b13f7e821e5",
+      "source_content_sha256": "3ba29e8d35251212378af287c44f1fc1aef95a5c5d70142b9e3dbce7c587143b",
+      "source_sha256": {
+        "plugin/src/input.rs": "16457cff25395cd5ce57a0d63152b5834706f2068c0bae7ace0ff986710c3182",
+        "rust/crates/harness-fuzz/fuzz_targets/native_input.rs": "7b6aa0dce19a64b0f90774cd7844a5b41fd3a62a0e20fe33da08352455f93cf0",
+        "rust/crates/harness-fuzz/fuzz_targets/native_input/actions.rs": "12f9c20d99597568a8729c7c6bed7205b8c3ce732dd9a51b2be0b2eaac5d50de",
+        "rust/crates/harness-fuzz/fuzz_targets/native_input/commands.rs": "c24fef3e9f12d455af9ad00495eaf28ef8eb08072b3d38700e342130bf241012",
+        "rust/crates/harness-fuzz/Cargo.toml": "d4c2952b1d94318a0038d737c0fb0f786d7a53c64d36fa358f0730852671774f"
+      },
+      "negative_control": "Actual read_to_end propagation omitted: unchanged typed OS-error assertion fails",
+      "restoration": "Exact production source restored before original retained corpus replay",
+      "retained_files": 234,
+      "retained_bytes": 22742,
+      "new_campaign_runs": 0,
+      "replay_seconds": 2,
+      "instrumented_edges": 6534,
+      "features": 10915,
+      "platform": "Linux x86_64"
+    }
   }
 }
