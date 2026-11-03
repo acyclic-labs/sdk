@@ -102,6 +102,27 @@ fn success(reply: &AgentReply, command: &AgentCommand) {
             );
         }
     }
+    let quiet = match (reply, command) {
+        (AgentReply::Usage { page, settled, .. }, AgentCommand::Usage { after, .. }) => {
+            !settled && page.as_ref().is_none_or(|page| page.end == *after)
+        }
+        (AgentReply::Events { page, settled, .. }, AgentCommand::Events { after, .. }) => {
+            !settled && page.as_ref().is_none_or(|page| page.end == *after)
+        }
+        _ => false,
+    };
+    if quiet {
+        // A snapshot without source progress cannot answer a live wait.
+        let mut live = json(command);
+        live["wait"] = true.into();
+        let live: AgentCommand = serde_json::from_value(live).unwrap();
+        let wire = encode_agent_reply(&Ok(reply.clone()), command).unwrap();
+        assert!(
+            decode_agent_reply(&wire, &live).is_err(),
+            "quiet snapshot admitted as live progress"
+        );
+        assert!(encode_agent_reply(&Ok(reply.clone()), &live).is_err());
+    }
 }
 
 /// Every positive input is emitted by the public SDK writer it exercises.
@@ -152,11 +173,77 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
         (
             "read",
             AgentCommand::Read {
-                agent,
+                agent: agent.clone(),
                 target: ReadTarget::Approval { status: 0 },
                 offset: 3,
             },
             AgentReply::read(b"original payload", 19),
+        ),
+        (
+            "history",
+            AgentCommand::History {
+                agent: agent.clone(),
+                page: AgentPageRequest::default(),
+            },
+            AgentReply::History {
+                items: Vec::new(),
+                next: None,
+            },
+        ),
+        (
+            "approvals",
+            AgentCommand::Approvals {
+                agent: agent.clone(),
+                page: AgentPageRequest::default(),
+            },
+            AgentReply::Approvals {
+                items: Vec::new(),
+                next: None,
+            },
+        ),
+        (
+            "projects",
+            AgentCommand::ProjectHeads {
+                agent: agent.clone(),
+            },
+            AgentReply::ProjectHeads { items: Vec::new() },
+        ),
+        (
+            "diff",
+            AgentCommand::Diff {
+                agent: agent.clone(),
+                page: AgentPageRequest::default(),
+            },
+            AgentReply::Diff { items: Vec::new() },
+        ),
+        (
+            "usage-tail",
+            AgentCommand::Usage {
+                agent: agent.clone(),
+                input: 3,
+                after: 0,
+                wait: false,
+            },
+            AgentReply::Usage {
+                input: 3,
+                page: None,
+                settled: false,
+            },
+        ),
+        (
+            "events-tail",
+            AgentCommand::Events {
+                agent: agent.clone(),
+                input: 3,
+                after: 0,
+                wait: false,
+            },
+            AgentReply::Events {
+                input: 3,
+                inbox_tail: 3,
+                page: None,
+                settled: false,
+            },
         ),
     ];
     for (name, command, reply) in cases {
