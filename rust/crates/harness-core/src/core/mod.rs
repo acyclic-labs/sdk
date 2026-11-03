@@ -23,8 +23,8 @@ mod element_sizes;
 mod extension_types;
 mod filesystem_access;
 pub(crate) use filesystem_access::{
-    ReadGrant, directory_read_granted_with_work, file_read_grant, filesystem_scope_label,
-    volume_write_granted_with_work,
+    ReadGrant, contains_content_grant_with_work, directory_read_granted_with_work, file_read_grant,
+    filesystem_scope_label, volume_write_granted_with_work,
 };
 pub(crate) mod ownership;
 mod records;
