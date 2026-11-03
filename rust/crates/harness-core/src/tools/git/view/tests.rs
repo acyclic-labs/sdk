@@ -709,7 +709,9 @@ async fn volume_branches_use_the_same_facade_without_a_native_source() -> TestRe
 
 #[test]
 fn volume_view_pins_exact_generations_for_both_capture_modes() -> TestResult {
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     let (_directory, _filesystem, _store, workspace) = runtime.block_on(fixture())?;
     // Property: for arbitrary UTF-8 bytes, exact and lazy requests over an SDK
     // volume select the identical current generation and return identical bytes.
