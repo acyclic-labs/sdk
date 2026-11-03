@@ -14,9 +14,22 @@ test("native payload framing preserves caller path and case policies without cop
   const flat = gunzipSync(readFileSync(new URL("./test-support/archive-corpus/native-flat.tar.gz", import.meta.url)));
   // The third member in the retained native capture is a directory header.
   const withDirectory = Buffer.concat([flat.subarray(0, flat.length - 1024), seed.subarray(1536, 2048), flat.subarray(flat.length - 1024)]);
+  const snippets = Buffer.from(seed);
+  let headerOffset = 0;
+  for (const entry of tarEntries(seed)) {
+    const header = snippets.subarray(headerOffset, headerOffset + 512);
+    if (entry.type === "5" || entry.path.includes("/")) {
+      const start = entry.type === "5" ? 0 : 345;
+      header.fill(0, start, start + (entry.type === "5" ? 100 : 155));
+      header.write(entry.type === "5" ? "snippets/" : "snippets", start);
+      seal(header);
+    }
+    headerOffset += 512 + Math.ceil(entry.size / 512) * 512;
+  }
   for (const insensitive of [false, true]) {
     assert.equal(fuzzPayload(flat, insensitive).size, 2);
     assert.deepEqual([...fuzzPayload(withDirectory, insensitive)], [...fuzzPayload(flat, insensitive)]);
+    assert.notEqual(fuzzPayload(snippets, insensitive), false);
     for (let offset = 0; offset < flat.length; offset += 512) fuzzPayload(flat.subarray(0, offset), insensitive);
   }
   const unsafe = Buffer.from(flat);
