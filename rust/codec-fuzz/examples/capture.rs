@@ -351,26 +351,10 @@ fn capture() -> Result<(), Box<dyn Error>> {
         }
     }
     capture_semantic(&mut manifest)?;
-    // Preserve retained captures without inventing replacement writers.
-    let current_agents = agent_prefix();
-    for line in std::fs::read_to_string("corpus/SOURCES.tsv")?
-        .lines()
-        .filter(|line| {
-            (line.starts_with("harness_codecs/agent-") && !line.starts_with(&current_agents))
-                || line.starts_with("object_revisions/")
-                || matches!(
-                    line.split('\t').next(),
-                    Some(
-                        "actor_codecs/timer"
-                            | "object_persistence/head-live"
-                            | "object_persistence/head-dying"
-                    )
-                )
-        })
-    {
-        manifest.push_str(line);
-        manifest.push('\n');
-    }
+    retain_historical(
+        &mut manifest,
+        &std::fs::read_to_string("corpus/SOURCES.tsv")?,
+    );
     save(
         "harness_codecs",
         "attachment-manifest-empty",
@@ -774,6 +758,60 @@ fn capture_agent_controls(manifest: &mut String) -> Result<(), Box<dyn Error>> {
         save("agent_controls", &name, &bytes, producer, manifest)?;
     }
     Ok(())
+}
+
+// Keep historical inputs without restoring obsolete writers or replacing fresh provenance.
+fn retain_historical(manifest: &mut String, previous: &str) {
+    let current_agents = agent_prefix();
+    let mut names = manifest
+        .lines()
+        .filter_map(|line| line.split('\t').next())
+        .map(str::to_owned)
+        .collect::<std::collections::HashSet<_>>();
+    for line in previous.lines().filter(|line| {
+        line.starts_with("actor_codecs/")
+            || (line.starts_with("harness_codecs/agent-") && !line.starts_with(&current_agents))
+            || line.starts_with("object_revisions/")
+            || matches!(
+                line.split('\t').next(),
+                Some("object_persistence/head-live" | "object_persistence/head-dying")
+            )
+    }) {
+        let name = line.split('\t').next().unwrap_or(line);
+        if names.insert(name.to_owned()) {
+            manifest.push_str(line);
+            manifest.push('\n');
+        }
+    }
+}
+
+#[test]
+fn full_capture_retains_original_actor_inputs_once() {
+    let previous = include_str!("../corpus/SOURCES.tsv");
+    let original = previous
+        .lines()
+        .filter(|line| line.starts_with("actor_codecs/"))
+        .collect::<Vec<_>>();
+    let current = original
+        .iter()
+        .find(|line| line.starts_with("actor_codecs/invocation-committed-v2\t"))
+        .expect("original Store invocation capture");
+    let mut manifest = format!("{current}\n");
+    retain_historical(&mut manifest, previous);
+    for row in &original {
+        assert_eq!(
+            manifest.lines().filter(|line| line == row).count(),
+            1,
+            "full capture must retain each original Actor input and its provenance once: {row}"
+        );
+    }
+    assert_eq!(
+        manifest
+            .lines()
+            .filter(|line| line.starts_with("actor_codecs/"))
+            .count(),
+        original.len()
+    );
 }
 
 fn capture_agents(manifest: &mut String) -> Result<(), Box<dyn Error>> {

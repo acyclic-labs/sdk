@@ -61,6 +61,7 @@ the shared transition encoder. Refresh only these Actors captures with
 `cargo run --locked --example capture -- --only-actors --extend-goldens`.
 Use `python3 actor-negative-control.py --capture` to capture and replay without
 repeating source mutations already qualified on unchanged decoder/oracle paths.
+Full and Actors-only capture retain every historical Actors input and its provenance.
 Versioned invocation and State writer captures retain the earlier corpus and
 provenance, including transitions that contain the earlier State version.
 
