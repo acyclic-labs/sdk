@@ -124,12 +124,17 @@ impl Pool {
                     }
                 }
                 if !reused && let Some(opening) = opening {
-                    if self
+                    match self
                         .routes
                         .get(&opening.channel_id)
-                        .is_none_or(|route| route.generation != opening.generation || !route.live())
+                        .filter(|route| route.generation == opening.generation && route.live())
                     {
-                        self.cancel_subscription(&installed, opening)?;
+                        Some(route) => {
+                            if let Some(link) = self.links.get(&installed) {
+                                link.joined(route);
+                            }
+                        }
+                        None => self.cancel_subscription(&installed, opening)?,
                     }
                 }
                 if reused {
