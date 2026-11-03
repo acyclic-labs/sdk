@@ -499,15 +499,24 @@ mod tests {
             );
         });
     }
+    struct Cancellation {
+        original: Option<thread::ThreadId>,
+        wrong_target: bool,
+        started: Option<loom::sync::mpsc::Sender<()>>,
+    }
     loom::lazy_static! {
-        static ref CANCELLATIONS: Mutex<(Vec<thread::ThreadId>, Option<loom::sync::mpsc::Sender<()>>)> =
-            Mutex::new((Vec::new(), None));
+        static ref CANCELLATIONS: Mutex<Cancellation> = Mutex::new(Cancellation {
+            original: None,
+            wrong_target: false,
+            started: None,
+        });
     }
 
     fn record_cancel(worker: &JoinHandle<()>) {
         let mut calls = CANCELLATIONS.lock().unwrap_or_else(|e| panic!("{e}"));
-        calls.0.push(worker.thread().id());
-        if let Some(started) = calls.1.take() {
+        let wrong_target = calls.original.as_ref() != Some(&worker.thread().id());
+        calls.wrong_target |= wrong_target;
+        if let Some(started) = calls.started.take() {
             started.send(()).unwrap_or_else(|e| panic!("{e}"));
         }
     }
@@ -516,7 +525,10 @@ mod tests {
     fn cancellation_wakeup_cannot_target_replacement_generation() {
         loom::model(|| {
             let (started, cancelled) = loom::sync::mpsc::channel();
-            CANCELLATIONS.lock().unwrap_or_else(|e| panic!("{e}")).1 = Some(started);
+            CANCELLATIONS
+                .lock()
+                .unwrap_or_else(|e| panic!("{e}"))
+                .started = Some(started);
             let owner = Owner::new(
                 RestoreGuard::new(Vec::new(), &Capabilities::default()),
                 record_cancel,
@@ -535,6 +547,10 @@ mod tests {
                 state.generation
             };
             let original_id = submitted.recv().unwrap();
+            CANCELLATIONS
+                .lock()
+                .unwrap_or_else(|e| panic!("{e}"))
+                .original = Some(original_id);
             let cancelling_owner = Arc::clone(&owner);
             let canceller = thread::spawn(move || {
                 cancelling_owner
@@ -562,12 +578,10 @@ mod tests {
             }
             drop(state);
             assert!(
-                CANCELLATIONS
+                !CANCELLATIONS
                     .lock()
                     .unwrap_or_else(|e| panic!("{e}"))
-                    .0
-                    .iter()
-                    .all(|worker| *worker == original_id),
+                    .wrong_target,
                 "cancel reached replacement worker"
             );
         });
