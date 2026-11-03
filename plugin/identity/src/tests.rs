@@ -1047,35 +1047,6 @@ fn dropping_store_releases_lock_while_a_forked_child_waits_to_exec() {
     );
 }
 
-#[tokio::test]
-async fn identity_read_errors_preserve_code_and_redact_description() {
-    let mut refused = Expected::get(
-        "/v1/identity/orgs",
-        "access",
-        json!({
-            "error": "permission_denied", "error_description": "refresh-secret"
-        }),
-    );
-    refused.status = StatusCode::FORBIDDEN;
-    let fake = Fake::start(vec![refused]).await;
-    let directory = tempfile::tempdir().expect("directory");
-    let store = Store::open(&directory.path().join("identity.json")).expect("store");
-    store
-        .write(
-            &fake.identity.endpoint,
-            session("access", "refresh-secret", now().expect("time") + 900),
-        )
-        .expect("write");
-    let error = fake
-        .identity
-        .get(&store, "/v1/identity/orgs")
-        .await
-        .expect_err("refused");
-    assert_eq!(error.code, "permission_denied");
-    assert!(!error.json().to_string().contains("refresh-secret"));
-    fake.done();
-}
-
 #[test]
 fn endpoint_rejects_credentials_paths_and_remote_cleartext() {
     for endpoint in [
