@@ -8,6 +8,7 @@ import { performance } from "node:perf_hooks";
 import { inventory, readCoverage } from "./coverage.mjs";
 import { Processes } from "./process.mjs";
 import { failureReport, publishReport } from "./report.mjs";
+import { executionSucceeded } from "./assertions.mjs";
 import { environment, scratchDirectory } from "./scratch.mjs";
 import { nativeHost } from "../../plugin/tests/hosts/native-host.mjs";
 import { sha256File } from "../file-digest.mjs";
@@ -25,9 +26,13 @@ export function collect(cases, receipts, platform, coverage) {
     const test = expectedSuites[index], { code, report, failure: receiptFailure, seconds, execution } = receipts[index];
     const expected = [test.id];
     try {
-      assert.ok(!execution?.expired && !execution?.cancelled && !execution?.signal,
-        "original suite execution expired, was cancelled or ended by signal");
+      assert.ok(!execution?.expired && !execution?.cancelled,
+        "original suite execution expired or was cancelled");
       assert.ok(report, receiptFailure?.error ?? "missing suite receipt");
+      if (code === 0) {
+        assert.ok(execution, "missing original suite execution");
+        executionSucceeded(execution);
+      }
       assert.equal(report.platform, platform, "suite OS mismatch");
       assert.deepEqual(report.selected, [test.id], "suite must select exactly its case");
       assert.equal(report.qualification, false, "selected suite is diagnostic");

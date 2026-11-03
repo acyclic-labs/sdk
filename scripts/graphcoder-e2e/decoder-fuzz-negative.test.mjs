@@ -8,7 +8,9 @@ for (const group of ["serial", "decoder"]) test(`${group} fuzz oracles reject pl
       'void binding;', "serial"],
     ["serial.mjs", 'binding: first.binding', 'binding: undefined', "serial"],
     ["serial.mjs", ",'E2E_GIT_BINARY'", "", "serial-admission"],
-    ...["expired", "cancelled", "signal"].map(field =>
+    ["serial.mjs", 'if (code === 0) {\n        assert.ok(execution, "missing original suite execution");\n        executionSucceeded(execution);\n      }',
+      "void execution;", "serial"],
+    ...["expired", "cancelled"].map(field =>
       ["serial.mjs", `!execution?.${field}`, "true", "serial"]),
     ["process-report.mjs", "this.#controlFailure ??= cause;", "void cause;", "report"],
     ["process-report.mjs", "    const request = this.#request;",
