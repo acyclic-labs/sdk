@@ -655,6 +655,48 @@ pub fn actor_seeds()
     }
     seeds.extend(futures::executor::block_on(actor_alarm_seeds())?);
     seeds.extend(actor_socket_seeds()?);
+    seeds.extend(actor_socket_input_seeds()?);
+    Ok(seeds)
+}
+
+fn actor_socket_input_seeds()
+-> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn std::error::Error>> {
+    use acyclic_actors::guest::wire;
+    // Original Runtime deliveries, captured at SocketPackage::on_record while
+    // the shared physical conformance suite checks its independently sent events.
+    let captures: serde_json::Value =
+        serde_json::from_str(include_str!("../captures/socket-deliveries.capture"))?;
+    let mut seeds = Vec::new();
+    for name in [
+        "socket-input-open",
+        "socket-input-text",
+        "socket-input-binary",
+        "socket-input-close-peer",
+        "socket-input-close-actor",
+        "socket-input-close-runtime",
+    ] {
+        let capture = &captures[name];
+        let bytes: Vec<u8> = serde_json::from_value(capture["bytes"].clone())?;
+        let (delivery, checkpoint) = wire::decode_delivery(&bytes)?;
+        assert_eq!(wire::encode_delivery(&delivery, checkpoint.as_ref()), bytes);
+        let socket = delivery
+            .socket()?
+            .ok_or("socket input writer must be admitted")?;
+        assert_eq!(
+            socket.connection_id,
+            capture["connection"].as_str().unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(socket.event)?,
+            capture["event"],
+            "socket input must retain the original runtime event"
+        );
+        seeds.push((
+            name,
+            bytes,
+            "Runtime::run -> SocketPackage::on_record -> guest::wire::encode_delivery",
+        ));
+    }
     Ok(seeds)
 }
 
@@ -1035,6 +1077,7 @@ pub fn actor_codecs(bytes: &[u8]) {
         );
     }
     if let Ok((value, checkpoint)) = wire::decode_delivery(bytes) {
+        let _ = value.socket();
         let canonical = wire::encode_delivery(&value, checkpoint.as_ref());
         assert_eq!(
             canonical.as_slice(),

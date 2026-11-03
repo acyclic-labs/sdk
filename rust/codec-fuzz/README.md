@@ -465,6 +465,17 @@ reject production open refusal, lost close codes and skipped subprotocol checks,
 then captures the original restored writers. These codec controls do not cover
 the separate inbox `InputWire` or prove physical session/recovery behavior.
 
+The same target also admits retained Runtime-created deliveries at
+`SocketPackage::on_record`. The shared physical socket suite independently sends
+and checks Open, text, binary and peer/actor/runtime Close events. Their original
+guest wire envelopes and event projections are in `captures/socket-deliveries.capture`;
+`Delivery::socket` must preserve the connection and every captured event field.
+Arbitrary guest deliveries enter that same private input decoder.
+`python3 actor-negative-control.py --socket-inputs` requires the unchanged oracle
+to reject an actual production `Delivery::socket` returning no events. Error input
+has no shipped producer capture yet; these controls do not establish complete
+branch coverage, non-owner routing or upgrades.
+
 `python3 actor-negative-control.py --call-schedules` restores the former decoder
 schedule drive and requires a production schedule-entry refusal to expose it.
 The separated decoder must still replay; the unchanged schedule entry must

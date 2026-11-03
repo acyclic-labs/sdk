@@ -431,6 +431,10 @@ pub async fn verify<T: SocketBackend + ?Sized>(target: &T) -> Result<(), Failure
         peer.send(text(&format!("echo {word}"))).await?;
         case.expect_frame(&mut peer, Some(text(word))).await?;
     }
+    peer.send(SocketFrame::Message(SocketPayload::Binary {
+        binary: Bytes::from_static(b"\0\xffsocket"),
+    }))
+    .await?;
     peer.send(SocketFrame::Close {
         code: 1000,
         reason: "done".into(),
@@ -444,6 +448,7 @@ pub async fn verify<T: SocketBackend + ?Sized>(target: &T) -> Result<(), Failure
         "open",
         "message echo one",
         "message echo two",
+        "message binary",
         "close peer 1000",
     ])
     .await?;

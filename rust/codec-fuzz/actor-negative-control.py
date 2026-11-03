@@ -48,6 +48,8 @@ def main():
         return replay_diagnostics()
     if sys.argv[1:] == ["--sockets"]:
         return sockets()
+    if sys.argv[1:] == ["--socket-inputs"]:
+        return socket_inputs()
     if sys.argv[1:]:
         raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms|--persisted-alarms|--reservation-book|--call-records|--call-schedules|--replay-diagnostics|--sockets|--capture]")
     original = {path: path.read_bytes() for path in (PRODUCTION, ORACLE)}
@@ -321,6 +323,30 @@ def sockets():
         for anchor, replacement, diagnostic in plants:
             production.write_bytes(source.replace(anchor, replacement))
             run("same socket oracle rejects production defect", "rejected", diagnostic)
+        production.write_bytes(source)
+        capture()
+    finally:
+        for path, value in original.items():
+            path.write_bytes(value)
+
+
+def socket_inputs():
+    production = ROOT.parent / "crates/actors/src/sockets.rs"
+    original = {path: path.read_bytes() for path in (production, ORACLE)}
+    source, oracle = original[production], original[ORACLE]
+    anchor = b"pub fn socket(&self) -> Result<Option<SocketDelivery>, GuestError> {"
+    admission = b"    seeds.extend(actor_socket_input_seeds()?);"
+    if source.count(anchor) != 1 or oracle.count(admission) != 1:
+        raise RuntimeError("socket input anchor changed; recovery: inspect Delivery::socket "
+                           "and actor_socket_input_seeds before python3 actor-negative-control.py --socket-inputs")
+    try:
+        print("socket input production sha256=" + hashlib.sha256(source).hexdigest(), flush=True)
+        production.write_bytes(source.replace(anchor, anchor + b" return Ok(None);"))
+        ORACLE.write_bytes(oracle.replace(admission, b""))
+        run("conditional input oracle misses production reject-all", "accepted")
+        ORACLE.write_bytes(oracle)
+        run("same socket input oracle rejects production reject-all", "rejected",
+            "socket input writer must be admitted")
         production.write_bytes(source)
         capture()
     finally:
