@@ -174,7 +174,7 @@ async fn home_agent_settings_apply_at_open_and_bad_ones_fall_back_to_the_seed() 
 #[tokio::test]
 async fn conflicting_sampling_is_rejected_before_a_profile_bound_session_opens() -> Result<()> {
     use crate::model::{
-        Model, ModelDispatch, ModelEvent, ModelProfileBinding, ModelProvider, PreparedModelRequest,
+        Model, ModelDispatch, ModelProfileBinding, ModelProvider, PreparedModelRequest,
     };
     use crate::profile::{AgentOverride, ModelProfile, ProjectLayer, RoleFile, resolve};
     use std::sync::Arc;
