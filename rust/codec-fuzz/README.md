@@ -306,3 +306,12 @@ control keeps its distinct typed refusal obligation. `object_root_format.patch`
 removes the production foreign-format refusal; the unchanged root oracle must
 reject that acceptance. This adds no parser, test, target, polling or production
 IO, and does not establish a power-loss or full source-branch guarantee.
+
+`object_write_minimum.patch` restores the original server's read-only revision
+admission, including the mutation bypass. The existing generated HTTP/2
+GET/PUT/DELETE control must reject it at the unchanged physical-storage oracle:
+a foreign scope or incarnation cannot change any key through singleton, batch,
+manifest, delete, retain, release or collect routes. The same control ends an
+ahead-of-provider mutation through the original authority's close event. This
+qualifies server admission independently of the client's final-status check;
+it does not establish remote replica or full source-branch coverage.
