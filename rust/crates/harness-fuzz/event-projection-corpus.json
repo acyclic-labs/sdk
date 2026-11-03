@@ -1,0 +1,16 @@
+{
+  "source_commit": "d98cc6b4d3ae13fbc4e87ba163a9af7e7fb3d253",
+  "producer": "fuzz_targets/event_projection.rs::writer_corpus, using original client serializers",
+  "scope": "Caller-chosen serializer inputs and explicit corruptions; not captured provider continuations",
+  "files": {
+    "empty": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "empty-state": "c70d9b670971fd218ff00027ec4285a5b8cedbf79768eb64f326d79641e9497b",
+    "execution-state": "14017e78d9e52262cfaaaba5baf7734695570490c33d3c132b30a0379b2b32b7",
+    "invalid-opaque": "6d652d3eac4a79f73fca034822b7212502a17ee6f277caa959842b2e77e4bd83",
+    "maximum-position": "40b1819ab0d694a2fe6fd0ea2e517c83907dd2b59edf231f6fd7c44e15a66ff8",
+    "opaque-cursor": "5fb89a2d6f2d81f4b50ab99a053ba8469a90459b86ca1eec0e206905e485c348",
+    "resource-state": "bfe8330fa47ffe7a0298c11b8fabfc056bcbbee77a47662e3ecd40475bf129a3",
+    "wrong-operation": "36f920476c608d79ec894b21d9eddc0ff1840a50825a7ccb3e77efb857d0949d",
+    "wrong-version": "509951fd6116540501f63985c5db9862a1c4f8e6b0bde43ded35a025fe3f324e"
+  }
+}

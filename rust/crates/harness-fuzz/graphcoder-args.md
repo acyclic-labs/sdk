@@ -5,6 +5,11 @@ command output. A file contains UTF-8 arguments separated by NUL, excluding
 argv[0]. Empty input means no arguments. Mutations also exercise native invalid
 UTF-8 on Unix and native UTF-16 units on Windows. No seed contains credentials.
 
+Windows also admits a `FF 00` prefix followed by little-endian UTF-16 arguments
+separated by zero *units*. This preserves zero bytes inside units such as D800
+and DC00. `native-d800` and `native-dc00` retain those authored OS inputs; the
+readable UTF-8 corpus uses its original encoding.
+
 The target includes the shipping `graphcoder/args.rs` and invokes its clap parser
 and `prepare_input`. It opens no runtime, config, provider or output file.
 Accepted results must retain one input producer and operation identity, one

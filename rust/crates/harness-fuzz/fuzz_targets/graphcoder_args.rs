@@ -31,6 +31,28 @@ fn native(bytes: &[u8]) -> OsString {
     }
 }
 
+fn arguments(bytes: &[u8]) -> Vec<OsString> {
+    #[cfg(windows)]
+    if let Some(wide) = bytes.strip_prefix(b"\xff\0") {
+        use std::os::windows::ffi::OsStringExt as _;
+        let units: Vec<_> = wide
+            .chunks(2)
+            .map(|pair| u16::from_le_bytes([pair[0], *pair.get(1).unwrap_or(&0)]))
+            .collect();
+        // Split native units, preserving zero bytes within D800/DC00 units.
+        return units
+            .split(|unit| *unit == 0)
+            .map(OsString::from_wide)
+            .collect();
+    }
+    (!bytes.is_empty())
+        .then(|| bytes.split(|byte| *byte == 0))
+        .into_iter()
+        .flatten()
+        .map(native)
+        .collect()
+}
+
 fn check(mut parsed: args::Args) {
     let original_prompt = parsed.prompt.clone();
     let execution = match &parsed.command {
@@ -94,12 +116,7 @@ fn check(mut parsed: args::Args) {
 }
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
-    let tail = (!bytes.is_empty())
-        .then(|| bytes.split(|byte| *byte == 0))
-        .into_iter()
-        .flatten()
-        .map(native);
-    let argv = std::iter::once(OsString::from("graphcoder")).chain(tail);
+    let argv = std::iter::once(OsString::from("graphcoder")).chain(arguments(bytes));
     if let Ok(parsed) = args::Args::try_parse_from(argv) {
         check(parsed);
     }
