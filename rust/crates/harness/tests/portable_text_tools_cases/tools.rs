@@ -394,7 +394,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             .await?
             .ok_or_else(|| Error::Invalid("pinned read was not reconciled".into()))?
             .value,
-        json!({"file":source,"text":"one two"})
+        json!({"file":files::FileReadSource::Content(source),"text":"one two"})
     );
     let fresh = OperationId::new();
     let stale = ToolInvocation {

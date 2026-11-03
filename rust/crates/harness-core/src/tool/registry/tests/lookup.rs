@@ -72,7 +72,8 @@ proptest! {
                 })), "cancelled pinned lookup must refuse");
             } else {
                 prop_assert!(matches!(cancelled, Err(Error::NativeFilesystem { source, .. })
-                    if matches!(source.as_ref(), acyclic_fs::FsError::Cancelled(_))),
+                    if matches!(source.as_ref(), acyclic_fs::FsError::NativeKernel(
+                        acyclic_fs::NativeTreeMaterializationError::Cancelled))),
                     "cancelled query scan must refuse");
             }
         }

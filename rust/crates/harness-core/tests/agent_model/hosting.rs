@@ -747,6 +747,12 @@ async fn trees_sharing_a_stream_each_claim_only_their_own_agents() -> Result {
                 .await?,
         );
         let record = changes
+            .try_filter_map(|record| {
+                futures::future::ready(
+                    acyclic_actors::local::State::decode(&record.value)
+                        .map(|state| state.checkpoint().map(|_| record)),
+                )
+            })
             .try_next()
             .await?
             .ok_or("actor state producer ended")?;

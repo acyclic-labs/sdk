@@ -2171,8 +2171,8 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
         }
         fn read(&self) -> BoxProviderFuture<'_, acyclic_harness_core::Result<Option<GoalView>>> {
             Box::pin(async move {
-                let observed = self.original.read().await?;
                 self.edit.reads.fetch_add(1, Ordering::SeqCst);
+                let observed = self.original.read().await?;
                 if self.edit.pending.swap(false, Ordering::SeqCst) {
                     // An actual file publication changes the original observation
                     // after its read and before its conditioned rewrite.

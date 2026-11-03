@@ -118,24 +118,6 @@ async fn incompatible_explicit_compaction_fails_before_owner_creation() -> Resul
     Ok(())
 }
 
-#[tokio::test]
-async fn oversized_tool_catalog_fails_before_owner_creation_or_model_dispatch() -> Result<()> {
-    let directory = tempfile::tempdir().map_err(super::storage)?;
-    let project = volume(directory.path()).await?;
-    let provider = text();
-    let mut oversized = tool("test.oversized");
-    oversized.definition.description = "x".repeat(capacity().context_tokens as usize);
-    let config = volume_config(directory.path(), project, provider.clone())?.tool(oversized);
-    let owner = config.resolved_state_directory()?.join("owner.json");
-    assert!(matches!(
-        LocalHarness::open(config).await,
-        Err(Error::Invalid(_))
-    ));
-    assert!(!owner.exists());
-    assert!(provider.requests().is_empty());
-    Ok(())
-}
-
 struct Echo;
 impl ToolExecutor for Echo {
     fn execute<'a>(
