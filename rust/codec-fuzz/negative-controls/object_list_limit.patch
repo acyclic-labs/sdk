@@ -1,0 +1,12 @@
+--- a/rust/crates/objects/src/convert.rs
++++ b/rust/crates/objects/src/convert.rs
+@@ -346,8 +346,7 @@
+     limit: u32,
+ ) -> Result<Page, Error> {
+     let page = page(value)?;
+-    if page.digests.len() > limit as usize
+-        || after.is_some_and(|after| page.digests.first().is_some_and(|first| *first <= after))
++    if after.is_some_and(|after| page.digests.first().is_some_and(|first| *first <= after))
+     {
+         return Err(wire::ErrorCode::Unavailable.into());
+     }

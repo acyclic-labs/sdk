@@ -597,3 +597,13 @@ second provider capture. `object_read_start.patch`, `object_read_length.patch`
 and `object_read_content.patch` omit the corresponding production predicates.
 The unchanged property must catch each omission. Manifest logical-content
 authentication, every range-refusal branch and remote topology remain open.
+
+The listing projection independently checks strict digest ordering, continuation
+identity, the caller's limit and the exclusive original cursor. The retained
+two-member service page supplies swapped, repeated and changed-continuation
+operands; those mutations are derived inputs, not additional captures. Zero and
+one-member limits and an unbounded limit with a cursor exercise each request
+bound separately. `object_list_order.patch`, `object_list_cursor.patch`,
+`object_list_limit.patch` and `object_list_after.patch` each omit the actual
+production predicate. The same writer property must catch every omission.
+Malformed digest branches, full pagination state and remote topology remain open.

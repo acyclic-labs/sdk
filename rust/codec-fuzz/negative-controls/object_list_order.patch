@@ -1,0 +1,16 @@
+--- a/rust/crates/objects/src/convert.rs
++++ b/rust/crates/objects/src/convert.rs
+@@ -186,10 +186,9 @@
+             .transpose()?,
+         revision: None,
+     };
+-    if page.digests.windows(2).any(|pair| pair[0] >= pair[1])
+-        || page
+-            .next
+-            .is_some_and(|next| page.digests.last() != Some(&next))
++    if page
++        .next
++        .is_some_and(|next| page.digests.last() != Some(&next))
+     {
+         return Err(invalid());
+     }

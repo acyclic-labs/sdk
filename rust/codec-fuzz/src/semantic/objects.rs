@@ -306,10 +306,37 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
                 .delete(digest()));
         }
         "acyclic.objects.v1.ListBlobsResponse" => {
-            response!(ListBlobsResponse, "blobs/list", |client| client
-                .list(None, u32::MAX));
-            response!(ListBlobsResponse, "blobs/list", |client| client
-                .list(Some(digest()), 1));
+            for (after, limit) in [
+                (None, u32::MAX),
+                (None, 0),
+                (None, 1),
+                (Some(digest()), u32::MAX),
+                (Some(digest()), 1),
+            ] {
+                compare::<wire::ListBlobsResponse, _>(bytes, "blobs/list", |client| {
+                    ready(client.list(after, limit)).inspect(|page| {
+                        assert!(
+                            page.digests.windows(2).all(|pair| pair[0] < pair[1]),
+                            "listed digests are strictly increasing"
+                        );
+                        assert!(
+                            page.next
+                                .is_none_or(|next| page.digests.last() == Some(&next)),
+                            "listed continuation is the last returned digest"
+                        );
+                        assert!(
+                            page.digests.len() <= limit as usize,
+                            "listing respects the original requested limit"
+                        );
+                        assert!(
+                            after.is_none_or(|after| {
+                                page.digests.first().is_none_or(|first| *first > after)
+                            }),
+                            "listing starts after the original requested cursor"
+                        );
+                    })
+                });
+            }
         }
         "acyclic.objects.v1.RetainResponse" => {
             response!(RetainResponse, "blobs/retain", |client| client
@@ -567,6 +594,37 @@ mod tests {
         super::check(
             "acyclic.objects.v1.GetBlobResponse",
             &selected.encode_to_vec(),
+        );
+        let captured = acyclic_proto_build::golden::frame(
+            "corpus/protobuf/acyclic.objects.v1.ListBlobsResponse-ordered",
+        )
+        .expect("retained original service listing writer");
+        super::check("acyclic.objects.v1.ListBlobsResponse", &captured[8..]);
+        let original = super::wire::ListBlobsResponse::decode(&captured[8..])
+            .expect("original service listing wire");
+        let mut wrong = original.clone();
+        wrong.digests.swap(0, 1);
+        super::check(
+            "acyclic.objects.v1.ListBlobsResponse",
+            &wrong.encode_to_vec(),
+        );
+        let mut wrong = original.clone();
+        wrong.digests[1] = wrong.digests[0].clone();
+        super::check(
+            "acyclic.objects.v1.ListBlobsResponse",
+            &wrong.encode_to_vec(),
+        );
+        // Continuations are derived operands, not additional provider captures.
+        let mut page = original;
+        page.next = page.digests.first().cloned();
+        super::check(
+            "acyclic.objects.v1.ListBlobsResponse",
+            &page.encode_to_vec(),
+        );
+        page.next = page.digests.last().cloned();
+        super::check(
+            "acyclic.objects.v1.ListBlobsResponse",
+            &page.encode_to_vec(),
         );
     }
 }
