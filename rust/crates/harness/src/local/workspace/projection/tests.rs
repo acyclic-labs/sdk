@@ -295,6 +295,10 @@ fn scoped_retirement(broken: bool) {
         let (slot, users) = (slot.clone(), users.clone());
         thread::spawn(move || scope(&slot, &users, broken))
     };
+    // Finish the other command while this original claim is still live.
+    // The retirement check must observe that overlap directly, rather than
+    // depend on scheduling inside Tokio's uninstrumented lock.
+    joined(worker);
     complete(leave(&slot, &users, entered, async |slot, retire| {
         assert!(slot.is_some(), "projection retired under a running command");
         if retire {
@@ -303,7 +307,6 @@ fn scoped_retirement(broken: bool) {
         Ok(())
     }))
     .unwrap();
-    joined(worker);
     assert!(
         complete(lock_owned(slot)).is_none(),
         "projection outlived its last scope"
