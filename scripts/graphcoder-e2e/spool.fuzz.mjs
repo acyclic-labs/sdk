@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { createWriteStream, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Readable } from "node:stream";
 import { finished } from "node:stream/promises";
 import { Spool } from "./process.mjs";
@@ -7,6 +9,10 @@ import { Spool } from "./process.mjs";
 const captured = JSON.parse(readFileSync(new URL("./fixtures/shipping-output.json", import.meta.url)))
   .captures["jsonl-reopen"];
 const original = Buffer.from(captured.stdout);
+// Identifier mutation supplies a second independent indexed range without
+// inventing another provider response fixture.
+const event = JSON.parse(captured.stdout);
+const distinct = Buffer.from(JSON.stringify({ ...event, id: event.id + "\0" }) + "\n");
 const key = event => event && typeof event.id === "string" ? [event.id] : [];
 
 // Node's whole-buffer UTF-8/JSON decode is the independent reference. Compare
@@ -15,23 +21,24 @@ const key = event => event && typeof event.id === "string" ? [event.id] : [];
 function expected(bytes, unique) {
   const lines = bytes.toString("utf8").split("\n");
   if (lines.at(-1) === "") lines.pop();
-  const events = [], index = new Map();
+  const events = [], written = [], index = new Map();
   let sequence = 0;
   for (const line of lines) {
     let event;
     try { event = JSON.parse(line); }
-    catch { return { events, index, sequence, kind: "malformed" }; }
+    catch { return { events, written, index, sequence, kind: "malformed" }; }
+    written.push(event);
     sequence++;
     for (const id of key(event)) {
-      if (index.has(id) && unique) return { events, index, sequence, kind: "duplicate" };
+      if (index.has(id) && unique) return { events, written, index, sequence, kind: "duplicate" };
       if (!index.has(id)) index.set(id, event);
     }
     events.push(event);
   }
-  return { events, index, sequence, kind: "eof" };
+  return { events, written, index, sequence, kind: "eof" };
 }
 
-async function replay(bytes, unique, partition, closedFirst) {
+async function replay(bytes, unique, partition, closedFirst, path) {
   const reference = expected(bytes, unique), chunks = [];
   for (let offset = 0; offset < bytes.length;) {
     const end = partition === "whole" ? bytes.length
@@ -41,7 +48,9 @@ async function replay(bytes, unique, partition, closedFirst) {
   const source = Readable.from(chunks);
   let close;
   const closed = new Promise(resolve => { close = resolve; });
-  const spool = new Spool(source, closed, { key, unique });
+  const transcript = path ? createWriteStream(path) : undefined;
+  const persisted = transcript && finished(transcript);
+  const spool = new Spool(source, closed, { key, unique, transcript });
   const events = [];
   spool.subscribe(event => events.push(event));
   const observed = promise => promise.then(value => ({ value }), error => ({ error }));
@@ -55,6 +64,7 @@ async function replay(bytes, unique, partition, closedFirst) {
   else source.once("end", () => close(captured));
   const cause = await terminal;
   await drained;
+  await persisted;
   assert.equal(cause.kind, reference.kind, "original terminal must survive byte partitions and physical-exit order");
   assert.equal(await missing, cause, "all original waiters must receive the same terminal");
   assert.equal(spool.ended, cause);
@@ -65,8 +75,11 @@ async function replay(bytes, unique, partition, closedFirst) {
   if (keyed) assert.deepEqual((await keyed).value, reference.index.get(firstKey.value));
   for (const [id, event] of reference.index) {
     assert.equal(spool.has(id), true);
-    assert.deepEqual(await spool.keyed(id), event, "late lookup must preserve the first committed event");
+    let actual;
+    await assert.doesNotReject(async () => { actual = await spool.keyed(id); }, "the original indexed event must remain readable");
+    assert.deepEqual(actual, event, "late lookup must preserve the first committed event");
   }
+  if (path) assert.deepEqual(await spool.history(), reference.written, "history contains only original completed transcript lines");
   await assert.rejects(spool.next(() => true), error => error === cause);
   await assert.rejects(spool.keyed(Symbol("still absent")), error => error === cause);
   if (cause.kind === "eof") assert.equal(cause.detail, captured, "EOF must retain the original native result");
@@ -74,9 +87,14 @@ async function replay(bytes, unique, partition, closedFirst) {
 
 export async function fuzz(data) {
   const bytes = Buffer.from(data);
-  for (const input of [bytes, Buffer.concat([bytes, original]), Buffer.concat([original, bytes]),
-    Buffer.concat([original, original, bytes])])
-    for (const unique of [false, true])
-      for (const partition of ["whole", "bytes", "input"])
-        for (const closedFirst of [false, true]) await replay(input, unique, partition, closedFirst);
+  const directory = mkdtempSync(join(tmpdir(), "spool-corpus-"));
+  try {
+    for (const input of [bytes, Buffer.concat([bytes, original]), Buffer.concat([original, bytes]),
+      Buffer.concat([original, original, bytes]), Buffer.concat([original, distinct, bytes])])
+      for (const unique of [false, true])
+        for (const closedFirst of [false, true]) {
+          for (const partition of ["whole", "bytes", "input"]) await replay(input, unique, partition, closedFirst);
+          await replay(input, unique, "input", closedFirst, join(directory, "events.jsonl"));
+        }
+  } finally { rmSync(directory, { recursive: true }); }
 }

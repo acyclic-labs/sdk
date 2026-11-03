@@ -220,5 +220,8 @@ ordering against whole-buffer substring positions, including captured terminal
 escape sequences. It checks whole, single-byte and input-derived chunk partitions;
 it does not establish native terminal input or OS PTY behavior.
 The spool target checks JSONL admission, unique-key indexing and original
-terminal retention across byte partitions and process-exit order. Its in-memory
+terminal retention across byte partitions and process-exit order. It also checks
+the original file-backed index and completed transcript history, joining the
+original file stream before cleanup. A generated identifier mutation supplies
+a distinct second range. Its in-memory
 stream adapter does not qualify filesystem transcript failures or native pipes.
