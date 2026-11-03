@@ -14,8 +14,29 @@ node --test --experimental-test-coverage test/process-completion.test.mjs
 
 The retained fuzz entry consumes arbitrary bytes, mutates original fields and
 checks terminal/binding invariants. Replay requires every original field to
-survive decoding. Its negative controls remove each of fifteen production
+survive decoding. Its negative controls remove each of eighteen production
 admission guards separately, then plant refusal of a valid original receipt;
 each mutation must fail the same replay/fuzz oracle.
-Native refusal and cancellation wire captures remain additional corpus work;
-the real-binary integration control independently exercises those paths.
+
+The five `linux-{refused,exit,input,eof,failed}-v3.json` samples are exact bytes
+from the production writer exercised by
+`original_host_phases_preserve_root_status_and_control_custody` on Linux x86_64,
+2026-11-03. Capture source: `7498a743c7bae4e531feee7db1d4c7e7a0848cc4`;
+the production writer is unchanged from the producer revision above. The
+control prints the byte array read from the original file before decoding it.
+These cover original missing-command refusal, status 124, control input/EOF
+cancellation with signal 9, and control-read failure with original OS error 21.
+No fields, byte order or line endings were rewritten.
+
+| Sample | SHA-256 |
+| --- | --- |
+| refused | `83ce315823443eec431f653efff31021efb8788b3d32dc5e233c890dee6632b1` |
+| exit | `8adf254273d74fc851f93c77c88fed08d0e64bc57f210a3ff8c1f0e7b19f02f5` |
+| input | `2f25322bcb9b33974a05865e0b664055531e6657bb648f9e520f903fe54a489b` |
+| eof | `f360684ce49a07b654790fec7f434d478afeaeceffd964e472f787a7b6c6a888` |
+| failed | `5a258a546433c041f1cdfbf8e86e10170e9e7fc3ea37b4dd3697aad2cc390481b` |
+
+The replay now removes eighteen production admission guards independently,
+including the failure phase, error kind and OS-error guards, and rejects a
+nineteenth defect that refuses valid original receipts. Broader platform and
+state-machine qualification remains separate from this bounded byte campaign.

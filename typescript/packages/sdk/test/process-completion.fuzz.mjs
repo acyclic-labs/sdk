@@ -55,5 +55,13 @@ export function fuzz(data, decode = decodeCompletion) {
       invalid({...seed, root_status: null, process_tree_retired: true});
     }
     invalid({...seed, process_tree_retired: false, failure: null});
+    if (seed.failure) {
+      for (const phase of [undefined, null, 0]) invalid(
+        {...seed, failure: {...seed.failure, phase}});
+      for (const kind of [undefined, null, 0]) invalid(
+        {...seed, failure: {...seed.failure, error: {...seed.failure.error, kind}}});
+      for (const raw_os_error of [undefined, 'ENOENT', 0.5]) invalid(
+        {...seed, failure: {...seed.failure, error: {...seed.failure.error, raw_os_error}}});
+    }
   }
 }

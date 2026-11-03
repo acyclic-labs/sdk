@@ -40,6 +40,8 @@ impl std::os::fd::AsFd for ChildExitWatch {
 }
 
 /// Waits for and reaps the caller's child without taking termination authority.
+/// Closes retained stdin before waiting, matching `Child::wait` and allowing
+/// children that consume input until EOF to exit.
 /// An already retained status wins even at an expired deadline. Failure leaves
 /// the child and all responsibility for its termination with the caller.
 #[cfg(target_os = "linux")]
@@ -47,6 +49,7 @@ pub fn wait_child_until(
     child: &mut std::process::Child,
     deadline: Instant,
 ) -> io::Result<ExitStatus> {
+    drop(child.stdin.take());
     if let Some(watch) = ChildExitWatch::open(child)? {
         watch.wait_until(deadline)?;
     }
