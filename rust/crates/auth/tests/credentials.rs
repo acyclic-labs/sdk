@@ -9,25 +9,30 @@ use std::sync::{
 #[path = "common/credential.rs"]
 mod conformance;
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
-    #[test]
-    fn credential_admission_matches_the_bounded_header_contract(value in prop_oneof![
+#[test]
+fn credential_admission_matches_the_bounded_header_contract() {
+    conformance::check(include_bytes!("../fuzz/corpus/credential/v2-opaque-bearer"));
+    conformance::check(include_bytes!(
+        "../fuzz/corpus/capability/v2-signed-capability"
+    ));
+    // Fixed corpus and byte boundaries run once, independently of generated cases.
+    for length in [MAX_CREDENTIAL_BYTES, MAX_CREDENTIAL_BYTES + 1] {
+        conformance::check("a".repeat(length).as_bytes());
+    }
+    for length in [MAX_CREDENTIAL_BYTES / 2, MAX_CREDENTIAL_BYTES / 2 + 1] {
+        conformance::check("é".repeat(length).as_bytes());
+    }
+    proptest!(ProptestConfig::with_cases(64), |(value in prop_oneof![
         any::<String>(),
         (0..=MAX_CREDENTIAL_BYTES + 2, any::<bool>()).prop_map(|(length, unicode)|
             if unicode { "é".repeat(length) } else { "a".repeat(length) }),
-    ]) {
-        conformance::check(include_bytes!("../fuzz/corpus/credential/v2-opaque-bearer"));
-        conformance::check(include_bytes!("../fuzz/corpus/capability/v2-signed-capability"));
+    ])| {
         conformance::check(value.as_bytes());
-        // Keep byte-boundary cases deterministic within the same provider oracle.
-        for length in [MAX_CREDENTIAL_BYTES, MAX_CREDENTIAL_BYTES + 1] {
-            conformance::check("a".repeat(length).as_bytes());
-        }
-        for length in [MAX_CREDENTIAL_BYTES / 2, MAX_CREDENTIAL_BYTES / 2 + 1] {
-            conformance::check("é".repeat(length).as_bytes());
-        }
-    }
+    });
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
     fn each_resolution_owns_the_current_value_without_caching(values in prop::collection::vec("[a-zA-Z0-9_-]{1,128}", 1..16)) {
         let index = Arc::new(AtomicUsize::new(0));
