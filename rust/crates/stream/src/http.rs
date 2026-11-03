@@ -574,7 +574,9 @@ mod tests {
     #[tokio::test]
     async fn filtered_http_failure_does_not_record_on_its_parent()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::{CommitId, StreamError, StreamProvider as _};
+        use crate::{
+            AppendRequest, IdempotencyKey, StreamError, StreamPath, StreamProviderExt as _,
+        };
         use tracing::{Instrument, instrument::WithSubscriber};
         use tracing_subscriber::{Layer, layer::Context, prelude::*};
 
@@ -608,14 +610,12 @@ mod tests {
                 "fixture-token",
                 1024,
             )?;
-            let server = tokio::spawn(async move {
-                let connection = listener.accept().await;
-                assert!(
-                    connection.is_ok(),
-                    "loopback fixture could not accept the request"
-                );
+            let server = async move {
+                let (connection, _) = listener.accept().await?;
                 // Closing before a response forces the request completion error path.
-            });
+                drop(connection);
+                Ok::<_, std::io::Error>(())
+            };
             let parent = tracing::info_span!(
                 "test.parent",
                 outcome = "sentinel",
@@ -623,12 +623,16 @@ mod tests {
                 bytes = 777_u64,
                 http.status = 777_u64
             );
-            // Commit reads are one physical HTTP request; heads use the session.
-            let result = provider
-                .read_commit(CommitId::from_bytes([7; 32]))
-                .instrument(parent)
-                .await;
-            server.await?;
+            // Reads use the reconnecting Session. A public append exercises the
+            // HTTP observation whose filtered completion this test protects.
+            let request = provider.append(AppendRequest {
+                path: StreamPath::new("filtered/test")?,
+                records: vec![bytes::Bytes::from_static(b"record").into()],
+                if_tail: Some(0),
+                idempotency_key: IdempotencyKey::unique(),
+            });
+            let (result, served) = tokio::join!(request.instrument(parent), server);
+            served?;
             assert_eq!(result, Err(StreamError::Unavailable));
             Ok(())
         }
