@@ -173,6 +173,13 @@ additional_controls = {
             "null",
             b"native input admission changed its original JSON",
         ),
+        (
+            "plugin/src/input.rs",
+            b"input.take(65_537).read_to_end(&mut bytes)?;",
+            b"let _ = input.take(65_537).read_to_end(&mut bytes);",
+            "null",
+            b"native input read failure must retain its OS error",
+        ),
     ],
     "command_result": [
         (
