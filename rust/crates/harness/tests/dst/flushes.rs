@@ -106,6 +106,13 @@ fn measure(replies: [ScriptedTurn; 5]) -> Result<[(usize, usize); 5]> {
         schedule.drained().await;
         releaser.abort();
         let writes = schedule.durable_writes();
+        eprintln!("settled reply writes: {:?}", &writes[cuts[0]..cuts[1]]);
+        eprintln!(
+            "settled reply flushes: {:?}",
+            std::array::from_fn::<_, 5, _>(|index| {
+                flushes(&writes[cuts[index]..cuts[index + 1]])
+            })
+        );
         Ok(std::array::from_fn(|index| {
             flushes(&writes[cuts[index]..cuts[index + 1]])
         }))
