@@ -16,6 +16,8 @@ pub use runtime::{
 };
 mod sockets;
 pub use sockets::Sockets;
+#[cfg(feature = "test-support")]
+pub use sockets::codec_fuzz as socket_ledger_codec;
 
 use crate::addressing::ActorReference;
 use crate::guest::{

@@ -108,6 +108,37 @@ fn decode_canonical<M: prost::Message + Default>(bytes: &[u8]) -> Result<M, Erro
     Ok(wire)
 }
 
+fn advance(value: u64, count: u64) -> Result<u64, Error> {
+    value
+        .checked_add(count)
+        .ok_or_else(|| invalid("socket ledger counter exhausted"))
+}
+
+fn recover_epoch(bytes: &[u8]) -> Result<(u64, u64, u64), Error> {
+    let wire = decode_canonical::<EpochWire>(bytes)?;
+    let next = advance(wire.segment, 1)?;
+    if wire.version != 1 || wire.from > next {
+        return Err(invalid("invalid socket epoch"));
+    }
+    Ok((wire.segment, wire.from, next))
+}
+
+fn epoch_record(segment: u64, from: u64) -> AppendRecord {
+    EpochWire {
+        version: 1,
+        segment,
+        from,
+    }
+    .encode_to_vec()
+    .into()
+}
+
+fn decode_ledger(bytes: &[u8]) -> Result<LedgerKind, Error> {
+    decode_canonical::<LedgerWire>(bytes)?
+        .kind
+        .ok_or_else(|| invalid("invalid socket ledger record"))
+}
+
 /// The final close of one socket.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Close {
@@ -359,8 +390,8 @@ async fn fold<P: StreamProvider + ?Sized>(
         };
         let count = page.len();
         for record in page {
-            match decode_canonical::<LedgerWire>(&record.value)?.kind {
-                Some(LedgerKind::Opened(opened)) => {
+            match decode_ledger(&record.value)? {
+                LedgerKind::Opened(opened) => {
                     if !closed.contains(&opened.connection) {
                         live.insert(
                             opened.connection,
@@ -372,13 +403,12 @@ async fn fold<P: StreamProvider + ?Sized>(
                         );
                     }
                 }
-                Some(LedgerKind::Closed(connection)) => {
+                LedgerKind::Closed(connection) => {
                     live.remove(&connection);
                     closed.insert(connection);
                 }
-                None => return Err(invalid("invalid socket ledger record")),
             }
-            from = record.sequence + 1;
+            from = advance(record.sequence, 1)?;
         }
         if count < PAGE as usize {
             return Ok(());
@@ -623,30 +653,20 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
             Err(StreamError::NotFound) => (0, None),
             Err(error) => return Err(error.into()),
         };
-        let (segment, from) = match (tail, last) {
-            (0, _) => (0, 1),
-            (_, Some(record)) if record.sequence + 1 == tail => {
-                let wire = decode_canonical::<EpochWire>(&record.value)?;
-                if wire.version != 1 || wire.from > wire.segment + 1 {
-                    return Err(invalid("invalid socket epoch"));
-                }
-                (wire.segment, wire.from)
+        let (segment, from, incarnation) = match (tail, last) {
+            (0, _) => (0, 1, 1),
+            (_, Some(record)) if record.sequence.checked_add(1) == Some(tail) => {
+                recover_epoch(&record.value)?
             }
             _ => return Err(invalid("socket epochs history is incomplete")),
         };
-        let incarnation = segment + 1;
+        // Reserve both epoch positions before fencing the previous host.
+        let settled_tail = advance(tail, 2)?;
+        let fenced_tail = settled_tail - 1;
         // Each ownership attempt has its own keys: a concurrent host fencing
         // the same tail conflicts instead of replaying this attempt's result.
         let attempt = uuid::Uuid::new_v4();
-        let epoch = |from| -> AppendRecord {
-            EpochWire {
-                version: 1,
-                segment: incarnation,
-                from,
-            }
-            .encode_to_vec()
-            .into()
-        };
+        let epoch = |from| epoch_record(incarnation, from);
         // Fence first: an open of an earlier incarnation commits under
         // `Tail{epochs}` and now fails, so the survivors below are final.
         let fenced = commit(
@@ -701,7 +721,7 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
                 vec![epoch(incarnation)],
                 vec![CommitCondition::Tail {
                     path: epochs,
-                    expected: tail + 1,
+                    expected: fenced_tail,
                 }],
             )],
         )
@@ -721,7 +741,7 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
                 ledger: RwLock::new(Ledger {
                     segment: incarnation,
                     allocated: incarnation,
-                    epochs: tail + 2,
+                    epochs: settled_tail,
                 }),
                 live: AtomicUsize::new(0),
                 written: AtomicUsize::new(0),
@@ -953,16 +973,10 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
     async fn compact(&self) -> Result<(), Error> {
         let mut ledger = self.ledger.write().await;
         let epochs = self.layout.epochs.clone();
-        let next = ledger.allocated + 1;
-        let epoch = |from| -> AppendRecord {
-            EpochWire {
-                version: 1,
-                segment: next,
-                from,
-            }
-            .encode_to_vec()
-            .into()
-        };
+        let next = advance(ledger.allocated, 1)?;
+        let settled_tail = advance(ledger.epochs, 2)?;
+        let allocated_tail = settled_tail - 1;
+        let epoch = |from| epoch_record(next, from);
         let allocate = |from: u64, expected: u64, label: &'static [u8]| -> Result<_, Error> {
             Ok((
                 self.layout.key(&[label, &next.to_be_bytes()])?,
@@ -981,7 +995,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         if !commit(&self.store, executor, key, effects).await? {
             return Err(Error::Conflict);
         }
-        ledger.epochs += 1;
+        ledger.epochs = allocated_tail;
         ledger.allocated = next;
         let mut live = BTreeMap::new();
         fold(
@@ -1030,7 +1044,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         if !commit(&self.store, executor, key, effects).await? {
             return Err(Error::Conflict);
         }
-        ledger.epochs += 1;
+        ledger.epochs = settled_tail;
         ledger.segment = next;
         self.written.store(records.len(), Ordering::Release);
         self.live.store(records.len(), Ordering::Release);
@@ -1796,6 +1810,50 @@ impl<P: StreamProvider + ?Sized + 'static> SocketHost for Sockets<P> {
     ) -> Result<Vec<String>, GuestError> {
         self.shared
             .with_entry(actor, socket, |entry| Ok(entry.tags.clone()))
+    }
+}
+
+/// Access to the production persisted codecs for the shared fuzz target.
+#[cfg(feature = "test-support")]
+pub mod codec_fuzz {
+    use super::*;
+
+    /// Decode the persisted recovery frontier and its next incarnation.
+    pub fn epoch(bytes: &[u8]) -> Result<(u64, u64, u64), Error> {
+        recover_epoch(bytes)
+    }
+
+    /// The original writer, also used for counter-boundary inputs.
+    pub fn write_epoch(segment: u64, from: u64) -> Bytes {
+        epoch_record(segment, from).value
+    }
+
+    /// Project one real ledger entry, including its original target bytes.
+    pub fn entry(bytes: &[u8]) -> Result<(String, Option<(Vec<u8>, String)>), Error> {
+        match decode_ledger(bytes)? {
+            LedgerKind::Opened(opened) => Ok((
+                opened.connection,
+                Some((opened.actor.to_vec(), opened.inbox)),
+            )),
+            LedgerKind::Closed(connection) => Ok((connection, None)),
+        }
+    }
+
+    /// Exercise both persisted decoders and check the accepted wire image.
+    pub fn check(bytes: &[u8]) {
+        if let Ok((segment, from, next)) = recover_epoch(bytes) {
+            assert_eq!(Some(next), segment.checked_add(1));
+            assert!(from <= next);
+            assert_eq!(epoch_record(segment, from).value.as_ref(), bytes);
+        }
+        if let Ok(kind) = decode_ledger(bytes) {
+            assert_eq!(ledger_record(kind).value.as_ref(), bytes);
+        }
+    }
+
+    /// Both ownership operations reserve two positions before any publication.
+    pub fn reserve_epochs(tail: u64) -> Result<u64, Error> {
+        advance(tail, 2)
     }
 }
 

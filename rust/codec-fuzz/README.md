@@ -482,6 +482,14 @@ captured deliveries. The positive-only oracle misses a production sequence-guard
 bypass; the unchanged derived-record oracle must catch actual sequence/version
 guard removal. It reuses the original corpus without reconstructing a wire schema.
 
+The same target covers persisted socket epochs and Opened/Closed ledger records.
+`captures/socket-ledger.capture` pairs actual committed LocalStream records with
+their original writer inputs. Admission checks their frontiers and targets,
+unknown fields and versions, and independently computes counter capacity in u128.
+`python3 actor-negative-control.py --socket-ledger` checks production refusal,
+canonicality bypass and wrapping arithmetic with that unchanged oracle. Recovery
+and compaction reserve their required epoch positions before publishing anything.
+
 `python3 actor-negative-control.py --call-schedules` restores the former decoder
 schedule drive and requires a production schedule-entry refusal to expose it.
 The separated decoder must still replay; the unchanged schedule entry must

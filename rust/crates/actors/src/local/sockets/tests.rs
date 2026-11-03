@@ -172,6 +172,78 @@ async fn local_backend() -> Result<LocalSockets, Box<dyn std::error::Error>> {
 conformance::suite!(socket_conformance_passes_on_local_runtime, local_backend);
 
 #[tokio::test]
+async fn socket_ledger_exhaustion_preserves_committed_history() -> TestResult {
+    for segment in [u64::MAX, u64::MAX - 1] {
+        let directory = Arc::new(tempfile::tempdir()?);
+        let provider = Arc::new(
+            LocalStream::open_with_ownership_anchor(
+                directory.path(),
+                Default::default(),
+                acyclic_native_runtime::OwnershipAnchor::new(Arc::clone(&directory)),
+            )
+            .await?,
+        );
+        let store = Store::new(Arc::clone(&provider), root()?);
+        let layout = Layout::new(&store)?;
+        // Persist the real epoch format at its representable boundary.
+        let record = EpochWire {
+            version: 1,
+            segment,
+            from: segment,
+        }
+        .encode_to_vec();
+        assert!(
+            commit(
+                &store,
+                &PlatformExecutor,
+                layout.key(&[b"exhausted-epoch"])?,
+                vec![append(
+                    layout.epochs.clone(),
+                    vec![record.clone().into()],
+                    Vec::new()
+                )],
+            )
+            .await?
+        );
+        let opened = Sockets::open(store, Arc::new(PlatformExecutor), Arc::new(SystemClock)).await;
+        let expected = if segment == u64::MAX {
+            assert!(matches!(
+                opened,
+                Err(Error::Invalid("socket ledger counter exhausted"))
+            ));
+            1
+        } else {
+            let sockets = opened?;
+            assert_eq!(sockets.shared.incarnation, u64::MAX);
+            assert!(matches!(
+                sockets.shared.compact().await,
+                Err(Error::Invalid("socket ledger counter exhausted"))
+            ));
+            3
+        };
+        assert_eq!(provider.head(layout.epochs.clone()).await?.tail, expected);
+        assert_eq!(
+            provider
+                .read(ReadRequest {
+                    key: None,
+                    path: layout.epochs,
+                    from: 0,
+                    limit: 1,
+                    at_least: RevisionCut::default(),
+                })
+                .await?
+                .try_collect::<Vec<_>>()
+                .await?[0]
+                .value
+                .as_ref(),
+            record.as_slice(),
+            "exhaustion must retain the original committed frontier"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> TestResult {
     let decode_work = || crate::sockets::OPEN_DECODE_WORK.with(std::cell::Cell::get);
     let provider = Arc::new(MemoryStream::default());

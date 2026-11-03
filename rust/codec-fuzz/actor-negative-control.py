@@ -52,8 +52,10 @@ def main():
         return socket_inputs()
     if sys.argv[1:] == ["--socket-metadata"]:
         return socket_metadata()
+    if sys.argv[1:] == ["--socket-ledger"]:
+        return socket_ledger()
     if sys.argv[1:]:
-        raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms|--persisted-alarms|--reservation-book|--call-records|--call-schedules|--replay-diagnostics|--sockets|--socket-inputs|--socket-metadata|--capture]")
+        raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms|--persisted-alarms|--reservation-book|--call-records|--call-schedules|--replay-diagnostics|--sockets|--socket-inputs|--socket-metadata|--socket-ledger|--capture]")
     original = {path: path.read_bytes() for path in (PRODUCTION, ORACLE)}
     needle = b"Ok(Self::decode_bound(record)?.map(|(_, invocation)| invocation))"
     source = original[PRODUCTION]
@@ -387,6 +389,43 @@ def socket_metadata():
             run("same derived-record oracle rejects actual metadata bypass", "rejected", diagnostic)
         production.write_bytes(source)
         run("restored production admits original envelopes and rejects derived violations", "accepted")
+    finally:
+        for path, value in original.items():
+            path.write_bytes(value)
+
+
+def socket_ledger():
+    production = ROOT.parent / "crates/actors/src/local/sockets.rs"
+    original = {path: path.read_bytes() for path in (production, ORACLE)}
+    source, oracle = original[production], original[ORACLE]
+    admission = b"    seeds.extend(actor_socket_ledger_seeds()?);"
+    check = b"    acyclic_actors::local::socket_ledger_codec::check(bytes);"
+    plants = (
+        (b"    let wire = M::decode(bytes).map_err(|_| invalid(\"invalid socket ledger record\"))?;",
+         b'    let wire = M::decode(bytes).map_err(|_| invalid("invalid socket ledger record"))?;\n'
+         b'    if !bytes.is_empty() { return Err(invalid("invalid socket ledger record")); }',
+         "Actors decoders must admit their production writers"),
+        (b"if wire.encode_to_vec().as_slice() != bytes {", b"if false {",
+         "socket epoch rejects unknown fields"),
+        (b'value\n        .checked_add(count)\n        .ok_or_else(|| invalid("socket ledger counter exhausted"))',
+         b"Ok(value.wrapping_add(count))",
+         "socket epoch checks format capacity and frontier"),
+    )
+    if (oracle.count(admission) != 1 or oracle.count(check) != 1
+            or any(source.count(anchor) != 1 for anchor, _, _ in plants)):
+        raise RuntimeError("socket ledger anchor changed; recovery: inspect production persisted "
+                           "decoders and actor_socket_ledger_seeds before python3 actor-negative-control.py --socket-ledger")
+    try:
+        print("socket ledger production sha256=" + hashlib.sha256(source).hexdigest(), flush=True)
+        production.write_bytes(source.replace(*plants[0][:2]))
+        ORACLE.write_bytes(oracle.replace(admission, b"").replace(check, b""))
+        run("previous decoder target misses persisted ledger refusal", "accepted")
+        ORACLE.write_bytes(oracle)
+        for anchor, replacement, diagnostic in plants:
+            production.write_bytes(source.replace(anchor, replacement))
+            run("same persisted oracle rejects actual production defect", "rejected", diagnostic)
+        production.write_bytes(source)
+        run("restored persisted writers and retained corpus", "accepted")
     finally:
         for path, value in original.items():
             path.write_bytes(value)

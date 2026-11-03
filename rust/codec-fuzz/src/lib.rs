@@ -656,6 +656,109 @@ pub fn actor_seeds()
     seeds.extend(futures::executor::block_on(actor_alarm_seeds())?);
     seeds.extend(actor_socket_seeds()?);
     seeds.extend(actor_socket_input_seeds()?);
+    seeds.extend(actor_socket_ledger_seeds()?);
+    Ok(seeds)
+}
+
+fn actor_socket_ledger_seeds()
+-> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn std::error::Error>> {
+    use acyclic_actors::local::socket_ledger_codec as codec;
+    let captures: serde_json::Value =
+        serde_json::from_str(include_str!("../captures/socket-ledger.capture"))?;
+    let mut seeds = Vec::new();
+    for name in [
+        "socket-ledger-epoch-initial",
+        "socket-ledger-epoch-fenced",
+        "socket-ledger-epoch-recovered",
+        "socket-ledger-opened",
+        "socket-ledger-closed",
+    ] {
+        let capture = &captures[name];
+        let bytes: Vec<u8> = serde_json::from_value(capture["bytes"].clone())?;
+        let mut noncanonical = bytes.clone();
+        noncanonical.extend_from_slice(&[0x78, 1]);
+        if capture["kind"] == "epoch" {
+            let segment = capture["segment"].as_u64().ok_or("original segment")?;
+            let from = capture["from"].as_u64().ok_or("original frontier")?;
+            assert_eq!(
+                codec::epoch(&bytes)?,
+                (segment, from, segment + 1),
+                "socket epoch retains the committed writer frontier"
+            );
+            assert!(
+                codec::epoch(&noncanonical).is_err(),
+                "socket epoch rejects unknown fields"
+            );
+            let unversioned = bytes
+                .strip_prefix(&[8, 1])
+                .ok_or("original epoch version")?;
+            assert!(
+                codec::epoch(unversioned).is_err(),
+                "socket epoch rejects unknown version"
+            );
+        } else {
+            let connection = capture["connection"]
+                .as_str()
+                .ok_or("original connection")?
+                .to_owned();
+            let target = if capture["kind"] == "opened" {
+                Some((
+                    serde_json::from_value(capture["actor"].clone())?,
+                    capture["inbox"]
+                        .as_str()
+                        .ok_or("original inbox")?
+                        .to_owned(),
+                ))
+            } else {
+                None
+            };
+            assert_eq!(
+                codec::entry(&bytes)?,
+                (connection, target),
+                "socket ledger retains the committed writer target"
+            );
+            assert!(
+                codec::entry(&noncanonical).is_err(),
+                "socket ledger rejects unknown fields"
+            );
+        }
+        seeds.push((
+            name,
+            bytes,
+            "local::Sockets::open/commit_open/commit_close -> LocalStream",
+        ));
+    }
+    for (name, segment, from) in [
+        ("socket-ledger-exhausted", u64::MAX, u64::MAX),
+        ("socket-ledger-last-incarnation", u64::MAX - 1, u64::MAX),
+        ("socket-ledger-invalid-frontier", 1, u64::MAX),
+    ] {
+        let bytes = codec::write_epoch(segment, from);
+        let next = u128::from(segment) + 1;
+        let expected = next <= u128::from(u64::MAX) && u128::from(from) <= next;
+        let actual = codec::epoch(&bytes);
+        assert_eq!(
+            actual.is_ok(),
+            expected,
+            "socket epoch checks format capacity and frontier"
+        );
+        if let Ok(actual) = actual {
+            assert_eq!(actual, (segment, from, next as u64));
+        }
+        seeds.push((name, bytes.to_vec(), "local::sockets::epoch_record"));
+    }
+    for tail in [0, 1, u64::MAX - 2, u64::MAX - 1, u64::MAX] {
+        let expected = u128::from(tail) + 2;
+        let actual = codec::reserve_epochs(tail);
+        assert_eq!(
+            actual.is_ok(),
+            expected <= u128::from(u64::MAX),
+            "socket ownership reserves both epoch positions"
+        );
+        if let Ok(actual) = actual {
+            assert_eq!(u128::from(actual), expected);
+        }
+    }
     Ok(seeds)
 }
 
@@ -1101,6 +1204,7 @@ pub fn actor_codecs(bytes: &[u8]) {
         assert_eq!(SocketFrame::decode(&frame.clone().encode()).unwrap(), frame);
     }
     actor_socket_verdict(bytes);
+    acyclic_actors::local::socket_ledger_codec::check(bytes);
     use acyclic_actors::{guest::wire, local::State};
     assert!(acyclic_actors::reservation::codec_fuzz::check(bytes));
     if let Ok(checkpoint) = serde_json::from_slice::<acyclic_actors::guest::Checkpoint>(bytes) {
