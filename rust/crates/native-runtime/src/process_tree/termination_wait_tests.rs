@@ -119,7 +119,7 @@ fn group_wait_observes_descendants_after_the_leader_exits() -> io::Result<()> {
     let group = process.guard.process_group;
     let release = process.take_stdin().ok_or(io::ErrorKind::BrokenPipe)?;
     let id = libc::id_t::try_from(group).map_err(io::Error::other)?;
-    let status = super::await_exiting_id(id, None)?;
+    let status = super::await_exiting_id(id, None, &mut None)?;
     assert!(
         status.success(),
         "the descendant fixture failed to spawn its children"
