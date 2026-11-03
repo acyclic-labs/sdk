@@ -16,20 +16,21 @@ use acyclic_harness::{model::ModelEvent, test_support::ScriptedEvent};
 const REPLY_TURN_FLUSHES: (usize, usize) = (1, 2);
 
 fn flushes(writes: &[DurableWrite]) -> (usize, usize) {
-    let barriers = writes
-        .iter()
-        .filter(|write| write.operation.ends_with("_barrier"))
-        .count();
-    let drains = writes
-        .iter()
-        .filter(|write| {
-            matches!(
+    writes.iter().fold((0, 0), |(barriers, drains), write| {
+        if write.operation.ends_with("_barrier") {
+            (barriers + 1, drains)
+        } else {
+            let drain = matches!(
                 write.operation,
-                "file:sync" | "file:sync_data" | "file:sync_all" | "file:sync_parent"
-            )
-        })
-        .count();
-    (barriers, drains)
+                "file:sync"
+                    | "file:sync_data"
+                    | "file:sync_all"
+                    | "file:sync_parent"
+                    | "file:sync_filesystem"
+            );
+            (barriers, drains + usize::from(drain))
+        }
+    })
 }
 
 /// Opens a harness and settles three reply turns, returning the durable
