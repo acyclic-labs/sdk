@@ -462,7 +462,7 @@ fn rollback_and_gaps_are_refused_and_fence_the_account() {
     assert_eq!(trust.apply(&gapped, NOW), Err(VerifyError::Trust));
     assert_eq!(
         verify::verify(&bytes, &trust, NOW).err(),
-        Some(VerifyError::Trust)
+        Some(VerifyError::Refused)
     );
 
     // Custody refuses to lower its own floor.
@@ -914,7 +914,7 @@ fn account_publication_does_not_hold_global_storage_or_accept_a_retired_signer()
         sequence
     );
     assert_eq!(trust.apply(&old, NOW), Err(VerifyError::Signature));
-    assert_eq!(trust.account("account").err(), Some(VerifyError::Trust));
+    assert_eq!(trust.account("account").err(), Some(VerifyError::Refused));
 
     // The same original frontier advances through the current signer's real
     // writer; no state rollback, history copy, or replacement account is needed.

@@ -378,9 +378,11 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
                 .filter(|event| event.0 == "open workspace")
                 .count()
         };
-        let expected_opens = 1;
-        assert_eq!(opens(&after.1), expected_opens, "{entry:?} {mode:?}");
-        assert_eq!(opens(&before.1), expected_opens + 1, "{entry:?} {mode:?}");
+        // Every reuse opens the workspace once; only a first non-create read
+        // opens it again to select the generation it then retains.
+        assert_eq!(opens(&after.1), 1, "{entry:?} {mode:?}");
+        let first = if matches!(entry, Entry::Create) { 1 } else { 2 };
+        assert_eq!(opens(&before.1), first, "{entry:?} {mode:?}");
         let observed = |trace: Vec<(&'static str, u64)>| {
             trace
                 .into_iter()
