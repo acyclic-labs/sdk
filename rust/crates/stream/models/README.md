@@ -126,3 +126,25 @@ consumption against one generation fence. It does not qualify bootstrap or
 checked-record admission, cursor overflow, transport loss, physical restarts or
 multiple placement participants. The sequential generation property and distinct
 strict-record and overflow refusal controls remain separate.
+
+The source recheck model polls the real `ReadySources` scheduler. Its visibility
+history publishes a relaxed payload through a coalesced wake, then checks the
+payload inside the provider poll before joining the writer. The relaxed
+notification observation supplies no acquire edge. The existing `release_only`
+branch is a model-selected fault; `mutations/source_wake_acquire.patch` instead
+removes the acquire from the shipping hint reset without changing the model:
+
+```sh
+git apply rust/crates/stream/models/mutations/source_wake_acquire.patch
+RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream --no-default-features --features grpc,model-checking --test main client_pool_loom::source_deduplication_survives_pending_rechecks_during_drain -- --exact --nocapture
+git apply --reverse rust/crates/stream/models/mutations/source_wake_acquire.patch
+```
+
+The mutant must fail at `coalesced wake lost its publication`; restored production
+must pass the same command. This qualifies the atomic publication edge and the
+existing repeated-recheck history through the production scheduler and its Loom
+synchronization adapter. The source and payload are internal model inputs;
+external wire, authority changes, producer loss, physical restarts, non-owner
+topology and source coverage remain separate. Ordinary `Arc` reference counts
+are not instrumented by Loom. One modeled source does not establish constant
+cost across the scheduler's source map or multiple queued hints.
