@@ -94,7 +94,7 @@ fn open_beneath_with_flags(
     path.extend_from_slice(bytes);
     path.push(0);
     let how = OpenHow {
-        flags: (libc::O_PATH | libc::O_CLOEXEC | flags) as u64,
+        flags: u64::from((libc::O_PATH | libc::O_CLOEXEC | flags).cast_unsigned()),
         mode: 0,
         // BENEATH | NO_SYMLINKS: resolution stays under this native object,
         // even when an ancestor is renamed or replaced during the syscall.
@@ -454,6 +454,20 @@ struct Filter<const N: usize> {
     len: usize,
 }
 
+const fn element<T>(items: &[T], index: usize) -> &T {
+    match items.split_at_checked(index) {
+        Some((_, [item, ..])) => item,
+        _ => panic!("execution filter index exceeds its counted capacity"),
+    }
+}
+
+const fn element_mut<T>(items: &mut [T], index: usize) -> &mut T {
+    match items.split_at_mut_checked(index) {
+        Some((_, [item, ..])) => item,
+        _ => panic!("execution filter index exceeds its counted capacity"),
+    }
+}
+
 impl<const N: usize> Filter<N> {
     const fn new() -> Self {
         Self {
@@ -464,16 +478,16 @@ impl<const N: usize> Filter<N> {
 
     const fn push(&mut self, instruction: Instruction) {
         if N != 0 {
-            self.instructions[self.len] = instruction;
+            *element_mut(&mut self.instructions, self.len) = instruction;
         }
         self.len += 1;
     }
 
     const fn extend(&mut self, instructions: &[Instruction]) {
-        let mut at = 0;
-        while at < instructions.len() {
-            self.push(instructions[at]);
-            at += 1;
+        let mut remaining = instructions;
+        while let Some((instruction, rest)) = remaining.split_first() {
+            self.push(*instruction);
+            remaining = rest;
         }
     }
 }
@@ -578,13 +592,13 @@ const fn control_filter<const N: usize>(code: &mut Filter<N>) {
         number(libc::SYS_fcntl),
     ));
     code.push(instruction(LOAD, 0, 0, 24));
-    let mut at = 0;
-    while at < COMMANDS.len() {
+    let mut remaining = COMMANDS;
+    while let Some((command, rest)) = remaining.split_first() {
         code.extend(&[
-            instruction(EQUAL, 0, 1, COMMANDS[at]),
+            instruction(EQUAL, 0, 1, *command),
             instruction(RETURN, 0, 0, ALLOW),
         ]);
-        at += 1;
+        remaining = rest;
     }
     code.push(instruction(RETURN, 0, 0, DENY));
     // prlimit64 can otherwise change another host process's resource limits.
@@ -634,9 +648,8 @@ const fn socket_filter<const N: usize>(code: &mut Filter<N>, network: FilterNetw
             (libc::SYS_sendmsg, 32),
             (libc::SYS_sendmmsg, 40),
         ];
-        let mut at = 0;
-        while at < sends.len() {
-            let (call, flags) = sends[at];
+        let mut remaining = sends.as_slice();
+        while let Some((&(call, flags), rest)) = remaining.split_first() {
             code.extend(&[
                 instruction(EQUAL, 0, 5, number(call)),
                 instruction(LOAD, 0, 0, flags),
@@ -645,7 +658,7 @@ const fn socket_filter<const N: usize>(code: &mut Filter<N>, network: FilterNetw
                 instruction(RETURN, 0, 0, DENY),
                 instruction(LOAD, 0, 0, 0),
             ]);
-            at += 1;
+            remaining = rest;
         }
         verdict(code, libc::SYS_bind, DENY);
         verdict(code, libc::SYS_listen, DENY);
@@ -680,15 +693,17 @@ const fn socket_filter<const N: usize>(code: &mut Filter<N>, network: FilterNetw
 
 const fn number(value: libc::c_long) -> u32 {
     assert!(
-        value >= 0 && value as u64 <= u32::MAX as u64,
+        value >= 0 && value.cast_unsigned() <= u32::MAX as libc::c_ulong,
         "invalid syscall number"
     );
-    value as u32
+    let [a, b, c, d, ..] = value.to_le_bytes();
+    u32::from_le_bytes([a, b, c, d])
 }
 
 const fn jump(value: usize) -> u8 {
     assert!(value <= u8::MAX as usize, "invalid execution filter jump");
-    value as u8
+    let [low, ..] = value.to_le_bytes();
+    low
 }
 
 const fn verdict<const N: usize>(code: &mut Filter<N>, call: libc::c_long, result: u32) {
@@ -705,37 +720,37 @@ struct SyscallRange {
 }
 
 struct SyscallRanges {
-    ranges: [SyscallRange; allowed_syscalls().len()],
+    ranges: [SyscallRange; ALLOWED_SYSCALLS.len()],
     len: usize,
 }
 
 /// Sort and coalesce only during constant evaluation. No runtime table,
 /// sorting, allocation or additional policy representation is retained.
 const fn syscall_ranges() -> SyscallRanges {
-    let calls = allowed_syscalls();
-    let mut sorted = [0; allowed_syscalls().len()];
+    let calls = ALLOWED_SYSCALLS;
+    let mut sorted = [0; ALLOWED_SYSCALLS.len()];
     let mut at = 0;
     while at < calls.len() {
-        let call = number(calls[at]);
+        let call = number(*element(calls, at));
         let mut insert = at;
-        while insert != 0 && sorted[insert - 1] > call {
-            sorted[insert] = sorted[insert - 1];
+        while insert != 0 && *element(&sorted, insert - 1) > call {
+            *element_mut(&mut sorted, insert) = *element(&sorted, insert - 1);
             insert -= 1;
         }
-        sorted[insert] = call;
+        *element_mut(&mut sorted, insert) = call;
         at += 1;
     }
     let mut result = SyscallRanges {
-        ranges: [SyscallRange { first: 0, last: 0 }; allowed_syscalls().len()],
+        ranges: [SyscallRange { first: 0, last: 0 }; ALLOWED_SYSCALLS.len()],
         len: 0,
     };
     at = 0;
     while at < sorted.len() {
-        let call = sorted[at];
-        if result.len != 0 && call <= result.ranges[result.len - 1].last + 1 {
-            result.ranges[result.len - 1].last = call;
+        let call = *element(&sorted, at);
+        if result.len != 0 && call <= element(&result.ranges, result.len - 1).last + 1 {
+            element_mut(&mut result.ranges, result.len - 1).last = call;
         } else {
-            result.ranges[result.len] = SyscallRange {
+            *element_mut(&mut result.ranges, result.len) = SyscallRange {
                 first: call,
                 last: call,
             };
@@ -751,7 +766,7 @@ const fn syscall_ranges() -> SyscallRanges {
 const fn syscall_dispatch<const N: usize>(code: &mut Filter<N>, ranges: &[SyscallRange]) {
     assert!(!ranges.is_empty(), "empty execution syscall declaration");
     if ranges.len() == 1 {
-        let range = ranges[0];
+        let range = *element(ranges, 0);
         if range.first == range.last {
             code.push(instruction(EQUAL, 0, 1, range.first));
         } else {
@@ -763,224 +778,228 @@ const fn syscall_dispatch<const N: usize>(code: &mut Filter<N>, ranges: &[Syscal
         return;
     }
     let (left, right) = ranges.split_at(ranges.len() / 2);
-    code.push(instruction(GREATER_EQUAL, 0, 1, right[0].first));
+    code.push(instruction(GREATER_EQUAL, 0, 1, element(right, 0).first));
     let branch = code.len;
     code.push(instruction(JUMP, 0, 0, 0));
     syscall_dispatch(code, left);
     if N != 0 {
         // Classic BPF's unconditional jump carries a full 32-bit offset;
         // it cannot truncate a large subtree to an eight-bit branch.
-        code.instructions[branch].k = (code.len - branch - 1) as u32;
+        let distance = code.len - branch - 1;
+        assert!(
+            distance <= u32::MAX as usize,
+            "invalid execution filter branch"
+        );
+        let [a, b, c, d, ..] = distance.to_le_bytes();
+        element_mut(&mut code.instructions, branch).k = u32::from_le_bytes([a, b, c, d]);
     }
     syscall_dispatch(code, right);
 }
 
-const fn allowed_syscalls() -> &'static [libc::c_long] {
-    &[
-        // Data and memory operate only on this address space or descriptors
-        // acquired under Landlock. No external IPC object identifiers enter.
-        libc::SYS_close,
-        libc::SYS_mmap,
-        libc::SYS_mprotect,
-        libc::SYS_munmap,
-        libc::SYS_brk,
-        libc::SYS_mremap,
-        libc::SYS_madvise,
-        libc::SYS_msync,
-        libc::SYS_mincore,
-        libc::SYS_mlock,
-        libc::SYS_munlock,
-        libc::SYS_mlockall,
-        libc::SYS_munlockall,
-        libc::SYS_pread64,
-        libc::SYS_pwrite64,
-        libc::SYS_readv,
-        libc::SYS_writev,
-        libc::SYS_preadv,
-        libc::SYS_pwritev,
-        libc::SYS_preadv2,
-        libc::SYS_pwritev2,
-        libc::SYS_lseek,
-        libc::SYS_fadvise64,
-        libc::SYS_sendfile,
-        libc::SYS_copy_file_range,
-        libc::SYS_splice,
-        libc::SYS_tee,
-        libc::SYS_vmsplice,
-        libc::SYS_dup,
-        libc::SYS_dup3,
-        libc::SYS_pipe2,
-        libc::SYS_close_range,
-        libc::SYS_memfd_create,
-        // Paths and writable file handles are checked by Landlock. Metadata
-        // mutation has no admitted syscall, even inside the workspace.
-        libc::SYS_openat,
-        libc::SYS_openat2,
-        libc::SYS_fstat,
-        libc::SYS_newfstatat,
-        libc::SYS_statx,
-        libc::SYS_faccessat,
-        libc::SYS_faccessat2,
-        libc::SYS_getdents64,
-        libc::SYS_readlinkat,
-        libc::SYS_getcwd,
-        libc::SYS_chdir,
-        libc::SYS_fchdir,
-        libc::SYS_mkdirat,
-        libc::SYS_mknodat,
-        libc::SYS_unlinkat,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_renameat,
-        libc::SYS_renameat2,
-        libc::SYS_linkat,
-        libc::SYS_symlinkat,
-        libc::SYS_truncate,
-        libc::SYS_ftruncate,
-        libc::SYS_fallocate,
-        libc::SYS_flock,
-        libc::SYS_fsync,
-        libc::SYS_fdatasync,
-        libc::SYS_statfs,
-        libc::SYS_fstatfs,
-        libc::SYS_umask,
-        // Threads, children and signals remain in the inherited domain.
-        // clone flags and cross-domain signals have separate enforcement.
-        libc::SYS_clone,
-        libc::SYS_execve,
-        libc::SYS_execveat,
-        libc::SYS_exit,
-        libc::SYS_exit_group,
-        libc::SYS_wait4,
-        libc::SYS_waitid,
-        libc::SYS_kill,
-        libc::SYS_tkill,
-        libc::SYS_tgkill,
-        libc::SYS_pidfd_open,
-        libc::SYS_pidfd_send_signal,
-        libc::SYS_rt_sigaction,
-        libc::SYS_rt_sigprocmask,
-        libc::SYS_rt_sigreturn,
-        libc::SYS_rt_sigpending,
-        libc::SYS_rt_sigtimedwait,
-        libc::SYS_rt_sigqueueinfo,
-        libc::SYS_rt_tgsigqueueinfo,
-        libc::SYS_rt_sigsuspend,
-        libc::SYS_sigaltstack,
-        libc::SYS_set_tid_address,
-        libc::SYS_set_robust_list,
-        libc::SYS_futex,
-        libc::SYS_rseq,
-        libc::SYS_membarrier,
-        libc::SYS_sched_yield,
-        libc::SYS_sched_getaffinity,
-        libc::SYS_restart_syscall,
-        // Descriptor events and this process's clocks/identity expose no
-        // independently named host mutation or external message channel.
-        libc::SYS_eventfd2,
-        libc::SYS_epoll_create1,
-        libc::SYS_epoll_ctl,
-        libc::SYS_epoll_pwait,
-        libc::SYS_epoll_pwait2,
-        libc::SYS_ppoll,
-        libc::SYS_pselect6,
-        libc::SYS_timerfd_create,
-        libc::SYS_timerfd_settime,
-        libc::SYS_timerfd_gettime,
-        libc::SYS_nanosleep,
-        libc::SYS_clock_nanosleep,
-        libc::SYS_clock_gettime,
-        libc::SYS_clock_getres,
-        libc::SYS_gettimeofday,
-        libc::SYS_getitimer,
-        libc::SYS_setitimer,
-        libc::SYS_getpid,
-        libc::SYS_getppid,
-        libc::SYS_gettid,
-        libc::SYS_getuid,
-        libc::SYS_geteuid,
-        libc::SYS_getgid,
-        libc::SYS_getegid,
-        libc::SYS_getgroups,
-        libc::SYS_getrusage,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_getrlimit,
-        libc::SYS_getrandom,
-        libc::SYS_getcpu,
-        libc::SYS_uname,
-        libc::SYS_prctl,
-        // Socket creation is separately restricted to Internet families;
-        // Landlock checks TCP connections and the port-only mode's listeners.
-        libc::SYS_socket,
-        libc::SYS_connect,
-        libc::SYS_bind,
-        libc::SYS_listen,
-        libc::SYS_accept,
-        libc::SYS_accept4,
-        libc::SYS_shutdown,
-        libc::SYS_sendto,
-        libc::SYS_recvfrom,
-        libc::SYS_sendmsg,
-        libc::SYS_recvmsg,
-        libc::SYS_sendmmsg,
-        libc::SYS_recvmmsg,
-        libc::SYS_getsockname,
-        libc::SYS_getpeername,
-        libc::SYS_setsockopt,
-        libc::SYS_getsockopt,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_open,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_creat,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_stat,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_lstat,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_access,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_readlink,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_getdents,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_mkdir,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_mknod,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_rmdir,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_rename,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_link,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_unlink,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_symlink,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_fork,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_vfork,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_dup2,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_pipe,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_poll,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_select,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_epoll_create,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_epoll_wait,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_eventfd,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_alarm,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_time,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_arch_prctl,
-    ]
-}
+const ALLOWED_SYSCALLS: &[libc::c_long] = &[
+    // Data and memory operate only on this address space or descriptors
+    // acquired under Landlock. No external IPC object identifiers enter.
+    libc::SYS_close,
+    libc::SYS_mmap,
+    libc::SYS_mprotect,
+    libc::SYS_munmap,
+    libc::SYS_brk,
+    libc::SYS_mremap,
+    libc::SYS_madvise,
+    libc::SYS_msync,
+    libc::SYS_mincore,
+    libc::SYS_mlock,
+    libc::SYS_munlock,
+    libc::SYS_mlockall,
+    libc::SYS_munlockall,
+    libc::SYS_pread64,
+    libc::SYS_pwrite64,
+    libc::SYS_readv,
+    libc::SYS_writev,
+    libc::SYS_preadv,
+    libc::SYS_pwritev,
+    libc::SYS_preadv2,
+    libc::SYS_pwritev2,
+    libc::SYS_lseek,
+    libc::SYS_fadvise64,
+    libc::SYS_sendfile,
+    libc::SYS_copy_file_range,
+    libc::SYS_splice,
+    libc::SYS_tee,
+    libc::SYS_vmsplice,
+    libc::SYS_dup,
+    libc::SYS_dup3,
+    libc::SYS_pipe2,
+    libc::SYS_close_range,
+    libc::SYS_memfd_create,
+    // Paths and writable file handles are checked by Landlock. Metadata
+    // mutation has no admitted syscall, even inside the workspace.
+    libc::SYS_openat,
+    libc::SYS_openat2,
+    libc::SYS_fstat,
+    libc::SYS_newfstatat,
+    libc::SYS_statx,
+    libc::SYS_faccessat,
+    libc::SYS_faccessat2,
+    libc::SYS_getdents64,
+    libc::SYS_readlinkat,
+    libc::SYS_getcwd,
+    libc::SYS_chdir,
+    libc::SYS_fchdir,
+    libc::SYS_mkdirat,
+    libc::SYS_mknodat,
+    libc::SYS_unlinkat,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_renameat,
+    libc::SYS_renameat2,
+    libc::SYS_linkat,
+    libc::SYS_symlinkat,
+    libc::SYS_truncate,
+    libc::SYS_ftruncate,
+    libc::SYS_fallocate,
+    libc::SYS_flock,
+    libc::SYS_fsync,
+    libc::SYS_fdatasync,
+    libc::SYS_statfs,
+    libc::SYS_fstatfs,
+    libc::SYS_umask,
+    // Threads, children and signals remain in the inherited domain.
+    // clone flags and cross-domain signals have separate enforcement.
+    libc::SYS_clone,
+    libc::SYS_execve,
+    libc::SYS_execveat,
+    libc::SYS_exit,
+    libc::SYS_exit_group,
+    libc::SYS_wait4,
+    libc::SYS_waitid,
+    libc::SYS_kill,
+    libc::SYS_tkill,
+    libc::SYS_tgkill,
+    libc::SYS_pidfd_open,
+    libc::SYS_pidfd_send_signal,
+    libc::SYS_rt_sigaction,
+    libc::SYS_rt_sigprocmask,
+    libc::SYS_rt_sigreturn,
+    libc::SYS_rt_sigpending,
+    libc::SYS_rt_sigtimedwait,
+    libc::SYS_rt_sigqueueinfo,
+    libc::SYS_rt_tgsigqueueinfo,
+    libc::SYS_rt_sigsuspend,
+    libc::SYS_sigaltstack,
+    libc::SYS_set_tid_address,
+    libc::SYS_set_robust_list,
+    libc::SYS_futex,
+    libc::SYS_rseq,
+    libc::SYS_membarrier,
+    libc::SYS_sched_yield,
+    libc::SYS_sched_getaffinity,
+    libc::SYS_restart_syscall,
+    // Descriptor events and this process's clocks/identity expose no
+    // independently named host mutation or external message channel.
+    libc::SYS_eventfd2,
+    libc::SYS_epoll_create1,
+    libc::SYS_epoll_ctl,
+    libc::SYS_epoll_pwait,
+    libc::SYS_epoll_pwait2,
+    libc::SYS_ppoll,
+    libc::SYS_pselect6,
+    libc::SYS_timerfd_create,
+    libc::SYS_timerfd_settime,
+    libc::SYS_timerfd_gettime,
+    libc::SYS_nanosleep,
+    libc::SYS_clock_nanosleep,
+    libc::SYS_clock_gettime,
+    libc::SYS_clock_getres,
+    libc::SYS_gettimeofday,
+    libc::SYS_getitimer,
+    libc::SYS_setitimer,
+    libc::SYS_getpid,
+    libc::SYS_getppid,
+    libc::SYS_gettid,
+    libc::SYS_getuid,
+    libc::SYS_geteuid,
+    libc::SYS_getgid,
+    libc::SYS_getegid,
+    libc::SYS_getgroups,
+    libc::SYS_getrusage,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_getrlimit,
+    libc::SYS_getrandom,
+    libc::SYS_getcpu,
+    libc::SYS_uname,
+    libc::SYS_prctl,
+    // Socket creation is separately restricted to Internet families;
+    // Landlock checks TCP connections and the port-only mode's listeners.
+    libc::SYS_socket,
+    libc::SYS_connect,
+    libc::SYS_bind,
+    libc::SYS_listen,
+    libc::SYS_accept,
+    libc::SYS_accept4,
+    libc::SYS_shutdown,
+    libc::SYS_sendto,
+    libc::SYS_recvfrom,
+    libc::SYS_sendmsg,
+    libc::SYS_recvmsg,
+    libc::SYS_sendmmsg,
+    libc::SYS_recvmmsg,
+    libc::SYS_getsockname,
+    libc::SYS_getpeername,
+    libc::SYS_setsockopt,
+    libc::SYS_getsockopt,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_open,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_creat,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_stat,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_lstat,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_access,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_readlink,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_getdents,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_mkdir,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_mknod,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_rmdir,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_rename,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_link,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_unlink,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_symlink,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_fork,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_vfork,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_dup2,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_pipe,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_poll,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_select,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_epoll_create,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_epoll_wait,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_eventfd,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_alarm,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_time,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_arch_prctl,
+];
 
 #[cfg(all(test, any(target_arch = "x86_64", target_arch = "aarch64")))]
 mod checks;

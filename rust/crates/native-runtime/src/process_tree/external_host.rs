@@ -379,7 +379,7 @@ pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) 
 /// Output remains inherited and has no arrival/EOF observations here.
 pub fn run_external_process_host_with_progress(
     arguments: impl IntoIterator<Item = OsString>,
-) -> Result<ProcessHostCompletion, ProcessHostFailure> {
+) -> Result<ProcessHostCompletion, Box<ProcessHostFailure>> {
     let origin = Instant::now();
     observed_host(Invocation::parse(arguments), origin)
 }
@@ -387,7 +387,7 @@ pub fn run_external_process_host_with_progress(
 fn observed_host(
     invocation: io::Result<Invocation>,
     origin: Instant,
-) -> Result<ProcessHostCompletion, ProcessHostFailure> {
+) -> Result<ProcessHostCompletion, Box<ProcessHostFailure>> {
     let mut observations = [ProcessHostPartialProgress::new()];
     let result = invocation
         .map_err(|error| (error, None))
@@ -395,30 +395,45 @@ fn observed_host(
     let (exit_code, root_status, cancelled, progress) =
         result.map_err(|(error, receipt_error)| {
             let [progress] = observations;
-            ProcessHostFailure {
+            Box::new(ProcessHostFailure {
                 error,
                 receipt_error,
                 phase: progress.phase,
                 progress,
-            }
+            })
         })?;
+    let progress = progress.ok_or_else(|| {
+        let [progress] = observations;
+        Box::new(ProcessHostFailure {
+            error: io::Error::new(
+                io::ErrorKind::InvalidData,
+                "process host clock was not retained",
+            ),
+            receipt_error: None,
+            phase: progress.phase,
+            progress,
+        })
+    })?;
     Ok(ProcessHostCompletion {
         exit_code,
         root_status,
         cancelled,
-        progress: progress.expect("observed host retains its original clock"),
+        progress,
     })
 }
+
+type HostOutcome = (i32, ExitStatus, bool, Option<ProcessHostProgress>);
+type HostFailure = (io::Error, Option<io::Error>);
 
 fn run_host<const OBSERVATIONS: usize>(
     mut invocation: Invocation,
     origins: [Instant; OBSERVATIONS],
     observations: &mut [ProcessHostPartialProgress; OBSERVATIONS],
-) -> Result<(i32, ExitStatus, bool, Option<ProcessHostProgress>), (io::Error, Option<io::Error>)> {
+) -> Result<HostOutcome, HostFailure> {
     let origin = origins.first().copied();
     let binding = invocation.invocation.take();
     observe(observations, |progress| {
-        progress.phase = ProcessHostPhase::ReceiptReservation
+        progress.phase = ProcessHostPhase::ReceiptReservation;
     });
     let mut completion =
         Completion::open(invocation.completion.as_deref()).map_err(|error| (error, None))?;
@@ -427,159 +442,14 @@ fn run_host<const OBSERVATIONS: usize>(
     let mut lease = None;
     let result = (|| -> io::Result<_> {
         observe(observations, |progress| {
-            progress.phase = ProcessHostPhase::CustodyAdmission
+            progress.phase = ProcessHostPhase::CustodyAdmission;
         });
         lease = invocation
             .lease
             .as_deref()
             .map(ProcessCustodyLease::acquire)
             .transpose()?;
-        observe(observations, |progress| {
-            progress.lease_wait = Some(
-                lease
-                    .as_ref()
-                    .map_or(Duration::ZERO, ProcessCustodyLease::waited),
-            );
-        });
-        let directory = (invocation.custody.is_none() && lease.is_none())
-            .then(Directory::create)
-            .transpose()?;
-        let custody = invocation
-            .custody
-            .as_deref()
-            .or_else(|| directory.as_ref().map(|directory| directory.0.as_path()))
-            .map(ProcessCustody::acquire)
-            .transpose()?;
-        let custody = lease
-            .as_ref()
-            .map(ProcessCustodyLease::custody)
-            .or(custody.as_deref())
-            .ok_or_else(invalid_arguments)?;
-        let mut command = ProcessCommand::new(invocation.executable);
-        command
-            .args(invocation.arguments)
-            .stdin(if invocation.inherit_input {
-                ProcessStdio::inherit()
-            } else {
-                ProcessStdio::null()
-            })
-            .stdout(ProcessStdio::inherit())
-            .stderr(ProcessStdio::inherit());
-        observe(observations, |progress| {
-            progress.phase = ProcessHostPhase::RootAdmission
-        });
-        let mut tree = ProcessTree::spawn_in_custody(&mut command, custody)?;
-        let root_admitted = origin.map(|origin| origin.elapsed());
-        observe(observations, |progress| {
-            progress.root_admitted = root_admitted
-        });
-        // The sole waiter owns the actual Child. Cancellation only asks the same
-        // tree's containment owner to terminate; it never substitutes PID polling.
-        let child = tree.child.take().ok_or(io::ErrorKind::NotFound)?;
-        tree.cleanup_on_drop = false;
-        let shared = Arc::new(Shared::<OBSERVATIONS> {
-            state: Mutex::new(State {
-                tree,
-                cancelled: false,
-                failure: None,
-            }),
-            control: std::array::from_fn(|_| OnceLock::new()),
-        });
-        if !invocation.inherit_input {
-            observe(observations, |progress| {
-                progress.phase = ProcessHostPhase::ControlAdmission
-            });
-            let control = Arc::clone(&shared);
-            let started = std::thread::Builder::new()
-                .name("process-host-control".into())
-                .spawn(move || {
-                    let input = io::stdin().read(&mut [0]);
-                    if let Some(origin) = origin {
-                        let outcome = match &input {
-                            Ok(0) => ProcessHostControl::Eof,
-                            Ok(_) => ProcessHostControl::Input,
-                            Err(error) => ProcessHostControl::Failed {
-                                kind: error.kind(),
-                                raw_os_error: error.raw_os_error(),
-                            },
-                        };
-                        if let Some(slot) = control.control.first() {
-                            let _ = slot.set(ProcessHostControlObservation {
-                                elapsed: origin.elapsed(),
-                                outcome,
-                            });
-                        }
-                    }
-                    let mut state = control
-                        .state
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    state.cancelled = true;
-                    state.failure = state
-                        .tree
-                        .terminate_descendants()
-                        .err()
-                        .or_else(|| input.err());
-                });
-            if let Err(admission) = started {
-                let mut state = shared
-                    .state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                return Err(reject_control_admission(&mut state.tree, child, admission));
-            }
-        }
-        observe(observations, |progress| {
-            progress.phase = ProcessHostPhase::RootExit
-        });
-        let waited = super::platform::wait_without_reaping(&child);
-        let root_exit_observed = waited
-            .as_ref()
-            .ok()
-            .and(origin)
-            .map(|origin| origin.elapsed());
-        observe(observations, |progress| {
-            progress.root_exit_observed = root_exit_observed
-        });
-        let mut state = shared
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        observe(observations, |progress| {
-            progress.cancelled = state.cancelled;
-            progress.control = shared.control.first().and_then(OnceLock::get).copied();
-        });
-        if waited.is_ok() {
-            observe(observations, |progress| {
-                progress.phase = ProcessHostPhase::Retirement
-            });
-        }
-        let status = retire_after_observation(&mut state.tree, child, waited, |status| {
-            observe(observations, |progress| progress.root_status = Some(status));
-        })?;
-        let retired = origin.map(|origin| origin.elapsed());
-        observe(observations, |progress| progress.retired = retired);
-        if let Some(failure) = state.failure.take() {
-            observe(observations, |progress| {
-                progress.phase = ProcessHostPhase::Control
-            });
-            return Err(failure);
-        }
-        let code = if state.cancelled {
-            124
-        } else {
-            exit_code(status)
-        };
-        observe(observations, |progress| {
-            progress.phase = ProcessHostPhase::ReceiptPublication
-        });
-        let progress = origin.map(|_| ProcessHostProgress {
-            root_admitted: root_admitted.expect("admitted on the original clock"),
-            root_exit_observed: root_exit_observed.expect("observed on the original clock"),
-            retired: retired.expect("retired on the original clock"),
-            control: shared.control.first().and_then(OnceLock::get).copied(),
-        });
-        Ok((code, status, state.cancelled, progress))
+        run_admitted(invocation, origin, observations, lease.as_ref())
     })();
     let publication = if let Some(binding) = &binding {
         match observations.first() {
@@ -606,12 +476,194 @@ fn run_host<const OBSERVATIONS: usize>(
         (Err(error), publication) => Err((error, publication.err())),
         (Ok(_), Err(error)) => {
             observe(observations, |progress| {
-                progress.phase = ProcessHostPhase::ReceiptPublication
+                progress.phase = ProcessHostPhase::ReceiptPublication;
             });
             Err((error, None))
         }
         (Ok(result), Ok(())) => Ok(result),
     }
+}
+
+// The receipt owner retains the lease while admission, retirement and publication settle.
+fn run_admitted<const N: usize>(
+    invocation: Invocation,
+    origin: Option<Instant>,
+    observations: &mut [ProcessHostPartialProgress; N],
+    lease: Option<&ProcessCustodyLease>,
+) -> io::Result<HostOutcome> {
+    observe(observations, |progress| {
+        progress.lease_wait = Some(lease.map_or(Duration::ZERO, ProcessCustodyLease::waited));
+    });
+    let directory = (invocation.custody.is_none() && lease.is_none())
+        .then(Directory::create)
+        .transpose()?;
+    let custody = invocation
+        .custody
+        .as_deref()
+        .or_else(|| directory.as_ref().map(|directory| directory.0.as_path()))
+        .map(ProcessCustody::acquire)
+        .transpose()?;
+    let custody = lease
+        .map(ProcessCustodyLease::custody)
+        .or(custody.as_deref())
+        .ok_or_else(invalid_arguments)?;
+    let mut command = ProcessCommand::new(invocation.executable);
+    command
+        .args(invocation.arguments)
+        .stdin(if invocation.inherit_input {
+            ProcessStdio::inherit()
+        } else {
+            ProcessStdio::null()
+        })
+        .stdout(ProcessStdio::inherit())
+        .stderr(ProcessStdio::inherit());
+    observe(observations, |progress| {
+        progress.phase = ProcessHostPhase::RootAdmission;
+    });
+    let mut tree = ProcessTree::spawn_in_custody(&mut command, custody)?;
+    let root_admitted = origin.map(|origin| origin.elapsed());
+    observe(observations, |progress| {
+        progress.root_admitted = root_admitted;
+    });
+    // The sole waiter owns the actual Child. Cancellation only asks the same
+    // tree's containment owner to terminate; it never substitutes PID polling.
+    let child = tree.child.take().ok_or(io::ErrorKind::NotFound)?;
+    tree.cleanup_on_drop = false;
+    let shared = Arc::new(Shared::<N> {
+        state: Mutex::new(State {
+            tree,
+            cancelled: false,
+            failure: None,
+        }),
+        control: std::array::from_fn(|_| OnceLock::new()),
+    });
+    let child = if invocation.inherit_input {
+        child
+    } else {
+        observe(observations, |progress| {
+            progress.phase = ProcessHostPhase::ControlAdmission;
+        });
+        start_control(&shared, child, origin)?
+    };
+    retire_host(&shared, child, origin, root_admitted, observations)
+}
+
+fn start_control<const N: usize>(
+    shared: &Arc<Shared<N>>,
+    child: Child,
+    origin: Option<Instant>,
+) -> io::Result<Child> {
+    let control = Arc::clone(shared);
+    let started = std::thread::Builder::new()
+        .name("process-host-control".into())
+        .spawn(move || {
+            let input = io::stdin().read(&mut [0]);
+            if let Some(origin) = origin {
+                let outcome = match &input {
+                    Ok(0) => ProcessHostControl::Eof,
+                    Ok(_) => ProcessHostControl::Input,
+                    Err(error) => ProcessHostControl::Failed {
+                        kind: error.kind(),
+                        raw_os_error: error.raw_os_error(),
+                    },
+                };
+                if let Some(slot) = control.control.first() {
+                    let _ = slot.set(ProcessHostControlObservation {
+                        elapsed: origin.elapsed(),
+                        outcome,
+                    });
+                }
+            }
+            let mut state = control
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.cancelled = true;
+            state.failure = state
+                .tree
+                .terminate_descendants()
+                .err()
+                .or_else(|| input.err());
+        });
+    if let Err(admission) = started {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        return Err(reject_control_admission(&mut state.tree, child, admission));
+    }
+    Ok(child)
+}
+
+fn retire_host<const N: usize>(
+    shared: &Shared<N>,
+    child: Child,
+    origin: Option<Instant>,
+    root_admitted: Option<Duration>,
+    observations: &mut [ProcessHostPartialProgress; N],
+) -> io::Result<HostOutcome> {
+    observe(observations, |progress| {
+        progress.phase = ProcessHostPhase::RootExit;
+    });
+    let waited = super::platform::wait_without_reaping(&child);
+    let root_exit_observed = waited
+        .as_ref()
+        .ok()
+        .and(origin)
+        .map(|origin| origin.elapsed());
+    observe(observations, |progress| {
+        progress.root_exit_observed = root_exit_observed;
+    });
+    let mut state = shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    observe(observations, |progress| {
+        progress.cancelled = state.cancelled;
+        progress.control = shared.control.first().and_then(OnceLock::get).copied();
+    });
+    if waited.is_ok() {
+        observe(observations, |progress| {
+            progress.phase = ProcessHostPhase::Retirement;
+        });
+    }
+    let status = retire_after_observation(&mut state.tree, child, waited, |status| {
+        observe(observations, |progress| progress.root_status = Some(status));
+    })?;
+    let retired = origin.map(|origin| origin.elapsed());
+    observe(observations, |progress| progress.retired = retired);
+    if let Some(failure) = state.failure.take() {
+        observe(observations, |progress| {
+            progress.phase = ProcessHostPhase::Control;
+        });
+        return Err(failure);
+    }
+    let code = if state.cancelled {
+        124
+    } else {
+        exit_code(status)
+    };
+    observe(observations, |progress| {
+        progress.phase = ProcessHostPhase::ReceiptPublication;
+    });
+    let progress = match (root_admitted, root_exit_observed, retired) {
+        (Some(root_admitted), Some(root_exit_observed), Some(retired)) => {
+            Some(ProcessHostProgress {
+                root_admitted,
+                root_exit_observed,
+                retired,
+                control: shared.control.first().and_then(OnceLock::get).copied(),
+            })
+        }
+        (None, None, None) => None,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "process host clock observations are incomplete",
+            ));
+        }
+    };
+    Ok((code, status, state.cancelled, progress))
 }
 
 fn reject_control_admission(

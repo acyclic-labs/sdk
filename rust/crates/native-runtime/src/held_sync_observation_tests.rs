@@ -38,7 +38,7 @@ fn physical_attempts_preserve_errors_and_original_worker_context() -> io::Result
     #[cfg(unix)]
     let descriptor = {
         use std::os::fd::AsRawFd as _;
-        file.as_raw_fd() as u64
+        u64::from(file.as_raw_fd().cast_unsigned())
     };
     #[cfg(windows)]
     let descriptor = {

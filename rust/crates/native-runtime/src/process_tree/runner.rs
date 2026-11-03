@@ -229,21 +229,12 @@ pub(super) fn start(
             "a custodied tree leads its own process group",
         ));
     }
-    let mut environment: BTreeMap<&OsStr, &OsStr> = BTreeMap::new();
     let inherited: Vec<(OsString, OsString)> = if command.env.clear {
         Vec::new()
     } else {
         std::env::vars_os().collect()
     };
-    for (key, value) in &inherited {
-        environment.insert(key, value);
-    }
-    for (key, value) in &command.env.vars {
-        match value {
-            Some(value) => environment.insert(&key.name, value),
-            None => environment.remove(key.name.as_os_str()),
-        };
-    }
+    let environment = environment(command, &inherited);
     // Which standard streams the owner has open, decided before this
     // function allocates a descriptor that could take a closed one's number.
     // The custody directory was opened by the caller, so its number is
@@ -256,17 +247,7 @@ pub(super) fn start(
     // Granted launches reuse this original descriptor role for the held cwd.
     // Trusted launches retain the owner's cwd, followed by their path change.
     // A path descriptor is enough for fchdir and needs no read access.
-    let here = if command.boundary.is_none() {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        Some(
-            std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
-                .open(".")?,
-        )
-    } else {
-        None
-    };
+    let here = working_directory(command)?;
     let directory_handle = command
         .boundary
         .as_ref()
@@ -356,6 +337,35 @@ pub(super) fn start(
         stderr.map(Into::into),
     );
     Ok((child, failure.map_or(Ok(()), Err)))
+}
+
+fn environment<'a>(
+    command: &'a ProcessCommand,
+    inherited: &'a [(OsString, OsString)],
+) -> BTreeMap<&'a OsStr, &'a OsStr> {
+    let mut environment: BTreeMap<&OsStr, &OsStr> = BTreeMap::new();
+    for (key, value) in inherited {
+        environment.insert(key, value);
+    }
+    for (key, value) in &command.env.vars {
+        match value {
+            Some(value) => environment.insert(&key.name, value),
+            None => environment.remove(key.name.as_os_str()),
+        };
+    }
+    environment
+}
+
+fn working_directory(command: &ProcessCommand) -> io::Result<Option<File>> {
+    if command.boundary.is_some() {
+        return Ok(None);
+    }
+    use std::os::unix::fs::OpenOptionsExt as _;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+        .open(".")
+        .map(Some)
 }
 
 fn put_count(body: &mut Vec<u8>, count: usize) {
