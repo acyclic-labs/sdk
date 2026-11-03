@@ -7,7 +7,11 @@ import sys
 
 root = Path(__file__).resolve().parent
 choice = sys.argv[1] if len(sys.argv) == 2 else "delimiter"
-if choice.startswith("issuance-"):
+if choice.startswith("secret-"):
+    target = "secret_ref"
+    source = root.parent / "src/secrets.rs"
+    oracle = root.parent / "tests/common/secret_ref.rs"
+elif choice.startswith("issuance-"):
     target = "capability"
     source = root.parent / "src/trust" / ("issuance/wire.rs" if choice == "issuance-reply" else "issuance.rs")
     oracle = root / "fuzz_targets/capability.rs"
@@ -51,10 +55,18 @@ try:
             b"if reply.encode_to_vec() != bytes {", b"if false && reply.encode_to_vec() != bytes {",
             "duplicate issuance reply version must refuse", "issuance-unknown",
         ),
+        "secret-json": (
+            b"        #[serde(deny_unknown_fields)]", b"",
+            "secret reference must refuse unknown fields", "json-max-version",
+        ),
+        "secret-wire": (
+            b"if canonical.as_slice() != input {", b"if false && canonical.as_slice() != input {",
+            "secret reference must refuse duplicate wire fields", "wire-max-version",
+        ),
     }
     step = "select production Auth mutation"
     if len(sys.argv) > 2 or choice not in mutations:
-        raise RuntimeError("select delimiter, text-decoder, json-field, trust-target, issuance-request or issuance-reply")
+        raise RuntimeError("select one of: " + ", ".join(mutations))
     check, replacement, message, seed = mutations[choice]
     try:
         if original.count(check) != 1:
