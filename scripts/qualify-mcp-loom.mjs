@@ -152,6 +152,12 @@ export function qualifyNativeWakeLoom(run = runCommand) {
   });
 }
 
+export function qualifyNativeOwnerLoom(run = runCommand) {
+  return qualifyLoom("acyclic-native-runtime", "owner_count_loom", [], run, {
+    suites: [["", 1]],
+  });
+}
+
 export function qualifyFsBindingLoom(features = [], run = runCommand) {
   return qualifyLoom("acyclic-fs", "main", features, run, {
     targetCfg: ["--", "--cfg", "loom"], suites: [["native_binding_model::", 5]],
@@ -260,6 +266,7 @@ const fixedModels = {
   "--native-progress": qualifyNativeProgressLoom, "--timer": qualifyTimerLoom,
   "--native-signal": qualifyNativeSignalLoom,
   "--native-wake": qualifyNativeWakeLoom,
+  "--native-owner": qualifyNativeOwnerLoom,
   "--guest": qualifyGuestLoom,
   "--session-fs": qualifySessionFsLoom, "--ownership": qualifyOwnershipLoom,
   "--native-registry": qualifyNativeRegistryLoom,

@@ -1,3 +1,4 @@
+//! Replay the retained production claim corpus through the shared fuzz oracle.
 #[path = "../../../fuzz/native_claim_record.rs"]
 mod native_claim_record;
 

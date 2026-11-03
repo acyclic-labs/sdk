@@ -120,3 +120,8 @@ required-features = ["model-checking"]
 name = "process_signal_loom"
 path = "tests/process_signal_loom.rs"
 required-features = ["model-checking"]
+
+[[test]]
+name = "owner_count_loom"
+path = "tests/owner_count_loom.rs"
+required-features = ["model-checking"]
