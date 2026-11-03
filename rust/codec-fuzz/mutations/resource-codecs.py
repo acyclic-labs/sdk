@@ -8,8 +8,8 @@ package = Path(__file__).resolve().parents[1]
 root = package.parents[1]
 oracle = package / 'src/harness_resources.rs'
 oracle_digest = hashlib.sha256(oracle.read_bytes()).digest()
-command = ['cargo', 'run', '--locked', '--example', 'capture', '--',
-           '--only-resources']
+command = ['cargo', 'run', '--locked', '--example', 'replay', '--',
+           'harness_codecs/resource-']
 
 
 def run(step, diagnostic=None):
@@ -26,7 +26,7 @@ def run(step, diagnostic=None):
     if (diagnostic is not None and (result.returncode == 0 or not failed_oracle)) or (
         diagnostic is None and result.returncode != 0
     ):
-        raise RuntimeError(f'{step}: expected {diagnostic or "successful writer replay"}, exit={result.returncode}; recovery: cargo run --locked --example capture -- --only-resources')
+        raise RuntimeError(f'{step}: expected {diagnostic or "successful writer replay"}, exit={result.returncode}; recovery: cargo run --locked --example replay -- harness_codecs/resource-')
     print(f'{step}: {"REJECTED" if diagnostic is not None else "PASS"}', flush=True)
 
 

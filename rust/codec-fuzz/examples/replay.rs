@@ -1,4 +1,6 @@
 //! Replay captured inputs and check their recorded provenance.
+//! An optional target, or captured-name prefix containing `/`, scopes the same
+//! checks to matching inputs.
 use sha2::{Digest as _, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -39,8 +41,21 @@ fn external_expectations() -> Result<BTreeMap<String, (String, String)>, Box<dyn
     Ok(expectations)
 }
 
+/// Whether `name` is selected: a bare target selects that whole target, and a
+/// selector containing `/` selects captured names with that prefix.
+fn selects(selected: Option<&str>, name: &str) -> bool {
+    selected.is_none_or(|selected| {
+        if selected.contains('/') {
+            name.starts_with(selected)
+        } else {
+            name.split_once('/').is_some_and(|(target, _)| target == selected)
+        }
+    })
+}
+
 fn replay(selected: Option<&str>, entry: Option<&str>) -> Result<usize, Box<dyn Error>> {
     let mut expectations = external_expectations()?;
+    expectations.retain(|name, _| selects(selected, name));
     let sources = [
         ("corpus", std::fs::read_to_string("corpus/SOURCES.tsv")?),
         ("external", std::fs::read_to_string("corpus/EXTERNAL.tsv")?),
@@ -60,7 +75,7 @@ fn replay(selected: Option<&str>, entry: Option<&str>) -> Result<usize, Box<dyn 
                 return Err(format!("duplicate captured name: {name}").into());
             }
             let (target, _) = name.split_once('/').ok_or("captured name has no target")?;
-            if selected.is_some_and(|selected| selected != target) {
+            if !selects(selected, name) {
                 continue;
             }
             let bytes = std::fs::read(Path::new("corpus").join(name))?;
@@ -98,9 +113,7 @@ fn replay(selected: Option<&str>, entry: Option<&str>) -> Result<usize, Box<dyn 
             count += 1;
         }
     }
-    if expectations.keys().any(|name| {
-        selected.is_none_or(|target| name.split_once('/').is_some_and(|(own, _)| own == target))
-    }) {
+    if !expectations.is_empty() {
         return Err("external expectations have no captured input".into());
     }
     if count == 0 {
