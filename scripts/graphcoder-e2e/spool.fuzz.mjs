@@ -137,6 +137,35 @@ async function failure(bytes, mode, sourceError) {
   assert.equal(await observed(spool.keyed(Symbol("later missing"))), cause);
 }
 
+// The original file writer supplies the failure, before any source output or
+// process completion. Empty history needs no file; readers after the refusal
+// retain its original cause.
+async function transcriptFailure(directory) {
+  const source = new PassThrough();
+  const transcript = createWriteStream(join(directory, "absent", "events.jsonl"));
+  const failed = finished(transcript).then(() => assert.fail("missing parent cannot accept a transcript"), error => error);
+  let close;
+  const spool = new Spool(source, new Promise(resolve => { close = resolve; }), { key, transcript });
+  const terminal = spool.next(() => false).catch(error => error);
+  const missing = spool.keyed(Symbol("missing transcript key")).catch(error => error);
+  const history = spool.history().catch(error => error);
+  const cause = await terminal, error = await failed;
+  assert.equal(error.code, "ENOENT");
+  assert.equal(cause.kind, "spool");
+  assert.equal(cause.detail, error);
+  assert.equal(cause.cause, error);
+  assert.equal(await missing, cause);
+  assert.deepEqual(await history, [], "history before the first completed write needs no file");
+  await assert.rejects(spool.history(), error => error === cause, "late history cannot bypass transcript failure");
+  await assert.rejects(spool.next(() => true), error => error === cause);
+  await assert.rejects(spool.keyed(Symbol("late transcript key")), error => error === cause);
+  source.end(original);
+  close(captured);
+  await finished(source);
+  assert.equal(spool.sequence, 0, "later source output cannot replace the writer refusal");
+  assert.equal(spool.ended, cause);
+}
+
 // Mutate the original completed file, then compare its two indexed ranges and
 // completed history with independent whole-buffer decoding. These are format
 // checks, not integrity certification for externally modified transcripts.
@@ -185,6 +214,7 @@ export async function fuzz(data) {
     assert.equal(sourceError?.code, "ENOENT");
     for (const mode of ["key", "listener", "predicate", "stream", "closed"])
       await failure(bytes, mode, sourceError);
+    await transcriptFailure(directory);
     await persisted(bytes, join(directory, "mutated.jsonl"));
     for (const input of [bytes, Buffer.concat([bytes, original]), Buffer.concat([original, bytes]),
       Buffer.concat([original, original, bytes]), Buffer.concat([original, distinct, bytes])])
