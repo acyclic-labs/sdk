@@ -126,7 +126,7 @@ pub use wasm::{
     WasmFollow, WasmProviderRequest, WasmSessionAuthority, WasmStream, serve_wasm_grpc_session,
     serve_wasm_session,
 };
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod codec_fuzz;
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.
