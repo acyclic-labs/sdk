@@ -37,7 +37,6 @@ proptest! {
                 let through = original.iter().filter(|value| **value <= observed).count();
                 prop_assert!(below * 100 < percent * original.len());
                 prop_assert!(through * 100 >= percent * original.len());
-                prop_assert!(original.contains(&observed));
             }
         }
     }

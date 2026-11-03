@@ -1,0 +1,21 @@
+diff --git a/rust/crates/conformance/benches/local_hotpath/report.rs b/rust/crates/conformance/benches/local_hotpath/report.rs
+--- a/rust/crates/conformance/benches/local_hotpath/report.rs
++++ b/rust/crates/conformance/benches/local_hotpath/report.rs
+@@ -75,7 +75,7 @@
+     #[derive(Serialize)]
+     struct Receipt<'a> {
+         sample: usize,
+-        identity: &'a serde_json::Value,
++        identity: serde_json::Value,
+         work: &'a [Option<u64>],
+         physical_admission_binding: Option<()>,
+         progress: &'static str,
+@@ -84,7 +84,7 @@
+     serializer.collect_seq(receipts.iter().enumerate().map(|(sample, (identity, work))| {
+         Receipt {
+             sample,
+-            identity,
++            identity: identity.clone(),
+             work: &work.0,
+             physical_admission_binding: None,
+             progress: "original operation returned; operation-specific result oracle checked before the report",
