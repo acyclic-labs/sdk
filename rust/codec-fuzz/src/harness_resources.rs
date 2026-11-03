@@ -582,20 +582,23 @@ pub(super) fn check(bytes: &[u8]) {
     }
     if let Some(cache) = roundtrip::<ModelCacheObservation>(bytes) {
         let mut metadata = serde_json::json!({"cache": cache});
-        assert_eq!(
-            ModelCacheObservation::reported(&metadata),
-            (cache.version == ModelCacheObservation::VERSION).then_some(cache),
-        );
-        assert_eq!(
-            cache.key().is_some(),
-            cache.version == ModelCacheObservation::VERSION
-                && cache.credential_scope.is_some()
-                && cache.breakpoint.is_some(),
-        );
-        for version in [0, 2, u32::MAX] {
+        for version in [cache.version, 0, 2, u32::MAX] {
+            let observed = ModelCacheObservation { version, ..cache };
+            let expected = match (version, cache.credential_scope, cache.breakpoint) {
+                (1, Some(scope), Some(cut)) => Some((scope, cut.digest)),
+                _ => None,
+            };
+            assert_eq!(
+                observed
+                    .key()
+                    .map(|key| (key.credential_scope, key.prefix_digest)),
+                expected,
+                "cache observation key identity changed",
+            );
             metadata["cache"]["version"] = version.into();
-            assert!(
-                ModelCacheObservation::reported(&metadata).is_none(),
+            assert_eq!(
+                ModelCacheObservation::reported(&metadata),
+                (version == ModelCacheObservation::VERSION).then_some(observed),
                 "unsupported cache observation version admitted",
             );
         }
