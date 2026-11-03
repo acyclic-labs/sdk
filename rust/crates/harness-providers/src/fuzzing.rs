@@ -54,8 +54,7 @@ fn assert_chat_usage(input: &[u8], events: &[ModelEvent]) {
     .expect("accepted Chat stream has valid original frames");
     let mut expected = None;
     for frame in frames {
-        let value: serde_json::Value =
-            serde_json::from_str(&frame).expect("accepted Chat frame is JSON");
+        let value = crate::json(frame.as_bytes()).expect("accepted Chat frame is JSON");
         if let Some(usage) = value.get("usage").and_then(serde_json::Value::as_object) {
             expected
                 .get_or_insert_with(serde_json::Map::new)
@@ -458,6 +457,30 @@ mod properties {
                 parse(adapter, body, 7).is_ok(),
                 "seed {adapter:?} must exercise accepted events"
             );
+            if matches!(adapter, Adapter::Chat) {
+                for marker in [
+                    "$serde_json::private::RawValue",
+                    "$serde_json::private::Number",
+                ] {
+                    // Mutate an original frame's ignored extension field while
+                    // retaining its actual response content and usage bytes.
+                    let extra = json!({(marker): "null", "nested": []});
+                    let mutated = std::str::from_utf8(body).unwrap().replacen(
+                        "data: {",
+                        &format!("data: {{\"extra\":{extra},"),
+                        1,
+                    );
+                    assert_ne!(mutated.as_bytes(), body);
+                    assert_eq!(
+                        parse(adapter, mutated.as_bytes(), 7).unwrap(),
+                        parse(adapter, body, 7).unwrap(),
+                        "ignored literal-map keys changed original events"
+                    );
+                    let mut seed = vec![kind];
+                    seed.extend_from_slice(mutated.as_bytes());
+                    assert_stream_invariants(&seed);
+                }
+            }
         }
     }
 }
