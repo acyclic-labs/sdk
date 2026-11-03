@@ -6,3 +6,5 @@ route-3	53	2bde594a4660c210f4c46d195ff515b3d0233124cf9fa06dc583a051a7bad68a	Reso
 route-4	84	dcb81007581cb528daa4c40aa859cefb7c5e028aa55e88294280f2ff4312f9f2	ResourceIdentity::hostname or RoutePattern::as_str with caller URL context derived from the SDK hostname (NUL-separated fuzz tuple)
 route-5	95	bdd6b2272f7150d98c446466110a769c0f54f1f5f0dbcb5ab4e31344fe7abb3b	ResourceIdentity::hostname or RoutePattern::as_str with caller URL context derived from the SDK hostname (NUL-separated fuzz tuple)
 route-6	8276	fb246e5602131c43c512a7f32e5b86c35653b8523a8c730e7a3c433a10dfd49a	ResourceIdentity::hostname or RoutePattern::as_str with caller URL context derived from the SDK hostname (NUL-separated fuzz tuple)
+actor	67	dad9dcfd82aa42fd549a4d65be226c25d134d56e54c8c52d386dd2dcba44fd6e	ActorReference::encode
+resource	56	3b780e9a3aa2ccc5e2c61f64a87373682624c7657fe593fe79b2b8b1c1ada7bf	ResourceIdentity::encode

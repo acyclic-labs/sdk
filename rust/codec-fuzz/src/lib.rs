@@ -422,16 +422,6 @@ pub fn auth(bytes: &[u8]) {
 
 pub fn identities(bytes: &[u8]) {
     auth_addressing::check(bytes);
-    use acyclic_auth::addressing::{ActorReference, ResourceIdentity};
-    if let Ok(value) = ResourceIdentity::decode(bytes) {
-        auth_addressing::identity(&value);
-        assert_eq!(value.encode(), bytes);
-        assert_eq!(ResourceIdentity::decode(&value.encode()), Ok(value));
-    }
-    if let Ok(value) = ActorReference::decode(bytes) {
-        assert_eq!(value.encode(), bytes);
-        assert_eq!(ActorReference::decode(&value.encode()), Ok(value));
-    }
 }
 
 pub fn actor_codecs(bytes: &[u8]) {

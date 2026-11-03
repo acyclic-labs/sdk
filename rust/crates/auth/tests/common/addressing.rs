@@ -1,7 +1,7 @@
 //! Textual addresses must retain the identities and route decisions they carry.
 use acyclic_auth::addressing::{
-    CanonicalHost, ResourceIdentity, RouteError, RoutePattern, WorkerRoute, select_route,
-    validate_dns_label,
+    ActorReference, CanonicalHost, ResourceIdentity, RouteError, RoutePattern, WorkerRoute,
+    select_route, validate_dns_label,
 };
 
 const DOMAIN: &str = "run.example.com";
@@ -118,8 +118,22 @@ fn route(pattern: &str, url: &str) {
     );
 }
 
-/// Check raw hostname input and route/context tuples through production APIs.
+/// Check binary identities, hostnames and route tuples through production APIs.
 pub fn check(bytes: &[u8]) {
+    if let Ok(value) = ResourceIdentity::decode(bytes) {
+        identity(&value);
+        assert_eq!(
+            value.encode(),
+            bytes,
+            "resource bytes must roundtrip exactly"
+        );
+        assert_eq!(ResourceIdentity::decode(&value.encode()), Ok(value));
+    }
+    if let Ok(value) = ActorReference::decode(bytes) {
+        assert_eq!(value.encode(), bytes, "actor bytes must roundtrip exactly");
+        assert_eq!(ActorReference::decode(&value.encode()), Ok(value));
+        assert!(ResourceIdentity::decode(bytes).is_err());
+    }
     label(bytes);
     let Ok(text) = std::str::from_utf8(bytes) else {
         return;
