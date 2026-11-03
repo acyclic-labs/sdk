@@ -1,6 +1,8 @@
 #![no_main]
 
 // The installed binary and this target share admission before workspace lookup.
+#[path = "native_input/actions.rs"]
+mod actions;
 #[path = "../../../../plugin/src/input.rs"]
 mod input;
 
@@ -27,6 +29,7 @@ fn check(bytes: &[u8]) {
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     check(bytes);
+    actions::check(bytes);
     static BOUNDARIES: std::sync::Once = std::sync::Once::new();
     BOUNDARIES.call_once(|| {
         // Valid JSON on both sides of the bound distinguishes admission from
