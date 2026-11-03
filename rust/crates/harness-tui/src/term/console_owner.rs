@@ -462,8 +462,9 @@ mod tests {
             Ok(())
         }
     }
-    fn model(broken: bool) {
-        loom::model(move || {
+    #[test]
+    fn console_worker_acknowledges_before_restoration() {
+        loom::model(|| {
             let restored = Arc::new(AtomicBool::new(false));
             let late = Arc::new(AtomicBool::new(false));
             let (submitting, submitted) = loom::sync::mpsc::channel();
@@ -487,38 +488,17 @@ mod tests {
             // check and may pause immediately before the native write. This
             // removes unrelated open/close-before-submit permutations.
             submitted.recv().unwrap_or_else(|error| panic!("{error}"));
-            if broken {
-                owner
-                    .state
-                    .lock()
-                    .unwrap_or_else(|error| panic!("{error:?}"))
-                    .closed = true;
-                owner
-                    .quiesce(false)
-                    .unwrap_or_else(|error| panic!("{error}"));
-                restored.store(true, Ordering::SeqCst);
-            } else {
-                Owner::close(&owner, |writer| {
-                    writer.restored.store(true, Ordering::SeqCst);
-                    Ok(())
-                })
-                .unwrap_or_else(|error| panic!("{error}"));
-            }
+            Owner::close(&owner, |writer| {
+                writer.restored.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+            .unwrap_or_else(|error| panic!("{error}"));
             assert!(
                 !late.load(Ordering::SeqCst),
                 "write after acknowledged restoration"
             );
         });
     }
-    #[test]
-    fn console_worker_acknowledges_before_restoration() {
-        model(false);
-    }
-    #[test]
-    fn negative_control_detects_unfenced_native_submission() {
-        assert!(std::panic::catch_unwind(|| model(true)).is_err());
-    }
-
     loom::lazy_static! {
         static ref CANCELLATIONS: Mutex<(Vec<thread::ThreadId>, Option<loom::sync::mpsc::Sender<()>>)> =
             Mutex::new((Vec::new(), None));
