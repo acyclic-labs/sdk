@@ -89,6 +89,13 @@ additional_controls = {
     "native_settings": [
         (
             "rust/crates/harness-core/src/native_settings.rs",
+            b"if !load_mcp {",
+            b"if false {",
+            "project-server",
+            b"inactive MCP sections must not block hooks",
+        ),
+        (
+            "rust/crates/harness-core/src/native_settings.rs",
             b"Entry::Occupied(mut entry) if entry.get().0 <= order => {",
             b"Entry::Occupied(mut entry) if entry.get().0 >= order => {",
             "project-server",
