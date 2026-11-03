@@ -11,6 +11,10 @@ mod actor;
 pub use actor::{
     ActorReference, DEFAULT_ACTOR_NAMESPACE, NamespaceId, validate_actor_id, validate_location_hint,
 };
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+#[path = "../tests/common/addressing.rs"]
+pub mod testing;
 
 /// Invalid identity component or canonical encoding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]

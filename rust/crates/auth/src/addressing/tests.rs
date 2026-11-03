@@ -36,9 +36,9 @@ proptest! {
     #[test]
     fn hostname_retains_direct_components(account in "[a-z][a-z0-9]{0,62}", id in "[a-z][a-z0-9]{0,62}") {
         let identity = ResourceIdentity::new(account.as_bytes(), id.as_bytes())?;
+        testing::identity(&identity);
         let host = identity.hostname("example.com")?;
         prop_assert_eq!(host.as_str(), format!("{id}.{account}.example.com"));
-        prop_assert_eq!(CanonicalHost::parse(host.as_str())?, host);
     }
     #[test]
     fn admitted_hosts_retain_their_url_authority(labels in prop::collection::vec("[a-z0-9][a-z0-9-]{0,61}[a-z0-9]", 1..=4)) {
@@ -50,6 +50,7 @@ proptest! {
     }
     #[test]
     fn parser_accepts_only_canonical_bytes(bytes in prop::collection::vec(any::<u8>(), 0..10000)) {
+        testing::check(&bytes);
         if let Ok(value) = ResourceIdentity::decode(&bytes) {
             prop_assert_eq!(value.encode(), bytes);
         }
