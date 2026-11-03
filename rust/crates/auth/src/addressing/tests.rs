@@ -18,7 +18,6 @@ proptest! {
         let value = ResourceIdentity::new(&account, &id)?;
         let encoded = value.encode();
         prop_assert_eq!(encoded.len(), value.encoded_len());
-        prop_assert_eq!(ResourceIdentity::decode(&encoded)?, value);
         let (original_account, original_id) = ResourceIdentity::decode(&encoded)?.into_parts();
         prop_assert_eq!(original_account.into_bytes(), account);
         prop_assert_eq!(original_id.into_bytes(), id);

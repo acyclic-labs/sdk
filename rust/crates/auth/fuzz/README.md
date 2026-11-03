@@ -134,7 +134,15 @@ The runner restores the source and checks oracle custody. Complete source and
 branch coverage, and the other addressing guards, need separate qualification.
 
 Binary actor/resource admission uses this same oracle before text admission.
-It preserves both original decode/encode round trips and actor/resource grammar
+Arbitrary nonempty input also supplies opaque fields to the real resource writer
+and an account plus generated legal actor name to the real actor writer. Their
+outputs must decode to the original values, so rejecting valid writer output
+cannot evade the checks gated on successful decoding. The actor name generator
+obeys the public 128-byte name grammar; it does not bound opaque resource fields.
+`python3 negative-control.py addressing-resource-admission` and
+`addressing-actor-admission` make each production reader expect a different
+version from its unchanged writer. Each must trip its forward admission check.
+The oracle preserves both original decode/encode round trips and actor/resource grammar
 disjointness. `python3 negative-control.py addressing-resource` and
 `addressing-actor` swap fields in the actual production decoders; the original
 writer captures `resource` and `actor` must fail their unchanged exact-byte

@@ -19,9 +19,11 @@ elif choice.startswith("addressing-"):
         "addressing-resource": "addressing.rs",
         "addressing-resource-tail": "addressing.rs",
         "addressing-resource-version": "format.rs",
+        "addressing-resource-admission": "addressing.rs",
         "addressing-actor": "addressing/actor.rs",
         "addressing-actor-tail": "addressing/actor.rs",
         "addressing-actor-version": "format.rs",
+        "addressing-actor-admission": "addressing/actor.rs",
     }.get(choice, "addressing/dns.rs")
     oracle = root.parent / "tests/common/addressing.rs"
 elif choice.startswith("secret-"):
@@ -49,6 +51,14 @@ try:
     oracle_hashes = {path: hashlib.sha256(path.read_bytes()).digest() for path in oracles}
     newline = b"\r\n" if b"\r\n" in original else b"\n"
     mutations = {
+        "addressing-resource-admission": (
+            b"            RESOURCE_VERSION,", b"            b\"\\x02\",",
+            "resource writer output must admit", "resource",
+        ),
+        "addressing-actor-admission": (
+            b"            b\"\\x01\",", b"            b\"\\x02\",",
+            "actor writer output must admit", "actor",
+        ),
         "addressing-resource-version": (
             b".strip_prefix(version)", b".get(version.len()..)",
             "identity version must refuse before fields", "resource",
