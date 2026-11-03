@@ -186,7 +186,6 @@ def call_records():
     production = ROOT.parent / "crates/actors/src/call.rs"
     original = {path: path.read_bytes() for path in (production, ORACLE)}
     source, oracle = original[production], original[ORACLE]
-    decoder = b'        let kind = attribute(record, KIND).ok_or(Error::Malformed("record is no call record"))?;'
     cancellation = b"Outcome::Cancelled(reason) if self.accepted.is_some() => {"
     start = oracle.index(b"    for (name, bytes) in futures::executor::block_on(acyclic_actors::call::model::codec_seeds())?")
     end = oracle.index(b"    for (name, bytes) in acyclic_actors::reservation::codec_fuzz::seeds()?", start)
@@ -194,22 +193,18 @@ def call_records():
                 b'        .expect("original call protocol must conserve its committed receipts");\n')
     if b"\r\n" in oracle:
         schedule = schedule.replace(b"\n", b"\r\n")
-    if source.count(decoder) != 1 or source.count(cancellation) != 1 or oracle.count(schedule) != 1:
-        raise RuntimeError("call mutation anchor changed; recovery: inspect Entry::decode, "
+    if source.count(cancellation) != 1 or oracle.count(schedule) != 1:
+        raise RuntimeError("call mutation anchor changed; recovery: inspect "
                            "Journal::apply and actor_codecs before running "
                            "python3 actor-negative-control.py --call-records")
-    mutant = source.replace(decoder, decoder.replace(b"attribute(record, KIND)",
-                                                   b"attribute(record, KIND).filter(|_| false)"))
+    mutant = source.replace(cancellation, b"Outcome::Cancelled(reason) if false => {")
     try:
         for label, value in (("call production", source), ("call oracle", oracle)):
             print(f"{label} sha256={hashlib.sha256(value).hexdigest()}", flush=True)
         production.write_bytes(mutant)
         ORACLE.write_bytes((oracle[:start] + oracle[end:]).replace(schedule, b""))
-        run("unbound call oracle misses production refusal", "accepted")
+        run("unbound call oracle misses lost accepted cancellation context", "accepted")
         ORACLE.write_bytes(oracle)
-        run("same oracle detects production call refusal", "rejected",
-            'Malformed("record is no call record")')
-        production.write_bytes(source.replace(cancellation, b"Outcome::Cancelled(reason) if false => {"))
         run("same oracle detects lost accepted cancellation context", "rejected",
             "call reader must retain its acceptance context")
         production.write_bytes(source)

@@ -43,8 +43,10 @@ builders, provider and journal, and feeds committed Stream wire envelopes to
 from actual commits with a fixed provider clock and stable retry identities.
 Admission distinguishes cancellation before acceptance from the indeterminate
 outcome after acceptance. `python3 actor-negative-control.py --call-records`
-requires the unchanged oracle to reject production decoder refusal and loss of
-that acceptance context. This finite provider model does not establish physical
+shows that admission without the call binding misses loss of acceptance context;
+the unchanged expanded oracle must reject that same production defect. Existing
+Host producer admission already rejects a call decoder which refuses every
+record. This finite provider model does not establish physical
 recovery, distributed ownership or complete branch coverage.
 
 `python3 actor-negative-control.py --alarms` checks the original guest transition
