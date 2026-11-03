@@ -90,7 +90,7 @@ code-mode = ["core", "acyclic-harness-core/filesystem", "dep:tokio"]
 native-skill-records = ["core", "acyclic-harness-core/filesystem-local", "acyclic-harness-core/native-execution"]
 native-settings = ["core", "dep:tempfile", "acyclic-harness-core/filesystem-local", "acyclic-harness-core/native-execution"]
 client = ["dep:acyclic-harness-client", "dep:acyclic-stream"]
-native-input = ["dep:acyclic-harness", "acyclic-harness/filesystem-local", "acyclic-harness/native-execution"]
+native-input = ["dep:acyclic-harness", "dep:tempfile", "acyclic-harness/filesystem-local", "acyclic-harness/native-execution"]
 runtime = ["native-settings", "filesystem-local", "native-execution", "native-input", "acyclic-harness/terminal", "acyclic-harness/tui", "acyclic-harness/grpc", "acyclic-harness/test-support", "acyclic-harness/search-http", "acyclic-harness/objects", "dep:acyclic-native-runtime", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
 # Harness sources included by `#[path]` gate native helpers on these features;
 # the fuzz runtime compiles them as the native harness it depends on does.

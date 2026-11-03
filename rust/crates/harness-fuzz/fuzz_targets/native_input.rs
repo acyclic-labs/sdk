@@ -33,6 +33,25 @@ fn read_pipe(bytes: &[u8]) -> input::Result<serde_json::Value> {
     })
 }
 
+fn read_failure() {
+    use std::io::Read;
+    let directory = tempfile::tempdir().expect("create native input failure directory");
+    let file = std::fs::File::options()
+        .write(true)
+        .create_new(true)
+        .open(directory.path().join("stdin"))
+        .expect("open native write-only input");
+    let original = (&file)
+        .read(&mut [0_u8; 1])
+        .expect_err("write-only input must refuse an OS read");
+    let error = input::read_json(file).expect_err("native input read failure must be refused");
+    let actual = error
+        .downcast_ref::<std::io::Error>()
+        .expect("native input read failure must retain its OS error");
+    assert_eq!(actual.kind(), original.kind());
+    assert_eq!(actual.raw_os_error(), original.raw_os_error());
+}
+
 fn check(bytes: &[u8]) {
     let admitted = read_pipe(bytes);
     if bytes.len() > 65_536 {
@@ -60,6 +79,7 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     commands::check(bytes);
     static BOUNDARIES: std::sync::Once = std::sync::Once::new();
     BOUNDARIES.call_once(|| {
+        read_failure();
         // Valid JSON on both sides of the bound distinguishes admission from
         // incidental parse refusal. The original spaces-only example did not.
         for length in [65_535, 65_536, 65_537] {
