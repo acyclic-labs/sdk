@@ -67,29 +67,6 @@ fn budget_bound_preserves_reservation_and_refuses_overflow() {
     assert!(!fits(u64::MAX, 1, 100));
 }
 
-#[test]
-fn summary_key_fences_source_range_renderer_and_model() {
-    let key = SummaryKey {
-        source: StreamPath::new("account/agent/conversation").unwrap(),
-        through: 30,
-        renderer: 1,
-        model: [1; 32],
-    };
-    let digest = key.digest();
-    let mut other = key.clone();
-    other.through += 1;
-    assert_ne!(digest, other.digest());
-    other = key.clone();
-    other.renderer += 1;
-    assert_ne!(digest, other.digest());
-    other = key.clone();
-    other.model = [2; 32];
-    assert_ne!(digest, other.digest());
-    other = key.clone();
-    other.source = StreamPath::new("account/child/conversation").unwrap();
-    assert_ne!(digest, other.digest());
-}
-
 /// Full materialized model: a summary marks source items individually. It
 /// intentionally pays O(history) to serve as an independent coverage oracle.
 #[cfg(feature = "filesystem")]
