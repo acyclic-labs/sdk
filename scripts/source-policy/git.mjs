@@ -11,7 +11,10 @@ export function gitBatchSources(files, original) {
   if (headerEnd < 0) throw new GitBatchSyntaxError('truncated Git object header for ' + file);
   const header = original.subarray(at, headerEnd).toString('utf8');
   at = headerEnd + 1;
-  if (!header.endsWith(' missing')) {
+  if (header.endsWith(' missing')) {
+   const request = /^(?:[a-f0-9]{40}|[a-f0-9]{64}):/.exec(header);
+   if (!request || header.slice(request[0].length) !== file + ' missing') throw new GitBatchSyntaxError('invalid missing Git object header for ' + file);
+  } else {
    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64}) blob (?:0|[1-9][0-9]*)$/.test(header)) throw new GitBatchSyntaxError('invalid Git object header for ' + file);
    const fields = header.split(' ');
    const size = Number(fields[2]);

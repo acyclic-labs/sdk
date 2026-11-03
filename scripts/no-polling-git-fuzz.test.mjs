@@ -15,9 +15,10 @@ test('Git batch oracle rejects actual production framing mutations', async () =>
  for (const [original, replacement, diagnostic] of [
   [" || original[at + size] !== 10", '', /lost body terminator/],
   ["if (at !== original.length)", 'if (false)', /unconsumed response/],
+  ["if (!request || header.slice(request[0].length) !== file + ' missing')", 'if (false)', /invalid missing-object header/],
  ]) {
   assert.equal(source.split(original).length, 2, 'one actual production branch');
   const mutated = await import('data:text/javascript;base64,' + Buffer.from(source.replace(original, replacement)).toString('base64'));
-  assert.throws(() => fuzzGitBatch(Uint8Array.of(1), mutated.gitBatchSources), {name: 'AssertionError', message: diagnostic});
+  assert.throws(() => fuzzGitBatch(Uint8Array.of(1), mutated.gitBatchSources, mutated.GitBatchSyntaxError), {name: 'AssertionError', message: diagnostic});
  }
 });

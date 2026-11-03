@@ -58,6 +58,7 @@ request order and the original Node `Buffer`; the result maps present blobs to
 UTF-8 source and omits missing objects. It rejects incomplete responses, malformed
 blob headers, unsafe sizes, missing body terminators and extra response bytes
 with `GitBatchSyntaxError`. Revision selection and process I/O stay with callers.
+Missing-object headers must carry a full revision ID and the requested file key.
 The decoder advances once through the supplied bytes, with no I/O or extra body
 copy. Run `node --test scripts/no-polling-git-fuzz.test.mjs` for the original Git
 capture, damaged-frame corpus and retained production mutation controls.

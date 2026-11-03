@@ -8,7 +8,7 @@ const capture = JSON.parse(readFileSync(new URL('./fixtures/no-polling/git-batch
 const original = Buffer.from(capture.bytes, 'base64');
 const terminator = original.indexOf(10) + 1 + Buffer.byteLength(capture.sources[0][1]);
 
-export function fuzzGitBatch(data, decode = gitBatchSources) {
+export function fuzzGitBatch(data, decode = gitBatchSources, SyntaxError = GitBatchSyntaxError) {
  assert.deepEqual(decode(capture.files, original), new Map(capture.sources));
  const damaged = Buffer.from(original);
  damaged[terminator] = (data[0] ?? 0) === 10 ? 11 : (data[0] ?? 0);
@@ -25,6 +25,13 @@ export function fuzzGitBatch(data, decode = gitBatchSources) {
   assert.throws(() => decode(capture.files, Buffer.concat([Buffer.from(invalid), original.subarray(headerEnd)])),
    {name: 'GitBatchSyntaxError'}, invalid);
  }
+ const missing = capture.producer.input.trimEnd().split('\n').at(-1) + ' missing';
+ const missingAt = original.length - Buffer.byteLength(missing + '\n');
+ for (const invalid of [missing.replace(capture.producer.revision, 'not-an-object'),
+  missing.replace(capture.files.at(-1), 'other-request.ts')]) {
+  assert.throws(() => decode(capture.files, Buffer.concat([original.subarray(0, missingAt), Buffer.from(invalid + '\n')])),
+   {name: 'GitBatchSyntaxError'}, 'invalid missing-object header');
+ }
  try { decode(capture.files, Buffer.from(data)); }
- catch (error) { assert.ok(error instanceof GitBatchSyntaxError, String(error)); }
+ catch (error) { assert.ok(error instanceof SyntaxError, String(error)); }
 }
