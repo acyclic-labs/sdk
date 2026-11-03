@@ -93,11 +93,16 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
   'if (/^typescript\\/packages\\/[^/]+\\/package\\.json$/.test(file)) {');
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), layout),
   {name: 'AssertionError', message: /repository layout/});
- const current = await mutant('./source-policy/project.mjs',
-  'if (historical && error instanceof SourceSyntaxError) continue;',
-  'if (error instanceof SourceSyntaxError) continue;');
- assert.throws(() => targets.fuzzProject(Buffer.from('}'), current),
-  {name: 'AssertionError', message: /Missing expected exception \(SourceSyntaxError\)/});
+ for (const [original, replacement, seed, expected] of [
+  ['if (historical && error instanceof SourceSyntaxError) continue;',
+   'if (error instanceof SourceSyntaxError) continue;', '}',
+   {name: 'AssertionError', message: /Missing expected exception \(SourceSyntaxError\)/}],
+  ['projectPollingSites(before, {historical: true})', 'projectPollingSites(before)', [0],
+   {name: 'AggregateError', message: /unterminated block comment/}],
+ ]) {
+  const refusal = await mutant('./source-policy/project.mjs', original, replacement);
+  assert.throws(() => targets.fuzzProject(Buffer.from(seed), refusal), expected);
+ }
  const causes = await mutant('./source-policy/project.mjs',
   'new AggregateError(errors, errors.map', 'new AggregateError(errors.slice(1), errors.map');
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), causes),

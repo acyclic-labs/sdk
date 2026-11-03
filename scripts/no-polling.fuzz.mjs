@@ -288,9 +288,6 @@ export function fuzzProject(data, {source: api = sourcePolicy, graph = projectPo
    [caller, `import {settle} from '${name}'; settle();`]]);
   assert.ok(project(local).some(site => site.file === caller && site.kind === 'unresolved-local-helper'),
    'repository layout concealed a missing local producer');
-  const manifest = new Map([[packageFile, '{"name":']]);
-  assert.throws(() => project(manifest), SourceSyntaxError);
-  assert.deepEqual(newProjectPollingSites(manifest, new Map()), []);
   project(new Map([[packageFile, 'null']]));
   let valid = true;
   try { JSON.parse(raw); } catch { valid = false; }
