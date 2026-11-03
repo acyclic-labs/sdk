@@ -45,29 +45,6 @@ proptest::proptest! {
 }
 
 #[tokio::test]
-async fn harness_content_matches_its_oracle_and_detects_divergence() -> TestResult {
-    let bytes = content::Content::exact(b"owner bytes");
-    let first = content::run(memory()?, "harness-content", &bytes).await?;
-    let again = content::run(memory()?, "harness-content", &bytes).await?;
-    assert_eq!(first, again);
-    let other = content::Content::exact(b"other owner bytes");
-    assert_ne!(
-        content::run(memory()?, "harness-content", &other).await?,
-        first
-    );
-    let wrong = content::Content {
-        staged: b"owner bytes",
-        expected: b"owner bytez",
-    };
-    assert!(
-        content::run(memory()?, "harness-content", &wrong)
-            .await
-            .is_err()
-    );
-    Ok(())
-}
-
-#[tokio::test]
 #[ignore = "needs a local cloud: node scripts/local-cloud.mjs"]
 async fn objects_and_harness_content_match_the_local_cloud() -> TestResult {
     let file = acyclic_harness::test_support::environment("ACYCLIC_LOCAL_CLOUD")

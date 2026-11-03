@@ -9,7 +9,7 @@ use acyclic_harness::{
     AgentId, Capabilities, OperationId,
     conversation::{
         Attachment, ContentPublisher as _, ContentResidencyVerifier as _, Limits, VolumeClass,
-        VolumeOperation, VolumeOwner, VolumeRef, load_manifest,
+        VolumeOperation, VolumeOwner, VolumeRef, encode_attachment_manifest, load_manifest,
     },
     core::{AggregateKind, Authority, AuthorityRoot},
     objects::ObjectContentStore,
@@ -173,7 +173,7 @@ pub(super) async fn run(
         file: file.clone(),
         label: None,
     }];
-    let manifest_bytes = serde_json::to_vec(&items)?;
+    let manifest_bytes = encode_attachment_manifest(&items)?;
     let manifest = owner_store
         .stage(
             OperationId::from_bytes([12; 16]),
