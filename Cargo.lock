@@ -708,10 +708,12 @@ version = "0.0.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-harness",
+ "acyclic-harness-client",
  "acyclic-harness-core",
  "acyclic-native-runtime",
  "acyclic-stream",
  "acyclic-test-support",
+ "base64 0.22.1",
  "blake3",
  "bytes",
  "clap",
