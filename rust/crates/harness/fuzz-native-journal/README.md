@@ -42,8 +42,9 @@ the task comparison in `Receipt::confirm` must fail the unchanged oracle with
 `native_child_reference` calls the original `host_workspace::child_reference`
 parser used before native spawn commits and mount registration. Its shared
 test-support oracle checks admitted inputs against actual path components and
-the portable mount alphabet. A separate generator requires valid components
-to be admitted, so a reject-all parser cannot pass. Arbitrary input is not
+the portable mount alphabet and bounds invalid-input diagnostics. A separate
+generator requires valid components to be admitted, so a reject-all parser
+cannot pass. Arbitrary input is not
 truncated; generated components obey the existing 255-byte filesystem bound.
 This checks reference syntax, not mount confinement or process lifetime.
 
@@ -51,6 +52,7 @@ The corpus contains explicitly authored user references, including `first`
 (the input used by the real-owner receipt control), parent/current paths,
 both separators, non-ASCII input and the component-size boundary. These are
 request inputs, not recorded external responses. The retained mutation
-patches remove parent refusal and force reject-all admission. Each must fail
-the unchanged oracle at its corresponding assertion; neither is a compiler
+patches remove parent refusal, force reject-all admission, and restore the
+original diagnostic that copied the entire rejected input. Each must fail
+the unchanged oracle at its corresponding assertion; none is a compiler
 failure control.

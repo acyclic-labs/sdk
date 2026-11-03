@@ -27,9 +27,9 @@ pub(crate) fn child_reference(reference: &str) -> Result<()> {
     if portable {
         Ok(())
     } else {
-        Err(Error::Invalid(format!(
-            "child reference {reference:?} is not one portable path component"
-        )))
+        Err(Error::Invalid(
+            "child reference is not one portable path component".into(),
+        ))
     }
 }
 

@@ -15,23 +15,31 @@ pub fn check_native_child_reference(input: &[u8]) {
     use crate::local::host_workspace::child_reference;
     use std::path::{Component, Path};
 
-    if let Ok(reference) = std::str::from_utf8(input)
-        && child_reference(reference).is_ok()
-    {
-        let mut components = Path::new(reference).components();
-        assert!(
-            matches!(components.next(), Some(Component::Normal(name)) if name == reference)
-                && components.next().is_none(),
-            "admitted reference escaped its single child component"
-        );
-        assert!(
-            reference.len() <= 255
-                && reference
-                    .chars()
-                    .all(|character| character.is_ascii_alphanumeric()
-                        || matches!(character, '-' | '_' | '.')),
-            "admitted reference cannot be represented by the portable mount alphabet"
-        );
+    if let Ok(reference) = std::str::from_utf8(input) {
+        match child_reference(reference) {
+            Ok(()) => {
+                let mut components = Path::new(reference).components();
+                assert!(
+                    matches!(components.next(), Some(Component::Normal(name)) if name == reference)
+                        && components.next().is_none(),
+                    "admitted reference escaped its single child component"
+                );
+                assert!(
+                    reference.len() <= 255
+                        && reference
+                            .chars()
+                            .all(|character| character.is_ascii_alphanumeric()
+                                || matches!(character, '-' | '_' | '.')),
+                    "admitted reference cannot be represented by the portable mount alphabet"
+                );
+            }
+            Err(crate::Error::Invalid(message)) => assert!(
+                message.len() <= 64,
+                "child-reference refusal retained unbounded input: {} bytes",
+                message.len()
+            ),
+            Err(error) => panic!("child-reference refusal lost its invalid-input type: {error}"),
+        }
     }
 
     // This is an input generator, not a second parser. Its bounded output is
