@@ -103,7 +103,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         authority: AuthorityId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<AuthoritySnapshot, AuthorityStoreError> {
-        self.authority_require_live(authority, work).await?;
+        crate::heap_future::in_frame(self.authority_require_live(authority, work)).await?;
         self.snapshot(authority, work).await
     }
 
@@ -322,7 +322,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         work: &mut AuthorityWork<'_>,
     ) -> Result<bool, AuthorityStoreError> {
         work.check()?;
-        self.authority_require_live(authority, work).await?;
+        crate::heap_future::in_frame(self.authority_require_live(authority, work)).await?;
         let locator = work.path(
             &self.placement,
             authority,
