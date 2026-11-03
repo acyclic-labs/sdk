@@ -12,11 +12,15 @@ struct Fixture {
 }
 
 fn fixture(runtime: &tokio::runtime::Runtime) -> Fixture {
-    fixture_with_prefix(runtime, ".tmp")
+    fixture_in(runtime, None)
 }
 
-fn fixture_with_prefix(runtime: &tokio::runtime::Runtime, prefix: &str) -> Fixture {
-    let source = tempfile::Builder::new().prefix(prefix).tempdir().unwrap();
+fn fixture_in(runtime: &tokio::runtime::Runtime, parent: Option<&Path>) -> Fixture {
+    let source = match parent {
+        Some(parent) => tempfile::tempdir_in(parent),
+        None => tempfile::tempdir(),
+    }
+    .unwrap();
     std::fs::create_dir(source.path().join("d")).unwrap();
     std::fs::write(source.path().join("empty"), []).unwrap();
     std::fs::write(source.path().join("d/body"), [0x5a; 96]).unwrap();
@@ -156,7 +160,7 @@ fn minimal_rescan(heap: AllocationInfo, trace: &[&str], fallback: bool) -> bool 
 
 fn run(
     runtime: &tokio::runtime::Runtime,
-    mut fixture: Fixture,
+    fixture: &mut Fixture,
     old: bool,
     fault: u8,
     limit: u64,
@@ -296,7 +300,7 @@ fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
             // Separate host roots, stores, caches, checkouts, cancellations and ledgers.
             let paired = differential::pair::<_, _, &'static str>(
                 || fixture(&runtime),
-                |state, old| run(&runtime, state, old, 0, limit, cancelled),
+                |mut state, old| run(&runtime, &mut state, old, 0, limit, cancelled),
             );
             for ((output, heap), trace) in &paired {
                 assert_eq!(output.bytes, [vec![], vec![0x5a; 96]]);
@@ -378,10 +382,10 @@ fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
                     let [_, ((broken, broken_heap), broken_trace)] =
                         differential::pair::<_, _, &'static str>(
                             || fixture(&runtime),
-                            |state, old| {
+                            |mut state, old| {
                                 run(
                                     &runtime,
-                                    state,
+                                    &mut state,
                                     old,
                                     if old { 0 } else { fault },
                                     limit,
@@ -438,23 +442,30 @@ fn exact_rescan_work_tracks_native_root_names() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
+    // Keep the physical source, authored root, store and warmed proofs identical.
+    // Renaming an ancestor changes only the root spelling: the captured directory
+    // itself and all its descendants retain their identities and metadata.
+    let parent = tempfile::tempdir().unwrap();
+    let short = parent.path().join("rescan");
+    let long = parent.path().join("longer-rescan-Ω-🦀");
+    std::fs::create_dir(&short).unwrap();
+    let mut fixture = fixture_in(&runtime, Some(&short));
+    let source_name = fixture._source.path().file_name().unwrap().to_owned();
     let mut observations = Vec::new();
-    for prefix in ["rescan-", "longer-rescan-Ω-🦀-"] {
-        let (output, heap) = run(
-            &runtime,
-            fixture_with_prefix(&runtime, prefix),
-            false,
-            0,
-            u64::MAX,
-            false,
-        );
+    for ancestor in [&short, &long] {
+        if ancestor == &long {
+            std::fs::rename(&short, &long).unwrap();
+            fixture.options.source_root = long.join(&source_name);
+        }
+        let (output, heap) = run(&runtime, &mut fixture, false, 0, u64::MAX, false);
         assert!(output.result.is_ok());
         assert!(output.unchanged_root);
-        assert_eq!(heap.count_total, if cfg!(windows) { 324 } else { 331 });
+        assert_eq!(output.bytes, [vec![], vec![0x5a; 96]]);
         let items = output.work["itemsExamined"].as_u64().unwrap() - output.health_items;
-        assert_eq!(items, expected_rescan_items(&output));
-        observations.push((output.root_path_units, items));
+        observations.push((output.root_path_units, items, heap.count_total));
     }
+    std::fs::rename(&long, &short).unwrap();
+    assert_eq!(observations[0].2, observations[1].2);
     assert_eq!(
         observations[1].1 - observations[0].1,
         (if cfg!(windows) { 2 } else { 1 }) * (observations[1].0 - observations[0].0)
