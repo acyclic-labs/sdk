@@ -6,8 +6,9 @@ use crate::{
     agent::AgentPath,
     local::agent_conversation::Conversation,
     model::{
-        Divergence, DivergenceSink, ModelEvent, ModelProvider, ReasoningBlock, ReasoningKind,
-        ReasoningOrigin, ReasoningOutcome, RecordedModel, Recording, ToolCall,
+        Divergence, DivergenceSink, ModelDelivery, ModelDispatch, ModelEvent, ModelProvider,
+        ModelRequest, PreparedModelRequest, ReasoningBlock, ReasoningKind, ReasoningOrigin,
+        ReasoningOutcome, RecordedModel, Recording, ToolCall,
     },
     runtime::ToolContext,
     test_support::{ScriptedEvent, ScriptedTurn},
@@ -84,7 +85,7 @@ async fn run(provider: Arc<dyn ModelProvider>, tool: Tool, inputs: &[&str]) -> R
 }
 
 /// A source run whose first turn reasons with native bytes and calls a tool.
-async fn source(tool: Tool) -> Result<Recording> {
+async fn source(tool: Tool) -> Result<(Recording, Vec<ModelRequest>)> {
     let reasoning = ReasoningBlock {
         kind: ReasoningKind::Signature,
         text: Some("plan".into()),
@@ -115,9 +116,25 @@ async fn source(tool: Tool) -> Result<Recording> {
         ScriptedTurn::Text("answer 0".into()),
         ScriptedTurn::Text("answer 1".into()),
     ]);
-    let recording = run(provider, tool, &["first", "second"]).await?;
+    let recording = run(provider.clone(), tool, &["first", "second"]).await?;
     assert_eq!(recording.len(), 3);
-    Ok(recording)
+    Ok((recording, provider.requests()))
+}
+
+/// Compare answers while retaining the distinct original dispatches of runs.
+fn same_answers(left: &Recording, right: &Recording) {
+    assert_eq!(left.len(), right.len());
+    let right = right.calls().collect::<std::collections::HashMap<_, _>>();
+    for (key, calls) in left.calls() {
+        let expected = right[key];
+        assert_eq!(calls.len(), expected.len());
+        for (call, original) in calls.iter().zip(expected) {
+            assert_eq!(call.events, original.events);
+            assert_eq!(call.tools, original.tools);
+            assert!(call.source.is_some());
+            assert!(original.source.is_some());
+        }
+    }
 }
 
 fn failing(message: &'static str) -> Tool {
@@ -132,12 +149,13 @@ fn refused() -> Tool {
 
 #[tokio::test]
 async fn a_fresh_run_replays_its_source_without_the_model_or_its_tools() -> Result<()> {
-    let expected = source(super::tool("example.echo")).await?;
+    let (source, requests) = source(super::tool("example.echo")).await?;
+    let expected = Arc::new(source);
     let live = super::scripted([]);
     let divergences = Arc::new(Divergences::default());
     let replay = Arc::new(RecordedModel::new(
         live.clone(),
-        source(super::tool("example.echo")).await?,
+        Arc::clone(&expected),
         divergences.clone(),
     ));
     let replayed = run(replay.clone(), refused(), &["first", "second"]).await?;
@@ -146,7 +164,103 @@ async fn a_fresh_run_replays_its_source_without_the_model_or_its_tools() -> Resu
     assert_eq!(replay.unused(), 0);
     // Same keys, verbatim events (native reasoning included) and the
     // recorded tool result, journaled again by the replayed run.
-    assert_eq!(replayed, expected);
+    same_answers(&replayed, expected.as_ref());
+    // A second trial uses the original retained source, without another
+    // source run, journal walk or consumption by the first trial.
+    let second = Arc::new(RecordedModel::new(
+        live.clone(),
+        Arc::clone(&expected),
+        divergences.clone(),
+    ));
+    assert_eq!(second.unused(), 3);
+    let replayed = run(second.clone(), refused(), &["first", "second"]).await?;
+    same_answers(&replayed, expected.as_ref());
+    assert_eq!(second.unused(), 0);
+    assert_eq!(expected.len(), 3);
+    assert!(divergences.taken().is_empty());
+    assert!(live.requests().is_empty());
+
+    // Observe the original provider seam using a request captured from the
+    // actual source execution above, without constructing provider fixtures.
+    let request = PreparedModelRequest::prepare(requests[0].clone(), Default::default(), None)?;
+    let key = crate::model::replay_key(request.bytes())?;
+    let original = expected
+        .calls()
+        .find(|(candidate, _)| **candidate == key)
+        .unwrap()
+        .1[0]
+        .source;
+    let dispatch = ModelDispatch {
+        operation_id: crate::OperationId::new(),
+        step: 0,
+        request_digest: request.request_digest(),
+    };
+    let trial = || RecordedModel::new(live.clone(), Arc::clone(&expected), divergences.clone());
+    let adapter = trial();
+    let stream = adapter.generate(&request, dispatch);
+    assert_eq!(
+        stream.delivery(),
+        ModelDelivery::Recorded { source: original }
+    );
+    assert_ne!(original.unwrap().operation_id, dispatch.operation_id);
+    use futures::TryStreamExt as _;
+    let events: Vec<_> = stream.try_collect().await?;
+    assert!(!events.is_empty());
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .map_err(|(cause, _)| cause)?;
+        let adapter = trial();
+        let stream = adapter
+            .generate_with_native_work(&request, dispatch, &work)?
+            .await?;
+        assert_eq!(
+            stream.delivery(),
+            ModelDelivery::Recorded { source: original }
+        );
+        let paid: Vec<_> = stream.try_collect().await?;
+        assert_eq!(
+            paid.iter().map(|(event, _)| event).collect::<Vec<_>>(),
+            events.iter().collect::<Vec<_>>()
+        );
+    }
+    // A producer without an annotation stays unknown even after a replay miss.
+    let unknown = RecordedModel::new(
+        super::scripted([]),
+        Arc::new(Recording::default()),
+        divergences.clone(),
+    );
+    let stream = unknown.generate(&request, dispatch);
+    assert_eq!(stream.delivery(), ModelDelivery::Unknown);
+    // The old event-only stream cannot distinguish these two delivery paths.
+    assert_ne!(
+        stream.delivery(),
+        ModelDelivery::Recorded { source: original }
+    );
+    // An in-memory source may know its events without an original
+    // dispatch. Preserve that absence rather than attributing the new caller.
+    let mut unattributed = Recording::default();
+    let mut call = expected
+        .calls()
+        .find(|(candidate, _)| **candidate == key)
+        .unwrap()
+        .1[0]
+        .clone();
+    call.source = None;
+    unattributed.insert(key, call);
+    let inner = Arc::new(RecordedModel::new(
+        live.clone(),
+        Arc::new(unattributed),
+        divergences.clone(),
+    ));
+    let outer = RecordedModel::new(inner, Arc::new(Recording::default()), divergences.clone());
+    let stream = outer.generate(&request, dispatch);
+    assert_eq!(stream.delivery(), ModelDelivery::Recorded { source: None });
+    assert_eq!(stream.try_collect::<Vec<_>>().await?, events);
     Ok(())
 }
 
@@ -156,7 +270,7 @@ async fn a_changed_input_goes_live_at_its_first_step_and_stays_live() -> Result<
     let divergences = Arc::new(Divergences::default());
     let replay = Arc::new(RecordedModel::new(
         live.clone(),
-        source(super::tool("example.echo")).await?,
+        Arc::new(source(super::tool("example.echo")).await?.0),
         divergences.clone(),
     ));
     let replayed = run(replay.clone(), refused(), &["first", "changed"]).await?;
@@ -174,17 +288,17 @@ async fn a_changed_input_goes_live_at_its_first_step_and_stays_live() -> Result<
 
 #[tokio::test]
 async fn a_failed_tool_call_replays_its_recorded_failure() -> Result<()> {
-    let expected = source(failing("source failure")).await?;
+    let expected = source(failing("source failure")).await?.0;
     let live = super::scripted([]);
     let divergences = Arc::new(Divergences::default());
     let replay = Arc::new(RecordedModel::new(
         live.clone(),
-        source(failing("source failure")).await?,
+        Arc::new(source(failing("source failure")).await?.0),
         divergences.clone(),
     ));
     let replayed = run(replay, refused(), &["first", "second"]).await?;
     assert_eq!(divergences.taken(), []);
     assert!(live.requests().is_empty());
-    assert_eq!(replayed, expected);
+    same_answers(&replayed, &expected);
     Ok(())
 }

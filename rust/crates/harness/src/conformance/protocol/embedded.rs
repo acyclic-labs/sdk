@@ -39,10 +39,10 @@ impl ModelProvider for Scripted {
         &'a self,
         _: &'a PreparedModelRequest,
         dispatch: ModelDispatch,
-    ) -> BoxProviderStream<'a, acyclic_harness_core::Result<ModelEvent>> {
-        Box::pin(futures::stream::iter(
+    ) -> crate::model::ModelStream<'a> {
+        crate::model::ModelStream::new(Box::pin(futures::stream::iter(
             model_events(dispatch.step).into_iter().map(Ok),
-        ))
+        )))
     }
 }
 

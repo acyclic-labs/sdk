@@ -63,6 +63,69 @@ pub struct ModelDispatch {
     pub request_digest: [u8; 32],
 }
 
+/// Provider-declared delivery path, separate from historical event metadata.
+/// This identifies execution, not billing or successful provider completion.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ModelDelivery {
+    /// The producer did not supply an observation. Never infer one from usage,
+    /// elapsed time, request equality or the absence of divergence.
+    #[default]
+    Unknown,
+    /// Generation selected the live provider path.
+    Live,
+    /// Events came from a recording. Token and price metadata describe its
+    /// source answer and cannot certify spending by this delivery.
+    Recorded {
+        /// Original admitted dispatch, when retained by the source producer.
+        source: Option<ModelDispatch>,
+    },
+}
+
+/// One generation's events and immutable provider-declared delivery path.
+/// Adds no allocation to the original stream box and retains no event payload.
+pub struct ModelStream<'a> {
+    stream: BoxStream<'a, Result<ModelEvent>>,
+    delivery: ModelDelivery,
+}
+
+impl<'a> ModelStream<'a> {
+    /// Carries a stream whose producer has not declared its delivery path.
+    pub fn new(stream: BoxStream<'a, Result<ModelEvent>>) -> Self {
+        Self {
+            stream,
+            delivery: ModelDelivery::Unknown,
+        }
+    }
+
+    /// Attaches the original producer's declaration before returning the stream.
+    #[must_use]
+    pub fn with_delivery(mut self, delivery: ModelDelivery) -> Self {
+        self.delivery = delivery;
+        self
+    }
+
+    /// Original observation; independent of whether the stream has been polled.
+    #[must_use]
+    pub fn delivery(&self) -> ModelDelivery {
+        self.delivery
+    }
+}
+
+impl futures::Stream for ModelStream<'_> {
+    type Item = Result<ModelEvent>;
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.stream.size_hint()
+    }
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.get_mut().stream.as_mut().poll_next(cx)
+    }
+}
+
 /// Concrete stream box admitted before invoking its builder.
 /// The first error or EOF terminates the stream; later polls return EOF.
 /// Cancellation wakes a pending stream independently of its source.
@@ -72,6 +135,7 @@ pub struct NativeModelStream<'a> {
     cancelled: Option<acyclic_fs::Cancelled<'static>>,
     custody: NativeAllocation,
     terminated: bool,
+    delivery: ModelDelivery,
 }
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl<'a> NativeModelStream<'a> {
@@ -95,12 +159,24 @@ impl<'a> NativeModelStream<'a> {
             cancelled: Some(cancelled),
             custody,
             terminated: false,
+            delivery: ModelDelivery::Unknown,
         })
     }
     /// Original ledger funding this stream.
     #[must_use]
     pub fn work(&self) -> &NativeMaterializationWork {
         self.custody.work()
+    }
+    /// Attaches the original producer's declaration without changing event custody.
+    #[must_use]
+    pub fn with_delivery(mut self, delivery: ModelDelivery) -> Self {
+        self.delivery = delivery;
+        self
+    }
+    /// Original observation; unknown producers remain unknown.
+    #[must_use]
+    pub fn delivery(&self) -> ModelDelivery {
+        self.delivery
     }
 }
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -244,7 +320,7 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
         &'a self,
         request: &'a PreparedModelRequest,
         dispatch: ModelDispatch,
-    ) -> BoxStream<'a, Result<ModelEvent>>;
+    ) -> ModelStream<'a>;
     /// Reconciles an interrupted run without starting another request.
     fn reconcile<'a>(
         &'a self,
@@ -257,12 +333,15 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     /// `operation`, taken once. Only a replaying provider
     /// ([`super::RecordedModel`]) has one, for calls made by an answer it
     /// served from its recording.
+    /// The original native work admits the owned copy before consuming the
+    /// settlement and returns its custody. Refusal leaves it available.
     fn recorded_tool_result(
         &self,
         _operation: OperationId,
         _call_id: &str,
-    ) -> Option<super::RecordedToolOutcome> {
-        None
+        _work: crate::NativeWork<'_>,
+    ) -> Result<Option<(super::RecordedToolOutcome, crate::NativeCustody)>> {
+        Ok(None)
     }
     /// Pure native capability query.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

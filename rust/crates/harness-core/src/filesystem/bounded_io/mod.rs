@@ -139,7 +139,7 @@ impl PreparationIo {
             cancellation,
         }
     }
-    pub(in crate::filesystem) fn owned_since(&self, before: u64) -> Result<u64> {
+    pub(crate) fn owned_since(&self, before: u64) -> Result<u64> {
         self.owned_bytes()?
             .checked_sub(before)
             .ok_or_else(|| self.invalid("preparation custody underflows"))
@@ -546,6 +546,25 @@ impl PreparationIo {
             reservation.bytes = 0;
         }
         Ok(reservation)
+    }
+    /// Keeps an incoming original-ledger allocation with its owned value,
+    /// without merging it into the longer-lived preparation.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn hold_native_custody(
+        &self,
+        custody: acyclic_fs::NativeAllocation,
+    ) -> Result<DecodeReservation<'_>> {
+        if !self
+            .original_native_work()
+            .is_some_and(|work| work.shares_allocation_context(custody.work()))
+        {
+            return Err(self.invalid("native content custody belongs to another ledger"));
+        }
+        Ok(DecodeReservation {
+            io: self,
+            bytes: 0,
+            custody: Some(custody),
+        })
     }
     pub(crate) fn guard_bytes(
         &self,

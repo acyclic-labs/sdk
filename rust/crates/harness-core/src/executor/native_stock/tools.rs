@@ -20,6 +20,44 @@ pub(in crate::executor) fn stock_is_native(io: Option<&PreparationIo>) -> bool {
     }
 }
 
+pub(in crate::executor) fn stock_recorded_tool_result<'a>(
+    provider: &dyn crate::model::ModelProvider,
+    operation: OperationId,
+    call_id: &str,
+    io: Option<&'a PreparationIo>,
+) -> Result<
+    Option<(
+        crate::model::RecordedToolOutcome,
+        Option<crate::conversation::ContentHold<'a>>,
+    )>,
+> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let work = io.and_then(PreparationIo::original_native_work);
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    let work = None;
+    let Some((outcome, custody)) = provider.recorded_tool_result(operation, call_id, work)? else {
+        return Ok(None);
+    };
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let hold = if let Some(io) = io.filter(|_| work.is_some()) {
+        Some(io.hold_native_custody(custody.ok_or_else(|| {
+            stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Unsupported,
+                "recorded tool settlement has no native custody",
+            )
+        })?)?)
+    } else {
+        None
+    };
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    let hold = {
+        let _ = (io, custody);
+        None
+    };
+    Ok(Some((outcome, hold)))
+}
+
 pub(in crate::executor) fn stock_authorize_tool(
     tool: &crate::tool::Tool,
     context: Option<&crate::runtime::ToolContext>,

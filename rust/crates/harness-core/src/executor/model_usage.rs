@@ -76,10 +76,8 @@ pub(crate) struct ModelCallUsage<'a> {
     pub model: &'a str,
     pub agent_path: Option<&'a str>,
     /// Sampling from the original pinned request.
-    #[cfg(feature = "research")]
     pub sampling: crate::model::ModelSampling,
     /// Original requested output ceiling; absent remains unbounded.
-    #[cfg(feature = "research")]
     pub max_output_tokens: Option<u32>,
     pub tokens: ModelTokenUsage,
     /// Dispatch through receipt of the terminal event, including original
@@ -145,9 +143,45 @@ pub struct ModelUsageRecord {
     pub cache: Option<ModelCacheObservation>,
 }
 
+/// Borrowed identity shared by original-request and original-usage readers.
+/// Unknown fields retain their absence; completion measurements are excluded.
+#[derive(PartialEq)]
+pub(crate) struct ModelUsageAdmission<'a> {
+    pub dispatch: crate::model::ModelDispatch,
+    pub purpose: ModelPurpose,
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub agent_path: Option<&'a str>,
+    pub sampling: Option<crate::model::ModelSampling>,
+    pub max_output_tokens: Option<u32>,
+}
+
 impl ModelUsageRecord {
     /// The one per-call format accepted by producers, readers and aggregates.
     pub const VERSION: u32 = 2;
+
+    /// Whether both observations retain the same original admitted call.
+    /// Completion counters, timing and provider response metadata may change;
+    /// the dispatch, agent and pinned request binding may not. Unknown fields
+    /// remain distinct from supplied values. Format validation is separate.
+    /// Compares a fixed set of fields, borrowing their strings without IO,
+    /// allocation, copying, waiting or traversal of other observations.
+    #[must_use]
+    pub fn same_admission_as(&self, other: &Self) -> bool {
+        self.admission() == other.admission()
+    }
+
+    pub(crate) fn admission(&self) -> ModelUsageAdmission<'_> {
+        ModelUsageAdmission {
+            dispatch: self.dispatch,
+            purpose: self.purpose,
+            provider: &self.provider,
+            model: &self.model,
+            agent_path: self.agent_path.as_deref(),
+            sampling: self.sampling,
+            max_output_tokens: self.max_output_tokens,
+        }
+    }
 }
 
 #[cfg(any(

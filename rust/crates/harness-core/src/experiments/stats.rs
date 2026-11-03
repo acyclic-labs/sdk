@@ -14,6 +14,11 @@ pub struct Cluster {
 }
 
 impl Cluster {
+    /// Whether this cut has no observed differences for the selected metric.
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
     /// Add one treatment-minus-baseline difference in O(1) space and work.
     /// Errors leave this accumulator unchanged.
     pub fn push(&mut self, difference: f64) -> Result<(), Error> {
@@ -58,6 +63,12 @@ pub struct Estimate {
 }
 
 impl PairedStats {
+    /// Matched-pair and independent-cluster counts, including before an estimate
+    /// has enough independent clusters to report uncertainty.
+    pub fn counts(&self) -> (u64, u64) {
+        (self.pairs.count, self.clusters)
+    }
+
     /// Merge one complete independent cluster without storing its rows.
     /// The independent-cluster assignment is part of the experimental design.
     pub fn push(&mut self, cluster: Cluster) -> Result<(), Error> {

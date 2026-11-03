@@ -61,12 +61,19 @@ source cut. A changed provider or cut is a comparability failure; keep that
 assignment and its incurred cost in the descriptive table. Do not silently
 turn unmatched observations into a paired difference.
 
-Predeclare execution order independently of results. With two replicates per
-cut, run baseline then treatment in replicate 0, and treatment then baseline in
-replicate 1. Each arm still forks the same saved source cut; never fork the
+Predeclare execution order independently of results. The shared
+`experiments::plan::AssignmentPlan::new(2, 2)` supplies baseline then treatment in
+replicate 0, and treatment then baseline in replicate 1. Use its lazy iterator or
+direct assignment index; do not rebuild or adapt an arm list after an outcome.
+Each arm still forks the same saved source cut; never fork the
 second arm from the first arm's result. Retain the assigned order even when the
 first arm fails. This counterbalances order within a cut without a history
 scan or an adaptive stopping rule; it does not make the replicates independent.
+
+Retain the original paired keys before execution as version-1
+`plan::PairAssignment` objects, separate from outcomes. The file analyzer matches
+each observed pair against this declaration. An equal number of rows cannot
+replace an omitted failed trial with another population or replicate.
 
 Every arm/replicate forks the same saved cut within its source cluster. Use the
 shared scope-fork entrance, admit configuration and grants while dormant, bind
@@ -97,10 +104,15 @@ explicit admitted choice.
 
 ## Replay and analysis
 
-Use the shipped `model::RecordedModel` and a source `Recording`. Independent
-trial cursors must share immutable recorded data without consuming another
-arm's matches or rebuilding the source history per trial. That shared entrance
-and pre-activation provider binding remain prerequisites.
+Build the source `Conversation::recording()` once and retain it in an
+`Arc<Recording>`. For each trial, call
+`RecordedModel::new(live_provider, Arc::clone(&source), trial_sink)` before
+admitting the harness configuration. Each adapter has independent consumption
+positions over the same immutable events and tool settlements. Reusing an
+adapter shares consumption; constructing a fresh adapter costs one allocation
+without copying calls or walking source history. Content binding preserves that
+trial's positions. The saved whole-scope fork and dormant configuration/grant
+admission remain prerequisites for executing these recipes.
 
 Record the first `DivergenceSink` event (`dispatch`, `key`) per adapter, or an
 explicit observed no-divergence result. Use `replay_key` on exact reconstructed

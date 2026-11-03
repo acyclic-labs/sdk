@@ -1,8 +1,9 @@
 # Offline paired experiment analysis
 
 `acyclic_harness::experiments` analyzes trial observations independently of the
-execution engine. Observation rows are version 2; reports, scorers and decisions
-remain version 1. The module provides paired differences, ordinary paired
+execution engine. Pair assignments are version 1. Observation rows and paired analysis reports are version 2;
+assigned-trial reports, arm cost summaries, scorers and decisions remain version 1.
+The module provides paired differences, ordinary paired
 standard errors, intercept-only CR1
 clustered standard errors, normal-approximation power planning and an objective
 integer scorer and assigned-trial summaries for organism probes.
@@ -12,6 +13,30 @@ share authored task, intervention and scorer files. Their results tables are
 explicitly unrun; the recipes introduce no execution mechanism.
 
 ## Pair and cluster identity
+
+`plan::AssignmentPlan::new(arms, replicates)` admits a positive arm count and a
+representable total once. It plans one source population, assigning every arm
+once per replicate. Arm numbers index the caller's declared arm/configuration
+table. Its lazy iterator rotates execution order by one arm each replicate;
+over a complete block of `arms` replicates, every arm occupies every position
+once. Partial blocks remain unbalanced. Zero replicates is an empty plan.
+
+Direct `assignment(index)` access takes constant work even near the end of a
+large plan. Two integer fields retain the declaration; no array, outcomes or
+history are stored. Out-of-range selection finishes with `None`. Outcomes never
+change assignments: failed work stays in the declared denominator. This helper
+neither selects a saved cut nor dispatches work, admits grants, enforces a model
+or replaces the ordinary fork/replay entrance. Configuration remains in operator
+files. Execution order differs from analysis row order: emit each matched pair
+baseline first even when treatment executed first.
+
+Declare every paired key before outcomes with
+`plan::PairAssignment::new(population, replicate)`. Serialize these as version-1
+objects containing `version`, the 32-byte `population` array and `replicate`.
+The shared strict object decoder rejects changed versions, unknown or duplicate
+fields and positional arrays. Keep this original declaration independently of
+result collection; rebuilding it from completed rows would hide omitted work.
+It declares identities, not proof that the cuts or providers actually match.
 
 An observation binds a 32-byte population identity, replicate number, numeric
 arm, optional finite score and optional complete measured cost. The population
@@ -40,21 +65,23 @@ map and does not detect submitting the same cluster twice.
 For example:
 
 ```rust
-use acyclic_harness::experiments::{Observation, stats::{Cluster, PairedStats}};
+use acyclic_harness::experiments::{Observation, analysis::Contrast, plan::PairAssignment};
 
 # fn example() -> Result<(), acyclic_harness::experiments::Error> {
-let mut report = PairedStats::default();
-for (source, baseline_score, treatment_score) in [(1, 1.0, 2.0), (2, 1.0, 4.0)] {
-    let baseline = Observation::new([source; 32], 0, 0, Some(baseline_score), None)?;
-    let treatment = Observation::new([source; 32], 0, 1, Some(treatment_score), None)?;
-    let mut cluster = Cluster::default();
-    if let Some(difference) = treatment.difference(&baseline)? {
-        cluster.push(difference)?;
-    }
-    report.push(cluster)?;
-}
-let estimate = report.estimate()?;
-assert_eq!(estimate.difference, 2.0);
+let rows = [
+    (1, None, None),
+    (2, Some(1.0), Some(2.0)),
+    (3, Some(1.0), Some(4.0)),
+].into_iter().flat_map(|(source, baseline, treatment)| [
+    Observation::new([source; 32], 0, 0, baseline, None),
+    Observation::new([source; 32], 0, 1, treatment, None),
+]);
+let expected = (1..=3).map(|source| Ok(PairAssignment::new([source; 32], 0)));
+let report = Contrast::new(0, 1)?.analyze(rows, expected)?;
+assert_eq!(report.assigned_pairs, 3);
+assert_eq!(report.assigned_clusters, 3);
+assert_eq!(report.score.pairs, 2);
+assert_eq!(report.score.estimate.map(|estimate| estimate.difference), Some(2.0));
 # Ok(())
 # }
 ```
@@ -116,6 +143,58 @@ the estimate. Unknown costs are never zero, and uncertainty over a measured
 subset does not describe all assigned trials. Score-pair coverage is separate;
 the assigned-trial report retains the primary correctness denominator.
 
+## Analyze an observation file
+
+The `experiment-analysis` contributor program reads version-2 observation objects
+from one file, accepting JSONL without retaining its rows:
+
+```sh
+cargo run --locked -p acyclic-harness-core --example experiment-analysis -- 0 1 assignments.jsonl observations.jsonl > analysis.json
+```
+
+For each assigned `(population, replicate)` write the declared baseline arm first
+and treatment arm second. Pair keys must strictly increase lexicographically;
+this catches duplicate assignments and a closed cut appearing again using one
+retained key. The input producer supplies that order. No sorting or history scan
+is performed. Supply the original version-1 assignment file declared before
+outcomes, independently of the version-2 observation file. Each assignment needs
+its exact population and replicate, not merely an equal row count. All assigned
+pairs need rows even when both values are unknown. Missing, surplus or replaced
+pairs are refused. A declaration rebuilt from completed rows proves no coverage.
+Original source independence, fork/provider evidence and numeric-score semantics
+remain the producer's responsibility. A population digest alone proves none of
+those facts. For primary correctness, predeclare unscored outputs as failures;
+conditional score estimates with missing rows do not replace assigned-trial rates.
+
+The version-2 output counts all assigned pairs and cuts, with separate known-pair
+and contributing-cut counts for score and cost. A cut with no known values for a
+metric stays in assigned coverage and does not enter that metric's estimator.
+Fewer than two contributing cuts yields an unknown estimate, even when many
+assigned cuts were empty. Manual consumers must likewise skip empty score and
+cost clusters and retain their assignments in coverage counts.
+
+`baseline_cost` and `treatment_cost` each contain a version-1 `CostReport`:
+assigned trials, fully priced trials, the known-cost sum, complete total and USD
+per assigned trial. All assignments contribute, regardless of scoring or matched
+cost availability. If baseline accounting is incomplete, its total and mean stay
+unknown even when treatment is fully priced. A treatment cost without its matched
+baseline cost still contributes to the treatment summary. It does not enter the
+paired cost estimate. Empty input has a zero total and unknown mean.
+
+`AssignedTrials` and this pipeline share one cost accumulator and complete-cost
+rule. The existing flat version-1 assigned-trial report is unchanged. The paired
+analysis report advances to version 2 for its two new arm summaries; no format
+migration path is provided. An overflowing known-cost sum refuses the report
+instead of publishing a nonfinite total or silently treating it as missing.
+
+`analysis::Contrast::new` admits distinct arms before opening input;
+`Contrast::analyze` shares the pipeline with other callers. It checks a pair once
+for both contrasts and reuses `Cluster`/`PairedStats`. It returns no partial report
+on a malformed row, missing partner, changed arm, duplicate or decreasing key,
+declared assignment-key mismatch or numerical refusal. The program buffers
+input and output, writes one report at the end and flushes once. It adds no model
+call, executor, replay or scheduling.
+
 ## Execution and cost boundary
 
 Research execution belongs in an experiments plugin directory containing files
@@ -141,6 +220,26 @@ either returns its value or a typed refusal; no producer event is awaited here.
 Rejected statistics and trial-summary updates leave their accumulators unchanged.
 Trial summaries retain six scalar fields, with no rows, maps or repeated scoring.
 
+The shared file pipeline reduces two identity checks per score/cost pair to one.
+Its numeric state allocates nothing and retains two observations, one ordering
+key, the current assignment and fixed accumulators. Each pair consumes one
+declared key and compares its fixed-width identity once; EOF checks for one
+leftover declaration. The ordering key copies 32 population bytes only when a
+new cut starts; later replicates update one integer. The contributor program
+opens two input files, reads each through one buffer and writes through one output buffer,
+with one final flush and zero durability barriers or network round trips. Read
+syscalls depend on input bytes; JSON decoding can reuse scratch space for the
+current token. Neither buffer nor parser retains earlier rows. EOF with a partial
+row or pair is an error. Every observed key must match the original declaration,
+and both inputs must finish together. The extra open and input buffer buy exact
+assignment coverage: counts alone cannot reject a substituted failed trial.
+
+Each arm summary adds only a priced count and known-cost sum: four scalar fields
+for the comparison, independent of trial count. It reuses the checked assignment
+count. A known cost adds one sum/overflow check and one counter increment; unknown
+cost adds neither. Cost admission is shared and occurs once at each public input
+boundary. The assigned-trial summary still retains six scalar fields.
+
 Controls cover mismatched pairs even with missing values, unscored but fully
 priced trials, unknown versus zero costs, malformed/ambiguous objects, nonfinite
 inputs, overflow, false independence, unequal cluster sizes and large common offsets.
@@ -154,6 +253,12 @@ cargo check --locked -p acyclic-harness-core --lib
 cargo test --locked -p acyclic-harness-core --lib experiments::stats::tests::clustered_estimate_matches_direct_residuals_with_unequal_clusters
 cargo test --locked -p acyclic-harness-core --lib experiments::reports::tests::unscored_trials_and_unknown_cost_remain_in_assigned_denominators
 cargo test --locked -p acyclic-harness-core --lib experiments::tests::paired_cost_retains_unscored_trials_without_imputing_unknown_values
+cargo test --locked -p acyclic-harness-core --lib experiments::analysis::tests::empty_cuts_and_unscored_paid_trials_keep_separate_coverage
+cargo test --locked -p acyclic-harness-core --lib experiments::analysis::tests::arm_costs_keep_unmatched_and_unscored_assignments_without_inventing_totals
 cargo kani -p acyclic-harness-core --harness objective_success_and_injection_adoption_are_exclusive
 cargo kani -p acyclic-harness-core --harness admitted_cost_difference_is_finite_even_without_scores
+cargo kani -p acyclic-harness-core --harness ordered_pair_admission_rejects_reuse_without_changing_the_last_key
+cargo kani -p acyclic-harness-core --harness incomplete_cost_coverage_never_claims_a_full_total_or_mean
+cargo kani -p acyclic-harness-core --harness assignment_indices_are_bijective_within_the_declared_population
+cargo kani -p acyclic-harness-core --harness a_complete_pair_is_accepted_only_for_its_declared_assignment
 ```

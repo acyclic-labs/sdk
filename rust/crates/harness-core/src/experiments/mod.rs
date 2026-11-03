@@ -3,6 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod analysis;
+pub mod plan;
 pub mod probes;
 pub mod reports;
 pub mod stats;
@@ -15,11 +17,26 @@ pub enum Error {
         "analyze experiment observations: {0}; recovery: correct inputs and repeat the failed call to Observation::new, Observation::decode, Observation::difference, Observation::cost_difference, AssignedTrials::push/report, Cluster::push, PairedStats::push/estimate or required_clusters"
     )]
     Statistics(&'static str),
+    /// Invalid ordering, arm selection or incomplete input to the file analysis.
+    #[error(
+        "analyze observation stream: {0}; recovery: choose distinct arms, supply the original predeclared assignment stream, retain every assignment in strictly increasing (population, replicate) order with baseline then treatment, and call analysis::Contrast::new and Contrast::analyze again"
+    )]
+    Analysis(&'static str),
+    /// An invalid or unrepresentable assignment declaration.
+    #[error(
+        "plan experiment assignments: {0}; recovery: correct the positive arm count and representable arm-by-replicate count, then call plan::AssignmentPlan::new again"
+    )]
+    Plan(&'static str),
     /// Original observation decoder failure.
     #[error(
         "decode observation: {0}; recovery: correct the version-2 JSON object and call Observation::decode"
     )]
     Json(#[from] serde_json::Error),
+    /// Original assignment-file decoding failure.
+    #[error(
+        "decode pair assignment: {0}; recovery: correct the version-1 JSON object and call serde_json::from_slice::<plan::PairAssignment> or repeat the assignment stream decoder"
+    )]
+    AssignmentJson(serde_json::Error),
     /// Invalid scoring contrast or decision version.
     #[error(
         "admit probe decision: {0}; recovery: supply version-1 files with distinct expected/injected values and call Scorer::decode or Decision::decode"
@@ -60,7 +77,7 @@ pub struct Observation(ObservationFile);
 impl Observation {
     /// Admit one complete version-2 JSON object before numerical analysis.
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        Self::admit(crate::executor::json::decode_object(bytes)?)
+        Ok(serde_json::from_slice(bytes)?)
     }
 
     /// Admit a caller-built row without serializing its identity.
@@ -84,8 +101,61 @@ impl Observation {
     /// Score treatment minus baseline, or unknown if either score is missing.
     /// Pair identity is checked even for missing scores; admission is not repeated.
     pub fn difference(&self, baseline: &Self) -> Result<Option<f64>, Error> {
-        self.check_pair(baseline)?;
-        let (Some(score), Some(baseline)) = (self.0.score, baseline.0.score) else {
+        self.pair(baseline)?.score()
+    }
+
+    /// Complete cost treatment minus baseline, independently of score validity.
+    /// Unknown if either cost is missing. Admitted costs are finite/nonnegative,
+    /// so their difference is finite without another numerical check.
+    pub fn cost_difference(&self, baseline: &Self) -> Result<Option<f64>, Error> {
+        Ok(self.pair(baseline)?.cost())
+    }
+
+    fn pair<'a>(&'a self, baseline: &'a Self) -> Result<Pair<'a>, Error> {
+        let (row, baseline) = (&self.0, &baseline.0);
+        if row.population != baseline.population
+            || row.replicate != baseline.replicate
+            || row.arm == baseline.arm
+        {
+            return Err(Error::Statistics("observations are not a matched pair"));
+        }
+        Ok(Pair { row, baseline })
+    }
+
+    fn admit(row: ObservationFile) -> Result<Self, Error> {
+        if row.version != 2 || row.score.is_some_and(|score| !score.is_finite()) {
+            return Err(Error::Statistics("invalid observation version or score"));
+        }
+        admit_cost(row.cost_usd)?;
+        Ok(Self(row))
+    }
+}
+
+fn admit_cost(cost: Option<f64>) -> Result<(), Error> {
+    if cost.is_some_and(|cost| !cost.is_finite() || cost < 0.0) {
+        return Err(Error::Statistics(
+            "trial cost must be finite and nonnegative",
+        ));
+    }
+    Ok(())
+}
+
+impl<'de> Deserialize<'de> for Observation {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        let row = crate::executor::json::deserialize_object(decoder)?;
+        Self::admit(row).map_err(serde::de::Error::custom)
+    }
+}
+
+// One admission for callers consuming both contrasts; no row is copied.
+struct Pair<'a> {
+    row: &'a ObservationFile,
+    baseline: &'a ObservationFile,
+}
+
+impl Pair<'_> {
+    fn score(&self) -> Result<Option<f64>, Error> {
+        let (Some(score), Some(baseline)) = (self.row.score, self.baseline.score) else {
             return Ok(None);
         };
         let difference = score - baseline;
@@ -95,41 +165,11 @@ impl Observation {
         Ok(Some(difference))
     }
 
-    /// Complete cost treatment minus baseline, independently of score validity.
-    /// Unknown if either cost is missing. Admitted costs are finite/nonnegative,
-    /// so their difference is finite without another numerical check.
-    pub fn cost_difference(&self, baseline: &Self) -> Result<Option<f64>, Error> {
-        self.check_pair(baseline)?;
-        Ok(self
-            .0
+    fn cost(&self) -> Option<f64> {
+        self.row
             .cost_usd
-            .zip(baseline.0.cost_usd)
-            .map(|(cost, baseline)| cost - baseline))
-    }
-
-    fn check_pair(&self, baseline: &Self) -> Result<(), Error> {
-        let (row, baseline) = (&self.0, &baseline.0);
-        if row.population != baseline.population
-            || row.replicate != baseline.replicate
-            || row.arm == baseline.arm
-        {
-            return Err(Error::Statistics("observations are not a matched pair"));
-        }
-        Ok(())
-    }
-
-    fn admit(row: ObservationFile) -> Result<Self, Error> {
-        if row.version != 2
-            || row.score.is_some_and(|score| !score.is_finite())
-            || row
-                .cost_usd
-                .is_some_and(|cost| !cost.is_finite() || cost < 0.0)
-        {
-            return Err(Error::Statistics(
-                "invalid observation version, score or cost",
-            ));
-        }
-        Ok(Self(row))
+            .zip(self.baseline.cost_usd)
+            .map(|(cost, baseline)| cost - baseline)
     }
 }
 

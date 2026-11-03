@@ -2,7 +2,7 @@
 use super::*;
 use crate::{
     executor::{ExecutionEvent, ExecutionPayloadField, ExecutionRecord},
-    model::{ModelEvent, RecordedCall, RecordedToolOutcome, Recording, replay_key},
+    model::{ModelDispatch, ModelEvent, RecordedCall, RecordedToolOutcome, Recording, replay_key},
     tool::ToolResult,
 };
 
@@ -117,9 +117,25 @@ async fn observe(
         )
     };
     match &record.event {
-        ExecutionEvent::ModelStarted { step, .. } => {
+        ExecutionEvent::ModelStarted {
+            step,
+            purpose,
+            request_digest,
+            ..
+        } => {
             let key = replay_key(&payload(ExecutionPayloadField::AdmittedRequest).await?)?;
-            calls.started = Some((key, *step, RecordedCall::default()));
+            calls.started = Some((
+                key,
+                *step,
+                RecordedCall {
+                    source: Some(ModelDispatch {
+                        operation_id: purpose.attempt_operation(record.operation_id, None)?,
+                        step: *step,
+                        request_digest: *request_digest,
+                    }),
+                    ..Default::default()
+                },
+            ));
         }
         ExecutionEvent::ModelInline { event, .. } => calls.event(event.as_bytes().to_vec())?,
         ExecutionEvent::Model { .. } => {

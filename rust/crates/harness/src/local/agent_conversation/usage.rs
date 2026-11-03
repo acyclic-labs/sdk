@@ -45,12 +45,10 @@ async fn write_agent(
         };
         for row in page.items {
             if row.completed {
-                if pending.as_ref().is_none_or(|original| {
-                    original.dispatch != row.dispatch
-                        || original.purpose != row.purpose
-                        || original.provider != row.provider
-                        || original.model != row.model
-                }) {
+                if pending
+                    .as_ref()
+                    .is_none_or(|original| !original.same_admission_as(&row))
+                {
                     return Err(Error::Storage(
                         "usage completion differs from its original admission".into(),
                     ));

@@ -175,7 +175,7 @@ async fn conflicting_sampling_is_rejected_before_a_profile_bound_session_opens()
             &'a self,
             _: &'a PreparedModelRequest,
             _: ModelDispatch,
-        ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
+        ) -> crate::model::ModelStream<'a> {
             panic!("settings admission must not dispatch a model")
         }
     }

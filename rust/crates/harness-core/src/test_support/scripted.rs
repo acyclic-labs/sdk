@@ -346,11 +346,11 @@ impl ModelProvider for ScriptedModelProvider {
         &'a self,
         request: &'a PreparedModelRequest,
         dispatch: ModelDispatch,
-    ) -> BoxProviderStream<'a, Result<ModelEvent>> {
+    ) -> crate::model::ModelStream<'a> {
         if !self.reads_content {
-            return self.answer(request.clone(), dispatch);
+            return crate::model::ModelStream::new(self.answer(request.clone(), dispatch));
         }
-        Box::pin(
+        crate::model::ModelStream::new(Box::pin(
             futures::stream::once(async move {
                 let reader = self
                     .content
@@ -360,7 +360,7 @@ impl ModelProvider for ScriptedModelProvider {
                 Ok::<_, Error>(self.answer(request.clone(), dispatch))
             })
             .try_flatten(),
-        )
+        ))
     }
 
     fn reconcile<'a>(
