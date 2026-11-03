@@ -3,7 +3,7 @@
 //! kernel lock never nests; no Rust synchronization is added to production.
 //! Enabled only by the dedicated `--cfg loom` command.
 use super::*;
-use crate::sync::native::Mutex;
+use crate::sync::Mutex;
 use std::{cell::RefCell, sync::Arc};
 
 pub(crate) struct Kernel {
@@ -35,13 +35,17 @@ fn check(omit_reader_sync: bool) {
         });
         let publish = |candidate: u8| {
             let kernel = kernel.clone();
-            let root = crate::hold_root(directory.path()).unwrap();
+            let root = HostRoot::open(directory.path(), &mut ordinary_work()).unwrap();
             loom::thread::spawn(move || {
                 CONTEXT.set(Some(kernel.clone()));
                 let _entered = Enter;
                 publish_probe::omit_reader_sync(omit_reader_sync);
                 let record = root
-                    .read_or_publish(Path::new("token"), || Ok([candidate; 16]))
+                    .read_or_publish(
+                        Path::new("token"),
+                        || Ok([candidate; 16]),
+                        &mut ordinary_work(),
+                    )
                     .unwrap();
                 let durable = *kernel.state.lock().unwrap();
                 (record, durable)
