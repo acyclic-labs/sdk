@@ -13,7 +13,7 @@ const original = Buffer.from(captured.stdout);
 // inventing another provider response fixture.
 const event = JSON.parse(captured.stdout);
 const distinct = Buffer.from(JSON.stringify({ ...event, id: event.id + "\0" }) + "\n");
-const key = event => event && typeof event.id === "string" ? [event.id] : [];
+const key = event => event && typeof event.id === "string" ? [event.id, `alias:${event.id}`] : [];
 
 // Node's whole-buffer UTF-8/JSON decode is the independent reference. Compare
 // the original Spool's incremental admission, first-key index and terminal;

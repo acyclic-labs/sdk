@@ -105,26 +105,6 @@ test("retired native event observations release their captured payloads", async 
   } finally { await processes.close(); }
 });
 
-test("keyed transcript lookups read exactly one original event, including after EOF", async () => {
-  const source = new PassThrough();
-  let close;
-  const closed = new Promise(resolve => { close = resolve; });
-  const path = join(mkdtempSync(join(tmpdir(), "keyed-spool-")), "events.jsonl");
-  const events = new Spool(source, closed, { transcript: path, key: event => [event.id, `alias:${event.id}`], unique: true });
-  const first = { id: "first", text: "λ\n終" }, second = { id: "second", text: "z".repeat(128 * 1024) };
-  const seen = events.next(event => event.id === "second");
-  source.end(JSON.stringify(first) + "\r\n" + JSON.stringify(second));
-  await seen;
-  // EOF may win the next microtask, but cannot erase a prior indexed event.
-  const early = events.keyed("first");
-  close({ code: 0, signal: null });
-  assert.deepEqual(await early, first);
-  assert.deepEqual(await events.keyed("alias:second"), second);
-  await events.history();
-  truncateSync(path, 1);
-  await assert.rejects(events.keyed("first"), error => error.kind === "spool" && /indexed event/.test(error.message));
-});
-
 test("abandoned next and keyed waits release their subscriptions without ending the source", async () => {
   const source = new PassThrough(), controller = new AbortController();
   const events = new Spool(source, new Promise(() => {}), { key: event => [event.id] });

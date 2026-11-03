@@ -35,6 +35,8 @@ test("decoder fuzz oracles reject planted production defects", async () => {
     ["process.mjs", "if (!this.#state.open) return true;", "if (false) return true;", "spool"],
     ["process.mjs", "if (!this.#path) return Promise.resolve(indexed);",
       "if (!this.#path) return Promise.resolve({});", "spool"],
+    ["process.mjs", "for (const key of this.#key?.(event) ?? []) {",
+      "for (const key of (this.#key?.(event) ?? []).slice(0, 1)) {", "spool"],
     ["process.mjs", "indexed = { at, length: bytes.length, written: this.#written };",
       "indexed = { at: 0, length: bytes.length, written: this.#written };", "spool"],
     ["process.mjs", "const bytes = Buffer.alloc(this.#completed), fd = openSync(this.#path, \"r\");",
