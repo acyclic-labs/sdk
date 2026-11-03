@@ -12,7 +12,9 @@ pub(super) fn exclude_mount_paths(root: &acyclic_fs::HeldRoot, paths: &[&Path]) 
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use std::io::Write as _;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     // Exercise the common held-metadata implementation with native paths.
     fn exclude_mount_paths(root: &Path, paths: &[PathBuf]) -> std::io::Result<()> {
@@ -138,18 +140,51 @@ mod tests {
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
     }
 
-    fn ignored(root: &Path, path: &Path) -> bool {
-        let status = std::process::Command::new("git")
-            .args(["check-ignore", "--no-index", "-q", "--"])
-            .arg(path)
+    fn repository() -> impl Strategy<Value = Arc<tempfile::TempDir>> {
+        let directory = tempfile::tempdir().unwrap();
+        git(directory.path(), &["init", "-q"]);
+        Just(Arc::new(directory))
+    }
+
+    fn ignores(root: &Path, paths: &[(&Path, bool)]) {
+        let recovery = "cargo test --locked -p acyclic-harness --lib local::workspace::volumes::exclude::tests::";
+        let mut child = std::process::Command::new("git")
+            .args(["check-ignore", "--no-index", "-z", "--stdin"])
             .current_dir(root)
-            .status()
-            .unwrap();
-        match status.code() {
-            Some(0) => true,
-            Some(1) => false,
-            other => panic!("git: {other:?}"),
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|error| {
+                panic!("step=launch git ignore query: {error}; recovery={recovery}")
+            });
+        let mut input = Vec::new();
+        let mut expected = Vec::new();
+        for &(path, ignored) in paths {
+            let bytes = path.as_os_str().as_encoded_bytes();
+            input.extend_from_slice(bytes);
+            input.push(0);
+            if ignored {
+                expected.extend_from_slice(bytes);
+                expected.push(0);
+            }
         }
+        let written = child.stdin.take().unwrap().write_all(&input);
+        let output = child.wait_with_output().unwrap_or_else(|error| {
+            panic!("step=join git ignore query: {error}; recovery={recovery}")
+        });
+        written.unwrap_or_else(|error| {
+            panic!("step=write git ignore paths: {error}; recovery={recovery}")
+        });
+        assert_eq!(
+            output.status.code(),
+            Some(i32::from(expected.is_empty())),
+            "step=git ignore status: {output:?}; recovery={recovery}"
+        );
+        assert_eq!(
+            output.stdout, expected,
+            "step=git ignore original path observations: {output:?}; recovery={recovery}"
+        );
     }
 
     fn native_component() -> impl Strategy<Value = String> {
@@ -174,12 +209,11 @@ mod tests {
         // every byte and a second call is idempotent, including CRLF rules.
         #[test]
         fn arbitrary_existing_bytes_survive_exclusion_updates(
+            directory in repository(),
             bytes in prop::collection::vec(any::<u8>(), 0..256),
             crlf in any::<bool>(),
         ) {
-            let directory = tempfile::tempdir().unwrap();
             let repository = directory.path();
-            git(repository, &["init", "-q"]);
             let exclude = repository.join(".git/info/exclude");
             let mut original = vec![b'#', 0xff];
             original.extend(bytes);
@@ -203,12 +237,13 @@ mod tests {
 
         #[test]
         fn exact_rules_preserve_authored_siblings(
+            directory in repository(),
             parts in prop::collection::vec(native_component(), 0..3),
         ) {
-            let directory = tempfile::tempdir().unwrap();
             let repository = directory.path();
-            git(repository, &["init", "-q"]);
-            let mut root = repository.to_path_buf();
+            std::fs::write(repository.join(".git/info/exclude"), b"").unwrap();
+            let case = tempfile::tempdir_in(repository).unwrap();
+            let mut root = case.path().to_path_buf();
             for part in parts { root.push(part); }
             let mount = root.join(".volumes/scratch");
             let created = std::fs::create_dir_all(&mount);
@@ -227,16 +262,14 @@ mod tests {
             exclude_mount_paths(&root, &[mount.clone(), control.clone()]).unwrap();
             let mounted = mount.join("data");
             std::fs::write(&mounted, "volume").unwrap();
-            prop_assert!(ignored(repository, &mounted));
-            prop_assert!(ignored(repository, &control));
-            prop_assert!(!ignored(repository, &authored));
+            ignores(repository, &[(&mounted, true), (&control, true), (&authored, false)]);
             std::fs::remove_file(&mounted).unwrap();
             std::fs::remove_dir(&mount).unwrap();
-            prop_assert!(!ignored(repository, &authored));
+            ignores(repository, &[(&authored, false)]);
             // Reinstating the broad rule must fail the sibling oracle.
             let broad = String::from_utf8(crate::local::owner::exclusion::pattern(&root.strip_prefix(repository).unwrap().join(".volumes")).unwrap()).unwrap();
             std::fs::write(repository.join(".git/info/exclude"), format!("{broad}\n")).unwrap();
-            prop_assert!(ignored(repository, &authored));
+            ignores(repository, &[(&authored, true)]);
         }
     }
 
@@ -270,7 +303,7 @@ mod tests {
                 }
                 malformed.push_str("/.volumes/scratch\n");
                 std::fs::write(&exclude, malformed).unwrap();
-                assert!(!ignored(directory.path(), &projected));
+                ignores(directory.path(), &[(&projected, false)]);
                 std::fs::write(&exclude, "user-pattern\n").unwrap();
             }
         }
