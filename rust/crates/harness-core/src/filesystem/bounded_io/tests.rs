@@ -70,9 +70,10 @@ fn preparation_records_share_the_native_budget_and_cover_physical_storage() -> R
         // same native Value entrance used by tool arguments must own the
         // original syntax diagnostic until that refusal is dropped.
         for length in 0..bytes.len() {
+            let cancellation = CancellationToken::new();
             let native = acyclic_fs::NativeMaterializationWork::new(
                 acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
-                &CancellationToken::new(),
+                &cancellation,
             )
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let baseline = native.live_allocation_bytes();
@@ -113,8 +114,10 @@ fn preparation_records_share_the_native_budget_and_cover_physical_storage() -> R
                 "prefix={length}; physical={physical:?}; receipt={:?}",
                 native.receipt()
             );
-            drop(refusal);
             drop(io);
+            assert_eq!(native.live_allocation_bytes(), baseline + retained);
+            cancellation.cancel();
+            drop(refusal);
             assert_eq!(native.live_allocation_bytes(), baseline);
         }
     }
