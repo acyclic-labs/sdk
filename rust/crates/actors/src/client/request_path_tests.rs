@@ -212,6 +212,76 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
         }
         assert_eq!(renewals.load(Ordering::Relaxed), 4);
         assert_eq!(calls.load(Ordering::SeqCst), 6);
+        // Observe the shipped request path at its credential event, before
+        // protobuf serialization. Both direct and namespace calls must move
+        // payload storage; admission work cannot grow with the body length.
+        for bound in [false, true] {
+            let mut admission_bytes = Vec::new();
+            for length in [1, 65_536] {
+                let (release, credential) = tokio::sync::oneshot::channel();
+                let credential = Arc::new(std::sync::Mutex::new(Some(credential)));
+                let observed = Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
+                let measured = Arc::clone(&observed);
+                let client = Arc::new(Client::from_channel(
+                    channel.clone(),
+                    CredentialProvider::new(move || {
+                        measured.store(
+                            acyclic_test_support::current_allocations()
+                                .unwrap()
+                                .bytes_total,
+                            Ordering::Relaxed,
+                        );
+                        let credential = credential.lock().unwrap().take().unwrap();
+                        async move {
+                            credential
+                                .await
+                                .map_err(|_| acyclic_auth::credential::CredentialError::Invalid)
+                        }
+                    }),
+                ));
+                let namespace =
+                    crate::namespace::Namespace::new(b"account", b"ClassOne", Arc::clone(&client))?;
+                let stub = namespace.get_by_name("actor-a", None)?;
+                let body = vec![7; length];
+                let mut work = std::pin::pin!(async {
+                    let response = if bound {
+                        stub.fetch("POST".into(), "/work".into(), body, vec![])
+                            .await?
+                    } else {
+                        let request = domain::InvokeActorRequest::new(
+                            domain::ActorId::new("actor-a".into())?,
+                            "POST".into(),
+                            "/work".into(),
+                            body,
+                            vec![],
+                        );
+                        client.invoke_actor(&request).await?
+                    };
+                    Ok::<_, Box<dyn std::error::Error>>(response)
+                });
+                acyclic_test_support::measure(|| {
+                    assert!(
+                        work.as_mut()
+                            .poll(&mut Context::from_waker(std::task::Waker::noop()))
+                            .is_pending()
+                    );
+                });
+                let bytes = observed.load(Ordering::Relaxed);
+                assert_ne!(
+                    bytes,
+                    u64::MAX,
+                    "request must reach its credential producer"
+                );
+                admission_bytes.push(bytes);
+                release.send("fixture".into()).unwrap();
+                assert_eq!(work.await?.body(), vec![7; length]);
+            }
+            assert_eq!(
+                admission_bytes[0], admission_bytes[1],
+                "admitted request must not copy payload storage"
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 10);
         Ok::<_, Box<dyn std::error::Error>>(())
     }
     .await;
