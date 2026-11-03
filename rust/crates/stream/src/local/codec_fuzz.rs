@@ -45,6 +45,34 @@ pub(crate) fn check(bytes: &[u8]) -> bool {
     ) {
         return false;
     }
+    // Both containers share encode_limits. Challenge every other field through
+    // the fixed-size header, without hashing the snapshot payload again.
+    for field in 0..7 {
+        let mut other_limits = limits;
+        if field == 6 {
+            other_limits.compaction_bytes = if limits.compaction_bytes == HEADER_BYTES as u64 {
+                HEADER_BYTES as u64 + 1
+            } else {
+                HEADER_BYTES as u64
+            };
+        } else {
+            let capacity = match field {
+                0 => &mut other_limits.memory.paths,
+                1 => &mut other_limits.memory.path_bytes,
+                2 => &mut other_limits.memory.records,
+                3 => &mut other_limits.memory.payload_bytes,
+                4 => &mut other_limits.memory.commits,
+                _ => &mut other_limits.memory.idempotency_results,
+            };
+            *capacity = Some((incarnation as usize).max(1));
+        }
+        if !matches!(
+            decode_header(&header, other_limits),
+            Err(LocalStreamError::Corrupt)
+        ) {
+            return false;
+        }
+    }
     // Corrupt the actual writer's checksum without changing its payload.
     let checksum_byte = snapshot.len() - 1;
     snapshot[checksum_byte] ^= changed;
