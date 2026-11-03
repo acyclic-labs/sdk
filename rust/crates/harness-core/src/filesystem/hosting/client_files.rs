@@ -162,10 +162,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
                         .map_err(|_| Error::Record("client file is not UTF-8"))?
                         .to_owned(),
                 }),
-                Err(crate::Error::ToolRejected {
-                    code: crate::wire::ErrorCode::NotFound,
-                    ..
-                }) => None,
+                Err(error) if error.code() == crate::wire::ErrorCode::NotFound => None,
                 Err(error) => return Err(turn(error)),
             };
             files.insert(path.clone(), file);
