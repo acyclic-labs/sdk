@@ -177,26 +177,8 @@ fn assert_only_ledger_control(
     accounting: &mut KernelAccounting<'_>,
     promoted: bool,
 ) -> Result<(), FsError> {
-    use crate::kernel::allocation::{LedgerState, SharedAllocationBytes};
-    use std::sync::{Arc, Mutex};
-
     let (ledger, _, _, _) = accounting.standalone_parts().ok_or(FsError::InvalidDiff)?;
-    if let LedgerState::Shared(control) = &ledger.state {
-        assert!(promoted);
-        assert_eq!(
-            Arc::strong_count(control),
-            1,
-            "index funding still retained"
-        );
-        let bytes = crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<
-            Mutex<SharedAllocationBytes>,
-        >())
-        .map_err(|_| crate::performance::WorkError::Overflow)? as u64;
-        assert_eq!(ledger.live_bytes(), bytes, "only the live ledger is funded");
-    } else {
-        assert!(!promoted, "the original promoted ledger must remain owned");
-        assert_eq!(ledger.live_bytes(), 0);
-    }
+    assert_eq!(ledger.assert_payloads_retired()?, promoted);
     Ok(())
 }
 

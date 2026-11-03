@@ -2,6 +2,35 @@ use super::*;
 use crate::foundation::Digest;
 use crate::storage::ObjectKind;
 
+impl AllocationLedger {
+    /// Checks retirement without pretending that the original ledger has died.
+    /// Returns whether a retained owner promoted this ledger to shared custody.
+    pub(crate) fn assert_payloads_retired(&self) -> Result<bool, crate::FsError> {
+        use std::sync::{Arc, Mutex};
+
+        match &self.state {
+            LedgerState::Shared(control) => {
+                assert_eq!(
+                    Arc::strong_count(control),
+                    1,
+                    "payload funding still retained"
+                );
+                let bytes = crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<
+                    Mutex<SharedAllocationBytes>,
+                >())
+                .map_err(|_| WorkError::Overflow)? as u64;
+                assert_eq!(self.live_bytes(), bytes, "only the live ledger is funded");
+                Ok(true)
+            }
+            LedgerState::Suspended(_) => panic!("original accounting custody not returned"),
+            LedgerState::Empty | LedgerState::Inline(_) => {
+                assert_eq!(self.live_bytes(), 0);
+                Ok(false)
+            }
+        }
+    }
+}
+
 fn object(suffix: u8) -> ObjectId {
     let mut digest = [0_u8; 32];
     digest[8] = suffix;

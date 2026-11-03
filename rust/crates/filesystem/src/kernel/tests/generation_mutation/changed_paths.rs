@@ -108,7 +108,10 @@ async fn verify(
         drain(cursor, store, roots, &mut work, &cancel).await?,
         expected
     );
-    assert_eq!(work.standalone_parts().unwrap().0.live_bytes(), 0);
+    work.standalone_parts()
+        .unwrap()
+        .0
+        .assert_payloads_retired()?;
 
     let views = roots.map(|root| {
         root.map(|root| crate::workspace::NamespaceView {
@@ -127,7 +130,10 @@ async fn verify(
             .map(|row| row.path.retained_bytes())
             .sum::<u64>();
     KernelOwned::new(rows, allocation, bytes).retire(&mut work)?;
-    assert_eq!(work.standalone_parts().unwrap().0.live_bytes(), 0);
+    work.standalone_parts()
+        .unwrap()
+        .0
+        .assert_payloads_retired()?;
 
     if let [Some(before), Some(after)] = roots {
         let (delta, allocation) = crate::kernel::generation_diff::diff_generation_file_tables(
@@ -148,7 +154,10 @@ async fn verify(
         );
         let bytes = delta.retained_bytes()?;
         KernelOwned::new(delta, allocation, bytes).retire(&mut work)?;
-        assert_eq!(work.standalone_parts().unwrap().0.live_bytes(), 0);
+        work.standalone_parts()
+            .unwrap()
+            .0
+            .assert_payloads_retired()?;
     }
     Ok(())
 }
@@ -309,11 +318,10 @@ async fn retained_changed_paths_cover_aliases_moves_replacements_and_refused_pag
             ),
             "allocation {maximum}/{allocations}: {result:?}"
         );
-        assert_eq!(
-            work.standalone_parts().unwrap().0.live_bytes(),
-            0,
-            "allocation {maximum}/{allocations} lost original custody"
-        );
+        work.standalone_parts()
+            .unwrap()
+            .0
+            .assert_payloads_retired()?;
     }
     let mut work = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
     let mut cursor = Cursor::new(roots, config(), &mut work)?;
@@ -336,7 +344,10 @@ async fn retained_changed_paths_cover_aliases_moves_replacements_and_refused_pag
         Err(FsError::InvalidDiff)
     ));
     cursor.retire(&mut work)?;
-    assert_eq!(work.standalone_parts().unwrap().0.live_bytes(), 0);
+    work.standalone_parts()
+        .unwrap()
+        .0
+        .assert_payloads_retired()?;
     sparse_alias_change(&store, &fixture).await?;
     Ok(())
 }
@@ -377,7 +388,10 @@ async fn sparse_alias_change(
         2,
         "a binding-only change reconstructed unrelated aliases"
     );
-    assert_eq!(work.standalone_parts().unwrap().0.live_bytes(), 0);
+    work.standalone_parts()
+        .unwrap()
+        .0
+        .assert_payloads_retired()?;
 
     // Counterfactual: retain the former all-alias reconstruction on the same
     // immutable endpoints. Its work must expose every unchanged alias.
@@ -398,6 +412,10 @@ async fn sparse_alias_change(
     }
     assert_eq!(eager.spent().source_path_components, 516);
     assert!(eager.spent().items_examined > work.spent().items_examined);
-    assert_eq!(eager.standalone_parts().unwrap().0.live_bytes(), 0);
+    eager
+        .standalone_parts()
+        .unwrap()
+        .0
+        .assert_payloads_retired()?;
     Ok(())
 }
