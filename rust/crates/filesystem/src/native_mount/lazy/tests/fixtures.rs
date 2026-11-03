@@ -202,8 +202,8 @@ async fn mounted_view_of_with_authored_work<D: DemandSource + 'static, S: LazyWo
     CallbackRuntime::create()?;
     let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
     // A physical retirement fixture needs an actual birth-paid watch. Keep its
-    // startup ledger separate from the authored source's exhausted poll bank,
-    // so this test cannot replenish the very credit whose exhaustion it proves.
+    // startup ledger separate from the authored source's finite allowance;
+    // accepted watch cleanup must retain its own original credit.
     let startup = original
         .map(|original| {
             crate::NativeMaterializationWork::new(

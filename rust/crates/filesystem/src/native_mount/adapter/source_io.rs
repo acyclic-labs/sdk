@@ -40,8 +40,6 @@ impl Drop for CaptureProducer {
     }
 }
 
-impl CaptureSourceGate {}
-
 impl<A, O> CheckoutMountSource<A, O> {
     pub(super) fn with_capture_observer_dispatch<T>(&self, dispatch: impl FnOnce() -> T) -> T {
         crate::native_mount::lazy::with_capture_observer_dispatch(
@@ -157,7 +155,7 @@ impl<A, O> CheckoutMountSource<A, O> {
     pub(in crate::native_mount) fn cancel_cleanup_with_join(
         &self,
         wait: Option<&CancellationToken>,
-        join: SourceRetirementWait,
+        _join: SourceRetirementWait,
     ) -> Result<(), MountSourceError> {
         if self.capture_retired() {
             return Ok(());
@@ -180,17 +178,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         {
             return Err(MountSourceError::Stale);
         }
-        let _cancellation = wait
-            .map(|wait| {
-                let gate = Arc::clone(&self.capture_gate);
-                let quiesced = Arc::clone(&self.capture_quiesced);
-                wait.on_cancel(self.native_original.as_ref(), move || {
-                    let _gate = gate.lock().unwrap_or_else(PoisonError::into_inner);
-                    quiesced.notify_all();
-                })
-            })
-            .transpose()
-            .map_err(MountSourceError::NativeWork)?;
+        let mut cancellation = None;
         loop {
             let mut gate = self
                 .capture_gate
@@ -224,11 +212,25 @@ impl<A, O> CheckoutMountSource<A, O> {
                 self.capture_quiesced.notify_all();
                 return Ok(());
             }
-            if matches!(join, SourceRetirementWait::Physical) {
-                #[cfg(test)]
-                if let Some(observed) = gate.physical_cleanup_wait_observed.take() {
-                    let _ = observed.send(());
-                }
+            if let Some(wait) = wait.filter(|_| cancellation.is_none()) {
+                // A quiescent source needs no registration or fresh allocation.
+                // Register outside the gate: an already-cancelled token invokes
+                // its callback immediately, and that callback takes this mutex.
+                drop(gate);
+                let gate = Arc::clone(&self.capture_gate);
+                let quiesced = Arc::clone(&self.capture_quiesced);
+                cancellation = Some(
+                    wait.on_cancel(self.native_original.as_ref(), move || {
+                        let _gate = gate.lock().unwrap_or_else(PoisonError::into_inner);
+                        quiesced.notify_all();
+                    })
+                    .map_err(MountSourceError::NativeWork)?,
+                );
+                continue;
+            }
+            #[cfg(test)]
+            if let Some(observed) = gate.cleanup_wait_observed.take() {
+                let _ = observed.send(_join);
             }
             gate = self
                 .capture_quiesced
