@@ -437,14 +437,21 @@ impl Journal {
         // Retain the original producer before reading its publication. A later
         // transition can replace the slot, but cannot replace this handle.
         // Storage observation must never hold up lifecycle admission.
-        let producer = {
+        let mut producer = {
             let active = self.producer.lock().await;
             active
                 .as_ref()
                 .filter(|(id, _)| *id == operation)
                 .map(|(_, receiver)| receiver.clone())
         };
-        let value = self.existing_call(&path).await?;
+        let value = match &mut producer {
+            Some(producer) => tokio::select! {
+                biased;
+                result = self.existing_call(&path) => result?,
+                () = producer_lost(producer) => return Err(ProviderError::Indeterminate(key)),
+            },
+            None => self.existing_call(&path).await?,
+        };
         let mut request =
             acyclic_stream::FollowRequest::new(path.log().clone(), value.journal.next());
         request.preceding = value.preceding;
