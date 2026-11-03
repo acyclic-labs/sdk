@@ -1,5 +1,16 @@
 use super::*;
 
+// The stable js-sys bindings for these intrinsics cannot return exceptions.
+// Untrusted Proxies can throw, so admission must retain Rust cleanup on exit.
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(catch, js_namespace = Object, js_name = keys)]
+    fn object_keys(value: &JsValue) -> Result<js_sys::Array, JsValue>;
+
+    #[wasm_bindgen(catch, js_namespace = Array, js_name = isArray)]
+    fn is_array(value: &JsValue) -> Result<bool, JsValue>;
+}
+
 /// Parses canonical JSON without passing full-width integer literals through
 /// JavaScript Number. Large serde integers are returned as `BigInt`.
 #[wasm_bindgen(js_name = decodeCanonicalJson)]
@@ -204,18 +215,19 @@ pub(super) fn snapshot_js_json(
     {
         return Err(JsValue::from_str("cyclic values are not canonical JSON"));
     }
+    let array = is_array(value)?;
     let is_map = value.is_instance_of::<js_sys::Map>();
-    if !js_sys::Array::is_array(value) && !is_map {
-        let prototype: JsValue = js_sys::Object::get_prototype_of(value).into();
+    if !array && !is_map {
+        let prototype: JsValue = js_sys::Reflect::get_prototype_of(value)?.into();
         let ordinary: JsValue =
-            js_sys::Object::get_prototype_of(&js_sys::Object::new().into()).into();
+            js_sys::Reflect::get_prototype_of(&js_sys::Object::new().into())?.into();
         if !prototype.is_null() && !js_sys::Object::is(&prototype, &ordinary) {
             return Err(JsValue::from_str("only plain objects are canonical JSON"));
         }
     }
     ancestors.push(value.clone());
-    let snapshot = if js_sys::Array::is_array(value) {
-        let items = js_sys::Array::from(value);
+    let snapshot = if array {
+        let items = js_sys::Array::from_iterable(value.unchecked_ref::<js_sys::Array>())?;
         let mut snapshot = Vec::with_capacity(items.length() as usize);
         for item in items.iter() {
             snapshot.push(snapshot_js_json(&item, ancestors)?);
@@ -223,10 +235,17 @@ pub(super) fn snapshot_js_json(
         serde_json::Value::Array(snapshot)
     } else if is_map {
         let map = value.unchecked_ref::<js_sys::Map>();
-        let mut entries = Vec::with_capacity(map.size() as usize);
+        let size = js_sys::Reflect::get(value, &JsValue::from_str("size"))?
+            .as_f64()
+            .filter(|size| (0.0..=f64::from(u32::MAX)).contains(size) && size.fract() == 0.0)
+            .ok_or_else(|| JsValue::from_str("Map size must be an unsigned 32-bit integer"))?;
+        let mut entries = Vec::with_capacity(size as usize);
         // Select before evaluating child getters: they can append to the same
         // Map, whose live iteration would otherwise keep admitting new work.
-        map.for_each(&mut |child, key| entries.push((key, child)));
+        map.try_for_each(&mut |child, key| {
+            entries.push((key, child));
+            Ok(())
+        })?;
         let mut snapshot = serde_json::Map::new();
         for (key, child) in entries {
             let key = checked_js_string(key, "JSON object key")?;
@@ -235,9 +254,8 @@ pub(super) fn snapshot_js_json(
         }
         serde_json::Value::Object(snapshot)
     } else {
-        let object: &js_sys::Object = value.unchecked_ref();
         let mut snapshot = serde_json::Map::new();
-        for key in js_sys::Object::keys(object).iter() {
+        for key in object_keys(value)?.iter() {
             let key_text = checked_js_string(key.clone(), "JSON object key")?;
             let child = js_sys::Reflect::get(value, &key)?;
             let admitted = snapshot_js_json(&child, ancestors)?;
