@@ -41,15 +41,18 @@ export class TerminalFrames {
 
 // Query errors are rendered in the status row, outside the task transcript.
 export function queryFailure(visible) {
-  const notice = visible.slice(visible.lastIndexOf("\n") + 1);
+  const notice = visible.slice(visible.lastIndexOf("\n") + 1).replace(/^✗ /, "");
   return /^(?:storage failure:|Usage query ended:)/.test(notice) ? notice : undefined;
 }
 function* failures(visible) {
-  for (const failure of visible.matchAll(/task [0-9a-f-]{36} failed: ([^\n]*)|✗ ([^\n]*)/g))
-    yield { text: failure[0], reason: failure[1] ?? failure[2],
-      kind: failure[1] !== undefined ? "task_failure" : "action_refusal" };
-  const notice = queryFailure(visible);
-  if (notice) yield { text: notice, reason: notice, kind: "query_failure" };
+  const notice = queryFailure(visible), status = visible.lastIndexOf("\n") + 1;
+  for (const failure of visible.matchAll(/task [0-9a-f-]{36} failed: ([^\n]*)|✗ ([^\n]*)/g)) {
+    if (notice && failure.index >= status) continue;
+    yield failure[1] !== undefined
+      ? { text: failure[0], reason: failure[1], kind: "task_failure" }
+      : { text: failure[0], reason: failure[2], kind: "action_refusal" };
+  }
+  if (notice) yield { text: visible.slice(status), reason: notice, kind: "query_failure" };
 }
 const expected = (failure, condition) => failure.kind === "action_refusal"
   ? (condition?.contains ?? []).some(text => text.length > 0 && failure.reason.includes(text))

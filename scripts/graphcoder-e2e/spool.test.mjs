@@ -36,7 +36,7 @@ test("native event callback failures end unmatched waits with the original cause
         const fail = () => {
           calls++;
           try { readFileSync(join(root, "original-missing-callback-input")); }
-          catch (error) { original = error; throw error; }
+          catch (error) { original = stage === "listener" ? error.message : error; throw original; }
         };
         const producer = processes.start(process.execPath, ["-e", stage === "eof" ? "" :
           "console.log(JSON.stringify({id:'first'}));console.log(JSON.stringify({id:'later'}))"]);
@@ -56,10 +56,16 @@ test("native event callback failures end unmatched waits with the original cause
         assert.equal(await laterKeyed, failure);
         assert.equal(failure.kind, stage === "eof" ? "eof" : "consumer");
         if (stage !== "eof") {
-          assert.equal(failure.cause, original);
           assert.equal(failure.detail, original);
-          assert.equal(original.code, "ENOENT");
-          assert.match(failureReport(failure).cause, /ENOENT.*original-missing-callback-input/);
+          const report = failureReport(failure);
+          if (stage === "listener") {
+            assert.equal(failure.cause, undefined);
+            assert.match(report.detail, /ENOENT.*original-missing-callback-input/);
+          } else {
+            assert.equal(failure.cause, original);
+            assert.equal(original.code, "ENOENT");
+            assert.match(report.cause, /ENOENT.*original-missing-callback-input/);
+          }
           assert.match(failure.message, /step=dispatch event 1.*recovery=/);
         }
         await assert.rejects(events.next(() => true), error => error === failure);
