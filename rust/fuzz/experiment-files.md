@@ -228,3 +228,13 @@ assignment-key guard or final declaration consumption. They reuse the original
 assignment input. Inputs are authored own-format JSON; no provider or filesystem
 IO conformance is inferred. Ordering, metric arithmetic and allocation controls
 remain distinct, and source coverage still requires separate qualification.
+
+The streamed property also keeps declarations and outcomes matched while
+reusing a key, decreasing a replicate, decreasing a population immediately, or
+returning to a closed population. These transformations preserve pair counts;
+only strict order is broken. All population bytes and the starting replicate
+come from the input, with two ordered population keys and nonoverflowing
+replicates constructed before transformation. Two retained actual-source
+mutations admit repeated replicates or decreasing populations. They reuse the
+original assignment input and replace the fixed repeated/decreased-key loop.
+No history map or alternate ordering implementation is introduced.

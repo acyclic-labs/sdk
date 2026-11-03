@@ -8,6 +8,17 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 FUZZ = ROOT / "rust/fuzz"
 CASES = {
+    "analysis-repeated-key": (
+        "experiments/analysis.rs", "if replicate <= *previous_replicate {",
+        "if replicate < *previous_replicate {", "assignment",
+        "independent streamed analysis invariant: strict key order",
+    ),
+    "analysis-decreasing-population": (
+        "experiments/analysis.rs",
+        'std::cmp::Ordering::Less => Err(Error::Analysis("population keys decreased")),',
+        "std::cmp::Ordering::Less => Ok(false),", "assignment",
+        "independent streamed analysis invariant: strict key order",
+    ),
     "analysis-declared-population": (
         "experiments/analysis.rs", "baseline.0.population != assignment.population",
         "false", "assignment",

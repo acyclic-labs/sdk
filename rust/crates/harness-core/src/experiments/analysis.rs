@@ -371,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_reordered_or_failed_input_never_returns_a_partial_report() -> Result<(), Error> {
+    fn incomplete_or_failed_input_never_returns_a_partial_report() -> Result<(), Error> {
         let row = |cut, replicate, arm| Observation::new([cut; 32], replicate, arm, None, None);
         assert!(analyze([row(1, 0, 0)], 0, 1, [(1, 0)]).is_err());
         assert!(analyze([row(1, 0, 1), row(1, 0, 0)], 0, 1, [(1, 0)]).is_err());
@@ -379,22 +379,6 @@ mod tests {
         assert!(analyze([row(1, 0, 0), row(1, 1, 1)], 0, 1, [(1, 0)]).is_err());
         assert!(analyze([row(1, 0, 0), row(1, 0, 1)], 0, 1, [(1, 0), (2, 0)]).is_err());
         assert!(analyze([row(1, 0, 0), row(1, 0, 1)], 0, 1, []).is_err());
-        for (cut, replicate) in [(1, 0), (0, 1)] {
-            assert!(
-                analyze(
-                    [
-                        row(1, 0, 0),
-                        row(1, 0, 1),
-                        row(cut, replicate, 0),
-                        row(cut, replicate, 1),
-                    ],
-                    0,
-                    1,
-                    [(1, 0), (cut, replicate)],
-                )
-                .is_err()
-            );
-        }
         assert!(analyze([], 0, 0, []).is_err());
         let baseline = row(1, 0, 0)?;
         let mut bytes = serde_json::to_vec(&baseline)?;

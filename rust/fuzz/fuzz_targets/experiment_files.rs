@@ -592,6 +592,27 @@ fn declared_stream(bytes: &[u8]) {
         (3, 2),
         "independent streamed analysis invariant: assigned coverage"
     );
+    // Keep declarations and outcomes matched while breaking only key order.
+    // The constructed keys satisfy 0 < 1 < 2; counts alone cannot detect reuse.
+    for (order, reason) in [
+        ([0, 0, 2], "replicate key repeated or decreased"),
+        ([1, 0, 2], "replicate key repeated or decreased"),
+        ([2, 0, 1], "population keys decreased"),
+        ([0, 2, 1], "population keys decreased"),
+    ] {
+        let reordered = order.map(|index| declarations[index].clone());
+        let outcomes: Vec<_> = order
+            .into_iter()
+            .flat_map(|index| rows[index * 2..index * 2 + 2].iter().cloned())
+            .collect();
+        assert!(
+            matches!(
+                streamed(&encode(&outcomes), &encode(&reordered)),
+                Err(Error::Analysis(actual)) if actual == reason
+            ),
+            "independent streamed analysis invariant: strict key order"
+        );
+    }
     for index in 0..declarations.len() {
         for field in ["population", "replicate"] {
             let mut replaced = declarations.clone();
