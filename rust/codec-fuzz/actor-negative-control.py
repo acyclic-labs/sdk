@@ -38,8 +38,10 @@ def main():
         return persisted_alarms()
     if sys.argv[1:] == ["--call-records"]:
         return call_records()
+    if sys.argv[1:] == ["--sockets"]:
+        return sockets()
     if sys.argv[1:]:
-        raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms|--persisted-alarms|--reservation-book|--call-records|--capture]")
+        raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms|--persisted-alarms|--reservation-book|--call-records|--sockets|--capture]")
     original = {path: path.read_bytes() for path in (PRODUCTION, ORACLE)}
     needle = b"Ok(Self::decode_bound(record)?.map(|(_, invocation)| invocation))"
     source = original[PRODUCTION]
@@ -208,6 +210,44 @@ def call_records():
         ORACLE.write_bytes(oracle)
         run("same oracle detects lost accepted cancellation context", "rejected",
             "call reader must retain its acceptance context")
+        production.write_bytes(source)
+        capture()
+    finally:
+        for path, value in original.items():
+            path.write_bytes(value)
+
+
+def sockets():
+    production = ROOT.parent / "crates/actors/src/sockets.rs"
+    original = {path: path.read_bytes() for path in (production, ORACLE)}
+    source, oracle = original[production], original[ORACLE]
+    plants = (
+        (b"if wire.version != 1 || wire.subscription.is_empty() {",
+         b"if true || wire.subscription.is_empty() {",
+         "Actors decoders must admit their production writers"),
+        (b"u16::try_from(code).map_err(|_| invalid())", b"Ok(0)",
+         "socket frame writer must retain its fields"),
+        (b"&& !open.subprotocols.contains(selected)", b"&& false",
+         "socket verdict must refuse unoffered subprotocols"),
+    )
+    writer = b"    seeds.extend(actor_socket_seeds()?);"
+    start = oracle.index(b"    use acyclic_actors::sockets::{SocketFrame, SocketOpen};",
+                         oracle.index(b"pub fn actor_codecs("))
+    end = oracle.index(b"    futures::executor::block_on", start)
+    if oracle.count(writer) != 1 or any(source.count(anchor) != 1 for anchor, _, _ in plants):
+        raise RuntimeError("socket source anchor changed; recovery: inspect the original "
+                           "socket decoders and shared target before python3 actor-negative-control.py --sockets")
+    previous = (oracle[:start] + oracle[end:]).replace(writer, b"")
+    try:
+        for label, value in (("socket production", source), ("socket oracle", oracle)):
+            print(f"{label} sha256={hashlib.sha256(value).hexdigest()}", flush=True)
+        production.write_bytes(source.replace(*plants[0][:2]))
+        ORACLE.write_bytes(previous)
+        run("previous shared target misses socket reject-all", "accepted")
+        ORACLE.write_bytes(oracle)
+        for anchor, replacement, diagnostic in plants:
+            production.write_bytes(source.replace(anchor, replacement))
+            run("same socket oracle rejects production defect", "rejected", diagnostic)
         production.write_bytes(source)
         capture()
     finally:

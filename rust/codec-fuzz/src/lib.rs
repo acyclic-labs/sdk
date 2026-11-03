@@ -651,6 +651,181 @@ pub fn actor_seeds()
         seeds.push((name, bytes, "guest::wire::encode_transition"));
     }
     seeds.extend(futures::executor::block_on(actor_alarm_seeds())?);
+    seeds.extend(actor_socket_seeds()?);
+    Ok(seeds)
+}
+
+fn actor_socket_open() -> &'static acyclic_actors::sockets::SocketOpen {
+    static OPEN: std::sync::LazyLock<acyclic_actors::sockets::SocketOpen> =
+        std::sync::LazyLock::new(|| acyclic_actors::sockets::SocketOpen {
+            actor: acyclic_auth::addressing::ActorReference::new(
+                b"account",
+                b"namespace",
+                b"socket",
+            )
+            .unwrap(),
+            subscription: "sockets".into(),
+            app_channel: Some("presence".into()),
+            subprotocols: vec!["chat".into()],
+            headers: vec![("x-device".into(), "desktop".into())],
+            resume_after: u64::MAX,
+            reconnected: true,
+        });
+    &OPEN
+}
+
+fn actor_socket_verdict(bytes: &[u8]) {
+    use acyclic_actors::{guest::GuestEventResult, sockets::socket_verdict};
+    let actual = socket_verdict(bytes, actor_socket_open());
+    match serde_json::from_slice::<GuestEventResult>(bytes) {
+        Ok(GuestEventResult::SocketAccept {
+            subprotocol: Some(selected),
+            ..
+        }) if selected != "chat" => {
+            assert!(
+                actual.is_err(),
+                "socket verdict must refuse unoffered subprotocols"
+            );
+        }
+        Ok(expected) => assert_eq!(
+            actual.unwrap(),
+            expected,
+            "socket verdict must retain its reply"
+        ),
+        Err(_) => assert!(actual.is_err(), "socket verdict must refuse invalid JSON"),
+    }
+}
+
+fn actor_socket_seeds()
+-> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn std::error::Error>> {
+    use acyclic_actors::{
+        guest::{GuestEventResult, SocketCloseInitiator, SocketPayload},
+        sockets::{SocketFrame, SocketOpen, socket_reply},
+    };
+    use bytes::Bytes;
+    let open = actor_socket_open();
+    let bytes = open.encode();
+    assert_eq!(
+        SocketOpen::decode(&bytes)?,
+        *open,
+        "socket open writer must be admitted"
+    );
+    let mut seeds = vec![(
+        "socket-open-v1",
+        bytes.to_vec(),
+        "sockets::SocketOpen::encode",
+    )];
+    for (name, frame) in [
+        (
+            "socket-text-v1",
+            SocketFrame::Message(SocketPayload::Text {
+                text: "ping".into(),
+            }),
+        ),
+        (
+            "socket-binary-v1",
+            SocketFrame::Message(SocketPayload::Binary {
+                binary: Bytes::from_static(b"\0\xff"),
+            }),
+        ),
+        (
+            "socket-close-peer-v1",
+            SocketFrame::Close {
+                code: 1000,
+                reason: "bye".into(),
+                initiator: SocketCloseInitiator::Peer,
+            },
+        ),
+        (
+            "socket-close-actor-v1",
+            SocketFrame::Close {
+                code: 1001,
+                reason: "actor".into(),
+                initiator: SocketCloseInitiator::Actor,
+            },
+        ),
+        (
+            "socket-close-runtime-v1",
+            SocketFrame::Close {
+                code: u16::MAX,
+                reason: "runtime".into(),
+                initiator: SocketCloseInitiator::Runtime,
+            },
+        ),
+        (
+            "socket-accepted-v1",
+            SocketFrame::Accepted {
+                subprotocol: Some("chat".into()),
+            },
+        ),
+        (
+            "socket-accepted-none-v1",
+            SocketFrame::Accepted { subprotocol: None },
+        ),
+        (
+            "socket-rejected-v1",
+            SocketFrame::Rejected {
+                status: 403,
+                reason: "denied".into(),
+            },
+        ),
+    ] {
+        let bytes = frame.clone().encode();
+        assert_eq!(
+            SocketFrame::decode(&bytes)?,
+            frame,
+            "socket frame writer must retain its fields"
+        );
+        seeds.push((name, bytes.to_vec(), "sockets::SocketFrame::encode"));
+    }
+    for (name, reply) in [
+        (
+            "socket-verdict-accept-v1",
+            GuestEventResult::SocketAccept {
+                subprotocol: Some("chat".into()),
+                attachment: Bytes::from_static(b"attachment"),
+                tags: vec!["room".into()],
+            },
+        ),
+        (
+            "socket-verdict-none-v1",
+            GuestEventResult::SocketAccept {
+                subprotocol: None,
+                attachment: Bytes::new(),
+                tags: Vec::new(),
+            },
+        ),
+        (
+            "socket-verdict-unoffered-v1",
+            GuestEventResult::SocketAccept {
+                subprotocol: Some("unoffered".into()),
+                attachment: Bytes::new(),
+                tags: Vec::new(),
+            },
+        ),
+        (
+            "socket-verdict-reject-v1",
+            GuestEventResult::SocketReject {
+                status: 403,
+                reason: "denied".into(),
+            },
+        ),
+        (
+            "socket-verdict-reply-v1",
+            GuestEventResult::Reply {
+                payload: Bytes::from_static(b"reply"),
+            },
+        ),
+    ] {
+        let bytes = socket_reply(&reply)?;
+        assert_eq!(
+            serde_json::from_slice::<GuestEventResult>(&bytes)?,
+            reply,
+            "socket reply writer must be admitted"
+        );
+        actor_socket_verdict(&bytes);
+        seeds.push((name, bytes.to_vec(), "sockets::socket_reply"));
+    }
     Ok(seeds)
 }
 
@@ -809,6 +984,18 @@ pub fn actor_codecs(bytes: &[u8]) {
         actor_seeds().expect("Actors decoders must admit their production writers");
     });
     std::sync::LazyLock::force(&WRITERS);
+    use acyclic_actors::sockets::{SocketFrame, SocketOpen};
+    if let Ok(open) = SocketOpen::decode(bytes) {
+        assert_eq!(
+            open.encode().as_ref(),
+            bytes,
+            "socket open retains every field"
+        );
+    }
+    if let Ok(frame) = SocketFrame::decode(bytes) {
+        assert_eq!(SocketFrame::decode(&frame.clone().encode()).unwrap(), frame);
+    }
+    actor_socket_verdict(bytes);
     futures::executor::block_on(acyclic_actors::call::model::check(bytes))
         .expect("original call protocol must conserve its committed receipts");
     use acyclic_actors::{guest::wire, local::State};

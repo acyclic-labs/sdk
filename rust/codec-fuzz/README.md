@@ -447,3 +447,13 @@ admission misses a production `Book::validate` which refuses populated state;
 the unchanged producer oracle must catch that same defect. Captures are emitted
 by the original production writers. This finite MemoryStream path does not
 establish physical restart, distributed ownership or instrumented coverage.
+
+The same Actors target admits the actual `SocketOpen::encode`,
+`SocketFrame::encode` and `socket_reply` writers before decoding arbitrary input.
+It checks all frame variants and close initiators, reply fields, and offered
+versus unoffered subprotocols through `socket_verdict`. The documented peer-close
+initiator alias is accepted and normalised by the original decoder.
+`python3 actor-negative-control.py --sockets` requires this unchanged oracle to
+reject production open refusal, lost close codes and skipped subprotocol checks,
+then captures the original restored writers. These codec controls do not cover
+the separate inbox `InputWire` or prove physical session/recovery behavior.
