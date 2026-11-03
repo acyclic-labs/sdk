@@ -97,6 +97,7 @@ impl ModelStream {
     }
 }
 
+#[inline(never)]
 fn ready<F: Future>(create: impl FnOnce() -> F) -> F::Output {
     loom::future::block_on(crate::heap_future::in_heap(create))
 }
@@ -359,7 +360,7 @@ fn check(change: Change, broken: bool, cut: Option<usize>, calls: Arc<CallCount>
             } else {
                 &reader_cancel
             };
-            let mut work = AuthorityWork::new(BUDGET, token);
+            let mut work = Box::new(AuthorityWork::new(BUDGET, token));
             let result = if !broken || !matches!(change, Change::Retire) {
                 ready(|| store.head_payload(ID, 32, &mut work))
             } else {

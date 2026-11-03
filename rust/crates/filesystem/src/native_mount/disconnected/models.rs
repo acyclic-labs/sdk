@@ -16,17 +16,23 @@ fn check_case(name: &str, scenario: impl Fn() + Send + Sync + 'static) {
     }
 }
 
+#[inline(never)]
+fn work() -> Result<Box<NativeMaterializationWork>, NativeMountError> {
+    NativeMaterializationWork::new(
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )
+    .map(Box::new)
+    .map_err(|(error, _)| NativeMountError::from(error))
+}
+
 // Keep independent model phases out of the caller's coroutine frame.
 #[inline(never)]
 fn remount(
     destination: &Path,
     kernel: &kernel::Kernel,
 ) -> Result<MountDestinationGuard, NativeMountError> {
-    let work = NativeMaterializationWork::new(
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )
-    .map_err(|(error, _)| NativeMountError::from(error))?;
+    let work = work()?;
     let mut guard = None;
     // The startup path's actual acquisition, including registry, physical fence
     // files and work accounting. Only the subsequent mount syscall is fake.

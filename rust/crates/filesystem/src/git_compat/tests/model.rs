@@ -12,6 +12,7 @@ use std::{
 // Loom's coroutines share the OS thread and may switch while a mutex blocks.
 // Keep construction and polling behind the existing non-inlined heap
 // boundaries instead of combining them with the scenario frame.
+#[inline(never)]
 fn ready<F: Future>(create: impl FnOnce() -> F) -> F::Output {
     let mut future = crate::heap_future::in_heap(create);
     match future
@@ -21,6 +22,17 @@ fn ready<F: Future>(create: impl FnOnce() -> F) -> F::Output {
         Poll::Ready(value) => value,
         Poll::Pending => panic!("memory operation unexpectedly suspended"),
     }
+}
+
+// The complete compatibility state is much larger than the facts checked by
+// the driver. Keep its load/result slot out of the writer/join frame.
+#[inline(never)]
+fn state<S: GitCompatStore>(repository: &GitCompatRepository<S>) -> Box<GitCompatState> {
+    Box::new(
+        ready(|| repository.store.load(WorkspaceId::from_bytes([0; 16])))
+            .unwrap()
+            .unwrap(),
+    )
 }
 
 #[test]
@@ -73,9 +85,7 @@ fn registrations<S: GitCompatStore + 'static>(store: impl Fn() -> S + Send + Syn
             2,
             "conditional write was repeated"
         );
-        let state = ready(|| repository.store.load(WorkspaceId::from_bytes([0; 16])))
-            .unwrap()
-            .unwrap();
+        let state = state(&repository);
         assert!(
             !accepted.is_empty(),
             "neither conditional writer progressed"
