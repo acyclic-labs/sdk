@@ -1,6 +1,9 @@
 """Replay one shipped input corpus and detect its production admission defect."""
 import argparse
+import base64
+import copy
 import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -9,6 +12,13 @@ import sys
 root = Path(__file__).resolve().parents[3]
 recovery = "python3 rust/crates/harness-fuzz/graphcoder-args-control.py"
 controls = {
+    "native_marketplace": (
+        "plugin/src/install/marketplace.rs",
+        b'if name == "acyclic" && selected.replace(entry).is_some() {',
+        b'if name == "acyclic" && { selected = Some(entry); false } {',
+        "duplicate-registration",
+        b"duplicate native registrations must be refused",
+    ),
     "native_model_selection": (
         "rust/crates/harness-core/src/native_settings/model_selection.rs",
         b"Some(provider) => (provider, model),",
@@ -56,6 +66,7 @@ def run(target, seed, witness, *, capture=False, runs=0):
     options = {
         "event_projection": ["--no-default-features", "--features", "client"],
         "native_model_selection": ["--no-default-features"],
+        "native_marketplace": ["--no-default-features"],
     }.get(target, [])
     environment = os.environ.copy()
     environment.pop("ACYCLIC_FUZZ_CORPUS", None)
@@ -78,10 +89,65 @@ def run(target, seed, witness, *, capture=False, runs=0):
     return child.returncode, found
 
 
+def marketplace_corpus():
+    """Stage original bytes and explicitly derived mutations outside tracked files."""
+    encoded = os.environ.get("ACYCLIC_MARKETPLACE_CAPTURE", "")
+    require(bool(encoded), "supply original marketplace stdout as base64 in ACYCLIC_MARKETPLACE_CAPTURE")
+    try:
+        original = base64.b64decode(encoded, validate=True)
+    except ValueError as error:
+        raise RuntimeError("decode original marketplace capture base64") from error
+    require(
+        len(original) == 314 and hashlib.sha256(original).hexdigest()
+        == "1e4e2006ef89ae8a33a2d7c9ab356f0ba64f2273f603d911993daefd486c9a6d",
+        "verify unchanged original marketplace stdout",
+    )
+    corpus = "target/native-marketplace-corpus"
+    directory = root / corpus
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "native-list-original").write_bytes(original)
+    recorded = json.loads(original)
+    entry = recorded["marketplaces"][0]
+    mutations = {
+        "duplicate-registration": {"marketplaces": [entry, entry]},
+        "missing-list": {},
+        "null-list": {"marketplaces": None},
+        "empty-list": {"marketplaces": []},
+    }
+    for name, path, replacement in [
+        ("missing-name", ["name"], None),
+        ("foreign-name", ["name"], "foreign"),
+        ("number-name", ["name"], 1),
+        ("missing-root", ["root"], None),
+        ("number-root", ["root"], 1),
+        ("missing-source", ["marketplaceSource"], None),
+        ("missing-origin", ["marketplaceSource", "source"], None),
+        ("number-origin", ["marketplaceSource", "source"], 1),
+        ("missing-type", ["marketplaceSource", "sourceType"], None),
+        ("nonlocal-type", ["marketplaceSource", "sourceType"], "remote"),
+    ]:
+        changed = copy.deepcopy(entry)
+        parent = changed if len(path) == 1 else changed[path[0]]
+        if replacement is None:
+            del parent[path[-1]]
+        else:
+            parent[path[-1]] = replacement
+        mutations[name] = {"marketplaces": [changed]}
+    for name, document in mutations.items():
+        (directory / name).write_bytes(json.dumps(document).encode("utf-8"))
+    # Prefix truncations retain the recorded protocol bytes, not authored output.
+    for length in [0, 1, 156, 313]:
+        (directory / f"partial-{length}").write_bytes(original[:length])
+    print("native_marketplace: original 314-byte capture and derived mutations staged", flush=True)
+    return corpus
+
+
 def qualify(target, runs=0):
     filename, guard, replacement, seed, witness = controls[target]
     source = root / filename
     corpus = f"rust/crates/harness-fuzz/corpus/{target}"
+    if target == "native_marketplace":
+        corpus = marketplace_corpus()
     original = source.read_bytes()
     require(original.count(guard) == 1, f"locate original {target} admission")
     if target == "event_projection":
