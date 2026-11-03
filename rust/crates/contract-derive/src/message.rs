@@ -240,6 +240,16 @@ impl Field {
     }
 }
 
+fn redacted_debug(wire: &syn::Ident) -> TokenStream {
+    quote! {
+        impl ::core::fmt::Debug for #wire {
+            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                f.write_str(concat!(stringify!(#wire), "([redacted])"))
+            }
+        }
+    }
+}
+
 pub fn expand(mut input: ItemStruct, options: Options) -> syn::Result<TokenStream> {
     let error = options
         .error
@@ -307,16 +317,7 @@ pub fn expand(mut input: ItemStruct, options: Options) -> syn::Result<TokenStrea
     }
     let post = options.post.map(|post| quote!(#post(&result)?;));
     let (debug_attribute, debug_impl) = if options.redacted {
-        (
-            quote!(#[prost(skip_debug)]),
-            quote! {
-                impl ::core::fmt::Debug for #wire {
-                    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-                        f.write_str(concat!(stringify!(#wire), "([redacted])"))
-                    }
-                }
-            },
-        )
+        (quote!(#[prost(skip_debug)]), redacted_debug(&wire))
     } else {
         (quote!(), quote!())
     };

@@ -49,14 +49,8 @@ pub fn file(args: TokenStream, input: &ItemStruct) -> syn::Result<TokenStream> {
 }
 
 impl File {
-    fn expand(self, input: &ItemStruct) -> syn::Result<TokenStream> {
-        if !input.generics.params.is_empty() || !matches!(input.fields, syn::Fields::Unit) {
-            return Err(syn::Error::new_spanned(
-                input,
-                "contract file requires a nongeneric unit struct",
-            ));
-        }
-        let family = self.family.ok_or_else(|| {
+    fn family_name(&self, input: &ItemStruct) -> syn::Result<String> {
+        let family = self.family.as_ref().ok_or_else(|| {
             syn::Error::new_spanned(&input.ident, "first-party family is required")
         })?;
         let family_name = family.value();
@@ -70,6 +64,17 @@ impl File {
                 "first-party family must be a lowercase identifier",
             ));
         }
+        Ok(family_name)
+    }
+
+    fn expand(self, input: &ItemStruct) -> syn::Result<TokenStream> {
+        if !input.generics.params.is_empty() || !matches!(input.fields, syn::Fields::Unit) {
+            return Err(syn::Error::new_spanned(
+                input,
+                "contract file requires a nongeneric unit struct",
+            ));
+        }
+        let family_name = self.family_name(input)?;
         let package = format!("acyclic.{family_name}.v1");
         let path = format!("{family_name}/v1/{family_name}.proto");
         let go_package =
