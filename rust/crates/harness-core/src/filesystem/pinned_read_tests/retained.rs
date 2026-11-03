@@ -34,7 +34,7 @@ fn with_reopen<T>(old: bool, run: impl FnOnce() -> T) -> T {
     run()
 }
 
-fn grant(file: &FileRef) -> Result<ContentGrant> {
+fn grant(file: &FileRef) -> Result<(AuthorityRoot, ContentGrant)> {
     let issuer = AuthorityRoot::new(
         "pinned",
         [2; 32],
@@ -53,14 +53,15 @@ fn grant(file: &FileRef) -> Result<ContentGrant> {
         Some(AgentId::from_bytes([1; 16])),
         &mut None,
     )?;
-    ContentGrant::verify(
+    let grant = ContentGrant::verify(
         &issuer.verifier(&mut None)?,
         &scope,
         file.volume(),
         VolumeOperation::Write,
         u64::MAX,
         &mut None,
-    )
+    )?;
+    Ok((issuer, grant))
 }
 
 struct Clock;
@@ -70,9 +71,12 @@ impl acyclic_stream::UnixMillisClock for Clock {
     }
 }
 
-async fn initialize(prefix: usize, bytes: &[u8]) -> Result<(Arc<Host>, FileRef, ContentGrant)> {
-    let (host, file, grant, _) = initialize_with_stream(prefix, bytes).await?;
-    Ok((host, file, grant))
+async fn initialize(
+    prefix: usize,
+    bytes: &[u8],
+) -> Result<(Arc<Host>, FileRef, ContentGrant, AuthorityRoot)> {
+    let (host, file, grant, _, issuer) = initialize_with_stream(prefix, bytes).await?;
+    Ok((host, file, grant, issuer))
 }
 
 type Initialized = (
@@ -80,6 +84,7 @@ type Initialized = (
     FileRef,
     ContentGrant,
     Arc<acyclic_stream::MemoryStream>,
+    AuthorityRoot,
 );
 
 async fn initialize_with_stream(prefix: usize, bytes: &[u8]) -> Result<Initialized> {
@@ -92,7 +97,7 @@ async fn initialize_with_stream(prefix: usize, bytes: &[u8]) -> Result<Initializ
     let objects = acyclic_objects::MemoryObjects::memory();
     let filesystem = Fs::from_memory_providers(stream.clone(), Arc::new(objects));
     let (host, file) = fixture_with_filesystem(b"seed", filesystem).await?;
-    let grant = grant(&file)?;
+    let (issuer, grant) = grant(&file)?;
     let workspace = workspace_ref(
         host.provider.clone(),
         &file.volume().storage_name(&mut None)?,
@@ -135,7 +140,7 @@ async fn initialize_with_stream(prefix: usize, bytes: &[u8]) -> Result<Initializ
         &IdempotencyKey::new("later-head")?,
     )
     .await?;
-    Ok((host, target, grant, stream))
+    Ok((host, target, grant, stream, issuer))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -219,7 +224,7 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
                                 .block_on(initialize(prefix, b"published bytes"))
                                 .unwrap()
                         },
-                        |(host, source, grant)| {
+                        |(host, source, grant, _issuer)| {
                             with_reopen(old, || {
                                 ITEMS.set(None);
                                 let mut result = None;
@@ -606,7 +611,7 @@ fn published_content_retries_and_recovery_do_not_append_retention_records() -> R
         .map_err(|error| Error::Storage(error.to_string()))?;
     for entry in [Entry::Create, Entry::Retry, Entry::Observe] {
         for native in [false, true] {
-            let (host, source, grant, stream) =
+            let (host, source, grant, stream, _issuer) =
                 runtime.block_on(initialize_with_stream(0, b"original"))?;
             let page =
                 runtime.block_on(stream.children_page(acyclic_stream::ChildrenPageRequest {

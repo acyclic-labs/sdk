@@ -19,7 +19,7 @@ async fn published(body: &[u8]) -> Result<(Arc<Host>, FileRef)> {
     )?;
     let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     host.create_volume(&volume).await?;
-    let grant = grant(&volume, VolumeOperation::Write)?;
+    let (_issuer, grant) = grant(&volume, VolumeOperation::Write)?;
     let file = host
         .put_content(
             &volume,
@@ -37,7 +37,7 @@ async fn published(body: &[u8]) -> Result<(Arc<Host>, FileRef)> {
     Ok((host, file))
 }
 
-fn grant(volume: &VolumeRef, operation: VolumeOperation) -> Result<ContentGrant> {
+fn grant(volume: &VolumeRef, operation: VolumeOperation) -> Result<(AuthorityRoot, ContentGrant)> {
     let issuer = AuthorityRoot::new(
         "ranges",
         [3; 32],
@@ -70,7 +70,7 @@ fn grant(volume: &VolumeRef, operation: VolumeOperation) -> Result<ContentGrant>
             &mut None,
         )?
     };
-    Ok(grant)
+    Ok((issuer, grant))
 }
 
 async fn ordinary(body: &[u8]) -> Result<(Arc<Host>, FileRef)> {
@@ -88,10 +88,11 @@ async fn ordinary(body: &[u8]) -> Result<(Arc<Host>, FileRef)> {
             &IdempotencyKey::new("ordinary")?,
         )
         .await?;
+    let (_issuer, read) = grant(volume, VolumeOperation::Read)?;
     let (reference, actual) = host
         .read_private_path(
             volume,
-            &grant(volume, VolumeOperation::Read)?,
+            &read,
             "ordinary",
             Some(&generation),
             body.len() as u64,
@@ -252,7 +253,7 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
     let body: Vec<u8> = (0..2 * 1024 * 1024).map(|index| index as u8).collect();
     let (host, file) = ordinary(&body).await?;
     let volume = file.volume();
-    let read = grant(volume, VolumeOperation::Read)?;
+    let (_issuer, read) = grant(volume, VolumeOperation::Read)?;
     let workspace = bounded_io::content_workspace(&host.provider, volume, None)?;
     host.apply(
         &workspace,
