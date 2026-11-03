@@ -381,7 +381,7 @@ case "$lane" in
     bash scripts/test-ensure-rust-target.sh
     node scripts/check-workflow-runners.mjs
     node --test scripts/harness-provider-evidence.test.mjs
-    node --test scripts/qualify-main-green-debts.test.mjs
+    node --test scripts/qualify-main-green-debts.test.mjs scripts/test-support/libtest.test.mjs
     node --test scripts/check-harness-package.test.mjs scripts/check-machines-package.test.mjs scripts/ci-background-log.test.mjs
     install_tool actionlint_1.7.7_linux_amd64.tar.gz \
       https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz \
