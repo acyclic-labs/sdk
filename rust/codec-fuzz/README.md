@@ -46,6 +46,11 @@ actual JSON command and a NUL separator. Assembly inputs instead prefix the
 original Staged invocation before the whole command. They check the public
 assembly boundary's agent, command kind and retained invocation; host storage,
 digest verification and multi-frame transport remain separate obligations.
+Outer-response inputs prefix the original invocation before the response from
+`AgentCall::reply`. The public `PreparedAgentInvocation::send` path admits those
+bytes, including refusal and Unknown results, and must reject unknown/duplicate
+protobuf fields and preserve a non-200 Actors status. Its byte source is immediate;
+this exercises response admission without modeling a network or its failures.
 These selectors are not product formats.
 Malformed base64 is derived from admitted content while retaining its original
 encoded length and range. Writer inputs include content encoding to JSON field
