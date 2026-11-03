@@ -122,4 +122,56 @@ pub async fn check(input: &[u8]) {
             assert_eq!(result.unwrap()["ok"], false, "invalid UTF-8 must refuse");
         }
     }
+    // Unlike a failed send, retirement after recv must wake the original
+    // oneshot wait. Keep the real blocking-pool boundary in this control.
+    for console in [false, true] {
+        for retire in [true, false] {
+            if !console && !retire {
+                continue; // Successful tool replies are checked above.
+            }
+            let work = native_work(false);
+            let baseline = work.live_allocation_bytes();
+            let allocator = EngineAllocator::new(Some(&work));
+            let failure = allocator.failure();
+            let source = if console {
+                format!("await console.log({literal})")
+            } else {
+                format!("await tools[{tool_name}]({{}})")
+            };
+            let (send, mut receive) = tokio::sync::mpsc::channel(1);
+            let run = acyclic_native_runtime::blocking_future(interpreter::run(
+                source,
+                definitions.clone(),
+                send,
+                tokio_util::sync::CancellationToken::new(),
+                4096,
+                allocator,
+                16,
+            ));
+            let dispatch = async move {
+                let Some(request) = receive.recv().await else {
+                    return false;
+                };
+                drop(receive);
+                if !retire {
+                    let super::Request::Log { reply, .. } = request else {
+                        panic!("console must use its original log request");
+                    };
+                    let _ = reply.send(None);
+                }
+                true // Otherwise dropping request retires its reply producer.
+            };
+            let (result, admitted) = futures::join!(run, dispatch);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+            if failure.lock().unwrap().is_none() {
+                assert!(admitted, "the engine must submit its original RPC");
+                let result = result.expect("the original blocking pool must execute");
+                if retire {
+                    assert!(result.is_err(), "a retired reply producer must refuse");
+                } else {
+                    assert_eq!(result.unwrap(), serde_json::Value::Null);
+                }
+            }
+        }
+    }
 }
