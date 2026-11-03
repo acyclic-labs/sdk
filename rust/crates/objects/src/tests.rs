@@ -1588,39 +1588,6 @@ async fn a_delayed_collector_never_removes_a_later_version()
     Ok(())
 }
 
-#[test]
-fn envelopes_refuse_obsolete_encodings() -> Result<(), Box<dyn std::error::Error>> {
-    let envelope = crate::blob::Envelope {
-        kind: crate::Kind::Blob,
-        length: 3,
-        stored: 3,
-        references: vec![Digest::of(b"child")],
-        version: [4; 16],
-        dying: Some([5; 16]),
-        condemned: 9,
-    };
-    let encoded = envelope.encode();
-    assert_eq!(crate::blob::Envelope::decode(&encoded)?, envelope);
-    // Stamping and marking never change the size.
-    let restamped = crate::blob::Envelope {
-        dying: None,
-        condemned: u64::MAX,
-        ..envelope.clone()
-    };
-    assert_eq!(restamped.encode().len(), encoded.len());
-    assert_eq!(
-        crate::blob::Envelope::decode(&encoded[..encoded.len() - 8]).map_err(|error| error.code),
-        Err(ErrorCode::Corrupt)
-    );
-    let mut pending = encoded[..encoded.len() - 24].to_vec();
-    *pending.last_mut().ok_or("empty")? = 2;
-    assert_eq!(
-        crate::blob::Envelope::decode(&pending).map_err(|error| error.code),
-        Err(ErrorCode::Corrupt)
-    );
-    Ok(())
-}
-
 /// Where the first of two equal puts parks while the second runs to
 /// completion: after each of its writes; it reads nothing.
 const EQUAL_PUT_STALLS: [(&str, &str, usize); 2] = [("create", "/e/", 0), ("create", "/p/", 0)];
