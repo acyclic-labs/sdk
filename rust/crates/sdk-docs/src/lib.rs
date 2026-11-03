@@ -23,6 +23,9 @@ mod child;
 pub mod concrete_versions;
 /// Native projections and immutable identities for historical releases.
 pub mod historical;
+#[cfg(test)]
+#[path = "../fuzz/metadata_output.rs"]
+mod metadata_output_oracle;
 #[doc(hidden)]
 pub mod path_identity;
 #[doc(hidden)]
@@ -35,7 +38,7 @@ mod render_cache;
 pub use child::with_command_executor;
 pub use child::{command, command_environment, with_command_environment};
 #[doc(hidden)]
-pub use child::{command_directory, execute_metadata, CommandOutput};
+pub use child::{command_directory, decode_metadata_output, execute_metadata, CommandOutput};
 pub use render_cache::{read_rustdoc, read_rustdoc_json, rustdoc_worker, with_rustdoc_cache};
 /// Cargo/Rustdoc-owned profile projections.
 pub mod rustdoc_profiles;

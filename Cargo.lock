@@ -7775,6 +7775,7 @@ dependencies = [
  "cargo_metadata",
  "libfuzzer-sys",
  "rustdoc-types 0.60.0",
+ "sdk-docs",
  "serde_json",
 ]
 
