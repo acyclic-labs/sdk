@@ -1,4 +1,4 @@
-//! Schedule the production journal owner, including its pre-fix negative control.
+//! Schedule the production journal owner and its registered waiter cancellation.
 //! Tokio is the real primitive; its internal atomics are not Loom-instrumented.
 #![cfg(loom)]
 
@@ -7,7 +7,7 @@ mod skill_materializer;
 
 use crate::sync::owned::block_on;
 
-fn schedule<const SERIALIZE: bool>() {
+fn schedule() {
     use loom::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -19,7 +19,7 @@ fn schedule<const SERIALIZE: bool>() {
             let owner = owner.clone();
             let head = head.clone();
             loom::thread::spawn(move || {
-                let _guard = SERIALIZE.then(|| block_on(owner.enter()));
+                let _guard = block_on(owner.enter());
                 let pinned = head.load(Ordering::SeqCst);
                 loom::thread::yield_now();
                 assert!(
@@ -38,22 +38,7 @@ fn schedule<const SERIALIZE: bool>() {
 
 #[test]
 fn journal_owner_serializes_first_publications() {
-    loom::model(schedule::<true>);
-}
-
-#[test]
-fn former_independent_publishers_can_conflict() {
-    let failure = std::panic::catch_unwind(|| loom::model(schedule::<false>))
-        .expect_err("negative control must conflict");
-    let text = failure
-        .downcast_ref::<String>()
-        .map(String::as_str)
-        .or_else(|| failure.downcast_ref::<&str>().copied())
-        .unwrap_or("");
-    assert!(
-        text.contains("materialization conflict"),
-        "unexpected model failure: {text}"
-    );
+    loom::model(schedule);
 }
 
 #[test]
