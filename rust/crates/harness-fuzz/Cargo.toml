@@ -138,6 +138,14 @@ doc = false
 bench = false
 
 [[bin]]
+name = "graphcoder_input"
+path = "fuzz_targets/graphcoder_input.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "mock_model_script"
 path = "fuzz_targets/mock_model_script.rs"
 test = false

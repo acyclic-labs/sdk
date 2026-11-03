@@ -1,16 +1,27 @@
-"""Replay the shipped argv corpus and detect an actual admission defect."""
+"""Replay one shipped input corpus and detect its production admission defect."""
+import argparse
 from pathlib import Path
 import subprocess
 import sys
 
 root = Path(__file__).resolve().parents[3]
-source = root / "rust/crates/harness/src/bin/graphcoder/args.rs"
-corpus = "rust/crates/harness-fuzz/corpus/graphcoder_args"
-command = [
-    "cargo", "+nightly-2026-07-01", "fuzz", "run", "--dev",
-    "--fuzz-dir", "rust/crates/harness-fuzz", "graphcoder_args",
-]
 recovery = "python3 rust/crates/harness-fuzz/graphcoder-args-control.py"
+controls = {
+    "graphcoder_args": (
+        "args.rs",
+        b"if self.input_format == InputFormat::Jsonl && self.operation.is_none() {",
+        b"if false {",
+        "exec-missing-operation",
+        b"JSONL requires an operation identity",
+    ),
+    "graphcoder_input": (
+        "headless/input.rs",
+        b"#[serde(untagged, deny_unknown_fields)]",
+        b"#[serde(untagged)]",
+        "mixed-actions",
+        b"a request must select exactly one action without unknown fields",
+    ),
+}
 
 
 def require(condition, step):
@@ -18,9 +29,13 @@ def require(condition, step):
         raise RuntimeError(f"step={step}; recovery: {recovery}")
 
 
-def run(seed):
+def run(target, seed, witness):
     child = subprocess.Popen(
-        [*command, seed, "--", "-runs=0", "-print_final_stats=1"],
+        [
+            "cargo", "+nightly-2026-07-01", "fuzz", "run", "--dev",
+            "--fuzz-dir", "rust/crates/harness-fuzz", target, seed,
+            "--", "-runs=0", "-print_final_stats=1",
+        ],
         cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
     found = False
@@ -28,33 +43,39 @@ def run(seed):
         for line in child.stdout:
             sys.stdout.buffer.write(line)
             sys.stdout.buffer.flush()
-            found |= b"JSONL requires an operation identity" in line
+            found |= witness in line
     return child.returncode, found
 
 
-def main():
+def qualify(target):
+    filename, guard, replacement, seed, witness = controls[target]
+    source = root / "rust/crates/harness/src/bin/graphcoder" / filename
+    corpus = f"rust/crates/harness-fuzz/corpus/{target}"
     original = source.read_bytes()
-    guard = b"if self.input_format == InputFormat::Jsonl && self.operation.is_none() {"
-    require(original.count(guard) == 1, "locate original operation admission")
+    require(original.count(guard) == 1, f"locate original {target} admission")
     try:
-        source.write_bytes(original.replace(guard, b"if false {"))
-        code, found = run(f"{corpus}/exec-missing-operation")
+        source.write_bytes(original.replace(guard, replacement))
+        code, found = run(target, f"{corpus}/{seed}", witness)
         require(
             code != 0 and found,
-            "unchanged oracle must detect removed production operation admission",
+            f"unchanged oracle must detect removed production {target} admission",
         )
-        print("planted defect: original operation admission omission detected", flush=True)
+        print(f"{target}: planted production admission defect detected", flush=True)
     finally:
         source.write_bytes(original)
     require(source.read_bytes() == original, "restore production source")
-    code, _ = run(corpus)
-    require(code == 0, "replay production argv corpus")
-    print("production argv corpus passed; planted-defect oracle passed", flush=True)
+    code, _ = run(target, corpus, witness)
+    require(code == 0, f"replay production {target} corpus")
+    print(f"{target}: production corpus and planted-defect oracle passed", flush=True)
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("target", nargs="?", choices=controls, default="graphcoder_args")
+    target = parser.parse_args().target
+    recovery = f"{recovery} {target}"
     try:
-        main()
+        qualify(target)
     except (OSError, RuntimeError) as error:
-        print(f"step=qualify argv fuzz oracle: {error}; recovery: {recovery}", file=sys.stderr)
+        print(f"step=qualify {target} fuzz oracle: {error}; recovery: {recovery}", file=sys.stderr)
         sys.exit(1)
