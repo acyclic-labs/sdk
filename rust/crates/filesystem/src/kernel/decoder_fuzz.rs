@@ -98,9 +98,130 @@ fn decode<const PLANTED: bool>(
     })
 }
 
+fn fixture(kind: u8, payload: &[u8], number: u64) -> Vec<u8> {
+    match kind {
+        0 => encode_file_metadata(
+            FileMetadata {
+                posix_uid: MetadataField::Value(number as u32),
+                created_ns: MetadataField::Value(number as i64),
+                ..FileMetadata::default()
+            },
+            |_| Ok::<_, FsError>(()),
+            |_| CanonicalDecodeError::AllocationFailed.into(),
+        )
+        .unwrap(),
+        1 => encode_generation_root(
+            &GenerationRoot {
+                volume_id: VolumeId::from_bytes([1; 16]),
+                root_file_id: FileId::from_bytes([2; 16]),
+                file_table: ObjectId {
+                    storage: None,
+                    kind: ObjectKind::FileTablePage,
+                    digest: Digest::from_bytes([3; 32]),
+                },
+                parents: (0..number % 3)
+                    .map(|index| GenerationId::new(Digest::from_bytes([index as u8; 32])))
+                    .collect(),
+                required_features: 0,
+            },
+            |_| Ok::<_, FsError>(()),
+            |_| CanonicalDecodeError::AllocationFailed.into(),
+        )
+        .unwrap(),
+        2 => encode_file_table_page(
+            &FileTablePage::Leaf(vec![FileRecord {
+                bindings: None,
+                file_id: FileId::from_bytes([2; 16]),
+                kind: FileKind::Regular,
+                link_count: 1,
+                metadata: ObjectId {
+                    storage: None,
+                    kind: ObjectKind::Metadata,
+                    digest: Digest::from_bytes([3; 32]),
+                },
+                payload: FilePayload::InlineRegular(InlineFileData::new(payload).unwrap()),
+            }]),
+            32,
+            |_| Ok::<_, FsError>(()),
+            |_| CanonicalDecodeError::AllocationFailed.into(),
+        )
+        .unwrap(),
+        3 => encode_tree_page(
+            &TreePage::Leaf(vec![TreeEntry {
+                name: LogicalName::new(
+                    NameEncoding::Utf8,
+                    format!("n{number:016x}").into_bytes(),
+                    256,
+                )
+                .unwrap(),
+                file_id: FileId::from_bytes([2; 16]),
+                kind: FileKind::Regular,
+            }]),
+            32,
+            |_| Ok::<_, FsError>(()),
+            |_| CanonicalDecodeError::AllocationFailed.into(),
+        )
+        .unwrap(),
+        4 => encode_extent_page(
+            &ExtentPage::Leaf(vec![Extent {
+                offset: 0,
+                length: number % 65 + 1,
+                kind: ExtentKind::Hole,
+            }]),
+            32,
+            |_| Ok::<_, FsError>(()),
+            |_| CanonicalDecodeError::AllocationFailed.into(),
+        )
+        .unwrap(),
+        _ => {
+            let binding = |parent: u8, name: String| bindings::Binding {
+                parent: FileId::from_bytes([parent; 16]),
+                name: LogicalName::new(NameEncoding::Utf8, name.into_bytes(), 256).unwrap(),
+            };
+            let first = binding(2, format!("n{number:016x}"));
+            let leaf = [first.clone(), binding(3, format!("p{}", payload.len()))];
+            let children = [persistent_btree::Child {
+                first,
+                page: ObjectId {
+                    storage: None,
+                    kind: ObjectKind::BindingPage,
+                    digest: Digest::from_bytes([4; 32]),
+                },
+            }];
+            let page = if number % 2 == 0 {
+                persistent_btree::PageRef::Leaf(&leaf)
+            } else {
+                persistent_btree::PageRef::Internal(&children)
+            };
+            bindings::encode_binding_page(
+                &page,
+                32,
+                |_| Ok::<_, FsError>(()),
+                |_| CanonicalDecodeError::AllocationFailed.into(),
+            )
+            .unwrap()
+        }
+    }
+}
+
 /// Fuzz bytes, limits, cancellation and injected before-effect decoder failures.
 pub fn check(input: &[u8]) {
     records::check(input);
+    let kind = input.first().copied().unwrap_or(0) % KINDS;
+    let mut word = [0; 8];
+    let length = input.len().min(word.len());
+    word[..length].copy_from_slice(&input[..length]);
+    let encoded = fixture(
+        kind,
+        &input[..input.len().min(65)],
+        u64::from_le_bytes(word),
+    );
+    let mut writer = vec![kind, 255, 255, 0, 0, 0];
+    writer.extend_from_slice(&encoded);
+    assert!(
+        check_inner::<false, false>(&writer),
+        "original filesystem page writer refused kind {kind}"
+    );
     let _ = check_inner::<false, false>(input);
 }
 
@@ -262,112 +383,6 @@ mod tests {
     use crate::foundation::{Digest, FileId, GenerationId, VolumeId};
     use crate::storage::{ObjectId, ObjectKind};
     use proptest::prelude::*;
-
-    fn fixture(kind: u8, payload: &[u8], number: u64) -> Vec<u8> {
-        match kind {
-            0 => encode_file_metadata(
-                FileMetadata {
-                    posix_uid: MetadataField::Value(number as u32),
-                    created_ns: MetadataField::Value(number as i64),
-                    ..FileMetadata::default()
-                },
-                |_| Ok::<_, FsError>(()),
-                |_| CanonicalDecodeError::AllocationFailed.into(),
-            )
-            .unwrap(),
-            1 => encode_generation_root(
-                &GenerationRoot {
-                    volume_id: VolumeId::from_bytes([1; 16]),
-                    root_file_id: FileId::from_bytes([2; 16]),
-                    file_table: ObjectId {
-                        storage: None,
-                        kind: ObjectKind::FileTablePage,
-                        digest: Digest::from_bytes([3; 32]),
-                    },
-                    parents: (0..number % 3)
-                        .map(|index| GenerationId::new(Digest::from_bytes([index as u8; 32])))
-                        .collect(),
-                    required_features: 0,
-                },
-                |_| Ok::<_, FsError>(()),
-                |_| CanonicalDecodeError::AllocationFailed.into(),
-            )
-            .unwrap(),
-            2 => encode_file_table_page(
-                &FileTablePage::Leaf(vec![FileRecord {
-                    bindings: None,
-                    file_id: FileId::from_bytes([2; 16]),
-                    kind: FileKind::Regular,
-                    link_count: 1,
-                    metadata: ObjectId {
-                        storage: None,
-                        kind: ObjectKind::Metadata,
-                        digest: Digest::from_bytes([3; 32]),
-                    },
-                    payload: FilePayload::InlineRegular(InlineFileData::new(payload).unwrap()),
-                }]),
-                32,
-                |_| Ok::<_, FsError>(()),
-                |_| CanonicalDecodeError::AllocationFailed.into(),
-            )
-            .unwrap(),
-            3 => encode_tree_page(
-                &TreePage::Leaf(vec![TreeEntry {
-                    name: LogicalName::new(
-                        NameEncoding::Utf8,
-                        format!("n{number:016x}").into_bytes(),
-                        256,
-                    )
-                    .unwrap(),
-                    file_id: FileId::from_bytes([2; 16]),
-                    kind: FileKind::Regular,
-                }]),
-                32,
-                |_| Ok::<_, FsError>(()),
-                |_| CanonicalDecodeError::AllocationFailed.into(),
-            )
-            .unwrap(),
-            4 => encode_extent_page(
-                &ExtentPage::Leaf(vec![Extent {
-                    offset: 0,
-                    length: number % 65 + 1,
-                    kind: ExtentKind::Hole,
-                }]),
-                32,
-                |_| Ok::<_, FsError>(()),
-                |_| CanonicalDecodeError::AllocationFailed.into(),
-            )
-            .unwrap(),
-            _ => {
-                let binding = |parent: u8, name: String| bindings::Binding {
-                    parent: FileId::from_bytes([parent; 16]),
-                    name: LogicalName::new(NameEncoding::Utf8, name.into_bytes(), 256).unwrap(),
-                };
-                let first = binding(2, format!("n{number:016x}"));
-                let leaf = [first.clone(), binding(3, format!("p{}", payload.len()))];
-                let children = [persistent_btree::Child {
-                    first,
-                    page: ObjectId {
-                        storage: None,
-                        kind: ObjectKind::BindingPage,
-                        digest: Digest::from_bytes([4; 32]),
-                    },
-                }];
-                let page = if number % 2 == 0 {
-                    persistent_btree::PageRef::Leaf(&leaf)
-                } else {
-                    persistent_btree::PageRef::Internal(&children)
-                };
-                bindings::encode_binding_page(
-                    &page,
-                    32,
-                    |_| Ok::<_, FsError>(()),
-                    |_| CanonicalDecodeError::AllocationFailed.into(),
-                )
-                .unwrap()
-            }
-        }
-    }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
