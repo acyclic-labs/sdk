@@ -467,6 +467,7 @@ name = "acyclic-guest-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-actors",
+ "acyclic-conformance",
  "acyclic-objects",
  "acyclic-stream",
  "libfuzzer-sys",

@@ -77,7 +77,6 @@ def main():
                     "max_event_bytes": 1024 * 1024, "models": {"conformance-tiny": {
                         "capacity": {"context_tokens": 2048, "output_tokens": 128},
                         "features": {"tools": True, "images": False}}}},
-                "options": {"temperature": 0, "seed": 1, "chat_template_kwargs": {"enable_thinking": False}},
                 "usage": usage["text"], "tool_usage": [usage["tool"], usage["result"]],
                 "context_input": cases["context"]["messages"][0]["content"],
                 "rate_source": "real nginx limit_req configured at 1 request/minute, limit_req_status 429"}
