@@ -16,7 +16,7 @@ pub use super::workspace::HOST_VIEW_ROOT;
 
 /// Checks that `reference` names an `agents/<reference>` mount; a spawn
 /// checks it before committing the child.
-pub(super) fn child_reference(reference: &str) -> Result<()> {
+pub(crate) fn child_reference(reference: &str) -> Result<()> {
     let portable = !reference.is_empty()
         && reference.len() <= 255
         && reference != "."

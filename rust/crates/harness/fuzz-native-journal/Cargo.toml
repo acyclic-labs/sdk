@@ -37,3 +37,10 @@ path = "fuzz_targets/native_receipt.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "native_child_reference"
+path = "fuzz_targets/native_child_reference.rs"
+test = false
+doc = false
+bench = false

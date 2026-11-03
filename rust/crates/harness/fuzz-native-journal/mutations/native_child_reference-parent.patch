@@ -1,0 +1,10 @@
+--- a/rust/crates/harness/src/local/host_workspace.rs
++++ b/rust/crates/harness/src/local/host_workspace.rs
+@@ -20,7 +20,6 @@
+     let portable = !reference.is_empty()
+         && reference.len() <= 255
+         && reference != "."
+-        && reference != ".."
+         && reference
+             .bytes()
+             .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte));
