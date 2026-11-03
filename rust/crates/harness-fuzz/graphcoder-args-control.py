@@ -89,6 +89,13 @@ additional_controls = {
     "native_settings": [
         (
             "rust/crates/harness-core/src/native_settings.rs",
+            b"if hooks && config.trust_project_hooks {",
+            b"if hooks {",
+            "project-server",
+            b"hook sources must follow their independent trust role",
+        ),
+        (
+            "rust/crates/harness-core/src/native_settings.rs",
             b"if config.trust_project_mcp {",
             b"if true {",
             "project-server",
