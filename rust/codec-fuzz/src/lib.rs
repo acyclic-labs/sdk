@@ -434,7 +434,155 @@ pub fn identities(bytes: &[u8]) {
     }
 }
 
+/// Capture the deployed Actors writers and require their original values to
+/// survive admission. The fuzz oracle shares these producers with capture so
+/// a decoder which rejects everything cannot vacuously satisfy round trips.
+pub fn actor_seeds()
+-> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn std::error::Error>> {
+    use acyclic_actors::{
+        domain,
+        guest::{self, Handler as _, wire},
+        invocation::Invocation,
+        local::{State, Store},
+    };
+    use acyclic_auth::addressing::ActorReference;
+    use acyclic_stream::{CommitId, CommitMutation, MemoryStream, StreamPath};
+    use bytes::Bytes;
+    use std::{collections::BTreeMap, sync::Arc};
+
+    let actor = ActorReference::new(b"account", b"namespace", b"codec")?;
+    let invocation = Invocation::new(
+        StreamPath::new("invoke-control/caller")?,
+        actor.clone(),
+        "inbox".into(),
+        Bytes::from_static(b"operation"),
+        Bytes::from_static(b"request"),
+    )?;
+    let encoded = invocation.record(&StreamPath::new("codec/actors/state")?)?;
+    let record = acyclic_stream::Record {
+        sequence: 0,
+        value: encoded.value,
+        headers: encoded.headers,
+        commit_id: CommitId::from_bytes([1; 32]),
+        committed_at_micros: 42,
+        origin: StreamPath::new("codec/actors/inbox")?,
+    };
+    let invocation_bytes = acyclic_stream::wire_codec::record_wire(record, None).encode_to_vec();
+    let record = acyclic_stream::wire_codec::record(
+        acyclic_stream::wire::Record::decode(invocation_bytes.as_slice())?,
+        None,
+    )?;
+    assert_eq!(
+        Invocation::decode(&record)?,
+        Some(invocation),
+        "invocation writer must be admitted"
+    );
+    let mut seeds = vec![(
+        "invocation",
+        invocation_bytes,
+        "Invocation::record and wire_codec::record_wire",
+    )];
+    for (name, bytes) in acyclic_actors::reservation::codec_fuzz::seeds()? {
+        seeds.push((
+            name,
+            bytes,
+            "actors::reservation canonical request/decision/checkpoint encoder",
+        ));
+    }
+    let artifact = guest::Checkpoint {
+        codec: guest::CodecIdentity {
+            name: "codec".into(),
+            version: "1".into(),
+        },
+        bytes: Bytes::from_static(b"checkpoint"),
+    };
+    let bytes = serde_json::to_vec(&artifact)?;
+    assert_eq!(
+        serde_json::from_slice::<guest::Checkpoint>(&bytes)?,
+        artifact
+    );
+    seeds.push((
+        "artifact-checkpoint",
+        bytes,
+        "serde_json::to_vec(guest::Checkpoint) with current artifact codec identity",
+    ));
+    let package = acyclic_actors::reservation::Package::new(
+        domain::CodeSha256::new(vec![1; 32])?,
+        domain::ActorLimits::new(1, 1024, 4096)?,
+    );
+    let manifest = package.manifest();
+    let bytes = wire::encode_manifest(manifest);
+    let admitted = wire::decode_manifest(&bytes)?;
+    assert_eq!(admitted.code, manifest.code);
+    assert_eq!(admitted.codec, manifest.codec);
+    assert_eq!(admitted.subscriptions, manifest.subscriptions);
+    assert_eq!(admitted.interrupts, manifest.interrupts);
+    assert_eq!(admitted.bindings, manifest.bindings);
+    assert_eq!(admitted.limits, manifest.limits);
+    seeds.push((
+        "manifest",
+        bytes,
+        "guest::wire::encode_manifest(reservation::Package::manifest)",
+    ));
+    let store = Store::new(
+        Arc::new(MemoryStream::default()),
+        StreamPath::new("codec/actors")?,
+    );
+    let checkpoint = acyclic_actors::reservation::initial_checkpoint(7)?;
+    let effects = store.create(&actor, BTreeMap::new(), Some(checkpoint.clone()))?;
+    let CommitMutation::Append { records, .. } = &effects[0].mutation else {
+        return Err("actor creation did not append state".into());
+    };
+    let bytes = records
+        .first()
+        .ok_or("actor creation emitted no state")?
+        .value
+        .to_vec();
+    let state = State::decode(&bytes)?;
+    assert_eq!(state.checkpoint(), Some(&checkpoint));
+    assert_eq!(state.epoch(), 0);
+    assert!(state.subscriptions().is_empty());
+    assert_eq!(state.encode(), bytes);
+    seeds.push(("state", bytes, "local::Store::create state encoder"));
+    let delivery = guest::Delivery {
+        actor,
+        epoch: 1,
+        trigger: guest::Trigger::Alarm {
+            generation: 1,
+            now_unix_ms: 42,
+        },
+        now_unix_ms: 42,
+        record: None,
+        subscriptions: guest::SubscriptionCuts::new(
+            StreamPath::new("codec/actors/state")?,
+            CommitId::from_bytes([1; 32]),
+            BTreeMap::new(),
+        ),
+    };
+    let bytes = wire::encode_delivery(&delivery, Some(&checkpoint));
+    assert_eq!(
+        wire::decode_delivery(&bytes)?,
+        (delivery, Some(checkpoint.clone()))
+    );
+    seeds.push(("delivery", bytes, "guest::wire::encode_delivery"));
+    let transition = guest::Transition {
+        response: None,
+        checkpoint,
+        alarm: guest::AlarmChange::Keep,
+        effects: effects.into(),
+        participant: None,
+    };
+    let bytes = wire::encode_transition(&transition)?;
+    assert_eq!(wire::decode_transition(&bytes)?, transition);
+    seeds.push(("transition", bytes, "guest::wire::encode_transition"));
+    Ok(seeds)
+}
+
 pub fn actor_codecs(bytes: &[u8]) {
+    static WRITERS: std::sync::LazyLock<()> = std::sync::LazyLock::new(|| {
+        actor_seeds().expect("Actors decoders must admit their production writers");
+    });
+    std::sync::LazyLock::force(&WRITERS);
     use acyclic_actors::{guest::wire, local::State};
     assert!(acyclic_actors::reservation::codec_fuzz::check(bytes));
     if let Ok(checkpoint) = serde_json::from_slice::<acyclic_actors::guest::Checkpoint>(bytes) {

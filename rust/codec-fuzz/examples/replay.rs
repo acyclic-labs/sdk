@@ -39,7 +39,7 @@ fn external_expectations() -> Result<BTreeMap<String, (String, String)>, Box<dyn
     Ok(expectations)
 }
 
-fn replay() -> Result<usize, Box<dyn Error>> {
+fn replay(selected: Option<&str>) -> Result<usize, Box<dyn Error>> {
     let mut expectations = external_expectations()?;
     let sources = [
         ("corpus", std::fs::read_to_string("corpus/SOURCES.tsv")?),
@@ -60,6 +60,9 @@ fn replay() -> Result<usize, Box<dyn Error>> {
                 return Err(format!("duplicate captured name: {name}").into());
             }
             let (target, _) = name.split_once('/').ok_or("captured name has no target")?;
+            if selected.is_some_and(|selected| selected != target) {
+                continue;
+            }
             let bytes = std::fs::read(Path::new("corpus").join(name))?;
             if bytes.len() != length.parse::<usize>()?
                 || hex::encode(Sha256::digest(&bytes)) != *digest
@@ -97,7 +100,9 @@ fn replay() -> Result<usize, Box<dyn Error>> {
             count += 1;
         }
     }
-    if !expectations.is_empty() {
+    if expectations.keys().any(|name| {
+        selected.is_none_or(|target| name.split_once('/').is_some_and(|(own, _)| own == target))
+    }) {
         return Err("external expectations have no captured input".into());
     }
     if count == 0 {
@@ -107,7 +112,8 @@ fn replay() -> Result<usize, Box<dyn Error>> {
 }
 
 fn main() {
-    match std::panic::catch_unwind(replay) {
+    let selected = std::env::args().nth(1);
+    match std::panic::catch_unwind(|| replay(selected.as_deref())) {
         Ok(Ok(count)) => println!("replayed {count} captured inputs"),
         Ok(Err(error)) => {
             eprintln!(

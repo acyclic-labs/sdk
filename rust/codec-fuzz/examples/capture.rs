@@ -856,14 +856,9 @@ fn capture_identity_vectors() -> Result<(), Box<dyn Error>> {
 }
 
 fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
-    use acyclic_actors::{
-        domain,
-        guest::{self, Handler as _},
-    };
     use acyclic_auth::addressing::{ActorReference, ResourceIdentity};
-    use acyclic_stream::{CommitId, CommitMutation, MemoryStream, StreamPath};
+    use acyclic_stream::{CommitId, StreamPath};
     use bytes::Bytes;
-    use std::{collections::BTreeMap, sync::Arc};
     for (name, bytes) in acyclic_codec_fuzz::auth_addressing::seeds()? {
         save(
             "identities",
@@ -888,116 +883,9 @@ fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
         "ResourceIdentity::encode",
         manifest,
     )?;
-    let invocation = acyclic_actors::invocation::Invocation::new(
-        acyclic_stream::StreamPath::new("invoke-control/caller")?,
-        actor.clone(),
-        "inbox".into(),
-        Bytes::from_static(b"operation"),
-        Bytes::from_static(b"request"),
-    )?;
-    let encoded = invocation.record(&StreamPath::new("codec/actors/state")?)?;
-    let record = acyclic_stream::Record {
-        sequence: 0,
-        value: encoded.value,
-        headers: encoded.headers,
-        commit_id: CommitId::from_bytes([1; 32]),
-        committed_at_micros: 42,
-        origin: StreamPath::new("codec/actors/inbox")?,
-    };
-    save(
-        "actor_codecs",
-        "invocation",
-        &acyclic_stream::wire_codec::record_wire(record, None).encode_to_vec(),
-        "Invocation::record and wire_codec::record_wire",
-        manifest,
-    )?;
-    for (name, bytes) in acyclic_actors::reservation::codec_fuzz::seeds()? {
-        save(
-            "actor_codecs",
-            name,
-            &bytes,
-            "actors::reservation canonical request/decision/checkpoint encoder",
-            manifest,
-        )?;
+    for (name, bytes, producer) in acyclic_codec_fuzz::actor_seeds()? {
+        save("actor_codecs", name, &bytes, producer, manifest)?;
     }
-    save(
-        "actor_codecs",
-        "artifact-checkpoint",
-        &serde_json::to_vec(&guest::Checkpoint {
-            codec: guest::CodecIdentity {
-                name: "codec".into(),
-                version: "1".into(),
-            },
-            bytes: Bytes::from_static(b"checkpoint"),
-        })?,
-        "serde_json::to_vec(guest::Checkpoint) with current artifact codec identity",
-        manifest,
-    )?;
-    let package = acyclic_actors::reservation::Package::new(
-        domain::CodeSha256::new(vec![1; 32])?,
-        domain::ActorLimits::new(1, 1024, 4096)?,
-    );
-    save(
-        "actor_codecs",
-        "manifest",
-        &guest::wire::encode_manifest(package.manifest()),
-        "guest::wire::encode_manifest(reservation::Package::manifest)",
-        manifest,
-    )?;
-    let store = acyclic_actors::local::Store::new(
-        Arc::new(MemoryStream::default()),
-        StreamPath::new("codec/actors")?,
-    );
-    let checkpoint = acyclic_actors::reservation::initial_checkpoint(7)?;
-    let effects = store.create(&actor, BTreeMap::new(), Some(checkpoint.clone()))?;
-    if let CommitMutation::Append { records, .. } = &effects[0].mutation {
-        let record = records.first().ok_or("actor creation emitted no state")?;
-        save(
-            "actor_codecs",
-            "state",
-            &record.value,
-            "local::Store::create state encoder",
-            manifest,
-        )?;
-    } else {
-        return Err("actor creation did not append state".into());
-    }
-    let delivery = guest::Delivery {
-        actor,
-        epoch: 1,
-        trigger: guest::Trigger::Alarm {
-            generation: 1,
-            now_unix_ms: 42,
-        },
-        now_unix_ms: 42,
-        record: None,
-        subscriptions: guest::SubscriptionCuts::new(
-            StreamPath::new("codec/actors/state")?,
-            CommitId::from_bytes([1; 32]),
-            BTreeMap::new(),
-        ),
-    };
-    save(
-        "actor_codecs",
-        "delivery",
-        &guest::wire::encode_delivery(&delivery, Some(&checkpoint)),
-        "guest::wire::encode_delivery",
-        manifest,
-    )?;
-    let transition = guest::Transition {
-        response: None,
-        checkpoint,
-        alarm: guest::AlarmChange::Keep,
-        effects: effects.into(),
-        participant: None,
-    };
-    save(
-        "actor_codecs",
-        "transition",
-        &guest::wire::encode_transition(&transition)?,
-        "guest::wire::encode_transition",
-        manifest,
-    )?;
     use acyclic_fs::{
         Digest, DurableCommit, Epoch, OperationId, ProposedCommit, Sequence,
         streams_record::{StreamsAuthorityRecord, StreamsDurableRecord},
