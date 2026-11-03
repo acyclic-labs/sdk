@@ -12,6 +12,13 @@ import sys
 root = Path(__file__).resolve().parents[3]
 recovery = "python3 rust/crates/harness-fuzz/graphcoder-args-control.py"
 controls = {
+    "native_settings": (
+        "rust/crates/harness-core/src/native_settings.rs",
+        b"if config.trust_project_mcp {",
+        b"if true {",
+        "project-server",
+        b"untrusted project declarations must not enter the snapshot",
+    ),
     "native_marketplace": (
         "plugin/src/install/marketplace.rs",
         b'if name == "acyclic" && selected.replace(entry).is_some() {',
