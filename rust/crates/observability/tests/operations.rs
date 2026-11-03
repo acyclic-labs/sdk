@@ -228,8 +228,8 @@ fn admitted_identity_survives_original_worker_and_credited_terminal_retirement()
         let root = tracing::info_span!(parent: None, "acyclic.test.admitted_owner", outcome = tracing::field::Empty);
         let binding = Binding::attach(&root, key, admission.clone().try_acquire_owned()?)?;
         assert_eq!(
-            Binding::attach(&root, key, admission.clone().try_acquire_owned()?).unwrap_err(),
-            BindingError::AlreadyBound
+            Binding::attach(&root, key, admission.clone().try_acquire_owned()?).err(),
+            Some(BindingError::AlreadyBound)
         );
         assert_eq!(admission.available_permits(), 1);
         let bridge = tracing::info_span!(parent: &root, "original.worker");
@@ -249,7 +249,9 @@ fn admitted_identity_survives_original_worker_and_credited_terminal_retirement()
         });
         Ok::<_, Box<dyn std::error::Error>>((binding, work, bridge.id()))
     })?;
-    let original_error = std::fs::File::open("").expect_err("empty path cannot open a file");
+    let original_error = std::fs::File::open("")
+        .err()
+        .ok_or("empty path unexpectedly opened")?;
     let code = original_error.raw_os_error();
     let returned = std::thread::spawn(move || {
         let foreign = tracing::Dispatch::new(tracing_subscriber::registry());
@@ -263,7 +265,13 @@ fn admitted_identity_survives_original_worker_and_credited_terminal_retirement()
     })
     .join()
     .map_err(|_| "original worker panicked")?;
-    assert_eq!(returned.unwrap_err().raw_os_error(), code);
+    assert_eq!(
+        returned
+            .err()
+            .ok_or("original failure lost")?
+            .raw_os_error(),
+        code
+    );
     let unbound = ready(output.recv())?.ok_or("explicit root terminal absent")?;
     assert!(unbound.sample().binding.is_none());
     assert!(!binding.matches(&unbound.sample()));
@@ -480,7 +488,6 @@ fn credited_export_keeps_original_cause_and_cancellation_with_a_blocked_sink()
 -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_observability::{Export, Outcome, Sink};
     use std::sync::Arc;
-    use std::sync::atomic::Ordering;
     use tokio::sync::Semaphore;
     let original_cause = OriginalCause::default();
     let credit = Arc::new(Semaphore::new(1));
@@ -1070,8 +1077,8 @@ fn assert_binding_terminals(
     tracing::dispatcher::with_default(dispatch, || {
         let span = tracing::info_span!("acyclic.test.completed", outcome = "ok");
         assert_eq!(
-            Binding::attach(&span, key, admission.clone().try_acquire_owned()?).unwrap_err(),
-            BindingError::Completed
+            Binding::attach(&span, key, admission.clone().try_acquire_owned()?).err(),
+            Some(BindingError::Completed)
         );
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
@@ -1132,7 +1139,9 @@ fn assert_native_field_contract() -> Result<(), Box<dyn std::error::Error>> {
     // Exercise the producer's field contract through the real registry and
     // credited sink. This checks projection, not an additional native hook.
     use acyclic_observability::{DurabilityRequest, DurabilitySyscall};
-    let native = std::fs::File::open("").expect_err("an empty path cannot open a file");
+    let native = std::fs::File::open("")
+        .err()
+        .ok_or("empty path unexpectedly opened")?;
     let code = native.raw_os_error().ok_or("native error code absent")?;
     let (fields, mut field_output) = Export::channel(Arc::new(Semaphore::new(1)), false);
     let field_dispatch =
