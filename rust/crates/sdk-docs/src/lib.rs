@@ -35,6 +35,9 @@ pub mod path_identity;
 pub use path_identity::normalize_path;
 mod public_api;
 mod relative_spans;
+#[cfg(test)]
+#[path = "../fuzz/relative_spans.rs"]
+mod relative_spans_oracle;
 mod render_cache;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
