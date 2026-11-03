@@ -124,25 +124,32 @@ test("complete evidence is published before failed export can release its snapsh
   const report = { results: [{ case: "host", status: "fail",
     evidence: { captures: [{ stdout: "real host output", stderr: "native failure", code: 101 }],
       requests: [{ sequence: 1, path: "/actual/request" }] } }] };
-  let published;
-  const io = { publish: async text => { published = text; },
-    writeFile: async () => { throw new Error("ENOTCONN: export snapshot unavailable"); } };
-  await assert.rejects(publishReport("matrix.json", report, io), /ENOTCONN/);
-  assert.deepEqual(JSON.parse(published), report);
-  // Old write-first ordering loses every byte when the export rejects.
-  published = undefined;
-  await assert.rejects((async () => {
-    await io.writeFile("matrix.json", JSON.stringify(report));
-    await io.publish(JSON.stringify(report));
-  })(), /ENOTCONN/);
-  assert.equal(published, undefined);
-  const order = [];
-  await publishReport("matrix.json", report, {
-    publish: async text => order.push(["published", text]),
-    writeFile: async (path, text) => order.push([path, text]),
-  });
-  assert.deepEqual(order.map(([event]) => event), ["published", "matrix.json"]);
-  assert.equal(order[0][1], order[1][1]);
+  const check = async publish => {
+    let published;
+    await assert.rejects(publish("matrix.json", report, {
+      publish: async text => { published = text; },
+      writeFile: async () => { throw new Error("ENOTCONN: export snapshot unavailable"); },
+    }), /ENOTCONN/);
+    assert.equal(typeof published, "string", "original evidence must precede the failed export");
+    assert.deepEqual(JSON.parse(published), report);
+    const order = [];
+    await publish("matrix.json", report, {
+      publish: async text => order.push(["published", text]),
+      writeFile: async (path, text) => order.push([path, text]),
+    });
+    assert.deepEqual(order.map(([event]) => event), ["published", "matrix.json"]);
+    assert.equal(order[0][1], order[1][1]);
+  };
+  await check(publishReport);
+  // Qualify the same oracle against the actual production order, rather than
+  // restating a deleted write-first implementation in a separate example.
+  const source = await readFile(new URL("./report.mjs", import.meta.url), "utf8");
+  const before = "    await io.publish(text);\n    await io.writeFile(path, text);";
+  assert.equal(source.split(before).length, 2, "production mutation site must be unique");
+  const mutated = source.replace(before, "    await io.writeFile(path, text);\n    await io.publish(text);");
+  const { publishReport: reordered } = await import("data:text/javascript," + encodeURIComponent(mutated));
+  await assert.rejects(check(reordered), error => error.code === "ERR_ASSERTION"
+    && error.message.includes("original evidence must precede the failed export"));
 });
 
 test("cancellation during either original report write retains a failed terminal snapshot", async () => {
