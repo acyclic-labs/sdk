@@ -1,0 +1,6 @@
+diff --git a/rust/crates/harness/src/local/host_process/launch.rs b/rust/crates/harness/src/local/host_process/launch.rs
+--- a/rust/crates/harness/src/local/host_process/launch.rs
++++ b/rust/crates/harness/src/local/host_process/launch.rs
+@@ -72 +72 @@
+-        if !allowed.contains(&name.as_str()) || arguments.next().is_none() {
++        if arguments.next().is_none() {

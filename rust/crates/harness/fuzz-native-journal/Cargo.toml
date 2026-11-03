@@ -51,3 +51,10 @@ path = "fuzz_targets/native_readiness.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "native_launch"
+path = "fuzz_targets/native_launch.rs"
+test = false
+doc = false
+bench = false

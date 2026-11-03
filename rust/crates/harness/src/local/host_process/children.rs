@@ -162,13 +162,14 @@ impl NativeChildren {
     /// through this owner, so it settles their orphaned turns once and runs
     /// their queued inputs; it never polls the harness afterwards.
     pub fn open(host: &str) -> Result<Self> {
-        let flags: Vec<String> =
-            serde_json::from_str(&std::env::var("ACYCLIC_HOST_ARGS").map_err(|_| {
+        let flags = {
+            let encoded = std::env::var("ACYCLIC_HOST_ARGS").map_err(|_| {
                 invalid(
                     "launch the native parent with acyclic host HOST -- POLICY_ARGS before spawning",
                 )
-            })?)
-            .map_err(storage)?;
+            })?;
+            launch::inherited_arguments(&encoded)?
+        };
         let cwd = PathBuf::from(
             std::env::var_os("ACYCLIC_WORKSPACE")
                 .ok_or_else(|| invalid("native workspace context absent"))?,

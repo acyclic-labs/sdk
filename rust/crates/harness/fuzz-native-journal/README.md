@@ -89,3 +89,39 @@ The internal schedule seed digests are:
 | `replacement` | `6dbc0be31823b21866b3802571ae94b848a87d2a6a082b9245f2af14450d75b5` |
 | `multiple-children` | `a50938f0d40fbb111d5ecb88c5b9a86af5455a517f0823651089bac780422a05` |
 | `empty-consumption` | `2aab45833c58f6165ff8162229607ccfae4e0ebe8af94afc879ea1a33f67558f` |
+
+`native_launch` enters `launch::inherited_arguments`, the JSON string-vector
+admission called by `NativeChildren::open`, then the original `validate`,
+`parent_flags` and `child_arguments` functions. It never changes process-wide
+environment variables or starts a native host. Its inputs are authored root
+policy requests in the same JSON-vector format that `run_root_session` writes;
+they are not external-tool responses. An independent JSON value projection
+checks exact vector contents and type refusal. The target also generates valid
+root policies and checks unchanged inheritance, exact resume suffixes, required
+policy cardinality, missing values, host-specific switches and option refusal.
+The existing physical path/collision and argument-allocation controls remain;
+their repeated policy-refusal examples are subsumed by this target.
+
+Retained source mutations replace actual vector decoding with an empty vector,
+remove unknown-option admission, and bypass the resume-option guard. They must
+fail at `native policy decoder changed root argument vector`,
+`native launch admitted an unknown policy option`, and
+`native resume reference was admitted as an option`, respectively. A compiler
+error or an unrelated panic is not a qualifying negative control. Run with
+`cargo fuzz run native_launch --fuzz-dir rust/crates/harness/fuzz-native-journal`.
+This checks the in-process format and policy boundary; it does not qualify the
+OS environment handoff, native CLI parsing, credential inheritance, physical
+processes, non-Unicode working directories, concurrency or all platforms.
+
+The retained request seeds and their SHA-256 digests are:
+
+| Seed | SHA-256 |
+| --- | --- |
+| `codex` | `cb0700ac23729a7dbeba8332730b04edf39cc96599ec26f0ca218ac30c52ef46` |
+| `claude` | `0a91eb423124a013cf930c5beb5e207d1c44b92ee27e17842c8eb20098b51bd6` |
+| `pi` | `f08a6db6b04ea023bf0585d2881315d7f29fca1b422e5953ed4c68b7977ecc65` |
+| `wrong-type` | `8a925a5f20c4df4fcd3ef7f313094fc68a107f8ee91af96cdcd2df5c95ba084f` |
+| `duplicate-policy` | `87b8a1fb5c7e0eead885ca8153d8afd4f9444c48e80bea15b61dec7a8a08f06b` |
+| `missing-value` | `dfa99913ec3738de2968c58d601846d4efc06a0cdf871c9ded10b536e6dcd6ca` |
+| `empty` | `4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945` |
+| `partial-json` | `795c797dd7cbb280e5d38dd4ce2ddc06d48fb65eed17b365311392c20c6c1f68` |
