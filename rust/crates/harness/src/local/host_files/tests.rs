@@ -662,33 +662,6 @@ async fn workspace_shutdown_retains_its_cause_when_retirement_refuses() -> Resul
     Ok(())
 }
 
-#[test]
-fn rejected_request_retains_its_admission_and_withdrawal_failures() -> Result<()> {
-    let (_checkout, mut files, _probe) = carrier_io()?;
-    let name = format!("{}.json", OperationId::from_bytes([7; 16]));
-    let path = files.requests.join(&name);
-    // A directory at the request leaf is neither a regular request nor a
-    // removable file. Both refusals come from the original held native root.
-    std::fs::create_dir(&path).map_err(storage)?;
-    let admission = regular_bytes(&path).expect_err("a directory cannot be admitted as a request");
-    let withdrawal =
-        remove_projection(&path).expect_err("file withdrawal cannot remove a directory");
-    let result = files.served.observe(
-        &files.requests,
-        uuid::Uuid::from_bytes([9; 16]),
-        std::ffi::OsStr::new(&name),
-    );
-    let error = result.expect_err("the failed withdrawal must end this owner");
-    assert!(files.served.known.is_empty());
-    assert!(files.served.ready.is_empty());
-    let Error::Cleanup(causes) = error else {
-        panic!("rejected request must retain admission and withdrawal causes");
-    };
-    assert_eq!(causes.primary().to_string(), admission.to_string());
-    assert_eq!(causes.cleanup().to_string(), withdrawal.to_string());
-    Ok(())
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn workspace_projection_uses_shared_results_without_client_state() -> Result<()> {
     rejected_requests_end_without_owner_exit()?;
@@ -1237,21 +1210,25 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     let waiting = blocked.wait(operation, delivery)?;
     // A directory at a canonical request leaf is rejected by the no-follow
     // reader and cannot be unlinked as a file on any supported platform.
-    std::fs::create_dir(requests.join(format!("{operation}.json"))).map_err(storage)?;
+    let rejected = requests.join(format!("{operation}.json"));
+    std::fs::create_dir(&rejected).map_err(storage)?;
     blocked.shared.published(operation);
     let failure = tokio::time::timeout(Duration::from_secs(2), &mut owner)
         .await
         .map_err(storage)?
         .map_err(storage)?
-        .unwrap_err()
-        .to_string();
-    assert!(
-        failure.contains(&format!(
-            "step=withdraw rejected native request {operation}:"
-        )),
-        "the original rejection cause must survive retirement: {failure}"
-    );
-    assert!(failure.ends_with("recovery=graphcoder --host-workspace"));
+        .unwrap_err();
+    let Error::Cleanup(causes) = failure else {
+        panic!("rejected request must retain admission and withdrawal causes: {failure}");
+    };
+    // Compare both original native failures, without pinning diagnostic wording.
+    // Neither operation can remove this directory, including during retirement.
+    let admission =
+        regular_bytes(&rejected).expect_err("a directory cannot be admitted as a request");
+    let withdrawal =
+        remove_projection(&rejected).expect_err("file withdrawal cannot remove a directory");
+    assert_eq!(causes.primary().to_string(), admission.to_string());
+    assert_eq!(causes.cleanup().to_string(), withdrawal.to_string());
     assert!(matches!(
         response
             .recv_timeout(Duration::from_secs(2))
