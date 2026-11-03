@@ -55,16 +55,14 @@ pub struct OperationSpan {
     dispatch: Dispatch,
 }
 
-#[inline]
-fn dispatch_guard(dispatch: &Dispatch) -> tracing::dispatcher::DefaultGuard {
-    #[cfg(test)]
-    tests::DISPATCH_INSTALLS.with(|count| count.set(count.get() + 1));
-    tracing::dispatcher::set_default(dispatch)
-}
+#[cfg(not(test))]
+use tracing::dispatcher::with_default as with_dispatch;
 
+#[cfg(test)]
+#[inline]
 fn with_dispatch<T>(dispatch: &Dispatch, work: impl FnOnce() -> T) -> T {
-    let _dispatch = dispatch_guard(dispatch);
-    work()
+    tests::DISPATCH_INSTALLS.with(|count| count.set(count.get() + 1));
+    tracing::dispatcher::with_default(dispatch, work)
 }
 
 impl OperationSpan {
@@ -119,26 +117,20 @@ impl OperationSpan {
     }
     /// Runs work under its originating dispatcher and context.
     pub fn in_scope<T>(&self, work: impl FnOnce() -> T) -> T {
-        Self::in_optional_scope(Some(self), work)
-    }
-
-    fn in_optional_scope<T>(origin: Option<&Self>, work: impl FnOnce() -> T) -> T {
         // Preserve isolation when an unobserved producer is later polled under
         // a foreign subscriber, but install no dispatcher when both ends are idle.
-        let observed = origin.filter(|origin| {
-            !origin.dispatch.is::<tracing::subscriber::NoSubscriber>()
-                || !tracing::dispatcher::get_default(|current| {
-                    current.is::<tracing::subscriber::NoSubscriber>()
-                })
-        });
-        let _dispatch = observed.map(|origin| dispatch_guard(&origin.dispatch));
+        if self.dispatch.is::<tracing::subscriber::NoSubscriber>()
+            && tracing::dispatcher::get_default(|current| {
+                current.is::<tracing::subscriber::NoSubscriber>()
+            })
+        {
+            return work();
+        }
         // A registry span can be enabled while one of its layers filters it.
         // Enter the retained caller as well so that layer keeps its ancestry.
-        let _caller = observed.map(|origin| origin.caller.enter());
-        let _span = observed.map(|origin| origin.span.enter());
-        // Enter guards before the one producer call so optional tracing does
-        // not duplicate inlined poll and drop frames through every layer.
-        work()
+        with_dispatch(&self.dispatch, || {
+            self.caller.in_scope(|| self.span.in_scope(work))
+        })
     }
     /// Release a completed operation while retaining its originating caller for
     /// later cleanup. Call after leaving the operation's entered scope.

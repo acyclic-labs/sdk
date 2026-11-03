@@ -15,7 +15,10 @@ pin_project_lite::pin_project! {
     impl<T> PinnedDrop for Scoped<T> {
         fn drop(this: Pin<&mut Self>) {
             let mut this = this.project();
-            OperationSpan::in_optional_scope(this.context.as_ref(), || this.inner.set(None));
+            match this.context.as_ref() {
+                Some(context) => context.in_scope(|| this.inner.set(None)),
+                None => this.inner.set(None),
+            }
         }
     }
 }
@@ -57,7 +60,10 @@ impl<T: futures_core::Stream> Scoped<T> {
                 .as_pin_mut()
                 .map_or(Poll::Ready(None), |inner| inner.poll_next(cx))
         };
-        OperationSpan::in_optional_scope(this.context.as_ref(), poll)
+        match this.context.as_ref() {
+            Some(context) => context.in_scope(poll),
+            None => poll(),
+        }
     }
 }
 impl<T: Future> Future for Scoped<T> {
@@ -67,7 +73,10 @@ impl<T: Future> Future for Scoped<T> {
         let Some(mut inner) = this.inner.as_pin_mut() else {
             return Poll::Pending;
         };
-        OperationSpan::in_optional_scope(this.context.as_ref(), || inner.as_mut().poll(cx))
+        match this.context.as_ref() {
+            Some(context) => context.in_scope(|| inner.as_mut().poll(cx)),
+            None => inner.as_mut().poll(cx),
+        }
     }
 }
 impl<T: futures_core::Stream> futures_core::Stream for Scoped<T> {
@@ -76,7 +85,10 @@ impl<T: futures_core::Stream> futures_core::Stream for Scoped<T> {
         let next = self.as_mut().poll_next_retained(cx);
         if matches!(&next, Poll::Ready(None)) {
             let mut this = self.project();
-            OperationSpan::in_optional_scope(this.context.as_ref(), || this.inner.set(None));
+            match this.context.as_ref() {
+                Some(context) => context.in_scope(|| this.inner.set(None)),
+                None => this.inner.set(None),
+            }
         }
         next
     }
