@@ -5,40 +5,43 @@ use acyclic_fs::{
 };
 use acyclic_objects::MemoryObjects;
 
-async fn row<P, A, O>(name: &str, files: Fs<A, O>, stream: Arc<P>) -> TestResult
+async fn row<P, A, O>(
+    name: &str,
+    files: Fs<A, O>,
+    stream: Arc<P>,
+    cases: &[(PathBuf, Value, Value)],
+) -> TestResult
 where
     P: acyclic_harness::store::JournalProvider,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    let cases = scenarios()?;
-    assert_eq!(cases.len(), 27, "scenario inventory changed");
-    let results: Vec<TestResult> = futures::future::join_all(cases.iter().map(|(path, case)| {
-        let files = files.clone();
-        let stream = stream.clone();
-        async move {
-            let result = async {
-                let expected = trace(case, Arc::new(MemoryStream::default())).await?;
-                let observed = Value::Array(
-                    execution::run_with_filesystem(
-                        Scenario::from_value(case.clone())?,
-                        files,
-                        stream,
-                    )
-                    .await?
-                    .trace()
-                    .await?,
-                );
-                if observed != expected {
-                    return Err("scenario traces differ".into());
+    let results: Vec<TestResult> =
+        futures::future::join_all(cases.iter().map(|(path, case, expected)| {
+            let files = files.clone();
+            let stream = stream.clone();
+            async move {
+                let result = async {
+                    let observed = Value::Array(
+                        execution::run_with_filesystem(
+                            Scenario::from_value(case.clone())?,
+                            files,
+                            stream,
+                        )
+                        .await?
+                        .trace()
+                        .await?,
+                    );
+                    if &observed != expected {
+                        return Err("scenario traces differ".into());
+                    }
+                    TestResult::Ok(())
                 }
-                TestResult::Ok(())
+                .await;
+                result.map_err(|error| format!("{name}/{}: {error}", path.display()).into())
             }
-            .await;
-            result.map_err(|error| format!("{name}/{}: {error}", path.display()).into())
-        }
-    }))
-    .await;
+        }))
+        .await;
     for result in results {
         result?;
     }
@@ -53,10 +56,27 @@ async fn files<P: acyclic_harness::store::JournalProvider>(
     name: &str,
     stream: Arc<P>,
 ) -> TestResult {
-    row(&format!("memory/{name}"), Fs::memory(), stream.clone()).await?;
+    let cases = scenarios()?;
+    assert_eq!(cases.len(), 27, "scenario inventory changed");
+    // The independent memory reference is identical for every filesystem
+    // adapter. Run its oracle once per case and share only the immutable trace.
+    let cases = futures::future::try_join_all(cases.into_iter().map(|(path, case)| async move {
+        let expected = trace(&case, Arc::new(MemoryStream::default()))
+            .await
+            .map_err(|error| format!("{name}/reference/{}: {error}", path.display()))?;
+        TestResult::<_>::Ok((path, case, expected))
+    }))
+    .await?;
+    row(
+        &format!("memory/{name}"),
+        Fs::memory(),
+        stream.clone(),
+        &cases,
+    )
+    .await?;
     let directory = tempfile::tempdir()?;
     let local = Fs::local(acyclic_fs::LocalOptions::new(directory.path())).await?;
-    row(&format!("disk/{name}"), local, stream.clone()).await?;
+    row(&format!("disk/{name}"), local, stream.clone(), &cases).await?;
     // Remote authority and local Objects are independently bound. Public remote
     // Objects batches and an Actors host are separate, explicit qualification gaps.
     let authority = loopback(Arc::new(MemoryStream::default())).await?;
@@ -66,7 +86,13 @@ async fn files<P: acyclic_harness::store::JournalProvider>(
         LogicalObjectStore::new(objects),
         acyclic_fs::EmbeddedCapabilities::MEMORY,
     );
-    row(&format!("grpc-authority/{name}"), remote_authority, stream).await
+    row(
+        &format!("grpc-authority/{name}"),
+        remote_authority,
+        stream,
+        &cases,
+    )
+    .await
 }
 
 #[tokio::test]
