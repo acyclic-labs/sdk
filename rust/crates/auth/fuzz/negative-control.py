@@ -1,4 +1,4 @@
-"""Require an unchanged Auth fuzz oracle to catch a production defect."""
+"""Require an unchanged authority fuzz oracle to catch a production defect."""
 import hashlib
 import os
 from pathlib import Path
@@ -7,7 +7,12 @@ import sys
 
 root = Path(__file__).resolve().parent
 choice = sys.argv[1] if len(sys.argv) == 2 else "delimiter"
-if choice.startswith("secret-"):
+if choice.startswith("filesystem-"):
+    root = root.parent.parent / "harness-fuzz"
+    target = "filesystem_access"
+    source = root.parent / "harness-core/src/core/authority/workload/admission.rs"
+    oracle = source.with_name("verification.rs")
+elif choice.startswith("secret-"):
     target = "secret_ref"
     source = root.parent / "src/secrets.rs"
     oracle = root.parent / "tests/common/secret_ref.rs"
@@ -26,9 +31,22 @@ else:
 step = "read original Auth source and oracle"
 try:
     original = source.read_bytes()
-    oracle_hash = hashlib.sha256(oracle.read_bytes()).digest()
+    oracles = [oracle, root / "fuzz_targets" / (target + ".rs")]
+    if choice.startswith("filesystem-"):
+        oracles.append(root.parent / "harness-core/src/filesystem/access/verification.rs")
+    oracle_hashes = {path: hashlib.sha256(path.read_bytes()).digest() for path in oracles}
     newline = b"\r\n" if b"\r\n" in original else b"\n"
     mutations = {
+        "filesystem-ancestor": (
+            b".is_some_and(|parent| !capabilities.is_subset_of(&parent.capabilities))",
+            b".is_some_and(|parent| false && !capabilities.is_subset_of(&parent.capabilities))",
+            "signed refinement removed its ancestor ceiling", "ceiling-set",
+        ),
+        "filesystem-certified": (
+            b"if !refined.is_subset_of(&capabilities) {",
+            b"if false && !refined.is_subset_of(&capabilities) {",
+            "filesystem label gained uncertified authority", "ceiling-set",
+        ),
         "delimiter": (
             b"        && !value.contains(['\\r', '\\n', '\\0'])", b"",
             "credential transport delimiter must refuse", "v2-opaque-bearer",
@@ -75,6 +93,8 @@ try:
         command = ["cargo", "+nightly", "fuzz", "run", "--dev"]
         if cargo_target := os.environ.get("CARGO_TARGET_DIR"):
             command += ["--target-dir", cargo_target]
+        if choice.startswith("filesystem-"):
+            command += ["--features", "filesystem-access"]
         command += [target, "corpus/" + target + "/" + seed, "--", "-runs=1"]
         step = "detect " + choice + " through the " + target + " fuzzer"
         result = subprocess.run(
@@ -88,7 +108,8 @@ try:
     finally:
         source.write_bytes(original)
     step = "verify unchanged Auth oracle"
-    if hashlib.sha256(oracle.read_bytes()).digest() != oracle_hash:
+    if any(hashlib.sha256(path.read_bytes()).digest() != digest
+           for path, digest in oracle_hashes.items()):
         raise RuntimeError("Auth oracle changed during the negative control")
 except (OSError, RuntimeError) as error:
     print(
