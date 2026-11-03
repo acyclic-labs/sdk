@@ -214,7 +214,16 @@ pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
             // Change one cache-key dimension at a time. Otherwise a changed
             // base could hide a missing source or imported-content dependency.
             let base_revision = if mode == 1 || mode == 2 { revision } else { 0 };
-            let base = json!({"base": base_revision, "nested": {"base": base_revision}});
+            let base = if mode == 2 {
+                json!({
+                    "nested": {"config": {"base": revision}},
+                    "items": [{"base": revision}, revision],
+                    "mismatch": {"0": revision},
+                    "present": null,
+                })
+            } else {
+                json!({"base": base_revision, "nested": {"base": base_revision}})
+            };
             let imported = json!({"imported": revision, "value": literal});
             let tree = Files {
                 input: serde_json::to_vec(&imported).map_err(|error| error.to_string())?,
@@ -234,12 +243,36 @@ pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
                     Form::Function,
                     true,
                 ),
-                2 => (
-                    "export default {nested: (base) => ({...base, added: true})};".to_owned(),
-                    json!({"nested": {"base": revision, "added": true}}),
-                    Form::Value,
-                    true,
-                ),
+                2 => {
+                    let (prefix, suffix, form) =
+                        if bytes.get(1).copied().unwrap_or_default() & 1 == 0 {
+                            ("", "", Form::Value)
+                        } else {
+                            ("(base) => (", ")", Form::Function)
+                        };
+                    (
+                        format!(
+                            "export default {prefix}{{
+                                nested: {{config: (c) => ({{...c, added: {encoded}}})}},
+                                items: [(c) => ({{...c, added: true}}), (c) => c + 1],
+                                mismatch: [(c) => c === undefined],
+                                present: (c) => c === null,
+                                constructor: (c) => c === undefined,
+                                extra: {{config: (c) => ({{seen: c === undefined}})}},
+                            }}{suffix};"
+                        ),
+                        json!({
+                            "nested": {"config": {"base": revision, "added": literal}},
+                            "items": [{"base": revision, "added": true}, revision + 1],
+                            "mismatch": [true],
+                            "present": true,
+                            "constructor": true,
+                            "extra": {"config": {"seen": true}},
+                        }),
+                        form,
+                        true,
+                    )
+                }
                 3 => (
                     "import input from 'sys/input.json'; export default input;".to_owned(),
                     imported,
