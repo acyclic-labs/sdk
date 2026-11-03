@@ -216,6 +216,16 @@ pub(super) fn check_wire(bytes: &[u8]) {
         refuses(changed, "checkpoint admitted an invalid bitmap width");
     }
     if let Some(child) = encoded.open_children.first() {
+        for oversized in [false, true] {
+            let mut changed = encoded.clone();
+            let id = &mut changed.open_children[0];
+            if oversized {
+                id.push(0);
+            } else {
+                id.pop();
+            }
+            refuses(changed, "checkpoint admitted an invalid child id width");
+        }
         let mut changed = encoded.clone();
         changed.open_children.push(child.clone());
         let bitmap = changed.open_children.len().div_ceil(8);

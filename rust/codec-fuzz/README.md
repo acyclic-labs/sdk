@@ -202,7 +202,8 @@ The producer checks the same complete state separately; no simulated decoder
 or alternate field-loss implementation is used.
 
 The checkpoint's shared wire oracle uses its original prost type and writer
-to derive malformed variants of each admitted input. Duplicate children,
+to derive malformed variants of each admitted input. Short or long child IDs,
+duplicate children,
 incorrect archive/awaited bitmap widths and unmatched turn body/inbox fields
 must receive the original typed malformed-checkpoint refusal. No alternate
 protobuf parser or capture producer is needed. The following production
@@ -212,6 +213,7 @@ guard mutations must fail when replaying the retained
 | PATCH | Required runtime assertion |
 | --- | --- |
 | `agent-checkpoint-duplicate-child.patch` | `checkpoint admitted a duplicate child` |
+| `agent-checkpoint-child-id.patch` | `checkpoint admitted an invalid child id width` |
 | `agent-checkpoint-bitmap-width.patch` | `checkpoint admitted an invalid bitmap width` |
 | `agent-checkpoint-turn-pair.patch` | `checkpoint admitted an incomplete turn` |
 

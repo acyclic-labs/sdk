@@ -1,0 +1,11 @@
+diff --git a/rust/crates/harness-core/src/agent/checkpoint.rs b/rust/crates/harness-core/src/agent/checkpoint.rs
+--- a/rust/crates/harness-core/src/agent/checkpoint.rs
++++ b/rust/crates/harness-core/src/agent/checkpoint.rs
+@@ -164,3 +164,6 @@
+     for (index, id) in encoded.open_children.iter().enumerate() {
+-        let id: [u8; 16] = id.as_slice().try_into().map_err(|_| malformed())?;
++        let id: [u8; 16] = id
++            .get(..16)
++            .and_then(|bytes| bytes.try_into().ok())
++            .unwrap_or([0; 16]);
+         let child = state.path.child(&AgentId::from_bytes(id))?;
