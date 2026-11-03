@@ -84,6 +84,33 @@ async function signalControls(mutation) {
 }
 
 async function processSignalControls() {
+  // A caller-owned signal delegates cancellation without borrowing process
+  // handlers, even when already aborted. The action owns its original result.
+  const callerOwned = async run => {
+    const before = ['SIGINT', 'SIGTERM'].map(name => process.listeners(name));
+    for (const aborted of [false, true]) for (const fails of [false, true]) {
+      const stop = new AbortController(), cause = new Error('original caller signal');
+      if (aborted) stop.abort(cause);
+      const action = signal => {
+        assert.equal(signal, stop.signal, 'the action must retain its original caller signal');
+        assert.deepEqual(['SIGINT', 'SIGTERM'].map(name => process.listeners(name)), before,
+          'caller-owned cancellation must not borrow process handlers');
+        if (fails) throw cause;
+        return cause;
+      };
+      const completed = run(action, {signal: stop.signal});
+      if (fails) await assert.rejects(completed, error => error === cause);
+      else assert.equal(await completed, cause);
+    }
+  };
+  await callerOwned(withProcessSignals);
+  const production = await processSource();
+  const planted = production.replace('if (signal) return action(signal);', '');
+  assert.notEqual(planted, production, 'production caller-signal delegation must exist');
+  const {withProcessSignals: mutant} = await import(`data:text/javascript;base64,${Buffer.from(planted).toString('base64')}`);
+  await assert.rejects(() => callerOwned(mutant), {
+    code: 'ERR_ASSERTION', message: /the action must retain its original caller signal/,
+  });
   if (process.platform !== 'win32') {
     await signalControls('original');
     await assert.rejects(() => signalControls('omit-release'), {

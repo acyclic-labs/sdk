@@ -74,6 +74,8 @@ fn workspace_and_network_grants_cannot_attach_host_shared_memory() {
         command
     };
     let custody = crate::ProcessCustody::open(&root.path().join("custody")).unwrap();
+    let mut admitted = 0;
+    let mut refused = 0;
     for custody in [None, Some(&custody)] {
         let tree = match ProcessTree::spawn_granted(command("no"), &grant, custody) {
             Ok(tree) => tree,
@@ -81,11 +83,14 @@ fn workspace_and_network_grants_cannot_attach_host_shared_memory() {
                 assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
                 // SAFETY: the original attachment is still owned here.
                 assert_eq!(unsafe { segment.address.cast::<u8>().read_volatile() }, 0);
+                eprintln!("confined child refused: {error}");
+                refused += 1;
                 continue;
             }
             Err(error) => panic!("confined IPC probe admission: {error}"),
         };
         complete(tree);
+        admitted += 1;
         // SAFETY: the original attachment is live; the child has exited.
         assert_eq!(unsafe { segment.address.cast::<u8>().read_volatile() }, 0);
     }
@@ -93,6 +98,7 @@ fn workspace_and_network_grants_cannot_attach_host_shared_memory() {
     complete(ProcessTree::spawn(&mut command("yes")).unwrap());
     // SAFETY: the original attachment is live; the child has exited.
     assert_eq!(unsafe { segment.address.cast::<u8>().read_volatile() }, 1);
+    eprintln!("original child coverage: confined={admitted}, refused={refused}, unrestricted=1");
 }
 
 fn complete(mut tree: ProcessTree) {
