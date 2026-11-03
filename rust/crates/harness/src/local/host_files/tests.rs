@@ -619,9 +619,11 @@ async fn workspace_shutdown_retains_its_cause_when_retirement_refuses() -> Resul
         .await?,
     );
     let mut failures = Vec::new();
+    let operation = OperationId::from_bytes([7; 16]);
     for shutdown in [
         Err(Error::Cancelled),
         Err(Error::Unsupported("original shutdown producer".into())),
+        Err(Error::Indeterminate(operation)),
         Ok(()),
     ] {
         let expected = shutdown.as_ref().err().map(Error::code);
@@ -644,12 +646,18 @@ async fn workspace_shutdown_retains_its_cause_when_retirement_refuses() -> Resul
             expected.unwrap_or(crate::wire::ErrorCode::Conflict),
             "retirement must retain the original shutdown classification: {failure}"
         );
-        assert!(
-            failure
-                .to_string()
-                .contains("native owner still has live harness handles"),
-            "the original retirement refusal must also survive: {failure}"
-        );
+        let retirement = if let Error::Cleanup(ref causes) = failure {
+            assert_eq!(Some(causes.primary().code()), expected);
+            if let Error::Indeterminate(id) = causes.primary() {
+                assert_eq!(*id, operation);
+            }
+            causes.cleanup()
+        } else {
+            assert!(expected.is_none(), "the original failure must survive");
+            &failure
+        };
+        assert!(matches!(retirement, Error::Conflict(cause)
+            if cause == "native owner still has live harness handles"));
     }
     Ok(())
 }
