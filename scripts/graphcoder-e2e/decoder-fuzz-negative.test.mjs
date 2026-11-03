@@ -12,6 +12,14 @@ for (const group of ["serial", "decoder", "frames"]) test(`${group} fuzz oracles
       "void execution;", "serial"],
     ...["expired", "cancelled"].map(field =>
       ["serial.mjs", `!execution?.${field}`, "true", "serial"]),
+    ["serial.mjs", 'platform === "win32" && test.ntfs', "false", "serial"],
+    ...[
+      'assert.equal(report.platform, platform, "suite OS mismatch");',
+      'assert.equal(report.qualification, false, "selected suite is diagnostic");',
+      'assert.ok(report.results.every(result => result.platform === platform), "case OS mismatch");',
+      'assert.ok(Number.isFinite(report.seconds) && report.seconds > 0, "missing suite timing");',
+      'assert.equal(report.limit_seconds, 10, "suite budget changed");',
+    ].map(before => ["serial.mjs", before, "void report;", "serial"]),
     ["frames.mjs", "this.#completed = true;", "this.#completed = false;", "frames"],
     ["frames.mjs", "try { this.frame(); } finally { this.#boundary = false; }",
       "this.#boundary = false;", "frames"],
