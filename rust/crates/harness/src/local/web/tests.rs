@@ -217,57 +217,64 @@ async fn model_consumer_receives_real_search_result_not_a_tool_name_or_echo() ->
     Ok(())
 }
 
-async fn expected_fetch_failure(case: u8) -> Result<()> {
-    let (url, reason, server) = match case {
-        0 => ("not-a-url".into(), "fetch URL must use HTTP or HTTPS", None),
-        1 => (
-            "http://user:private-input@example.test/".into(),
-            "invalid fetch URL scheme, host, or user information",
-            None,
-        ),
-        2 => {
-            let (url, server) = serve_response(503, "", "private-provider-body".into()).await?;
-            (url, "fetch HTTP request rejected", Some(server))
-        }
-        3 => {
-            let (url, server) =
-                serve_response(302, "Location: file:///private-redirect\r\n", String::new())
-                    .await?;
-            (
-                url,
+#[tokio::test]
+async fn expected_fetch_refusals_continue_the_model_turn() -> Result<()> {
+    let mut cases = Vec::new();
+    for case in 0..5 {
+        let (url, reason, server) = match case {
+            0 => ("not-a-url".into(), "fetch URL must use HTTP or HTTPS", None),
+            1 => (
+                "http://user:private-input@example.test/".into(),
                 "invalid fetch URL scheme, host, or user information",
-                Some(server),
-            )
-        }
-        _ => {
-            let (url, server) = serve_response(
-                302,
-                "Location: http://127.0.0.1:9/private-redirect\r\n",
-                String::new(),
-            )
-            .await?;
-            (
-                url,
-                "fetch redirect targets a non-public address",
-                Some(server),
-            )
-        }
-    };
+                None,
+            ),
+            2 => {
+                let (url, server) = serve_response(503, "", "private-provider-body".into()).await?;
+                (url, "fetch HTTP request rejected", Some(server))
+            }
+            3 => {
+                let (url, server) =
+                    serve_response(302, "Location: file:///private-redirect\r\n", String::new())
+                        .await?;
+                (
+                    url,
+                    "invalid fetch URL scheme, host, or user information",
+                    Some(server),
+                )
+            }
+            _ => {
+                let (url, server) = serve_response(
+                    302,
+                    "Location: http://127.0.0.1:9/private-redirect\r\n",
+                    String::new(),
+                )
+                .await?;
+                (
+                    url,
+                    "fetch redirect targets a non-public address",
+                    Some(server),
+                )
+            }
+        };
+        cases.push((url, reason, server));
+    }
     let directory =
         tempfile::tempdir().map_err(|_| Error::Storage("fixture directory failed".into()))?;
-    let provider = model([
-        ScriptedTurn::Events(vec![
-            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
-                "refused-fetch".into(),
-                "url_fetch".into(),
-                json!({"url":url}),
-            ))),
-            ScriptedEvent::Event(ModelEvent::Completed {
-                metadata: json!({}),
-            }),
-        ]),
-        ScriptedTurn::Text("adapted after the refusal".into()),
-    ]);
+    let provider = model(cases.iter().enumerate().flat_map(|(index, (url, _, _))| {
+        [
+            ScriptedTurn::Events(vec![
+                ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                    format!("refused-fetch-{index}"),
+                    "url_fetch".into(),
+                    json!({"url":url}),
+                ))),
+                ScriptedEvent::Event(ModelEvent::Completed {
+                    metadata: json!({}),
+                }),
+            ]),
+            ScriptedTurn::Text("adapted after the refusal".into()),
+        ]
+    }));
     let config = volume_config(
         directory.path(),
         volume(directory.path()).await?,
@@ -276,19 +283,21 @@ async fn expected_fetch_failure(case: u8) -> Result<()> {
     .without_default_tools()
     .web_tools();
     let local = Arc::new(LocalHarness::open(config).await?);
-    assert_eq!(
-        run(&local, "consult the source, or adapt to its refusal").await?,
-        "adapted after the refusal"
-    );
-    if let Some(server) = server {
-        server
-            .await
-            .map_err(|_| Error::Storage("fixture server task failed".into()))??;
+    for (_, _, server) in &mut cases {
+        assert_eq!(
+            run(&local, "consult the source, or adapt to its refusal").await?,
+            "adapted after the refusal"
+        );
+        if let Some(server) = server.take() {
+            server
+                .await
+                .map_err(|_| Error::Storage("fixture server task failed".into()))??;
+        }
     }
     let requests = provider.requests();
     assert_eq!(
         requests.len(),
-        2,
+        cases.len() * 2,
         "expected failure terminated the session or retried the model"
     );
     for request in &requests {
@@ -299,49 +308,35 @@ async fn expected_fetch_failure(case: u8) -> Result<()> {
             "unconfigured search was advertised"
         );
     }
-    let results: Vec<_> = requests[1]
-        .messages
-        .iter()
-        .flat_map(|message| message.content.parts())
-        .filter_map(|part| match part {
-            ModelContentPart::ToolResult {
-                call_id,
-                name,
-                content: ToolResultContent::Json { value },
-            } if call_id == "refused-fetch" && name == "url_fetch" => Some(value),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        results,
-        [&json!({"status":"rejected","code":"invalid","reason":reason})]
-    );
-    assert_published_web_contract("url_fetch", results[0])?;
-    let encoded = serde_json::to_string(results[0]).unwrap();
-    for private in ["private-input", "private-provider-body", "private-redirect"] {
-        assert!(
-            !encoded.contains(private),
-            "tool refusal exposed raw provider/input data"
+    for (index, (_, reason, _)) in cases.iter().enumerate() {
+        let call = format!("refused-fetch-{index}");
+        let results: Vec<_> = requests[index * 2 + 1]
+            .messages
+            .iter()
+            .flat_map(|message| message.content.parts())
+            .filter_map(|part| match part {
+                ModelContentPart::ToolResult {
+                    call_id,
+                    name,
+                    content: ToolResultContent::Json { value },
+                } if call_id == &call && name == "url_fetch" => Some(value),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            results,
+            [&json!({"status":"rejected","code":"invalid","reason":reason})]
         );
+        assert_published_web_contract("url_fetch", results[0])?;
+        let encoded = serde_json::to_string(results[0]).unwrap();
+        for private in ["private-input", "private-provider-body", "private-redirect"] {
+            assert!(
+                !encoded.contains(private),
+                "tool refusal exposed raw provider/input data"
+            );
+        }
     }
     Ok(())
-}
-
-#[tokio::test]
-async fn expected_fetch_malformed_url_continues_the_model_turn() -> Result<()> {
-    expected_fetch_failure(0).await?;
-    expected_fetch_failure(1).await
-}
-
-#[tokio::test]
-async fn expected_fetch_http_503_continues_the_model_turn() -> Result<()> {
-    expected_fetch_failure(2).await
-}
-
-#[tokio::test]
-async fn expected_fetch_unsafe_redirect_continues_the_model_turn() -> Result<()> {
-    expected_fetch_failure(3).await?;
-    expected_fetch_failure(4).await
 }
 
 #[tokio::test]
