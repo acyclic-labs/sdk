@@ -67,13 +67,17 @@ proptest! {
 // Check the actual model-visible registry, independently of PLATFORM.name.
 #[test]
 fn model_visible_shell_name_is_platform_independent() -> crate::Result<()> {
-    let definitions = crate::tools::defaults()?.definitions(None)?;
+    let registry = crate::tools::defaults()?;
+    let definitions = registry.definitions(None)?;
     assert!(definitions.iter().any(|tool| tool.name == "shell"));
     assert!(
         !definitions
             .iter()
             .any(|tool| matches!(tool.name.as_str(), "bash" | "powershell"))
     );
+    for alias in ["bash", "powershell"] {
+        assert!(registry.get(alias, None, None)?.is_none());
+    }
     Ok(())
 }
 

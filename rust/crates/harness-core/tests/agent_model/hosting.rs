@@ -735,56 +735,66 @@ async fn trees_sharing_a_stream_each_claim_only_their_own_agents() -> Result {
     create(&a, 1).await?;
     let foreign = b.agents().actor(&root_b)?;
     assert!(a.agents().runtime().track(foreign).is_err());
-    struct ActivationWake(std::sync::atomic::AtomicBool);
-    impl std::task::Wake for ActivationWake {
-        fn wake(self: Arc<Self>) {
-            self.0.store(true, Ordering::SeqCst);
+    // The accepted actor checkpoint is the completion event. A runtime may
+    // cooperatively yield before it publishes, even with memory-backed I/O.
+    let observed = async |bound: &Bound<MemoryStream, Objects>, path: &AgentPath| -> Result {
+        use futures::TryStreamExt as _;
+        let actor = bound.agents().actor(path)?;
+        let store = bound.agents().runtime().store();
+        let mut changes = acyclic_stream::records_only(
+            stream
+                .follow(acyclic_stream::FollowRequest::new(store.path(&actor)?, 1))
+                .await?,
+        );
+        let record = changes
+            .try_next()
+            .await?
+            .ok_or("actor state producer ended")?;
+        let state = acyclic_actors::local::State::decode(&record.value)?;
+        assert!(state.checkpoint().is_some(), "adoption did not checkpoint");
+        Ok(())
+    };
+    let (failed, failure) = tokio::sync::oneshot::channel();
+    let failed = std::sync::Mutex::new(Some(failed));
+    let report = |actor: &ActorReference, error: &acyclic_actors::local::Error| {
+        if let Some(failed) = failed.lock().expect("failure sender").take() {
+            let _ = failed.send(format!("{actor:?}: {error}"));
         }
-    }
-    let activations = [false, false].map(|_| Arc::new(ActivationWake(false.into())));
-    let wakers = activations.clone().map(std::task::Waker::from);
-    // MemoryStream completes these fixed activations inline. Advance each
-    // original producer once and inspect its result, never wait on a count.
-    let mut runners = [a.agents(), b.agents()].map(|agents| Box::pin(agents.run(|_, _| {})));
-    let mut advance = |expected| -> Result {
-        for (runner, waker) in runners.iter_mut().zip(&wakers) {
-            let mut context = std::task::Context::from_waker(waker);
-            if let std::task::Poll::Ready(result) =
-                std::future::Future::poll(runner.as_mut(), &mut context)
-            {
-                return match result {
-                    Err(error) => Err(Box::<dyn std::error::Error>::from(error)),
-                    Ok(never) => match never {},
-                };
-            }
-        }
+    };
+    let exercise = async {
+        observed(&a, &AgentPath::root(&id(1))).await?;
+        observed(&b, &root_b).await?;
+        assert_eq!(a.agents().runtime().counts().0, 1);
+        assert_eq!(b.agents().runtime().counts().0, 1);
+        // These roots are committed by different hosts after discovery starts.
+        // Interleaving their activations also exercises foreign-tree exclusion.
+        let later_b = create(&b2, 3).await?;
+        let later_a = create(&a2, 4).await?;
+        let last_b = create(&b2, 5).await?;
+        observed(&b, &later_b).await?;
+        observed(&a, &later_a).await?;
+        observed(&b, &last_b).await?;
         assert_eq!(
             (
                 a.agents().runtime().counts().0,
                 b.agents().runtime().counts().0
             ),
-            expected,
-            "original activation producers did not discover exactly their own roots"
+            (2, 3),
+            "activation producers discovered exactly their own roots"
         );
-        Ok(())
+        Ok::<(), Box<dyn std::error::Error>>(())
     };
-    advance((1, 1))?;
-    for activation in &activations {
-        activation.0.store(false, Ordering::SeqCst);
+    tokio::select! {
+        result = a.agents().run(report) => return match result {
+            Err(error) => Err(error.into()),
+            Ok(never) => match never {},
+        },
+        result = b.agents().run(report) => return match result {
+            Err(error) => Err(error.into()),
+            Ok(never) => match never {},
+        },
+        result = failure => return Err(result.map_err(|_| "actor failure producer ended")?.into()),
+        result = exercise => result?,
     }
-    // These roots are committed by different hosts after discovery starts.
-    // Interleaving their activations also exercises foreign-tree exclusion.
-    create(&b2, 3).await?;
-    assert!(
-        activations[1].0.swap(false, Ordering::SeqCst),
-        "tree-b activation did not wake its original producer"
-    );
-    create(&a2, 4).await?;
-    assert!(
-        activations[0].0.swap(false, Ordering::SeqCst),
-        "tree-a activation did not wake its original producer"
-    );
-    create(&b2, 5).await?;
-    advance((2, 3))?;
     Ok(())
 }

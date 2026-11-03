@@ -872,6 +872,7 @@ ship it
 
 #[tokio::test]
 async fn an_unlimited_goal_keeps_its_loop_identity_across_counter_boundaries() -> Result {
+    let run = OperationId::from_bytes([17; 16]);
     for (count, turns, last) in [
         ("31", 40, "71"),
         ("4294967295", 2, "4294967297"),
@@ -895,7 +896,7 @@ async fn an_unlimited_goal_keeps_its_loop_identity_across_counter_boundaries() -
         let driver = ExecutorDriver::new(Host(script, Some(Arc::clone(&goal))));
         let mut message = Message {
             from: Sender::Agent { path: path.clone() },
-            id: intent(&format!("{GOAL_INTENT}original:{count}")),
+            id: intent(&format!("{GOAL_INTENT}{run}:{count}")),
             body: Box::new(file("GOAL.md")?),
             attachments: None,
         };
@@ -919,7 +920,7 @@ async fn an_unlimited_goal_keeps_its_loop_identity_across_counter_boundaries() -
             assert_ne!(message.id, previous_id);
             state = settled.state;
         }
-        assert_eq!(message.id.as_str(), format!("{GOAL_INTENT}original:{last}"));
+        assert_eq!(message.id.as_str(), format!("{GOAL_INTENT}{run}:{last}"));
         assert!(goal.rewrites.lock().expect("lock").is_empty());
     }
     Ok(())
