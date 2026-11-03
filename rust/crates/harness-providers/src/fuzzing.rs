@@ -436,15 +436,15 @@ mod properties {
             &include_bytes!("../fuzz/corpus/provider_stream/catalog.json")[1..]
         ));
         for input in [
+            include_bytes!("../fuzz/corpus/provider_stream/llamacpp-text").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/llamacpp-tool").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/llamacpp-result").as_slice(),
             include_bytes!("../fuzz/corpus/provider_stream/anthropic.sse").as_slice(),
             include_bytes!("../fuzz/corpus/provider_stream/responses.sse").as_slice(),
             include_bytes!("../fuzz/corpus/provider_stream/chat.sse").as_slice(),
             include_bytes!("../fuzz/corpus/provider_stream/chat-reused-id.sse").as_slice(),
             include_bytes!("../fuzz/corpus/provider_stream/gemini.sse").as_slice(),
             include_bytes!("../fuzz/corpus/provider_stream/gemini-signed-answer.sse").as_slice(),
-            include_bytes!("../fuzz/corpus/provider_stream/llamacpp-text").as_slice(),
-            include_bytes!("../fuzz/corpus/provider_stream/llamacpp-tool").as_slice(),
-            include_bytes!("../fuzz/corpus/provider_stream/llamacpp-result").as_slice(),
         ] {
             assert_stream_invariants(input);
             let (&kind, body) = input.split_first().unwrap();
