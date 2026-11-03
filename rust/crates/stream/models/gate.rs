@@ -3,6 +3,18 @@ fn admission_registration_cannot_lose_a_wakeup() {
     registration(0);
 }
 #[test]
+fn replacing_waiter_retires_previous_outside_lock() {
+    loom::model(|| {
+        let gate = super::Arc::new(Gate::new());
+        let inspected = super::Arc::clone(&gate);
+        super::waiter_replacement(
+            |wake| gate.poll_changed(false, &mut Context::from_waker(wake)),
+            || gate.set(true).unwrap(),
+            move || inspected.state.try_lock().is_ok(),
+        );
+    });
+}
+#[test]
 #[should_panic(expected = "a parked follower must be woken")]
 fn admission_negative_control_omits_notification() {
     registration(1);

@@ -186,3 +186,26 @@ callbacks and assertions stay unchanged. This checks one producer and waiter
 through the included production methods and Loom mutexes; waiter replacement,
 producer loss, poisoning, value destruction, external wire, physical restarts and
 multiple nodes remain separate obligations.
+
+Waiter replacement has a separate callback: dropping the last retained waker
+may run user destruction code even when no notification occurs. One shared
+observer checks the original Signal, Gate and Outbound poll methods. It releases
+the caller's old waker, replaces the stored waiter, requires destruction outside
+the original mutex, and then requires notification and readiness of the new
+waiter. The registration race models above remain necessary.
+
+```sh
+git apply rust/crates/stream/models/mutations/waiter_retirement_lock.patch
+RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream-models --features model-checking --test session_model replacing_waiter_retires_previous_outside_lock -- --nocapture
+git apply --reverse rust/crates/stream/models/mutations/waiter_retirement_lock.patch
+```
+
+The mutation retires each previous waker while holding its shipping mutex. All
+three unchanged observer assertions must fail; restored production must pass all
+three controls. Existing notification controls have no destructor observer and
+must not be credited with detecting this defect. This deterministic replacement
+history uses actual included production bodies and Loom mutexes. Ordinary waker
+Arc reference counts are not instrumented. RawWaker clone callbacks, concurrent
+replacement, producer loss, poisoned mutexes, queued-value destruction, external
+wire, physical restarts and multiple nodes remain separate obligations. No
+production operations or allocations are added.

@@ -53,6 +53,42 @@ fn wake_probe(
     (count, wake)
 }
 
+fn waiter_replacement<T>(
+    poll: impl Fn(&std::task::Waker) -> std::task::Poll<T>,
+    publish: impl FnOnce(),
+    unlocked: impl Fn() -> bool + Send + Sync + 'static,
+) {
+    struct RetiringWake(Box<dyn Fn() + Send + Sync>);
+    impl std::task::Wake for RetiringWake {
+        fn wake(self: std::sync::Arc<Self>) {
+            panic!("the replaced waiter must not be notified");
+        }
+    }
+    impl Drop for RetiringWake {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let retired = Arc::new(AtomicU64::new(0));
+    let observed = Arc::clone(&retired);
+    let previous = std::task::Waker::from(std::sync::Arc::new(RetiringWake(Box::new(move || {
+        assert!(
+            unlocked(),
+            "the replaced waiter must retire outside its lock"
+        );
+        observed.fetch_add(1, Ordering::SeqCst);
+    }))));
+    assert!(poll(&previous).is_pending());
+    drop(previous);
+    assert_eq!(retired.load(Ordering::SeqCst), 0);
+    let (notified, current) = wake_count();
+    assert!(poll(&current).is_pending());
+    assert_eq!(retired.load(Ordering::SeqCst), 1);
+    publish();
+    assert_eq!(notified.0.load(Ordering::SeqCst), 1);
+    assert!(poll(&current).is_ready());
+}
+
 #[test]
 fn cursor_consumption_and_movement_are_atomic() {
     cursor(false);
