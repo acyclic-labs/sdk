@@ -1,0 +1,11 @@
+--- a/rust/crates/objects/src/blob.rs
++++ b/rust/crates/objects/src/blob.rs
+@@ -135,7 +135,7 @@
+     pub fn length(&self) -> Result<u64, Error> {
+         self.parts.iter().try_fold(0u64, |total, part| {
+             total
+-                .checked_add(part.length)
++                .checked_add(part.length).or(Some(total.wrapping_add(part.length)))
+                 .ok_or_else(|| ErrorCode::QuotaExceeded.into())
+         })
+     }

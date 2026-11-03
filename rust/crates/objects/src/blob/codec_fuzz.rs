@@ -175,6 +175,18 @@ pub fn check(bytes: &[u8]) -> bool {
             .collect(),
         edges: references.clone(),
     };
+    // Wide arithmetic independently checks the public logical-length boundary.
+    let length: u128 = manifest
+        .parts
+        .iter()
+        .map(|part| u128::from(part.length))
+        .sum();
+    match (manifest.length(), u64::try_from(length)) {
+        (Ok(actual), Ok(expected)) if actual == expected => {}
+        (Err(error), Err(_))
+            if error.code == ErrorCode::QuotaExceeded && error.stopped.is_none() => {}
+        _ => return false,
+    }
     let mut envelope = Envelope {
         kind: if fields[56] & 1 == 0 {
             Kind::Blob
