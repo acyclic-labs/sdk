@@ -148,5 +148,30 @@
     "features": 1151,
     "new_campaign_runs": 0,
     "scope": "Original recorded stdout and explicitly derived structural and prefix cases only. Earlier duplicate control and 94-file campaign retain original qualification. Remaining source guards, filesystem resolution, process custody, source branch maps and other platforms remain open."
+  },
+  "shape_qualification": {
+    "source_commit": "e2f921e15c1a0cd45e9a5f569792e61b275fc57c",
+    "source_tree": "81ccd16f365b7c76ec322f3f1dacb6e1d92e29e3",
+    "sources": {
+      "plugin/src/install/marketplace.rs": "7c1eb26abc2fbf8bbda256f36dcc8a9809a06bd85295ba4ef8184de505ca04ff",
+      "rust/crates/harness-fuzz/fuzz_targets/native_marketplace.rs": "4f1df392bf343551b308155a58d05b62261fcb93b5c60be1cd08f7220120ceae",
+      "rust/crates/harness-fuzz/graphcoder-args-control.py": "13bb33af91382eb4d3b1a6e10378f9d33000e43afd0037bc0ba63c0dfcea27a5"
+    },
+    "result": "pass",
+    "negative_controls": [
+      "Actual absent-list refusal replaced by empty selection",
+      "Actual missing root admitted as empty string",
+      "Actual missing origin admitted as empty string",
+      "Actual foreign registration selected without its name"
+    ],
+    "restoration": "All four actual source mutations hit their unchanged specific semantic assertions; exact source restored before corpus replay",
+    "new_campaign_runs": 0,
+    "scope": "Original recorded stdout and explicitly derived structural/prefix seeds only. Earlier source guard controls and 94-file campaign retain their original source qualification. No full source branch map, filesystem resolution, process custody or other platform qualification.",
+    "replayed_nonempty_files": 18,
+    "replayed_bytes": 3354,
+    "executed_units": 19,
+    "replay_seconds": 0,
+    "instrumented_edges": 575,
+    "features": 1151
   }
 }
