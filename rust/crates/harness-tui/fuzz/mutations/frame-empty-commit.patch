@@ -1,0 +1,10 @@
+--- a/rust/crates/harness-tui/src/term/frame.rs
++++ b/rust/crates/harness-tui/src/term/frame.rs
+@@ -177,4 +177,7 @@
+     fn commit(&mut self, expected: Option<u64>) -> io::Result<Option<u64>> {
++        if self.frame.is_empty() {
++            return Ok(expected);
++        }
+         // Empty frames must cross the same boundary as nonempty ones: the
+         // signal worker can invalidate a cursor while the caller is rendering.
+         let mut frame = std::mem::take(&mut self.frame);
