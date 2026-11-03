@@ -387,6 +387,18 @@ mod tests {
             ];
             for (index, metadata) in dialects.iter().enumerate() {
                 codec_fuzz::check_metadata(metadata);
+                for marker in ["$serde_json::private::RawValue", "$serde_json::private::Number"] {
+                    let mut extended = metadata.clone();
+                    extended["extra"] = serde_json::json!({(marker): "null", "nested": []});
+                    let mut bytes = serde_json::to_vec(&extended).unwrap();
+                    prop_assert!(codec_fuzz::check_metadata_bytes(&bytes).is_ok());
+                    let event = serde_json::json!({"kind": "completed", "metadata": extended});
+                    let restored: ModelEvent =
+                        serde_json::from_slice(&serde_json::to_vec(&event).unwrap()).unwrap();
+                    prop_assert_eq!(restored, ModelEvent::Completed { metadata: extended });
+                    bytes.extend_from_slice(b" null");
+                    prop_assert!(codec_fuzz::check_metadata_bytes(&bytes).is_err());
+                }
                 prop_assert_eq!(ModelTokenUsage::reported(metadata), ModelTokenUsage {
                     input: Some(input), output: Some(output), cached,
                     cache_write: if index == 0 { cache_write } else { None },
