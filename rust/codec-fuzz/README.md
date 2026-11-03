@@ -591,6 +591,7 @@ and restore exact production bytes. This qualifies only the named predicate.
 | HEAD/GET: one metadata assertion for explicit kind, logical length and ordered references, using retained HEAD and LIST writers | `object_head_kind.patch`, `object_head_unspecified.patch`, `object_head_references.patch` |
 | Unary and batch PUT: one explicit outcome assertion; retained created response with derived true/false/absent Unknown discriminator | `object_put_unknown.patch` |
 | Persisted writer: public ByteRange resolver against sorted input-derived bounds, FULL empty/nonempty, explicit empty/reversed/oversized selections and open-ended selections from an interior or out-of-bounds start | `object_range_empty.patch`, `object_range_open_end.patch` |
+| Persisted writer: complete original writer body with a foreign format domain must retain Unsupported before body admission | `object_format_domain.patch` |
 | Persisted writer: actual Manifest logical length versus an independent u128 sum; overflow retains QuotaExceeded without a stopped cause | `object_manifest_length.patch` |
 | Persisted writer: envelope fixed width across marking/epoch restamps and admission of the rewritten value; exact epoch truncation and invalid presence tag in a complete writer body | `object_envelope_width.patch`, `object_envelope_tag.patch` |
 | Persisted writer: unknown kind and definitely nonzero nonce for an absent deleter, isolated in complete writer bodies; typed Corrupt without a stopped cause | `object_envelope_kind.patch`, `object_envelope_padding.patch` |

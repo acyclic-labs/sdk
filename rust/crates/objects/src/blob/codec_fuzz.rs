@@ -59,6 +59,13 @@ fn check_codec<T: PartialEq>(
             return false;
         }
     }
+    // A complete valid body must not admit another format domain.
+    encoded[0] ^= 0x20;
+    let foreign_domain = refused(&encoded, ErrorCode::Unsupported);
+    encoded[0] ^= 0x20;
+    if !foreign_domain {
+        return false;
+    }
     // Refuse another version before any body, using the admitted writer header.
     for version in [b'0', b'1', b'2', b'9'] {
         if version != magic[magic.len() - 2] {
