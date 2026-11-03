@@ -212,7 +212,18 @@ export function qualifyNativeHostLoom(run = runCommand, controls = false) {
       "testing::host::models::readiness_racing_worker_parking_cannot_be_lost",
       "testing::host::models::queue_capacity_and_physical_terminal_wakes_are_latched",
       "testing::host::models::physical_occupants_outside_the_schedule_cannot_block_the_driver",
-    ] } : { suites: [["testing::host::models::", 4], ["testing::executor::models::", 7]] }),
+    ] } : { suites: [["testing::host::models::", 4], ["testing::executor::models::", 5]] }),
+  });
+}
+
+export function qualifyNativeExecutor(run = runCommand, rounds = false) {
+  return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
+    kind: "--lib", targetCfg: [],
+    ...(rounds ? {} : { env: loomEnvironment() }),
+    filters: rounds ? ["testing::executor::tests::every_continuously_ready_task_runs_in_each_round"] : [
+      "testing::executor::models::ready_publication_cannot_lose_a_task_or_driver_wake",
+      "testing::executor::models::real_completion_wait_latches_early_and_late_wakes",
+    ],
   });
 }
 
@@ -325,6 +336,8 @@ const fixedModels = {
   "--native-signal": qualifyNativeSignalLoom,
   "--native-host": qualifyNativeHostLoom,
   "--native-host-source": run => qualifyNativeHostLoom(run, true),
+  "--native-executor-source": qualifyNativeExecutor,
+  "--native-executor-rounds": run => qualifyNativeExecutor(run, true),
   "--native-wake": qualifyNativeWakeLoom,
   "--native-owner": qualifyNativeOwnerLoom,
   "--native-claim": qualifyNativeClaimLoom,

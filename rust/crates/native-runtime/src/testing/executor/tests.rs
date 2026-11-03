@@ -238,13 +238,12 @@ proptest::proptest! {
 
     #[test]
     fn every_continuously_ready_task_runs_in_each_round(seed in proptest::prelude::any::<u64>()) {
-        fair_rounds(seed, false);
+        fair_rounds(seed);
     }
 }
 
-fn fair_rounds(seed: u64, forget_round: bool) {
+fn fair_rounds(seed: u64) {
     let executor = Executor::new(seed);
-    lock(&executor.0).forget_round = forget_round;
     let tasks: Vec<_> = (0..4)
         .map(|_| executor.register(Some(Box::pin(std::future::pending()))))
         .collect();
@@ -375,12 +374,6 @@ fn draining_inside_a_root_keeps_the_external_driver() -> io::Result<()> {
     }));
     assert!(lock(&executor.0).live.is_empty());
     Ok(())
-}
-
-#[test]
-#[should_panic(expected = "ready task starved within a round")]
-fn negative_control_removing_rounds_allows_a_ready_task_to_starve() {
-    fair_rounds(0, true);
 }
 
 #[test]

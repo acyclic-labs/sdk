@@ -46,8 +46,9 @@ impl Wake for Flag {
     }
 }
 
-fn readiness(forget_wake: bool) {
-    loom::model(move || {
+#[test]
+fn ready_publication_cannot_lose_a_task_or_driver_wake() {
+    loom::model(|| {
         let executor = Executor::new(11);
         let published = Arc::new(AtomicBool::new(false));
         let completed = Arc::new(AtomicBool::new(false));
@@ -65,7 +66,6 @@ fn readiness(forget_wake: bool) {
         let waker = Waker::from(flag.clone());
         let cx = PollContext::from_waker(&waker);
         executor.poll_owned(&cx);
-        lock(&executor.0).forget_wake = forget_wake;
         let producer = loom::thread::spawn(move || {
             published.store(true, Ordering::SeqCst);
             task.wake_by_ref();
@@ -78,17 +78,6 @@ fn readiness(forget_wake: bool) {
         assert!(completed.load(Ordering::SeqCst), "ready task was lost");
         assert!(lock(&executor.0).live.is_empty());
     });
-}
-
-#[test]
-fn ready_publication_cannot_lose_a_task_or_driver_wake() {
-    readiness(false);
-}
-
-#[test]
-#[should_panic(expected = "driver wake was lost")]
-fn missing_ready_publication_negative_control() {
-    readiness(true);
 }
 
 #[test]
@@ -159,8 +148,9 @@ fn concurrent_abort_drops_the_original_future_once() {
     });
 }
 
-fn completion(omit_latch: bool) {
-    loom::model(move || {
+#[test]
+fn real_completion_wait_latches_early_and_late_wakes() {
+    loom::model(|| {
         let (sender, receiver) = loom::sync::mpsc::channel::<Waker>();
         let published = Arc::new(AtomicBool::new(false));
         let ready = published.clone();
@@ -173,7 +163,6 @@ fn completion(omit_latch: bool) {
         let wake = Arc::new(CompletionWake {
             ready: Mutex::new(false),
             signal: Condvar::new(),
-            omit_latch,
         });
         wait_io(
             std::future::poll_fn(|cx| {
@@ -190,15 +179,4 @@ fn completion(omit_latch: bool) {
         );
         worker.join().unwrap();
     });
-}
-
-#[test]
-fn real_completion_wait_latches_early_and_late_wakes() {
-    completion(false);
-}
-
-#[test]
-#[should_panic(expected = "deadlock")]
-fn missing_real_completion_latch_negative_control() {
-    completion(true);
 }

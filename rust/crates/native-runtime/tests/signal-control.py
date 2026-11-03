@@ -1,7 +1,7 @@
 """Check production signal/wake/owner models against actual source defects.
 
 Run in a disposable checkout: python3 rust/crates/native-runtime/tests/signal-control.py /tmp/native-signal-control
-Select a retained control with --wake, --owners, --host, --host-source, --host-events, --ownership, --claim, --descriptor, --owner-envelope, --durability, --durability-io, --native-terminal, --native-capacity, --native-funding or --native-tracker.
+Select a retained control with --wake, --owners, --host, --host-source, --host-events, --ownership, --claim, --descriptor, --owner-envelope, --durability, --durability-io, --native-terminal, --native-capacity, --native-funding --native-tracker, --executor-source or --executor-rounds.
 An optional comma-separated mutation selection shares one restored positive run.
 """
 import hashlib
@@ -13,8 +13,8 @@ import sys
 
 
 def main():
-    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--host-source", "--host-events", "--ownership", "--claim", "--descriptor", "--owner-envelope", "--durability", "--durability-io", "--native-terminal", "--native-capacity", "--native-funding", "--native-tracker")):
-        raise RuntimeError("arguments: expected evidence directory, optional control and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--host-source|--host-events|--ownership|--claim|--descriptor|--owner-envelope|--durability|--durability-io|--native-terminal|--native-capacity|--native-funding|--native-tracker [mutation]]")
+    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--host-source", "--host-events", "--ownership", "--claim", "--descriptor", "--owner-envelope", "--durability", "--durability-io", "--native-terminal", "--native-capacity", "--native-funding", "--native-tracker", "--executor-source", "--executor-rounds")):
+        raise RuntimeError("arguments: expected evidence directory, optional control and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--host-source|--host-events|--ownership|--claim|--descriptor|--owner-envelope|--durability|--durability-io|--native-terminal|--native-capacity|--native-funding|--native-tracker|--executor-source|--executor-rounds [mutation]]")
     mode = sys.argv[2] if len(sys.argv) >= 3 else "--signal"
     root = Path(__file__).resolve().parents[4]
     output = Path(sys.argv[1]).resolve()
@@ -33,6 +33,7 @@ def main():
     completion = root / "rust/crates/native-runtime/src/completion/state.rs"
     admission = root / "rust/crates/native-runtime/src/workers/admission.rs"
     tracker = root / "rust/crates/native-runtime/src/testing.rs"
+    executor = tracker.parent / "testing/executor.rs"
     target, sources, selection = {
         "--signal": ("process_signal_loom.rs", (signal, outcome), "--native-signal"),
         "--wake": ("wake_loom.rs", (wake,), "--native-wake"),
@@ -50,6 +51,8 @@ def main():
         "--native-capacity": ("../src/testing/queue_model.rs", (admission,), "--native-capacity"),
         "--native-funding": ("../src/testing/queue_model.rs", (completion, admission), "--native-funding"),
         "--native-tracker": ("../src/testing/model.rs", (tracker,), "--native-tracker"),
+        "--executor-source": ("../src/testing/executor/models.rs", (executor,), "--native-executor-source"),
+        "--executor-rounds": ("../src/testing/executor/tests.rs", (executor,), "--native-executor-rounds"),
     }[mode]
     oracle = root / "rust/crates/native-runtime/tests" / target
     qualifier = root / "scripts/qualify-mcp-loom.mjs"
@@ -243,6 +246,26 @@ qualificationMain([process.argv[1]], (command, args, options) => spawnSync(comma
              b"(state.active == 0).then(|| state.idle.take()).flatten()",
              b"None::<Waker>",
              "terminal wake lost", "testing::model::accepted_descendants_cannot_escape_cancel_or_lose_the_terminal_wake"),
+        ]
+    elif mode == "--executor-source":
+        mutations = [
+            ("ready-task", executor,
+             b"            state.ready.insert(id);\n            state.drivers()",
+             b"            state.drivers()",
+             "ready task was lost", "testing::executor::models::ready_publication_cannot_lose_a_task_or_driver_wake"),
+            ("driver-wake", executor,
+             b"            state.ready.insert(id);\n            state.drivers()",
+             b"            state.ready.insert(id);\n            Drivers::default()",
+             "driver wake was lost", "testing::executor::models::ready_publication_cannot_lose_a_task_or_driver_wake"),
+            ("completion-latch", executor,
+             b"        *lock(&self.ready) = true;", b"        *lock(&self.ready) = false;",
+             "deadlock; threads =", "testing::executor::models::real_completion_wait_latches_early_and_late_wakes"),
+        ]
+    elif mode == "--executor-rounds":
+        mutations = [
+            ("served-round", executor,
+             b"        state.served.insert(id);", b"        state.served.remove(&id);",
+             "ready task starved within a round", "testing::executor::tests::every_continuously_ready_task_runs_in_each_round"),
         ]
     if len(sys.argv) == 4:
         selected = set(sys.argv[3].split(","))

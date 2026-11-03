@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { loomEnvironment, qualificationMain, qualifySkillMaterializerLoom, qualifyFsPolicyLoom } from "./qualify-mcp-loom.mjs";
-import { harnessModelSuites, qualifyHarnessModelsLoom, qualifyNativeHostLoom } from "./qualify-mcp-loom.mjs";
+import { harnessModelSuites, qualifyHarnessModelsLoom, qualifyNativeHostLoom, qualifyNativeExecutor } from "./qualify-mcp-loom.mjs";
 import { gateQualifications, qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "main" }, profile: { test: true }, executable: "model-binary" };
@@ -140,14 +140,17 @@ test("progress qualification requires the cleanup and runnable-wake models and c
 });
 
 test("native progress qualification instruments the real mutex and requires every selected model", () => {
-  for (const [qualify, count, pattern] of [
+  for (const [qualify, count, pattern, ordinary = false] of [
     [qualifyNativeProgressLoom, 8, /^testing::(?:(?:queue_)?model::|durability::models::)/],
     [run => qualifyNativeHostLoom(run, true), 3, /^testing::host::models::/],
+    [qualifyNativeExecutor, 2, /^testing::executor::models::/],
+    [run => qualifyNativeExecutor(run, true), 1, /^testing::executor::tests::/, true],
   ]) for (const missing of [null, ...Array.from({ length: count }, (_, index) => index + 1)]) {
     let models = 0;
     const run = (command, args, options) => {
       if (command === "cargo") {
-        assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
+        if (ordinary) assert.equal(options.env, undefined);
+        else assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
         assert.ok(args.includes("--lib") && args.includes("--no-run"));
         return {status: 0, stdout: JSON.stringify({...artifact, target: {name: "acyclic_native_runtime"}})};
       }
