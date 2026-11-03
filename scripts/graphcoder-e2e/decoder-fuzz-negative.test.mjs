@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Worker } from "node:worker_threads";
 
-for (const group of ["serial", "decoder"]) test(`${group} fuzz oracles reject planted production defects`, async () => {
+for (const group of ["serial", "decoder", "frames"]) test(`${group} fuzz oracles reject planted production defects`, async () => {
   const mutations = [
     ["serial.mjs", 'assert.deepEqual(first.binding, binding, "partition differs from expected acceptance identity");',
       'void binding;', "serial"],
@@ -12,6 +12,9 @@ for (const group of ["serial", "decoder"]) test(`${group} fuzz oracles reject pl
       "void execution;", "serial"],
     ...["expired", "cancelled"].map(field =>
       ["serial.mjs", `!execution?.${field}`, "true", "serial"]),
+    ["frames.mjs", "this.#completed = true;", "this.#completed = false;", "frames"],
+    ["frames.mjs", "try { this.frame(); } finally { this.#boundary = false; }",
+      "this.#boundary = false;", "frames"],
     ["process-report.mjs", "this.#controlFailure ??= cause;", "void cause;", "report"],
     ["process-report.mjs", "    const request = this.#request;",
       "    if (this.#terminal) return;\n    const request = this.#request;", "report"],
@@ -105,6 +108,9 @@ for (const group of ["serial", "decoder"]) test(`${group} fuzz oracles reject pl
         ` : oracle === "serial" ? `
           const { fuzz } = await import(${JSON.stringify(new URL("./serial.fuzz.mjs", import.meta.url).href)});
           fuzz(Buffer.alloc(0));
+        ` : oracle === "frames" ? `
+          const { fuzz } = await import(${JSON.stringify(new URL("./frames.fuzz.mjs", import.meta.url).href)});
+          await fuzz(Buffer.alloc(0));
         ` : oracle === "watch" ? `
           const { fuzz } = await import(${JSON.stringify(new URL("./output-watch.fuzz.mjs", import.meta.url).href)});
           fuzz(Buffer.alloc(0));
@@ -153,7 +159,8 @@ for (const group of ["serial", "decoder"]) test(`${group} fuzz oracles reject pl
     assert.equal(result.error?.code, 1, `${recovery}\n${result.stdout}\n${result.stderr}`);
     assert.match(result.stdout, /PLANTED_DEFECT_REJECTED/, `${recovery}\n${result.stdout}\n${result.stderr}`);
   };
-  const remaining = mutations.filter(([, , , oracle]) => oracle.startsWith("serial") === (group === "serial")).values();
+  const category = oracle => oracle.startsWith("serial") ? "serial" : oracle === "frames" ? "frames" : "decoder";
+  const remaining = mutations.filter(([, , , oracle]) => category(oracle) === group).values();
   // Each worker has fresh module state and one production mutation. Two share
   // admission credit; the original worker exit releases its slot.
   await Promise.all([0, 1].map(async () => {

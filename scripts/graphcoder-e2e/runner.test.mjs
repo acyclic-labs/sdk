@@ -125,11 +125,6 @@ test("screen assertions observe complete synchronized frames at every fragmentat
     assert.ok(seen.every(text => text === "" || text === "final"), JSON.stringify(seen));
     frames.dispose(); screen.dispose();
   }
-  // Negative control: callbacks after arbitrary writes disclose the half-painted draft.
-  const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
-  await new Promise(resolve => screen.write(bytes.slice(0, bytes.indexOf("\x1b[Hfinal")), resolve));
-  assert.equal(screen.buffer.active.getLine(0).translateToString(true), "draft");
-  screen.dispose();
 });
 
 test("handled failures retain exact task and reason identity across subsequent actions", () => {
