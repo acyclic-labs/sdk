@@ -104,3 +104,14 @@ same test again. The control calls production `Owner::close` twice, retaining th
 original guard after failure and checking both DEC and OS restoration on retry.
 It does not manufacture a restored flag in the model or establish native worker
 creation failure provenance.
+
+## Console close publication
+
+`console-withhold-input-close.patch` removes input-close notification from
+production `Owner::close`. With the wrapper above, run the exact test
+`term::console_owner::tests::input_observes_output_close_before_its_next_bounded_read`.
+Require `input waited for restoration instead of the original close publication`,
+then restore the patch and run the same test. The writer's restoration event lets
+the model release the writer and join it even when the close publication is lost;
+it does not supply the missing input-close event. No model flag changes the
+notification, and the production close transition and assertion stay unchanged.

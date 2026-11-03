@@ -1,0 +1,7 @@
+--- a/rust/crates/harness-tui/src/term/console_owner.rs
++++ b/rust/crates/harness-tui/src/term/console_owner.rs
+@@ -363,3 +363,3 @@
+             state.closing = true;
+-            this.closed.close()
++            Ok(())
+         };

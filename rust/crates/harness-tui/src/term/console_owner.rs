@@ -670,7 +670,6 @@ mod tests {
     struct InputClose {
         state: Mutex<InputState>,
         changed: Condvar,
-        late: bool,
     }
     impl InputClose {
         fn publish(&self) -> io::Result<()> {
@@ -682,7 +681,7 @@ mod tests {
 
     impl CloseWake for Arc<InputClose> {
         fn close(&self) -> io::Result<()> {
-            if self.late { Ok(()) } else { self.publish() }
+            self.publish()
         }
     }
 
@@ -702,12 +701,6 @@ mod tests {
                         .map_err(|_| io::ErrorKind::Other)?;
                 }
             }
-            drop(state);
-            // Counterfactual: withhold only close publication until the held
-            // restoration is released. The reader still eventually finishes.
-            if first && self.0.late {
-                self.0.publish()?;
-            }
             Ok(bytes.len())
         }
         fn flush(&mut self) -> io::Result<()> {
@@ -715,8 +708,9 @@ mod tests {
         }
     }
 
-    fn input_close_model(broken: bool) {
-        loom::model(move || {
+    #[test]
+    fn input_observes_output_close_before_its_next_bounded_read() {
+        loom::model(|| {
             let input = Arc::new(InputClose {
                 state: Mutex::new(InputState {
                     armed: false,
@@ -725,7 +719,6 @@ mod tests {
                     release: false,
                 }),
                 changed: Condvar::new(),
-                late: broken,
             });
             let owner = Owner::notifying(
                 RestoreGuard::new(HeldRestore(Arc::clone(&input)), &Capabilities::default()),
@@ -789,10 +782,5 @@ mod tests {
             );
             assert!(owner.check_open().is_err());
         });
-    }
-    #[test]
-    fn input_observes_output_close_before_its_next_bounded_read() {
-        input_close_model(false);
-        assert!(std::panic::catch_unwind(|| input_close_model(true)).is_err());
     }
 }
