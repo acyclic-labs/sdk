@@ -1679,3 +1679,40 @@ proptest::proptest! {
         proptest::prop_assert_eq!(accepted, expected);
     }
 }
+
+#[test]
+fn an_account_keyring_publishes_only_under_the_keys_that_authenticated_it() {
+    let a = Issuer::new("test", key(20));
+    let b = Issuer::new("test", key(21));
+    // Names only A, signed by B: unproven while the anchor is {A}.
+    let restated = environment_keyring_by(&b, &a.anchor());
+    let (_root, genesis) = b.genesis("account", key(22), NOW).unwrap();
+    let expanded = |anchor: &AnchorKeys| anchor.rotate([a.anchor(), b.anchor()].concat(), NOW, 0);
+    let follower = || {
+        let (owner, anchor) = tokio::sync::watch::channel(AnchorKeys::new(a.anchor()));
+        let trust = Arc::new(Follower::new("test", anchor));
+        assert_eq!(trust.apply(&restated, NOW), Ok(Applied::Changed));
+        assert_eq!(trust.environment_initialized(), Ok(false));
+        owner.send_modify(|keys| *keys = expanded(keys));
+        (owner, trust)
+    };
+    // Control: with no interleaving, the expanded anchor authenticates B.
+    let (_owner, trust) = follower();
+    assert_eq!(trust.apply(&genesis[0], NOW), Ok(Applied::Changed));
+
+    let (_owner, trust) = follower();
+    let verifying = Arc::clone(&trust);
+    let replay = restated.clone();
+    VERIFYING_KEYRING.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(move || {
+            // The same record now proves a position whose only key is A.
+            assert_eq!(verifying.apply(&replay, NOW), Ok(Applied::Changed));
+            assert_eq!(verifying.environment_initialized(), Ok(true));
+        }));
+    });
+    assert_eq!(trust.apply(&genesis[0], NOW), Err(VerifyError::Unavailable));
+    VERIFYING_KEYRING.with(|slot| assert!(slot.borrow().is_none()));
+    // B is no longer trusted: the root it signed never installs.
+    assert!(trust.apply(&genesis[0], NOW).is_err());
+    assert!(trust.snapshot("account").is_err());
+}

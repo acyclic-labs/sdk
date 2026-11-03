@@ -698,20 +698,16 @@ impl Follower {
         let mut account = entry.state.write().map_err(|_| VerifyError::Unavailable)?;
         let result = match record {
             TrustRecordKind::Keyring(signed) => {
-                let (keys, revision) = {
+                let keys = {
                     let environment = self
                         .environment
                         .read()
                         .map_err(|_| VerifyError::Unavailable)?;
                     let anchor = self.anchor.borrow().clone();
-                    (
-                        environment.keys(&anchor, now),
-                        (environment.sequence, environment.digest),
-                    )
+                    environment.keys(&anchor, now)
                 };
-                prepare_keyring(&account, signed, &keys, now).and_then(|prepared| {
-                    self.publish_keyring(&mut account, revision, &keys, prepared)
-                })
+                prepare_keyring(&account, signed, &keys, now)
+                    .and_then(|prepared| self.publish_keyring(&mut account, &keys, now, prepared))
             }
             _ => account.apply(id, record, &[], now),
         };
@@ -727,15 +723,20 @@ impl Follower {
     fn publish_keyring(
         &self,
         account: &mut Account,
-        revision: (u64, BlockId),
-        keys: &Arc<[BlockId]>,
+        authenticated: &[BlockId],
+        now: u64,
         prepared: PreparedKeyring,
     ) -> Result<(Applied, u64), VerifyError> {
         let environment = self
             .environment
             .read()
             .map_err(|_| VerifyError::Unavailable)?;
-        if (environment.sequence, environment.digest) != revision || !Arc::ptr_eq(&environment.keys, keys) {
+        // Publish only while the keys that authenticated the keyring are still
+        // the environment's trusted keys. Comparing the key set itself covers
+        // every way they change: a new revision, an unproven position becoming
+        // proven, and an anchor publication.
+        let anchor = self.anchor.borrow().clone();
+        if *environment.keys(&anchor, now) != *authenticated {
             return Err(VerifyError::Unavailable);
         }
         let retired = prepared.next.and_then(|next| account.keyring.replace(next));
