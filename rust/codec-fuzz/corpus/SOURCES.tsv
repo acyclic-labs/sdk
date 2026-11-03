@@ -1953,3 +1953,7 @@ ids/machine-json	38	f144552e7ec6609f103cf63d01d7172a8169e2330874e08cabd935502e9d
 ids/machine-nil-bytes	16	374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb	Machines public as_bytes/Display/Serialize writers; UUID nil writer for refusal
 ids/machine-nil-text	36	12b9377cbe7e5c94e8a70d9d23929523d14afa954793130f8a3959c7b849aca8	Machines public as_bytes/Display/Serialize writers; UUID nil writer for refusal
 ids/machine-nil-json	38	36b6647187901ac4413731fb4bfcc0acaf826e0443d5fdbcfae119480fc63216	Machines public as_bytes/Display/Serialize writers; UUID nil writer for refusal
+ids/image-bytes	32	72cd6e8422c407fb6d098690f1130b7ded7ec2f7f5e1d30bd9d521f015363793	Machines public ImageDigest as_bytes/Serialize writers; zero array writer for refusal
+ids/image-json	65	49f6be3b003d7c754bc87ae96c4403b4d5600e8ad0a15b16ff93629a45fd15ee	Machines public ImageDigest as_bytes/Serialize writers; zero array writer for refusal
+ids/image-zero-bytes	32	66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925	Machines public ImageDigest as_bytes/Serialize writers; zero array writer for refusal
+ids/image-zero-json	65	54f65952ad8d24e1cc555b1ccd5de84cdb2052aa402e567295838ee33194b565	Machines public ImageDigest as_bytes/Serialize writers; zero array writer for refusal

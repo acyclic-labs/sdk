@@ -154,13 +154,46 @@ pub mod identity_codec_fuzz {
             )+ };
         }
         check!(MachineId, CheckpointId, OperationId, IdempotencyKey);
+        check_image_digest(bytes);
+    }
+
+    fn check_image_digest(bytes: &[u8]) {
+        let nonzero = |raw: [u8; 32]| raw.iter().any(|byte| *byte != 0);
+        let expected = <[u8; 32]>::try_from(bytes).ok().filter(|raw| nonzero(*raw));
+        let actual = <[u8; 32]>::try_from(bytes)
+            .ok()
+            .and_then(|raw| ImageDigest::new(raw).ok());
+        assert_eq!(
+            actual.map(ImageDigest::as_bytes),
+            expected,
+            "public image digest admission must retain nonzero bits"
+        );
+        let expected_json = serde_json::from_slice::<[u8; 32]>(bytes)
+            .ok()
+            .filter(|raw| nonzero(*raw));
+        assert_eq!(
+            serde_json::from_slice::<ImageDigest>(bytes)
+                .ok()
+                .map(ImageDigest::as_bytes),
+            expected_json,
+            "public image digest serde admission must retain nonzero bits"
+        );
+        if let Some(digest) = actual {
+            assert_eq!(
+                serde_json::from_slice::<ImageDigest>(&serde_json::to_vec(&digest).unwrap())
+                    .unwrap(),
+                digest
+            );
+        }
     }
 
     /// Capture the original public identity writers and the UUID library's nil
-    /// writer as a refusal input. The four identity types share these formats.
+    /// writer as a refusal input. Image digests retain their public byte/serde
+    /// writers and the zero array writer as refusal inputs.
     pub fn seeds() -> Vec<(&'static str, Vec<u8>)> {
         let id = MachineId::from_digest([1; 32]);
         let nil = Uuid::nil();
+        let image = ImageDigest::new([1; 32]).unwrap();
         vec![
             ("machine-bytes", id.as_bytes().to_vec()),
             ("machine-text", id.to_string().into_bytes()),
@@ -168,6 +201,10 @@ pub mod identity_codec_fuzz {
             ("machine-nil-bytes", nil.as_bytes().to_vec()),
             ("machine-nil-text", nil.to_string().into_bytes()),
             ("machine-nil-json", serde_json::to_vec(&nil).unwrap()),
+            ("image-bytes", image.as_bytes().to_vec()),
+            ("image-json", serde_json::to_vec(&image).unwrap()),
+            ("image-zero-bytes", [0; 32].to_vec()),
+            ("image-zero-json", serde_json::to_vec(&[0_u8; 32]).unwrap()),
         ]
     }
 }
@@ -177,7 +214,7 @@ mod resource_identity_tests {
     use proptest::prelude::*;
 
     #[test]
-    fn public_identity_admission_matches_uuid_syntax_and_non_nil_bits() {
+    fn public_identity_admission_preserves_syntax_and_nonzero_bits() {
         use super::identity_codec_fuzz::check;
         use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
         for (_, bytes) in super::identity_codec_fuzz::seeds() {
@@ -186,17 +223,20 @@ mod resource_identity_tests {
         let strategy = (
             proptest::collection::vec(any::<u8>(), 0..128),
             any::<[u8; 16]>(),
+            any::<[u8; 32]>(),
         );
         TestRunner::new_with_rng(
             Config::with_cases(64),
             TestRng::deterministic_rng(RngAlgorithm::ChaCha),
         )
-        .run(&strategy, |(bytes, raw)| {
+        .run(&strategy, |(bytes, raw, image)| {
             check(&bytes);
             check(&raw);
             let original = uuid::Uuid::from_bytes(raw);
             check(original.to_string().as_bytes());
             check(&serde_json::to_vec(&original).unwrap());
+            check(&image);
+            check(&serde_json::to_vec(&image).unwrap());
             Ok(())
         })
         .unwrap();

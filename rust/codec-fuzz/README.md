@@ -849,7 +849,7 @@ nil refusals; `corpus/SOURCES.tsv` retains their producers and hashes.
 
 ```sh
 git apply rust/codec-fuzz/negative-controls/machines-identity-nil.patch
-cargo test --locked -p acyclic-machines --no-default-features --features grpc,test-support --lib contract::identity::resource_identity_tests::public_identity_admission_matches_uuid_syntax_and_non_nil_bits -- --exact --nocapture
+cargo test --locked -p acyclic-machines --no-default-features --features grpc,test-support --lib contract::identity::resource_identity_tests::public_identity_admission_preserves_syntax_and_nonzero_bits -- --exact --nocapture
 git apply -R rust/codec-fuzz/negative-controls/machines-identity-nil.patch
 ```
 
@@ -858,6 +858,14 @@ The unchanged property must reject the planted production nil acceptance at
 After exact source restoration, require the same property to pass. Compiler
 failures do not qualify the control. Source coverage, instrumented campaigns and
 physical service/platform qualification remain separate obligations.
+
+The same property also checks `ImageDigest` byte and serde admission against
+exact width and nonzero original bits. Its original public writers supply the
+positive forms, and the zero-array writer supplies the refusal forms. Apply
+`negative-controls/machines-image-zero.patch` and require the unchanged property
+to fail at `public image digest admission must retain nonzero bits`, then restore
+the production source and require that property to pass. This check covers
+digest admission; OCI reference parsing has a separate input grammar.
 
 The existing Machine result-page RPC property also supplies the simulator's
 original observations to the same `MachineState` semantic oracle. The public
