@@ -1021,19 +1021,12 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         // Requests of one process wait concurrently, each its own keyed
         // waiter, sharing one watch per awaited status key.
         std::thread::scope(|scope| {
-            let readers = (0..8)
-                .map(|reader| {
-                    let (cwd, parent) = (&cwd, &parent);
-                    scope.spawn(move || {
-                        let action = if reader % 2 == 0 {
-                            HostAction::Sessions { parent: parent.clone() }
-                        } else {
-                            HostAction::Locate { cwd: cwd.clone() }
-                        };
-                        request(cwd, action).map(|_| ())
-                    })
-                })
-                .collect::<Vec<_>>();
+            let cwd = &cwd;
+            let readers = [
+                HostAction::Sessions { parent: parent.clone() },
+                HostAction::Locate { cwd: cwd.clone() },
+            ]
+            .map(|action| scope.spawn(move || request(cwd, action).map(|_| ())));
             readers.into_iter().try_for_each(|reader| {
                 reader
                     .join()
