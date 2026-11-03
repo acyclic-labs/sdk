@@ -84,6 +84,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(fuzzing)", 'c
 
 [features]
 default = ["runtime"]
+reader = ["dep:acyclic-harness-client", "dep:acyclic-stream"]
 core = ["dep:acyclic-harness-core", "dep:futures"]
 native-answer = ["core", "dep:acyclic-native-runtime"]
 code-mode = ["core", "acyclic-harness-core/filesystem", "dep:tokio"]
@@ -100,6 +101,7 @@ native-execution = []
 
 
 [dependencies]
+acyclic-harness-client = { path = "../harness-client", default-features = false, optional = true }
 acyclic-harness-core = { path = "../harness-core", default-features = false, features = ["hooks", "test-support"], optional = true }
 acyclic-native-runtime = { path = "../native-runtime", optional = true }
 harness-mock-model = { path = "../harness-mock-model" }
@@ -360,3 +362,15 @@ required-features = ["runtime"]
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "reader_snapshot"
+path = "fuzz_targets/reader_snapshot.rs"
+required-features = ["reader"]
+test = false
+doc = false
+bench = false
+
+[[example]]
+name = "reader_snapshot_corpus"
+required-features = ["reader"]
