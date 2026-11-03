@@ -340,14 +340,15 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
     async fn usage(&self) -> Result<Usage, Error>;
 
     /// The applied-revision authority this account's reads are served from,
-    /// when the provider issues revisions. Servers park a read's minimum on it.
+    /// when the provider issues revisions. Servers park request minima on it
+    /// before dispatch, including mutations.
     async fn revisions(&self) -> Result<Option<&acyclic_stream::AppliedRevisions>, Error> {
         Ok(None)
     }
 
     /// Drops the participants of `minimum` the provider proves are already
     /// visible, such as writes another instance over the same storage
-    /// committed. Servers park a read only on what remains.
+    /// committed. Servers park a request only on what remains.
     async fn admitted(
         &self,
         minimum: acyclic_stream::RevisionCut,

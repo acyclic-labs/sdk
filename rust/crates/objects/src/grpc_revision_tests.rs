@@ -99,6 +99,7 @@ async fn admission_preserves_authority_and_original_failure() -> TestResult {
 #[tokio::test]
 async fn generated_get_put_delete_share_floors_and_scoped_views() -> TestResult {
     refused_writes_preserve_storage().await?;
+    closed_write_preserves_storage().await?;
     let provider = Arc::new(MemoryObjects::memory());
     let original = provider.clone();
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -218,7 +219,7 @@ async fn refused_writes_preserve_storage() -> TestResult {
             .await?
             .expect("original authority")
             .current();
-        let minimum = if foreign {
+        let wanted = if foreign {
             AppliedRevisions::in_process().at(1)
         } else {
             Revision {
@@ -226,7 +227,7 @@ async fn refused_writes_preserve_storage() -> TestResult {
                 ..current
             }
         };
-        let floor = RevisionCut::of(minimum);
+        let floor = RevisionCut::of(wanted);
         let before = stored(&medium).await?;
         let mut client = wire::blobs_service_client::BlobsServiceClient::new(RevisionChannel::new(
             channel_over(serving(provider.clone())),
@@ -289,6 +290,50 @@ async fn refused_writes_preserve_storage() -> TestResult {
         );
         refused!(collect, wire::CollectRequest {});
     }
+    Ok(())
+}
+
+async fn closed_write_preserves_storage() -> TestResult {
+    // The original authority ends a parked mutation when its producer closes;
+    // no deadline, readiness retry or replacement revision can release it.
+    let medium = crate::MemoryMedium::default();
+    let provider = Arc::new(crate::Store::new(medium.clone()).account(b"closed-write-minimum")?);
+    let put = provider.put(b"held".as_slice().into(), Vec::new()).await?;
+    provider.flush(None).await?;
+    let authority = provider.revisions().await?.expect("original authority");
+    let floor = RevisionCut::of(authority.at(authority.current().index + 1));
+    let before = stored(&medium).await?;
+    let (entered, received) = tokio::sync::oneshot::channel();
+    let entered = Mutex::new(Some(entered));
+    let account = provider.clone();
+    let resolve: AccountResolver = Arc::new(move |_| {
+        if let Some(entered) = entered.lock().unwrap().take() {
+            let _ = entered.send(());
+        }
+        Ok(account.clone())
+    });
+    let mut client = wire::blobs_service_client::BlobsServiceClient::new(RevisionChannel::new(
+        channel_over(resolve),
+    ));
+    let mut request = Request::new(wire::DeleteBlobRequest {
+        digest: Some(put.verified().ok_or("original put")?.digest.into()),
+    });
+    minimum(&mut request, Some(&floor));
+    let (result, closed) = tokio::join!(client.delete_blob(request), async {
+        received.await?;
+        authority.close();
+        Ok::<_, tokio::sync::oneshot::error::RecvError>(())
+    });
+    closed?;
+    assert_eq!(
+        stored(&medium).await?,
+        before,
+        "closed producer must not dispatch a write"
+    );
+    assert_eq!(
+        error_from_status(&result.expect_err("closed original authority")).code,
+        wire::ErrorCode::Unavailable
+    );
     Ok(())
 }
 

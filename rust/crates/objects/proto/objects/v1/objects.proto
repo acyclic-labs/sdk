@@ -169,9 +169,9 @@ message AvailabilityCursor {
 }
 // Read-your-writes rides gRPC binary metadata as the shared Streams token
 // acyclic.stream.v1.Revision (protobuf bytes). Requests may repeat
-// `acyclic-min-revision-bin`, one value per authority: GET, HEAD and LIST wait,
-// bounded by the call deadline, until the account applies it, and refuse a
-// foreign scope or incarnation with ERROR_CODE_REVISION_FOREIGN. Every
+// `acyclic-min-revision-bin`, one value per authority: every unary route waits
+// before dispatch, bounded by the call deadline, until the account applies it,
+// and refuses a foreign scope or incarnation with ERROR_CODE_REVISION_FOREIGN. Every
 // response, including failures, may carry `acyclic-revision-bin`: a write's
 // committed revision, or the applied revision a read was served at.
 service BlobsService {

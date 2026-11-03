@@ -599,6 +599,9 @@ type Reply<T> = Result<tonic::Response<T>, tonic::Status>;
 async fn applied(blobs: &dyn Blobs, metadata: &MetadataMap) -> Result<(), Error> {
     let minimum =
         revision::requested(metadata).map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
+    if minimum.is_empty() {
+        return Ok(());
+    }
     let minimum = blobs.admitted(minimum).await?;
     if minimum.is_empty() {
         return Ok(());
@@ -660,19 +663,15 @@ fn stamp(metadata: &mut MetadataMap, revision: Option<&Revision>) {
     }
 }
 
-/// Serves one route: a read first waits for its minimum; every reply carries
+/// Serves one route: admission precedes dispatch; every reply carries
 /// its revision, and a failure the account's current one.
-async fn serve<T, F>(blobs: &dyn Blobs, metadata: &MetadataMap, read: bool, route: F) -> Reply<T>
+async fn serve<T, F>(blobs: &dyn Blobs, metadata: &MetadataMap, route: F) -> Reply<T>
 where
     F: Future<Output = Result<crate::route::Served<T>, Error>>,
 {
-    let outcome = if read {
-        match applied(blobs, metadata).await {
-            Ok(()) => route.await,
-            Err(error) => Err(error),
-        }
-    } else {
-        route.await
+    let outcome = match applied(blobs, metadata).await {
+        Ok(()) => route.await,
+        Err(error) => Err(error),
     };
     match outcome {
         Ok((value, revision)) => {
@@ -695,16 +694,10 @@ where
 }
 
 macro_rules! serve {
-    ($self:ident, $request:ident, $route:ident, $read:expr) => {{
+    ($self:ident, $request:ident, $route:ident) => {{
         let blobs = $self.account(&$request)?;
         let (metadata, _, message) = $request.into_parts();
-        serve(
-            &*blobs,
-            &metadata,
-            $read,
-            crate::route::$route(&*blobs, message),
-        )
-        .await
+        serve(&*blobs, &metadata, crate::route::$route(&*blobs, message)).await
     }};
 }
 
@@ -734,58 +727,58 @@ impl wire::blobs_service_server::BlobsService for BlobsServer {
     }
 
     async fn put_blob(&self, request: Request<wire::PutBlobRequest>) -> Reply<wire::PutResponse> {
-        serve!(self, request, put_blob, false)
+        serve!(self, request, put_blob)
     }
     async fn put_blobs(
         &self,
         request: Request<wire::PutBlobsRequest>,
     ) -> Reply<wire::PutBlobsResponse> {
-        serve!(self, request, put_blobs, false)
+        serve!(self, request, put_blobs)
     }
     async fn put_manifest(
         &self,
         request: Request<wire::PutManifestRequest>,
     ) -> Reply<wire::PutResponse> {
-        serve!(self, request, put_manifest, false)
+        serve!(self, request, put_manifest)
     }
     async fn get_blob(
         &self,
         request: Request<wire::GetBlobRequest>,
     ) -> Reply<wire::GetBlobResponse> {
-        serve!(self, request, get_blob, true)
+        serve!(self, request, get_blob)
     }
     async fn head_blob(&self, request: Request<wire::HeadBlobRequest>) -> Reply<wire::BlobInfo> {
-        serve!(self, request, head_blob, true)
+        serve!(self, request, head_blob)
     }
     async fn delete_blob(
         &self,
         request: Request<wire::DeleteBlobRequest>,
     ) -> Reply<wire::DeleteBlobResponse> {
-        serve!(self, request, delete_blob, false)
+        serve!(self, request, delete_blob)
     }
     async fn list_blobs(
         &self,
         request: Request<wire::ListBlobsRequest>,
     ) -> Reply<wire::ListBlobsResponse> {
-        serve!(self, request, list_blobs, true)
+        serve!(self, request, list_blobs)
     }
     async fn retain(&self, request: Request<wire::RetainRequest>) -> Reply<wire::RetainResponse> {
-        serve!(self, request, retain, false)
+        serve!(self, request, retain)
     }
     async fn release(
         &self,
         request: Request<wire::ReleaseRequest>,
     ) -> Reply<wire::ReleaseResponse> {
-        serve!(self, request, release, false)
+        serve!(self, request, release)
     }
     async fn collect(
         &self,
         request: Request<wire::CollectRequest>,
     ) -> Reply<wire::CollectResponse> {
-        serve!(self, request, collect, false)
+        serve!(self, request, collect)
     }
     async fn usage(&self, request: Request<wire::UsageRequest>) -> Reply<wire::UsageResponse> {
-        serve!(self, request, usage, false)
+        serve!(self, request, usage)
     }
 }
 
