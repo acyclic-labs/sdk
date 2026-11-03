@@ -14,7 +14,6 @@ test("decoder fuzz targets retain captured native and shipping seeds across byte
   const acknowledged = wire(acknowledgement);
   const seeds = [Buffer.alloc(0), wire(ready), failed, acknowledged,
     ...Object.values(shipping).map(value => Buffer.from(value.stdout))];
-  assert.equal((await report(wire(ready))).capability.ready, true);
   for (const field of ["generation", "request_id"]) {
     const foreign = { ...acknowledgement, [field]: "0".repeat(32) };
     const result = await report(wire(foreign));

@@ -12,6 +12,12 @@ const wire = value => Buffer.from(JSON.stringify(value) + "\n");
 // mutation. Arbitrary bytes cannot erase any of these prior observations.
 const retained = Buffer.concat([wire(ready), wire(acknowledgement), wire({ generation: selected.generation, failed: failure }),
   wire({ ...ready, generation: "0".repeat(32) })]);
+// Preserve a real OS error at the original channel/error interface. This is
+// transport fault injection, not an authored external wire fixture.
+let transportError;
+try { readFileSync(new URL("./fixtures/absent-report-transport", import.meta.url)); }
+catch (error) { transportError = error; }
+assert.equal(transportError?.code, "ENOENT");
 
 // Fuzz the actual stream/JSON/report decoder, including unterminated frames
 // and source loss. This checks partition invariance, not native retirement.
@@ -32,7 +38,69 @@ export async function fuzz(data, selection = selected) {
   assert.deepEqual(protectedResult.termination.execution_failure, failure, "later bytes cannot erase the original execution cause");
   assert.equal(protectedResult.termination.control_failure, "foreign-or-invalid-acknowledgement",
     "an ACK cannot authorize a later foreign frame or erase its first refusal");
+  for (const error of [transportError, new Error(transportError.message, { cause: transportError })]) {
+    for (const ownerExited of [false, true]) {
+      for (const source of ["promise", "stream", "write"]) await sourceFailure(error, source, ownerExited);
+      await sourceFailure(error, "stream", ownerExited, true);
+    }
+  }
+  for (const ownerExited of [false, true]) await deadline(ownerExited);
   return result;
+}
+
+async function sourceFailure(error, source, ownerExited, acknowledged = false) {
+  const report = new ProcessReport();
+  Object.assign(report, selected);
+  const child = new EventEmitter();
+  const channel = new Duplex({ read() {}, write(_chunk, _encoding, done) {
+    done(source === "write" ? error : undefined);
+  } });
+  const readiness = report.ready.then(() => "ready", failure => failure.code);
+  try {
+    report.attach(child, source === "promise" ? Promise.reject(error) : channel);
+    if (ownerExited) child.emit("exit", 0, null);
+    const completion = report.request(Number.MAX_SAFE_INTEGER);
+    if (acknowledged) {
+      channel.push(Buffer.concat([wire(ready), wire(acknowledgement)]));
+      await completion;
+      channel.destroy(error);
+    } else if (source === "write") channel.push(wire(ready));
+    else if (source === "stream") channel.destroy(error);
+    await completion;
+    await report.closeTransport(() => {});
+    assert.equal(await readiness, acknowledged || source === "write" ? "ready" : "REPORT_CONTROL_ENDED");
+    assert.equal(report.termination.report_outcome, acknowledged ? acknowledgement.outcome
+      : source === "promise" && ownerExited ? "exited" : "write-failed");
+    assert.equal(report.termination.report_cause, acknowledged ? undefined : error.code ?? "transport-error",
+      "original source error must survive EOF and physical owner exit");
+    assert.equal(report.termination.report_acknowledged, acknowledged);
+    if (source !== "promise") assert.equal(report.termination.control_failure, error.code ?? "transport-error");
+  } finally {
+    channel.destroy();
+  }
+}
+
+async function deadline(ownerExited) {
+  const report = new ProcessReport();
+  Object.assign(report, selected);
+  const child = new EventEmitter();
+  const channel = new Duplex({ read() {}, write(_chunk, _encoding, done) { done(); } });
+  try {
+    report.attach(child, channel);
+    if (ownerExited) child.emit("exit", 0, null);
+    // The original captured ACK is already too late for this admitted request.
+    // A past deadline is deterministic; no wall-clock wait or clock patch.
+    const completed = report.request(0);
+    channel.push(Buffer.concat([wire(ready), wire(acknowledgement)]));
+    await completed;
+    assert.equal(report.termination.report_outcome, ownerExited ? "exited" : "unacknowledged");
+    assert.equal(report.termination.report_cause, ownerExited ? undefined : "original-drain-deadline");
+    assert.equal(report.termination.report_acknowledged, false);
+    channel.push(null);
+    await report.closeTransport(() => {});
+  } finally {
+    channel.destroy();
+  }
 }
 
 async function partitions(bytes, selection, { late = false, ownerExited = false } = {}) {
@@ -67,6 +135,9 @@ async function partitions(bytes, selection, { late = false, ownerExited = false 
       if (late) await report.closeTransport(() => {});
       await (completed ?? report.request(Number.MAX_SAFE_INTEGER));
       await report.closeTransport(() => {});
+      const terminal = report.termination;
+      report.expire();
+      assert.deepEqual(report.termination, terminal, "a later deadline cannot replace original source settlement");
       results.push({ capability: report.capability, termination: report.termination, readiness: await readiness });
       assert.ok(report.termination.report_outcome, "source loss must settle the original request");
     } finally {
