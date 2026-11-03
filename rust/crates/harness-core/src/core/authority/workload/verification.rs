@@ -27,14 +27,14 @@ pub(crate) fn check_filesystem_refinement(parent: &acyclic_fs::access::Capabilit
         &Capabilities::new([child.to_scope_label().map_err(unauthorized)?]),
     )?;
     verifier.verify(&child, &mut None)?;
-    let verified = verify(&verifier, issuer.audience(), &child, now(), &mut None)?;
+    let verified = verify(&verifier, &issuer.audience, &child, now(), &mut None)?;
     // Possessing the append key is insufficient to undo the previous ceiling.
     // Bypass the caller's subset check, sign the actual block, and admit it.
     let mut widened = child.clone();
     widened.id = "widened".into();
     widened.capabilities = root.capabilities.clone();
     widened.parent_proof = Some(*child.proof);
-    append(&verified, &mut widened, issuer.audience(), None, None)?;
+    append(&verified, &mut widened, &issuer.audience, None, None)?;
     assert!(
         verifier.verify(&widened, &mut None).is_err(),
         "signed refinement removed its ancestor ceiling"
@@ -45,7 +45,7 @@ pub(crate) fn check_filesystem_refinement(parent: &acyclic_fs::access::Capabilit
     ungranted.parent_proof = Some(*child.proof);
     ungranted.capabilities = Capabilities::default();
     let label = child.capabilities.iter().next().unwrap().to_owned();
-    let mut caveats = facts(&ungranted, &resource(issuer.audience())?, None)?;
+    let mut caveats = facts(&ungranted, &resource(&issuer.audience)?, None)?;
     caveats.push(Caveat {
         kind: CaveatKind::Label(label.clone()),
     });

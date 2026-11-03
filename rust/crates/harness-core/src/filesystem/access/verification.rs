@@ -84,6 +84,11 @@ pub fn check_access_record(bytes: &[u8]) -> Result<()> {
     if let Ok(capabilities) =
         record::<crate::Capabilities>(&io, bytes, crate::wire::ErrorCode::Storage)
     {
+        for label in capabilities.0.with_prefix(acyclic_fs::access::SCOPE_PREFIX) {
+            if let Ok(Some(capability)) = Capability::from_scope_label(label) {
+                crate::core::check_filesystem_refinement(&capability)?;
+            }
+        }
         let ceilings = crate::Capabilities::new(
             capabilities
                 .0

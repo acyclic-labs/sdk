@@ -101,3 +101,16 @@ version refusal, and exact canonical protobuf admission. Run
 JSON unknown-field or protobuf canonicality guard. Each must fail its unchanged
 semantic assertion; the runner restores source bytes. This target does not
 qualify secret-value custody, catalog providers or live operation cancellation.
+
+The same mutation runner covers signed harness filesystem refinements through
+`python3 negative-control.py filesystem-ancestor` and `filesystem-certified`.
+It runs the existing `harness-fuzz/filesystem_access` target against its retained
+`ceiling-set` policy input. The shared oracle uses the actual scope bootstrap,
+append, signing and verification APIs to produce descendants in memory. Each
+control removes one production admission guard and requires its specific
+unchanged refusal assertion to fail. The retained unsigned policy seed originates
+in the initial filesystem-access corpus; no external capture provenance is
+inferred. The runner checks the shared oracle and target bytes and restores the
+original production source. These controls cover ceiling restoration and
+uncertified labels; source coverage and other admission branches need their own
+qualification.
