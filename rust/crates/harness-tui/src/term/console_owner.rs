@@ -563,17 +563,24 @@ mod tests {
             // Complete the original production worker. Its acknowledgement can
             // race replacement with the cancellation waiter's lock reacquisition.
             release.send(()).unwrap();
+            let (finish, finishing) = loom::sync::mpsc::channel();
             {
                 let mut state = owner.state.lock().unwrap_or_else(|e| panic!("{e}"));
                 while !state.acknowledged {
                     state = owner.wake.wait(state).unwrap_or_else(|e| panic!("{e}"));
                 }
-                Owner::submit(&owner, &mut state, false, |_| Ok(()))
-                    .unwrap_or_else(|e| panic!("{e}"));
+                // Completion of the replacement is independent of which worker
+                // cancellation targets. Hold its action until that race settles.
+                Owner::submit(&owner, &mut state, false, move |_| {
+                    finishing.recv().unwrap();
+                    Ok(())
+                })
+                .unwrap_or_else(|e| panic!("{e}"));
             }
             canceller
                 .join()
                 .unwrap_or_else(|e| std::panic::resume_unwind(e));
+            finish.send(()).unwrap();
             let mut state = owner.state.lock().unwrap_or_else(|e| panic!("{e}"));
             while !state.acknowledged {
                 state = owner.wake.wait(state).unwrap_or_else(|e| panic!("{e}"));
