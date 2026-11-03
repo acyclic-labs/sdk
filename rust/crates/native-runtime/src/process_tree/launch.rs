@@ -28,8 +28,8 @@ pub struct CaptureRequest {
 /// Why a launch produced no capture. Admission and owner-control refusals
 /// remain distinct from an indeterminate spawn or lost worker.
 pub enum LaunchFailure<H> {
-    /// Refused before spawning, by the command itself, the owner check or
-    /// the deadline: nothing ran. `failure` carries no output and
+    /// Refused before spawning, by the command itself or its deadline:
+    /// nothing ran. `failure` carries no output and
     /// `cleanup_completed = true`, so a runner reports it as a definite stop
     /// through [`ProcessCaptureFailure::stop`], like any other.
     Refused {
