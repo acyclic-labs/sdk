@@ -969,9 +969,13 @@ fn one_terminal_sample_survives_retained_handles_and_producer_loss()
 #[test]
 fn disabled_operation_allocates_nothing_with_enabled_negative_control()
 -> Result<(), Box<dyn std::error::Error>> {
-    tracing::dispatcher::with_default(&tracing::Dispatch::none(), || {
+    use std::io::Write as _;
+    let negative = std::env::var_os("ACYCLIC_OBSERVATION_NEGATIVE").is_some();
+    tracing::dispatcher::with_default(&tracing::Dispatch::none(), || -> std::io::Result<()> {
         operation(false);
         assert!(matches!(ready(async_operation()), Ok(Ok(()))));
+        let mut output = std::io::stderr().lock();
+        output.write_all(b"observation-begin\n")?;
         for count in [1, 100_000] {
             let work = acyclic_test_support::measure(|| {
                 for _ in 0..count {
@@ -980,12 +984,13 @@ fn disabled_operation_allocates_nothing_with_enabled_negative_control()
                 }
             });
             assert_eq!(work.count_total, 0, "disabled instrumentation allocated");
-            eprintln!(
-                "disabled operations={count}, allocations={}",
-                work.count_total
-            );
         }
-    });
+        if negative {
+            drop(std::fs::File::open("/dev/null")?);
+        }
+        output.write_all(b"observation-end\n")?;
+        Ok(())
+    })?;
     let metrics = Metrics::default();
     let query = metrics.query("acyclic.test.operation");
     let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(metrics)));
@@ -1202,34 +1207,6 @@ fn slo_file_refuses_empty_and_ambiguous_evidence() -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-#[test]
-#[ignore = "subprocess entry point for the syscall counting witness"]
-fn syscall_probe() -> Result<(), Box<dyn std::error::Error>> {
-    use std::io::Write as _;
-    assert!(std::env::var_os("ACYCLIC_OBSERVATION_PROBE").is_some());
-    let negative = std::env::var_os("ACYCLIC_OBSERVATION_NEGATIVE").is_some();
-    operation(false);
-    assert!(matches!(ready(async_operation()), Ok(Ok(()))));
-    let mut output = std::io::stderr().lock();
-    output.write_all(b"observation-begin\n")?;
-    let mut negative_result = Ok(());
-    let allocations = acyclic_test_support::measure(|| {
-        for _ in 0..100_000 {
-            operation(false);
-            assert!(matches!(ready(async_operation()), Ok(Ok(()))));
-        }
-        if negative {
-            negative_result = std::fs::File::open("/dev/null").map(drop);
-        }
-    });
-    output.write_all(b"observation-end\n")?;
-    negative_result?;
-    if !negative {
-        assert_eq!(allocations.count_total, 0);
-    }
-    Ok(())
-}
-
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires strace; run explicitly to count actual kernel crossings"]
@@ -1242,12 +1219,10 @@ fn disabled_operation_has_zero_syscalls_with_real_io_negative_control()
             .arg(std::env::current_exe()?)
             .args([
                 "--exact",
-                "syscall_probe",
-                "--ignored",
+                "disabled_operation_allocates_nothing_with_enabled_negative_control",
                 "--nocapture",
                 "--test-threads=1",
-            ])
-            .env("ACYCLIC_OBSERVATION_PROBE", "1");
+            ]);
         if negative {
             command.env("ACYCLIC_OBSERVATION_NEGATIVE", "1");
         }
