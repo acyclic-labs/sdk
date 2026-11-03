@@ -148,6 +148,9 @@ async fn saved_command_replay_authenticates_its_original_repository_sources() ->
         .await?
         .value
         .workspace();
+    WorkspaceGraph::new(store.clone())
+        .register_root(&foreign)
+        .await?;
     let mut state = GitCompatStore::load(&store, main.id())
         .await?
         .ok_or("missing repository")?;

@@ -3,6 +3,8 @@ use crate::core::{AggregateKind, AuthorityRoot};
 use crate::{AgentId, conversation::VolumeOwner, core::Authority};
 
 fn publication_grants(volume: &VolumeRef, agent: AgentId) -> Result<(ContentGrant, ContentGrant)> {
+    use acyclic_fs::access::{Action, Capability};
+
     let issuer = AuthorityRoot::host_owned(
         "batch",
         [41; 32],
@@ -13,10 +15,12 @@ fn publication_grants(volume: &VolumeRef, agent: AgentId) -> Result<(ContentGran
     );
     let scope = issuer.bootstrap_scope(
         "batch-owner",
-        &crate::Capabilities::new([
-            volume.capability(VolumeOperation::Write, &mut None)?,
-            volume.capability(VolumeOperation::Read, &mut None)?,
-        ]),
+        &crate::Capabilities::new([Capability::whole_volume(
+            None,
+            &[Action::Read, Action::Create, Action::Write, Action::Delete],
+        )
+        .to_scope_label()
+        .map_err(|error| Error::Invalid(error.to_string()))?]),
         Some(agent),
         &mut None,
     )?;
