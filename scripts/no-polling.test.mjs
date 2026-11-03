@@ -246,21 +246,6 @@ test('a legitimate helper requires an exact caller disposition rather than a hel
  }
 });
 
-test('module side effects and missing local producers remain reviewable dependencies', () => {
- const helper = 'typescript/packages/example/test/helper.ts';
- const before = new Map([[helper, 'while (!ready()) step();'], [script, 'export const value = 1;']]);
- const after = new Map(before).set(script, "import './helper.js'; export const value = 1;");
- assert.ok(newProjectPollingSites(before, after).some(site => site.file === script && site.kind === 'polling-module-initialization'));
- const missing = new Map([[script, "import {proceed} from './missing.js'; export function operation() { return proceed(); }"]]);
- assert.ok(newProjectPollingSites(new Map(), missing).some(site => site.kind === 'unresolved-local-helper'));
- const cyclicModules = new Map([
-  [helper, "import './other.js'; export const first = 1;"],
-  ['typescript/packages/example/test/other.ts', "import './helper.js'; export const second = 2;"],
-  [script, "import {first} from './helper.js'; export const result = first;"],
- ]);
- assert.deepEqual(newProjectPollingSites(new Map(), cyclicModules), []);
-});
-
 test('malformed historical source cannot authorize current waits or hide malformed current source', () => {
  const helper = 'typescript/packages/example/test/helper.ts';
  const caller = "import {settle} from './helper.js'; export function operation() { return settle(); }";

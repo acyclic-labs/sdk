@@ -90,6 +90,24 @@ export function fuzzProject(data, {project = projectPollingSites, validate = val
  assert.deepEqual(ordered(project(recursive)), ordered(project(new Map([...recursive].reverse()))),
   'snapshot enumeration changed recursive dependency identity');
  const helper = 'lib/helper.ts', barrel = 'lib/barrel.ts', caller = 'svc/consumer.ts';
+ const load = ["import '../lib/helper.js';", "import original = require('../lib/helper.js');",
+  "await import('../lib/helper.js');", "require('../lib/helper.js');"][variant % 4];
+ const loaded = new Map([[helper, 'Bun.sleep(1); export const value = 1;'], [caller, load]]);
+ const changedLoad = new Map(loaded).set(helper, 'Bun.sleep(2); export const value = 1;');
+ const loadSites = project(loaded);
+ const changedLoadSites = project(changedLoad);
+ assert.ok(changedLoadSites.some(site => site.file === caller && site.kind === 'polling-module-initialization'),
+  'lost runtime module initialization dependency');
+ const loadFingerprints = new Set(loadSites.filter(site => site.file === caller).map(site => site.fingerprint));
+ assert.ok(changedLoadSites.some(site => site.file === caller && !loadFingerprints.has(site.fingerprint)),
+  'changed runtime module did not reopen its unchanged caller');
+ assert.ok(project(new Map([[caller, load]])).some(site => site.file === caller && site.kind === 'unresolved-local-helper'),
+  'missing runtime module producer was accepted');
+ const typeOnly = new Map(loaded).set(caller, "import type original = require('../lib/helper.js');");
+ assert.deepEqual(project(typeOnly).filter(site => site.file === caller), [], 'type-only import executed its producer');
+ const passiveCycle = new Map([[helper, "import '../svc/consumer.js'; export const value = 1;"],
+  [caller, "import '../lib/helper.js'; export const value = 2;"]]);
+ assert.deepEqual(project(passiveCycle), [], 'passive module cycle became callable work');
  const raw = new TextDecoder().decode(new Uint8Array(data));
  // Parser acceptance is determined by the same production unit boundary.
  // Accepted bytes must also survive graph construction, independent of order.

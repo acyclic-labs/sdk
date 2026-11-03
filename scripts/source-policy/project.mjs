@@ -9,6 +9,18 @@ import {pollingUnit, SourceSyntaxError, temporalModule, validateDispositions} fr
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const script = file => /\.(?:[cm]?[jt]s|[jt]sx)$/.test(file);
 
+/** @param {import('typescript-parser').Node} node */
+function runtimeModuleSpecifier(node) {
+ let specifier;
+ if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
+  && !(ts.isImportDeclaration(node) ? node.importClause?.isTypeOnly : node.isTypeOnly)) specifier = node.moduleSpecifier;
+ else if (ts.isImportEqualsDeclaration(node) && !node.isTypeOnly
+  && ts.isExternalModuleReference(node.moduleReference)) specifier = node.moduleReference.expression;
+ else if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword
+  || (ts.isIdentifier(node.expression) && node.expression.text === 'require'))) specifier = node.arguments[0];
+ return specifier && ts.isStringLiteralLike(specifier) ? specifier : undefined;
+}
+
 /** @template K, V @param {Map<K, V>} map @param {K} key @returns {V} */
 function required(map, key) {
  const value = map.get(key);
@@ -176,9 +188,10 @@ export function projectPollingSites(sources, {historical = false} = {}) {
   for (const declaration of symbol.declarations ?? []) {
    /** @type {import('typescript-parser').Node} */
    let original = declaration;
-   while (original.parent && !ts.isImportDeclaration(original) && !ts.isExportDeclaration(original)) original = original.parent;
-   if ((ts.isImportDeclaration(original) || ts.isExportDeclaration(original))
-    && original.moduleSpecifier && ts.isStringLiteralLike(original.moduleSpecifier)) return original.moduleSpecifier.text;
+   while (original.parent && !ts.isImportDeclaration(original) && !ts.isExportDeclaration(original)
+    && !ts.isImportEqualsDeclaration(original)) original = original.parent;
+   const specifier = runtimeModuleSpecifier(original);
+   if (specifier) return specifier.text;
   }
   return undefined;
  };
@@ -224,15 +237,13 @@ export function projectPollingSites(sources, {historical = false} = {}) {
    const {node, owner: parentOwner} = /** @type {{node: import('typescript-parser').Node, owner: Dependency}} */ (stack.pop());
    if (ts.isTypeNode(node)) continue;
    let owner = parentOwner;
-   if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
-    if (node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)
-     && !(ts.isImportDeclaration(node) ? node.importClause?.isTypeOnly : node.isTypeOnly)) {
-     const resolved = resolveModule(node.moduleSpecifier.text, source.fileName);
-     if (resolved) initializers.push({node: node.moduleSpecifier, owner, target: required(roots, resolved.resolvedFileName)});
-     else if (localModule(node.moduleSpecifier.text)) references.push({node: node.moduleSpecifier, unresolved: node.moduleSpecifier.text});
-    }
-    continue;
+   const specifier = runtimeModuleSpecifier(node);
+   if (specifier) {
+    const resolved = resolveModule(specifier.text, source.fileName);
+    if (resolved) initializers.push({node: specifier, owner, target: required(roots, resolved.resolvedFileName)});
+    else if (localModule(specifier.text)) references.push({node: specifier, unresolved: specifier.text});
    }
+   if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node) || ts.isImportEqualsDeclaration(node)) continue;
    if ((ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isMethodDeclaration(node)
     || ts.isGetAccessor(node) || ts.isSetAccessor(node) || ts.isClassDeclaration(node) || ts.isClassExpression(node)) && node.name) {
     owner = symbolDependency(checker.getSymbolAtLocation(node.name)) ?? owner;

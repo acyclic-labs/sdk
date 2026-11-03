@@ -24,6 +24,16 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
   'a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0', 'a[0].localeCompare(b[0])');
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), {project: collation.projectPollingSites}),
   {name: 'AssertionError', message: /snapshot enumeration/});
+ for (const [original, replacement, seed, message] of [
+  ['ts.isImportEqualsDeclaration(node) && !node.isTypeOnly', 'false', 1, /lost runtime module initialization/],
+  ['node.expression.kind === ts.SyntaxKind.ImportKeyword', 'false', 2, /lost runtime module initialization/],
+  ["node.expression.text === 'require'", 'false', 3, /lost runtime module initialization/],
+  ['ts.isImportEqualsDeclaration(node) && !node.isTypeOnly', 'ts.isImportEqualsDeclaration(node)', 0, /type-only import executed/],
+ ]) {
+  const load = await mutant('./source-policy/project.mjs', original, replacement);
+  assert.throws(() => targets.fuzzProject(Buffer.from([seed]), {project: load.projectPollingSites}),
+   {name: 'AssertionError', message});
+ }
  const policy = await mutant('./source-policy/index.mjs',
   "|| typeof item.producer !== 'string' || !item.producer.trim()", '|| false');
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), {validate: policy.validateDispositions}),
