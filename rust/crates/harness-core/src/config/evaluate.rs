@@ -167,26 +167,25 @@ async fn closure(
     // A completed shared dependency is reused without scanning the active path.
     let mut stack = vec![(path.to_owned(), 0_usize)];
     let mut order = Vec::new();
-    while let Some((current, index)) = stack.last().cloned() {
-        let Some(next) = modules[&current].0.imports.get(index).cloned() else {
-            if let Some((_, active)) = modules.get_mut(&current) {
+    while let Some((current, index)) = stack.last_mut() {
+        let Some(next) = modules[current.as_str()].0.imports.get(*index) else {
+            if let Some((_, active)) = modules.get_mut(current.as_str()) {
                 *active = false;
             }
+            order.push(std::mem::take(current));
             stack.pop();
-            order.push(current);
             continue;
         };
-        if let Some(top) = stack.last_mut() {
-            top.1 += 1;
-        }
+        *index += 1;
         #[cfg(any(test, feature = "test-support"))]
         model::dependency_checked();
-        if let Some((_, active)) = modules.get(&next) {
+        if let Some((_, active)) = modules.get(next) {
             if *active {
                 return Ok(Err(format!("import cycle through {next}")));
             }
             continue;
         }
+        let next = next.clone();
         let Some(bytes) = tree.read(&next).await? else {
             return Ok(Err(format!(
                 "{current} imports {next}, which no layer holds"
