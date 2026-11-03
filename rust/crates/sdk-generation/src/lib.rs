@@ -19,15 +19,15 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 #[path = "../fuzz/archive_members.rs"]
 mod archive_members_oracle;
+mod generation;
 #[cfg(test)]
 #[path = "../fuzz/git_layout.rs"]
 mod git_layout_oracle;
+pub mod historical;
+mod release_manifest;
 #[cfg(test)]
 #[path = "../fuzz/source_identities.rs"]
 mod source_identities_oracle;
-mod generation;
-pub mod historical;
-mod release_manifest;
 use generation::*;
 mod drift_check;
 use drift_check::*;

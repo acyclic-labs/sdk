@@ -26,11 +26,11 @@ pub mod historical;
 #[cfg(test)]
 #[path = "../fuzz/metadata_output.rs"]
 mod metadata_output_oracle;
+#[doc(hidden)]
+pub mod path_identity;
 #[cfg(test)]
 #[path = "../fuzz/path_identity.rs"]
 mod path_identity_oracle;
-#[doc(hidden)]
-pub mod path_identity;
 #[doc(hidden)]
 pub use path_identity::normalize_path;
 mod public_api;
