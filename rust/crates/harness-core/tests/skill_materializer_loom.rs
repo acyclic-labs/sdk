@@ -1,4 +1,5 @@
-//! Model the production journal owner, including its pre-fix negative control.
+//! Schedule the production journal owner, including its pre-fix negative control.
+//! Tokio is the real primitive; its internal atomics are not Loom-instrumented.
 #![cfg(loom)]
 
 #[path = "../src/context/skill_materializer.rs"]
@@ -51,4 +52,43 @@ fn former_independent_publishers_can_conflict() {
         text.contains("materialization conflict"),
         "unexpected model failure: {text}"
     );
+}
+
+#[test]
+fn cancelled_waiter_does_not_take_the_next_owners_wake() {
+    use std::{
+        future::Future,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        task::{Context, Wake, Waker},
+    };
+
+    struct Wakes(AtomicUsize);
+    impl Wake for Wakes {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    loom::model(|| {
+        let owner = skill_materializer::SkillMaterializer::new();
+        let held = loom::future::block_on(Box::pin(owner.enter()));
+        let wakes = Arc::new(Wakes(AtomicUsize::new(0)));
+        let waker = Waker::from(wakes.clone());
+        let mut context = Context::from_waker(&waker);
+        let mut abandoned = Box::pin(owner.enter());
+        let mut remaining = Box::pin(owner.enter());
+        assert!(abandoned.as_mut().poll(&mut context).is_pending());
+        assert!(remaining.as_mut().poll(&mut context).is_pending());
+        drop(abandoned);
+        wakes.0.store(0, Ordering::Relaxed);
+        drop(held);
+        assert!(
+            wakes.0.load(Ordering::Relaxed) > 0,
+            "owner release must wake its queued successor"
+        );
+        assert!(remaining.as_mut().poll(&mut context).is_ready());
+    });
 }

@@ -51,7 +51,7 @@ export function qualifySkillMaterializerLoom(run = runCommand) {
   return qualifyLoom("acyclic-harness-core", "main",
     ["--features", "filesystem-local,native-execution,test-support"], run, {
       targetCfg: ["--", "--cfg", "loom"],
-      filters: ["skill_materializer_loom::journal_owner_serializes_first_publications", "skill_materializer_loom::former_independent_publishers_can_conflict"],
+      filters: ["skill_materializer_loom::journal_owner_serializes_first_publications", "skill_materializer_loom::former_independent_publishers_can_conflict", "skill_materializer_loom::cancelled_waiter_does_not_take_the_next_owners_wake"],
     });
 }
 
