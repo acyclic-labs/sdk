@@ -40,6 +40,11 @@ pub enum StreamError {
     /// Required authority is unavailable.
     #[error("stream unavailable")]
     Unavailable,
+    /// [`Self::Unavailable`] as a member reported it, with the member's
+    /// original status retained verbatim. Recovery is exactly Unavailable's;
+    /// the refusal is a diagnostic, never retry permission.
+    #[error("stream unavailable{0}")]
+    Refused(acyclic_auth::refusal::Refusal),
     /// A provider-evaluated commit deadline elapsed before linearization.
     #[error("stream commit deadline elapsed")]
     DeadlineElapsed,
@@ -76,7 +81,10 @@ impl StreamError {
     /// its deadline elapsed, so the same request may yet succeed unchanged.
     #[must_use]
     pub const fn uncertain(&self) -> bool {
-        matches!(self, Self::Unavailable | Self::DeadlineElapsed)
+        matches!(
+            self,
+            Self::Unavailable | Self::Refused(_) | Self::DeadlineElapsed
+        )
     }
 
     /// Stable `snake_case` code shared by the HTTP, gRPC, and WASM transports.
@@ -94,7 +102,7 @@ impl StreamError {
             Self::IdempotencyMismatch => "idempotency_mismatch",
             Self::Capacity => "capacity",
             Self::AccessDenied => "access_denied",
-            Self::Unavailable => "unavailable",
+            Self::Unavailable | Self::Refused(_) => "unavailable",
             Self::HierarchyChanged => "hierarchy_changed",
             Self::DeadlineElapsed => "deadline_elapsed",
             Self::Unsupported => "unsupported",

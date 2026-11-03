@@ -581,7 +581,7 @@ impl Completion {
         let kind = if error.code() == Code::Cancelled {
             "cancelled"
         } else {
-            status(error).code()
+            crate::wire_codec::status::category(error).code()
         };
         self.finish(Some(kind), Some(error.code()));
     }

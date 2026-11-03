@@ -9,7 +9,7 @@ fn pool() -> Result<&'static DescriptorPool, Error> {
         DescriptorPool::decode(FILE_DESCRIPTOR_SET).map_err(|_| wire::ErrorCode::Unavailable.into())
     })
     .as_ref()
-    .map_err(|error| *error)
+    .map_err(Clone::clone)
 }
 /// Encodes generated binary wire bytes through the canonical descriptor JSON mapping.
 pub fn encode_binary(name: &str, bytes: &[u8], maximum: usize) -> Result<Vec<u8>, Error> {

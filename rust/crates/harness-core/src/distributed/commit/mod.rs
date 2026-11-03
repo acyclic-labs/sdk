@@ -163,7 +163,7 @@ impl Settlement {
             input,
         } = self;
         if let Err(error) = &committed
-            && *error != StreamError::Unavailable
+            && !matches!(error, StreamError::Unavailable | StreamError::Refused(_))
             && let Some(phase) = phase.as_deref_mut()
         {
             *phase = CommitPhase::Uncommitted;

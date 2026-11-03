@@ -95,7 +95,7 @@ async fn definite_refusals_settle_and_leave_the_input_available() -> Result<(), 
     for refusal in StreamError::ALL {
         if matches!(
             refusal,
-            StreamError::Unavailable | StreamError::InvalidResponse
+            StreamError::Unavailable | StreamError::Refused(_) | StreamError::InvalidResponse
         ) {
             continue;
         }

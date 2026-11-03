@@ -654,7 +654,7 @@ fn decode<T: serde::de::DeserializeOwned>(head: PathHead) -> Result<T, ProviderE
 
 fn storage(error: StreamError) -> ProviderError {
     match error {
-        StreamError::Unavailable => ProviderError::Unavailable,
+        StreamError::Unavailable | StreamError::Refused(_) => ProviderError::Unavailable,
         error => ProviderError::Rejected(format!(
             "Machine journal access failed: {error}; recovery: restore the original Streams authority and publication"
         )),

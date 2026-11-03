@@ -277,14 +277,14 @@ struct Observation {
 
 impl Observation {
     fn open(mut self) -> Result<Availability, Error> {
-        let initial = (*self.receiver.borrow_and_update())?;
+        let initial = self.receiver.borrow_and_update().clone()?;
         let changes = stream::try_unfold(self, |mut observation| async move {
             observation
                 .receiver
                 .changed()
                 .await
                 .map_err(|_| unavailable())?;
-            let cursor = (*observation.receiver.borrow_and_update())?;
+            let cursor = observation.receiver.borrow_and_update().clone()?;
             Ok(Some((cursor, observation)))
         });
         Ok(Availability::new(initial, changes))

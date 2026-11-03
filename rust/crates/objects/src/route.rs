@@ -117,7 +117,7 @@ pub async fn put_blobs(
         // No member it covered is acknowledged; repeating one is safe.
         for outcome in &mut outcomes {
             if outcome.as_ref().is_ok_and(|put| put.verified().is_some()) {
-                *outcome = Err(error);
+                *outcome = Err(error.clone());
             }
         }
     }

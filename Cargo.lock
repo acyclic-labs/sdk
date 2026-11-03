@@ -136,6 +136,7 @@ dependencies = [
  "bytes",
  "ed25519-dalek 3.0.0",
  "futures",
+ "http",
  "js-sys",
  "proptest",
  "prost",
