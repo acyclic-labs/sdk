@@ -670,7 +670,7 @@ fn every_partial_current_frame_recovers_only_the_accepted_prefix()
                 let reopened = LocalStream::open(directory.path(), limits).await?;
                 let complete = cut == frame.len();
                 assert_eq!(
-                    &records(&reopened, &paths).await?,
+                    &records(&reopened, paths).await?,
                     if complete { after } else { before },
                     "frame {key:?}, cut {cut} exposed a partial namespace or record"
                 );
