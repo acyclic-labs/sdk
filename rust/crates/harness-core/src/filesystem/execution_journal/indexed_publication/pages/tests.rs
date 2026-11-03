@@ -210,7 +210,9 @@ async fn composed_cut_retains_original_native_construction() -> Result<()> {
                         )),
                         2 => assert!(
                             matches!(&error, Error::NativeFilesystem { source, .. }
-                                if matches!(source.as_ref(), acyclic_fs::FsError::Cancelled(_))),
+                            if matches!(source.as_ref(), acyclic_fs::FsError::NativeKernel(
+                                acyclic_fs::NativeTreeMaterializationError::Cancelled
+                            ))),
                             "original filesystem cancellation was lost: {error:?}"
                         ),
                         _ => panic!("original construction refused: {error:?}"),
