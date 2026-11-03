@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { collect, runSuites, partition, collectPartitions,acceptanceBinding, variants } from "./serial.mjs";
+import { collect, runSuites, partition,acceptanceBinding, variants } from "./serial.mjs";
 import {mkdtemp,mkdir,readFile,writeFile,rename,rm,copyFile,symlink} from 'node:fs/promises';
 import {dirname,join} from 'node:path';
 import {nativeHost} from '../../plugin/tests/hosts/native-host.mjs';
@@ -10,6 +10,7 @@ import {tmpdir} from 'node:os';
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { schedule } from "./process.mjs";
+import { inventory, readCoverage } from "./coverage.mjs";
 
 test("serial collection and command rejection retain original native failure evidence", async () => {
   const root = await mkdtemp(join(tmpdir(), "serial-failure-"));
@@ -266,44 +267,35 @@ test("partitions preserve the complete ordered inventory without empty or overla
     assert.throws(() => partition(cases, value));
 });
 
-test("partition collection fences runtime, source, definitions and exact case receipts", () => {
-  const cases = [{ id: "first" }, { id: "second" }], coverage = { pass: true };
-  const hash = value => createHash("sha256").update(value).digest("hex");
-  const binding = { binary: hash("binary"), mock: hash("mock"),
-    executables: { NODE: hash("node"), E2E_BUN: hash("bun") },
-    cases: hash(JSON.stringify(cases)), source: { "serial.mjs": hash("source") } };
-  const bundles = cases.map((item, index) => ({ index, count: 2, platform: "linux", binding,
-    inventory: cases.map(item => item.id), selected: [item.id], coverage,
-    receipts: [{ code: 0, report: { platform: "linux", selected: [item.id], qualification: false,
-      coverage, seconds: 0.1,
-      results: [{ case: item.id, platform: "linux", status: "pass" }] } }] }));
-  assert.equal(collectPartitions(cases, [...bundles].reverse(), "linux", coverage).pass, true);
-  assert.throws(() => collectPartitions(cases, [bundles[0]], "linux", coverage), /every partition/);
-  for (const edit of [bundle => bundle.index = 0, bundle => bundle.count = 3,
-    bundle => bundle.platform = "win32", bundle => bundle.binding.binary = hash("changed"),
-    bundle => bundle.binding.source["serial.mjs"] = hash("changed"),
-    bundle => bundle.binding.executables.E2E_BUN = hash("changed"),
-    bundle => bundle.inventory.reverse(), bundle => bundle.selected = ["first"],
-    bundle => bundle.receipts = [], bundle => bundle.coverage = { pass: false }]) {
-    // Give each bundle its own binding, as real receipt files do.
-    const changed = bundles.map(bundle => structuredClone(bundle)); edit(changed[1]);
-    assert.throws(() => collectPartitions(cases, changed, "linux", coverage));
+test("matrix command binds its intended executables and retains refused receipts", async () => {
+  const root = await mkdtemp(join(tmpdir(), "matrix-identity-")), scope = new Processes();
+  const directory = dirname(fileURLToPath(import.meta.url)), cases = inventory(), coverage = readCoverage(cases);
+  const env = { ...process.env };
+  for (const name of Object.keys(env)) if (name.startsWith("E2E_")
+    && !["E2E_CODEX", "E2E_CLAUDE", "E2E_PI"].includes(name)) delete env[name];
+  try {
+    // Identity-only inputs use the actual Node executable. Collection launches
+    // no case; these generated internal refusals never claim native acceptance.
+    const binding = await acceptanceBinding(directory, process.execPath, process.execPath, cases, env);
+    const bundle = { index: 0, count: 1, platform: process.platform, binding, coverage,
+      inventory: cases.map(test => test.id), selected: cases.map(test => test.id), seconds: .1,
+      receipts: variants(cases, process.platform).map(test => ({ code: 1, report: {
+        platform: process.platform, selected: [test.id], qualification: false, coverage,
+        seconds: .1, limit_seconds: 10,
+        results: [{ case: test.id, platform: process.platform, status: "refused" }] } })) };
+    const input = join(root, "partition.json");
+    await writeFile(input, JSON.stringify(bundle));
+    const command = destination => scope.run(process.execPath,
+      [join(directory, "serial.mjs"), "--collect", process.execPath, process.execPath, destination, input], { env });
+    const destination = join(root, "collected"), result = await command(destination);
+    assert.equal(result.code, 1, result.stderr);
+    const report = JSON.parse(await readFile(join(destination, "matrix.json"), "utf8"));
+    assert.deepEqual(JSON.parse(result.stdout), report);
+    assert.deepEqual(report.binding, binding);
+    assert.equal(report.pass, false);
+    assert.deepEqual(report.results.map(row => row.status), bundle.receipts.map(() => "refused"));
+  } finally {
+    await scope.close();
+    await rm(root, { recursive: true, force: true });
   }
-  const changed = structuredClone(cases); changed[0].changed = true;
-  assert.throws(() => collectPartitions(changed, bundles, "linux", coverage), /definitions/);
-  const missing = bundles.map(bundle => structuredClone(bundle)); delete missing[0].binding;
-  assert.throws(() => collectPartitions(cases, missing, "linux", coverage), /identity/);
-  const missingRuntime = bundles.map(bundle => structuredClone(bundle));
-  for (const bundle of missingRuntime) delete bundle.binding.executables.NODE;
-  assert.throws(() => collectPartitions(cases, missingRuntime, "linux", coverage), /Node identity/);
-  // Agreement between partitions cannot turn absent provenance into a digest.
-  // Both bundles carry the same malformed value, so equality alone accepts it.
-  for (const source of [[], [hash("source")], { "serial.mjs": null },
-    { "serial.mjs": true }, { "serial.mjs": "not-a-sha256" }, { "": hash("source") }]) {
-    const invalid = bundles.map(bundle => structuredClone(bundle));
-    for (const bundle of invalid) bundle.binding.source = source;
-    assert.throws(() => collectPartitions(cases, invalid, "linux", coverage), /acceptance source/);
-  }
-  const red = structuredClone(bundles); red[1].receipts[0].code = 1;
-  assert.equal(collectPartitions(cases, red, "linux", coverage).pass, false);
 });

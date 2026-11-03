@@ -4,6 +4,9 @@ import { Worker } from "node:worker_threads";
 
 test("decoder fuzz oracles reject planted production defects", async () => {
   const mutations = [
+    ["serial.mjs", 'assert.deepEqual(first.binding, binding, "partition differs from expected acceptance identity");',
+      'void binding;', "serial"],
+    ["serial.mjs", 'binding: first.binding', 'binding: undefined', "serial"],
     ["process-report.mjs", "this.#controlFailure ??= cause;", "void cause;", "report"],
     ["process-report.mjs", "    const request = this.#request;",
       "    if (this.#terminal) return;\n    const request = this.#request;", "report"],
@@ -91,7 +94,10 @@ test("decoder fuzz oracles reject planted production defects", async () => {
         return { ...loaded, source: source.replace(${JSON.stringify(before)}, ${JSON.stringify(after)}) };
       } });
       try {
-        ${oracle === "watch" ? `
+        ${oracle === "serial" ? `
+          const { fuzz } = await import(${JSON.stringify(new URL("./serial.fuzz.mjs", import.meta.url).href)});
+          fuzz(Buffer.alloc(0));
+        ` : oracle === "watch" ? `
           const { fuzz } = await import(${JSON.stringify(new URL("./output-watch.fuzz.mjs", import.meta.url).href)});
           fuzz(Buffer.alloc(0));
         ` : oracle === "spool" ? `
