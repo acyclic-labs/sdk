@@ -1,5 +1,1 @@
-{
-  "prompt":"Reject duplicate completion.",
-  "turns":[[{"type":"event","kind":"completed","metadata":null},{"type":"event","kind":"completed","metadata":{}}]],
-  "expect":{"error":"model emitted an event after completion"}
-}
+{"prompt":"Retain the first completion without reading a trailing event.","turns":[[{"type":"event","kind":"completed","metadata":null},{"type":"event","kind":"completed","metadata":{}}]],"expect":{"text":"","request_count":1,"reconciliation_count":0,"model_events":[{"kind":"completed","metadata":null}]},"replay":true}

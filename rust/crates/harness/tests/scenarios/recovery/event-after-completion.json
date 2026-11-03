@@ -1,5 +1,5 @@
 {"prompt":"Settle at the recovered terminal without consuming trailing transport events.","turns":[[{"type":"error","error":"offline"}]],
   "recoveries":[{"observed":[],"continuation":[{"kind":"completed","metadata":null},{"kind":"content",
-  "delta":"trailing"}]}],"replay":true,"expect":{"text":"",
+  "delta":"trailing"}]}],"replay":true,"expect":{"text":"","request_count":1,"reconciliation_count":1,
   "model_events":[{"kind":"completed","metadata":null}],
   "not_events":[{"kind":"model","event":{"kind":"content","delta":"trailing"}}]}}

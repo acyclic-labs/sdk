@@ -1,4 +1,1 @@
-{"capacity":{"output_tokens":30},"compaction":{"config":{"response_reserve_tokens":10,"recent_tokens":30,
-  "retention":{"roles":["system"],"native_media":true}}},"turns":[],
-  "expect":{"error":"compaction budgets exceed selected model capacity","reconciliation_count":0,
-  "not_events":[{"kind":"model_started","purpose":"response"}]},"max_output_tokens":20}
+{"capacity":{"output_tokens":30},"compaction":{"config":{"response_reserve_tokens":10,"recent_tokens":30}},"turns":["answer"],"expect":{"text":"answer","request_count":1,"reconciliation_count":0,"requests":[{"max_output_tokens":20,"messages":[{"role":"assistant","content":{"kind":"file"}},{"role":"system","content":"keep instructions"},{"role":"user","content":"recent request"},{"role":"user","content":"current request"}]}],"events":[{"kind":"context_compacted"},{"kind":"model_started","purpose":"response"}],"not_events":[{"kind":"model_started","purpose":"summary"}]},"max_output_tokens":20,"replay":true}

@@ -1,5 +1,1 @@
-{
-  "prompt":"Reject trailing content.",
-  "turns":[[{"type":"event","kind":"completed","metadata":null},{"type":"event","kind":"content","delta":"trailing"}]],
-  "expect":{"error":"model emitted an event after completion","events":[{"kind":"model","event":{"kind":"completed"}}]}
-}
+{"prompt":"Retain the first completion without reading a trailing event.","turns":[[{"type":"event","kind":"completed","metadata":null},{"type":"event","kind":"content","delta":"trailing"}]],"expect":{"events":[{"kind":"model","event":{"kind":"completed"}}],"text":"","request_count":1,"reconciliation_count":0,"model_events":[{"kind":"completed","metadata":null}]},"replay":true}

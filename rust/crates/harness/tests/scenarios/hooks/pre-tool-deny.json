@@ -36,18 +36,6 @@
    {
     "messages": [
      {
-      "content": {
-       "kind": "file",
-       "file": {
-        "display_name": "prompt"
-       }
-      }
-     }
-    ]
-   },
-   {
-    "messages": [
-     {
       "$contains": "HOOK-DENY-OTTER"
      }
     ]

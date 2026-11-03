@@ -21,22 +21,18 @@
   "results": {
    "call": {
     "name": "shell",
-    "content": {"kind":"parts","parts":[{"kind":"text","text":"Exit code: 0\nvisible"}]}
+    "content": {
+     "kind": "parts",
+     "parts": [
+      {
+       "kind": "text",
+       "text": "Exit code: 0\nvisible"
+      }
+     ]
+    }
    }
   },
   "requests": [
-   {
-    "messages": [
-     {
-      "content": {
-       "kind": "file",
-       "file": {
-        "display_name": "prompt"
-       }
-      }
-     }
-    ]
-   },
    {
     "messages": [
      {
