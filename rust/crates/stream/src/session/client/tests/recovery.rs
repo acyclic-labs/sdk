@@ -53,6 +53,30 @@ async fn refused_endpoint_finishes_without_scheduling_a_retry() -> TestResult {
             event?
         ),
     }
+
+    // A definite peer status after Welcome must retain the same classification
+    // through the response stream, rather than reopening the live interest.
+    let provider = Arc::new(MemoryStream::default());
+    append(&provider, "events", 1).await?;
+    let fixture = Fixture::open(provider, "node").await?;
+    let transport = fixture.client()?;
+    let client = transport.session_client()?;
+    let mut records = client
+        .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
+        .map_ok(crate::records_only)
+        .await?;
+    let connections = client.connections();
+    let opened = connections.changed(0).await?;
+    fixture.controls.send(Err(Status::unavailable("refused")))?;
+    let terminal = records.next();
+    let reconnected = connections.changed(opened);
+    futures::pin_mut!(terminal, reconnected);
+    match future::select(terminal, reconnected).await {
+        future::Either::Left((result, _)) => {
+            assert_eq!(result, Some(Err(StreamError::Unavailable)));
+        }
+        future::Either::Right(_) => panic!("a definite peer failure reopened the live interest"),
+    }
     Ok(())
 }
 
