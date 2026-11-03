@@ -33,12 +33,18 @@ fn summary(value: &e::SummaryRef) {
     }
     let mut changed = original.clone();
     changed["portable"]["descriptor"]["media_type"] = "application/json".into();
-    assert!(serde_json::from_value::<e::SummaryRef>(changed).is_err());
+    assert!(
+        serde_json::from_value::<e::SummaryRef>(changed).is_err(),
+        "nonplaintext portable summary admitted",
+    );
     for index in 0..value.native().len() {
         for field in ["provider", "model", "endpoint"] {
             let mut changed = original.clone();
             changed["native"][index]["provenance"][field] = " ".into();
-            assert!(serde_json::from_value::<e::SummaryRef>(changed).is_err());
+            assert!(
+                serde_json::from_value::<e::SummaryRef>(changed).is_err(),
+                "incomplete native summary provenance admitted",
+            );
         }
     }
 }

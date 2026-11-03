@@ -9,7 +9,7 @@ root = package.parents[1]
 oracle = package / 'src/harness_resources.rs'
 oracle_digest = hashlib.sha256(oracle.read_bytes()).digest()
 command = ['cargo', 'run', '--locked', '--example', 'capture', '--',
-           '--only-resources', '--extend-goldens']
+           '--only-resources']
 
 
 def run(step, diagnostic=None):
@@ -26,7 +26,7 @@ def run(step, diagnostic=None):
     if (diagnostic is not None and (result.returncode == 0 or not failed_oracle)) or (
         diagnostic is None and result.returncode != 0
     ):
-        raise RuntimeError(f'{step}: expected {diagnostic or "successful writer replay"}, exit={result.returncode}; recovery: cargo run --locked --example capture -- --only-resources --extend-goldens')
+        raise RuntimeError(f'{step}: expected {diagnostic or "successful writer replay"}, exit={result.returncode}; recovery: cargo run --locked --example capture -- --only-resources')
     print(f'{step}: {"REJECTED" if diagnostic is not None else "PASS"}', flush=True)
 
 
@@ -66,6 +66,12 @@ def main():
          'Some(seconds.wrapping_mul(1_000_000_000))', 'cache lifetime overflow admitted'),
         ('summary-version', 'conversation/epochs/summary.rs',
          'if wire.version != 1 {', 'if false {', 'unsupported summary version admitted'),
+        ('summary-portable', 'conversation/epochs/summary.rs',
+         'if wire.portable.descriptor().media_type() != "text/plain" {',
+         'if false {', 'nonplaintext portable summary admitted'),
+        ('summary-provenance', 'conversation/epochs/summary.rs',
+         'native.provenance.validate()?;', 'let _ = &native.provenance;',
+         'incomplete native summary provenance admitted'),
         ('snapshot-identity', 'conversation/epochs/snapshot.rs',
          'if wire.epoch.key.digest_through(pending.through) != pending.summary {', 'if false {',
          'foreign snapshot preparation identity admitted'),
