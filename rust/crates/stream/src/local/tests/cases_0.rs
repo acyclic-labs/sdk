@@ -659,37 +659,33 @@ fn every_partial_current_frame_recovers_only_the_accepted_prefix()
     })?;
 
     for (key, prefix, frame, before, after, outcome) in &captures {
-        journal_cuts(0..frame.len() + 1, |cut| {
-            let paths = &paths;
-            async move {
-                let directory = tempfile::tempdir()?;
-                let path = directory.path().join(JOURNAL_FILE);
-                let mut bytes = prefix.clone();
-                bytes.extend_from_slice(&frame[..cut]);
-                std::fs::write(&path, &bytes)?;
-                let reopened = LocalStream::open(directory.path(), limits).await?;
-                let complete = cut == frame.len();
-                assert_eq!(
-                    &records(&reopened, paths).await?,
-                    if complete { after } else { before },
-                    "frame {key:?}, cut {cut} exposed a partial namespace or record"
-                );
-                assert_eq!(
-                    reopened
-                        .inspect_idempotency(key.clone())
-                        .await?
-                        .map(|observed| observed.outcome),
-                    complete.then(|| outcome.clone()),
-                    "frame {key:?}, cut {cut} changed retry acceptance"
-                );
-                drop(reopened);
-                assert_eq!(
-                    std::fs::read(&path)?,
-                    if complete { &bytes } else { prefix }.as_slice(),
-                    "recovery changed the accepted prefix"
-                );
-                Ok(())
-            }
+        journal_cuts(0..frame.len() + 1, async |cut, directory| {
+            let path = directory.join(JOURNAL_FILE);
+            let mut bytes = prefix.clone();
+            bytes.extend_from_slice(&frame[..cut]);
+            std::fs::write(&path, &bytes)?;
+            let reopened = LocalStream::open(directory, limits).await?;
+            let complete = cut == frame.len();
+            assert_eq!(
+                &records(&reopened, &paths).await?,
+                if complete { after } else { before },
+                "frame {key:?}, cut {cut} exposed a partial namespace or record"
+            );
+            assert_eq!(
+                reopened
+                    .inspect_idempotency(key.clone())
+                    .await?
+                    .map(|observed| observed.outcome),
+                complete.then(|| outcome.clone()),
+                "frame {key:?}, cut {cut} changed retry acceptance"
+            );
+            drop(reopened);
+            assert_eq!(
+                std::fs::read(&path)?,
+                if complete { &bytes } else { prefix }.as_slice(),
+                "recovery changed the accepted prefix"
+            );
+            Ok(())
         })?;
     }
     // A whole checksummed noncanonical command is never a torn append.
@@ -701,19 +697,15 @@ fn every_partial_current_frame_recovers_only_the_accepted_prefix()
     bytes.extend_from_slice(&length);
     bytes.extend_from_slice(&payload);
     bytes.extend_from_slice(&frame_checksum(&length, &payload));
-    journal_cuts(0..1, |_| {
-        let bytes = &bytes;
-        async move {
-            let directory = tempfile::tempdir()?;
-            let path = directory.path().join(JOURNAL_FILE);
-            std::fs::write(&path, bytes)?;
-            assert!(matches!(
-                LocalStream::open(directory.path(), limits).await,
-                Err(LocalStreamError::Corrupt)
-            ));
-            assert_eq!(std::fs::read(&path)?, *bytes);
-            Ok(())
-        }
+    journal_cuts(0..1, async |_, directory| {
+        let path = directory.join(JOURNAL_FILE);
+        std::fs::write(&path, &bytes)?;
+        assert!(matches!(
+            LocalStream::open(directory, limits).await,
+            Err(LocalStreamError::Corrupt)
+        ));
+        assert_eq!(std::fs::read(&path)?, bytes);
+        Ok(())
     })
 }
 
@@ -974,20 +966,16 @@ fn a_journal_torn_before_its_header_completed_is_created_again()
 -> Result<(), Box<dyn std::error::Error>> {
     let limits = LocalStreamLimits::default();
     let header = encode_header(limits, 0)?;
-    journal_cuts(0..header.len(), |cut| {
-        let header = &header;
-        async move {
-            let directory = tempfile::tempdir()?;
-            let path = directory.path().join(JOURNAL_FILE);
-            std::fs::write(
-                &path,
-                header.get(..cut).ok_or(StreamError::InvalidArgument)?,
-            )?;
-            let provider = LocalStream::open(directory.path(), limits).await?;
-            drop(provider);
-            assert_eq!(std::fs::read(&path)?, *header);
-            Ok(())
-        }
+    journal_cuts(0..header.len(), async |cut, directory| {
+        let path = directory.join(JOURNAL_FILE);
+        std::fs::write(
+            &path,
+            header.get(..cut).ok_or(StreamError::InvalidArgument)?,
+        )?;
+        let provider = LocalStream::open(directory, limits).await?;
+        drop(provider);
+        assert_eq!(std::fs::read(&path)?, header);
+        Ok(())
     })
 }
 
