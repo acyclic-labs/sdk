@@ -28,7 +28,7 @@ pub(super) fn observe_output(
 pub struct ProcessCaptureFailure {
     /// Capture error, or the cleanup error when cleanup could not be confirmed.
     pub error: io::Error,
-    /// Direct-child exit status if it was observed before capture stopped.
+    /// Direct-child exit status if observed during capture or cleanup.
     pub status: Option<ExitStatus>,
     /// Bounded stdout prefix collected before capture stopped.
     pub stdout: Vec<u8>,
