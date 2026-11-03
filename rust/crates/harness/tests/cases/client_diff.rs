@@ -512,9 +512,22 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
     fixture
         .put("expensive.txt", &"a\n".repeat(64), "old-expensive")
         .await?;
+    fixture.put("z-empty-removed.txt", "", "old-empty").await?;
     let expensive_base = fixture.source("expensive.txt").await?.generation;
     fixture
         .put("expensive.txt", &"b\n".repeat(64), "new-expensive")
+        .await?;
+    fixture.put("z-empty-added.txt", "", "new-empty").await?;
+    fixture
+        .host
+        .apply(
+            &workspace,
+            None,
+            &[acyclic_harness::filesystem::WorkspaceMutation::Remove {
+                path: "/z-empty-removed.txt".into(),
+            }],
+            &IdempotencyKey::new("remove-empty")?,
+        )
         .await?;
     let expensive_current = fixture.source("expensive.txt").await?.generation;
     let bounded = diff_page(
@@ -524,9 +537,18 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
         &AgentPageRequest::new(128, 2048, None).expect("finite computation credit"),
     )
     .await?;
-    assert_eq!(bounded.len(), 1);
+    assert_eq!(bounded.len(), 3);
     assert_eq!(bounded[0].omitted_bytes, Some(128));
     assert!(bounded[0].patch.is_empty());
+    for (file, (path, kind)) in bounded[1..].iter().zip([
+        ("z-empty-added.txt", DiffKind::Added),
+        ("z-empty-removed.txt", DiffKind::Removed),
+    ]) {
+        assert_eq!(file.path, path);
+        assert_eq!(file.kind, kind);
+        assert_eq!(file.omitted_bytes, Some(0));
+        assert!(file.patch.is_empty());
+    }
 
     // Negative control: authority over another volume discloses no path.
     let other = VolumeRef::new(

@@ -289,7 +289,8 @@ async fn path_diff(
     // storage/read failure into an omitted comparison: admit its input first.
     if let Some(bytes) = change.largest_file_bytes {
         let endpoints = u64::from(change.base.is_some()) + u64::from(change.current.is_some());
-        if bytes > limits.file_bytes
+        if work.remaining == 0
+            || bytes > limits.file_bytes
             || bytes
                 .checked_mul(endpoints)
                 .is_none_or(|input| input > work.remaining as u64)
