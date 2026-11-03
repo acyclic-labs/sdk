@@ -207,7 +207,7 @@ fn unscoped_occupant(forget_occupant: bool) {
         // The queued worker starts after its driver yielded to a different
         // occupant, then needs that SAME driver to produce its callback reply.
         // Observe the actual handoff before publishing any reply readiness.
-        let mut resumed = lock(&awakened.0);
+        let mut resumed = awakened.0.lock().unwrap_or_else(PoisonError::into_inner);
         while !*resumed {
             resumed = awakened.1.wait(resumed).unwrap();
         }
