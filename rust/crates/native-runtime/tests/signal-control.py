@@ -1,7 +1,7 @@
 """Check production signal/wake/owner models against actual source defects.
 
 Run in a disposable checkout: python3 rust/crates/native-runtime/tests/signal-control.py /tmp/native-signal-control
-Select a retained control with --wake, --owners, --host, --host-source, --host-events, --ownership, --claim, --descriptor, --owner-envelope, --durability, --durability-io, --native-terminal, --native-capacity, --native-funding --native-tracker, --executor-source, --executor-rounds, --clock or --core-source.
+Select a retained control with --wake, --owners, --host, --host-source, --host-events, --ownership, --claim, --descriptor, --owner-envelope, --durability, --durability-io, --native-terminal, --native-capacity, --native-funding --native-tracker, --executor-source, --executor-rounds, --clock, --core-source or --process-admission.
 An optional comma-separated mutation selection shares one restored positive run.
 """
 import hashlib
@@ -13,8 +13,8 @@ import sys
 
 
 def main():
-    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--host-source", "--host-events", "--ownership", "--claim", "--descriptor", "--owner-envelope", "--durability", "--durability-io", "--native-terminal", "--native-capacity", "--native-funding", "--native-tracker", "--executor-source", "--executor-rounds", "--clock", "--core-source")):
-        raise RuntimeError("arguments: expected evidence directory, optional control and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--host-source|--host-events|--ownership|--claim|--descriptor|--owner-envelope|--durability|--durability-io|--native-terminal|--native-capacity|--native-funding|--native-tracker|--executor-source|--executor-rounds|--clock|--core-source [mutation]]")
+    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--host-source", "--host-events", "--ownership", "--claim", "--descriptor", "--owner-envelope", "--durability", "--durability-io", "--native-terminal", "--native-capacity", "--native-funding", "--native-tracker", "--executor-source", "--executor-rounds", "--clock", "--core-source", "--process-admission")):
+        raise RuntimeError("arguments: expected evidence directory, optional control and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--host-source|--host-events|--ownership|--claim|--descriptor|--owner-envelope|--durability|--durability-io|--native-terminal|--native-capacity|--native-funding|--native-tracker|--executor-source|--executor-rounds|--clock|--core-source|--process-admission [mutation]]")
     mode = sys.argv[2] if len(sys.argv) >= 3 else "--signal"
     root = Path(__file__).resolve().parents[4]
     output = Path(sys.argv[1]).resolve()
@@ -37,6 +37,7 @@ def main():
     clock = tracker.parent / "testing/clock.rs"
     entropy = tracker.parent / "testing/entropy.rs"
     drain = tracker.parent / "device_flush.rs"
+    process_host = tracker.parent / "process_tree/external_host.rs"
     target, sources, selection = {
         "--signal": ("process_signal_loom.rs", (signal, outcome), "--native-signal"),
         "--wake": ("wake_loom.rs", (wake,), "--native-wake"),
@@ -58,12 +59,19 @@ def main():
         "--executor-rounds": ("../src/testing/executor/tests.rs", (executor,), "--native-executor-rounds"),
         "--clock": ("../src/testing/clock.rs", (clock,), "--native-clock"),
         "--core-source": ("../src/testing/entropy.rs", (entropy, drain), "--native-core-source"),
+        "--process-admission": ("../src/process_tree/external_host.rs", (process_host,), None),
     }[mode]
     oracle = root / "rust/crates/native-runtime/tests" / target
     qualifier = root / "scripts/qualify-mcp-loom.mjs"
     originals = {path: path.read_bytes() for path in (*sources, oracle, qualifier)}
     digest = lambda data: hashlib.sha256(data).hexdigest()
     command = ["node", "scripts/qualify-mcp-loom.mjs", selection]
+    if mode == "--process-admission":
+        command = [
+            "cargo", "test", "--locked", "-p", "acyclic-native-runtime", "--lib",
+            "process_tree::external_host::tests::unavailable_control_retains_its_admission_failure_before_root_launch",
+            "--", "--exact", "--nocapture",
+        ]
     report = {"inputs": {str(path.relative_to(root)): digest(data) for path, data in originals.items()}, "steps": []}
 
     def run(label, failure=None, test=None):
@@ -282,6 +290,13 @@ qualificationMain([process.argv[1]], (command, args, options) => spawnSync(comma
              b"        self.anchor.get_or_insert_with(tokio::time::Instant::now);",
              b"        // omitted original initial monotonic anchor",
              "wall clock diverged"),
+        ]
+    elif mode == "--process-admission":
+        mutations = [
+            ("control-admission", process_host,
+             b"    observe(observations, |progress| {\n        progress.phase = ProcessHostPhase::ControlAdmission;\n    });\n    let control = ControlInput::open",
+             b"    let control = ControlInput::open",
+             "control connection failure lost its original admission phase"),
         ]
     elif mode == "--core-source":
         mutations = [

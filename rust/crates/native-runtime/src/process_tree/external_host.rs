@@ -466,6 +466,9 @@ fn run_admitted<const N: usize>(
         .map(ProcessCustodyLease::custody)
         .or(custody.as_deref())
         .ok_or_else(invalid_arguments)?;
+    observe(observations, |progress| {
+        progress.phase = ProcessHostPhase::ControlAdmission;
+    });
     let control = ControlInput::open(invocation.control.as_deref(), invocation.inherit_input)?;
     let mut command = ProcessCommand::new(invocation.executable);
     command
@@ -685,6 +688,46 @@ mod tests {
     const PHASE_MODE: &str = "ACYCLIC_HOST_PHASE_MODE";
     const PHASE_RECEIPT: &str = "ACYCLIC_HOST_PHASE_RECEIPT";
     const PHASE_BINDING: &str = "0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn unavailable_control_retains_its_admission_failure_before_root_launch() {
+        let root = tempfile::tempdir().unwrap();
+        let failure = run_external_process_host_with_progress([
+            "--inherit-input".into(),
+            "--control".into(),
+            root.path().join("absent-control").into_os_string(),
+            "--completion".into(),
+            root.path().join("completion.json").into_os_string(),
+            "--invocation".into(),
+            PHASE_BINDING.into(),
+            "--custody".into(),
+            root.path().join("custody").into_os_string(),
+            std::env::current_exe().unwrap().into_os_string(),
+        ])
+        .unwrap_err();
+        assert_eq!(
+            failure.phase,
+            ProcessHostPhase::ControlAdmission,
+            "control connection failure lost its original admission phase"
+        );
+        assert_eq!(failure.error.kind(), io::ErrorKind::NotFound);
+        assert!(failure.error.raw_os_error().is_some());
+        assert!(failure.receipt_error.is_none());
+        assert!(failure.progress.root_admitted.is_none());
+        assert!(failure.progress.root_status.is_none());
+        assert!(failure.progress.retired.is_none());
+        let original = std::fs::read(root.path().join("completion.json")).unwrap();
+        let receipt: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        assert_eq!(receipt["invocation"], PHASE_BINDING);
+        assert_eq!(receipt["failure"]["phase"], "control-admission");
+        assert_eq!(
+            receipt["failure"]["error"]["raw_os_error"].as_i64(),
+            failure.error.raw_os_error().map(i64::from)
+        );
+        assert_eq!(receipt["process_tree_retired"], false);
+        assert!(receipt["root_status"].is_null());
+        assert!(receipt["phases"]["root_admitted_seconds"].is_null());
+    }
 
     #[test]
     fn host_phase_root_fixture() {
