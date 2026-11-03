@@ -307,14 +307,20 @@ def sockets():
         (b"&& !open.subprotocols.contains(selected)", b"&& false",
          "socket verdict must refuse unoffered subprotocols"),
     )
-    writer = b"    seeds.extend(actor_socket_seeds()?);"
+    writers = (
+        b"    seeds.extend(actor_socket_seeds()?);",
+        b"    seeds.extend(actor_socket_input_seeds()?);",
+    )
     start = oracle.index(b"    use acyclic_actors::sockets::{SocketFrame, SocketOpen};",
                          oracle.index(b"pub fn actor_codecs("))
     end = oracle.index(b"    use acyclic_actors::{guest::wire, local::State};", start)
-    if oracle.count(writer) != 1 or any(source.count(anchor) != 1 for anchor, _, _ in plants):
+    if (any(oracle.count(writer) != 1 for writer in writers)
+            or any(source.count(anchor) != 1 for anchor, _, _ in plants)):
         raise RuntimeError("socket source anchor changed; recovery: inspect the original "
                            "socket decoders and shared target before python3 actor-negative-control.py --sockets")
-    previous = (oracle[:start] + oracle[end:]).replace(writer, b"")
+    previous = oracle[:start] + oracle[end:]
+    for writer in writers:
+        previous = previous.replace(writer, b"")
     try:
         for label, value in (("socket production", source), ("socket oracle", oracle)):
             print(f"{label} sha256={hashlib.sha256(value).hexdigest()}", flush=True)
