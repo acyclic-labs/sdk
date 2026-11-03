@@ -45,8 +45,8 @@ pub(super) fn with_root_name<W: NativeHostWork, T>(
                 .ok_or(crate::WorkError::Overflow)?,
             ..WorkCounters::UNCHARGED
         })?;
+        work.started_io(items(length as u64))?;
         for unit in path.as_os_str().encode_wide() {
-            work.started_io(ITEM)?;
             if unit == 0 {
                 return Err(W::invalid_request());
             }

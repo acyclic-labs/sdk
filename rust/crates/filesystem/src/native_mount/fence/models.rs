@@ -205,7 +205,7 @@ fn threads_sharing_the_registry_descriptor_are_admitted_one_at_a_time() {
     loom::model(move || candidate(false));
     rejected(
         move || loom::model(move || scenario(true)),
-        "a shared registry descriptor admitted two threads",
+        SHARED_ADMISSION,
     );
 }
 
@@ -263,6 +263,9 @@ fn shared_registry_descriptor_serializes_threads_before_the_kernel_lock() {
     });
 }
 
+// The one oracle message that both the model and its negative control name.
+const SHARED_ADMISSION: &str = "shared descriptor admitted concurrent registry owners";
+
 fn shared_admission(
     registry: &registry::Registry,
     active: &loom::sync::Mutex<u8>,
@@ -272,10 +275,7 @@ fn shared_admission(
     {
         let mut active = active.lock().unwrap();
         *active += 1;
-        assert_eq!(
-            *active, 1,
-            "shared descriptor admitted concurrent registry owners"
-        );
+        assert_eq!(*active, 1, "{SHARED_ADMISSION}");
     }
     loom::thread::yield_now();
     *active.lock().unwrap() -= 1;
