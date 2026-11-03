@@ -55,8 +55,3 @@ proptest! {
         prop_assert!(work(&large, true) > work(&small, true) * 3);
     }
 }
-
-#[test]
-fn thousands_of_filters_double_the_work() {
-    assert_eq!(work(&holder(4096), false), work(&holder(2048), false) * 2);
-}

@@ -187,38 +187,23 @@ fn credential(world: &World, trust: &Follower, index: u8) -> (Vec<u8>, BlockId) 
 }
 
 #[test]
-fn revocation_refuses_the_next_verify() {
-    let mut world = world();
-    let trust = follower(&world);
-    let (bytes, id) = credential(&world, &trust, 0);
-    let record = world.root.revoke(&[(id, NOW + 10_000)], NOW).unwrap();
-    // Negative control: before the record applies, the credential verifies.
-    assert!(verify::verify(&bytes, &trust, NOW).is_ok());
-    assert_eq!(trust.apply(&record, NOW), Ok(Applied::Changed));
-    assert_eq!(
-        verify::verify(&bytes, &trust, NOW).err(),
-        Some(VerifyError::Revoked)
-    );
-    // Redelivery is a duplicate and changes nothing.
-    assert_eq!(trust.apply(&record, NOW), Ok(Applied::Duplicate));
-}
-
-#[test]
 fn swap_precedes_wake_and_lost_follow_fences() {
     let mut world = world();
     let trust = follower(&world);
     let (bytes, id) = credential(&world, &trust, 0);
+    assert!(verify::verify(&bytes, &trust, NOW).is_ok());
     let mut wake = trust.changed();
     assert!((&mut wake).now_or_never().is_none());
-    trust
-        .apply(&world.root.revoke(&[(id, NOW + 10_000)], NOW).unwrap(), NOW)
-        .unwrap();
+    let revoked = world.root.revoke(&[(id, NOW + 10_000)], NOW).unwrap();
+    assert_eq!(trust.apply(&revoked, NOW), Ok(Applied::Changed));
     // The wake is ready and the swapped trust is already visible.
     assert_eq!(wake.now_or_never(), Some(Ok(())));
     assert_eq!(
         verify::verify(&bytes, &trust, NOW).err(),
         Some(VerifyError::Revoked)
     );
+
+    assert_eq!(trust.apply(&revoked, NOW), Ok(Applied::Duplicate));
 
     let (other, _) = credential(&world, &trust, 1);
     let fenced = trust.changed();
