@@ -11,10 +11,10 @@ pub fn check_persisted_window(input: &[u8]) {
 }
 
 async fn check(input: &[u8]) {
-    let case = input.first().copied().unwrap_or(0) % 16;
+    let selector = input.first().copied().unwrap_or(0);
+    let case = selector % 16;
     let workspace = WorkspaceId::from_bytes([161; 16]);
     let parent = GenerationId::new(crate::Digest::from_bytes([152; 32]));
-    let selector = input.first().copied().unwrap_or(0);
     let pending =
         (selector & 0x40 == 0).then_some(GenerationId::new(crate::Digest::from_bytes([156; 32])));
     let subsequent =
@@ -39,7 +39,7 @@ async fn check(input: &[u8]) {
         subsequent_parent: subsequent,
     };
     let phase_case = if (12..=14).contains(&case) {
-        (input[0] >> 4) % 3
+        (selector >> 4) % 3
     } else {
         case
     };
