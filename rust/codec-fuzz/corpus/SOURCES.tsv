@@ -1841,3 +1841,9 @@ actor_codecs/socket-verdict-none-v1	68	e7ad83a89499711e1e8e9defccb780c4207cbd8c2
 actor_codecs/socket-verdict-unoffered-v1	75	662154c825e8df3d19c6c3614a19c0fdc97f77758da03b6e62494611f4787d6a	sockets::socket_reply
 actor_codecs/socket-verdict-reject-v1	54	9191059245768710a08dc039e78ce7a8e58ef31d102d39e91d197959101986a4	sockets::socket_reply
 actor_codecs/socket-verdict-reply-v1	48	6326a9ccd4537c603573637796760b734aa29ff103a7f5021406fd1296b3b55a	sockets::socket_reply
+actor_codecs/socket-input-open	908	c0b94f8d09e5386887c5982f957922c6f167c768bfb7204e820911e50aaf5fdc	Runtime::run -> SocketPackage::on_record -> guest::wire::encode_delivery
+actor_codecs/socket-input-text	548	cdd6ae5e82dff1a19bbb8250750355158afedf84de4453028ab54d3b063c3e23	Runtime::run -> SocketPackage::on_record -> guest::wire::encode_delivery
+actor_codecs/socket-input-binary	548	c451ecbd79ffc94f9a263b21face58dbe8c6cc206294c1dcfe24fc679c71c64f	Runtime::run -> SocketPackage::on_record -> guest::wire::encode_delivery
+actor_codecs/socket-input-close-peer	552	47f02331a090ca6ca465045ba042f5dc973427af9029eaa4d415fb9e7b60ec30	Runtime::run -> SocketPackage::on_record -> guest::wire::encode_delivery
+actor_codecs/socket-input-close-actor	566	d2a398e0783846f2d83cc3c7392bb9f5307f82d8cbbbe4088ce669a6ea554a78	Runtime::run -> SocketPackage::on_record -> guest::wire::encode_delivery
+actor_codecs/socket-input-close-runtime	590	9c5ee03113a43dd79f9390c9ea741ae2b4429359b9b98db59eb4eafac74ea6b8	Runtime::run -> SocketPackage::on_record -> guest::wire::encode_delivery
