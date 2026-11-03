@@ -171,12 +171,12 @@ impl Pool {
                             link.observation = Some(observation);
                             break Ok((node, link, response));
                         }
-                        Err(error) => {
-                            observation.finish(Some(&error));
+                        Err(failure) => {
+                            observation.finish(Some(&failure.error));
                             // Admission carries the request. An effectful call
                             // may have committed before transport failed.
-                            if error != StreamError::Unavailable || !replayable {
-                                break Err(error);
+                            if !failure.transient || !replayable {
+                                break Err(failure.error);
                             }
                             attempt = attempt.saturating_add(1);
                             executor.sleep(10).await;
@@ -462,7 +462,7 @@ async fn handshake(
     credentials: BTreeMap<u32, Bytes>,
     interest: wire::SessionInterest,
     progress: Arc<Progress>,
-) -> Result<Ready, StreamError> {
+) -> Result<Ready, transport::Failure> {
     let sender = Arc::new(Outbound::new(crate::MAX_ITEMS, crate::MAX_COMMAND_BYTES));
     let credit = wire::SessionWindow {
         bytes: crate::MAX_COMMAND_BYTES as u64,
@@ -495,7 +495,7 @@ async fn handshake(
     );
     let bytes = hello.encoded_len();
     if bytes > crate::MAX_COMMAND_BYTES {
-        return Err(StreamError::LimitExceeded);
+        return Err(StreamError::LimitExceeded.into());
     }
     sender.push(hello, bytes)?;
     // Ownership is installed before either credential or connection I/O await.
@@ -535,18 +535,21 @@ async fn handshake(
         .next()
         .await
         .transpose()?
-        .ok_or(StreamError::Unavailable)?;
+        .ok_or(transport::Failure {
+            error: StreamError::Unavailable,
+            transient: true,
+        })?;
     if welcome.wire().channel_id != 0 || welcome.wire().generation != 0 {
-        return Err(StreamError::InvalidResponse);
+        return Err(StreamError::InvalidResponse.into());
     }
     let Some(Body::Welcome(welcome)) = welcome.into_wire().body else {
-        return Err(StreamError::InvalidResponse);
+        return Err(StreamError::InvalidResponse.into());
     };
     if welcome.version != super::super::VERSION {
-        return Err(StreamError::Unsupported);
+        return Err(StreamError::Unsupported.into());
     }
     if welcome.node_id.is_empty() || (!destination.is_empty() && welcome.node_id != destination) {
-        return Err(StreamError::InvalidResponse);
+        return Err(StreamError::InvalidResponse.into());
     }
     link.input.grant(&wire::SessionWindow {
         bytes: welcome.receive_bytes,

@@ -33,7 +33,8 @@ impl transport::Transport for Unpolled {
     fn session(
         &self,
         _: transport::Requests,
-    ) -> BoxProviderFuture<'_, Result<transport::Responses, StreamError>> {
+    ) -> BoxProviderFuture<'_, Result<transport::Responses<transport::Failure>, transport::Failure>>
+    {
         panic!("display admission must not eagerly open a transport")
     }
 }
@@ -42,7 +43,7 @@ fn client() -> (WireSession, Arc<Scheduler>) {
     let scheduler = Arc::new(Scheduler::default());
     let pool = Client::with_transport(
         Arc::new(Unpolled),
-        Arc::new(|_| Box::pin(async { Err(StreamError::Unavailable) })),
+        Arc::new(|_| Box::pin(async { Err(StreamError::Unavailable.into()) })),
         scheduler.clone(),
     );
     (

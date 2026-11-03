@@ -2,8 +2,30 @@
 use crate::{BoxProviderFuture, BoxProviderStream, ProviderPlatform, StreamError, wire};
 use std::sync::Arc;
 
-/// Canonical inbound frames from one physical platform connection.
-pub type Responses = BoxProviderStream<'static, Result<super::super::Frame, StreamError>>;
+/// Canonical inbound frames, with the owning boundary's error contract.
+pub type Responses<E = StreamError> = BoxProviderStream<'static, Result<super::super::Frame, E>>;
+
+/// A physical connection failure, separate from the caller's semantic error.
+/// A definite refusal never authorizes reconnecting. Only an interrupted I/O
+/// operation may request backoff, and the pool still checks replay safety.
+#[derive(Debug, thiserror::Error)]
+#[error("{error}")]
+pub struct Failure {
+    /// The original caller-visible error, independent of retry classification.
+    #[source]
+    pub error: StreamError,
+    /// Whether the I/O owner observed a transient transport interruption.
+    pub transient: bool,
+}
+
+impl From<StreamError> for Failure {
+    fn from(error: StreamError) -> Self {
+        Self {
+            error,
+            transient: false,
+        }
+    }
+}
 /// Canonical wire frames, without process-local backing metadata.
 pub type WireResponses = BoxProviderStream<'static, Result<wire::SessionFrame, StreamError>>;
 /// Canonical outbound frames; dropping this source cancels the connection.
@@ -38,9 +60,12 @@ pub trait Transport: ProviderPlatform {
         None
     }
     /// Opens one bidirectional platform connection from the canonical frame source.
-    /// `Unavailable` denotes a transient transport failure and permits backoff;
-    /// every other error terminates the opening interests.
-    fn session(&self, source: Requests) -> BoxProviderFuture<'_, Result<Responses, StreamError>>;
+    /// The I/O owner classifies interruptions explicitly; an `Unavailable`
+    /// error alone never requests another physical connection.
+    fn session(
+        &self,
+        source: Requests,
+    ) -> BoxProviderFuture<'_, Result<Responses<Failure>, Failure>>;
     /// Withdraws an unadmitted write owned wholly by this logical channel.
     /// Synchronous socket writes need no hook; asynchronous platform queues
     /// cancel that write without closing the shared physical connection.
@@ -51,10 +76,10 @@ pub trait Transport: ProviderPlatform {
 pub type Endpoint = Arc<dyn Transport>;
 #[cfg(not(target_arch = "wasm32"))]
 /// Resolves a moved node to its authenticated endpoint, without opening a session.
-pub type Connect = dyn Fn(wire::SessionNode) -> BoxProviderFuture<'static, Result<Endpoint, StreamError>>
+pub type Connect = dyn Fn(wire::SessionNode) -> BoxProviderFuture<'static, Result<Endpoint, Failure>>
     + Send
     + Sync;
 #[cfg(target_arch = "wasm32")]
 /// Resolves a moved node using the browser's platform I/O.
 pub type Connect =
-    dyn Fn(wire::SessionNode) -> BoxProviderFuture<'static, Result<Endpoint, StreamError>>;
+    dyn Fn(wire::SessionNode) -> BoxProviderFuture<'static, Result<Endpoint, Failure>>;

@@ -24,7 +24,10 @@ impl transport::Transport for HeldInputTerminal {
     fn session(
         &self,
         source: transport::Requests,
-    ) -> crate::BoxProviderFuture<'_, Result<transport::Responses, StreamError>> {
+    ) -> crate::BoxProviderFuture<
+        '_,
+        Result<transport::Responses<transport::Failure>, transport::Failure>,
+    > {
         let held = self.held.clone();
         let calls = self.calls.clone();
         let mut lifetime = self.lifetime.clone();
@@ -38,7 +41,7 @@ impl transport::Transport for HeldInputTerminal {
                 }
                 Some((Ok(frame), (source, held)))
             });
-            serve_on_with_products(
+            let response = serve_on_with_products(
                 Arc::new(MemoryStream::default()),
                 testing::authority(),
                 Products {
@@ -51,7 +54,9 @@ impl transport::Transport for HeldInputTerminal {
                 Some(Box::pin(async move {
                     let _ = lifetime.changed().await;
                 })),
-            )
+            )?;
+            Ok(Box::pin(response.map(|frame| frame.map_err(Into::into)))
+                as transport::Responses<transport::Failure>)
         })
     }
 }
@@ -141,7 +146,7 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
     });
     let client = Client::with_transport(
         endpoint,
-        Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
+        Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable.into())))),
         Arc::new(crate::runtime::PlatformExecutor),
     );
     client.register_credential(0, credential.into())?;

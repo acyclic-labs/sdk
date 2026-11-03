@@ -37,8 +37,8 @@ impl Pool {
                         if self.links.get(&node).is_none_or(|link| link.epoch != epoch) { continue; }
                         match value {
                             Some(Ok(value)) => { if self.receive_frame(&node,value) { self.read(node,response); } }
-                            Some(Err(StreamError::Unavailable)) | None => self.reconnect(&node)?,
-                            Some(Err(error)) => self.fail_link(&node,&error),
+                            Some(Err(transport::Failure { transient: true, .. })) | None => self.reconnect(&node)?,
+                            Some(Err(failure)) => self.fail_link(&node,&failure.error),
                         }
                     }
                     None => return Err(StreamError::Unavailable),

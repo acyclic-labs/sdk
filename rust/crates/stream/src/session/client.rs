@@ -60,8 +60,16 @@ pub use progress::verify_latest_progress;
 mod tests;
 type Ready = (String, Link, Response);
 type Dial = BoxProviderFuture<'static, (String, u64, Result<Ready, StreamError>)>;
-type Response = transport::Responses;
-type Read = BoxProviderFuture<'static, (String, u64, Response, Option<Result<Frame, StreamError>>)>;
+type Response = transport::Responses<transport::Failure>;
+type Read = BoxProviderFuture<
+    'static,
+    (
+        String,
+        u64,
+        Response,
+        Option<Result<Frame, transport::Failure>>,
+    ),
+>;
 const QUEUE: usize = RECEIVE_FRAMES;
 const FRAME_BYTES: u64 = crate::MAX_RECORD_BYTES as u64 + 128;
 
