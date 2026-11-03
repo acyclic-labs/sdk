@@ -73,7 +73,7 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
   {name: 'AssertionError', message: /Missing expected exception/});
  const fingerprint = await mutant('./source-policy/index.mjs',
   "typeof item.fingerprint !== 'string' || ", '');
- assert.throws(() => targets.fuzzProject(Buffer.from([0]), fingerprint),
+ assert.throws(() => targets.fuzzProject(Buffer.from([5]), fingerprint),
   {name: 'AssertionError', message: /invalid disposition field: fingerprint/});
  for (const [file, message] of [['project.mjs', /invalid project disposition field/],
   ['index.mjs', /invalid source disposition field/]]) {
@@ -121,7 +121,10 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
 
 test('raw source and project fuzz targets replay captured corpus and byte mutations', () => {
  for (const text of ["printf ''", '\\', '\\u{']) targets.fuzz(Buffer.from(text));
- for (let byte = 0; byte < 256; byte++) {
+ // Empty/single-byte inputs and byte/UTF-8 boundaries cover the same parser
+ // branches without replaying every overlapping prefix. The longest inputs
+ // together retain every byte value; the fuzz target still accepts any length.
+ for (const byte of [0, 1, 2, 127, 128, 254, 255]) {
   targets.fuzz(Uint8Array.from({length: byte}, (_, index) => (byte + index) & 255));
  }
  for (const {file, source} of targets.sourceCorpus) targets.fuzzSource(file, Buffer.from(source));

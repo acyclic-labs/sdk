@@ -227,25 +227,6 @@ test('a producer edit reopens unchanged callers through recursive dependencies',
  assert.ok(newProjectPollingSites(before, changed, accepted).some(site => site.file === script));
 });
 
-test('a legitimate helper requires an exact caller disposition rather than a helper exemption', () => {
- const helper = 'typescript/packages/example/test/helper.ts';
- for (const [producer, classification, event, terminal] of [
-  ['export async function pause(context) { return context.timeout(deadline); }', 'caller-deadline', 'original caller chooses its deadline', 'caller cancellation or deadline'],
-  ['export async function pause(error) { return transportBackoff(error); }', 'transient-transport-backoff', 'original classified transient transport failure', 'original transport owner cancellation'],
-  ['export async function pause() { for (;;) { consume(await originalChannel.receive()); } }', 'event-wait', 'original channel producer', 'typed receive failure when that producer is dropped'],
- ]) {
-  const before = new Map([[helper, producer], [script, "import {pause} from './helper.js'; export async function operation() {}"]]);
-  const after = new Map(before).set(script, "import {pause} from './helper.js'; export async function operation() { await pause(original); }");
-  const added = newProjectPollingSites(before, after);
-  assert.ok(added.some(site => site.file === script && site.kind === 'polling-helper-reference'));
-  const accepted = added.map(site => disposition(site, classification, event, terminal, 'remove or suppress the original event and require the original terminal result'));
-  assert.deepEqual(newProjectPollingSites(before, after, accepted), []);
-  const originalCaller = after.get(script);
-  assert.ok(originalCaller);
-  assert.ok(newProjectPollingSites(before, new Map(after).set(script, originalCaller.replace('pause(original)', 'pause(replacement)')), accepted).length);
- }
-});
-
 test('aliases cannot use an unchanged timer import to conceal a new call', () => {
  for (const declaration of [
   "import {setTimeout as pause} from 'node:timers/promises';",

@@ -57,6 +57,8 @@ the unchanged source check all use that module, including its `SourceSyntaxError
 `fuzzProject(bytes, {source, graph})` takes the matching source and project module
 exports; dependency deltas, disposition admission and typed refusals all use that
 pair. Its authored `projectCorpus` seeds are shared with installed-module checks.
+The finite runner distributes invalid disposition types across those seeds and
+uses byte boundaries instead of replaying every overlapping byte prefix.
 The same target also consumes `projectSnapshots`: original committed SDK Actors
 modules captured with Git, with the repository, revision and source identities
 retained in the fixture. It checks snapshot order and unchanged deltas, plants a

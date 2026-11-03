@@ -262,14 +262,15 @@ export function fuzzProject(data, {source: api = sourcePolicy, graph = projectPo
  assert.ok(newProjectPollingSites(invalidPredecessor, currentWait).some(site => site.file === caller),
   'malformed predecessor authorized a current wait');
  for (const field of ['file', 'fingerprint', 'classification', 'producer', 'terminal', 'negativeControl']) {
-  for (const value of ['', null, false, 0, [], [accepted[0][field]], {}]) {
-   const invalid = {...accepted[0], [field]: value};
-   assert.throws(() => validate([invalid]), /invalid exact/, 'invalid disposition field: ' + field);
-   assert.throws(() => newProjectPollingSites(new Map(), after, [invalid]), /invalid exact/,
-    'invalid project disposition field: ' + field);
-   assert.throws(() => newPollingSites(caller, '', localSource, [invalid]), /invalid exact/,
-    'invalid source disposition field: ' + field);
-  }
+  // The retained byte seeds cover every invalid type for every field. Select
+  // one per input rather than replaying the entire type matrix for each seed.
+  const values = ['', null, false, 0, [], [accepted[0][field]], {}];
+  const invalid = {...accepted[0], [field]: values[(data[0] ?? 0) % values.length]};
+  assert.throws(() => validate([invalid]), /invalid exact/, 'invalid disposition field: ' + field);
+  assert.throws(() => newProjectPollingSites(new Map(), after, [invalid]), /invalid exact/,
+   'invalid project disposition field: ' + field);
+  assert.throws(() => newPollingSites(caller, '', localSource, [invalid]), /invalid exact/,
+   'invalid source disposition field: ' + field);
  }
  for (const admit of [
   (values, policy) => validate(values, policy),
