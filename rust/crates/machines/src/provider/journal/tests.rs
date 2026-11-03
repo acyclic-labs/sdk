@@ -169,7 +169,7 @@ async fn machines_call_recovery_transfers_original_decoded_body()
             MutationOutcome::Created(machine.clone())
         );
         assert!(matches!(
-            journal.begin(key, [9; 32], None, || panic!("accepted work cannot reenter")).await?,
+            journal.begin::<fn()>(key, [9; 32], None, || panic!("accepted work cannot reenter")).await?,
             Admission::Replay(MutationOutcome::Created(replayed)) if replayed == machine
         ));
     }
