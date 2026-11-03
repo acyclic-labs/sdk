@@ -167,17 +167,15 @@ async fn generation(
         files.push(file);
     }
     let tree = put_tree_page(objects, &TreePage::Leaf(entries), 8).await?;
-    files.insert(
-        0,
-        FileRecord {
-            bindings: None,
-            file_id: root_file_id,
-            kind: FileKind::Directory,
-            link_count: 1,
-            metadata,
-            payload: FilePayload::Directory { entries: tree },
-        },
-    );
+    files.push(FileRecord {
+        bindings: None,
+        file_id: root_file_id,
+        kind: FileKind::Directory,
+        link_count: 1,
+        metadata,
+        payload: FilePayload::Directory { entries: tree },
+    });
+    files.sort_unstable_by_key(|file| file.file_id);
     let table = put_file_table_page(objects, &FileTablePage::Leaf(files), 8).await?;
     let root = put_generation_root(
         objects,
