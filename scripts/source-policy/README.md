@@ -51,6 +51,9 @@ the recorded host corpus, byte mutations and dependency properties. The same
 oracles reject planted defects in the production lexer, dependency graph and
 disposition validation. Add `--experimental-test-coverage` before `--test` to
 report visited branches; the report does not establish runtime liveness.
+`fuzzSource(file, bytes, api)` also accepts the actual exports of a separately
+loaded package or source mutation. Its diagnostics, coordinates and unchanged
+source check all use that same module, including its `SourceSyntaxError` class.
 
 `@acyclic-labs/source-policy/git` exports `gitBatchSources(files, buffer)` for
 callers that already read `git cat-file --batch`. Supply the unique file keys in

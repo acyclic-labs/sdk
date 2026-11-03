@@ -14,6 +14,19 @@ async function mutant(file, original, replacement) {
 }
 
 test('source fuzz oracles reject planted decoder, graph and disposition defects', async () => {
+ for (const [original, replacement, file, source] of [
+  ['throw new SourceSyntaxError(', 'throw new Error(', 'control.ts', '}'],
+  ['const malformed = message => new SourceSyntaxError(', 'const malformed = message => new Error(', 'control.ps1', '<#'],
+  ['sites.push({file, line: t.line, kind, fingerprint, start: t.start});',
+   'sites.push({file, line: 0, kind, fingerprint, start: t.start});', 'control.ts', 'Bun.sleep(1);'],
+  ['sites.push({file, line: t.line, kind, fingerprint, start: t.start});',
+   'sites.push({file, line: t.line, kind, fingerprint, start: -1});', 'control.ts', 'Bun.sleep(1);'],
+  ['sites.push({file, line: t.line, kind, fingerprint, start: t.start});',
+   "sites.push({file: 'foreign.ts', line: t.line, kind, fingerprint, start: t.start});", 'control.ts', 'Bun.sleep(1);'],
+ ]) {
+  const parser = await mutant('./source-policy/index.mjs', original, replacement);
+  assert.throws(() => targets.fuzzSource(file, Buffer.from(source), parser), {name: 'AssertionError'});
+ }
  const lexer = await mutant('./source-policy/index.mjs', 'embeddedCandidate(spelling) ?', 'false ?');
  assert.throws(() => targets.fuzz(Buffer.from('original'), lexer.pollingSites), {name: 'AssertionError'});
  const graph = await mutant('./source-policy/project.mjs',
@@ -79,14 +92,7 @@ test('raw source and project fuzz targets replay captured corpus and byte mutati
  for (let byte = 0; byte < 256; byte++) {
   targets.fuzz(Uint8Array.from({length: byte}, (_, index) => (byte + index) & 255));
  }
- // These are the original host/parser captures, with provenance in each file.
- for (const [capture, file] of [
-  ['powershell-comments', 'control.ps1'], ['yaml-comments', 'control.yaml'],
-  ['yaml-scripts', 'control.yml'], ['shell-words', 'control.sh'],
- ]) {
-  const {records} = JSON.parse(readFileSync(new URL('./fixtures/no-polling/' + capture + '.json', import.meta.url), 'utf8'));
-  for (const record of records) targets.fuzzSource(file, Buffer.from(record.source ?? record.word));
- }
+ for (const {file, source} of targets.sourceCorpus) targets.fuzzSource(file, Buffer.from(source));
  // Generated source mutations, not fabricated output from an external tool.
  for (const extension of ['js', 'mjs', 'cjs', 'ts', 'mts', 'cts', 'jsx', 'tsx', 'rs', 'c', 'h', 'cpp', 'cc', 'hh', 'hxx', 'hpp', 'cxx', 'cs', 'py', 'sh', 'bash', 'ps1', 'cmd', 'bat', 'proto', 'toml', 'json', 'yaml', 'yml']) {
   for (const seed of ['', '\\u{', '/*', '\r\n', String.fromCharCode(...Array.from({length: 256}, (_, byte) => byte))]) {

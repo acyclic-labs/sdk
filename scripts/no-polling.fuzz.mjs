@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict';
-import {newPollingSites, pollingSites, pollingUnit, SourceSyntaxError, supportedSource, validateDispositions} from './source-policy/index.mjs';
+import {readFileSync} from 'node:fs';
+import * as sourcePolicy from './source-policy/index.mjs';
 import {newProjectPollingSites, projectPollingSites} from './source-policy/project.mjs';
+const {newPollingSites, pollingSites, pollingUnit, SourceSyntaxError, supportedSource, validateDispositions} = sourcePolicy;
+
+// Original host/parser captures, with provenance retained in each source file.
+export const sourceCorpus = [
+ ['powershell-comments', 'control.ps1'], ['yaml-comments', 'control.yaml'],
+ ['yaml-scripts', 'control.yml'], ['shell-words', 'control.sh'],
+].flatMap(([capture, file]) => {
+ const {records} = JSON.parse(readFileSync(new URL('./fixtures/no-polling/' + capture + '.json', import.meta.url), 'utf8'));
+ return records.map(record => ({file, source: record.source ?? record.word}));
+});
 
 // Byte-oriented source mutations, not captured tool output. Exercise the real
 // tokenizer: decoding must preserve raw candidates and expose escaped ones.
@@ -60,14 +71,15 @@ export function fuzz(data, analyze = pollingSites) {
 
 // Raw untrusted bytes reach every caller-selected production language parser.
 // Syntax refusal is valid; a crash or a diagnostic of another type is not.
-export function fuzzSource(file, data) {
+export function fuzzSource(file, data, api = sourcePolicy) {
  assert.ok(supportedSource(file));
  const source = new TextDecoder().decode(new Uint8Array(data));
  let sites;
- try { sites = pollingSites(file, source); }
- catch (error) { assert.ok(error instanceof SourceSyntaxError, String(error)); return; }
- assert.deepEqual(newPollingSites(file, source, source), []);
+ try { sites = api.pollingSites(file, source); }
+ catch (error) { assert.ok(error instanceof api.SourceSyntaxError, String(error)); return; }
+ assert.deepEqual(api.newPollingSites(file, source, source), []);
  for (const site of sites) {
+  assert.equal(site.file, file);
   assert.ok(Number.isInteger(site.start) && site.start >= 0 && site.start < source.length);
   assert.equal(site.line, source.slice(0, site.start).split('\n').length);
  }
