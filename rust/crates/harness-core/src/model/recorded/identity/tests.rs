@@ -174,12 +174,14 @@ fn typed_file_policy_controls_locator_equivalence() -> Result<()> {
             };
             let original = request(content(a.clone()))?;
             let relocated = request(content(b.clone()))?;
+            let visible_reference = nested && matches!(policy, FileProjectionPolicy::Native(_));
             assert_eq!(
-                key(&original)?,
-                key(&relocated)?,
-                "only storage provenance changed"
+                key(&original)? == key(&relocated)?,
+                !visible_reference,
+                "native tool results expose the full reference beside their media"
             );
-            assert_eq!(encoded_key(&original)?, key(&relocated)?);
+            assert_eq!(encoded_key(&original)?, key(&original)?);
+            assert_eq!(encoded_key(&relocated)?, key(&relocated)?);
             assert_ne!(
                 key(&original)?,
                 key(&request(content(changed.clone()))?)?,

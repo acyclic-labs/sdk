@@ -92,6 +92,14 @@ impl Serialize for Data<'_> {
         let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
         for part in self.0 {
             match part {
+                ModelDataPart::File {
+                    file,
+                    policy: policy @ FileProjectionPolicy::Native(_),
+                } => {
+                    // Tool media also renders a Reference marker beside the
+                    // bytes. Its complete visible locator remains semantic.
+                    seq.serialize_element(&("file", file, policy))?
+                }
                 ModelDataPart::File { file, policy } => {
                     seq.serialize_element(&("file", File(file, policy), policy))?
                 }
@@ -107,7 +115,8 @@ impl Serialize for File<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         match self.1 {
             // These policies read verified bytes. The descriptor pins those
-            // bytes and media type; the locator is not model-visible content.
+            // bytes and media type. Tool media's visible locator is handled
+            // by Data above; top-level native media has no reference marker.
             // ProjectInstructions keeps its separate original frame identity
             // in the policy above, and native configuration stays exact there.
             FileProjectionPolicy::BoundedFull

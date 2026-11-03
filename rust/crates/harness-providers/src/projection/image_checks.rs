@@ -333,6 +333,48 @@ async fn check_result_media(
     collect_media(&body, &mut found);
     assert_eq!(found, vec![bytes.to_vec(), bytes.to_vec()]);
     assert_eq!(reader.reads.load(Ordering::SeqCst), 2);
+    let marker = |file| {
+        crate::files::FileText::default()
+            .project(file, &FileProjectionPolicy::Reference)
+            .unwrap()
+    };
+    assert!(contains_text(&body, &marker(file)));
+    let mut relocated = serde_json::to_value(file).unwrap();
+    relocated["path"] = json!(format!("moved/{}", file.path()));
+    let relocated: FileRef = serde_json::from_value(relocated).unwrap();
+    let mut changed = prepared.request().clone();
+    let ModelContent::Part(ModelContentPart::ToolResult {
+        content: ToolResultContent::Parts { parts },
+        ..
+    }) = &mut changed.messages[2].content
+    else {
+        panic!("generated native tool result");
+    };
+    let ModelDataPart::File { file, .. } = &mut parts[1] else {
+        panic!("generated native file");
+    };
+    *file = relocated.clone();
+    let changed = PreparedModelRequest::prepare(changed, Limits::default(), None).unwrap();
+    assert_ne!(
+        prepared.replay_key().unwrap(),
+        changed.replay_key().unwrap(),
+        "a changed visible tool reference must invalidate replay"
+    );
+    let changed_body = crate::projection::body_with_files(
+        provider,
+        changed.request(),
+        &mut crate::files::FileText(
+            (0..2)
+                .map(|_| crate::files::ResolvedFile::Native(STANDARD.encode(bytes)))
+                .collect::<Vec<_>>()
+                .into_iter(),
+        ),
+    )
+    .unwrap();
+    assert!(contains_text(&changed_body, &marker(&relocated)));
+    let mut changed_media = Vec::new();
+    collect_media(&changed_body, &mut changed_media);
+    assert_eq!(changed_media, found, "only the visible reference changed");
     if matches!(adapter, Adapter::Chat | Adapter::Responses) {
         let items = body[if adapter == Adapter::Chat {
             "messages"
@@ -354,6 +396,15 @@ async fn check_result_media(
             })
             .unwrap();
         assert!(last_result < first_media);
+    }
+}
+
+fn contains_text(value: &Value, needle: &str) -> bool {
+    match value {
+        Value::String(text) => text.contains(needle),
+        Value::Array(items) => items.iter().any(|item| contains_text(item, needle)),
+        Value::Object(fields) => fields.values().any(|value| contains_text(value, needle)),
+        _ => false,
     }
 }
 
