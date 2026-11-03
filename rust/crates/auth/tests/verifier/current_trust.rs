@@ -193,6 +193,7 @@ fn compact_trust_matches_full_authentication_for_every_snapshot_change() -> Test
                 .into_iter()
                 .enumerate()
         {
+            let next = signed::key(next_seed).verifying_key().to_bytes();
             for mask in 0..1024 {
                 let mut trust = signed::Snapshot::default();
                 if mask & 1 != 0 {
@@ -219,7 +220,6 @@ fn compact_trust_matches_full_authentication_for_every_snapshot_change() -> Test
                 if mask & 128 != 0 {
                     trust.revoked_blocks.push(*last);
                 }
-                let next = signed::key(next_seed).verifying_key().to_bytes();
                 if mask & 256 != 0 {
                     trust.environments.push(next);
                 }

@@ -1108,12 +1108,12 @@ fn simulate(seed: u64, eager: bool) -> Result<(), String> {
     let mut world = world();
     let trust = Follower::new("test", world.issuer.anchor());
     let mut stream = world.genesis.clone();
-    let credentials = (0..4)
-        .map(|index| {
-            let probe = follower(&world);
-            credential(&world, &probe, index)
-        })
-        .collect::<Vec<_>>();
+    let credentials = {
+        let probe = follower(&world);
+        (0..4)
+            .map(|index| credential(&world, &probe, index))
+            .collect::<Vec<_>>()
+    };
     // Stream index of each credential's revocation, and of the epoch floor
     // that refuses every credential, once appended.
     let mut revoked_at = [None::<usize>; 4];
