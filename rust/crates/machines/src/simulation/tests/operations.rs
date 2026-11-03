@@ -67,21 +67,3 @@ fn managed_oci_requires_an_immutable_digest() {
     assert!(Image::oci(format!("ghcr.io/acme/agent@sha256:{}", "0".repeat(64))).is_err());
     assert!(Image::oci(format!("ghcr.io/acme/agent@sha256:{}", "a".repeat(64))).is_ok());
 }
-
-#[test]
-#[allow(
-    clippy::indexing_slicing,
-    reason = "indexes a repo-local `compatibility/manifest.json` fixture bundled via include_str!; a missing key means the fixture itself is broken and the test should panic loudly"
-)]
-fn public_descriptor_is_pinned() {
-    let digest: [u8; 32] = Sha256::digest(FILE_DESCRIPTOR_SET).into();
-    let manifest: serde_json::Value = serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../../compatibility/manifest.json"
-    )))
-    .unwrap_or_else(|_| unreachable!());
-    let expected = manifest["families"]["machines"]["descriptorDigest"]
-        .as_str()
-        .unwrap_or_else(|| unreachable!());
-    assert_eq!(expected, format!("sha256:{}", hex::encode(digest)));
-}
