@@ -83,10 +83,38 @@ fn json_equivalent(left: &Value, right: &Value) -> bool {
 }
 
 async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
+    let tree = Files {
+        input: Vec::new(),
+        cycle: false,
+    };
+    let specifier = serde_json::to_string(&String::from_utf8_lossy(bytes))
+        .map_err(|error| error.to_string())?;
+    let literal = format!("export default {specifier};");
+    let dynamic = format!("export default import({specifier});");
     // Parse arbitrary programs without executing their untrusted control flow.
     // Accepted TypeScript must emit JavaScript admitted by the same production
     // parser, with the same resolved imports after type erasure.
     for path in ["raw.ts", "raw.js"] {
+        strip(path, literal.as_bytes())
+            .map_err(|error| format!("encoded source literal admission: {error}"))?;
+        // The same valid literal becomes an import specifier. Both public
+        // surfaces must refuse that syntax before entering the engine, even
+        // when executing it would independently fail to find its module.
+        for surface in [Surface::Compose, Surface::Data] {
+            let entries = VM_ENTRIES.get();
+            let refusal = evaluate_cached(
+                path,
+                dynamic.as_bytes(),
+                &tree,
+                &Value::Null,
+                surface,
+                &Cache::default(),
+            )
+            .await;
+            if !matches!(refusal, Err(Error::Invalid(_))) || VM_ENTRIES.get() != entries {
+                return Err("dynamic import escaped source admission".into());
+            }
+        }
         if let Ok(module) = strip(path, bytes) {
             let emitted = strip("raw.js", module.script.as_bytes())
                 .map_err(|error| format!("emitted JavaScript admission: {error}"))?;
@@ -96,10 +124,6 @@ async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
         }
     }
     let expected = serde_json::from_slice::<Value>(bytes);
-    let tree = Files {
-        input: Vec::new(),
-        cycle: false,
-    };
     let actual = evaluate_cached(
         "raw.json",
         bytes,
