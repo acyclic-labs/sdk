@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import * as sourcePolicy from './source-policy/index.mjs';
-import {newProjectPollingSites, projectPollingSites} from './source-policy/project.mjs';
-const {newPollingSites, pollingSites, pollingUnit, SourceSyntaxError, supportedSource, validateDispositions} = sourcePolicy;
+import * as projectPolicy from './source-policy/project.mjs';
+const {pollingSites, supportedSource} = sourcePolicy;
 
 // Original host/parser captures, with provenance retained in each source file.
 export const sourceCorpus = [
@@ -12,6 +12,19 @@ export const sourceCorpus = [
  const {records} = JSON.parse(readFileSync(new URL('./fixtures/no-polling/' + capture + '.json', import.meta.url), 'utf8'));
  return records.map(record => ({file, source: record.source ?? record.word}));
 });
+
+// Authored graph seeds, shared by checkout and installed-module conformance.
+export const projectCorpus = [
+ ...Array.from({length: 8}, (_, byte) => Uint8Array.of(byte, 255 - byte)),
+ ...['null', '[]', '{}', '"ordinary"', '{"name":"@original/package"}',
+  'export class Original { constructor() { this.ready = 1; } get value() { return Bun.sleep(1); } set value(next) { this.ready = next; } }',
+  'export const Original = class Named { static value = Bun.sleep(1); };',
+  'export function first() { return second(); } function second() { return first(); }',
+  'export const {first: [value, ...rest]} = {first: [Bun.sleep(1)]}; export {value, rest};',
+  '/** @typedef {{ready: number}} Original */ export const value = 1;',
+  "export * from './helper.js'; export {default as original} from './helper.js';",
+ ].map(source => Buffer.from(source)),
+];
 
 // Byte-oriented source mutations, not captured tool output. Exercise the real
 // tokenizer: decoding must preserve raw candidates and expose escaped ones.
@@ -87,7 +100,9 @@ export function fuzzSource(file, data, api = sourcePolicy) {
 
 // Exercise the shipped graph and exact-disposition boundary, not a graph model.
 // The byte seed varies bindings, occurrence counts and the original source.
-export function fuzzProject(data, {project = projectPollingSites, validate = validateDispositions} = {}) {
+export function fuzzProject(data, {source: api = sourcePolicy, graph = projectPolicy} = {}) {
+ const {newPollingSites, pollingSites, pollingUnit, SourceSyntaxError, validateDispositions: validate} = api;
+ const {projectPollingSites: project, newProjectPollingSites} = graph;
  const variant = (data[0] ?? 0) % 8;
  const word = 'value' + Buffer.from(data).toString('hex');
  const ordered = values => values.map(site => JSON.stringify(site)).sort();
@@ -192,7 +207,7 @@ export function fuzzProject(data, {project = projectPollingSites, validate = val
  assert.ok(project(after).some(site => site.file === caller && site.kind === 'polling-helper-reference'), 'lost dependency');
  assert.ok(newProjectPollingSites(before, after).some(site => site.file === caller), 'new reference inherited approval');
  assert.deepEqual(newProjectPollingSites(after, after), []);
- const accepted = projectPollingSites(after).map(site => ({file: site.file, fingerprint: site.fingerprint,
+ const accepted = project(after).map(site => ({file: site.file, fingerprint: site.fingerprint,
   classification: 'caller-deadline', producer: 'original caller deadline', terminal: 'original cancellation',
   negativeControl: 'change the original source or remove its producer'}));
  validate(accepted);
@@ -245,6 +260,10 @@ export function fuzzProject(data, {project = projectPollingSites, validate = val
   for (const value of ['', null, false, 0, [], [accepted[0][field]], {}]) {
    const invalid = {...accepted[0], [field]: value};
    assert.throws(() => validate([invalid]), /invalid exact/, 'invalid disposition field: ' + field);
+   assert.throws(() => newProjectPollingSites(new Map(), after, [invalid]), /invalid exact/,
+    'invalid project disposition field: ' + field);
+   assert.throws(() => newPollingSites(caller, '', localSource, [invalid]), /invalid exact/,
+    'invalid source disposition field: ' + field);
   }
  }
  assert.throws(() => validate([accepted[0], accepted[0]]), /duplicate/);

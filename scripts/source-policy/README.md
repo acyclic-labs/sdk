@@ -54,6 +54,9 @@ report visited branches; the report does not establish runtime liveness.
 `fuzzSource(file, bytes, api)` also accepts the actual exports of a separately
 loaded package or source mutation. Its diagnostics, coordinates and unchanged
 source check all use that same module, including its `SourceSyntaxError` class.
+`fuzzProject(bytes, {source, graph})` takes the matching source and project module
+exports; dependency deltas, disposition admission and typed refusals all use that
+pair. Its authored `projectCorpus` seeds are shared with installed-module checks.
 
 `@acyclic-labs/source-policy/git` exports `gitBatchSources(files, buffer)` for
 callers that already read `git cat-file --batch`. Supply the unique file keys in

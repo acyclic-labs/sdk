@@ -7,10 +7,15 @@ import * as targets from './no-polling.fuzz.mjs';
 async function mutant(file, original, replacement) {
  const source = readFileSync(new URL(file, import.meta.url), 'utf8');
  assert.equal(source.split(original).length, 2, 'mutation must match one production branch');
- const mutated = source.replace(original, replacement)
-  .replace("from 'typescript-parser'", 'from ' + JSON.stringify(import.meta.resolve('typescript-parser')))
-  .replace("from './index.mjs'", 'from ' + JSON.stringify(new URL('./source-policy/index.mjs', import.meta.url).href));
- return import('data:text/javascript;base64,' + Buffer.from(mutated).toString('base64'));
+ const mutated = source.replace(original, replacement);
+ const moduleUrl = text => 'data:text/javascript;base64,' + Buffer.from(text
+  .replace("from 'typescript-parser'", 'from ' + JSON.stringify(import.meta.resolve('typescript-parser')))).toString('base64');
+ const sourceUrl = file.endsWith('/index.mjs') ? moduleUrl(mutated)
+  : new URL('./source-policy/index.mjs', import.meta.url).href;
+ const graphSource = file.endsWith('/project.mjs') ? mutated
+  : readFileSync(new URL('./source-policy/project.mjs', import.meta.url), 'utf8');
+ return {source: await import(sourceUrl), graph: await import(moduleUrl(graphSource
+  .replace("from './index.mjs'", 'from ' + JSON.stringify(sourceUrl))))};
 }
 
 test('source fuzz oracles reject planted decoder, graph and disposition defects', async () => {
@@ -25,26 +30,30 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
    "sites.push({file: 'foreign.ts', line: t.line, kind, fingerprint, start: t.start});", 'control.ts', 'Bun.sleep(1);'],
  ]) {
   const parser = await mutant('./source-policy/index.mjs', original, replacement);
-  assert.throws(() => targets.fuzzSource(file, Buffer.from(source), parser), {name: 'AssertionError'});
+  assert.throws(() => targets.fuzzSource(file, Buffer.from(source), parser.source), {name: 'AssertionError'});
  }
  const lexer = await mutant('./source-policy/index.mjs', 'embeddedCandidate(spelling) ?', 'false ?');
- assert.throws(() => targets.fuzz(Buffer.from('original'), lexer.pollingSites), {name: 'AssertionError'});
+ assert.throws(() => targets.fuzz(Buffer.from('original'), lexer.source.pollingSites), {name: 'AssertionError'});
  const graph = await mutant('./source-policy/project.mjs',
   'if (!unresolved && !component?.hazardous) continue;', 'if (!unresolved) continue;');
- assert.throws(() => targets.fuzzProject(Buffer.from([0]), {project: graph.projectPollingSites}),
+ assert.throws(() => targets.fuzzProject(Buffer.from([0]), graph),
   {name: 'AssertionError', message: /lost dependency/});
  const collation = await mutant('./source-policy/project.mjs',
   'a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0', 'a[0].localeCompare(b[0])');
- assert.throws(() => targets.fuzzProject(Buffer.from([0]), {project: collation.projectPollingSites}),
+ assert.throws(() => targets.fuzzProject(Buffer.from([0]), collation),
   {name: 'AssertionError', message: /snapshot enumeration/});
+ const baseline = await mutant('./source-policy/project.mjs',
+  'projectPollingSites(before, {historical: true})', '[]');
+ assert.throws(() => targets.fuzzProject(Buffer.from([0]), baseline),
+  {name: 'AssertionError', message: /shadowed source changed the exact runtime dependency/});
  const resolution = await mutant('./source-policy/project.mjs',
   'ts.resolveModuleName(name, containingFile, options, host, moduleCache).resolvedModule',
   "name.endsWith('/helper') ? undefined : ts.resolveModuleName(name, containingFile, options, host, moduleCache).resolvedModule");
- assert.throws(() => targets.fuzzProject(Buffer.from([0]), {project: resolution.projectPollingSites}),
+ assert.throws(() => targets.fuzzProject(Buffer.from([0]), resolution),
   {name: 'AssertionError', message: /relative source resolution/});
  const declarations = await mutant('./source-policy/project.mjs',
   'script(file) && !unit.parsed?.isDeclarationFile', 'script(file)');
- assert.throws(() => targets.fuzzProject(Buffer.from([0]), {project: declarations.projectPollingSites}),
+ assert.throws(() => targets.fuzzProject(Buffer.from([0]), declarations),
   {name: 'AssertionError', message: /declaration hid executable producer/});
  for (const [original, replacement, seed, message] of [
   ['ts.isImportEqualsDeclaration(node) && !node.isTypeOnly', 'false', 1, /lost runtime module initialization/],
@@ -53,37 +62,42 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
   ['ts.isImportEqualsDeclaration(node) && !node.isTypeOnly', 'ts.isImportEqualsDeclaration(node)', 0, /type-only import executed/],
  ]) {
   const load = await mutant('./source-policy/project.mjs', original, replacement);
-  assert.throws(() => targets.fuzzProject(Buffer.from([seed]), {project: load.projectPollingSites}),
+  assert.throws(() => targets.fuzzProject(Buffer.from([seed]), load),
    {name: 'AssertionError', message});
  }
  const policy = await mutant('./source-policy/index.mjs',
   "|| typeof item.producer !== 'string' || !item.producer.trim()", '|| false');
- assert.throws(() => targets.fuzzProject(Buffer.from([0]), {validate: policy.validateDispositions}),
+ assert.throws(() => targets.fuzzProject(Buffer.from([0]), policy),
   {name: 'AssertionError', message: /Missing expected exception/});
  const fingerprint = await mutant('./source-policy/index.mjs',
   "typeof item.fingerprint !== 'string' || ", '');
- assert.throws(() => targets.fuzzProject(Buffer.from([0]), {validate: fingerprint.validateDispositions}),
+ assert.throws(() => targets.fuzzProject(Buffer.from([0]), fingerprint),
   {name: 'AssertionError', message: /invalid disposition field: fingerprint/});
+ for (const [file, message] of [['project.mjs', /invalid project disposition field/],
+  ['index.mjs', /invalid source disposition field/]]) {
+  const admission = await mutant('./source-policy/' + file, 'validateDispositions(dispositions, policy);', '');
+  assert.throws(() => targets.fuzzProject(Buffer.from([0]), admission), {name: 'AssertionError', message});
+ }
  const manifest = await mutant('./source-policy/project.mjs',
   'throw new SourceSyntaxError(`${file}: ${error.message}`);', 'throw new Error(`${file}: ${error.message}`);');
- assert.throws(() => targets.fuzzProject(Buffer.from([0]), {project: manifest.projectPollingSites}),
+ assert.throws(() => targets.fuzzProject(Buffer.from([0]), manifest),
   {name: 'AssertionError', message: /SourceSyntaxError/});
  const layout = await mutant('./source-policy/project.mjs',
   'if (/(?:^|\\/)package\\.json$/.test(file)) {',
   'if (/^typescript\\/packages\\/[^/]+\\/package\\.json$/.test(file)) {');
- assert.throws(() => targets.fuzzProject(Buffer.from([0]), {project: layout.projectPollingSites}),
+ assert.throws(() => targets.fuzzProject(Buffer.from([0]), layout),
   {name: 'AssertionError', message: /repository layout/});
  const current = await mutant('./source-policy/project.mjs',
   'if (historical && error instanceof SourceSyntaxError) continue;',
   'if (error instanceof SourceSyntaxError) continue;');
- assert.throws(() => targets.fuzzProject(Buffer.from('}'), {project: current.projectPollingSites}),
+ assert.throws(() => targets.fuzzProject(Buffer.from('}'), current),
   {name: 'AssertionError', message: /Missing expected exception \(SourceSyntaxError\)/});
  const causes = await mutant('./source-policy/project.mjs',
   'new AggregateError(errors, errors.map', 'new AggregateError(errors.slice(1), errors.map');
- assert.throws(() => targets.fuzzProject(Buffer.from([0]), {project: causes.projectPollingSites}),
+ assert.throws(() => targets.fuzzProject(Buffer.from([0]), causes),
   {name: 'AssertionError', message: /malformed source causes/});
  const sqlite = await mutant('./source-policy/index.mjs', '(?:sqlite3_)?busy_(?:timeout|handler)|', '');
- assert.throws(() => targets.fuzz(Buffer.from('original'), sqlite.pollingSites),
+ assert.throws(() => targets.fuzz(Buffer.from('original'), sqlite.source.pollingSites),
   {name: 'AssertionError', message: /connection\.busy_timeout/});
 });
 
@@ -99,14 +113,5 @@ test('raw source and project fuzz targets replay captured corpus and byte mutati
    targets.fuzzSource('control.' + extension, Buffer.from(seed));
   }
  }
- for (let byte = 0; byte < 8; byte++) targets.fuzzProject(Uint8Array.of(byte, 255 - byte));
- for (const json of ['null', '[]', '{}', '"ordinary"', '{"name":"@original/package"}']) targets.fuzzProject(Buffer.from(json));
- for (const source of [
-  'export class Original { constructor() { this.ready = 1; } get value() { return Bun.sleep(1); } set value(next) { this.ready = next; } }',
-  'export const Original = class Named { static value = Bun.sleep(1); };',
-  'export function first() { return second(); } function second() { return first(); }',
-  'export const {first: [value, ...rest]} = {first: [Bun.sleep(1)]}; export {value, rest};',
-  '/** @typedef {{ready: number}} Original */ export const value = 1;',
-  "export * from './helper.js'; export {default as original} from './helper.js';",
- ]) targets.fuzzProject(Buffer.from(source));
+ for (const data of targets.projectCorpus) targets.fuzzProject(data);
 });
