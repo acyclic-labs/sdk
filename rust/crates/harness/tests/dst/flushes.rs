@@ -23,16 +23,13 @@ fn flushes(writes: &[DurableWrite]) -> (usize, usize) {
     })
 }
 
-/// Opens a harness and settles three reply turns, returning the durable
-/// trace length before the second and third turns and after the third. With
-/// `extra`, the last window also holds one eagerly durable commit on the
-/// harness's own log.
+/// Settles five replies on one hosted actor, then commits one independent
+/// record. Each cut follows the same actor's committed settlement.
 fn turns(
     schedule: acyclic_native_runtime::testing::Schedule,
     directory: &Path,
-    replies: [ScriptedTurn; 3],
-    extra: bool,
-) -> EntryFuture<'_, Result<[usize; 3]>> {
+    replies: [ScriptedTurn; 5],
+) -> EntryFuture<'_, Result<[usize; 6]>> {
     entry(async move {
         let reference =
             ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
@@ -63,38 +60,34 @@ fn turns(
             .state_directory(directory.join("state"));
         let harness = Arc::new(entry(LocalHarness::open(config)).await?);
         let (agents, root) = entry(harness.agents()).await?;
-        let mut cuts = [0; 3];
+        let mut cuts = [0; 6];
         for (turn, expected) in expected.iter().enumerate() {
-            if turn > 0 {
-                cuts[turn - 1] = schedule.durable_writes().len();
-            }
             prompt(&harness, &format!("turn-{turn}"), "reply", expected).await?;
             // The reply is observable before its serving delivery retires.
             // Wait on that same actor's delivery lock and committed checkpoint,
             // while its ordinary continuous runtime remains running.
             entry(agents.drain(root)).await.map_err(storage)?;
+            cuts[turn] = schedule.durable_writes().len();
         }
-        if extra {
-            use acyclic_stream::StreamProviderExt as _;
-            agents
-                .provider()
-                .append(acyclic_stream::AppendRequest {
-                    path: acyclic_stream::StreamPath::new("dst/extra").map_err(storage)?,
-                    records: vec!["extra".into()],
-                    if_tail: None,
-                    idempotency_key: acyclic_stream::IdempotencyKey::unique(),
-                })
-                .await
-                .map_err(storage)?;
-        }
-        cuts[2] = schedule.durable_writes().len();
+        use acyclic_stream::StreamProviderExt as _;
+        agents
+            .provider()
+            .append(acyclic_stream::AppendRequest {
+                path: acyclic_stream::StreamPath::new("dst/extra").map_err(storage)?,
+                records: vec!["extra".into()],
+                if_tail: None,
+                idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+            })
+            .await
+            .map_err(storage)?;
+        cuts[5] = schedule.durable_writes().len();
         Ok(cuts)
     })
 }
 
-/// Matching second and third settlement windows. Teardown still drains every
-/// accepted worker, but belongs to neither reply. Release each original boundary.
-fn measure(replies: [ScriptedTurn; 3], extra: bool) -> Result<[(usize, usize); 2]> {
+/// Observe four settled reply windows and the independent commit. Teardown
+/// drains every accepted worker outside those windows.
+fn measure(replies: [ScriptedTurn; 5]) -> Result<[(usize, usize); 5]> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -108,15 +101,14 @@ fn measure(replies: [ScriptedTurn; 3], extra: bool) -> Result<[(usize, usize); 2
             }
         });
         let cuts = schedule
-            .scope(turns(schedule.clone(), directory.path(), replies, extra))
+            .scope(turns(schedule.clone(), directory.path(), replies))
             .await?;
         schedule.drained().await;
         releaser.abort();
         let writes = schedule.durable_writes();
-        Ok([
-            flushes(&writes[cuts[0]..cuts[1]]),
-            flushes(&writes[cuts[1]..cuts[2]]),
-        ])
+        Ok(std::array::from_fn(|index| {
+            flushes(&writes[cuts[index]..cuts[index + 1]])
+        }))
     })
 }
 
@@ -126,15 +118,6 @@ fn text(reply: &str) -> ScriptedTurn {
 
 #[test]
 fn reply_publication_drains_follow_commits_and_not_history_or_event_count() -> Result<()> {
-    let [second, third] = measure([text("one"), text("two"), text("three")], false)?;
-    // History length never adds a flush.
-    assert_eq!(second, third, "reply-turn flushes grew with history");
-    let [_, extra] = measure([text("one"), text("two"), text("three")], true)?;
-    assert_eq!(
-        extra,
-        (third.0, third.1 + 1),
-        "the oracle missed an eager commit's drain"
-    );
     // Equal text in 2 or 32 content deltas; only the event count differs.
     let streamed = |parts: usize| {
         let mut events: Vec<ScriptedEvent> = (0..parts)
@@ -154,7 +137,19 @@ fn reply_publication_drains_follow_commits_and_not_history_or_event_count() -> R
         }));
         ScriptedTurn::Events(events)
     };
-    let [short, long] = measure([text("one"), streamed(2), streamed(32)], false)?;
+    let [second, third, short, long, extra] = measure([
+        text("one"),
+        text("two"),
+        text("three"),
+        streamed(2),
+        streamed(32),
+    ])?;
+    assert_eq!(second, third, "reply-turn flushes grew with history");
+    assert_eq!(
+        extra,
+        (0, 1),
+        "the oracle missed an independent commit's drain"
+    );
     assert_eq!(short.1, long.1, "each streamed event paid its own drain");
     assert_eq!(
         short.0 + 30,
