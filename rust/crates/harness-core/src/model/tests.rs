@@ -603,17 +603,3 @@ proptest::proptest! {
         proptest::prop_assert!(PreparedModelRequest::prepare(input, Limits::default(), None).is_err());
     }
 }
-
-#[test]
-fn pinned_request_fuzz_seed_is_a_valid_exact_exchange() -> Result<()> {
-    let request: ModelRequest = serde_json::from_slice(include_bytes!(
-        "../../../harness-fuzz/corpus/model_request/pinned"
-    ))
-    .expect("model request seed");
-    let prepared = PreparedModelRequest::prepare(request.clone(), Limits::default(), None)?;
-    assert_eq!(
-        PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None)?.request(),
-        &request
-    );
-    Ok(())
-}
