@@ -12,25 +12,6 @@ fn joined<T>(worker: thread::JoinHandle<T>) -> T {
         .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
-fn checked(scenario: fn(bool), diagnostic: &str) {
-    loom::model(move || scenario(false));
-    controlled(|| loom::model(move || scenario(true)), diagnostic);
-}
-
-fn controlled(control: impl FnOnce() + std::panic::UnwindSafe, diagnostic: &str) {
-    let failure = std::panic::catch_unwind(control)
-        .expect_err("projection negative control escaped the model");
-    let message = failure
-        .downcast_ref::<String>()
-        .map(String::as_str)
-        .or_else(|| failure.downcast_ref::<&str>().copied())
-        .unwrap_or("");
-    assert!(
-        message.contains(diagnostic),
-        "unexpected control: {message}"
-    );
-}
-
 fn concurrent_initializers() {
     let slot = StateArc::new(AsyncMutex::new(None));
     // A filesystem operation is a leaf; it never reacquires the projection.
