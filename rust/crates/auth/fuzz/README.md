@@ -139,3 +139,10 @@ disjointness. `python3 negative-control.py addressing-resource` and
 `addressing-actor` swap fields in the actual production decoders; the original
 writer captures `resource` and `actor` must fail their unchanged exact-byte
 assertions. No reference decoder or alternative wire format is introduced.
+
+For each admitted binary input, the shared oracle also requires a trailing byte
+and a truncated final field to return `IdentityError::Malformed`. The existing
+framing examples delegate those assertions and retain their full-prefix checks.
+`python3 negative-control.py addressing-resource-tail` and
+`addressing-actor-tail` remove each production decoder's trailing-byte guard;
+the same original writer captures must trip the unchanged framing assertion.
