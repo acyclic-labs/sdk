@@ -4,6 +4,33 @@ use acyclic_harness_client::{AgentId, AgentPath, EventCursor, EventProjection, E
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::Value;
 
+fn accepted_cursor(state: &mut EventProjection, bytes: &[u8]) {
+    let before = serde_json::to_value(&*state).unwrap();
+    assert!(!state.accepted("caller", None));
+    assert_eq!(serde_json::to_value(&*state).unwrap(), before);
+    let resource = before["resources"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .next()
+        .map_or("caller", String::as_str);
+    // The same source must retain its changed opaque bytes and position;
+    // every other source and the execution selection remain untouched.
+    let cursor = EventCursor {
+        next: state.cursor(resource).next ^ 1,
+        opaque: STANDARD.encode(bytes),
+    };
+    assert!(
+        state.accepted(resource, Some(cursor.clone())),
+        "a changed source cursor must be retained"
+    );
+    let mut expected = before.clone();
+    expected["resources"][resource] = serde_json::to_value(&cursor).unwrap();
+    assert_eq!(serde_json::to_value(&*state).unwrap(), expected);
+    assert!(!state.accepted(resource, Some(cursor)));
+    assert_eq!(serde_json::to_value(&*state).unwrap(), expected);
+}
+
 fn check(bytes: &[u8]) {
     if let Ok(cursor) = serde_json::from_slice::<EventCursor>(bytes) {
         assert_eq!(
@@ -48,7 +75,9 @@ fn check(bytes: &[u8]) {
     );
     let names: Vec<_> = resources.keys().cloned().collect();
     assert!(state.validate_sources(&names).is_ok());
-    assert_eq!(state.validate_sources(&[]).is_ok(), resources.is_empty());
+    if !names.is_empty() {
+        assert!(state.validate_sources(&names[1..]).is_err());
+    }
     let selected = &value["execution"];
     let fallback = AgentPath::root(&AgentId::from_bytes([13; 16]));
     let (agent, previous) = if selected.is_null() {
@@ -71,23 +100,34 @@ fn check(bytes: &[u8]) {
     for (to, from) in number.iter_mut().zip(bytes) {
         *to = *from;
     }
-    let next = ExecutionPosition {
-        input: u64::from_le_bytes(number),
-        after: bytes.len() as u64,
-    };
-    let expected = (next.input, next.after) >= (previous.input, previous.after);
-    match state.accepted_execution(&agent, next) {
-        Ok(changed) => {
-            assert!(expected, "execution cursor moved backwards");
-            assert_eq!(changed, selected.is_null() || next != previous);
-            assert_eq!(state.execution_position(&agent).unwrap(), next);
-            assert!(!state.accepted_execution(&agent, next).unwrap());
-        }
-        Err(_) => {
-            assert!(!expected, "a forward execution cursor was refused");
-            assert_eq!(serde_json::to_value(&state).unwrap(), value);
+    let checkpoint = serde_json::to_vec(&state).unwrap();
+    // JSON prefixes cannot generate all positions. Exercise both dimensions
+    // around the original position without replacing the production reducer.
+    for (input, after) in [
+        (u64::from_le_bytes(number), bytes.len() as u64),
+        (previous.input, previous.after),
+        (previous.input, previous.after.saturating_sub(1)),
+        (previous.input, previous.after.saturating_add(1)),
+        (previous.input.saturating_sub(1), u64::MAX),
+        (previous.input.saturating_add(1), 0),
+    ] {
+        let next = ExecutionPosition { input, after };
+        let mut candidate: EventProjection = serde_json::from_slice(&checkpoint).unwrap();
+        let expected = (next.input, next.after) >= (previous.input, previous.after);
+        match candidate.accepted_execution(&agent, next) {
+            Ok(changed) => {
+                assert!(expected, "execution cursor moved backwards");
+                assert_eq!(changed, selected.is_null() || next != previous);
+                assert_eq!(candidate.execution_position(&agent).unwrap(), next);
+                assert!(!candidate.accepted_execution(&agent, next).unwrap());
+            }
+            Err(_) => {
+                assert!(!expected, "a forward execution cursor was refused");
+                assert_eq!(serde_json::to_value(&candidate).unwrap(), value);
+            }
         }
     }
+    accepted_cursor(&mut state, bytes);
     // Decode the actual persisted writer, preserving every admitted field.
     let encoded = serde_json::to_vec(&state).unwrap();
     let restored: EventProjection = serde_json::from_slice(&encoded).unwrap();
@@ -139,6 +179,18 @@ fn writer_corpus() -> Vec<(&'static str, Vec<u8>)> {
     value["version"] = Value::from(1);
     value["resources"][&resource]["opaque"] = Value::from("!");
     seeds.push(("invalid-opaque", serde_json::to_vec(&value).unwrap()));
+    let other = AgentPath::root(&AgentId::from_bytes([14; 16]));
+    let other = acyclic_stream::wire_codec::session::stream_resource(
+        other.conversation().unwrap().as_str(),
+    );
+    assert!(state.accepted(
+        &other,
+        Some(EventCursor {
+            next: 0,
+            opaque: STANDARD.encode([255, 0, 1]),
+        }),
+    ));
+    seeds.push(("multiple-resource-state", encode(&state)));
     seeds
 }
 
