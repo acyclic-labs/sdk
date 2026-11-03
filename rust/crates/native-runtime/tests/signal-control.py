@@ -12,9 +12,9 @@ import sys
 
 
 def main():
-    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--ownership")):
-        raise RuntimeError("arguments: expected evidence directory and optional model; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--ownership]")
-    mode = sys.argv[2] if len(sys.argv) == 3 else "--signal"
+    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--ownership")):
+        raise RuntimeError("arguments: expected evidence directory, optional model and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--ownership [mutation]]")
+    mode = sys.argv[2] if len(sys.argv) >= 3 else "--signal"
     root = Path(__file__).resolve().parents[4]
     output = Path(sys.argv[1]).resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -105,7 +105,14 @@ qualifyOwnershipLoom((command, args, options) => spawnSync(command,
             ("release-order", ownership,
              b"struct SharedOwner<Owner, Fence> {\n", b"struct SharedOwner<Owner, Fence> {\n    release: ReleaseSignal,\n",
              "release preceded physical owner or retained-fence cleanup", "release_waits_for_the_actual_owner_and_retained_fence"),
+            ("async-release-wake", ownership,
+             b"self.0.asynchronous.notify_waiters();", b"// omitted original asynchronous notification",
+             "deadlock; threads =", "release_waits_for_the_actual_owner_and_retained_fence"),
         ]
+    if len(sys.argv) == 4:
+        mutations = [mutation for mutation in mutations if mutation[0] == sys.argv[3]]
+        if not mutations:
+            raise RuntimeError("selection: unknown mutation; recovery: select a retained mutation name from this controller")
     try:
         for mutation in mutations:
             label, path, before, after, failure, *test = mutation
