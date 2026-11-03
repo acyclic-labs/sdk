@@ -180,6 +180,13 @@ additional_controls = {
             "null",
             b"native input read failure must retain its OS error",
         ),
+        (
+            "rust/crates/harness/src/client/commands.rs",
+            b"if spec.arguments != expected {",
+            b"if false {",
+            "catalog-installed",
+            b"catalog argument-shape-",
+        ),
     ],
     "command_result": [
         (
