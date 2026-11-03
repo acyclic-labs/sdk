@@ -1,0 +1,16 @@
+diff --git a/rust/crates/machines/src/provider/journal.rs b/rust/crates/machines/src/provider/journal.rs
+index b47faa4ed2..e5bbac67e0 100644
+--- a/rust/crates/machines/src/provider/journal.rs
++++ b/rust/crates/machines/src/provider/journal.rs
+@@ -83,9 +83,9 @@ impl CallSnapshot {
+         }
+     }
+ 
+-    fn outcome(self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
++    fn outcome(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
+         match self.journal.outcome() {
+-            Some(call::Outcome::Ok(_)) => self.completed.ok_or_else(|| {
++            Some(call::Outcome::Ok(_)) => self.completed.clone().ok_or_else(|| {
+                 ProviderError::Rejected("Machine call terminal has no decoded completion".into())
+             }),
+             Some(call::Outcome::Cancelled(_)) => Err(ProviderError::Cancelled),

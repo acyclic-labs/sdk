@@ -889,6 +889,20 @@ original observations to the same `MachineState` semantic oracle. The public
 writer/reader must preserve every original field; arbitrary admitted packets
 must retain their own identity and reject a foreign caller identity.
 
+The Journal recovery property measures the original decoded completion handoff
+at three payload sizes. It checks zero allocation, original pointer identity,
+public recovery and duplicate admission without reentering physical work. Its
+retained control restores the original production clone; the unchanged property
+must fail at `recovery handoff must not allocate or copy the original decoded
+body`. Exact restoration must pass the same property. This measures the owned
+handoff; initial completion decoding still reads the full body.
+
+```sh
+git apply rust/codec-fuzz/negative-controls/machines-recovery-clone.patch
+cargo test --locked -p acyclic-machines --no-default-features --features grpc,local,test-support --lib provider::journal::tests::machines_call_recovery_transfers_original_decoded_body -- --exact --nocapture
+git apply -R rust/codec-fuzz/negative-controls/machines-recovery-clone.patch
+```
+
 ```sh
 git apply rust/codec-fuzz/negative-controls/machines-observation-state.patch
 cargo test --locked -p acyclic-machines --no-default-features --features grpc,test-support --lib grpc::tests::result_pages::machines_call_remote_pages_keep_original_cut_credit_and_observations -- --exact --nocapture
