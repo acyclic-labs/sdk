@@ -79,7 +79,6 @@ async fn evaluate_cached(
     let base = crate::contract::canonical_json_bytes(base)?;
     let mut key = blake3::Hasher::new_derive_key(VERSION);
     key.update(&digest);
-    key.update(blake3::hash(super::typescript().as_bytes()).as_bytes());
     key.update(&[u8::from(surface == Surface::Data)]);
     key.update(&base);
     let key: [u8; 32] = key.finalize().into();
