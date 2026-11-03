@@ -3,6 +3,8 @@ use super::allocation::KernelAccounting;
 use super::codec::ReadAllocationStep;
 use super::file_read::OriginalReadAccounting;
 use super::*;
+use crate::foundation::{Digest, FileId, GenerationId, VolumeId};
+use crate::storage::{ObjectId, ObjectKind};
 use crate::{CancellationToken, FsError, WorkBudget, WorkCounters};
 
 /// Re-encodes an admitted value and requires the encoding to decode to it.
@@ -380,8 +382,6 @@ fn check_inner<const OMIT_COMPLETION: bool, const PLANTED: bool>(input: &[u8]) -
 #[cfg(not(loom))]
 mod tests {
     use super::*;
-    use crate::foundation::{Digest, FileId, GenerationId, VolumeId};
-    use crate::storage::{ObjectId, ObjectKind};
     use proptest::prelude::*;
 
     proptest! {
