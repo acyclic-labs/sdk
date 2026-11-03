@@ -3,6 +3,8 @@ use super::*;
 use acyclic_native_runtime::host_command;
 use std::fs;
 
+mod marketplace;
+
 pub(super) fn run(args: &[String]) -> Result<()> {
     let command = args
         .first()
@@ -240,45 +242,11 @@ fn codex_output(args: &[&str]) -> Result<std::process::Output> {
 /// Discovery is read-only. Native marketplace add rewrites configuration even
 /// for an existing source, so it cannot serve as the admission check.
 fn codex_marketplace(package: &Path) -> Result<bool> {
-    let recovery = "recovery=codex plugin marketplace list --json";
+    let recovery = marketplace::RECOVERY;
     let output = codex_output(&["plugin", "marketplace", "list", "--json"])?;
-    let listed: Value = serde_json::from_slice(&output.stdout)
-        .map_err(|error| format!("step=decode Codex marketplaces: {error}; {recovery}"))?;
-    let entries = listed
-        .get("marketplaces")
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            format!("step=admit Codex marketplaces: marketplace list absent; {recovery}")
-        })?;
-    let mut selected = None;
-    for entry in entries {
-        let name = entry.get("name").and_then(Value::as_str).ok_or_else(|| {
-            format!("step=admit Codex marketplace: native marketplace name absent; {recovery}")
-        })?;
-        if name == "acyclic" && selected.replace(entry).is_some() {
-            return Err(format!(
-                "step=admit Codex marketplace: NATIVE_MARKETPLACE_AMBIGUOUS; {recovery}"
-            )
-            .into());
-        }
-    }
-    let Some(entry) = selected else {
+    let listed = marketplace::Marketplaces::parse(&output.stdout)?;
+    let Some((root, original)) = listed.local_source()? else {
         return Ok(false);
-    };
-    let source = entry.get("marketplaceSource");
-    let root = entry.get("root").and_then(Value::as_str);
-    let original = source
-        .and_then(|source| source.get("source"))
-        .and_then(Value::as_str);
-    let local = source
-        .and_then(|source| source.get("sourceType"))
-        .and_then(Value::as_str)
-        == Some("local");
-    let Some((root, original)) = root.zip(original).filter(|_| local) else {
-        return Err(format!(
-            "step=admit Codex marketplace: NATIVE_MARKETPLACE_SOURCE_UNAVAILABLE; {recovery}"
-        )
-        .into());
     };
     let original = if original == root {
         None

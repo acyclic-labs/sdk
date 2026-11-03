@@ -1,0 +1,15 @@
+{
+  "source_commit": "ce8b62dda594aade7c1457eeb2b0f9ba7e312205",
+  "host": "Codex 0.164.0",
+  "argv": ["plugin", "marketplace", "list", "--json"],
+  "exit_code": 0,
+  "signal": null,
+  "original_log_sha256": "059a710bf62c551819858ec11d44d737df3787827c6b64798bf23f62b2ed01b6",
+  "original_stdout_bytes": 314,
+  "original_stdout_sha256": "1e4e2006ef89ae8a33a2d7c9ab356f0ba64f2273f603d911993daefd486c9a6d",
+  "provenance": "Unchanged stdout recovered by decoding the enclosing original diagnostic string; original external recording retained separately",
+  "replay": "Supply original stdout as base64 in ACYCLIC_MARKETPLACE_CAPTURE; graphcoder-args-control.py native_marketplace stages it under target/native-marketplace-corpus",
+  "mutations": "Explicitly derived JSON field deletions/type changes, foreign name, duplicate registration, empty list and original byte-prefix truncations; these are mutations, not captured native responses",
+  "scope": "Original marketplace JSON and local source selection only; filesystem resolution and app-server frames require their own original evidence",
+  "qualification": "unrun; source branch coverage remains open"
+}
