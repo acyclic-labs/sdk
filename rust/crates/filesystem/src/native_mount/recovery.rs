@@ -296,6 +296,45 @@ impl NativeMountRecoveryOwner {
         original: &crate::NativeMaterializationWork,
         destination_source: RecoveryDestination,
     ) -> Result<Self, NativeMountError> {
+        let owner = Self::prepare(destination, original)?;
+        let result = {
+            let mut state = owner
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                state
+                    .as_mut()
+                    .ok_or(NativeMountError::ControlPending)?
+                    .acquire(
+                        &owner.shared.destination,
+                        destination_source,
+                        owner.shared._custody.work(),
+                    )
+            }))
+            .unwrap_or_else(|panic| {
+                Err(NativeMountError::DriverPanicked {
+                    operation: "administrative acquisition",
+                    panic: std::sync::Mutex::new(panic),
+                })
+            })
+        };
+        if let Err(error) = result {
+            // Constructor rejection waits for the physical acquisition prefix to retire.
+            wait_for_retirement(owner)?;
+            return Err(error);
+        }
+        Ok(owner)
+    }
+
+    // Drop construction's large state/reservation temporaries before entering
+    // the native acquisition path. Only the original compact owner crosses it.
+    #[inline(never)]
+    fn prepare(
+        destination: &Path,
+        original: &crate::NativeMaterializationWork,
+    ) -> Result<Self, NativeMountError> {
         let mut destination = crate::native_host::clone_path(destination, &mut &*original)?;
         destination
             .1
@@ -348,40 +387,11 @@ impl NativeMountRecoveryOwner {
         let worker = crate::sync::native::thread::Builder::new().spawn(move || {
             retire_recovery(worker);
         })?;
-        let owner = Self {
+        Ok(Self {
             shared,
             retirement: Some(retirement),
             worker: Some(worker),
-        };
-        let result = {
-            let mut state = owner
-                .shared
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                state
-                    .as_mut()
-                    .ok_or(NativeMountError::ControlPending)?
-                    .acquire(
-                        &owner.shared.destination,
-                        destination_source,
-                        owner.shared._custody.work(),
-                    )
-            }))
-            .unwrap_or_else(|panic| {
-                Err(NativeMountError::DriverPanicked {
-                    operation: "administrative acquisition",
-                    panic: std::sync::Mutex::new(panic),
-                })
-            })
-        };
-        if let Err(error) = result {
-            // Constructor rejection waits for the physical acquisition prefix to retire.
-            wait_for_retirement(owner)?;
-            return Err(error);
-        }
-        Ok(owner)
+        })
     }
 
     /// Returns the original identity and actual recovery state.
