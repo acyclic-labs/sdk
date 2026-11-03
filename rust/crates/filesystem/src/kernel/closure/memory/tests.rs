@@ -84,7 +84,28 @@ fn indexed_proof_membership_preserves_order_bounds_and_original_custody()
             map.position(FileId::from_bytes([0; 16]))?,
             Some(population as usize - 1)
         );
+        // Repeated successor lookup re-examines complete keys even though the
+        // caller consumes the entire index. Keep the original primitive as a
+        // negative control against the consuming node cursor.
+        let before = meter.work();
+        let mut after = None;
+        loop {
+            let next = meter.with_accounting(|accounting| {
+                let entry = match after {
+                    None => set.index.first(accounting)?,
+                    Some(key) => set.index.seek_after(key, accounting)?,
+                };
+                Ok(entry.map(|(key, _)| *key))
+            })?;
+            let Some(key) = next else { break };
+            after = Some(key);
+        }
+        let repeated_seek = meter.work().items_examined - before.items_examined;
+        let before = meter.work();
         let (objects, guard) = set.into_parts()?;
+        let consumed = meter.work().items_examined - before.items_examined;
+        assert!(consumed <= 6 * population);
+        assert!(repeated_seek > 6 * population);
         assert_eq!(objects.len(), population as usize);
         assert!(objects.iter().copied().eq((0..population).map(object)));
         drop(map);
@@ -151,8 +172,14 @@ fn indexed_proof_membership_preserves_order_bounds_and_original_custody()
     let before = meter.work();
     assert_eq!(map_get(&map, &FileId::from_bytes([0; 16]))?, Some(&1));
     assert!(meter.work().items_examined - before.items_examined <= 145);
+    let mut cancelled = ProofSet::new(&meter);
+    set_insert(&mut cancelled, object(0))?;
     cancellation.cancel();
     assert!(map_get(&map, &FileId::from_bytes([0; 16])).is_err());
+    assert!(matches!(
+        cancelled.into_parts(),
+        Err(crate::FsError::Cancelled(_))
+    ));
     drop(map);
     assert_eq!(live(&meter), baseline);
     drop(original);

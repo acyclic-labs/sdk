@@ -120,7 +120,7 @@ pub struct AccountingFact {
 /// One contiguous page ending at a pinned authority head.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AccountingPage {
-    /// Proven facts after the supplied cursor.
+    /// Proven facts after the supplied cursor, bounded by count and proof credit.
     pub facts: Vec<AccountingFact>,
     /// Exact cursor after the last fact.
     pub next: AccountingCursor,

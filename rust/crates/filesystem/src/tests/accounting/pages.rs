@@ -253,6 +253,31 @@ async fn a_later_publication_changes_the_watermark_without_changing_consumed_fac
     assert!(!second.complete);
     let last = page(&authority, &objects, id, second.next, 1).await?;
     assert!(last.complete);
+    let bounded = page(&authority, &objects, id, AccountingCursor::genesis(), 8).await?;
+    assert!(!bounded.facts.is_empty() && bounded.facts.len() < 4);
+    assert!(!bounded.complete);
+    bounded.work.verify(BUDGET)?;
+    assert_eq!(
+        bounded.next.sequence,
+        bounded.facts.last().unwrap().sequence
+    );
+    let mut insufficient = BUDGET;
+    insufficient.items_examined = last.work.items_examined.checked_sub(1).unwrap();
+    assert!(matches!(
+        accounting_page(
+            &authority,
+            &objects,
+            id,
+            second.next,
+            1,
+            insufficient,
+            &cancel
+        )
+        .await,
+        Err(AccountingError::Work(
+            crate::WorkError::BudgetExceeded { .. }
+        ))
+    ));
     for (fact, (generation_root, logical_regular_file_bytes)) in second
         .facts
         .iter()
@@ -272,5 +297,128 @@ async fn a_later_publication_changes_the_watermark_without_changing_consumed_fac
         page(&authority, &objects, id, first.next, 2).await?.facts,
         second.facts
     );
+    Ok(())
+}
+
+// Inject only the final credit refusal; all preceding records and objects come
+// from the same real publication. The two runs differ only in admitted work
+// spent before refusal, so their returned receipts must differ by exactly it.
+struct RefusingProof<'a> {
+    objects: &'a MemoryObjectBackend,
+    later: ObjectId,
+    archive: bool,
+    spent: u64,
+}
+
+impl RefusingProof<'_> {
+    fn refuse(&self, work: &mut AuthorityWork<'_>) -> Result<(), crate::ObjectStoreError> {
+        work.accept::<_, crate::ObjectStoreError>(Ok(crate::OperationReceipt {
+            value: (),
+            work: crate::WorkCounters {
+                items_examined: self.spent,
+                ..crate::WorkCounters::UNCHARGED
+            },
+        }))?;
+        Err(crate::WorkError::BudgetExceeded {
+            counter: "items_examined",
+            observed: work.budget.items_examined + 1,
+            maximum: work.budget.items_examined,
+        }
+        .into())
+    }
+}
+
+impl AsyncObjectStore for RefusingProof<'_> {
+    async fn put(
+        &self,
+        id: ObjectId,
+        bytes: acyclic_stream::OwnedBytes,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        self.objects.put(id, bytes, work).await
+    }
+
+    async fn read(
+        &self,
+        id: ObjectId,
+        maximum: u64,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        if !self.archive && id == self.later {
+            self.refuse(work)?;
+        }
+        self.objects.read(id, maximum, work).await
+    }
+
+    async fn read_many(
+        &self,
+        requests: &[crate::ObjectReadRequest],
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        if !self.archive
+            && requests
+                .iter()
+                .any(|request| request.object_id == self.later)
+        {
+            self.refuse(work)?;
+        }
+        self.objects.read_many(requests, work).await
+    }
+
+    async fn contains(
+        &self,
+        id: ObjectId,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<bool, crate::ObjectStoreError> {
+        self.objects.contains(id, work).await
+    }
+
+    async fn historical_generation_evidence(
+        &self,
+        id: AuthorityId,
+        record: &DurableCommit,
+        maximum: u64,
+        maximum_objects: u64,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<Option<crate::kernel::HistoricalGenerationEvidence>, crate::ObjectStoreError> {
+        if self.archive && record.sequence == Sequence::new(2) {
+            self.refuse(work)?;
+        }
+        self.objects
+            .historical_generation_evidence(id, record, maximum, maximum_objects, work)
+            .await
+    }
+}
+
+#[tokio::test]
+async fn refused_archive_and_closure_preserve_exact_spent_work() -> Result<(), Box<dyn Error>> {
+    let (fs, authority, objects) = fixture();
+    let cancel = CancellationToken::new();
+    let workspace = fs
+        .create_workspace("refused-proof-work", B, &cancel)
+        .await?
+        .value;
+    let id = volume_authority_id(workspace.id().volume_id());
+    workspace.write_text("/file", "original").await?;
+    let later = root(workspace.head(B, &cancel).await?.value.id());
+    for archive in [true, false] {
+        let mut store = RefusingProof {
+            objects: &objects,
+            later,
+            archive,
+            spent: 0,
+        };
+        let original = page(&authority, &store, id, AccountingCursor::genesis(), 2).await?;
+        assert_eq!(original.facts.len(), 1);
+        assert!(!original.complete);
+        store.spent = 7;
+        let charged = page(&authority, &store, id, AccountingCursor::genesis(), 2).await?;
+        assert_eq!(charged.facts, original.facts);
+        assert_eq!(charged.next, original.next);
+        let mut expected = original.work;
+        expected.items_examined += store.spent;
+        assert_eq!(charged.work, expected, "archive={archive}");
+        charged.work.verify(BUDGET)?;
+    }
     Ok(())
 }

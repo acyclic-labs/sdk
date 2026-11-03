@@ -167,6 +167,7 @@ async fn current_objects_and_offline_authority_cannot_substitute_for_original_pr
         .create_workspace("original-proof", B, &cancel)
         .await?
         .value;
+    let first_root = root(workspace.head(B, &cancel).await?.value.id());
     workspace.write_text("/file", "original").await?;
     workspace
         .write_text("/file", "different current head")
@@ -186,20 +187,16 @@ async fn current_objects_and_offline_authority_cannot_substitute_for_original_pr
         Err(AccountingError::Proof(_))
     ));
     let latest = root(workspace.head(B, &cancel).await?.value.id());
-    let proof = super::archive::prove(&objects, latest, workspace.volume_config()).await?;
-    for object in proof.objects {
-        let bytes = objects
-            .read(
-                object,
-                16 * 1024 * 1024,
-                &mut AuthorityWork::new(BUDGET, &cancel),
-            )
-            .await?
-            .bytes;
-        current_only
-            .put(object, bytes, &mut AuthorityWork::new(BUDGET, &cancel))
-            .await?;
-    }
+    let config = workspace.volume_config();
+    super::archive::copy_generation(
+        &objects,
+        &current_only,
+        workspace.id().volume_id(),
+        config,
+        latest,
+        &cancel,
+    )
+    .await?;
     let durable = records(&authority, id).await?;
     let present = page(&authority, &current_only, id, cursor(&durable[1])?, 1).await?;
     assert!(present.complete);
@@ -213,6 +210,41 @@ async fn current_objects_and_offline_authority_cannot_substitute_for_original_pr
     );
     assert!(matches!(
         page(&authority, &current_only, id, cursor(&durable[0])?, 1).await,
+        Err(AccountingError::Proof(_))
+    ));
+    let initial_only =
+        crate::LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory()));
+    super::archive::copy_generation(
+        &objects,
+        &initial_only,
+        workspace.id().volume_id(),
+        config,
+        first_root,
+        &cancel,
+    )
+    .await?;
+    assert_eq!(
+        page(
+            &authority,
+            &initial_only,
+            id,
+            AccountingCursor::genesis(),
+            1
+        )
+        .await?
+        .facts
+        .len(),
+        1
+    );
+    assert!(matches!(
+        page(
+            &authority,
+            &initial_only,
+            id,
+            AccountingCursor::genesis(),
+            2
+        )
+        .await,
         Err(AccountingError::Proof(_))
     ));
     let initial = &durable[0];
