@@ -1,0 +1,11 @@
+--- a/rust/crates/objects/src/blob.rs
++++ b/rust/crates/objects/src/blob.rs
+@@ -331,7 +331,7 @@
+         let domain_length = expected.len() - 2;
+         self.0 = acyclic_stream::persistence::header(
+             self.0,
+-            &expected[..domain_length],
++            self.0.get(..domain_length).unwrap_or(&expected[..domain_length]),
+             &expected[domain_length..],
+         )
+         .map_err(|_| Error::from(ErrorCode::Unsupported))?;
