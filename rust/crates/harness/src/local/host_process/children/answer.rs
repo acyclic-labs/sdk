@@ -35,6 +35,7 @@ impl NativeAnswer {
                     .pointer("/item/text")
                     .and_then(Value::as_str)
                     .map(|text| bounded([text]));
+                self.outcome = self.pending.clone().map(Outcome::Succeeded);
             }
             Some("turn.completed") if self.outcome.is_none() => {
                 self.outcome = self.pending.take().map(Outcome::Succeeded);
