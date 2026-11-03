@@ -13,7 +13,9 @@ node --test --experimental-test-coverage test/process-completion.test.mjs
 ```
 
 The retained fuzz entry consumes arbitrary bytes, mutates original fields and
-checks terminal/binding invariants. Its negative control runs the production
-decoder with invocation binding removed and requires the same oracle to fail.
+checks terminal/binding invariants. Replay requires every original field to
+survive decoding. Its negative controls remove each of fifteen production
+admission guards separately, then plant refusal of a valid original receipt;
+each mutation must fail the same replay/fuzz oracle.
 Native refusal and cancellation wire captures remain additional corpus work;
 the real-binary integration control independently exercises those paths.
