@@ -157,17 +157,38 @@ export function fuzzProject(data, {project = projectPollingSites, validate = val
  assert.ok(project(missing).some(site => site.file === caller && site.kind === 'unresolved-local-helper'), 'lost producer was accepted');
  const malformed = new Map(after).set(helper, before.get(helper) + '}');
  assert.throws(() => project(malformed), SourceSyntaxError);
- for (const [file, source] of [
-  ['lib/broken.rs', '/*'], ['lib/broken.rs', 'r#"'],
-  ['lib/broken.ps1', '<#'], ['lib/broken.ps1', '@"\n'],
-  ['lib/broken.py', '"""'], ['lib/broken.py', '"'],
- ]) {
-  const broken = new Map([[file, source]]);
-  assert.throws(() => project(broken), SourceSyntaxError);
-  assert.deepEqual(newProjectPollingSites(broken, new Map()), []);
-  assert.ok(newProjectPollingSites(broken, new Map([[file, 'sleep(1)']])).length,
-   'malformed predecessor authorized a current wait');
- }
+ const broken = new Map([
+  [`lib/${word}.rs`, '\n/*'], [`lib/raw-${word}.rs`, 'r#"'],
+  [`lib/${word}.ps1`, '<#'], [`lib/here-${word}.ps1`, '@"\n'],
+  [`lib/${word}.py`, '"""'], [`lib/quoted-${word}.py`, '\n"'],
+  [`lib/${word}.ts`, '}'], [`tools/${word}/package.json`, '{"name":'],
+ ].slice(0, variant + 2));
+ const causes = [...broken].map(([file, source]) => {
+  let cause;
+  assert.throws(() => project(new Map([[file, source]])), error => {
+   assert.ok(error instanceof SourceSyntaxError);
+   cause = error.message;
+   return true;
+  });
+  return cause;
+ });
+ const allCauses = error => {
+  assert.ok(error instanceof AggregateError, 'malformed source causes lost their aggregate');
+  assert.ok(error.errors.every(cause => cause instanceof SourceSyntaxError));
+  assert.deepEqual(error.errors.map(cause => cause.message), causes, 'malformed source causes were dropped or reordered');
+  assert.equal(error.message, causes.join('\n'));
+  return true;
+ };
+ assert.throws(() => project(broken), allCauses);
+ assert.throws(() => newProjectPollingSites(broken, broken), allCauses);
+ assert.deepEqual(newProjectPollingSites(broken, new Map()), []);
+ const repaired = new Map([[helper, 'export function settle() { return 1; }'],
+  [caller, "import {settle} from '../lib/helper.js'; settle();"]]);
+ const invalidPredecessor = new Map(repaired).set(helper, repaired.get(helper) + '}');
+ assert.deepEqual(newProjectPollingSites(invalidPredecessor, repaired), []);
+ const currentWait = new Map(repaired).set(helper, repaired.get(helper).replace('return 1', `return Bun.sleep(${data.length + 1})`));
+ assert.ok(newProjectPollingSites(invalidPredecessor, currentWait).some(site => site.file === caller),
+  'malformed predecessor authorized a current wait');
  for (const field of ['file', 'fingerprint', 'classification', 'producer', 'terminal', 'negativeControl']) {
   const invalid = {...accepted[0], [field]: ''};
   assert.throws(() => validate([invalid]), /invalid exact/);

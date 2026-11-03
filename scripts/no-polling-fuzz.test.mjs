@@ -52,6 +52,10 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
   'if (error instanceof SourceSyntaxError) continue;');
  assert.throws(() => targets.fuzzProject(Buffer.from('}'), {project: current.projectPollingSites}),
   {name: 'AssertionError', message: /Missing expected exception \(SourceSyntaxError\)/});
+ const causes = await mutant('./source-policy/project.mjs',
+  'new AggregateError(errors, errors.map', 'new AggregateError(errors.slice(1), errors.map');
+ assert.throws(() => targets.fuzzProject(Buffer.from([0]), {project: causes.projectPollingSites}),
+  {name: 'AssertionError', message: /malformed source causes/});
  const sqlite = await mutant('./source-policy/index.mjs', '(?:sqlite3_)?busy_(?:timeout|handler)|', '');
  assert.throws(() => targets.fuzz(Buffer.from('original'), sqlite.pollingSites),
   {name: 'AssertionError', message: /connection\.busy_timeout/});

@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import test from 'node:test';
 import {checkNoPolling} from './check-no-polling.mjs';
-import {newPollingSites, pollingSites, SourceSyntaxError, validateDispositions} from './source-policy/index.mjs';
+import {newPollingSites, pollingSites, validateDispositions} from './source-policy/index.mjs';
 import {sourceInScope} from './no-polling-scope.mjs';
 import {newProjectPollingSites, projectPollingSites} from './source-policy/project.mjs';
 
@@ -244,33 +244,6 @@ test('a legitimate helper requires an exact caller disposition rather than a hel
   assert.ok(originalCaller);
   assert.ok(newProjectPollingSites(before, new Map(after).set(script, originalCaller.replace('pause(original)', 'pause(replacement)')), accepted).length);
  }
-});
-
-test('malformed historical source cannot authorize current waits or hide malformed current source', () => {
- const helper = 'typescript/packages/example/test/helper.ts';
- const caller = "import {settle} from './helper.js'; export function operation() { return settle(); }";
- // Deliberately malformed source input; no external compiler output is fabricated.
- const before = new Map([[helper, 'export function settle() { return originalEvent; }}'], [script, caller]]);
- const repaired = new Map(before).set(helper, 'export function settle() { return originalEvent; }');
- assert.deepEqual(newProjectPollingSites(before, repaired), []);
- const polling = new Map(repaired).set(helper, 'export function settle() { return Bun.sleep(10); }');
- const refused = newProjectPollingSites(before, polling);
- assert.ok(refused.some(site => site.file === helper && site.kind === 'timer-or-readiness'));
- assert.ok(refused.some(site => site.file === script && site.kind === 'polling-helper-reference'));
- assert.throws(() => newProjectPollingSites(before, before), SourceSyntaxError);
- const malformed = new Map(before).set(helper, 'export function settle() { return Bun.sleep(10); }}');
- assert.throws(() => newProjectPollingSites(before, malformed), SourceSyntaxError);
- const brokenNative = new Map([
-  ['scripts/broken.py', '\n"unclosed'],
-  ['rust/crates/example/src/broken.rs', '\n/* unclosed'],
- ]);
- assert.throws(() => projectPollingSites(brokenNative), error => {
-  assert.ok(error instanceof AggregateError);
-  assert.equal(error.errors.length, 2);
-  assert.match(error.message, /scripts\/broken.py:2: unterminated quoted string/);
-  assert.match(error.message, /rust\/crates\/example\/src\/broken.rs:2: unterminated block comment/);
-  return true;
- });
 });
 
 test('aliases cannot use an unchanged timer import to conceal a new call', () => {
