@@ -185,7 +185,11 @@ async fn check_bridge(text: &str) {
         .await;
     drop(context);
     drop(runtime);
-    assert_eq!(work.live_allocation_bytes(), original);
+    assert_eq!(
+        work.live_allocation_bytes(),
+        original,
+        "native UTF-8 refusal must retire the original engine allocation"
+    );
 }
 
 async fn check_programs(input: &[u8], definitions: &OwnedBytes, literal: &str, text: &str) {

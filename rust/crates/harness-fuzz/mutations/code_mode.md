@@ -164,3 +164,11 @@ native admission`. The generated number-expansion seed exercises this case
 without a captured-host-fixture claim. Restore the patch before collecting
 original coverage. This uses the original reservation and ledger, with no
 additional decoder, charge callback model or public entry point.
+
+The generated narrow and wide Unicode JSON seeds force temporary UTF-8 views
+through both production conversion branches. With no temporary-view credit,
+the shared QuickJS failure label must release its owned source reference.
+Apply `mutations/code_mode_leak_utf8_source.patch` to omit that release. The
+unchanged native-ledger equality after context and runtime destruction must
+reject the leak. This is a generated allocation-refusal regression, separate
+from the captured guest inputs, and uses the existing bridge property.
