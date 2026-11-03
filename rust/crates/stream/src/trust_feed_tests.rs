@@ -121,7 +121,7 @@ async fn world(anchor: &Issuer, genesis: Vec<Vec<u8>>) -> World {
     for value in genesis {
         source.push(&account_path("test", "account"), value).await;
     }
-    let follower = Arc::new(Follower::new("test", anchor.anchor()));
+    let follower = Arc::new(Follower::new("test", AnchorKeys::fixed(anchor.anchor())));
     let (feed, accounts) = TrustFeed::new(
         Src(Arc::clone(&source)),
         Arc::clone(&follower),
@@ -182,7 +182,7 @@ impl Source for InterruptedReplay {
 async fn reconnect_completes_an_interrupted_authenticated_replay() {
     let anchor = Issuer::new("test", key(1));
     let current = Issuer::new("test", key(9));
-    let mut frontier = EnvironmentFrontier::genesis("test", anchor.anchor());
+    let mut frontier = EnvironmentFrontier::genesis("test", AnchorKeys::new(anchor.anchor()));
     let environment = anchor
         .environment_keyring(&mut frontier, &current.anchor(), NOW)
         .unwrap();
@@ -249,7 +249,7 @@ async fn losing_one_account_follow_fences_everything() {
 async fn an_account_record_before_its_environment_signer_is_retained_then_applied() {
     let anchor = Issuer::new("test", key(1));
     let rotated = Issuer::new("test", key(9));
-    let mut frontier = EnvironmentFrontier::genesis("test", anchor.anchor());
+    let mut frontier = EnvironmentFrontier::genesis("test", AnchorKeys::new(anchor.anchor()));
     let keys = [anchor.anchor()[0], rotated.anchor()[0]];
     let environment = anchor
         .environment_keyring(&mut frontier, &keys, NOW)
@@ -300,7 +300,7 @@ async fn an_undecodable_account_record_fences_that_account_only() {
 async fn a_new_account_replays_from_a_current_checkpoint_after_environment_rotation() {
     let anchor = Issuer::new("test", key(1));
     let current = Issuer::new("test", key(9));
-    let mut frontier = EnvironmentFrontier::genesis("test", anchor.anchor());
+    let mut frontier = EnvironmentFrontier::genesis("test", AnchorKeys::new(anchor.anchor()));
     let environment = anchor
         .environment_keyring(&mut frontier, &current.anchor(), NOW)
         .unwrap();
@@ -373,4 +373,71 @@ async fn a_slow_account_open_never_delays_another_accounts_revocations() {
     drop(producer);
     assert_eq!(step(&mut run), Some(Err(StreamError::Unavailable)));
     assert!(!served(&follower, "account"));
+}
+
+/// A feed over `fake` that follows `account`, its follower read from `anchor`.
+fn anchored(
+    fake: &Arc<Fake>,
+    anchor: tokio::sync::watch::Receiver<AnchorKeys>,
+) -> (Arc<Follower>, TrustFeed<Src>, Accounts) {
+    let follower = Arc::new(Follower::new("test", anchor));
+    let (feed, accounts) = TrustFeed::new(
+        Src(Arc::clone(fake)),
+        Arc::clone(&follower),
+        Arc::new(Clock),
+    );
+    accounts.follow("account").unwrap();
+    (follower, feed, accounts)
+}
+
+#[test]
+fn a_member_built_before_a_key_reload_converges_on_the_anchor_event() {
+    let old = Issuer::new("test", key(1));
+    let new = Issuer::new("test", key(9));
+    // Global reloaded its key and signed everything with the new one.
+    let mut frontier = EnvironmentFrontier::genesis("test", AnchorKeys::new(new.anchor()));
+    let environment = new
+        .environment_keyring(&mut frontier, &new.anchor(), NOW)
+        .unwrap();
+    let (_root, genesis) = new.genesis("account", key(2), NOW).unwrap();
+    let fake = Arc::new(Fake::default());
+    fake.push(&environment_path("test"), environment);
+    for value in genesis {
+        fake.push(&account_path("test", "account"), value);
+    }
+    let (owner, anchor) = tokio::sync::watch::channel(AnchorKeys::new(old.anchor()));
+    let (follower, mut feed, _accounts) = anchored(&fake, anchor);
+    let mut run = Box::pin(feed.run());
+    // Refused under the old anchor: retained, fenced, and the run continues.
+    assert!(step(&mut run).is_none());
+    assert_ne!(*follower.state().borrow(), FollowerState::Serving);
+    assert!(!served(&follower, "account"));
+    // Only the anchor's own publication retries; nothing is probed.
+    owner.send_modify(|keys| *keys = keys.rotate(new.anchor(), NOW, 0));
+    assert!(step(&mut run).is_none());
+    assert_eq!(*follower.state().borrow(), FollowerState::Serving);
+    assert!(served(&follower, "account"));
+    assert_eq!(&*follower.environment_keys("test").unwrap(), new.anchor());
+}
+
+#[test]
+fn a_member_anchored_after_a_key_reload_replays_older_history() {
+    let old = Issuer::new("test", key(1));
+    let new = Issuer::new("test", key(9));
+    let mut frontier = EnvironmentFrontier::genesis("test", AnchorKeys::new(old.anchor()));
+    let fake = Arc::new(Fake::default());
+    for keys in [old.anchor(), new.anchor()] {
+        let record = old.environment_keyring(&mut frontier, &keys, NOW).unwrap();
+        fake.push(&environment_path("test"), record);
+    }
+    let (_root, genesis) = new.genesis("account", key(2), NOW).unwrap();
+    for value in genesis {
+        fake.push(&account_path("test", "account"), value);
+    }
+    // The replacement reads the reloaded file: the new key alone.
+    let (follower, mut feed, _accounts) = anchored(&fake, AnchorKeys::fixed(new.anchor()));
+    let mut run = Box::pin(feed.run());
+    assert!(step(&mut run).is_none());
+    assert_eq!(*follower.state().borrow(), FollowerState::Serving);
+    assert!(served(&follower, "account"));
 }

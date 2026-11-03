@@ -60,7 +60,7 @@ impl RuntimeSigner {
         let issuer = workload::issuer(&seed);
         let trust = Arc::new(acyclic_auth::trust::Follower::new(
             workload::ENVIRONMENT,
-            issuer.anchor(),
+            acyclic_auth::trust::AnchorKeys::fixed(issuer.anchor()),
         ));
         let serving = TrustServing(trust.clone());
         let (custody, verifiers) = match owner {

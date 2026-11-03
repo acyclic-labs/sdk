@@ -1,9 +1,11 @@
 //! Public trust snapshots shared by native and WebAssembly capability holders.
 use crate::{crypto::BlockId, verify::*};
 use std::collections::HashSet;
+mod anchor;
 mod follower;
 pub mod issuance;
 mod issuer;
+pub use anchor::AnchorKeys;
 pub use follower::{
     Applied, EnvironmentFrontier, FenceCause, Follower, FollowerState, account_path,
     environment_path,

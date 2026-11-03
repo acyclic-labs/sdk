@@ -5,7 +5,7 @@ use acyclic_auth::{
         FilesystemGrant, Grant, GrantKind, GrantSet, Principal, PrincipalKind, ResourceGrant,
         ResourcePattern, Validity,
     },
-    trust::{Certification, Follower, Issuer},
+    trust::{AnchorKeys, Certification, Follower, Issuer},
     verify::CertifiedSigner,
 };
 use ed25519_dalek::SigningKey;
@@ -40,7 +40,7 @@ impl Mounts {
         let (root, genesis) = issuer
             .genesis("account", SigningKey::from_bytes(&[2; 32]), now)
             .expect("genesis");
-        let trust = Follower::new("test", issuer.anchor());
+        let trust = Follower::new("test", AnchorKeys::fixed(issuer.anchor()));
         for record in &genesis {
             trust.apply(record, now).expect("genesis record");
         }
