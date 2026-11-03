@@ -108,8 +108,8 @@ export function qualifyProjectionMutationsLoom(run = runCommand) {
   ], recovery, run);
 }
 
-export function qualifyProjectionCompletionMutationsLoom(run = runCommand) {
-  const recovery = "node scripts/qualify-mcp-loom.mjs --projection-completion-mutations";
+export function qualifyProjectionCustodyMutationsLoom(run = runCommand) {
+  const recovery = "node scripts/qualify-mcp-loom.mjs --projection-custody-mutations";
   return qualifyProjectionSourceMutations([[
     `    let mut slot = lock_owned(StateArc::clone(slot)).await;
     // Keep the completed worker's claim until its publication owns the slot.
@@ -119,6 +119,19 @@ export function qualifyProjectionCompletionMutationsLoom(run = runCommand) {
     let mut slot = lock_owned(StateArc::clone(slot)).await;`,
     "completion lost its unpublished projection",
     "every_completing_worker_retains_its_projection_until_publication",
+  ], [
+    `    let mut slot = lock_owned(StateArc::clone(slot)).await;
+    if slot.is_none() {
+        *slot = Some(create().await?);
+    }
+    Ok(slot)`,
+    `    let mut slot = std::mem::ManuallyDrop::new(lock_owned(StateArc::clone(slot)).await);
+    if slot.is_none() {
+        **slot = Some(create().await?);
+    }
+    Ok(std::mem::ManuallyDrop::into_inner(slot))`,
+    "initialization did not wake its registered successor",
+    "failed_or_cancelled_initialization_wakes_waiters_without_partial_state",
   ]], recovery, run);
 }
 
@@ -180,8 +193,7 @@ export function qualifyHookLifecycleLoom(features = ["--features", "filesystem-l
       "local::checkout_tools::tests::cancelled_bash_retains_projection_until_physical_cleanup",
       "local::workspace::projection::tests::first_native_users_share_one_initialization",
       "local::workspace::projection::tests::first_projection_and_logical_publication_share_custody",
-      "local::workspace::projection::tests::failed_initialization_leaves_no_published_projection",
-      "local::workspace::projection::tests::cancelling_initialization_releases_waiters_without_partial_state",
+      "local::workspace::projection::tests::failed_or_cancelled_initialization_wakes_waiters_without_partial_state",
       "local::workspace::projection::tests::checkout_then_projection_order_cannot_deadlock",
       "local::workspace::projection::tests::the_last_execution_scope_alone_retires_the_projection",
       "local::workspace::projection::tests::every_completed_command_publishes_before_its_acknowledgement",
@@ -375,7 +387,7 @@ const fixedModels = {
   "--provider-refresh-mutations": qualifyProviderRefreshMutationsLoom,
   "--skill-materializer-mutations": qualifySkillMaterializerMutationsLoom,
   "--projection-mutations": qualifyProjectionMutationsLoom,
-  "--projection-completion-mutations": qualifyProjectionCompletionMutationsLoom,
+  "--projection-custody-mutations": qualifyProjectionCustodyMutationsLoom,
   "--fs-policy": qualifyFsPolicyLoom,
 };
 const selectableModels = {

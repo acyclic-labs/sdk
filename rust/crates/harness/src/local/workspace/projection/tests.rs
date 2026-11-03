@@ -1,6 +1,6 @@
 use super::*;
 use loom::{sync::Mutex, thread};
-use std::task::{Context, Poll, Waker};
+use std::task::{Context, Wake, Waker};
 
 fn complete<F: Future>(future: F) -> F::Output {
     crate::sync::owned::block_on(future)
@@ -108,100 +108,67 @@ fn first_projection_and_logical_publication_share_custody() {
     checked(logical_write, "projection missed a write");
 }
 
-fn failure(broken: bool) {
-    let slot = StateArc::new(AsyncMutex::new(None::<u8>));
-    let mut first_poll = true;
-    let mut creation = Box::pin(async {
-        if broken {
-            let mut guard = lock_owned(slot.clone()).await;
-            *guard = Some(0);
+#[test]
+fn failed_or_cancelled_initialization_wakes_waiters_without_partial_state() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    struct Wakes(AtomicUsize);
+    impl Wake for Wakes {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
         }
-        initialize(&slot, async || {
-            std::future::poll_fn(|_| {
-                if std::mem::take(&mut first_poll) {
-                    Poll::Pending
+    }
+
+    for cancelled in [false, true] {
+        loom::model(move || {
+            let slot = StateArc::new(AsyncMutex::new(None::<u8>));
+            let wakes = Arc::new(Wakes(AtomicUsize::new(0)));
+            let waker = Waker::from(wakes.clone());
+            let mut context = Context::from_waker(&waker);
+            let (release, released) = tokio::sync::oneshot::channel::<()>();
+            let mut creation = Box::pin(initialize(&slot, async move || {
+                released
+                    .await
+                    .map_err(|_| Error::Invalid("creation source closed".into()))?;
+                Err(Error::Invalid("creation failed".into()))
+            }));
+            assert!(creation.as_mut().poll(&mut context).is_pending());
+            let mut waiter = Box::pin(initialize(&slot, async || Ok(7)));
+            // Registration is observed before the original creator can exit.
+            assert!(waiter.as_mut().poll(&mut context).is_pending());
+            if !cancelled {
+                release.send(()).unwrap();
+                wakes.0.store(0, Ordering::Relaxed);
+                assert!(matches!(
+                    creation.as_mut().poll(&mut context),
+                    std::task::Poll::Ready(Err(_))
+                ));
+            } else {
+                wakes.0.store(0, Ordering::Relaxed);
+            }
+            drop(creation);
+            assert!(
+                wakes.0.load(Ordering::Relaxed) > 0,
+                "initialization did not wake its registered successor"
+            );
+            let std::task::Poll::Ready(value) = waiter.as_mut().poll(&mut context) else {
+                panic!("initialization wake did not release its registered successor");
+            };
+            assert_eq!(
+                *value.unwrap(),
+                Some(7),
+                "{}",
+                if cancelled {
+                    "cancelled initialization published partial state"
                 } else {
-                    Poll::Ready(())
+                    "failed initialization published partial state"
                 }
-            })
-            .await;
-            Err(Error::Invalid("creation failed".into()))
-        })
-        .await
-        .map(|_| ())
-    });
-    if broken {
-        // The deliberate partial install skips creation and exposes its value.
-        assert!(complete(creation.as_mut()).is_ok());
-    } else {
-        assert!(
-            creation
-                .as_mut()
-                .poll(&mut Context::from_waker(Waker::noop()))
-                .is_pending()
-        );
+            );
+        });
     }
-    let reader_slot = slot.clone();
-    let reader = thread::spawn(move || {
-        assert_eq!(
-            *complete(initialize(&reader_slot, async || Ok(7))).unwrap(),
-            Some(7),
-            "failed initialization published partial state"
-        );
-    });
-    thread::yield_now();
-    if !broken {
-        assert!(complete(creation.as_mut()).is_err());
-    }
-    joined(reader);
-}
-
-#[test]
-fn failed_initialization_leaves_no_published_projection() {
-    checked(failure, "failed initialization published partial state");
-}
-
-fn cancellation(broken: bool) {
-    let slot = StateArc::new(AsyncMutex::new(None));
-    let mut creation = Box::pin(async {
-        if broken {
-            let mut guard = lock_owned(slot.clone()).await;
-            *guard = Some(0);
-            std::future::pending::<()>().await;
-        } else {
-            initialize(&slot, async || {
-                std::future::pending::<()>().await;
-                Ok(7)
-            })
-            .await
-            .unwrap();
-        }
-    });
-    assert!(
-        creation
-            .as_mut()
-            .poll(&mut Context::from_waker(Waker::noop()))
-            .is_pending()
-    );
-    let waiter_slot = slot.clone();
-    let waiter = thread::spawn(move || {
-        assert_eq!(
-            *complete(initialize(&waiter_slot, async || Ok(7))).unwrap(),
-            Some(7),
-            "cancelled initialization published partial state"
-        );
-    });
-    thread::yield_now();
-    drop(creation);
-    joined(waiter);
-}
-
-#[test]
-fn cancelling_initialization_releases_waiters_without_partial_state() {
-    checked(
-        cancellation,
-        "cancelled initialization published partial state",
-    );
 }
 
 fn lock_order(broken: bool) {
