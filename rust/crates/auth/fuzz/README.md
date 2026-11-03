@@ -130,6 +130,13 @@ and fuzz entrances call it, including for non-UTF-8 input. Run
 `python3 negative-control.py addressing-case` or `addressing-length` to weaken
 the production character or length guard. Each must fail its unchanged semantic
 assertion. These replace the fixed label table's mock-validator control.
+The generated label also supplies a 253-byte host with valid label boundaries;
+adding one byte must return `HostTooLong`. Decimal and hexadecimal final labels
+must return `NumericHost` before URL-parser fallback. Run
+`python3 negative-control.py addressing-host-length` or
+`addressing-host-numeric` to remove each actual host guard and require its
+unchanged typed refusal assertion to fail. These shared checks subsume the
+numeric entries in the hostname alias example.
 The runner restores the source and checks oracle custody. Complete source and
 branch coverage, and the other addressing guards, need separate qualification.
 
