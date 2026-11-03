@@ -126,13 +126,13 @@ pub enum AgentReply {
         /// Original consumed-input fence, with no retained work at or before it.
         settled: bool,
     },
-    /// How far an agent has settled.
+    /// How far an agent has settled, from one committed actor checkpoint.
     Settlement {
-        /// Settled turns: the conversation's tail.
+        /// Settled turns: the checkpoint's exclusive conversation tail.
         settled: u64,
-        /// Published statuses: the status stream's tail.
+        /// Published statuses: the checkpoint's exclusive status tail.
         statuses: u64,
-        /// The agent's current phase.
+        /// The phase published with those exact tails.
         phase: Phase,
     },
     /// One visible file fragment from the authorized workspace query.

@@ -1154,11 +1154,33 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     use crate::model::{ModelContent, ModelContentPart, ModelEvent, ToolCall, ToolResultContent};
     use crate::test_support::{ScriptedEvent, ScriptedTurn};
     use acyclic_harness_client::{AgentCommand, AgentReply, ReadTarget};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
+
+    // Count the original native provider boundary, including the real command
+    // admission. A settlement must add only its one actor observation.
+    struct HeadReads(Arc<AtomicUsize>);
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for HeadReads {
+        fn on_new_span(
+            &self,
+            attributes: &tracing::span::Attributes<'_>,
+            _: &tracing::span::Id,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if attributes.metadata().name() == "acyclic.stream.heads" {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+    let head_reads = Arc::new(AtomicUsize::new(0));
     let _subscriber = tracing::subscriber::set_default(
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::WARN)
-            .with_test_writer()
-            .finish(),
+        tracing_subscriber::registry()
+            .with(HeadReads(Arc::clone(&head_reads)))
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_test_writer()
+                    .with_filter(tracing_subscriber::filter::LevelFilter::WARN),
+            ),
     );
 
     let write = |text: &str| {
@@ -1400,6 +1422,46 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
             .await
             .is_err()
     );
+    for owner in [&root, &child] {
+        let before = head_reads.load(Ordering::Relaxed);
+        connection.execute(&AgentCommand::Root {}).await?;
+        let admission_heads = head_reads.load(Ordering::Relaxed) - before;
+        let before = head_reads.load(Ordering::Relaxed);
+        let state = agents.state(owner).await.map_err(agent)?;
+        let state_heads = head_reads.load(Ordering::Relaxed) - before;
+        assert!(
+            state_heads > 0,
+            "native checkpoint observation was not counted"
+        );
+        let before = head_reads.load(Ordering::Relaxed);
+        let observed = connection
+            .execute(&AgentCommand::Settlement {
+                agent: owner.clone(),
+            })
+            .await?;
+        let observed_heads = head_reads.load(Ordering::Relaxed) - before;
+        eprintln!(
+            "settlement head reads: admission={admission_heads}, checkpoint={state_heads}, observed={observed_heads}"
+        );
+        assert_eq!(
+            observed_heads,
+            admission_heads + state_heads,
+            "settlement reread stream tails outside its actor observation"
+        );
+        let AgentReply::Settlement {
+            settled,
+            statuses,
+            phase,
+        } = observed
+        else {
+            return Err(Error::Invalid("settlement returned another reply".into()));
+        };
+        assert_eq!(
+            (settled, statuses, phase),
+            (state.conversation_tail, state.status_tail, state.phase),
+            "settlement mixed committed actor cuts"
+        );
+    }
     Ok(())
 }
 
