@@ -25,7 +25,7 @@ pub struct FileDiff {
     pub kind: DiffKind,
     /// At least one side is non-UTF-8 or contains NUL.
     pub binary: bool,
-    /// Content was omitted before reading because an endpoint exceeds the byte bound.
+    /// Largest endpoint length when content exceeds the read or computation allowance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub omitted_bytes: Option<u64>,
     /// Inserted lines across all hunks, excluding context lines.
@@ -47,23 +47,24 @@ impl FileDiff {
         base: Option<&[u8]>,
         current: Option<&[u8]>,
         maximum_render_bytes: usize,
-        mut maximum_work: usize,
+        maximum_work: usize,
     ) -> Result<Option<Self>> {
+        let mut work = compute::Work::new(maximum_work);
         compute::charge(
-            &mut maximum_work,
+            &mut work,
             base.unwrap_or_default()
                 .len()
                 .checked_add(current.unwrap_or_default().len())
                 .ok_or_else(compute::work_bound)?,
         )?;
-        Self::between_work(base, current, maximum_render_bytes, &mut maximum_work)
+        Self::between_work(base, current, maximum_render_bytes, &mut work)
     }
 
     pub(super) fn between_work(
         base: Option<&[u8]>,
         current: Option<&[u8]>,
         maximum_render_bytes: usize,
-        work: &mut usize,
+        work: &mut compute::Work,
     ) -> Result<Option<Self>> {
         let before = base.unwrap_or_default();
         let after = current.unwrap_or_default();

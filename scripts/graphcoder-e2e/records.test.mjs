@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import test, { after } from "node:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { recordedRequests, requests, subset, toolResults } from "./assertions.mjs";
+import { fuzz } from "./tool-outcome.fuzz.mjs";
 
 const directory = mkdtempSync(join(tmpdir(), "e2e-records-"));
+after(() => rmSync(directory, { recursive: true }));
 let files = 0;
 // The records file appears only while the history is read, as when the mock
 // appends a record and then publishes its event: reading the file before the
@@ -44,18 +46,23 @@ test("request assertions reject omitted, duplicated, unmatched and fabricated re
   assert.throws(() => requests(fixture, [valid[0], { ...valid[1], status: 409 }]), /unmatched/);
   assert.throws(() => requests(fixture, [valid[0], record(1, [{ role: "user", content: "REAL_RESULT" }])]), /actual tool result missing/);
   assert.throws(() => requests({ ...fixture, assert: { requests: 2 } }, [valid[0], record(1, [{ type: "function_call_output", output: '{"error":"failed"}' }])]), /unexpected tool error/);
-  for (const output of ["tool execution failed: workspace generation changed",
-    "tool output violated its pinned schema (invalid): workspace generation changed"]) {
-    const rejected = record(1, [{ type: "function_call_output", output }]);
-    assert.throws(() => requests({ ...fixture, assert: { requests: 2 } }, [valid[0], rejected]), /unexpected tool error/);
-    requests({ ...fixture, assert: { requests: 2, tool_errors: ["workspace generation changed"] } }, [valid[0], rejected]);
-  }
   // A result that merely mentions a failure is not one.
   requests({ ...fixture, assert: { requests: 2 } }, [valid[0], record(1, [{ type: "function_call_output", output: "the tool execution failed: before" }])]);
   const gemini = [{ path: "models/tiny:streamGenerateContent", step: 0, status: 200,
     body: { contents: [{ role: "user", parts: [{ functionResponse: { name: "bash", response: { text: "REAL_RESULT" } } }] }] } }];
   requests({ model: { steps: [{}] }, assert: { requests: 1, tool_contains: ["REAL_RESULT"] } }, gemini);
   assert.throws(() => requests({ model: { steps: [{}] }, assert: { requests: 1, tool_contains: ["FORGED"] } }, gemini), /actual tool result missing/);
+});
+
+test("tool failure admission conforms to every production message and captured shell outcome", async () => {
+  const corpus = readFileSync(new URL("./fixtures/live-shell-results.json", import.meta.url));
+  fuzz(corpus);
+  const source = readFileSync(new URL("./assertions.mjs", import.meta.url), "utf8");
+  const boundary = "(?:$|[:;( ])";
+  assert.equal(source.split(boundary).length, 2);
+  const former = await import("data:text/javascript;base64," +
+    Buffer.from(source.replace(boundary, "[:( ]")).toString("base64"));
+  assert.throws(() => fuzz(corpus, former.toolOutcome), { code: "ERR_ASSERTION" });
 });
 
 test("auxiliary HTTP schemas cannot enter provider tool-result projection", async () => {

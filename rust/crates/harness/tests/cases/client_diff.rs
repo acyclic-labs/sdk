@@ -331,62 +331,19 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
     use acyclic_harness::hosting::diff_page;
     let fixture = Fixture::new().await?;
     for (path, text) in [
-        (
-            "kept.txt", "same
-",
-        ),
-        (
-            "edited.txt",
-            "before
-",
-        ),
-        (
-            "removed.txt",
-            "gone
-",
-        ),
-        (
-            "restored.txt",
-            "original
-",
-        ),
+        ("kept.txt", "same\n"),
+        ("edited.txt", "before\n"),
+        ("removed.txt", "gone\n"),
+        ("restored.txt", "original\n"),
     ] {
         fixture.put(path, text, &format!("base-{path}")).await?;
     }
     let base = fixture.source("kept.txt").await?.generation;
+    fixture.put("edited.txt", "after\n", "edit").await?;
+    fixture.put("restored.txt", "changed\n", "change").await?;
+    fixture.put("restored.txt", "original\n", "restore").await?;
     fixture
-        .put(
-            "edited.txt",
-            "after
-",
-            "edit",
-        )
-        .await?;
-    fixture
-        .put(
-            "restored.txt",
-            "changed
-",
-            "change",
-        )
-        .await?;
-    fixture
-        .put(
-            "restored.txt",
-            "original
-",
-            "restore",
-        )
-        .await?;
-    fixture
-        .put(
-            "added.txt",
-            "one
-two
-three
-",
-            "add",
-        )
+        .put("added.txt", "one\ntwo\n🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂\n", "add")
         .await?;
     let large = "x".repeat(65_537);
     fixture.put("large.txt", &large, "large").await?;
@@ -465,16 +422,52 @@ three
             .collect()
     );
 
+    // Tight encoded pages must retain accepted rows even when a later UTF-8
+    // scalar cannot fit. Reassemble patches at each original byte credit.
+    for bytes in [768, 1024, 1280, 1536] {
+        let mut cursor = None;
+        let mut actual = std::collections::BTreeMap::<String, String>::new();
+        loop {
+            let request = AgentPageRequest::new(128, bytes, cursor).expect("page");
+            let fragments = diff_page(&fixture.files, volume, (&base, &current), &request).await?;
+            assert!(!fragments.is_empty());
+            for fragment in &fragments {
+                if fragment.omitted_bytes.is_none() {
+                    actual
+                        .entry(fragment.path.clone())
+                        .or_default()
+                        .push_str(&fragment.patch);
+                }
+            }
+            cursor = fragments
+                .last()
+                .and_then(|item| item.next.as_ref())
+                .map(serde_json::to_string)
+                .transpose()
+                .expect("cursor");
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert!(
+            actual.contains_key("added.txt"),
+            "small Unicode changes must remain exact"
+        );
+        for (path, patch) in actual {
+            assert_eq!(
+                patch,
+                whole
+                    .iter()
+                    .find(|item| item.path == path)
+                    .expect("same projection path")
+                    .patch
+            );
+        }
+    }
+
     // A cursor of one projection never resumes another generation's.
     let stale = serde_json::to_string(whole[0].next.as_ref().expect("more files")).expect("cursor");
-    fixture
-        .put(
-            "added.txt",
-            "four
-",
-            "later",
-        )
-        .await?;
+    fixture.put("added.txt", "four\n", "later").await?;
     let later = fixture.source("kept.txt").await?.generation;
     assert!(matches!(
         diff_page(
@@ -492,6 +485,28 @@ three
             .await?
             .is_empty()
     );
+
+    // A quadratic replacement remains visible without retaining its trace
+    // beyond the actual request credit. It is isolated from the paging cases
+    // above, so one-line pages never recompute this deliberately costly input.
+    fixture
+        .put("expensive.txt", &"a\n".repeat(64), "old-expensive")
+        .await?;
+    let expensive_base = fixture.source("expensive.txt").await?.generation;
+    fixture
+        .put("expensive.txt", &"b\n".repeat(64), "new-expensive")
+        .await?;
+    let expensive_current = fixture.source("expensive.txt").await?.generation;
+    let bounded = diff_page(
+        &fixture.files,
+        volume,
+        (&expensive_base, &expensive_current),
+        &AgentPageRequest::new(1024, 2048, None).expect("finite computation credit"),
+    )
+    .await?;
+    assert_eq!(bounded.len(), 1);
+    assert_eq!(bounded[0].omitted_bytes, Some(128));
+    assert!(bounded[0].patch.is_empty());
 
     // Negative control: authority over another volume discloses no path.
     let other = VolumeRef::new(
