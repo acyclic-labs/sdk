@@ -21,6 +21,13 @@
     "layout-v1": "a0caa01df556b29a87bed995a8939e526f46cb3d40bd5a00333272e84b051e4f",
     "duplicate-request-path": "ece1ae5f0ed25ac07a00a7f2e9ce5ec207c93460cd4aea9b9deb50b10901415e",
     "unsupported-layout-version": "3f66813f4df2d42634b5030bfb88ffe3ed5e9bfaa8c7575dd9e7aab0a2ab2af0",
-    "mismatched-reply-path": "647b70914365c4c33e4062cba76c53fcb870d9d195de2c06bc0262c3d8a15fa1"
+    "mismatched-reply-path": "647b70914365c4c33e4062cba76c53fcb870d9d195de2c06bc0262c3d8a15fa1",
+    "conditional-publication": "1df167575e11128237996833567adefebf1a5b44257209fba624be78e576aae4"
+  },
+  "additional_captures": {
+    "conditional-publication": {
+      "source": "b15534c27a",
+      "origin": "Actual Connection::execute PublishClientFiles command and original encoded committed reply, captured in the same resume/version test."
+    }
   }
 }
