@@ -534,19 +534,20 @@ mod tests {
 
     fn handoff_model() {
         loom::model(|| {
-            let (started, cancelling) = loom::sync::mpsc::channel();
+            let (started, cancelled) = loom::sync::mpsc::channel();
             CANCELLATIONS.lock().unwrap_or_else(|e| panic!("{e}")).1 = Some(started);
             let owner = Owner::new(
                 RestoreGuard::new(Vec::new(), &Capabilities::default()),
                 record_cancel,
             );
             let (entered, submitted) = loom::sync::mpsc::channel();
-            let (release, waiting) = loom::sync::mpsc::channel();
             let generation = {
                 let mut state = owner.state.lock().unwrap_or_else(|e| panic!("{e}"));
                 Owner::submit(&owner, &mut state, false, move |_| {
                     entered.send(thread::current().id()).unwrap();
-                    waiting.recv().unwrap();
+                    // The cancellation callback is the event that completes
+                    // the original action; no observer relays that event.
+                    cancelled.recv().unwrap();
                     Ok(())
                 })
                 .unwrap();
@@ -559,10 +560,8 @@ mod tests {
                     .quiesce_generation(true, Some(generation))
                     .unwrap_or_else(|e| panic!("{e}"));
             });
-            cancelling.recv().unwrap_or_else(|e| panic!("{e}"));
-            // Complete the original production worker. Its acknowledgement can
-            // race replacement with the cancellation waiter's lock reacquisition.
-            release.send(()).unwrap();
+            // The original worker's acknowledgement races replacement with the
+            // cancellation waiter's lock reacquisition.
             let (finish, finishing) = loom::sync::mpsc::channel();
             {
                 let mut state = owner.state.lock().unwrap_or_else(|e| panic!("{e}"));
