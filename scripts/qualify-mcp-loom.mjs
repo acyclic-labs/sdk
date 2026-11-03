@@ -121,8 +121,6 @@ export function qualifyNativeProgressLoom(run = runCommand) {
       "testing::model::missing_terminal_wake_is_detected_on_the_real_tracker",
       "testing::queue_model::capacity_release_races_registration_on_the_real_queue",
       "testing::queue_model::physical_completion_races_observer_drop_on_the_real_terminal",
-      "testing::queue_model::broken_capacity_wake_is_detected",
-      "testing::queue_model::broken_capacity_accounting_is_detected",
       "testing::queue_model::shared_state_funding_survives_observation_and_worker_release",
       "testing::queue_model::premature_shared_state_refund_is_detected",
       "testing::queue_model::premature_panicked_shared_state_refund_is_detected",
@@ -131,7 +129,6 @@ export function qualifyNativeProgressLoom(run = runCommand) {
       "testing::queue_model::premature_admitted_waiter_refund_is_detected",
       "testing::queue_model::premature_cancelled_waiter_refund_is_detected",
       "testing::queue_model::release_broadcast_reaches_every_waiter_across_concurrent_cancellation",
-      "testing::queue_model::head_only_capacity_wake_is_detected",
       "testing::durability::models::concurrent_writers_cannot_clear_the_crash_boundary",
     ],
   });
@@ -157,6 +154,16 @@ export function qualifyNativeTerminalLoom(run = runCommand) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
     kind: "--lib", targetCfg: [], env: loomEnvironment(),
     filters: ["testing::queue_model::physical_completion_races_observer_drop_on_the_real_terminal"],
+  });
+}
+
+export function qualifyNativeCapacityLoom(run = runCommand) {
+  return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
+    kind: "--lib", targetCfg: [], env: loomEnvironment(),
+    filters: [
+      "testing::queue_model::capacity_release_races_registration_on_the_real_queue",
+      "testing::queue_model::release_broadcast_reaches_every_waiter_across_concurrent_cancellation",
+    ],
   });
 }
 
@@ -330,6 +337,7 @@ const fixedModels = {
   "--native-durability": qualifyNativeDurability,
   "--native-durability-io": run => qualifyNativeDurability(run, true),
   "--native-terminal": qualifyNativeTerminalLoom,
+  "--native-capacity": qualifyNativeCapacityLoom,
   "--guest": qualifyGuestLoom,
   "--session-fs": qualifySessionFsLoom, "--ownership": qualifyOwnershipLoom,
   "--native-registry": qualifyNativeRegistryLoom,

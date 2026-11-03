@@ -16,15 +16,9 @@ pub(crate) struct AdmissionState {
     notifying: bool,
     notify_again: bool,
     notify_next: Option<Arc<CapacityWaiter>>,
-    #[cfg(all(test, loom))]
-    pub(crate) broken_wake: bool,
-    #[cfg(all(test, loom))]
-    pub(crate) broken_accounting: bool,
     /// Refunds a live shared node early, for the Loom negative control.
     #[cfg(all(test, loom))]
     pub(crate) broken_charge: bool,
-    #[cfg(all(test, loom))]
-    pub(crate) broken_broadcast: bool,
 }
 
 pub(crate) struct CapacityWaiter {
@@ -51,13 +45,7 @@ impl AdmissionState {
             notify_again: false,
             notify_next: None,
             #[cfg(all(test, loom))]
-            broken_wake: false,
-            #[cfg(all(test, loom))]
-            broken_accounting: false,
-            #[cfg(all(test, loom))]
             broken_charge: false,
-            #[cfg(all(test, loom))]
-            broken_broadcast: false,
         }
     }
 
@@ -141,11 +129,7 @@ impl AdmissionState {
         // The owner's reference ends here; a notifier may still hold the node.
         drop(state);
         drop(node);
-        #[cfg(all(test, loom))]
-        let notify = !self.broken_wake;
-        #[cfg(not(all(test, loom)))]
-        let notify = true;
-        if previous.is_none() && notify {
+        if previous.is_none() {
             self.head.as_ref().map(|head| {
                 head.state
                     .lock()
@@ -313,15 +297,7 @@ pub(crate) fn notify_capacity_released(admission: &Mutex<AdmissionState>) {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         debug_assert_ne!(admission.queued_jobs, 0, "native queue accounting lost");
-        #[cfg(all(test, loom))]
-        if admission.broken_accounting {
-            return;
-        }
         admission.queued_jobs = admission.queued_jobs.saturating_sub(1);
-        #[cfg(all(test, loom))]
-        if admission.broken_wake {
-            return;
-        }
         if admission.notifying {
             // A waiter already visited by the active notifier may have polled
             // while the channel was full. Cover this release in a fresh pass.
@@ -349,10 +325,6 @@ pub(crate) fn notify_capacity_released(admission: &Mutex<AdmissionState>) {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             admission.notify_next = state.next.clone();
-            #[cfg(all(test, loom))]
-            if admission.broken_broadcast {
-                admission.notify_next = None;
-            }
             state.waker.clone()
         };
         // A consumer may cancel, poll, or release more capacity synchronously.

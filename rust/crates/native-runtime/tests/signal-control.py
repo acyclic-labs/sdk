@@ -1,7 +1,7 @@
 """Check production signal/wake/owner models against actual source defects.
 
 Run in a disposable checkout: python3 rust/crates/native-runtime/tests/signal-control.py /tmp/native-signal-control
-Select a retained control with --wake, --owners, --host, --host-events, --ownership, --claim, --descriptor, --owner-envelope, --durability, --durability-io or --native-terminal.
+Select a retained control with --wake, --owners, --host, --host-events, --ownership, --claim, --descriptor, --owner-envelope, --durability, --durability-io, --native-terminal or --native-capacity.
 An optional comma-separated mutation selection shares one restored positive run.
 """
 import hashlib
@@ -13,8 +13,8 @@ import sys
 
 
 def main():
-    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--host-events", "--ownership", "--claim", "--descriptor", "--owner-envelope", "--durability", "--durability-io", "--native-terminal")):
-        raise RuntimeError("arguments: expected evidence directory, optional control and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--host-events|--ownership|--claim|--descriptor|--owner-envelope|--durability|--durability-io|--native-terminal [mutation]]")
+    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--host-events", "--ownership", "--claim", "--descriptor", "--owner-envelope", "--durability", "--durability-io", "--native-terminal", "--native-capacity")):
+        raise RuntimeError("arguments: expected evidence directory, optional control and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--host-events|--ownership|--claim|--descriptor|--owner-envelope|--durability|--durability-io|--native-terminal|--native-capacity [mutation]]")
     mode = sys.argv[2] if len(sys.argv) >= 3 else "--signal"
     root = Path(__file__).resolve().parents[4]
     output = Path(sys.argv[1]).resolve()
@@ -31,6 +31,7 @@ def main():
     durability = root / "rust/crates/native-runtime/src/testing/durability.rs"
     blocking = root / "rust/crates/native-runtime/src/blocking/mod.rs"
     completion = root / "rust/crates/native-runtime/src/completion/state.rs"
+    admission = root / "rust/crates/native-runtime/src/workers/admission.rs"
     target, sources, selection = {
         "--signal": ("process_signal_loom.rs", (signal, outcome), "--native-signal"),
         "--wake": ("wake_loom.rs", (wake,), "--native-wake"),
@@ -44,6 +45,7 @@ def main():
         "--durability": ("../src/testing/durability/models.rs", (durability,), "--native-durability"),
         "--durability-io": ("../src/testing/durability/tests.rs", (durability,), "--native-durability-io"),
         "--native-terminal": ("../src/testing/queue_model.rs", (blocking, completion), "--native-terminal"),
+        "--native-capacity": ("../src/testing/queue_model.rs", (admission,), "--native-capacity"),
     }[mode]
     oracle = root / "rust/crates/native-runtime/tests" / target
     qualifier = root / "scripts/qualify-mcp-loom.mjs"
@@ -62,7 +64,7 @@ import { spawnSync } from 'node:child_process';
 import { qualificationMain } from './scripts/qualify-mcp-loom.mjs';
 qualificationMain([process.argv[1]], (command, args, options) => spawnSync(command,
   command === 'cargo' ? args : [process.argv[2], '--exact', '--nocapture'], options));
-""", "--", selection, oracle.parent.name + "::model::" + test]
+""", "--", selection, test if "::" in test else oracle.parent.name + "::model::" + test]
         result = subprocess.run(selected, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         log = output / (label + ".log")
         log.write_bytes(result.stdout)
@@ -184,6 +186,21 @@ qualificationMain([process.argv[1]], (command, args, options) => spawnSync(comma
             ("terminal-wake", completion,
              b"        let waker = state.waker.take();", b"        let waker = None;",
              "terminal wake lost"),
+        ]
+    elif mode == "--native-capacity":
+        mutations = [
+            ("queue-accounting", admission,
+             b"admission.queued_jobs = admission.queued_jobs.saturating_sub(1);",
+             b"admission.queued_jobs = admission.queued_jobs.saturating_sub(0);",
+             "queue accounting lost", "testing::queue_model::capacity_release_races_registration_on_the_real_queue"),
+            ("capacity-wake", admission,
+             b"admission.notifying = true;\n        admission.notify_next = admission.head.clone();",
+             b"admission.notifying = true;\n        admission.notify_next = None;",
+             "capacity wake lost", "testing::queue_model::capacity_release_races_registration_on_the_real_queue"),
+            ("capacity-broadcast", admission,
+             b"admission.notify_next = state.next.clone();",
+             b"admission.notify_next = None;",
+             "capacity broadcast lost a live waiter", "testing::queue_model::release_broadcast_reaches_every_waiter_across_concurrent_cancellation"),
         ]
     if len(sys.argv) == 4:
         selected = set(sys.argv[3].split(","))

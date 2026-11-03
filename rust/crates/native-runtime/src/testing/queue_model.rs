@@ -4,13 +4,6 @@ use crate::{AdmissionState, NativeWorkers, TaskTerminal, run_blocking_io, wake_c
 use loom::{sync::atomic::AtomicUsize, thread};
 use std::{pin::Pin, sync::atomic::Ordering, task::Wake};
 
-#[derive(Clone, Copy)]
-enum Fault {
-    None,
-    Wake,
-    Accounting,
-}
-
 struct Woken(AtomicUsize);
 
 const PANIC: &str = "original native task panic control";
@@ -82,7 +75,7 @@ impl Wake for Woken {
     }
 }
 
-fn capacity(fault: Fault) {
+fn capacity() {
     // Outside-model counters audit the explored schedule set; they never
     // participate in queue synchronization or determine a modeled outcome.
     let schedules = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -93,10 +86,7 @@ fn capacity(fault: Fault) {
         explored.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver) = crate::sync::mpsc::sync_channel(1);
         let receiver = Arc::new(Mutex::new(receiver));
-        let mut admission = AdmissionState::new();
-        admission.broken_wake = matches!(fault, Fault::Wake);
-        admission.broken_accounting = matches!(fault, Fault::Accounting);
-        let workers = NativeWorkers::single(sender, admission);
+        let workers = NativeWorkers::single(sender, AdmissionState::new());
         let mut filler = run_blocking_io(|| (), None).unwrap();
         assert!(
             workers
@@ -249,7 +239,7 @@ fn terminal(drop_observer: bool, disposition: Disposition) {
 
 #[test]
 fn capacity_release_races_registration_on_the_real_queue() {
-    capacity(Fault::None);
+    capacity();
 }
 
 #[test]
@@ -265,18 +255,6 @@ fn physical_completion_races_observer_drop_on_the_real_terminal() {
         terminal(false, disposition);
         terminal(true, disposition);
     }
-}
-
-#[test]
-#[should_panic(expected = "capacity wake lost")]
-fn broken_capacity_wake_is_detected() {
-    capacity(Fault::Wake);
-}
-
-#[test]
-#[should_panic(expected = "queue accounting lost")]
-fn broken_capacity_accounting_is_detected() {
-    capacity(Fault::Accounting);
 }
 
 /// Result observation and abandonment race the worker's final shared release.
@@ -515,7 +493,7 @@ fn premature_cancelled_waiter_refund_is_detected() {
     waiter_charge(true, true);
 }
 
-fn release_broadcast(head_only: bool) {
+fn release_broadcast() {
     // Prove broadcast without cancellation's independent successor wake too.
     // Otherwise a negative control can accidentally borrow that second path.
     for cancel in [None, Some(0), Some(1), Some(2)] {
@@ -531,7 +509,6 @@ fn release_broadcast(head_only: bool) {
                     .register(&Waker::from(flag.clone()), None)
             });
             workers.admission.lock().unwrap().queued_jobs = 1;
-            workers.admission.lock().unwrap().broken_broadcast = head_only;
             let admission = workers.admission.clone();
             let notifier = thread::spawn(move || crate::notify_capacity_released(&admission));
             if let Some(cancel) = cancel {
@@ -561,11 +538,5 @@ fn release_broadcast(head_only: bool) {
 
 #[test]
 fn release_broadcast_reaches_every_waiter_across_concurrent_cancellation() {
-    release_broadcast(false);
-}
-
-#[test]
-#[should_panic(expected = "capacity broadcast lost a live waiter")]
-fn head_only_capacity_wake_is_detected() {
-    release_broadcast(true);
+    release_broadcast();
 }
