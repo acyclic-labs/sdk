@@ -185,14 +185,17 @@ pub(super) fn check(bytes: &[u8]) {
     }
     // Mutated values may exceed the stream writer's protective frame size.
     // Such a writer refusal is not a decoder semantic failure.
-    if let Ok(written) = encoded(&snapshot) {
-        record.value = written.into();
-        assert_eq!(
-            e::Snapshot::decode(&record, &source(), u64::MAX).unwrap(),
-            snapshot
-        );
-    }
-    let original: Value = serde_json::from_slice(bytes).unwrap();
+    let Ok(written) = encoded(&snapshot) else {
+        return;
+    };
+    // Serde also admits positional struct fields. Mutate the same writer's
+    // canonical object spelling instead of assuming the admitted input's shape.
+    let original: Value = serde_json::from_slice(&written).unwrap();
+    record.value = written.into();
+    assert_eq!(
+        e::Snapshot::decode(&record, &source(), u64::MAX).unwrap(),
+        snapshot
+    );
     let mut changed = original.clone();
     let generation = if state.generation() == 0 { 1 } else { 0 };
     changed["snapshot"]["generation"] = generation.into();

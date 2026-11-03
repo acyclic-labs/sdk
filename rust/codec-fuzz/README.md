@@ -161,6 +161,12 @@ source/range/preparation identity. Its genesis envelope comes from a real
 `MemoryStream` commit/read; fuzz mutations replace only the value. These internal
 writer captures do not qualify stream authentication, hosted transport, provider
 cache attribution or physical producer retirement.
+Five additional inputs use serde's positional SnapshotWire fields derived from
+the original writer payloads. Each must pass the production decoder first.
+The oracle builds mutations from the successfully re-encoded snapshot, so all
+accepted field spellings use the writer's canonical object shape. A protective
+writer refusal still leaves source and settled-prefix checks exercised; the
+writer-dependent mutation checks apply only when encoding succeeds.
 
 Run the retained production mutations with
 `python3 mutations/resource-codecs.py`. It first captures and checks the writer
