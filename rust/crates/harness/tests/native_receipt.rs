@@ -59,7 +59,7 @@ async fn native_receipt_contract_uses_original_owner_replies()
             HostAction::Session {
                 parent,
                 reference: "first".into(),
-                action: SessionAction::Observe,
+                action: SessionAction::Observe {},
                 next: false,
             },
         )
