@@ -143,6 +143,14 @@ at `malformed host JSON must retain its parse refusal`. Restore the mutation
 before collecting original coverage. Complete reply-envelope semantics and
 embedded engine source coverage remain separate qualification obligations.
 
+The generated `corpus/code_mode/invalid-utf8.json` frame contains one byte `FF`
+inside the success envelope's JSON string. Replacing that byte with U+FFFD makes
+valid JSON, so `mutations/code_mode_lossy_reply_utf8.patch` deliberately changes
+the production reply bridge from UTF-8 rejection to lossy conversion. On this
+seed the unchanged raw-frame oracle must fail at `malformed host JSON must
+retain its parse refusal`. The seed is generated hostile input, not a captured
+provider response. Restore the patch before collecting original coverage.
+
 The same property checks bridge copies with the production engine allocator and
 its original ledger. The input varies the actual guest string. It measures the
 engine's temporary UTF-8 view, then verifies that only the returned destination
