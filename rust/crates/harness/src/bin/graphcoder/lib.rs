@@ -165,14 +165,14 @@ pub fn main_with(
                     acyclic_native_runtime::InheritedOutput::stdout().map(headless::Output::new)
                 })
                 .transpose()?;
-            let result = run(args, seams, run_shutdown, event_output.as_mut()).await;
+            let result = run(args, seams, run_shutdown.clone(), event_output.as_mut()).await;
             // Text output has no event channel: its stderr line is the only
             // account of a returned failure. It is written by this operation,
             // so the original shutdown still ends a write to a full pipe.
             if let (Err(error), None) = (&result, &event_failure) {
                 // The exit status reports the failure even when stderr is closed.
                 if let Ok(stderr) = acyclic_native_runtime::InheritedOutput::stderr() {
-                    let _ = stderr.write_owned(format!("graphcoder: {error}\n")).await;
+                    lifecycle::text_failure(stderr, error.as_ref(), run_shutdown).await;
                 }
             }
             if let (Err(error), Some((operation, generated))) = (&result, &event_failure) {
