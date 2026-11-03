@@ -1,0 +1,1 @@
+export default import('sys/input.json');
