@@ -463,6 +463,18 @@ still tests counter conservation. The original `usage-llamacpp-text-json` corpus
 and its `SOURCES.tsv` provenance remain unchanged. Neither hook establishes
 durable terminal authority.
 
+The actual metadata fuzz entry also refuses to skip JSON accepted by the
+production decoder. Its fallback parse runs only when the byte hook rejects;
+accepted metadata still takes one parse and the independent counter comparison.
+`corpus/DERIVED.tsv` records an ignored literal-map extension of the unchanged
+llama.cpp usage frame, including both hashes and the exact byte insertion. It
+is a generated mutation, not a captured output. The retained default-decoder
+patch must make the existing usage property fail at
+`production-accepted metadata skipped usage fuzz validation`, before any
+counter comparison can be silently skipped. This component control exercises
+the same entry called by `harness_codecs`; it does not establish an instrumented
+campaign or complete branch coverage.
+
 Fixed ID work is bounded by 113 bytes and allocates nothing. Variable codecs
 perform work proportional to supplied bytes and returned items. Framing controls
 check input consumption, typed EOF and finite producer loss; funded controls
