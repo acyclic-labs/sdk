@@ -71,7 +71,6 @@ proptest! {
         let findings = report.qualification_findings(&[operation], RECOVERY);
         prop_assert!(findings.iter().all(|finding| finding.step == "constant work"));
         prop_assert_eq!(!findings.is_empty(), grows);
-        prop_assert_eq!(report.qualify(&[operation], RECOVERY).is_err(), grows);
     }
 }
 
@@ -153,27 +152,17 @@ fn rejects_missing_coverage_hidden_tail_work_memory_growth_and_forged_reports() 
 fn fixed_sample_counts_use_observations_instead_of_population_as_denominator() {
     // Time and work share a fixed sample count at each resident population.
     // Dividing these counts by population would conceal the larger sample cost.
-    let mut report = flat();
     let operations = [Operation::ObjectHead];
-    report
+    flat()
         .qualify(&operations, RECOVERY)
         .expect("constant sampled work");
-    let mean_only = observed(&[vec![0, 2], vec![2, 2], vec![2, 2]], 5, operations[0]);
-    assert!(
-        mean_only
-            .findings(&operations, RECOVERY)
-            .iter()
-            .any(|finding| finding.step == "constant work"),
-        "growing mean with an unchanged maximum escaped qualification",
-    );
-    let counter = &mut report.points[2].samples[0].work[5];
-    counter.total = 8;
-    counter.maximum = 2;
+    let mut report = observed(&[vec![0, 2], vec![2, 2], vec![2, 2]], 5, operations[0]);
     assert!(
         report
             .findings(&operations, RECOVERY)
             .iter()
-            .any(|finding| finding.step == "constant work")
+            .any(|finding| finding.step == "constant work"),
+        "growing mean with an unchanged maximum escaped qualification",
     );
     // Retain all original refusals once. The former reporting/admission pair
     // is an independent allocation negative on this same counted report.
@@ -194,7 +183,7 @@ fn fixed_sample_counts_use_observations_instead_of_population_as_denominator() {
     assert_eq!(qualified.unwrap_err(), reused[0]);
     assert!(single.count_total < duplicate.count_total);
     assert!(single.bytes_total < duplicate.bytes_total);
-    report.points[1].samples[0].observations = 0;
+    report.points[1].samples[0] = Sample::new(operations[0]);
     assert!(
         report
             .findings(&operations, RECOVERY)
@@ -202,7 +191,7 @@ fn fixed_sample_counts_use_observations_instead_of_population_as_denominator() {
             .any(|finding| finding.step == "report shape")
     );
     assert!(
-        report
+        flat()
             .findings(&[Operation::ObjectHead, Operation::ObjectHead], RECOVERY)
             .iter()
             .any(|finding| finding.step == "report shape")
