@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-core/src/config/evaluate.rs
++++ b/rust/crates/harness-core/src/config/evaluate.rs
+@@ -369,7 +369,7 @@
+         const prototype = Object.getPrototypeOf(v);
+         if (prototype !== (array ? Array.prototype : Object.prototype) && !(prototype === null && !array))
+             throw new TypeError(`${at} is not a plain object or array`);
+-        const map = below !== null && typeof below === 'object' && Array.isArray(below) === array;
++        const map = below !== null && typeof below === 'object';
+         const at_ = (key) => (map && own.call(below, key) ? below[key] : undefined);
+         open.add(v);
+         let out;
