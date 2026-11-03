@@ -26,4 +26,6 @@ The `credential` target and shared `auth` target use the same
 It checks the real provider's admission and immediate completion, preserves
 the original bytes through the bearer writer and requires injected transport
 delimiters to fail. The original `auth/v2-opaque-bearer` shared capture remains
-owned by `rust/codec-fuzz/examples/capture.rs`.
+owned by `rust/codec-fuzz/examples/capture.rs`. Its byte-for-byte copy in
+`credential/v2-opaque-bearer` is also admitted by the credential property, so
+ordinary property validation exercises the retained real-writer input.
