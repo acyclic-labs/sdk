@@ -277,27 +277,6 @@ async fn project_hook_and_server_trust_are_independent() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn settings_reads_have_positive_finite_byte_bounds() -> Result<()> {
-    let fixture = Fixture::new()?;
-    write(&fixture.codex.join("config.toml"), b"[mcp_servers]\n")?;
-    assert!(
-        NativeSettings::load(fixture.config().maximum_file_bytes(14))
-            .await
-            .is_ok()
-    );
-    for maximum in [0, 13, u64::MAX] {
-        assert!(
-            NativeSettings::load(fixture.config().maximum_file_bytes(maximum))
-                .await
-                .is_err()
-        );
-    }
-    write(&fixture.codex.join("config.toml"), [0xff])?;
-    assert!(NativeSettings::load(fixture.config()).await.is_err());
-    Ok(())
-}
-
 #[cfg(unix)]
 #[tokio::test]
 async fn canonical_deduplication_combines_hook_and_mcp_roles() -> Result<()> {

@@ -14,10 +14,10 @@ recovery = "python3 rust/crates/harness-fuzz/graphcoder-args-control.py"
 controls = {
     "native_settings": (
         "rust/crates/harness-core/src/native_settings.rs",
-        b"if config.trust_project_mcp {",
-        b"if true {",
+        b"if bytes.len() as u64 > config.maximum_file_bytes {",
+        b"if false {",
         "project-server",
-        b"untrusted project declarations must not enter the snapshot",
+        b"valid over-bound settings must be refused",
     ),
     "native_marketplace": (
         "plugin/src/install/marketplace.rs",
@@ -62,6 +62,17 @@ controls = {
         b"native input exceeds its admitted byte bound",
     ),
 }
+additional_controls = {
+    "native_settings": [
+        (
+            "rust/crates/harness-core/src/native_settings.rs",
+            b"if config.trust_project_mcp {",
+            b"if true {",
+            "project-server",
+            b"untrusted project declarations must not enter the snapshot",
+        ),
+    ],
+}
 
 
 def require(condition, step):
@@ -71,6 +82,7 @@ def require(condition, step):
 
 def run(target, seed, witness, *, capture=False, runs=0):
     options = {
+        "native_settings": ["--no-default-features", "--features", "native-settings"],
         "event_projection": ["--no-default-features", "--features", "client"],
         "native_model_selection": ["--no-default-features"],
         "native_marketplace": ["--no-default-features"],
@@ -150,28 +162,31 @@ def marketplace_corpus():
 
 
 def qualify(target, runs=0):
-    filename, guard, replacement, seed, witness = controls[target]
-    source = root / filename
     corpus = f"rust/crates/harness-fuzz/corpus/{target}"
     if target == "native_marketplace":
         corpus = marketplace_corpus()
-    original = source.read_bytes()
-    require(original.count(guard) == 1, f"locate original {target} admission")
     if target == "event_projection":
+        _, _, _, seed, witness = controls[target]
         code, _ = run(target, corpus, witness, capture=True)
         require(code == 0, "capture original serialized cursor corpus")
         require((root / corpus / seed).is_file(), "retain original writer seed")
-    try:
-        source.write_bytes(original.replace(guard, replacement))
-        code, found = run(target, f"{corpus}/{seed}", witness)
-        require(
-            code != 0 and found,
-            f"unchanged oracle must detect removed production {target} admission",
-        )
-        print(f"{target}: planted production admission defect detected", flush=True)
-    finally:
-        source.write_bytes(original)
-    require(source.read_bytes() == original, "restore production source")
+    for filename, guard, replacement, seed, witness in [
+        controls[target], *additional_controls.get(target, []),
+    ]:
+        source = root / filename
+        original = source.read_bytes()
+        require(original.count(guard) == 1, f"locate original {target} admission")
+        try:
+            source.write_bytes(original.replace(guard, replacement))
+            code, found = run(target, f"{corpus}/{seed}", witness)
+            require(
+                code != 0 and found,
+                f"unchanged oracle must detect removed production {target} admission: {witness!r}",
+            )
+            print(f"{target}: planted production admission defect detected: {witness!r}", flush=True)
+        finally:
+            source.write_bytes(original)
+        require(source.read_bytes() == original, "restore production source")
     code, _ = run(target, corpus, witness, runs=runs)
     require(code == 0, f"replay production {target} corpus")
     print(f"{target}: production corpus and planted-defect oracle passed", flush=True)
