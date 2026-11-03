@@ -25,6 +25,10 @@ export const projectCorpus = [
  ].map(source => Buffer.from(source)),
 ];
 
+// Original committed SDK modules, not an authored stand-in for their topology.
+export const projectSnapshots = [JSON.parse(readFileSync(
+ new URL('./fixtures/no-polling/actor-project.json', import.meta.url), 'utf8'))];
+
 // Byte-oriented source mutations, not captured tool output. Exercise the real
 // tokenizer: decoding must preserve raw candidates and expose escaped ones.
 export function fuzz(data, analyze = sourcePolicy.pollingSites) {
@@ -105,6 +109,11 @@ export function fuzzProject(data, {source: api = sourcePolicy, graph = projectPo
  const variant = (data[0] ?? 0) % 8;
  const word = 'value' + Buffer.from(data).toString('hex');
  const ordered = values => values.map(site => JSON.stringify(site)).sort();
+ const stableSnapshot = sources => {
+  const sites = project(sources);
+  assert.deepEqual(ordered(project(new Map([...sources].reverse()))), ordered(sites));
+  assert.deepEqual(newProjectPollingSites(sources, sources), []);
+ };
  // Distinct Unicode paths can collate equally. A recursive component must keep
  // exactly the same review identity when the snapshot enumerates them in reverse.
  const composed = ['\u00e4', '\u00f6', '\u00e9', '\u00c5'][variant % 4];
@@ -181,11 +190,8 @@ export function fuzzProject(data, {source: api = sourcePolicy, graph = projectPo
  try { pollingUnit(helper, raw); parsed = true; }
  catch (error) { assert.ok(error instanceof SourceSyntaxError, String(error)); }
  const rawSources = new Map([[helper, raw], [caller, "import * as original from '../lib/helper.js'; export const value = original;"]]);
- if (parsed) {
-  const sites = project(rawSources);
-  assert.deepEqual(ordered(project(new Map([...rawSources].reverse()))), ordered(sites));
-  assert.deepEqual(newProjectPollingSites(rawSources, rawSources), []);
- } else assert.throws(() => project(rawSources), SourceSyntaxError);
+ if (parsed) stableSnapshot(rawSources);
+ else assert.throws(() => project(rawSources), SourceSyntaxError);
  const [binding, call, producer = 'export function settle() { return Bun.sleep(1); } export default settle;'] = [
   ["import {settle as invoke} from '../lib/helper.js';", 'invoke()'],
   ["import invoke from '../lib/helper.js';", 'invoke()'],
@@ -294,5 +300,27 @@ export function fuzzProject(data, {source: api = sourcePolicy, graph = projectPo
    [caller, `import '../${root}';`]]);
   if (valid) project(untrusted);
   else assert.throws(() => project(untrusted), SourceSyntaxError);
+ }
+ for (const capture of projectSnapshots) {
+  const sources = new Map(capture.sources);
+  stableSnapshot(sources);
+  const [producer, consumer] = capture.files;
+  const original = sources.get(producer);
+  const anchor = 'this.#initialize = initialize;';
+  assert.equal(original.split(anchor).length, 2, 'plant must match one recorded constructor');
+  // Authored source mutation; the surrounding captured modules stay untouched.
+  const changed = new Map(sources).set(producer,
+   original.replace(anchor, anchor + ` Bun.sleep(${data.length + 1});`));
+  const delta = newProjectPollingSites(sources, changed);
+  assert.ok(delta.some(site => site.file === producer && site.kind === 'timer-or-readiness'),
+   'recorded constructor lost its new wait');
+  const construction = sources.get(consumer).indexOf('new ActorActivation(') + 4;
+  assert.ok(construction >= 4, 'recorded consumer must construct its original activation');
+  assert.ok(delta.some(site => site.file === consumer && site.kind === 'polling-helper-reference' && site.start === construction),
+   'recorded producer edit did not reopen its unchanged constructor consumer');
+  const missing = new Map(sources);
+  missing.delete(producer);
+  assert.ok(project(missing).some(site => site.file === consumer && site.kind === 'unresolved-local-helper'),
+   'recorded constructor consumer accepted a missing producer');
  }
 }

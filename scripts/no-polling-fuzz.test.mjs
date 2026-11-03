@@ -112,6 +112,11 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
  const sqlite = await mutant('./source-policy/index.mjs', '(?:sqlite3_)?busy_(?:timeout|handler)|', '');
  assert.throws(() => targets.fuzz(Buffer.from('original'), sqlite.source.pollingSites),
   {name: 'AssertionError', message: /connection\.busy_timeout/});
+ const construction = await mutant('./source-policy/project.mjs',
+  'if (!declarationName && !resolvedReceiver)',
+  'if (!declarationName && !resolvedReceiver && !ts.isNewExpression(parent))');
+ assert.throws(() => targets.fuzzProject(Buffer.from([0]), construction),
+  {name: 'AssertionError', message: /recorded producer edit/});
 });
 
 test('raw source and project fuzz targets replay captured corpus and byte mutations', () => {

@@ -57,6 +57,13 @@ the unchanged source check all use that module, including its `SourceSyntaxError
 `fuzzProject(bytes, {source, graph})` takes the matching source and project module
 exports; dependency deltas, disposition admission and typed refusals all use that
 pair. Its authored `projectCorpus` seeds are shared with installed-module checks.
+The same target also consumes `projectSnapshots`: original committed SDK Actors
+modules captured with Git, with the repository, revision and source identities
+retained in the fixture. It checks snapshot order and unchanged deltas, plants a
+new wait in the real activation constructor, and removes its producer. The
+unchanged durable adapter must reopen in both cases. A production mutation that
+drops constructor references must fail this same oracle. These finite checks
+do not establish coverage-guided campaign completion or event liveness.
 
 `@acyclic-labs/source-policy/git` exports `gitBatchSources(files, buffer)` for
 callers that already read `git cat-file --batch`. Supply the unique file keys in
