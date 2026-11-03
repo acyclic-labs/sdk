@@ -196,3 +196,11 @@ Their three authored seeds change only score, cost or decision value to a JSON
 string in the existing own-format observation/decision files. They are not
 external-provider fixtures. The two observation fields share one type property;
 the scorer already checks its original fields with as_i64.
+
+For an admitted observation, removing score, cost, or both must retain admission.
+These three variants cover every omission combination of the two optional
+fields, including when the original raw sparse input would be skipped by an
+over-refusing decoder. Scalar type/projection checks precede the field's omission
+check so the retained coercion controls still fail at their intended assertions.
+Three retained omission mutations reuse the original observation-known seed;
+no additional corpus or parser is needed.

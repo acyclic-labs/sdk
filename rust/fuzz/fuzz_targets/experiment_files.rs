@@ -550,7 +550,25 @@ fuzz_target!(|bytes: &[u8]| {
                 original.as_f64(),
                 "independent observation invariant: numeric field {field}"
             );
+            let mut omitted = value.clone();
+            omitted
+                .as_object_mut()
+                .expect("original object")
+                .remove(field);
+            assert!(
+                Observation::decode(&serde_json::to_vec(&omitted).expect("omission encodes"))
+                    .is_ok(),
+                "independent admission invariant: optional measurement {field}"
+            );
         }
+        let mut omitted = value.clone();
+        let fields = omitted.as_object_mut().expect("original object");
+        fields.remove("score");
+        fields.remove("cost_usd");
+        assert!(
+            Observation::decode(&serde_json::to_vec(&omitted).expect("omissions encode")).is_ok(),
+            "independent admission invariant: both measurements optional"
+        );
         let restored = Observation::decode(&canonical).expect("canonical observation admits");
         assert_eq!(
             serde_json::to_vec(&restored).expect("restored observation encodes"),

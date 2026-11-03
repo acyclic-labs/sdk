@@ -64,6 +64,31 @@ CASES = {
         "    Ok(value.as_i64().unwrap_or_default())\n}",
         "decision-value-string", "independent decision invariant: integer value",
     ),
+    "observation-score-omission": (
+        "experiments/mod.rs",
+        "    score: Option<f64>,\n    cost_usd: Option<f64>,\n}",
+        "    #[serde(deserialize_with = \"Option::<f64>::deserialize\")]\n"
+        "    score: Option<f64>,\n    cost_usd: Option<f64>,\n}",
+        "observation-known", "independent admission invariant: optional measurement score",
+    ),
+    "observation-cost-omission": (
+        "experiments/mod.rs",
+        "    score: Option<f64>,\n    cost_usd: Option<f64>,\n}",
+        "    score: Option<f64>,\n"
+        "    #[serde(deserialize_with = \"Option::<f64>::deserialize\")]\n"
+        "    cost_usd: Option<f64>,\n}",
+        "observation-known", "independent admission invariant: optional measurement cost_usd",
+    ),
+    "observation-both-omission": (
+        "experiments/mod.rs",
+        "        Self::admit(crate::executor::json::decode_object(bytes)?)",
+        "        let value: serde_json::Value = serde_json::from_slice(bytes)?;\n"
+        "        if value.get(\"score\").is_none() && value.get(\"cost_usd\").is_none() {\n"
+        "            return Err(Error::Statistics(\"missing measurements\"));\n"
+        "        }\n"
+        "        Self::admit(crate::executor::json::decode_object(bytes)?)",
+        "observation-known", "independent admission invariant: both measurements optional",
+    ),
     "scorer-distinct": (
         "experiments/probes.rs", " || scorer.expected == scorer.injected", "", "scorer-equal",
         "independent admission invariant: distinguishable scorer",
