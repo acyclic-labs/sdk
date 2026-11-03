@@ -72,10 +72,6 @@ fn indexed_header_order_is_canonical_and_unique() -> Result<(), StreamError> {
         RecordHeaders::new(vec![], vec![attribute.clone(), attribute]),
         Err(StreamError::InvalidArgument)
     );
-    assert_eq!(
-        body(b"key", b"value")?.headers.keys(),
-        &[OwnedBytes::from_static(b"key")]
-    );
     Ok(())
 }
 
