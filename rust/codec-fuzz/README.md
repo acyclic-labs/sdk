@@ -816,3 +816,12 @@ bound separately. `object_list_order.patch`, `object_list_cursor.patch`,
 `object_list_limit.patch` and `object_list_after.patch` each omit the actual
 production predicate. The same writer property must catch every omission.
 Malformed digest branches, full pagination state and remote topology remain open.
+
+The deletion projection binds each admitted result to its explicit original
+wire outcome and permits reclaimed references only for `Deleted`. The retained
+referenced-deletion and head writers supply derived outcomes and references;
+these operands are not additional provider captures. `object_delete_outcome.patch`
+changes a production outcome, `object_delete_unspecified.patch` admits an unspecified
+status, and `object_delete_references.patch` drops the non-deletion reference
+guard. The same writer property must catch each actual production mutation.
+Reference framing, physical reclamation and distributed deletion remain open.

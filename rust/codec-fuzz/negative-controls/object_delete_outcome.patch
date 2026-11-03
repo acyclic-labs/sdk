@@ -1,0 +1,11 @@
+--- a/rust/crates/objects/src/convert.rs
++++ b/rust/crates/objects/src/convert.rs
+@@ -151,7 +151,7 @@
+     let outcome = match wire::DeleteStatus::try_from(value.status).map_err(|_| invalid())? {
+         wire::DeleteStatus::Deleted => Delete::Deleted,
+         wire::DeleteStatus::Absent => Delete::Absent,
+-        wire::DeleteStatus::Referenced => Delete::Referenced,
++        wire::DeleteStatus::Referenced => Delete::Absent,
+         wire::DeleteStatus::Unspecified => return Err(invalid()),
+     };
+     if outcome != Delete::Deleted && !value.references.is_empty() {

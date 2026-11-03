@@ -300,8 +300,27 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
             });
         }
         "acyclic.objects.v1.DeleteBlobResponse" => {
-            response!(DeleteBlobResponse, "blobs/delete", |client| client
-                .delete(digest()));
+            use acyclic_objects::Delete;
+            use wire::DeleteStatus as Status;
+            compare::<wire::DeleteBlobResponse, _>(bytes, "blobs/delete", |client| {
+                ready(client.delete(digest())).inspect(|deletion| {
+                    let original = wire::DeleteBlobResponse::decode(bytes)
+                        .expect("admitted original deletion wire");
+                    assert!(
+                        matches!(
+                            (Status::try_from(original.status), deletion.outcome),
+                            (Ok(Status::Deleted), Delete::Deleted)
+                                | (Ok(Status::Absent), Delete::Absent)
+                                | (Ok(Status::Referenced), Delete::Referenced)
+                        ),
+                        "deletion preserves the original explicit outcome"
+                    );
+                    assert!(
+                        deletion.outcome == Delete::Deleted || deletion.references.is_empty(),
+                        "only a deleted object returns reclaimed references"
+                    );
+                })
+            });
         }
         "acyclic.objects.v1.ListBlobsResponse" => {
             for (after, limit) in [
@@ -624,5 +643,40 @@ mod tests {
             "acyclic.objects.v1.ListBlobsResponse",
             &page.encode_to_vec(),
         );
+        let captured = acyclic_proto_build::golden::frame(
+            "corpus/protobuf/acyclic.objects.v1.DeleteBlobResponse-referenced",
+        )
+        .expect("retained original service deletion writer");
+        super::check("acyclic.objects.v1.DeleteBlobResponse", &captured[8..]);
+        let original = super::wire::DeleteBlobResponse::decode(&captured[8..])
+            .expect("original service deletion wire");
+        let head = acyclic_proto_build::golden::frame(
+            "corpus/protobuf/acyclic.objects.v1.BlobInfo-selected",
+        )
+        .expect("retained original service head writer");
+        let reference = super::wire::BlobInfo::decode(&head[8..])
+            .expect("original service head wire")
+            .digest
+            .expect("original head digest");
+        // Outcomes and references are derived from these retained packets, not
+        // captures of additional provider operations.
+        for status in [
+            super::wire::DeleteStatus::Deleted,
+            super::wire::DeleteStatus::Absent,
+            super::wire::DeleteStatus::Referenced,
+            super::wire::DeleteStatus::Unspecified,
+        ] {
+            let mut reply = original.clone();
+            reply.status = status as i32;
+            super::check(
+                "acyclic.objects.v1.DeleteBlobResponse",
+                &reply.encode_to_vec(),
+            );
+            reply.references.push(reference.clone());
+            super::check(
+                "acyclic.objects.v1.DeleteBlobResponse",
+                &reply.encode_to_vec(),
+            );
+        }
     }
 }
