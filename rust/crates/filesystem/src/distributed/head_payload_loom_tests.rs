@@ -78,14 +78,14 @@ impl ModelStream {
         }
     }
 
-    async fn call<T>(&self, future: impl Future<Output = T>) -> T {
+    async fn call<T>(&self, future: impl Future<Output = T>) -> Box<T> {
         let call = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
         let writer = (self.cut == Some(call)).then(|| {
             let inner = self.inner.clone();
             let request = self.change_request.clone().unwrap();
             loom::thread::spawn(move || ready(|| inner.commit(request)))
         });
-        let result = future.await;
+        let result = Box::new(future.await);
         if let Some(writer) = writer {
             assert!(matches!(
                 (*writer.join().unwrap()).unwrap(),
@@ -124,11 +124,11 @@ impl StreamProvider for ModelStream {
                     .iter()
                     .any(|path| path.as_str().ends_with("/records")),
         );
-        self.call(self.inner.heads(request)).await
+        *self.call(self.inner.heads(request)).await
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.observe_records(request.path.as_str().ends_with("/records"));
-        self.call(self.inner.read(request)).await
+        *self.call(self.inner.read(request)).await
     }
     fn write(
         &self,
