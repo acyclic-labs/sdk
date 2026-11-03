@@ -166,13 +166,17 @@ export async function commandCapture(program, args, {maxBuffer, ...options} = {}
   }
   return withProcessSignals(async signal => {
     const buffers = {stdout: [], stderr: []}, sizes = {stdout: 0, stderr: 0};
+    let overflow = false;
     const result = await commandProcess(program, args, {...options, signal,
-      onOutput(stream, bytes, active) {
-        if (!active) return;
+      onOutput(stream, bytes) {
+        if (overflow) return;
         const size = sizes[stream] + bytes.length;
-        if (maxBuffer !== undefined && size > maxBuffer) throw Object.assign(
-          new RangeError('step=process-capture; recovery=stream output with commandProcess or raise the explicit maxBuffer reservation'),
-          {code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'});
+        if (maxBuffer !== undefined && size > maxBuffer) {
+          overflow = true;
+          throw Object.assign(
+            new RangeError('step=process-capture; recovery=stream output with commandProcess or raise the explicit maxBuffer reservation'),
+            {code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'});
+        }
         sizes[stream] = size;
         buffers[stream].push(bytes);
       }});

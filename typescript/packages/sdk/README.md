@@ -20,7 +20,8 @@ absolute path as `host`. For example,
 `await commandCapture(process.execPath, ['--version'], {host, signal})` returns
 UTF-8 `stdout` and `stderr`. Omit `maxBuffer` for unbounded capture or pass an
 explicit per-stream byte budget. Use `commandProcess` to stream output without
-retaining it.
+retaining it. Capture retains bytes already written when cancellation occurs;
+only exceeding the explicit capture budget stops accumulation.
 
 The native owner admits the selected command, waits on OS exit events and
 retires its descendants on completion or cancellation. The cancellation channel

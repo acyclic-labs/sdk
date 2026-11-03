@@ -26,6 +26,37 @@ async function processSource() {
     "from './process-completion.mjs'", `from '${new URL('../native/process-completion.mjs', import.meta.url).href}'`);
 }
 
+async function captureCancellationControl(run, host) {
+  const stop = new AbortController(), input = new PassThrough();
+  const reason = new Error('original capture cancellation');
+  const observed = [];
+  let spawns = 0;
+  // Observe bytes on the original host pipe before its async capture accepts
+  // them. Cancellation must not discard that already-written diagnostic.
+  const spawned = ({process}) => {
+    spawns++;
+    process.stdout.on('data', bytes => { observed.push(bytes); stop.abort(reason); });
+  };
+  subscribe('child_process', spawned);
+  try {
+    await assert.rejects(run(process.execPath, [script, 'tree'], {
+      host, input, signal: stop.signal,
+    }), error => {
+      const causes = error instanceof AggregateError ? error.errors : [error];
+      assert.ok(causes.includes(reason), 'retain the original cancellation cause');
+      assert.ok(observed.length > 0, 'the original child must have written its diagnostic');
+      assert.equal(error.stdout, Buffer.concat(observed).toString('utf8'),
+        'capture must retain original bytes already written before cancellation');
+      return true;
+    });
+    assert.equal(spawns, 1, 'capture must keep the original native owner');
+    assert.ok(input.destroyed, 'physical retirement must close unfinished input');
+  } finally {
+    unsubscribe('child_process', spawned);
+    input.destroy();
+  }
+}
+
 async function terminalControls(run, host) {
   // The same real native close must preserve synchronous status failures and
   // both terminal failure paths, including work accepted after root exit.
@@ -322,6 +353,7 @@ if (mode === 'signal-owner') {
   const captured = await commandCapture(process.execPath, [script, 'echo'], {...options, input});
   assert.equal(captured.stdout, input.toString());
   assert.equal(captured.stderr, 'native stderr π\n');
+  await captureCancellationControl(commandCapture, host);
 
   const unfinishedInput = new PassThrough();
   const normal = await commandProcess(process.execPath, [script, 'exit'], {...options, input: unfinishedInput});
