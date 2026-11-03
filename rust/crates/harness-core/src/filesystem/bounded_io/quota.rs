@@ -144,15 +144,14 @@ pub(crate) fn native_decoded<T>(
 }
 
 pub(super) fn finish_decode<'a, T>(
-    io: &'a PreparationIo,
+    mut held: DecodeReservation<'a>,
     result: Result<T>,
-    admission: Option<(DecodeReservation<'a>, u64)>,
+    admission: Option<u64>,
 ) -> Result<(T, DecodeReservation<'a>)> {
-    let Some((mut held, diagnostics)) = admission else {
-        return result.and_then(|_| Err(io.invalid("trusted decode omitted admission")));
-    };
     match result {
         Ok(value) => {
+            let diagnostics =
+                admission.ok_or_else(|| held.io.invalid("trusted decode omitted admission"))?;
             if diagnostics != 0 {
                 held.substitute(held.bytes() - diagnostics)?;
             }
@@ -163,7 +162,7 @@ pub(super) fn finish_decode<'a, T>(
             code,
             source,
             custody: None,
-        }) if io.original_native_work().is_some() => {
+        }) if held.io.original_native_work().is_some() => {
             let (source, custody) = native_decoded((source, held))?;
             Err(Error::NativeJson {
                 code,

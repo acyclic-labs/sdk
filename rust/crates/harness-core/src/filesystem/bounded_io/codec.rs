@@ -176,14 +176,22 @@ impl PreparationIo {
         })
     }
 
-    /// Runs one typed decode under the reservation its layout admission
-    /// charges, plus the diagnostic its first error may render.
+    /// Owns the first diagnostic before admission can parse, then extends
+    /// that reservation with the admitted layout and typed diagnostic.
     fn decode_guarded<T>(
         &self,
         labels: Option<u64>,
         code: Option<crate::wire::ErrorCode>,
         decode: impl FnOnce(&mut dyn FnMut(Charge) -> Result<()>) -> Result<T>,
     ) -> Result<(T, DecodeReservation<'_>)> {
+        let initial_diagnostics = if code.is_some() {
+            crate::executor::json::sdk_json_diagnostic_bytes()
+        } else {
+            0
+        };
+        let mut held = code
+            .map(|_| self.reserve_decode(initial_diagnostics))
+            .transpose()?;
         let mut admission = None;
         let result = decode(&mut |charge| {
             if let Charge::Admission {
@@ -200,19 +208,33 @@ impl PreparationIo {
                         )
                     })
                     .transpose()?
-                    .unwrap_or(0);
+                    .unwrap_or(0)
+                    .max(initial_diagnostics);
                 let bytes = maximum_owned_bytes
                     .checked_add(diagnostics)
                     .ok_or_else(|| {
                         decode_allowance_error("typed diagnostic reservation overflow", code)
                     })?;
-                admission = Some((self.reserve_decode(bytes)?, diagnostics));
+                if let Some(held) = &mut held {
+                    let additional = bytes.checked_sub(held.bytes()).ok_or_else(|| {
+                        decode_allowance_error("typed admission shrank diagnostic ownership", code)
+                    })?;
+                    if additional != 0 {
+                        held.absorb(self.reserve_decode(additional)?)?;
+                    }
+                } else {
+                    held = Some(self.reserve_decode(bytes)?);
+                }
+                admission = Some(diagnostics);
                 Ok(())
             } else {
                 self.codec_charge(charge, false)
             }
         });
-        finish_decode(self, result, admission)
+        match held {
+            Some(held) => finish_decode(held, result, admission),
+            None => result.and_then(|_| Err(self.invalid("trusted decode omitted admission"))),
+        }
     }
 
     #[doc(hidden)]
