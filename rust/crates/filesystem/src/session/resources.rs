@@ -132,6 +132,7 @@ where
                 let _ = deadline_tx.send(trie.valid_until());
                 *opened.trie.lock().map_err(|_| StreamError::AccessDenied)? = Some(trie.clone());
                 opened.validate()?;
+                let scope = fs.authority_actor_scope();
                 let path = super::changes_path(&fs, volume_id)?;
                 let filter = request
                     .authorization
