@@ -101,19 +101,3 @@ fn reconnect_registers_before_the_required_verification_and_releases_old_state()
     drop(next);
     assert!(source.keys().unwrap().as_ref().unwrap().is_empty());
 }
-
-#[test]
-fn invalid_transport_cursor_and_source_eof_fail_closed() {
-    let initial = AvailabilityCursor::new([1; 16], 4).unwrap();
-    for next in [
-        initial,
-        AvailabilityCursor::new([1; 16], 3).unwrap(),
-        AvailabilityCursor::new([2; 16], 5).unwrap(),
-    ] {
-        let mut observation = Availability::new(initial, stream::iter([Ok(next)]));
-        assert_eq!(changed(&mut observation), Err(unavailable()));
-        assert_eq!(changed(&mut observation), Err(unavailable()));
-    }
-    let mut ended = Availability::new(initial, stream::empty());
-    assert_eq!(changed(&mut ended), Err(unavailable()));
-}

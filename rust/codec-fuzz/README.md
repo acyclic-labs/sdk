@@ -792,6 +792,7 @@ and restore exact production bytes. This qualifies only the named predicate.
 
 | Property and independent obligation | Kept production negative controls |
 | --- | --- |
+| Availability feed: actual Store-issued initial cursor; arbitrary admitted cursors plus derived forward/duplicate/regressing/foreign frames, retained last cut and terminal refusal before a later healthy frame | `object_availability_order.patch`, `object_availability_terminal.patch` |
 | GET: original maximum admitted bytes, including zero | `object_read_maximum.patch` |
 | Unary and batch PUT: original digest and logical length through one assertion | `object_put_identity.patch`, `object_put_length.patch` |
 | GET: original offset, complete selection length, digest of a complete blob; a selected slice is derived from the retained read | `object_read_start.patch`, `object_read_length.patch`, `object_read_content.patch` |
@@ -815,3 +816,10 @@ establish full source-branch coverage, malformed digest/reference framing,
 manifest logical-content authentication, complete pagination/range-refusal
 states, indeterminate execution, remote topology, crash frontiers, deletion
 progress, physical reclamation or distributed durability.
+
+The availability feed refinement uses the public adapter used by serving clients,
+with an initial cursor from the original Store producer. It subsumes the fixed
+invalid-frame and EOF example; producer ownership, selected wakeups and reconnect
+checks remain distinct. The producer incarnation is random, so it is not added
+to repeatable exports. A retained valid feed corpus, current branch coverage,
+producer-loss schedules and remote topology qualification remain open.
