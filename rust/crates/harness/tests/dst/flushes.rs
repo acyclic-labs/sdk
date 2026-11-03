@@ -176,3 +176,25 @@ fn streamed_events_add_no_flush_to_a_reply_turn() -> Result<()> {
     assert_eq!(long, REPLY_TURN_FLUSHES);
     Ok(())
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn negative_control_filesystem_wide_flush_is_counted() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(storage)?;
+    std::fs::write(directory.path().join("dirty"), b"durable").map_err(storage)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .map_err(storage)?;
+    let (schedule, _) = acyclic_native_runtime::testing::Schedule::seeded(71);
+    runtime
+        .block_on(
+            schedule.scope(async { acyclic_native_runtime::sync_filesystem(directory.path()) }),
+        )
+        .map_err(storage)?;
+    assert_eq!(
+        flushes(&schedule.durable_writes()),
+        (0, 1),
+        "the oracle missed the native filesystem-wide drain"
+    );
+    Ok(())
+}
