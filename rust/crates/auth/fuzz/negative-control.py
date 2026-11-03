@@ -12,9 +12,11 @@ if choice.startswith("filesystem-"):
     target = "filesystem_access"
     source = root.parent / "harness-core/src/core/authority/workload/admission.rs"
     oracle = source.with_name("verification.rs")
-elif choice == "addressing-fragment":
+elif choice.startswith("addressing-"):
     target = "addressing"
-    source = root.parent / "src/addressing/routes.rs"
+    source = root.parent / "src/addressing" / (
+        "routes.rs" if choice == "addressing-fragment" else "dns.rs"
+    )
     oracle = root.parent / "tests/common/addressing.rs"
 elif choice.startswith("secret-"):
     target = "secret_ref"
@@ -41,6 +43,14 @@ try:
     oracle_hashes = {path: hashlib.sha256(path.read_bytes()).digest() for path in oracles}
     newline = b"\r\n" if b"\r\n" in original else b"\n"
     mutations = {
+        "addressing-case": (
+            b"b.is_ascii_lowercase()", b"b.is_ascii_alphabetic()",
+            "DNS label aliases must refuse", "resource-hostname",
+        ),
+        "addressing-length": (
+            b"if label.len() > 63 {", b"if false && label.len() > 63 {",
+            "oversized DNS label must refuse", "resource-hostname",
+        ),
         "addressing-fragment": (
             b"            || url.fragment().is_some()", b"",
             "routing must refuse credentials, fragments and unsupported schemes", "route-0",

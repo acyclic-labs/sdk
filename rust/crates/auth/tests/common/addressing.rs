@@ -1,9 +1,63 @@
 //! Textual addresses must retain the identities and route decisions they carry.
 use acyclic_auth::addressing::{
     CanonicalHost, ResourceIdentity, RouteError, RoutePattern, WorkerRoute, select_route,
+    validate_dns_label,
 };
 
 const DOMAIN: &str = "run.example.com";
+
+fn label(bytes: &[u8]) {
+    // Construct an LDH label; this is a generator, not another admission parser.
+    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789-";
+    let edge = ALPHABET[usize::from(bytes.first().copied().unwrap_or(0)) % 36];
+    let mut value = vec![edge];
+    value.extend(
+        bytes
+            .iter()
+            .take(61)
+            .map(|byte| ALPHABET[usize::from(*byte) % ALPHABET.len()]),
+    );
+    value.push(edge);
+    for valid in [value.as_slice(), &value[..1]] {
+        assert!(
+            validate_dns_label(valid).is_ok(),
+            "generated DNS label must admit"
+        );
+    }
+    for (index, byte) in [
+        (0, b'-'),
+        (value.len() - 1, b'-'),
+        (value.len() / 2, b'.'),
+        (0, b'A'),
+        (0, b'_'),
+        (0, b':'),
+        (0, b'*'),
+        (0, 0),
+        (0, 255),
+    ] {
+        let mut alias = value.clone();
+        alias[index] = byte;
+        assert!(
+            validate_dns_label(&alias).is_err(),
+            "DNS label aliases must refuse"
+        );
+    }
+    assert!(
+        validate_dns_label(&[]).is_err(),
+        "empty DNS label must refuse"
+    );
+    value.resize(63, b'a');
+    assert!(
+        validate_dns_label(&value).is_ok(),
+        "maximum DNS label must admit"
+    );
+    value.resize(64, b'a');
+    assert!(
+        validate_dns_label(&value).is_err(),
+        "oversized DNS label must refuse"
+    );
+    let _ = validate_dns_label(bytes);
+}
 
 /// Check the real hostname producer against canonical and identity admission.
 pub fn identity(value: &ResourceIdentity) {
@@ -66,6 +120,7 @@ fn route(pattern: &str, url: &str) {
 
 /// Check raw hostname input and route/context tuples through production APIs.
 pub fn check(bytes: &[u8]) {
+    label(bytes);
     let Ok(text) = std::str::from_utf8(bytes) else {
         return;
     };

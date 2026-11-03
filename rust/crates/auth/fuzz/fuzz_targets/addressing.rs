@@ -1,5 +1,5 @@
 #![no_main]
-use acyclic_auth::addressing::{ActorReference, ResourceIdentity, testing, validate_dns_label};
+use acyclic_auth::addressing::{ActorReference, ResourceIdentity, testing};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
@@ -12,5 +12,4 @@ fuzz_target!(|data: &[u8]| {
         assert_eq!(identity.encode(), data);
         testing::identity(&identity);
     }
-    let _ = validate_dns_label(data);
 });
