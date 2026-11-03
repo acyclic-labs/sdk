@@ -690,5 +690,28 @@
     "features": 13173,
     "new_campaign_runs": 0,
     "scope": "Linux x86_64 selected-file native failure propagation only; original campaign and other controls retain original source qualification. Canonicalization failures, worker loss, physical source branch maps and other platforms remain open. This oracle shares the production error mapper and does not independently prove that mapper."
+  },
+  "path_qualification": {
+    "source_commit": "df7d91b0cb5bc171fb5855426028d8356837967d",
+    "source_tree": "b07f2cf3a34e0a0d7d0e8bbb2891c9324e144a61",
+    "sources": {
+      "rust/crates/harness-core/src/native_settings.rs": "7f7e5873459a627ec6608ffb32b08aefecfd774298ef38e957ebf86dbb316535",
+      "rust/crates/harness-fuzz/fuzz_targets/native_settings.rs": "61efaadcb1214bdc9cefbf9a3b262bf618155b10c552868b08bf15be35359399",
+      "rust/crates/harness-fuzz/graphcoder-args-control.py": "c3849c49a974eb53652f32a95ac30f1c8a3a3463d082ea834d3382ca1db091c1"
+    },
+    "result": "pass",
+    "negative_controls": [
+      "Actual configured workspace canonicalization failure suppressed",
+      "Actual selected path non-NotFound canonicalization failures suppressed"
+    ],
+    "oracle": "The real OS canonicalization failure must retain its ProcessError kind and cause through public NativeSettings::load; untrusted project paths remain unselected. Only OS NotFound may be skipped for selected source paths.",
+    "restoration": "Both source mutations hit the unchanged typed failure assertion; exact source restored before corpus replay",
+    "replayed_files": 512,
+    "replayed_bytes": 19849,
+    "replay_seconds": 3,
+    "instrumented_edges": 5932,
+    "features": 13175,
+    "new_campaign_runs": 0,
+    "scope": "Linux x86_64 native canonicalization propagation. OS classifications are platform dependent. Shared mapper correctness, worker loss, physical source branch maps and other platforms remain open."
   }
 }
