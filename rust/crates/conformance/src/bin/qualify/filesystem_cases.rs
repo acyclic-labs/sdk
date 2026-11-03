@@ -231,7 +231,7 @@ pub(super) fn sqlite_wal_child(path: &Path) -> Result<(), String> {
     reader
         .execute_batch("BEGIN")
         .map_err(|error| error.to_string())?;
-    let read_count = |connection: &Connection| -> Result<i64, String> {
+    let read_count = |connection: &rusqlite::Connection| -> Result<i64, String> {
         connection
             .query_row("SELECT count(*) FROM entries", [], |row| row.get(0))
             .map_err(|error| error.to_string())
