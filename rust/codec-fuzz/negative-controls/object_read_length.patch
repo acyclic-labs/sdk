@@ -1,0 +1,10 @@
+--- a/rust/crates/objects/src/convert.rs
++++ b/rust/crates/objects/src/convert.rs
+@@ -252,7 +252,6 @@
+     let selected = selection.resolve(head.length)?;
+     if head.digest != requested
+         || value.start != selected.start
+-        || value.body.len() as u64 != selected.end - selected.start
+         || value.body.len() as u64 > maximum
+         || (head.kind == Kind::Blob
+             && selected.start == 0

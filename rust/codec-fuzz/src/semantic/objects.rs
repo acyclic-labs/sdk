@@ -257,6 +257,27 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
                             object.body().len() as u64 <= maximum,
                             "read respects original byte admission"
                         );
+                        let end = range.end.unwrap_or(object.head().length);
+                        assert_eq!(
+                            object.start(),
+                            range.start,
+                            "read starts at the original requested offset"
+                        );
+                        assert_eq!(
+                            object.body().len() as u64,
+                            end - range.start,
+                            "read contains the complete requested selection"
+                        );
+                        if object.head().kind == acyclic_objects::Kind::Blob
+                            && range.start == 0
+                            && end == object.head().length
+                        {
+                            assert_eq!(
+                                Digest::of(object.body()),
+                                digest(),
+                                "complete blob read authenticates its original bytes"
+                            );
+                        }
                         (
                             object.head().clone(),
                             object.start(),
@@ -511,8 +532,9 @@ mod tests {
         )
         .expect("retained original service read writer");
         super::check("acyclic.objects.v1.GetBlobResponse", &captured[8..]);
-        let mut wrong = super::wire::GetBlobResponse::decode(&captured[8..])
+        let original = super::wire::GetBlobResponse::decode(&captured[8..])
             .expect("original service read wire");
+        let mut wrong = original.clone();
         wrong
             .info
             .as_mut()
@@ -522,5 +544,27 @@ mod tests {
             .expect("original read digest")
             .blake3[0] ^= 1;
         super::check("acyclic.objects.v1.GetBlobResponse", &wrong.encode_to_vec());
+        let mut wrong = original.clone();
+        wrong.start += 1;
+        super::check("acyclic.objects.v1.GetBlobResponse", &wrong.encode_to_vec());
+        let mut wrong = original.clone();
+        let mut bytes = wrong.body.to_vec();
+        bytes[0] ^= 1;
+        wrong.body = bytes.into();
+        super::check("acyclic.objects.v1.GetBlobResponse", &wrong.encode_to_vec());
+        // Derive a selected range from the original writer's bytes. This is an
+        // oracle operand, not a claimed capture of another provider operation.
+        let mut selected = original;
+        selected.start = 1;
+        selected.body = selected.body.slice(1..);
+        super::check(
+            "acyclic.objects.v1.GetBlobResponse",
+            &selected.encode_to_vec(),
+        );
+        selected.body.truncate(selected.body.len() - 1);
+        super::check(
+            "acyclic.objects.v1.GetBlobResponse",
+            &selected.encode_to_vec(),
+        );
     }
 }

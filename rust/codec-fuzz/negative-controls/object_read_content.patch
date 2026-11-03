@@ -1,0 +1,13 @@
+--- a/rust/crates/objects/src/convert.rs
++++ b/rust/crates/objects/src/convert.rs
+@@ -254,10 +254,6 @@
+         || value.start != selected.start
+         || value.body.len() as u64 != selected.end - selected.start
+         || value.body.len() as u64 > maximum
+-        || (head.kind == Kind::Blob
+-            && selected.start == 0
+-            && selected.end == head.length
+-            && Digest::of(&value.body) != requested)
+     {
+         return Err(wire::ErrorCode::Unavailable.into());
+     }
