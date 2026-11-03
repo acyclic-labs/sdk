@@ -1,24 +1,21 @@
 import assert from "node:assert/strict";
 import { tarEntries } from "./archive-utils.mjs";
 
-// Byte-oriented target for the production decoder. Seed with captured TAR
-// output; mutations may refuse admission but must not escape its error contract,
-// stop advancing, copy a body, or admit a partial end marker.
+// Exercise the production decoder; accepted bodies must retain their original
+// bytes, each header must advance, and the complete archive must authenticate.
 export function fuzz(data) {
   const bytes = Buffer.from(data);
-  const entries = tarEntries(bytes);
+  let entries;
+  try { entries = tarEntries(bytes)[Symbol.iterator](); }
+  catch (error) { return refused(error); }
   let offset = 0;
   for (let visited = 0; visited <= Math.floor(bytes.length / 512); visited++) {
     let next;
     try { next = entries.next(); }
-    catch (error) {
-      assert.equal(error.constructor, Error);
-      assert.match(error.message, /^archive (member |has an invalid end marker|lacks an end marker)/);
-      return false;
-    }
+    catch (error) { return refused(error); }
     if (next.done) {
-      assert.ok(offset + 1024 <= bytes.length);
-      assert.ok(bytes.subarray(offset).every(byte => byte === 0));
+      assert.ok(offset + 1024 <= bytes.length, "two end blocks are required");
+      assert.ok(bytes.subarray(offset).every(byte => byte === 0), "nonzero archive trailer");
       return true;
     }
     const { body, size, path, type } = next.value;
@@ -29,7 +26,22 @@ export function fuzz(data) {
     assert.equal(body.buffer, bytes.buffer);
     assert.equal(body.byteOffset, bytes.byteOffset + offset + 512);
     assert.ok(offset + 512 + size <= bytes.length);
+    const header = Buffer.from(bytes.subarray(offset, offset + 512));
+    const sizeText = header.toString("latin1", 124, 136).split("\0", 1)[0].trim();
+    assert.match(sizeText, /^[0-7]*$/);
+    assert.equal(size, sizeText === "" ? 0 : Number.parseInt(sizeText, 8));
+    const checksumText = header.toString("latin1", 148, 156).split("\0", 1)[0].trim();
+    assert.match(checksumText, /^[0-7]+$/);
+    const expected = Number.parseInt(checksumText, 8);
+    header.fill(32, 148, 156);
+    assert.equal(header.reduce((sum, byte) => sum + byte, 0), expected, "unauthenticated header");
     offset += 512 + Math.ceil(size / 512) * 512;
   }
   assert.fail("TAR decoder failed to advance within its input's header count");
+}
+
+function refused(error) {
+  assert.equal(error.constructor, Error);
+  assert.match(error.message, /^archive (member |has an invalid end marker|lacks an end marker)/);
+  return false;
 }

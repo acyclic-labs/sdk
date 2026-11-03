@@ -77,7 +77,6 @@ export function* tarEntries(tar) {
     if (rawSize !== "" && !/^[0-7]+$/.test(rawSize)) throw new Error("archive member has an invalid size");
     const size = rawSize === "" ? 0 : Number.parseInt(rawSize, 8);
     const type = String.fromCharCode(header[156] || 48);
-    if (!Number.isSafeInteger(size) || size < 0) throw new Error("archive member has an invalid size");
     const bodyStart = offset + 512;
     const bodyEnd = bodyStart + size;
     if (bodyEnd > tar.length) throw new Error("archive member is truncated");
