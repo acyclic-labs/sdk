@@ -145,7 +145,7 @@ cargo test --locked -p acyclic-harness-providers --features fuzzing --lib -- tes
 ```
 
 Both unchanged controls must fail at runtime with `accepted literal-key input
-skipped validation` and `accepted literal-key refusal skipped spelling comparison`.
+skipped validation` and `production-accepted refusal skipped fuzz spelling comparison`.
 Restore both source files before running the positive control. This establishes
 generator admission conformance, not complete parser coverage or a sanitizer
 campaign.
