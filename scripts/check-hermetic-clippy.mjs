@@ -6,7 +6,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = 'rust/crates/harness/tests/ui/native-environment/Cargo.toml';
 export function hermeticCompilerPlans() {
   return [false, true].map(negative => ({negative, args: ['clippy', '--locked', '--manifest-path', manifest,
-    '--lib', '--message-format=json', ...(negative ? ['--features', 'negative'] : []),
+    '--lib', '--message-format=json', '--features',
+    ['filesystem-local', 'native-execution', 'test-support', ...(negative ? ['negative'] : [])].join(','),
     '--', '-D', 'clippy::disallowed_methods', '-D', 'clippy::disallowed_macros']}));
 }
 

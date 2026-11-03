@@ -13,5 +13,10 @@ doctest = false
 
 [features]
 negative = []
-filesystem-local = []
+filesystem-local = ["dep:dirs"]
+native-execution = ["dep:acyclic-host-platform"]
 test-support = []
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+dirs = { workspace = true, optional = true }
+acyclic-host-platform = { version = "=0.2.0", path = "../../../../host-platform", optional = true }
