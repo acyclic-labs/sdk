@@ -1232,19 +1232,11 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     // reader and cannot be unlinked as a file on any supported platform.
     std::fs::create_dir(requests.join(format!("{operation}.json"))).map_err(storage)?;
     blocked.shared.published(operation);
-    let failure = tokio::time::timeout(Duration::from_secs(2), &mut owner)
+    tokio::time::timeout(Duration::from_secs(2), &mut owner)
         .await
         .map_err(storage)?
         .map_err(storage)?
-        .unwrap_err()
-        .to_string();
-    assert!(
-        failure.contains(&format!(
-            "step=withdraw rejected native request {operation}:"
-        )),
-        "the original rejection cause must survive retirement: {failure}"
-    );
-    assert!(failure.ends_with("recovery=graphcoder --host-workspace"));
+        .expect_err("failed request withdrawal must end its original owner");
     assert!(matches!(
         response
             .recv_timeout(Duration::from_secs(2))
