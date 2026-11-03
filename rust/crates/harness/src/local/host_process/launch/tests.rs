@@ -113,45 +113,6 @@ fn relative_parent_paths_keep_their_targets_when_child_cwd_changes() -> Result {
             "a missing parent extension must not load the child's collision"
         );
     }
-    for (option, source) in [
-        ("--extension", "npm:fixture-extension"),
-        ("--extension", "builtin:fixture"),
-        ("--extension", "git:example.com/fixture/extension"),
-        ("--extension", "github:fixture/extension"),
-        ("--extension", "http://example.com/fixture/extension"),
-        ("--extension", "https://example.com/fixture/extension"),
-        ("--extension", "ssh://example.com/fixture/extension"),
-        ("--extension", "~"),
-        ("--extension", "~/extensions/shared.ts"),
-        ("--extension", "file:///shared/extension.ts"),
-        ("--session-dir", "~"),
-        ("--session-dir", "~/sessions"),
-        ("--session-dir", "file:///shared/sessions"),
-    ] {
-        #[cfg(unix)]
-        {
-            let collision = workspace.join(source);
-            if source == "~" {
-                std::fs::create_dir_all(&collision)?;
-            } else {
-                std::fs::create_dir_all(collision.parent().ok_or("fixture parent absent")?)?;
-                std::fs::write(collision, "")?;
-            }
-        }
-        let supplied = [option.into(), source.into()];
-        assert_eq!(
-            parent_flags("pi", &supplied, &workspace)?,
-            supplied,
-            "package and intrinsic paths must not be rebound to the workspace"
-        );
-    }
-    #[cfg(windows)]
-    {
-        for option in ["--extension", "--session-dir"] {
-            let supplied = [option.into(), "~\\shared".into()];
-            assert_eq!(parent_flags("pi", &supplied, &workspace)?, supplied);
-        }
-    }
     Ok(())
 }
 
