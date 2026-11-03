@@ -8,7 +8,7 @@ Capture the corpus from the SDK's original status producer:
 
 ```sh
 cargo run --locked -p acyclic-stream --features test-support --example status-corpus
-cargo test --locked -p acyclic-stream --features test-support --lib codec_fuzz::status::tests::status_contract_and_planted_decoder_faults -- --exact
+cargo test --locked -p acyclic-stream --lib wire_codec::status_contract::tests::status_contract_and_planted_decoder_faults -- --exact
 cargo +nightly fuzz run --fuzz-dir rust/crates/stream/fuzz status -- -runs=1000 -seed=1 -max_len=256
 ```
 

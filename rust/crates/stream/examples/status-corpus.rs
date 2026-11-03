@@ -4,7 +4,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/status");
     std::fs::create_dir_all(&root)?;
     let mut provenance = String::from("file\tsha256\tproducer\n");
-    for (name, bytes) in acyclic_stream::codec_fuzz::status::seeds()? {
+    for (name, bytes) in acyclic_stream::wire_codec::status_contract::seeds()? {
         let digest: String = Sha256::digest(&bytes)
             .iter()
             .map(|byte| format!("{byte:02x}"))
