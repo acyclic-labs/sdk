@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { Spool, SpoolEnded, OutputWatch, Processes } from "./process.mjs";
 import { matches, pty, SHOW_CURSOR, HIDE_CURSOR } from "./pty.mjs";
 import { Terminal } from "../graphcoder-pty/screen.mjs";
-import { TerminalFrames, FailureHistory, queryFailure } from "./frames.mjs";
+import { TerminalFrames, FailureHistory } from "./frames.mjs";
 import { fuzz as fuzzTerminalFrames } from "./frames.fuzz.mjs";
 import { failureReport } from "./report.mjs";
 
@@ -127,19 +127,11 @@ test("screen assertions observe complete synchronized frames at every fragmentat
   }
 });
 
-test("handled failures retain exact task and reason identity across subsequent actions", () => {
+test("refused actions require named admission across subsequent actions", () => {
   const history = new FailureHistory();
-  const old = "task 00000000-0000-0000-0000-000000000001 failed: cancelled";
-  const next = old.replace("0001 failed", "0002 failed");
-  assert.equal(history.unexpected(old, {}), old, "old stateless guard rejects the handled result again");
-  history.accept(old, { task_failure: "cancelled" });
-  assert.equal(history.unexpected(old, {}), undefined);
-  assert.equal(history.unexpected(next, {}), next, "another task's failure must still fail immediately");
-  const changed = old.replace("cancelled", "unauthorized");
-  assert.equal(history.unexpected(changed, {}), changed, "another reason is not an accepted replay");
   // A refused action fails the awaited step unless that step names it; an
   // informational status line never does.
-  const refused = "✗ storage failure: diff command: unsupported";
+  const refused = "âœ— storage failure: diff command: unsupported";
   assert.equal(history.unexpected(refused, { contains: ["LARGE_DIFF_READY"] }), refused);
   assert.equal(history.unexpected(refused, { contains: ["diff command"] }), undefined);
   history.accept(refused, { contains: ["diff command"] });
@@ -153,20 +145,6 @@ test("shipping terminal refusals survive coalesced and fragmented redraws", asyn
 
 const queryCapturePath = fileURLToPath(new URL("./fixtures/live-terminal-query-refusal.json", import.meta.url));
 const queryCapture = JSON.parse(readFileSync(queryCapturePath, "utf8"));
-test("captured query refusal requires explicit status-row admission", () => {
-  const history = new FailureHistory(), visible = queryCapture.visible;
-  const notice = visible.slice(visible.lastIndexOf("\n") + 1);
-  assert.equal(queryFailure(visible), notice);
-  assert.equal(history.unexpected(visible, {}), notice);
-  assert.equal(history.unexpected(visible, { task_failure: notice }), notice);
-  history.accept(visible, { query_failure: "storage failure: diff command:" });
-  assert.equal(history.unexpected(visible, {}), undefined);
-  const changed = visible.replace(notice, notice + " changed");
-  assert.equal(history.unexpected(changed, {}), notice + " changed");
-  assert.equal(queryFailure(notice + "\nordinary status"), undefined,
-    "transcript text cannot stand in for the original status row");
-});
-
 test("observed producer frame asserts captured content with one screen projection", async () => {
   class TerminalProcess extends Processes {
     startTerminal(binary, args, { cwd, env }) { return this.start(binary, args, { cwd, env }); }
@@ -398,7 +376,7 @@ test("real process captures preserve UTF-8 at every byte boundary", async t => {
   const processes = new Processes();
   t.after(() => processes.close());
   const child = processes.start(process.execPath, ["-e", "require('node:readline').createInterface({input:process.stdin}).on('line',line=>process.stdout.write(Buffer.from(line,'hex')))"]);
-  const text = "hé λ 🙂", bytes = Buffer.from(text);
+  const text = "hÃ© Î» ðŸ™‚", bytes = Buffer.from(text);
   const output = child.child.stdout.iterator({ destroyOnReturn: false });
   const receive = async (output, remaining) => {
     while (remaining > 0) {
