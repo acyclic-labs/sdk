@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { loomEnvironment, qualificationMain, qualifySkillMaterializerLoom, qualifyFsPolicyLoom } from "./qualify-mcp-loom.mjs";
-import { harnessModelSuites, qualifyHarnessModelsLoom } from "./qualify-mcp-loom.mjs";
+import { harnessModelSuites, qualifyHarnessModelsLoom, qualifyNativeHostLoom } from "./qualify-mcp-loom.mjs";
 import { gateQualifications, qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "main" }, profile: { test: true }, executable: "model-binary" };
@@ -139,8 +139,11 @@ test("progress qualification requires the cleanup and runnable-wake models and c
   }
 });
 
-test("native progress qualification instruments the real mutex and requires every ownership model", () => {
-  for (const missing of [null, ...Array.from({ length: 8 }, (_, index) => index + 1)]) {
+test("native progress qualification instruments the real mutex and requires every selected model", () => {
+  for (const [qualify, count, pattern] of [
+    [qualifyNativeProgressLoom, 8, /^testing::(?:(?:queue_)?model::|durability::models::)/],
+    [run => qualifyNativeHostLoom(run, true), 3, /^testing::host::models::/],
+  ]) for (const missing of [null, ...Array.from({ length: count }, (_, index) => index + 1)]) {
     let models = 0;
     const run = (command, args, options) => {
       if (command === "cargo") {
@@ -148,11 +151,11 @@ test("native progress qualification instruments the real mutex and requires ever
         assert.ok(args.includes("--lib") && args.includes("--no-run"));
         return {status: 0, stdout: JSON.stringify({...artifact, target: {name: "acyclic_native_runtime"}})};
       }
-      assert.match(args[0], /^testing::(?:(?:queue_)?model::|durability::models::)/);
+      assert.match(args[0], pattern);
       return {status: 0, stdout: summary(++models === missing ? 0 : 1, 0, 4)};
     };
-    if (missing === null) { qualifyNativeProgressLoom(run); assert.equal(models, 8); }
-    else assert.throws(() => qualifyNativeProgressLoom(run), /requires a nonzero/);
+    if (missing === null) { qualify(run); assert.equal(models, count); }
+    else assert.throws(() => qualify(run), /requires a nonzero/);
   }
 });
 

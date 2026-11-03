@@ -23,10 +23,6 @@ struct State {
     waiting_start: bool,
     detached: bool,
     driver: Option<Waker>,
-    #[cfg(test)]
-    forget_ready: bool,
-    #[cfg(test)]
-    forget_io: bool,
 }
 
 impl State {
@@ -104,10 +100,6 @@ impl Host {
                 waiting_start: false,
                 detached: false,
                 driver: None,
-                #[cfg(test)]
-                forget_ready: false,
-                #[cfg(test)]
-                forget_io: false,
             }),
             changed: Condvar::new(),
             pool,
@@ -258,10 +250,6 @@ impl Wake for IoWake {
     fn wake_by_ref(self: &Arc<Self>) {
         let driver = {
             let mut state = lock(&self.0.state);
-            #[cfg(test)]
-            if state.forget_io {
-                return;
-            }
             state.io_ready = true;
             (
                 state.phase == Phase::Starting,
@@ -301,10 +289,6 @@ impl Wake for Host {
     fn wake_by_ref(self: &Arc<Self>) {
         let driver = {
             let mut state = lock(&self.state);
-            #[cfg(test)]
-            if state.forget_ready {
-                return;
-            }
             state.ready = true;
             if state.detached && state.phase == Phase::Parked {
                 state.ready = false;

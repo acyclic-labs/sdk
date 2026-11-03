@@ -1,7 +1,7 @@
 """Check production signal/wake/owner models against actual source defects.
 
 Run in a disposable checkout: python3 rust/crates/native-runtime/tests/signal-control.py /tmp/native-signal-control
-Select a retained control with --wake, --owners, --host, --host-events, --ownership, --claim, --descriptor, --owner-envelope, --durability, --durability-io, --native-terminal, --native-capacity, --native-funding or --native-tracker.
+Select a retained control with --wake, --owners, --host, --host-source, --host-events, --ownership, --claim, --descriptor, --owner-envelope, --durability, --durability-io, --native-terminal, --native-capacity, --native-funding or --native-tracker.
 An optional comma-separated mutation selection shares one restored positive run.
 """
 import hashlib
@@ -13,8 +13,8 @@ import sys
 
 
 def main():
-    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--host-events", "--ownership", "--claim", "--descriptor", "--owner-envelope", "--durability", "--durability-io", "--native-terminal", "--native-capacity", "--native-funding", "--native-tracker")):
-        raise RuntimeError("arguments: expected evidence directory, optional control and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--host-events|--ownership|--claim|--descriptor|--owner-envelope|--durability|--durability-io|--native-terminal|--native-capacity|--native-funding|--native-tracker [mutation]]")
+    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--host-source", "--host-events", "--ownership", "--claim", "--descriptor", "--owner-envelope", "--durability", "--durability-io", "--native-terminal", "--native-capacity", "--native-funding", "--native-tracker")):
+        raise RuntimeError("arguments: expected evidence directory, optional control and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--host-source|--host-events|--ownership|--claim|--descriptor|--owner-envelope|--durability|--durability-io|--native-terminal|--native-capacity|--native-funding|--native-tracker [mutation]]")
     mode = sys.argv[2] if len(sys.argv) >= 3 else "--signal"
     root = Path(__file__).resolve().parents[4]
     output = Path(sys.argv[1]).resolve()
@@ -38,6 +38,7 @@ def main():
         "--wake": ("wake_loom.rs", (wake,), "--native-wake"),
         "--owners": ("owner_count_loom.rs", (owners, owners.parent / "owners/model.rs"), "--native-owner"),
         "--host": ("../src/testing/host/models.rs", (host, host.parent / "host/pool.rs"), "--native-host"),
+        "--host-source": ("../src/testing/host/models.rs", (host, host.parent / "host/pool.rs"), "--native-host-source"),
         "--host-events": ("../src/testing/host/tests.rs", (host,), "--native-host-events"),
         "--ownership": ("../src/ownership/model.rs", (ownership,), "--ownership"),
         "--claim": ("../src/claim/model.rs", (claim,), "--native-claim"),
@@ -108,6 +109,18 @@ qualificationMain([process.argv[1]], (command, args, options) => spawnSync(comma
              b"let parked_driver = state.take_start_waiter();",
              b"let parked_driver = { state.waiting_start = false; None::<Waker> };",
              "deadlock; threads ="),
+        ]
+    elif mode == "--host-source":
+        mutations = [
+            ("worker-readiness", host,
+             b"            state.ready = true;", b"            state.ready = false;",
+             "deadlock; threads =", "testing::host::models::readiness_racing_worker_parking_cannot_be_lost"),
+            ("io-readiness", host,
+             b"            state.io_ready = true;", b"            state.io_ready = false;",
+             "deadlock; threads =", "testing::host::models::queue_capacity_and_physical_terminal_wakes_are_latched"),
+            ("physical-occupancy", host.parent / "host/pool.rs",
+             b"        if self.park() {", b"        if false {",
+             "deadlock; threads =", "testing::host::models::physical_occupants_outside_the_schedule_cannot_block_the_driver"),
         ]
     elif mode == "--host-events":
         mutations = [
