@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import { verifyExactTests } from './test-support/libtest.mjs';
 
 export function cargoArguments(entry) {
   if (!/^acyclic-[a-z0-9-]+$/.test(entry.package)) throw new Error('invalid package');
@@ -18,21 +19,10 @@ export function cargoArguments(entry) {
 
 export function verify(entry, status, output) {
   cargoArguments(entry);
-  if (status !== 0) throw new Error(`Cargo failed: ${status}`);
   const expected = [...new Set([entry.regression, ...entry.controls])];
-  const actual = [...output.matchAll(/^test (\S+)(?: - should panic)? \.\.\. ok\r?$/gm)].map(match => match[1]);
-  if (actual.length !== expected.length || new Set(actual).size !== actual.length
-    || expected.some(name => !actual.includes(name))) {
-    throw new Error(`expected every regression and negative control: ${JSON.stringify({ expected, actual })}`);
-  }
-  const summaries = [...output.matchAll(/^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; \d+ filtered out; finished in ([\d.]+)s\r?$/gm)];
-  if (summaries.length !== 1) throw new Error('exactly one libtest summary required');
-  const [, passed, failed, ignored, measured, seconds] = summaries[0];
-  if (Number(passed) !== expected.length || [failed, ignored, measured].some(value => Number(value) !== 0)) {
-    throw new Error('missing, ignored, failed or measured tests cannot discharge a debt');
-  }
-  if (!Number.isFinite(Number(seconds)) || Number(seconds) >= 10) throw new Error('suite must finish in under 10 seconds');
-  return { regression: entry.regression, tests: actual, seconds: Number(seconds) };
+  const result = verifyExactTests(expected, { status, stdout: output });
+  if (result.seconds >= 10) throw new Error('suite must finish in under 10 seconds');
+  return { regression: entry.regression, ...result };
 }
 
 export function testExecutable(entry, output) {
