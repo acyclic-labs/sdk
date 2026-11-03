@@ -462,7 +462,7 @@ versus unoffered subprotocols through `socket_verdict`. The documented peer-clos
 initiator alias is accepted and normalised by the original decoder.
 `python3 actor-negative-control.py --sockets` requires this unchanged oracle to
 reject production open refusal, lost close codes and skipped subprotocol checks,
-then captures the original restored writers. These codec controls do not cover
+then replays the original retained corpus. These codec controls do not cover
 the separate inbox `InputWire` or prove physical session/recovery behavior.
 
 The same target also admits retained Runtime-created deliveries at
@@ -494,3 +494,7 @@ and compaction reserve their required epoch positions before publishing anything
 schedule drive and requires a production schedule-entry refusal to expose it.
 The separated decoder must still replay; the unchanged schedule entry must
 reject removal of the actual settlement guard, then replay the original corpus.
+
+Mutation-only controls leave captured inputs and provenance unchanged. Their final
+replay still admits production writers. Use `--capture` explicitly when adding
+original writer inputs; it remains the single corpus and golden update path.

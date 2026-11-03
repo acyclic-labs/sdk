@@ -1824,7 +1824,7 @@ pub mod codec_fuzz {
     }
 
     /// The original writer, also used for counter-boundary inputs.
-    pub fn write_epoch(segment: u64, from: u64) -> Bytes {
+    pub fn write_epoch(segment: u64, from: u64) -> acyclic_stream::OwnedBytes {
         epoch_record(segment, from).value
     }
 

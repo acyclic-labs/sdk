@@ -125,7 +125,7 @@ def alarms():
         production.write_bytes(source.replace(*plants[1]))
         run("same oracle detects production lost Clear", "rejected", diagnostic)
         production.write_bytes(source)
-        capture()
+        run("restored production writers and retained corpus", "accepted")
     finally:
         for path, value in original.items():
             path.write_bytes(value)
@@ -146,7 +146,6 @@ def persisted_alarms():
         raise RuntimeError("persisted alarm mutation anchor changed; recovery: inspect "
                            "State::decode and actor_alarm_seeds before running "
                            "python3 actor-negative-control.py --persisted-alarms")
-    captured = False
     try:
         for label, value in (("persisted alarm production", source), ("persisted alarm oracle", oracle)):
             print(f"{label} sha256={hashlib.sha256(value).hexdigest()}", flush=True)
@@ -160,14 +159,10 @@ def persisted_alarms():
         run("same oracle detects production lost delivery generation", "rejected",
             "persisted alarm writer must retain its committed tuple")
         production.write_bytes(source)
-        capture()
-        captured = True
+        run("restored production writers and retained corpus", "accepted")
     finally:
         for path, value in original.items():
-            # Keep newly captured provenance on success; only a temporary
-            # mutation-phase manifest view needs restoration on failure.
-            if path != manifest or not captured:
-                path.write_bytes(value)
+            path.write_bytes(value)
 
 
 def reservation_book():
@@ -192,7 +187,7 @@ def reservation_book():
         run("same oracle detects production populated Book refusal", "rejected",
             "reservation writer must admit its populated checkpoint")
         production.write_bytes(source)
-        capture()
+        run("restored production writers and retained corpus", "accepted")
     finally:
         for path, value in original.items():
             path.write_bytes(value)
@@ -221,7 +216,7 @@ def call_records():
         run("same oracle detects lost accepted cancellation context", "rejected",
             "call reader must retain its acceptance context")
         production.write_bytes(source)
-        capture()
+        run("restored production writers and retained corpus", "accepted")
     finally:
         for path, value in original.items():
             path.write_bytes(value)
@@ -334,7 +329,7 @@ def sockets():
             production.write_bytes(source.replace(anchor, replacement))
             run("same socket oracle rejects production defect", "rejected", diagnostic)
         production.write_bytes(source)
-        capture()
+        run("restored production writers and retained corpus", "accepted")
     finally:
         for path, value in original.items():
             path.write_bytes(value)
@@ -358,7 +353,7 @@ def socket_inputs():
         run("same socket input oracle rejects production reject-all", "rejected",
             "socket input writer must be admitted")
         production.write_bytes(source)
-        capture()
+        run("restored production writers and retained corpus", "accepted")
     finally:
         for path, value in original.items():
             path.write_bytes(value)
