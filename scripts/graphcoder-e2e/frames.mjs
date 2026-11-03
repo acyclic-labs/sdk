@@ -25,9 +25,14 @@ export class TerminalFrames {
   dispose() { for (const handler of this.handlers) handler.dispose(); }
 }
 
-const failures = visible => [...visible.matchAll(/task [0-9a-f-]{36} failed: ([^\n]*)/g)];
-const expected = (failure, condition) => typeof condition?.task_failure === "string"
-  && condition.task_failure.length > 0 && failure[1].startsWith(condition.task_failure);
+// A failed task and a refused action (GraphCoder's ✗ status line) are
+// failures unless the awaited condition names them; a refusal is named by any
+// awaited text it contains.
+const failures = visible => [...visible.matchAll(/task [0-9a-f-]{36} failed: ([^\n]*)|✗ ([^\n]*)/g)];
+const expected = (failure, condition) => failure[1] !== undefined
+  ? typeof condition?.task_failure === "string" && condition.task_failure.length > 0
+    && failure[1].startsWith(condition.task_failure)
+  : (condition?.contains ?? []).some(text => text.length > 0 && failure[2].includes(text));
 export class FailureHistory {
   #handled = new Set();
   unexpected(visible, condition) {
