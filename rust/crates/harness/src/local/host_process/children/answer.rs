@@ -1,5 +1,8 @@
 //! Completion from the native host's original turn terminal.
-use super::{ANSWER_LIMIT, Outcome, Value};
+use super::{Outcome, Value};
+
+/// Byte bound of a retained answer.
+pub(super) const ANSWER_LIMIT: usize = 4096;
 
 /// A preview is not a completed reply. Native hosts can also report a failed
 /// turn before exiting successfully; their original terminal owns the outcome.
