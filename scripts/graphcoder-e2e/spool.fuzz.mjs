@@ -140,35 +140,44 @@ async function failure(bytes, mode, error) {
   assert.equal(await observed(spool.keyed(Symbol("later missing"))), cause);
 }
 
-// The original file writer supplies the failure, before any source output or
-// process completion. Empty history needs no file; readers after the refusal
-// retain its original cause.
+// The original file writer supplies the failure before process completion:
+// missing parent at open, or a real write to a read-only descriptor with a
+// second captured source chunk held for drain. No injected file callbacks.
 async function transcriptFailure(directory) {
-  const source = new PassThrough();
-  const transcript = createWriteStream(join(directory, "absent", "events.jsonl"));
-  const failed = finished(transcript).then(() => assert.fail("missing parent cannot accept a transcript"), error => error);
-  let close;
-  const spool = new Spool(source, new Promise(resolve => { close = resolve; }), { key, transcript });
-  const terminal = spool.next(() => false).catch(error => error);
-  const missing = spool.keyed(Symbol("missing transcript key")).catch(error => error);
-  const history = spool.history().catch(error => error);
-  const error = await failed;
-  assert.equal(spool.ended?.kind, "spool", "the original writer failure must end the spool before any waiter join");
-  const cause = await terminal;
-  assert.equal(error.code, "ENOENT");
-  assert.equal(cause.kind, "spool");
-  assert.equal(cause.detail, error);
-  assert.equal(cause.cause, error);
-  assert.equal(await missing, cause);
-  assert.deepEqual(await history, [], "history before the first completed write needs no file");
-  await assert.rejects(spool.history(), error => error === cause, "late history cannot bypass transcript failure");
-  await assert.rejects(spool.next(() => true), error => error === cause);
-  await assert.rejects(spool.keyed(Symbol("late transcript key")), error => error === cause);
-  source.end(original);
-  close(captured);
-  await finished(source);
-  assert.equal(spool.sequence, 0, "later source output cannot replace the writer refusal");
-  assert.equal(spool.ended, cause);
+  for (const queued of [false, true]) {
+    const source = new PassThrough();
+    const path = join(directory, queued ? "read-only.jsonl" : "absent/events.jsonl");
+    if (queued) writeFileSync(path, "");
+    const transcript = createWriteStream(path, queued ? { flags: "r", highWaterMark: 1 } : {});
+    const failed = finished(transcript).then(() => assert.fail("the original descriptor cannot accept a transcript"), error => error);
+    let close;
+    const spool = new Spool(source, new Promise(resolve => { close = resolve; }), { key, transcript });
+    const terminal = spool.next(() => false).catch(error => error);
+    const missing = spool.keyed(Symbol("missing transcript key")).catch(error => error);
+    const history = spool.history().catch(error => error);
+    if (queued) {
+      source.write(original); source.write(distinct);
+      assert.equal(spool.sequence, 1, "the second captured chunk waits for the original writer drain");
+    }
+    const error = await failed;
+    assert.equal(spool.ended?.kind, "spool", "the original writer failure must end the spool before any waiter join");
+    const cause = await terminal;
+    assert.equal(error.code, queued ? "EBADF" : "ENOENT");
+    assert.equal(cause.kind, "spool");
+    assert.equal(cause.detail, error);
+    assert.equal(cause.cause, error);
+    assert.equal(await missing, cause);
+    assert.deepEqual(await history, [], "history before the first completed write needs no file");
+    assert.equal(transcript.listenerCount("drain"), 0, "the failed writer releases its obsolete drain observer");
+    await assert.rejects(spool.history(), error => error === cause, "late history cannot bypass transcript failure");
+    await assert.rejects(spool.next(() => true), error => error === cause);
+    await assert.rejects(spool.keyed(Symbol("late transcript key")), error => error === cause);
+    source.end(original);
+    close(captured);
+    await finished(source);
+    assert.equal(spool.sequence, queued ? 1 : 0, "queued and later source output cannot replace the writer refusal");
+    assert.equal(spool.ended, cause);
+  }
 }
 
 // Native file closure is the finite observation boundary, including when the

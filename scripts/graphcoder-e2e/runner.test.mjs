@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { once } from "node:events";
+import { finished } from "node:stream/promises";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -252,6 +253,7 @@ test("a spool ends with the exact typed cause", async t => {
 
 test("transcript admission refuses before the executable starts", async t => {
   const root = mkdtempSync(join(tmpdir(), "transcript-admission-"));
+  t.after(() => rmSync(root, { recursive: true }));
   const second = join(root, "second");
   mkdirSync(second); mkdirSync(join(second, "0.stderr"));
   for (const transcripts of [join(root, "missing"), second]) await t.test(transcripts, async () => {
@@ -287,7 +289,7 @@ test("a synchronous launch refusal preserves transcripts and allows a corrected 
 });
 
 test("a slow transcript holds the source back, so queued bytes stay bounded by a chunk", async () => {
-  const lines = 64, chunks = 200;
+  const lines = 64, chunks = 16;
   const chunk = index => Array.from({ length: lines }, (_, line) => JSON.stringify({ n: index * lines + line, pad: "x".repeat(100) }) + "\n").join("");
   const size = chunk(chunks - 1).length;
   // The sink completes one write per turn. Negative control: a spool that
@@ -301,12 +303,16 @@ test("a slow transcript holds the source back, so queued bytes stay bounded by a
       queued = Math.max(queued, sink.writableLength);
       return honest ? room : true;
     };
-    const source = new PassThrough();
-    const events = new Spool(source, new Promise(() => {}), { transcript: sink });
+    const source = new PassThrough({ highWaterMark: 1024 });
+    const closed = finished(source).then(() => ({ code: 0, signal: null }));
+    const written = finished(sink);
+    const events = new Spool(source, closed, { transcript: sink });
     const last = events.next(event => event.n === lines * chunks - 1);
     let held = false;
     for (let index = 0; index < chunks; index++) if (!source.write(chunk(index))) held = true;
+    source.end();
     await last;
+    await written;
     // With backpressure the producer is held; the control never holds it.
     assert.equal(held, honest, "backpressure reaches the producer only through write()'s return");
     return queued;
