@@ -1151,7 +1151,7 @@ async fn a_ten_mebibyte_prompt_is_accepted_and_reads_back_exactly() -> Result<()
 
 #[tokio::test]
 async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Result<()> {
-    use crate::model::{ModelContent, ModelContentPart, ModelEvent, ToolCall, ToolResultContent};
+    use crate::model::{ModelContent, ModelContentPart, ModelEvent, ToolCall};
     use crate::test_support::{ScriptedEvent, ScriptedTurn};
     use acyclic_harness_client::{AgentCommand, AgentReply, ReadTarget};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1203,29 +1203,59 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         write("parent"),
         ScriptedTurn::Text("parent done".into()),
     ]);
-    let publication = |index| -> Result<crate::conversation::FileRef> {
-        let request = provider
-            .request(index)
-            .ok_or_else(|| Error::NotFound("write successor request".into()))?;
-        let value = request
-            .messages
-            .iter()
-            .flat_map(|message| message.content.parts())
-            .find_map(|part| match part {
-                ModelContentPart::ToolResult {
-                    name,
-                    content: ToolResultContent::Json { value },
-                    ..
-                } if name == "write" => Some(value.clone()),
-                _ => None,
-            })
-            .ok_or_else(|| Error::NotFound("successful write result".into()))?;
-        Ok(
-            serde_json::from_value::<crate::tool::files::FileResult>(value)
-                .map_err(agent)?
-                .file,
-        )
-    };
+    // Model projections carry a path and opaque version. The authoritative
+    // FileRef belongs to the original ToolCompleted journal observation.
+    async fn publication(
+        connection: &crate::local::Connection,
+        owner: &AgentPath,
+        mut input: u64,
+    ) -> Result<crate::conversation::FileRef> {
+        let mut after = 0;
+        loop {
+            let AgentReply::Events {
+                input: selected,
+                page: Some(page),
+                ..
+            } = connection
+                .execute(&AgentCommand::Events {
+                    agent: owner.clone(),
+                    input,
+                    after,
+                    wait: false,
+                })
+                .await?
+            else {
+                return Err(Error::NotFound("write observation".into()));
+            };
+            for record in page.items {
+                if matches!(record.event, crate::executor::ExecutionEvent::ToolCompleted { ref call_id, .. } if call_id == "write-seed")
+                {
+                    let bytes = Conversation::read(
+                        connection,
+                        owner,
+                        ReadTarget::Execution {
+                            input: selected,
+                            sequence: record.sequence,
+                            field: crate::executor::ExecutionPayloadField::Result,
+                        },
+                    )
+                    .await?;
+                    let result: crate::tool::ToolResult =
+                        serde_json::from_slice(&bytes).map_err(agent)?;
+                    return Ok(serde_json::from_value::<crate::tool::files::FileResult>(
+                        result.value,
+                    )
+                    .map_err(agent)?
+                    .file);
+                }
+            }
+            let Some(next) = page.next else {
+                return Err(Error::NotFound("write completion".into()));
+            };
+            assert!(next > after, "execution page did not advance");
+            (input, after) = (selected, next);
+        }
+    }
     let catalog = |index| -> Result<Vec<crate::context::SkillMetadata>> {
         let request = provider
             .request(index)
@@ -1316,7 +1346,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         )));
     }
     assert_eq!(provider.request_count(), 2);
-    let child_file = publication(1)?;
+    let child_file = publication(&connection, &child, 0).await?;
     let child_state = agents.state(&child).await.map_err(agent)?;
     let child_project = &child_state
         .volumes
@@ -1363,7 +1393,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
             .all(|skill| &skill.source.root.volume == seed)
     );
 
-    conversation(&harness)
+    let parent_input = conversation(&harness)
         .await?
         .send("parent-write", "write parent seed")
         .await?;
@@ -1372,7 +1402,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         result = runtime.completion() => result?,
     }
     assert_eq!(provider.request_count(), 4);
-    let parent_file = publication(3)?;
+    let parent_file = publication(&connection, &root, parent_input).await?;
     assert_eq!(parent_file.volume(), &project);
     // The second agent must not reuse the first agent's cached private pins.
     let parent_skills = catalog(2)?;
