@@ -67,13 +67,17 @@ pub(super) fn guarded<F: Future>(
     future: F,
 ) -> impl Future<Output = Result<F::Output, String>> {
     let future = Box::pin(future);
-    let path = path.to_owned();
     async move {
         if CURRENT.try_with(|_| ()).is_ok() {
             return Ok(future.await);
         }
         let mut guard = super::progress_guard::Guard::new();
-        let work = scoped(guard.io.clone(), guard.registry.clone(), path, future);
+        let work = scoped(
+            guard.io.clone(),
+            guard.registry.clone(),
+            path.into(),
+            future,
+        );
         guard.run(work).await
     }
 }
