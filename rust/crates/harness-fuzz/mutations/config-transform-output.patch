@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/config/evaluate.rs b/rust/crates/harness-core/src/config/evaluate.rs
+--- a/rust/crates/harness-core/src/config/evaluate.rs
++++ b/rust/crates/harness-core/src/config/evaluate.rs
+@@ -260,7 +260,7 @@
+     )
+     .build_with_scoping(scoping, &mut program);
+     refuse_errors!(transformed.diagnostics);
+-    let script = oxc_codegen::Codegen::new().build(&program).code;
++    let script = text.to_owned();
+     // Imports left after type erasure: re-read them from the emitted module.
+     let mut imports = {
+         let emitted =
