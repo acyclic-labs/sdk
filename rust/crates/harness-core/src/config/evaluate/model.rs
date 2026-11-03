@@ -57,9 +57,75 @@ fn agrees(
     }
 }
 
+// JSON numbers pass through ECMAScript Number, including integer rounding and
+// negative-zero normalization. Compare that numeric domain, retaining every
+// object key, array position and non-numeric value exactly.
+fn json_equivalent(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Number(left), Value::Number(right)) => left.as_f64() == right.as_f64(),
+        (Value::Array(left), Value::Array(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| json_equivalent(left, right))
+        }
+        (Value::Object(left), Value::Object(right)) => {
+            left.len() == right.len()
+                && left.iter().all(|(key, left)| {
+                    right
+                        .get(key)
+                        .is_some_and(|right| json_equivalent(left, right))
+                })
+        }
+        _ => left == right,
+    }
+}
+
+async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
+    // Parse arbitrary programs without executing their untrusted control flow.
+    // Accepted TypeScript must emit JavaScript admitted by the same production
+    // parser, with the same resolved imports after type erasure.
+    for path in ["raw.ts", "raw.js"] {
+        if let Ok(module) = strip(path, bytes) {
+            let emitted = strip("raw.js", module.script.as_bytes())
+                .map_err(|error| format!("emitted JavaScript admission: {error}"))?;
+            if module.imports != emitted.imports {
+                return Err("emitted JavaScript changed resolved imports".into());
+            }
+        }
+    }
+    let expected = serde_json::from_slice::<Value>(bytes);
+    let tree = Files {
+        input: Vec::new(),
+        cycle: false,
+    };
+    let actual = evaluate_cached(
+        "raw.json",
+        bytes,
+        &tree,
+        &Value::Null,
+        Surface::Data,
+        &Cache::default(),
+    )
+    .await;
+    match (expected, actual) {
+        (Ok(expected), Ok(actual))
+            if actual.form == Form::Value && json_equivalent(&expected, &actual.value) =>
+        {
+            Ok(())
+        }
+        (Err(_), Err(_)) => Ok(()),
+        (expected, actual) => Err(format!(
+            "raw JSON semantics: {actual:?}, expected {expected:?}"
+        )),
+    }
+}
+
 /// No process-global cache growth: each input owns one cache, shared across
 /// changes of source, imported content, base and surface at the same path.
 pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
+    raw_source(bytes).await?;
     let cache = Cache::default();
     let mode = bytes.first().copied().unwrap_or_default() % 13;
     let pending = mode == 11 && bytes.get(1).copied().unwrap_or_default() & 1 == 0;
@@ -294,6 +360,20 @@ mod tests {
 
     #[tokio::test]
     async fn generated_settings_match_fresh_evaluation() {
+        for source in [
+            include_bytes!("../../../../harness-fuzz/corpus/config_evaluation/json-properties")
+                .as_slice(),
+            include_bytes!("../../../../harness-fuzz/corpus/config_evaluation/json-numbers")
+                .as_slice(),
+            include_bytes!("../../../../harness-fuzz/corpus/config_evaluation/raw-typescript")
+                .as_slice(),
+            include_bytes!("../../../../harness-fuzz/corpus/config_evaluation/dynamic-import")
+                .as_slice(),
+            include_bytes!("../../../../harness-fuzz/corpus/config_evaluation/malformed-json")
+                .as_slice(),
+        ] {
+            check(source).await.unwrap();
+        }
         for mode in 0..13 {
             let variants = match mode {
                 4 => 8,

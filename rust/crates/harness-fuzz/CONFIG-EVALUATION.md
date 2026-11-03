@@ -1,4 +1,4 @@
-# Configuration dependency admission
+# Configuration source and dependency admission
 
 The existing `config_evaluation` target calls the production evaluator through
 `config::model::check`. Its thirteenth source family generates a shared import
@@ -24,7 +24,7 @@ cargo test --locked -p acyclic-harness-core --lib config::evaluate::model::tests
 cargo fuzz run --fuzz-dir rust/crates/harness-fuzz config_evaluation --no-default-features --features core -- -runs=1000 -seed=1
 ```
 
-Four retained patches alter the actual production walk or cache. Apply each separately
+Five retained patches alter the actual production walk or cache. Apply each separately
 against an unchanged oracle, run that same named property, then restore the
 source:
 
@@ -33,6 +33,7 @@ source:
 | `config-dependency-stack-scan.patch` | Membership work grows with active depth. This restores the original stack scan, with the same test-only observer counting each comparison. |
 | `config-dependency-finished-active.patch` | A valid shared dependency is falsely rejected by the plain-data oracle. |
 | `config-dependency-ignore-cycle.patch` | A cyclic closure enters the VM before admission. |
+| `config-json-object-literal.patch` | A JSON object is incorrectly interpreted as a JavaScript object literal, losing its `__proto__` property. |
 | `config-cache-key.patch` | A changed base or imported value incorrectly reuses an older result. |
 
 The cache mutation removes the production key comparison. It uses the same
@@ -47,9 +48,25 @@ name lookup remains O(log modules), and source parsing remains proportional
 to source bytes. No new read, syscall, barrier, round trip, lock or payload
 copy is introduced, and each imported module retains its original one read.
 
-This is component validation of generated source graphs. It does not establish
-raw-source parser coverage, mounted-source authority, evaluator cancellation,
-full source-branch coverage, or unbounded evaluator capacity. The existing
+Every input also reaches the actual TypeScript and JavaScript source parser.
+Accepted emitted JavaScript must be admitted again with the same resolved
+imports. Arbitrary programs are parsed without running their control flow.
+Raw JSON goes through the production evaluator and is compared with
+`serde_json::Value`, preserving all keys, values and array positions. Numbers
+are compared in ECMAScript's double-precision domain, which rounds large
+integers and normalizes negative zero.
+
+Five additional authored internal corpus inputs retain the original JSON
+property-semantics example, numeric and escaped-string cases, TypeScript type
+erasure with a static import, a forbidden dynamic import and malformed JSON.
+The shared property subsumes the former JSON-only example and checks the
+entire result through the original evaluation entry point. The object-literal
+mutation changes production JSON module construction, without modifying the
+oracle or linking a test-only parser.
+
+This is component validation of raw source and generated source graphs. It does
+not establish mounted-source authority, evaluator cancellation, full source
+branch coverage, or unbounded evaluator capacity. The existing
 instruction and memory limits are unchanged. Current runtime, fuzz campaign
 and source coverage results must be recorded separately; their presence here
 is not a pass claim.
