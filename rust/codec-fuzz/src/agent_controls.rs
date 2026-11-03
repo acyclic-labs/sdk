@@ -41,7 +41,7 @@ pub fn check(bytes: &[u8]) {
         assert_eq!(json(&restored), json(&decoded));
         assert!(decode_agent_reply(&with_unknown_field(reply), &command).is_err());
         let foreign = if matches!(command, AgentCommand::Root {}) {
-            AgentCommand::Bind {}
+            AgentCommand::Bind { agent: None }
         } else {
             AgentCommand::Root {}
         };
@@ -125,7 +125,7 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
         ),
         (
             "bind",
-            AgentCommand::Bind {},
+            AgentCommand::Bind { agent: None },
             AgentBinding::reply(&binding, "fs:/tools".into()),
         ),
         (
