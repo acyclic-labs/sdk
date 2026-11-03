@@ -132,3 +132,10 @@ the production character or length guard. Each must fail its unchanged semantic
 assertion. These replace the fixed label table's mock-validator control.
 The runner restores the source and checks oracle custody. Complete source and
 branch coverage, and the other addressing guards, need separate qualification.
+
+Binary actor/resource admission uses this same oracle before text admission.
+It preserves both original decode/encode round trips and actor/resource grammar
+disjointness. `python3 negative-control.py addressing-resource` and
+`addressing-actor` swap fields in the actual production decoders; the original
+writer captures `resource` and `actor` must fail their unchanged exact-byte
+assertions. No reference decoder or alternative wire format is introduced.

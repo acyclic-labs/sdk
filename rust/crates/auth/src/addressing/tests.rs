@@ -51,9 +51,6 @@ proptest! {
     #[test]
     fn parser_accepts_only_canonical_bytes(bytes in prop::collection::vec(any::<u8>(), 0..10000)) {
         testing::check(&bytes);
-        if let Ok(value) = ResourceIdentity::decode(&bytes) {
-            prop_assert_eq!(value.encode(), bytes);
-        }
     }
     #[test]
     fn actor_triples_are_injective_and_disjoint(
@@ -71,12 +68,6 @@ proptest! {
         let changed = ActorReference::new(&other_account, other_namespace.as_bytes(), other_id.as_bytes())?;
         if value != changed {
             prop_assert_ne!(value.encode(), changed.encode());
-        }
-    }
-    #[test]
-    fn actor_parser_accepts_only_canonical_bytes(bytes in prop::collection::vec(any::<u8>(), 0..10000)) {
-        if let Ok(value) = ActorReference::decode(&bytes) {
-            prop_assert_eq!(value.encode(), bytes);
         }
     }
     #[test]
