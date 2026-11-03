@@ -693,11 +693,13 @@ async fn atomic_patch_uses_the_checkout_publisher_and_recovers_its_original_cut(
         arguments: serde_json::json!({"patch": "*** Begin Patch\n*** Add File: one\n+first\n*** Add File: nested/two\n+second\n*** End Patch\n"}),
     };
     tool.executor
-        .authorize(None, Some(&context), &invocation, None)?;
+        .authorize(None, Some(&context), &invocation, None)
+        .inspect_err(|error| eprintln!("atomic create admission: {error:?}"))?;
     let result = tool
         .executor
         .execute(invocation.clone(), Some(context.clone()))
-        .await?;
+        .await
+        .inspect_err(|error| eprintln!("atomic create publication: {error:?}"))?;
     assert_eq!(result.value["files"].as_array().unwrap().len(), 2);
     assert_eq!(
         std::fs::read(directory.path().join("one")).map_err(storage)?,
@@ -711,7 +713,8 @@ async fn atomic_patch_uses_the_checkout_publisher_and_recovers_its_original_cut(
     let recovered = tool
         .executor
         .reconcile(invocation, Some(context))
-        .await?
+        .await
+        .inspect_err(|error| eprintln!("atomic create reconciliation: {error:?}"))?
         .unwrap();
     assert_eq!(result.value, recovered.value);
     // Recovery and direct publication use the same action-aware policy boundary.
@@ -724,8 +727,10 @@ async fn atomic_patch_uses_the_checkout_publisher_and_recovers_its_original_cut(
                 ceiling: Some(&create_only),
                 io: None,
             },
-        )?
-        .await?;
+        )
+        .inspect_err(|error| eprintln!("atomic receipt admission: {error:?}"))?
+        .await
+        .inspect_err(|error| eprintln!("atomic receipt observation: {error:?}"))?;
     let receipt = receipt.unwrap();
     let source = receipt.files().next().unwrap();
     let denied = publisher
@@ -764,7 +769,10 @@ async fn atomic_patch_uses_the_checkout_publisher_and_recovers_its_original_cut(
         name: tool.definition.name.clone(),
         arguments: serde_json::json!({"patch": "*** Begin Patch\n*** Update File: one\n*** Move to: moved\n@@\n-first\n+changed\n*** Delete File: nested/two\n*** End Patch\n"}),
     };
-    tool.executor.execute(moving, Some(context)).await?;
+    tool.executor
+        .execute(moving, Some(context))
+        .await
+        .inspect_err(|error| eprintln!("atomic move publication: {error:?}"))?;
     assert!(!directory.path().join("one").exists());
     assert!(!directory.path().join("nested/two").exists());
     assert_eq!(
