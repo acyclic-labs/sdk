@@ -215,3 +215,16 @@ The retained `assignment-refusal`, `assignment-population` and
 `assignment-replicate` controls reject all valid declarations, erase the cut,
 or erase the replicate in the actual production deserializer. Existing corpus
 inputs select nonzero identities; no new input format or corpus is needed.
+
+The same target also constructs three predeclared, ordered pairs across two
+populations, including two replicates of one population. Both streams enter
+through the buffered reader and public serde deserializers used by the
+`experiment-analysis` example, then `Contrast::analyze`. Every population and
+replicate declaration is independently substituted without changing row count;
+missing/surplus declarations and actual malformed declaration tails must return
+the original typed refusal. This replaces fixed declaration-substitution and
+source-error examples. Three retained production mutations remove either
+assignment-key guard or final declaration consumption. They reuse the original
+assignment input. Inputs are authored own-format JSON; no provider or filesystem
+IO conformance is inferred. Ordering, metric arithmetic and allocation controls
+remain distinct, and source coverage still requires separate qualification.

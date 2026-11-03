@@ -414,45 +414,6 @@ mod tests {
     }
 
     #[test]
-    fn declared_keys_refuse_equal_count_substitution_and_failed_sources() -> Result<(), Error> {
-        let rows = |second_cut, second_replicate| {
-            [(1, 0), (second_cut, second_replicate)]
-                .into_iter()
-                .flat_map(|(cut, replicate)| {
-                    [0, 1].map(move |arm| Observation::new([cut; 32], replicate, arm, None, None))
-                })
-        };
-        let declaration = [(1, 0), (1, 1)];
-        assert_eq!(analyze(rows(1, 1), 0, 1, declaration)?.assigned_pairs, 2);
-        for (cut, replicate) in [(1, 99), (2, 1)] {
-            // Negative control: counting alone accepts the replaced assignment.
-            assert_eq!(rows(cut, replicate).count() / 2, declaration.len());
-            assert!(matches!(
-                analyze(rows(cut, replicate), 0, 1, declaration),
-                Err(Error::Analysis(_))
-            ));
-        }
-        let contrast = Contrast::new(0, 1)?;
-        let declared = PairAssignment::new([1; 32], 0);
-        let mut bytes = serde_json::to_vec(&declared)?;
-        bytes.extend_from_slice(b"\n{\"version\":");
-        let expected = serde_json::Deserializer::from_slice(&bytes)
-            .into_iter::<PairAssignment>()
-            .map(|entry| entry.map_err(Error::AssignmentJson));
-        let rows = [0, 1].map(|arm| Observation::new([1; 32], 0, arm, None, None));
-        assert!(matches!(
-            contrast.analyze(rows, expected),
-            Err(Error::AssignmentJson(_))
-        ));
-        let expected = [Err(Error::Analysis("original declaration unavailable"))];
-        assert!(matches!(
-            contrast.analyze([], expected),
-            Err(Error::Analysis("original declaration unavailable"))
-        ));
-        Ok(())
-    }
-
-    #[test]
     fn streamed_pair_analysis_has_zero_allocations_independent_of_cut_count() -> Result<(), Error> {
         let rows = || {
             (0u8..32).flat_map(|cut| {

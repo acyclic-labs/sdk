@@ -3,6 +3,7 @@
 
 use acyclic_harness_core::experiments::{
     Error, Observation,
+    analysis::{AnalysisReport, Contrast},
     plan::PairAssignment,
     probes::{Decision, Scorer},
     reports::AssignedTrials,
@@ -536,6 +537,108 @@ fn scorer(bytes: &[u8]) {
     }
 }
 
+// Use the same buffered reader, public deserializers and error mapping as
+// experiment-analysis. These authored declarations precede their outcomes.
+fn streamed(rows: &[u8], assignments: &[u8]) -> Result<AnalysisReport, Error> {
+    let rows = serde_json::Deserializer::from_reader(std::io::BufReader::new(rows))
+        .into_iter::<Observation>()
+        .map(|row| row.map_err(Error::Json));
+    let expected = serde_json::Deserializer::from_reader(std::io::BufReader::new(assignments))
+        .into_iter::<PairAssignment>()
+        .map(|entry| entry.map_err(Error::AssignmentJson));
+    Contrast::new(0, 1)
+        .expect("distinct stream arms")
+        .analyze(rows, expected)
+}
+
+fn declared_stream(bytes: &[u8]) {
+    let mut population: [u8; 32] =
+        std::array::from_fn(|index| bytes.get(index).copied().unwrap_or_default());
+    population[31] &= 127;
+    let mut next_population = population;
+    next_population[31] += 1;
+    let replicate = u64::from_le_bytes(population[..8].try_into().unwrap()) >> 1;
+    let keys = [
+        (population, replicate),
+        (population, replicate + 1),
+        (next_population, replicate),
+    ];
+    let declarations = keys.map(|(population, replicate)| {
+        json!({"version":1,"population":population,"replicate":replicate})
+    });
+    let encode = |values: &[Value]| {
+        let mut wire = Vec::new();
+        for value in values {
+            serde_json::to_writer(&mut wire, value).expect("stream object encodes");
+            wire.push(b'\n');
+        }
+        wire
+    };
+    let rows: Vec<_> = keys
+        .into_iter()
+        .flat_map(|(population, replicate)| {
+            [0, 1].map(move |arm| {
+                json!({"version":2,"population":population,"replicate":replicate,
+                    "arm":arm,"score":null,"cost_usd":null})
+            })
+        })
+        .collect();
+    let wire = encode(&rows);
+    let expected = encode(&declarations);
+    let report = streamed(&wire, &expected)
+        .expect("independent streamed analysis invariant: valid declared pairs");
+    assert_eq!(
+        (report.assigned_pairs, report.assigned_clusters),
+        (3, 2),
+        "independent streamed analysis invariant: assigned coverage"
+    );
+    for index in 0..declarations.len() {
+        for field in ["population", "replicate"] {
+            let mut replaced = declarations.clone();
+            if field == "population" {
+                let mut foreign = keys[index].0;
+                foreign[0] ^= 1;
+                replaced[index][field] = json!(foreign);
+            } else {
+                replaced[index][field] = json!(keys[index].1 ^ 1);
+            }
+            assert!(
+                matches!(
+                    streamed(&wire, &encode(&replaced)),
+                    Err(Error::Analysis(
+                        "input differs from the declared assignment"
+                    ))
+                ),
+                "independent streamed analysis invariant: declared {field}"
+            );
+        }
+    }
+    assert!(
+        matches!(
+            streamed(&wire, &encode(&declarations[..2])),
+            Err(Error::Analysis("input exceeds the declared assignments"))
+        ),
+        "independent streamed analysis invariant: complete declaration"
+    );
+    assert!(
+        matches!(
+            streamed(&encode(&rows[..4]), &expected),
+            Err(Error::Analysis("input omits declared assignments"))
+        ),
+        "independent streamed analysis invariant: complete declaration"
+    );
+    // Invalid own-format JSON tests actual declaration-source error propagation
+    // both before an outcome and when the final declaration is first inspected.
+    for prefix in [&b""[..], expected.as_slice()] {
+        let mut failed = prefix.to_vec();
+        failed.extend_from_slice(b"{\"version\":");
+        assert!(
+            matches!(streamed(&wire, &failed), Err(Error::AssignmentJson(_))),
+            "independent streamed analysis invariant: declaration source error"
+        );
+    }
+}
+
 fuzz_target!(|bytes: &[u8]| {
     let (valid_scorer, expected) = valid_files(bytes);
     if let Ok(row) = Observation::decode(bytes) {
@@ -633,4 +736,5 @@ fuzz_target!(|bytes: &[u8]| {
     trials(bytes, &valid_scorer, expected);
     statistics(bytes);
     planning(bytes);
+    declared_stream(bytes);
 });

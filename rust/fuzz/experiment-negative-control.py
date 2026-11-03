@@ -8,6 +8,21 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 FUZZ = ROOT / "rust/fuzz"
 CASES = {
+    "analysis-declared-population": (
+        "experiments/analysis.rs", "baseline.0.population != assignment.population",
+        "false", "assignment",
+        "independent streamed analysis invariant: declared population",
+    ),
+    "analysis-declared-replicate": (
+        "experiments/analysis.rs", "baseline.0.replicate != assignment.replicate",
+        "false", "assignment",
+        "independent streamed analysis invariant: declared replicate",
+    ),
+    "analysis-assignment-tail": (
+        "experiments/analysis.rs", "if expected.next().transpose()?.is_some() {",
+        "if false {", "assignment",
+        "independent streamed analysis invariant: complete declaration",
+    ),
     "assignment-refusal": (
         "experiments/plan.rs", "file.version != 1", "true", "assignment",
         "independent admission invariant: valid assignment",
