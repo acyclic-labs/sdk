@@ -34,9 +34,10 @@ python3 rust/fuzz/experiment-negative-control.py decision-version
 ```
 
 The same kept control accepts `scorer-version`, `observation-version`,
-`scorer-distinct` or `trailing-input`. It first replays the original corpus,
-then changes exactly one production check, requires a failure from the original
-admission oracle and restores the original source bytes even on failure.
+`scorer-distinct` or `trailing-input`. Multiple names share one original corpus
+replay, then each changes exactly one production check, requires a failure from
+the original admission oracle and restores the original source bytes before
+the next control, even on failure. Select only controls still requiring a result.
 A compiler error or arbitrary nonzero exit does not count as a detected defect.
 The verdict requires a runtime panic at the unchanged target's source location
 with the selected admission invariant, and rejects compiler diagnostics.
