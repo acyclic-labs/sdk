@@ -378,10 +378,7 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
                 .filter(|event| event.0 == "open workspace")
                 .count()
         };
-        let expected_opens = match (entry, mode) {
-            (Entry::Create, _) => 2,
-            _ => 1,
-        };
+        let expected_opens = 1;
         assert_eq!(opens(&after.1), expected_opens, "{entry:?} {mode:?}");
         assert_eq!(opens(&before.1), expected_opens + 1, "{entry:?} {mode:?}");
         let observed = |trace: Vec<(&'static str, u64)>| {

@@ -851,10 +851,25 @@ impl Error {
             } | Self::NativeSchema {
                 code: crate::wire::ErrorCode::Invalid,
                 ..
-            } | Self::NativeWorkspace { .. }
-                | Self::NativeFilesystem { .. }
+            } | Self::NativeFilesystem { .. }
         ) {
             return true;
+        }
+        // A retained workspace cause is model feedback only as a definitive
+        // refusal; exhausted work stays a harness failure despite its Invalid code.
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Self::NativeWorkspace { source, .. } = self {
+            use crate::wire::ErrorCode;
+            return !matches!(
+                **source,
+                acyclic_fs::WorkspaceError::Work(_) | acyclic_fs::WorkspaceError::WorkMerge { .. }
+            ) && matches!(
+                Self::workspace_error_code(source),
+                ErrorCode::Invalid
+                    | ErrorCode::NotFound
+                    | ErrorCode::Conflict
+                    | ErrorCode::Unauthorized
+            );
         }
         !self.is_native_failure() || matches!(self, Self::Process(_))
     }
