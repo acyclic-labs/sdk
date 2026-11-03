@@ -174,7 +174,28 @@ async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
             }
         }
     }
-    let expected = serde_json::from_slice::<Value>(bytes);
+    let expected = match serde_json::from_slice::<Value>(bytes) {
+        Ok(value) => Some(value),
+        // IgnoredAny admits numbers outside serde's finite Value domain. A
+        // later duplicate property can overwrite one before the production
+        // JSON fold sees it. Use the original engine parser for that domain;
+        // the fixed program contains only an encoded data string.
+        Err(_) if serde_json::from_slice::<serde::de::IgnoredAny>(bytes).is_ok() => {
+            let source = format!("export default JSON.parse({specifier});");
+            evaluate_cached(
+                "raw-reference.js",
+                source.as_bytes(),
+                &tree,
+                &Value::Null,
+                Surface::Data,
+                &Cache::default(),
+            )
+            .await
+            .ok()
+            .map(|result| result.value)
+        }
+        Err(_) => None,
+    };
     let actual = evaluate_cached(
         "raw.json",
         bytes,
@@ -185,12 +206,12 @@ async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
     )
     .await;
     match (expected, actual) {
-        (Ok(expected), Ok(actual))
+        (Some(expected), Ok(actual))
             if actual.form == Form::Value && json_equivalent(&expected, &actual.value) =>
         {
             Ok(())
         }
-        (Err(_), Err(_)) => Ok(()),
+        (None, Err(_)) => Ok(()),
         (expected, actual) => Err(format!(
             "raw JSON semantics: {actual:?}, expected {expected:?}"
         )),
@@ -472,6 +493,12 @@ mod tests {
             include_bytes!("../../../../harness-fuzz/corpus/config_evaluation/json-properties")
                 .as_slice(),
             include_bytes!("../../../../harness-fuzz/corpus/config_evaluation/json-numbers")
+                .as_slice(),
+            include_bytes!(
+                "../../../../harness-fuzz/corpus/config_evaluation/json-overwritten-overflow"
+            )
+            .as_slice(),
+            include_bytes!("../../../../harness-fuzz/corpus/config_evaluation/json-overflow")
                 .as_slice(),
             include_bytes!("../../../../harness-fuzz/corpus/config_evaluation/raw-typescript")
                 .as_slice(),
