@@ -30,7 +30,10 @@ cargo run --locked --example replay
 Pass a target name to replay only its retained corpus, for example
 `cargo run --locked --example replay -- actor_codecs`. The Actors oracle first
 requires admission of the production writers shared with capture, including
-their original invocation, checkpoint and effect values. Run
+their original invocation, checkpoint and effect values. The current invocation
+wire capture comes from `Store::enqueue_invoke` and the returned ticket's original
+record, including provider-assigned sequence, commit, time and origin. Earlier
+invocation captures remain historical inputs. Run
 `python3 actor-negative-control.py` to prove that the same corpus oracle detects
 a production invocation decoder that rejects every marked request. The control
 also demonstrates that conditional round trips alone miss that mutation and

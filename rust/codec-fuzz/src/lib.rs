@@ -458,31 +458,71 @@ pub fn actor_seeds()
         Bytes::from_static(b"operation"),
         Bytes::from_static(b"request"),
     )?;
-    let encoded = invocation.record(&StreamPath::new("codec/actors/state")?)?;
-    let record = acyclic_stream::Record {
-        sequence: 0,
-        value: encoded.value,
-        headers: encoded.headers,
-        commit_id: CommitId::from_bytes([1; 32]),
-        committed_at_micros: 42,
-        origin: StreamPath::new("codec/actors/inbox")?,
-    };
-    let invocation_bytes = acyclic_stream::wire_codec::record_wire(record, None).encode_to_vec();
+    // Fix time at the provider boundary; retain all other metadata from the
+    // original Store acceptance instead of constructing a wire envelope.
+    struct Clock;
+    impl acyclic_stream::UnixMillisClock for Clock {
+        fn now_unix_millis(&self) -> u64 {
+            42
+        }
+    }
+    let clock: Arc<dyn acyclic_stream::UnixMillisClock> = Arc::new(Clock);
+    let input = StreamPath::new("codec/actors/inbox")?;
+    let ticket = futures::executor::block_on(async {
+        use acyclic_actors::local::{PreparedPublish, Subscription};
+        use acyclic_stream::{IdempotencyKey, MemoryLimits, StreamProvider as _};
+
+        let provider = Arc::new(MemoryStream::new_with_clock(
+            MemoryLimits::default(),
+            Arc::clone(&clock),
+        ));
+        let store = Store::new(Arc::clone(&provider), StreamPath::new("codec/actors")?);
+        let mut create =
+            PreparedPublish::foreign(IdempotencyKey::new(b"codec/invocation/create".to_vec())?);
+        for effect in store.create(
+            &actor,
+            BTreeMap::from([(
+                "inbox".into(),
+                Subscription {
+                    path: input.clone(),
+                    cursor: 0,
+                },
+            )]),
+            None,
+        )? {
+            create.join(effect)?;
+        }
+        PreparedPublish::settle(&provider.commit(create.into_request()?).await?)?;
+        Ok::<_, Box<dyn std::error::Error>>(store.enqueue_invoke(&invocation).await?)
+    })?;
+    assert_eq!(ticket.invocation(), &invocation);
+    assert_eq!(ticket.record().origin, input);
+    assert_eq!(ticket.record().sequence, 0);
+    assert_eq!(ticket.record().committed_at_micros, 42_000);
+    let invocation_bytes =
+        acyclic_stream::wire_codec::record_wire(ticket.record().clone(), None).encode_to_vec();
     let record = acyclic_stream::wire_codec::record(
         acyclic_stream::wire::Record::decode(invocation_bytes.as_slice())?,
         None,
     )?;
+    assert_eq!(
+        record,
+        *ticket.record(),
+        "wire must retain original acceptance"
+    );
     assert_eq!(
         Invocation::decode(&record)?,
         Some(invocation),
         "invocation writer must be admitted"
     );
     let mut seeds = vec![(
-        "invocation-v2",
+        "invocation-committed-v2",
         invocation_bytes,
-        "Invocation::record and wire_codec::record_wire",
+        "Store::enqueue_invoke original InvocationTicket::record and wire_codec::record_wire",
     )];
-    for (name, bytes) in futures::executor::block_on(acyclic_actors::call::model::codec_seeds())? {
+    for (name, bytes) in
+        futures::executor::block_on(acyclic_actors::call::model::codec_seeds(clock))?
+    {
         seeds.push((
             name,
             bytes,

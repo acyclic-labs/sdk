@@ -187,7 +187,8 @@ def call_records():
     original = {path: path.read_bytes() for path in (production, ORACLE)}
     source, oracle = original[production], original[ORACLE]
     cancellation = b"Outcome::Cancelled(reason) if self.accepted.is_some() => {"
-    start = oracle.index(b"    for (name, bytes) in futures::executor::block_on(acyclic_actors::call::model::codec_seeds())?")
+    producer = oracle.index(b"acyclic_actors::call::model::codec_seeds(clock)")
+    start = oracle.rindex(b"    for (name, bytes)", 0, producer)
     end = oracle.index(b"    for (name, bytes) in acyclic_actors::reservation::codec_fuzz::seeds()?", start)
     schedule = (b"    futures::executor::block_on(acyclic_actors::call::model::check(bytes))\n"
                 b'        .expect("original call protocol must conserve its committed receipts");\n')

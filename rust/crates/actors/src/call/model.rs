@@ -667,17 +667,12 @@ pub async fn check(bytes: &[u8]) -> Result<(), String> {
 
 /// Capture the original committed call records, with independent decoded and
 /// contextual dispositions. Provider metadata comes from real commits.
-pub async fn codec_seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
-    use acyclic_stream::{MemoryLimits, UnixMillisClock, wire_codec};
+pub async fn codec_seeds(
+    clock: std::sync::Arc<dyn acyclic_stream::UnixMillisClock>,
+) -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
+    use acyclic_stream::{MemoryLimits, wire_codec};
     use prost::Message as _;
     use std::sync::Arc;
-
-    struct Clock;
-    impl UnixMillisClock for Clock {
-        fn now_unix_millis(&self) -> u64 {
-            42
-        }
-    }
 
     let mut seeds = Vec::new();
     for (name, outcome, requested, accepted, fenced) in [
@@ -718,7 +713,7 @@ pub async fn codec_seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::
         ),
     ] {
         let model = Model::with_provider(
-            MemoryStream::new_with_clock(MemoryLimits::default(), Arc::new(Clock)),
+            MemoryStream::new_with_clock(MemoryLimits::default(), Arc::clone(&clock)),
             Fault::None,
             outcome.clone(),
         );
