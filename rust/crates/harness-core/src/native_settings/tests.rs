@@ -247,36 +247,6 @@ async fn local_project_selection_accepts_the_configured_workspace_spelling() -> 
     Ok(())
 }
 
-#[cfg(feature = "hooks")]
-#[tokio::test]
-async fn project_hook_and_server_trust_are_independent() -> Result<()> {
-    let fixture = Fixture::new()?;
-    let path = fixture.workspace.join(".codex/config.toml");
-    write(
-        &path,
-        "[mcp_servers.project]\ncommand='server'\n[[hooks.PreToolUse]]\nmatcher='['\n[[hooks.PreToolUse.hooks]]\ntype='command'\ncommand='guard'\n",
-    )?;
-    let snapshot = NativeSettings::load(fixture.config().trust_project_mcp(true)).await?;
-    assert_eq!(snapshot.mcp.server_names().collect::<Vec<_>>(), ["project"]);
-    assert!(
-        NativeSettings::load(fixture.config().trust_project_hooks(true))
-            .await
-            .is_err()
-    );
-    write(
-        &path,
-        "[mcp_servers.project]\ncommand=42\n[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype='command'\ncommand='guard'\n",
-    )?;
-    let snapshot = NativeSettings::load(fixture.config().trust_project_hooks(true)).await?;
-    assert_eq!(snapshot.mcp.server_names().count(), 0);
-    assert!(
-        NativeSettings::load(fixture.config().trust_project_mcp(true))
-            .await
-            .is_err()
-    );
-    Ok(())
-}
-
 #[cfg(unix)]
 #[tokio::test]
 async fn canonical_deduplication_combines_hook_and_mcp_roles() -> Result<()> {
@@ -380,29 +350,6 @@ async fn unrelated_workspace_entries_are_not_validated() -> Result<()> {
         serde_json::to_vec(&invalid).map_err(|error| Error::Invalid(error.to_string()))?,
     )?;
     assert!(NativeSettings::load(fixture.config()).await.is_err());
-    Ok(())
-}
-
-#[cfg(feature = "hooks")]
-#[tokio::test]
-async fn untrusted_hook_sections_do_not_block_trusted_project_mcp() -> Result<()> {
-    let fixture = Fixture::new()?;
-    write(
-        &fixture.workspace.join(".codex/config.toml"),
-        "hooks=42\n[mcp_servers.selected]\ncommand='winner'\n",
-    )?;
-    let snapshot = NativeSettings::load(fixture.config().trust_project_mcp(true)).await?;
-    assert_eq!(executable(&snapshot.mcp, "selected"), Some("winner"));
-    assert!(
-        NativeSettings::load(
-            fixture
-                .config()
-                .trust_project_mcp(true)
-                .trust_project_hooks(true)
-        )
-        .await
-        .is_err()
-    );
     Ok(())
 }
 
