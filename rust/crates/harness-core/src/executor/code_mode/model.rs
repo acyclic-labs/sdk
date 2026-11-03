@@ -122,11 +122,17 @@ pub async fn check(input: &[u8]) {
             assert_eq!(result.unwrap()["ok"], false, "invalid UTF-8 must refuse");
         }
     }
-    // Unlike a failed send, retirement after recv must wake the original
-    // oneshot wait. Keep the real blocking-pool boundary in this control.
+    #[derive(Clone, Copy)]
+    enum Settlement {
+        Retire,
+        Console,
+        Cancel,
+    }
+    // Unlike a failed send, retirement/cancellation after recv must wake the
+    // original wait. Keep the real blocking-pool boundary in this control.
     for console in [false, true] {
-        for retire in [true, false] {
-            if !console && !retire {
+        for settlement in [Settlement::Retire, Settlement::Console, Settlement::Cancel] {
+            if !console && matches!(settlement, Settlement::Console) {
                 continue; // Successful tool replies are checked above.
             }
             let work = native_work(false);
@@ -138,38 +144,57 @@ pub async fn check(input: &[u8]) {
             } else {
                 format!("await tools[{tool_name}]({{}})")
             };
+            let cancellation = tokio_util::sync::CancellationToken::new();
             let (send, mut receive) = tokio::sync::mpsc::channel(1);
             let run = acyclic_native_runtime::blocking_future(interpreter::run(
                 source,
                 definitions.clone(),
                 send,
-                tokio_util::sync::CancellationToken::new(),
+                cancellation.clone(),
                 4096,
                 allocator,
                 16,
             ));
             let dispatch = async move {
                 let Some(request) = receive.recv().await else {
-                    return false;
+                    return (false, None);
                 };
                 drop(receive);
-                if !retire {
-                    let super::Request::Log { reply, .. } = request else {
-                        panic!("console must use its original log request");
-                    };
-                    let _ = reply.send(None);
+                match settlement {
+                    Settlement::Console => {
+                        let super::Request::Log { reply, .. } = request else {
+                            panic!("console must use its original log request");
+                        };
+                        let _ = reply.send(None);
+                    }
+                    Settlement::Cancel => {
+                        cancellation.cancel();
+                        // Keep the reply producer alive until execution ends:
+                        // only the original cancellation event can wake it.
+                        return (true, Some(request));
+                    }
+                    Settlement::Retire => drop(request),
                 }
-                true // Otherwise dropping request retires its reply producer.
+                (true, None)
             };
-            let (result, admitted) = futures::join!(run, dispatch);
+            let (result, (admitted, retained)) = futures::join!(run, dispatch);
+            drop(retained);
             assert_eq!(work.live_allocation_bytes(), baseline);
             if failure.lock().unwrap().is_none() {
                 assert!(admitted, "the engine must submit its original RPC");
                 let result = result.expect("the original blocking pool must execute");
-                if retire {
-                    assert!(result.is_err(), "a retired reply producer must refuse");
-                } else {
-                    assert_eq!(result.unwrap(), serde_json::Value::Null);
+                match settlement {
+                    Settlement::Retire => {
+                        assert!(result.is_err(), "a retired reply producer must refuse");
+                    }
+                    Settlement::Console => {
+                        assert_eq!(result.unwrap(), serde_json::Value::Null);
+                    }
+                    Settlement::Cancel => assert_eq!(
+                        result,
+                        Err("JavaScript interrupted".into()),
+                        "parent cancellation must retain its interruption"
+                    ),
                 }
             }
         }
