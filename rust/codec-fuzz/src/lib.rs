@@ -729,6 +729,7 @@ fn actor_socket_ledger_seeds()
         ));
     }
     for (name, segment, from) in [
+        ("socket-ledger-exhausted-zero-frontier", u64::MAX, 0),
         ("socket-ledger-exhausted", u64::MAX, u64::MAX),
         ("socket-ledger-last-incarnation", u64::MAX - 1, u64::MAX),
         ("socket-ledger-invalid-frontier", 1, u64::MAX),

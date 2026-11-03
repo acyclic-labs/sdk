@@ -22,7 +22,8 @@ original test source SHA-256:
 The same `actor_codecs` target requires admission of every retained projection
 and compares decoded fields to the original writer inputs. Additional boundary
 values come from the actual shared epoch writer; an independent `u128` oracle
-checks format capacity and frontier validity. These are derived inputs, distinct
+checks format capacity and frontier validity independently: an exhausted segment
+with a zero frontier isolates capacity refusal. These are derived inputs, distinct
 from the original session captures. Unknown-field and version refusals are
 also derived from original bytes.
 
