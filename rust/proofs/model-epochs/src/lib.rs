@@ -12,22 +12,37 @@ mod proofs {
     use super::{kernel, protocol};
 
     #[kani::proof]
+    #[kani::unwind(4)]
     fn cuts_only_advance_at_complete_contiguous_exchanges() {
         let before: u64 = kani::any();
-        let next: u64 = kani::any();
-        let closed: bool = kani::any();
         let mut cut = kernel::Cut::after(before);
-        let boundary = if closed {
-            kernel::Boundary::Closed
-        } else {
-            kernel::Boundary::Open
-        };
-        let accepted = cut.push(next, boundary);
-        assert_eq!(accepted, before.checked_add(1) == Some(next));
-        assert_eq!(cut.cursor(), if accepted && closed { next } else { before });
-        kani::cover!(accepted && closed);
-        kani::cover!(accepted && !closed);
-        kani::cover!(!accepted);
+        let mut observed = u128::from(before);
+        let mut selected = before;
+        for _ in 0..3 {
+            let next: u64 = kani::any();
+            let closed: bool = kani::any();
+            let previous = cut;
+            let boundary = if closed {
+                kernel::Boundary::Closed
+            } else {
+                kernel::Boundary::Open
+            };
+            let expected = observed + 1 == u128::from(next);
+            let accepted = cut.push(next, boundary);
+            assert_eq!(accepted, expected);
+            if expected {
+                observed = u128::from(next);
+                if closed {
+                    selected = next;
+                }
+            } else {
+                assert_eq!(cut, previous);
+            }
+            assert_eq!(cut.cursor(), selected);
+            kani::cover!(accepted && !closed && selected < next);
+            kani::cover!(accepted && closed && selected > before);
+            kani::cover!(!accepted && observed > u128::from(selected));
+        }
     }
 
     #[kani::proof]
