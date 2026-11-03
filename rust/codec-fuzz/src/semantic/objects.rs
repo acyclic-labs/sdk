@@ -117,6 +117,19 @@ fn compare<W: Message + Default, T: Debug + PartialEq>(
     );
 }
 
+fn publication(put: &acyclic_objects::Put, expected: (Digest, u64)) {
+    if let Some(value) = put.verified() {
+        assert_eq!(
+            value.digest, expected.0,
+            "put answers the original requested digest"
+        );
+        assert_eq!(
+            value.length, expected.1,
+            "put answers the original requested length"
+        );
+    }
+}
+
 fn batch(bytes: &[u8]) {
     let run = |packet: Bytes, lost| {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -164,9 +177,7 @@ fn batch(bytes: &[u8]) {
                             ),
                             "member outcome remains original"
                         );
-                        if let Some(value) = put.verified() {
-                            assert_eq!((value.digest, value.length), expected);
-                        }
+                        publication(put, expected);
                     }
                     _ => panic!("batch admission changed a member outcome"),
                 }
@@ -215,10 +226,15 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
     match name {
         "acyclic.objects.v1.PutBlobsResponse" => batch(bytes),
         "acyclic.objects.v1.PutResponse" => {
-            response!(PutResponse, "blobs/put", |client| client
-                .put(body(), Vec::new()));
-            response!(PutResponse, "blobs/put-manifest", |client| client
-                .put_manifest(manifest()));
+            compare::<wire::PutResponse, _>(bytes, "blobs/put", |client| {
+                ready(client.put(body(), Vec::new()))
+                    .inspect(|put| publication(put, (digest(), BODY.len() as u64)))
+            });
+            compare::<wire::PutResponse, _>(bytes, "blobs/put-manifest", |client| {
+                ready(client.put_manifest(manifest())).inspect(|put| {
+                    publication(put, (Digest::of(&manifest().encode()), BODY.len() as u64));
+                })
+            });
         }
         "acyclic.objects.v1.GetBlobResponse" => {
             for (range, maximum) in [
@@ -455,6 +471,29 @@ mod tests {
         )
         .expect("retained original service request");
         super::check("acyclic.objects.v1.PutBlobRequest", &captured[8..]);
+        use prost::Message;
+        for variant in ["created", "existing", "manifest"] {
+            let captured = acyclic_proto_build::golden::frame(&format!(
+                "corpus/protobuf/acyclic.objects.v1.PutResponse-{variant}",
+            ))
+            .expect("retained original service publication writer");
+            super::check("acyclic.objects.v1.PutResponse", &captured[8..]);
+            for digest in [true, false] {
+                let mut wrong = super::wire::PutResponse::decode(&captured[8..])
+                    .expect("original service publication wire");
+                use super::wire::put_response::Outcome;
+                let value = match wrong.outcome.as_mut() {
+                    Some(Outcome::Created(value) | Outcome::AlreadyExists(value)) => value,
+                    _ => panic!("original publication writer has a durable acknowledgement"),
+                };
+                if digest {
+                    value.digest.as_mut().expect("original put digest").blake3[0] ^= 1;
+                } else {
+                    value.length += 1;
+                }
+                super::check("acyclic.objects.v1.PutResponse", &wrong.encode_to_vec());
+            }
+        }
         let captured = acyclic_proto_build::golden::frame(
             "corpus/protobuf/acyclic.objects.v1.PutBlobsResponse",
         )
@@ -465,7 +504,6 @@ mod tests {
         )
         .expect("retained original service head writer");
         super::check("acyclic.objects.v1.BlobInfo", &captured[8..]);
-        use prost::Message;
         let mut wrong =
             super::wire::BlobInfo::decode(&captured[8..]).expect("original service head wire");
         wrong.digest.as_mut().expect("original head digest").blake3[0] ^= 1;
