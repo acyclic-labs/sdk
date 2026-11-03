@@ -743,5 +743,17 @@
     "features_feedback": 12344,
     "new_campaign_runs": 0,
     "scope": "Linux x86_64 native query entry points only. Earlier controls and campaigns retain their original source and feature qualification. Hook publication, MCP installation/transport, worker loss, source branch maps and other platforms remain open."
+  },
+  "partial_query_domain": {
+    "status": "qualification pending",
+    "change": "Category selector is byte 8, independently of the first eight signed-integer bytes; all i64 bit patterns remain reachable. Earlier partial-query qualification describes its original coupled selector only.",
+    "new_caller_seed_sha256": {
+      "query-integer-min": "b7e16632b656ff8dfe82039d030275d178e4e012a2205b596925814aa7df0874",
+      "query-integer-negative-one": "ba67e86d827ab4c950017d1bfa6f82a1e7ac60baa80f086ad2f7c9e765011dbe",
+      "query-integer-one": "a536aa3cede6ea3c1f3e0357c3c60e0f216a8c89b853df13b29daa8f85065dfb",
+      "query-integer-max": "8d420fa925bf3a0f0064a17195f6eb40ffed576358c737727be0650d1fb05a30"
+    },
+    "seed_provenance": "Four authored signed-integer boundary/regression inputs, each followed by the independent integer-category byte; no external tool output.",
+    "scope": "Generator domain repair in the existing production-loader oracle; no production change, new target or new campaign."
   }
 }
