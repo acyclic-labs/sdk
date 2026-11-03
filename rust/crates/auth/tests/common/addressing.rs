@@ -1,7 +1,8 @@
 //! Addresses must retain the identities and route decisions they carry.
 use acyclic_auth::addressing::{
-    ActorReference, CanonicalHost, DnsError, IdentityError, NamespaceId, ResourceIdentity,
-    RouteError, RoutePattern, WorkerRoute, select_route, validate_actor_id, validate_dns_label,
+    AccountId, ActorReference, CanonicalHost, DnsError, IdentityError, NamespaceId, ResourceId,
+    ResourceIdentity, RouteError, RoutePattern, WorkerRoute, select_route, validate_actor_id,
+    validate_dns_label,
 };
 
 const DOMAIN: &str = "run.example.com";
@@ -189,6 +190,16 @@ fn route(pattern: &str, url: &str) {
 
 /// Check binary identities, hostnames and route tuples through production APIs.
 pub fn check(bytes: &[u8]) {
+    assert_eq!(
+        AccountId::new(b""),
+        Err(IdentityError::EmptyAccount),
+        "empty account must retain typed refusal"
+    );
+    assert_eq!(
+        ResourceId::new(b""),
+        Err(IdentityError::EmptyId),
+        "empty resource id must retain typed refusal"
+    );
     if !bytes.is_empty() {
         let value = ResourceIdentity::new(bytes, bytes).unwrap();
         assert_eq!(

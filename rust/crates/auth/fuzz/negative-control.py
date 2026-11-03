@@ -17,6 +17,8 @@ elif choice.startswith("addressing-"):
     source = root.parent / "src" / {
         "addressing-fragment": "addressing/routes.rs",
         "addressing-resource": "addressing.rs",
+        "addressing-account-empty": "addressing.rs",
+        "addressing-id-empty": "addressing.rs",
         "addressing-field-endian": "addressing.rs",
         "addressing-resource-tail": "addressing.rs",
         "addressing-resource-version": "format.rs",
@@ -56,6 +58,14 @@ try:
     oracle_hashes = {path: hashlib.sha256(path.read_bytes()).digest() for path in oracles}
     newline = b"\r\n" if b"\r\n" in original else b"\n"
     mutations = {
+        "addressing-account-empty": (
+            b"return Err(IdentityError::EmptyAccount);", b"return Ok(());",
+            "empty account must retain typed refusal", "resource",
+        ),
+        "addressing-id-empty": (
+            b"return Err(IdentityError::EmptyId);", b"return Ok(());",
+            "empty resource id must retain typed refusal", "resource",
+        ),
         "addressing-resource-domain": (
             b".strip_prefix(domain)", b".get(domain.len()..)",
             "identity domain must retain typed refusal", "resource",
