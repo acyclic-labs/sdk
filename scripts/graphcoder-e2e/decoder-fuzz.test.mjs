@@ -5,6 +5,7 @@ import { fuzz as lines } from "./lines.fuzz.mjs";
 import { fuzz as report } from "./process-report.fuzz.mjs";
 import { fuzz as assertions } from "./assertions.fuzz.mjs";
 import { fuzz as spool } from "./spool.fuzz.mjs";
+import { fuzz as watch } from "./output-watch.fuzz.mjs";
 
 test("decoder fuzz targets retain captured native and shipping seeds across byte mutations", async () => {
   const { ready, acknowledgement } = JSON.parse(readFileSync(new URL("./fixtures/native-report-ready.json", import.meta.url)));
@@ -48,6 +49,7 @@ test("decoder fuzz targets retain captured native and shipping seeds across byte
       await report(bytes);
       assertions(bytes);
       await spool(bytes);
+      watch(bytes);
     }
   }
 });

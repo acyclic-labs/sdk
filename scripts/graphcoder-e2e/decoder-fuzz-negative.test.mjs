@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import test from "node:test";
 
-test("decoder fuzz oracles reject planted production defects", () => {
+test("decoder fuzz oracles reject planted production defects", async () => {
   const mutations = [
     ["process-report.mjs", "this.#controlFailure ??= cause;", "void cause;", "report"],
     ["process-report.mjs", "    const request = this.#request;",
@@ -35,8 +35,11 @@ test("decoder fuzz oracles reject planted production defects", () => {
     ["process.mjs", "if (!this.#state.open) return true;", "if (false) return true;", "spool"],
     ["process.mjs", "if (!this.#path) return Promise.resolve(indexed);",
       "if (!this.#path) return Promise.resolve({});", "spool"],
+    ["process.mjs", "this.#last.set(needle, base + at);", "this.#last.set(needle, 0);", "watch"],
+    ["process.mjs", "const combined = this.#tail + text, base = this.#offset - this.#tail.length;",
+      "const combined = text, base = this.#offset;", "watch"],
   ];
-  for (const [file, before, after, oracle] of mutations) {
+  const check = async ([file, before, after, oracle]) => {
     // Mutate the actual imported implementation, never a parallel model. A
     // missing mutation site, import error or crash cannot qualify the oracle.
     const script = `
@@ -53,7 +56,10 @@ test("decoder fuzz oracles reject planted production defects", () => {
         return { ...loaded, source: source.replace(${JSON.stringify(before)}, ${JSON.stringify(after)}) };
       } });
       try {
-        ${oracle === "spool" ? `
+        ${oracle === "watch" ? `
+          const { fuzz } = await import('./output-watch.fuzz.mjs');
+          fuzz(Buffer.alloc(0));
+        ` : oracle === "spool" ? `
           const { fuzz } = await import('./spool.fuzz.mjs');
           await fuzz(Buffer.from([123, 10]));
         ` : oracle === "assertions" ? `
@@ -84,13 +90,17 @@ test("decoder fuzz oracles reject planted production defects", () => {
       }
       assert.ok(applied, 'production mutation must execute');
     `;
-    const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
-      cwd: new URL(".", import.meta.url), encoding: "utf8",
-    });
+    const result = await new Promise(resolve => execFile(process.execPath, ["--input-type=module", "--eval", script], {
+      cwd: new URL(".", import.meta.url), encoding: "utf8", windowsHide: true,
+    }, (error, stdout, stderr) => resolve({ error, stdout, stderr })));
     const recovery = `step=detect planted ${file} defect; recovery=node --test scripts/graphcoder-e2e/decoder-fuzz-negative.test.mjs`;
-    assert.equal(result.error, undefined, recovery);
-    assert.equal(result.signal, null, recovery);
-    assert.equal(result.status, 1, `${recovery}\n${result.stdout}\n${result.stderr}`);
+    assert.equal(result.error?.signal, null, recovery);
+    assert.equal(result.error?.code, 1, `${recovery}\n${result.stdout}\n${result.stderr}`);
     assert.match(result.stdout, /PLANTED_DEFECT_REJECTED/, `${recovery}\n${result.stdout}\n${result.stderr}`);
-  }
+  };
+  const remaining = mutations.values();
+  // Two isolated children share admission credit; each close releases one slot.
+  await Promise.all([0, 1].map(async () => {
+    for (const mutation of remaining) await check(mutation);
+  }));
 });

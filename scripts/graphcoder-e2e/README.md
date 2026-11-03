@@ -201,8 +201,8 @@ requires the real merge and the resulting parent file bytes. The text oracle fol
 JSONL replay compares the committed `{id,inbox,text}` answer and rejects repeated
 tool calls. This tier complements the installed-host matrix.
 
-The kept byte-fuzz entries are `lines.fuzz.mjs`, `process-report.fuzz.mjs` and
-`assertions.fuzz.mjs` and `spool.fuzz.mjs`. They call the shared production decoders and acceptance
+The kept byte-fuzz entries are `lines.fuzz.mjs`, `process-report.fuzz.mjs`,
+`assertions.fuzz.mjs`, `spool.fuzz.mjs` and `output-watch.fuzz.mjs`. They call the shared production decoders and acceptance
 boundaries, retaining captured wire seeds and provenance in `fixtures/`.
 Run their corpus replay and planted production-defect controls with:
 
@@ -215,6 +215,10 @@ the unchanged oracle rejects the intended defect; an import failure or crash
 does not qualify. For unmutated source coverage, run only `decoder-fuzz.test.mjs`
 with Node's `--experimental-test-coverage` option. These parser controls do not
 replace the real process, transport-retirement or installed-host suites.
+The output-watch target compares incremental UTF-8 presence and final occurrence
+ordering against whole-buffer substring positions, including captured terminal
+escape sequences. It checks whole, single-byte and input-derived chunk partitions;
+it does not establish native terminal input or OS PTY behavior.
 The spool target checks JSONL admission, unique-key indexing and original
 terminal retention across byte partitions and process-exit order. Its in-memory
 stream adapter does not qualify filesystem transcript failures or native pipes.
