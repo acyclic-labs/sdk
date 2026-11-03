@@ -19,7 +19,81 @@ fn record<T: AgentRecord + std::fmt::Debug + PartialEq>(bytes: &[u8]) {
         let restored = T::decode(&encoded).expect("encoded agent record decodes");
         assert_eq!(restored, value);
         assert_eq!(restored.encode().expect("stable record encoding"), encoded);
+        header(&value);
     }
+}
+
+fn header<T: serde::Serialize + for<'de> serde::Deserialize<'de>>(value: &T) {
+    fn refuses<T: for<'de> serde::Deserialize<'de>>(bytes: &[u8], found: u32) {
+        let refused = match records::decode_record::<T>(bytes) {
+            Err(super::Error::Record("record exceeds MAX_RECORD_BYTES")) => {
+                bytes.len() > records::MAX_RECORD_BYTES
+            }
+            Err(super::Error::UnsupportedRecordVersion(version)) => {
+                bytes.len() <= records::MAX_RECORD_BYTES
+                    && found != records::RECORD_VERSION
+                    && version.found == found
+                    && version.expected == records::RECORD_VERSION
+            }
+            Err(super::Error::Record("record is malformed")) => {
+                bytes.len() <= records::MAX_RECORD_BYTES && found == records::RECORD_VERSION
+            }
+            _ => false,
+        };
+        assert!(refused, "agent record header refusal changed");
+    }
+    let encoded = records::seal(value).expect("admitted record writer");
+    // Only inspect the canonical writer's output here. Parsing arbitrary input
+    // through Value would lose duplicate keys before the real header sees them.
+    let mut written: serde_json::Value = serde_json::from_slice(&encoded).expect("writer JSON");
+    let fields = written.as_object_mut().expect("writer header");
+    for version in (0..=records::RECORD_VERSION + 1).chain(std::iter::once(u32::MAX)) {
+        fields.insert("version".into(), version.into());
+        let encoded = crate::contract::canonical_json_bytes(fields).expect("altered header");
+        if version != records::RECORD_VERSION {
+            refuses::<T>(&encoded, version);
+        }
+        // Both a valid body and one that cannot decode as any of these record
+        // types must report a foreign version before payload decoding.
+        let body = fields.insert("record".into(), serde_json::Value::Null);
+        let malformed = crate::contract::canonical_json_bytes(fields).expect("altered payload");
+        refuses::<T>(&malformed, version);
+        fields.remove("record");
+        let missing = crate::contract::canonical_json_bytes(fields).expect("missing payload");
+        refuses::<T>(&missing, version);
+        fields.insert("record".into(), body.expect("writer record"));
+        for suffix in [
+            br#", "extra":0}"#.as_slice(),
+            br#", "record":null}"#.as_slice(),
+        ] {
+            let mut changed = encoded[..encoded.len() - 1].to_vec();
+            changed.extend_from_slice(suffix);
+            refuses::<T>(&changed, version);
+        }
+        // The first selected version wins; a repeated version marks the
+        // current header malformed, never a new format selection.
+        let mut duplicate = encoded[..encoded.len() - 1].to_vec();
+        let second_version = if version == records::RECORD_VERSION {
+            0
+        } else {
+            records::RECORD_VERSION
+        };
+        duplicate.extend_from_slice(format!(r#", "version":{second_version}}}"#).as_bytes());
+        refuses::<T>(&duplicate, version);
+    }
+    for version in [
+        serde_json::Value::Null,
+        (-1).into(),
+        u64::MAX.into(),
+        "unknown".into(),
+    ] {
+        fields.insert("version".into(), version);
+        let invalid = crate::contract::canonical_json_bytes(fields).expect("invalid version");
+        refuses::<T>(&invalid, records::RECORD_VERSION);
+    }
+    fields.remove("version");
+    let headerless = crate::contract::canonical_json_bytes(fields).expect("headerless record");
+    refuses::<T>(&headerless, 1);
 }
 
 fn envelope(value: &acyclic_actors::guest::Checkpoint) {
@@ -102,6 +176,7 @@ pub fn check(bytes: &[u8]) {
         let restored: TurnEffect =
             records::open(&encoded).unwrap_or_else(|_| panic!("encoded effect does not decode"));
         assert_eq!(restored, effect);
+        header(&effect);
     }
     if let Ok(state) = checkpoint::decode(bytes) {
         let encoded = checkpoint::encode(&state).expect("admitted checkpoint encodes");
