@@ -600,6 +600,186 @@ mod tests {
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn refused_generation_funding_preserves_replay_and_tool_coordinates() -> Result<()> {
+        // Generated canonical SDK inputs, not a captured provider response.
+        let request = PreparedModelRequest::prepare(
+            ModelRequest {
+                compose_tools: false,
+                model: Model::new("recorded-control".into(), "admission".into(), "1".into())?,
+                messages: vec![ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("source".into()),
+                }],
+                tools: Vec::new(),
+                sampling: Default::default(),
+                max_output_tokens: None,
+            },
+            crate::conversation::Limits::default(),
+            None,
+        )?;
+        let dispatch = ModelDispatch {
+            operation_id: OperationId::new(),
+            step: 0,
+            request_digest: request.request_digest(),
+        };
+        let key = replay_key(request.bytes())?;
+        let events = [0, 1].map(|occurrence| ModelEvent::Completed {
+            metadata: json!({"occurrence": occurrence}),
+        });
+        let mut source = Recording::default();
+        for (ordinal, event) in events.iter().enumerate() {
+            source.insert(
+                key,
+                RecordedCall {
+                    source: Some(ModelDispatch {
+                        step: ordinal as u32,
+                        ..dispatch
+                    }),
+                    events: vec![crate::contract::canonical_json_bytes(event)?],
+                    tools: vec![(
+                        format!("original-{ordinal}"),
+                        RecordedToolOutcome::Completed(crate::tool::ToolResult {
+                            value: Value::Null,
+                        }),
+                    )],
+                },
+            );
+        }
+        let source = Arc::new(source);
+        let trial = || {
+            RecordedModel::new(
+                Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+                Arc::clone(&source),
+                Arc::new(Quiet),
+            )
+        };
+        // Measure every returned-object allocation through the actual public entry.
+        // No event is decoded by this probe: per-event funding remains demand driven.
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let probe =
+            NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+                .map_err(|(error, _)| error)?;
+        let probe_trial = trial();
+        let stream = probe_trial
+            .generate_with_native_work(&request, dispatch, &probe)?
+            .await?;
+        let complete_allocations = probe.receipt().allocation_operations;
+        drop(stream);
+        assert!(complete_allocations > 1);
+        for allocations in 1..complete_allocations {
+            let mut budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+            budget.allocation_operations = allocations;
+            let refused = NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(error, _)| error)?;
+            let trial = trial();
+            assert!(
+                matches!(
+                    trial.generate_with_native_work(&request, dispatch, &refused),
+                    Err(Error::NativeWork { .. })
+                ),
+                "returned-object admission must refuse synchronously at allocation {allocations}",
+            );
+            assert_eq!(
+                trial.unused(),
+                2,
+                "refused funding consumed a source occurrence"
+            );
+            assert!(
+                trial.lock().tools.is_empty(),
+                "refused funding published tool coordinates"
+            );
+            assert!(
+                !trial.diverged(),
+                "refused replay admission entered the live provider"
+            );
+            let funded = NativeMaterializationWork::new(
+                acyclic_fs::performance::BOUNDARY_BUDGET,
+                &cancellation,
+            )
+            .map_err(|(error, _)| error)?;
+            let mut stream = trial
+                .generate_with_native_work(&request, dispatch, &funded)?
+                .await?;
+            assert_eq!(
+                stream.delivery(),
+                ModelDelivery::Recorded {
+                    source: Some(dispatch)
+                }
+            );
+            let (actual, custody) = futures::StreamExt::next(&mut stream).await.unwrap()?;
+            assert_eq!(
+                actual, events[0],
+                "retry skipped the original source occurrence"
+            );
+            drop(custody);
+            assert!(futures::StreamExt::next(&mut stream).await.is_none());
+            assert_eq!(trial.unused(), 1);
+            assert_eq!(trial.lock().tools.len(), 1);
+        }
+        // Cancellation after acceptance retains the selected original terminal.
+        let trial = trial();
+        let accepted_cancellation = acyclic_fs::CancellationToken::new();
+        let accepted = NativeMaterializationWork::new(
+            acyclic_fs::performance::BOUNDARY_BUDGET,
+            &accepted_cancellation,
+        )
+        .map_err(|(error, _)| error)?;
+        let mut interrupted = trial
+            .generate_with_native_work(&request, dispatch, &accepted)?
+            .await?;
+        accepted_cancellation.cancel();
+        assert!(matches!(
+            futures::StreamExt::next(&mut interrupted).await,
+            Some(Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+                ..
+            }))
+        ));
+        assert!(futures::StreamExt::next(&mut interrupted).await.is_none());
+        drop(interrupted);
+        let funded =
+            NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+                .map_err(|(error, _)| error)?;
+        let mut resumed = trial
+            .generate_with_native_work(&request, dispatch, &funded)?
+            .await?;
+        assert_eq!(
+            resumed.delivery(),
+            ModelDelivery::Recorded {
+                source: Some(dispatch)
+            }
+        );
+        let (actual, custody) = futures::StreamExt::next(&mut resumed).await.unwrap()?;
+        assert_eq!(
+            actual, events[0],
+            "accepted failure consumed a different recorded terminal"
+        );
+        drop(custody);
+        drop(resumed);
+        assert_eq!(trial.unused(), 1);
+        assert_eq!(trial.lock().tools.len(), 1);
+        let next = ModelDispatch {
+            step: 1,
+            ..dispatch
+        };
+        let mut stream = trial
+            .generate_with_native_work(&request, next, &funded)?
+            .await?;
+        assert_eq!(
+            stream.delivery(),
+            ModelDelivery::Recorded { source: Some(next) }
+        );
+        let (actual, custody) = futures::StreamExt::next(&mut stream).await.unwrap()?;
+        assert_eq!(actual, events[1]);
+        drop(custody);
+        assert_eq!(trial.unused(), 0);
+        assert_eq!(trial.lock().tools.len(), 2);
+        assert!(!trial.diverged());
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
     fn tool_copy_uses_original_work_and_refusal_keeps_the_settlement() -> Result<()> {
         let live: Arc<dyn ModelProvider> =
