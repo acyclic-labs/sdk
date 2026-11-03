@@ -38,6 +38,19 @@ external-tool responses or evidence of an admitted OS process.
 | at-bound | 4096 | e305bedb50e4c1f83f6a5da59b873ec9f20066aab241701b8d25ec18b0994961 |
 | past-bound | 4097 | 350469ea2abda9aa05a144747fb0141f35d4333c6b8e48f3d79559a14e4ea541 |
 
-One property target replaces the three former path, bound and truncation
-examples. The claim protocol's native and concurrency controls remain necessary:
+The ordinary `acyclic-native-runtime` integration test replays all four retained
+corpus files through the same `check` function used by the fuzzer:
+
+```sh
+cargo test --locked -p acyclic-native-runtime --test native_claim_record
+```
+
+The same source-defect control can qualify this routine test without repeating
+the fuzz campaign: append `--routine` to the Python command above. It first
+requires the checksum defect to fail the ordinary test, restores the production
+codec, then requires exactly one passing test.
+
+This shared oracle replaces the three former path, bound and truncation
+examples in routine validation as well as fuzzing. The claim protocol's native
+and concurrency controls remain necessary:
 codec fuzzing establishes no process identity, lock release or OS retirement.
