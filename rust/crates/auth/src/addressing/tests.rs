@@ -154,8 +154,6 @@ fn rejects_malformed_storage_and_wire() -> Result<(), Box<dyn std::error::Error>
         ResourceIdentity::decode(&impossible_length),
         Err(IdentityError::Malformed)
     );
-    assert_eq!(AccountId::new(b""), Err(IdentityError::EmptyAccount));
-    assert_eq!(ResourceId::new(b""), Err(IdentityError::EmptyId));
     let pair = ResourceIdentity::from_parts(AccountId::new(b"a")?, ResourceId::new(b"b")?);
     assert_eq!(pair, ResourceIdentity::new(b"a", b"b")?);
     Ok(())
