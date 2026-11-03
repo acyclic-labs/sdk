@@ -115,10 +115,7 @@ export function qualifyNativeProgressLoom(run = runCommand) {
     env: loomEnvironment(),
     filters: [
       "testing::model::native_progress_reporting_races_physical_completion_and_unwind",
-      "testing::model::missing_native_cleanup_is_detected_on_the_actual_tracker",
       "testing::model::accepted_descendants_cannot_escape_cancel_or_lose_the_terminal_wake",
-      "testing::model::missing_registration_is_detected_on_the_real_tracker",
-      "testing::model::missing_terminal_wake_is_detected_on_the_real_tracker",
       "testing::queue_model::capacity_release_races_registration_on_the_real_queue",
       "testing::queue_model::physical_completion_races_observer_drop_on_the_real_terminal",
       "testing::queue_model::shared_state_funding_survives_observation_and_worker_release",
@@ -149,6 +146,16 @@ function qualifyNativeQueueLoom(filters, run) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
     kind: "--lib", targetCfg: [], env: loomEnvironment(),
     filters: filters.map(symbol => `testing::queue_model::${symbol}`),
+  });
+}
+
+function qualifyNativeTrackerLoom(run) {
+  return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
+    kind: "--lib", targetCfg: [], env: loomEnvironment(),
+    filters: [
+      "testing::model::native_progress_reporting_races_physical_completion_and_unwind",
+      "testing::model::accepted_descendants_cannot_escape_cancel_or_lose_the_terminal_wake",
+    ],
   });
 }
 
@@ -329,6 +336,7 @@ const fixedModels = {
   "--native-funding": run => qualifyNativeQueueLoom([
     "shared_state_funding_survives_observation_and_worker_release",
     "shared_waiter_funding_survives_admission_and_cancellation"], run),
+  "--native-tracker": qualifyNativeTrackerLoom,
   "--guest": qualifyGuestLoom,
   "--session-fs": qualifySessionFsLoom, "--ownership": qualifyOwnershipLoom,
   "--native-registry": qualifyNativeRegistryLoom,

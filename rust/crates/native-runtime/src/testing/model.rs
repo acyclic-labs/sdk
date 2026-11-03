@@ -64,18 +64,6 @@ fn native_progress_reporting_races_physical_completion_and_unwind() {
 }
 
 #[test]
-#[should_panic(expected = "native cleanup hid idle")]
-fn missing_native_cleanup_is_detected_on_the_actual_tracker() {
-    loom::model(|| {
-        let (schedule, _) = Schedule::new();
-        let native = context(&schedule).accept("native");
-        // Deliberately omit the real completion guard's Drop path.
-        std::mem::forget(native);
-        assert_eq!(schedule.pending_native_work(), 0, "native cleanup hid idle");
-    });
-}
-
-#[test]
 fn accepted_descendants_cannot_escape_cancel_or_lose_the_terminal_wake() {
     loom::model(|| {
         let (schedule, _) = Schedule::new();
@@ -110,47 +98,5 @@ fn accepted_descendants_cannot_escape_cancel_or_lose_the_terminal_wake() {
             assert!(flag.0.load(Ordering::SeqCst), "terminal wake lost");
             assert!(drained.as_mut().poll(&mut cx).is_ready());
         }
-    });
-}
-
-#[test]
-#[should_panic(expected = "missing registration was accepted")]
-fn missing_registration_is_detected_on_the_real_tracker() {
-    loom::model(|| {
-        let (schedule, _) = Schedule::new();
-        let root = context(&schedule).accept("root");
-        // Broken tracker loses precisely the registration made by accept.
-        schedule.0.state.lock().unwrap().active = 0;
-        schedule.cancel();
-        let flag = Arc::new(WakeFlag(AtomicBool::new(false)));
-        let waker = Waker::from(flag);
-        let mut cx = PollContext::from_waker(&waker);
-        let ready = Box::pin(schedule.drained())
-            .as_mut()
-            .poll(&mut cx)
-            .is_ready();
-        schedule.0.state.lock().unwrap().active = 1;
-        drop(root);
-        assert!(!ready, "missing registration was accepted");
-    });
-}
-
-#[test]
-#[should_panic(expected = "terminal wake lost")]
-fn missing_terminal_wake_is_detected_on_the_real_tracker() {
-    loom::model(|| {
-        let (schedule, _) = Schedule::new();
-        let root = context(&schedule).accept("root");
-        schedule.cancel();
-        let flag = Arc::new(WakeFlag(AtomicBool::new(false)));
-        let waker = Waker::from(flag.clone());
-        let mut cx = PollContext::from_waker(&waker);
-        let mut drained = Box::pin(schedule.drained());
-        assert!(drained.as_mut().poll(&mut cx).is_pending());
-        // Broken completion drops the registered terminal waiter.
-        schedule.0.state.lock().unwrap().idle = None;
-        drop(root);
-        assert!(drained.as_mut().poll(&mut cx).is_ready());
-        assert!(flag.0.load(Ordering::SeqCst), "terminal wake lost");
     });
 }

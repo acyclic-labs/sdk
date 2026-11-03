@@ -1,7 +1,7 @@
 """Check production signal/wake/owner models against actual source defects.
 
 Run in a disposable checkout: python3 rust/crates/native-runtime/tests/signal-control.py /tmp/native-signal-control
-Select a retained control with --wake, --owners, --host, --host-events, --ownership, --claim, --descriptor, --owner-envelope, --durability, --durability-io, --native-terminal, --native-capacity or --native-funding.
+Select a retained control with --wake, --owners, --host, --host-events, --ownership, --claim, --descriptor, --owner-envelope, --durability, --durability-io, --native-terminal, --native-capacity, --native-funding or --native-tracker.
 An optional comma-separated mutation selection shares one restored positive run.
 """
 import hashlib
@@ -13,8 +13,8 @@ import sys
 
 
 def main():
-    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--host-events", "--ownership", "--claim", "--descriptor", "--owner-envelope", "--durability", "--durability-io", "--native-terminal", "--native-capacity", "--native-funding")):
-        raise RuntimeError("arguments: expected evidence directory, optional control and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--host-events|--ownership|--claim|--descriptor|--owner-envelope|--durability|--durability-io|--native-terminal|--native-capacity|--native-funding [mutation]]")
+    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--host-events", "--ownership", "--claim", "--descriptor", "--owner-envelope", "--durability", "--durability-io", "--native-terminal", "--native-capacity", "--native-funding", "--native-tracker")):
+        raise RuntimeError("arguments: expected evidence directory, optional control and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--host-events|--ownership|--claim|--descriptor|--owner-envelope|--durability|--durability-io|--native-terminal|--native-capacity|--native-funding|--native-tracker [mutation]]")
     mode = sys.argv[2] if len(sys.argv) >= 3 else "--signal"
     root = Path(__file__).resolve().parents[4]
     output = Path(sys.argv[1]).resolve()
@@ -32,6 +32,7 @@ def main():
     blocking = root / "rust/crates/native-runtime/src/blocking/mod.rs"
     completion = root / "rust/crates/native-runtime/src/completion/state.rs"
     admission = root / "rust/crates/native-runtime/src/workers/admission.rs"
+    tracker = root / "rust/crates/native-runtime/src/testing.rs"
     target, sources, selection = {
         "--signal": ("process_signal_loom.rs", (signal, outcome), "--native-signal"),
         "--wake": ("wake_loom.rs", (wake,), "--native-wake"),
@@ -47,6 +48,7 @@ def main():
         "--native-terminal": ("../src/testing/queue_model.rs", (blocking, completion), "--native-terminal"),
         "--native-capacity": ("../src/testing/queue_model.rs", (admission,), "--native-capacity"),
         "--native-funding": ("../src/testing/queue_model.rs", (completion, admission), "--native-funding"),
+        "--native-tracker": ("../src/testing/model.rs", (tracker,), "--native-tracker"),
     }[mode]
     oracle = root / "rust/crates/native-runtime/tests" / target
     qualifier = root / "scripts/qualify-mcp-loom.mjs"
@@ -213,6 +215,21 @@ qualificationMain([process.argv[1]], (command, args, options) => spawnSync(comma
              b"        state.queued = false;",
              b"        state._allocation.take();\n        state.queued = false;",
              "live shared waiter lost its funding", "testing::queue_model::shared_waiter_funding_survives_admission_and_cancellation"),
+        ]
+    elif mode == "--native-tracker":
+        mutations = [
+            ("tracker-retirement", tracker,
+             b"state.native_active -= usize::from(self.1);",
+             b"state.native_active -= 0;",
+             "completion lost another owner", "testing::model::native_progress_reporting_races_physical_completion_and_unwind"),
+            ("tracker-readiness", tracker,
+             b"            if state.active == 0 {",
+             b"            if true {",
+             "drain escaped accepted work", "testing::model::accepted_descendants_cannot_escape_cancel_or_lose_the_terminal_wake"),
+            ("tracker-wake", tracker,
+             b"(state.active == 0).then(|| state.idle.take()).flatten()",
+             b"None::<Waker>",
+             "terminal wake lost", "testing::model::accepted_descendants_cannot_escape_cancel_or_lose_the_terminal_wake"),
         ]
     if len(sys.argv) == 4:
         selected = set(sys.argv[3].split(","))
