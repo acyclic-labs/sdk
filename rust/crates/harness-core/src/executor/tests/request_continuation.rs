@@ -255,11 +255,9 @@ async fn prepared_accounting_recovers_with_its_projection_before_model_dispatch(
         })
         .unwrap();
     let bytes = journal.load(&reference, None)?.await?;
-    let retained = serde_json::json!({
-        "context": { "messages": prepared.request().messages, "metadata": projection.context.metadata, "current_input_index": projection.context.current_input_index },
-        "canonical": projection.canonical, "checkpoint": projection.checkpoint,
-        "accounting": accounting,
-    });
+    let mut retained = projection;
+    retained.context.messages = prepared.request().messages.clone();
+    retained.accounting = Some(accounting);
     assert_eq!(
         &*bytes,
         crate::contract::canonical_json_bytes(&retained)?,
