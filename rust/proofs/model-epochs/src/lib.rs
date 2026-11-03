@@ -7,7 +7,6 @@ pub mod kernel;
 #[path = "../../../crates/harness-core/src/conversation/epochs/protocol.rs"]
 pub mod protocol;
 
-#[cfg(kani)]
 mod proofs {
     use super::{kernel, protocol};
 
@@ -121,7 +120,7 @@ mod proofs {
     }
 
     #[kani::proof]
-    fn fanout_preserves_settled_coverage_and_never_drops_a_pending_producer() {
+    fn fanout_preserves_settled_coverage_and_pending_identity() {
         let cursor: u64 = kani::any();
         let end: u64 = kani::any();
         let common: u64 = kani::any();

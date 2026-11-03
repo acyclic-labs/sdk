@@ -20,6 +20,22 @@ renderer input provenance, storage publication, conditional-commit recovery,
 producer-loss notification, funding, or physical resource release. The kernel
 proofs alone do not establish that the executor uses these functions.
 
+The current reducer harnesses have the following source-level coverage. This
+table describes their assertions, rather than claiming an executed proof result.
+
+| Production operation | Checked cases | Missing cases |
+| --- | --- | --- |
+| `State::restore` | Valid empty preparation | Invalid cursor, generation and pending range |
+| `State::prepare` | New valid preparation | Duplicate intent, competing intent and invalid range |
+| `State::complete` | Ready/Failed and contradictory terminal result | Absent or foreign pending identity, identical terminal replay |
+| `State::demand` | Failed terminal | Unprepared, Await and Swap assertions |
+| `State::swap` | Ready success, failed terminal, stale generation, exhausted generation | Absent/foreign pending identity and head below prepared cut |
+| `State::fork` | Pending, settled inherited prefix and prefix exclusion | Failed pending and empty state |
+
+The fan-out harness checks a retained `Pending` value. It does not observe the
+producer itself, so its name refers to pending identity rather than producer
+lifetime.
+
 `epochs.qnt` is a separate design model with bounded agents, heads and proposals.
 It has no checked refinement to the Rust implementation. Its `omitSummary`
 negative control checks that model's safety predicate, rather than a planted
