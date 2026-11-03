@@ -138,7 +138,7 @@ pub(super) fn wire_contract(capabilities: &[wire::Capability]) -> wire::MachineC
 }
 
 #[test]
-fn contracts_retain_their_platform_lifecycle_and_offline_state() {
+fn contracts_retain_their_platform_and_lifecycle() {
     let attached = || wire::MachineContract {
         platform: Some(wire::Platform {
             os: wire::OperatingSystem::Windows as i32,
@@ -163,10 +163,6 @@ fn contracts_retain_their_platform_lifecycle_and_offline_state() {
     );
     assert_eq!(contract.lifecycle, LifecycleClass::Attached);
     assert!(contract.provisioned().is_err() && !contract.wakes_on_demand());
-    assert_eq!(
-        decode_machine_state(wire::MachineStatus::Offline as i32),
-        Ok(MachineState::Offline)
-    );
     // An unstated platform or lifecycle is never guessed.
     let cases: [fn(&mut wire::MachineContract); 3] = [
         |value: &mut wire::MachineContract| value.platform = None,

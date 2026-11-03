@@ -4,7 +4,7 @@ use crate::results::{ResultCursor, ResultCut};
 // All positive fork metadata comes from the actual simulator's retained result.
 // Malformed protocol controls mutate only that captured original publication.
 #[tokio::test]
-async fn machines_call_remote_pages_keep_original_cut_and_credit_without_inspections()
+async fn machines_call_remote_pages_keep_original_cut_credit_and_observations()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use wire::{mutation_outcome::Result as Outcome, recovered_admission::Result as Admission};
     let original = SimulatedMachines::default();
@@ -90,12 +90,37 @@ async fn machines_call_remote_pages_keep_original_cut_and_credit_without_inspect
     for observation in &page.machines {
         codec_fuzz::capture_machine(observation)?;
     }
-    original
-        .destroy_machine(
-            page.machines.first().ok_or("original child missing")?.id,
-            IdempotencyKey::from_digest([43; 32]),
-        )
-        .await?;
+    let child = page.machines.first().ok_or("original child missing")?.id;
+    for step in 0..5 {
+        match step {
+            0 => original.set_online(child, false).await?,
+            1 => original.set_online(child, true).await?,
+            2 => {
+                original
+                    .suspend(child, IdempotencyKey::from_digest([43; 32]))
+                    .await?;
+            }
+            3 => {
+                original
+                    .wake(child, IdempotencyKey::from_digest([44; 32]))
+                    .await?;
+            }
+            _ => {
+                original
+                    .destroy_machine(child, IdempotencyKey::from_digest([45; 32]))
+                    .await?;
+            }
+        }
+        let observation = original.inspect_machine(child).await?;
+        #[cfg(feature = "test-support")]
+        {
+            let bytes = codec_fuzz::capture_machine(&observation)?;
+            for end in 0..=bytes.len() {
+                codec_fuzz::check("acyclic.machines.v1.MachineState", &bytes[..end]);
+            }
+        }
+        assert_eq!(remote.inspect_machine(child).await?, observation);
+    }
     assert_eq!(remote.read_results(cursor, credit).await?, page);
     let next = page.next.ok_or("original continuation missing")?;
     assert_eq!(page.machines.len(), 3);
@@ -137,6 +162,7 @@ async fn machines_call_remote_pages_keep_original_cut_and_credit_without_inspect
     assert_eq!(
         script.lock().expect("original script").calls,
         [
+            vec!["inspect_machine"; 5],
             vec!["read_results"; 2],
             vec!["watch"; replies.len()],
             vec!["list_machines"; 2]

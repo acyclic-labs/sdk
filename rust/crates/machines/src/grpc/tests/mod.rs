@@ -137,6 +137,22 @@ operation_service! {
     }
     async fn inspect_machine(&self, request: Request<wire::InspectMachineRequest>)
         -> Result<Response<wire::MachineState>, Status> {
+        let original = if let WatchReply::Script(script) = &self.watch {
+            let mut script = script.lock().expect("observation script");
+            let original = script.results.clone();
+            if original.is_some() {
+                script.calls.push("inspect_machine");
+            }
+            original
+        } else { None };
+        if let Some(original) = original {
+            let machine = decode_machine(request.into_inner().machine.as_ref())
+                .map_err(|error| Status::invalid_argument(error.to_string()))?;
+            let observation = original.inspect_machine(machine).await
+                .map_err(|error| Status::failed_precondition(error.to_string()))?;
+            return Ok(Response::new(observation.try_into()
+                .map_err(|error: ProviderError| Status::failed_precondition(error.to_string()))?));
+        }
         let Some(wire::recovered_admission::Result::Create(admission)
             | wire::recovered_admission::Result::AttachVolume(admission)) = &self.recovered.result else {
             return Err(Status::unimplemented("inspect_machine"));

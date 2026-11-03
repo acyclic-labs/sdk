@@ -866,7 +866,7 @@ must retain their own identity and reject a foreign caller identity.
 
 ```sh
 git apply rust/codec-fuzz/negative-controls/machines-observation-state.patch
-cargo test --locked -p acyclic-machines --no-default-features --features grpc,test-support --lib grpc::tests::result_pages::machines_call_remote_pages_keep_original_cut_and_credit_without_inspections -- --exact --nocapture
+cargo test --locked -p acyclic-machines --no-default-features --features grpc,test-support --lib grpc::tests::result_pages::machines_call_remote_pages_keep_original_cut_credit_and_observations -- --exact --nocapture
 git apply -R rust/codec-fuzz/negative-controls/machines-observation-state.patch
 ```
 
@@ -882,3 +882,10 @@ the protobuf and JSON fuzz targets share that oracle. Retained
 `negative-controls/machines-page-{credit,cursor,order}.patch` controls remove each
 production decoder guard in turn. Older captured pages retain their original
 provenance until their current descriptor selector binding is qualified.
+
+The lifecycle extension of that original-provider property also checks actual
+offline, online, suspended, waking and destroyed simulator observations through
+the public inspection client. The retained production decoder controls are
+`negative-controls/machines-observation-{offline,suspended,destroyed}.patch`.
+The literal Offline enum assertion is subsumed by these original-result checks;
+platform/lifecycle admission refusals and per-capability intent checks remain.
