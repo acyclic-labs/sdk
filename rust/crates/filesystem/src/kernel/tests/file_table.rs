@@ -217,12 +217,16 @@ fn every_file_record_payload_and_typed_reference_is_validated() {
 #[test]
 fn inline_regular_payload_is_bounded_allocation_free_and_canonical()
 -> Result<(), Box<dyn std::error::Error>> {
-    let mut data = None;
-    let heap = acyclic_test_support::measure(|| {
-        data = Some(InlineFileData::new(&[0, 1, 2, 0xff]));
-    });
-    assert_eq!(heap, acyclic_test_support::AllocationInfo::default());
-    let data = data.unwrap()?;
+    let create = || InlineFileData::new(&[0, 1, 2, 0xff]);
+    #[cfg(not(target_arch = "wasm32"))]
+    let data = {
+        let mut data = None;
+        let heap = acyclic_test_support::measure(|| data = Some(create()));
+        assert_eq!(heap, acyclic_test_support::AllocationInfo::default());
+        data.unwrap()?
+    };
+    #[cfg(target_arch = "wasm32")]
+    let data = create()?;
     assert_eq!(data.as_bytes(), &[0, 1, 2, 0xff]);
     assert_eq!(
         InlineFileData::new(&[7; MAXIMUM_INLINE_FILE_BYTES + 1]),
