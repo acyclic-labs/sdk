@@ -30,6 +30,10 @@ pub fn check(bytes: &[u8]) {
     let Some(separator) = bytes.iter().position(|byte| *byte == 0) else {
         return;
     };
+    if let Ok(head) = AgentCall::decode(&bytes[..separator]) {
+        assembled(&head, &bytes[separator + 1..]);
+        return;
+    }
     let Ok(command) = PreparedCommand::decode(&bytes[..separator]) else {
         return;
     };
@@ -72,6 +76,58 @@ fn with_unknown_field(bytes: &[u8]) -> Vec<u8> {
     let mut changed = bytes.to_vec();
     changed.extend_from_slice(&[0xf8, 0x07, 0x01]); // protobuf field 127
     changed
+}
+
+fn assembled(head: &AgentCall, bytes: &[u8]) {
+    let Ok(call) = head.assembled(bytes) else {
+        return;
+    };
+    let AgentCommand::Staged { agent, command, .. } = head.command() else {
+        panic!("assembly admitted a non-staged head");
+    };
+    assert_eq!(call.command().agent(), Some(agent));
+    assert_eq!(call.command().kind(), command);
+    assert!(!matches!(
+        call.command(),
+        AgentCommand::Stage { .. } | AgentCommand::Staged { .. }
+    ));
+    assert_eq!(
+        call.invocation().encode_to_vec(),
+        head.invocation().encode_to_vec()
+    );
+    assert_eq!(
+        json(call.command()),
+        json(&PreparedCommand::decode_whole(bytes).unwrap())
+    );
+    let mut foreign = json(call.command());
+    let other = if agent.as_str().ends_with('1') {
+        '2'
+    } else {
+        '1'
+    };
+    let mut path = agent.as_str().to_owned();
+    path.pop();
+    path.push(other);
+    let key = if foreign.get("parent").is_some() {
+        "parent"
+    } else {
+        "agent"
+    };
+    foreign[key] = path.into();
+    assert!(
+        head.assembled(&serde_json::to_vec(&foreign).unwrap())
+            .is_err(),
+        "assembled command changed its admitted agent"
+    );
+    let mut foreign = json(head.command());
+    foreign["command"] = "root".into();
+    let mut invocation = head.invocation().clone();
+    invocation.body = serde_json::to_vec(&foreign).unwrap();
+    let foreign = AgentCall::decode(&invocation.encode_to_vec()).unwrap();
+    assert!(
+        foreign.assembled(bytes).is_err(),
+        "assembled command changed its admitted kind"
+    );
 }
 
 fn success(reply: &AgentReply, command: &AgentCommand) {
@@ -281,6 +337,23 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
             format!("json-{name}"),
             pair(&prepared, &serde_json::to_vec(&reply)?),
         ));
+    }
+    let whole = PreparedCommand::new(&AgentCommand::Cancel {
+        agent: agent.clone(),
+        id: IntentId::try_from("staged-cancel")?,
+    })?;
+    let head = PreparedCommand::new(&AgentCommand::Staged {
+        agent,
+        command: whole.decoded()?.kind().to_owned(),
+        digest: blake3::hash(whole.command()).to_hex().to_string(),
+        parts: 1,
+        bytes: whole.command().len() as u64,
+    })?;
+    for invocation in route.prepare(&head)?.invocations() {
+        let mut input = invocation.to_vec();
+        input.push(0);
+        input.extend_from_slice(whole.command());
+        seeds.push(("assembled-cancel".into(), input));
     }
     let root = PreparedCommand::new(&AgentCommand::Root {})?;
     let path = StreamPath::new("agent/inbox")?;

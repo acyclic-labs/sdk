@@ -102,6 +102,7 @@ dependencies = [
  "acyclic-proto-build",
  "acyclic-protobuf-json",
  "acyclic-stream",
+ "blake3",
  "bytes",
  "ed25519-dalek",
  "futures",
