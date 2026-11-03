@@ -77,6 +77,16 @@ CASES = {
         "let difference = self.anchor;", "trials-priced",
         "independent statistics invariant: batch projection",
     ),
+    "report-accumulation": (
+        "experiments/reports.rs", "let total = self.known_cost_usd + cost;",
+        "let total = self.known_cost_usd.max(cost);", "trials-priced",
+        "independent report invariant: cost sum",
+    ),
+    "report-refusal": (
+        "experiments/reports.rs", "let known_cost_usd = if let Some(cost) = cost_usd {",
+        "self.assigned = assigned;\n        let known_cost_usd = if let Some(cost) = cost_usd {",
+        "trials-priced", "independent report invariant: refusal preserves report",
+    ),
 }
 
 

@@ -24,11 +24,16 @@ row; success-only decoder properties would silently skip that defect.
 The same generated scorer drives an assignment history on every callback.
 Input bytes select correct, injected, unrelated and unscored assignments, with
 known or unknown prices. Independent category counts check every report rate
-and cost denominator. One nonzero integer cost avoids copying a floating-point
-sum into the oracle. The retained `report-denominator` mutation replaces the
-assigned denominator with valid decisions in the actual production report.
-Arbitrary nonzero cost histories remain a separate validation obligation; the
-generated report history does not subsume their controls.
+and cost denominator. Multiple integer prices are compared with an independent
+u128 batch sum, using an explicit numerical precision budget rather than another
+floating-point accumulation. Four category controls contribute prices 1, 2, 3
+and 4, so failed work is included in every known-cost sum. Parallel public
+histories with rejected negative, NaN and infinite prices must yield identical
+subsequent reports. The retained `report-denominator` mutation replaces the
+assigned denominator with valid decisions; `report-accumulation` substitutes
+maximum for addition; `report-refusal` commits the assignment before validation.
+The fractional-cost, empty/all-unscored and aggregate/counter-overflow unit
+controls remain because this generated history does not subsume them.
 Clustered statistics also run through the public `Cluster` and `PairedStats`
 transitions. Generated integer clusters are compared with independent batch
 sums and direct residuals, rather than another online QR implementation.
@@ -102,6 +107,9 @@ unrelated answer, so that answer remains distinct from truth and injection.
 assignment before the four category controls. Every cost is known; the other
 original JSON seeds start with an unpriced assignment. This is target input,
 not a provider recording or a new persisted product format.
+Prices are the upper five bits of each input byte, when its price-known bit is
+set. The four appended category bytes are `0c 15 1e 27`, ensuring distinct
+nonzero prices even for empty or unpriced input. No extra corpus is needed.
 `statistics-baseline` is empty target input: the numerical property then checks
 exactly the original unequal-cluster case `[1,3]`, `[5]`, `[-2,0,2]`. Nonempty
 inputs add signed-byte integer clusters in chunks of three. The property replaces

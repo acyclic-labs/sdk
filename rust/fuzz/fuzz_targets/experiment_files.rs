@@ -56,28 +56,41 @@ fn trials(bytes: &[u8], scorer: &Scorer, expected: i64) {
             scorer.score(&Decision::decode(&wire).expect("trial decision admits"))
         });
     let mut trials = AssignedTrials::default();
+    let mut refused = AssignedTrials::default();
     let mut counts = [0_u64; 4];
     let mut priced = 0_u64;
-    // Only the first assignment can have a nonzero integer cost. All remaining
-    // costs are zero or unknown, so the cost oracle has no rounding accumulation.
-    let first = bytes.first().copied().unwrap_or(4);
-    let cost = if first & 4 != 0 {
-        f64::from(first)
-    } else {
-        0.0
-    };
-    for (index, byte) in bytes.iter().copied().chain([4, 5, 6, 7]).enumerate() {
+    let mut known_cost = 0_u128;
+    // Integer prices give an independent exact batch sum. The suffix supplies
+    // all four outcomes and multiple priced trials, including failed work.
+    for (index, byte) in bytes.iter().copied().chain([12, 21, 30, 39]).enumerate() {
         let kind = usize::from(byte & 3);
-        let price = (byte & 4 != 0).then_some(if index == 0 { cost } else { 0.0 });
+        let cost = byte >> 3;
+        let price = (byte & 4 != 0).then_some(f64::from(cost));
+        let assessment = assessments.get(kind);
         trials
-            .push(assessments.get(kind), price)
+            .push(assessment, price)
             .expect("valid trial assignment admits");
+        refused
+            .push(assessment, price)
+            .expect("refusal history admits the same valid trial");
+        assert!(
+            refused
+                .push(assessment, Some([-1.0, f64::NAN, f64::INFINITY][index % 3]))
+                .is_err(),
+            "independent report invariant: invalid cost refusal"
+        );
         counts[kind] += 1;
         priced += u64::from(price.is_some());
+        known_cost += u128::from(cost) * u128::from(price.is_some());
     }
     let assigned: u64 = counts.iter().sum();
     let valid = assigned - counts[3];
     let report = trials.report().expect("assigned history reports");
+    assert_eq!(
+        refused.report().expect("refused history still reports"),
+        report,
+        "independent report invariant: refusal preserves report"
+    );
     assert_eq!(
         (
             report.assigned,
@@ -104,22 +117,33 @@ fn trials(bytes: &[u8], scorer: &Scorer, expected: i64) {
         ),
         "independent report invariant: rates"
     );
+    let cost = known_cost as f64;
     let total = (priced == assigned).then_some(cost);
     assert_eq!(
-        (
-            report.priced_trials,
-            report.known_cost_usd,
-            report.total_cost_usd,
-            report.cost_per_assigned_usd
-        ),
-        (
-            priced,
-            cost,
-            total,
-            total.map(|cost| cost / assigned as f64)
-        ),
-        "independent report invariant: costs"
+        report.priced_trials, priced,
+        "independent report invariant: priced count"
     );
+    for (actual, expected) in [
+        (Some(report.known_cost_usd), Some(cost)),
+        (report.total_cost_usd, total),
+        (
+            report.cost_per_assigned_usd,
+            total.map(|cost| cost / assigned as f64),
+        ),
+    ] {
+        assert_eq!(
+            actual.is_some(),
+            expected.is_some(),
+            "independent report invariant: cost completeness"
+        );
+        if let (Some(actual), Some(expected)) = (actual, expected) {
+            let tolerance = 64.0 * assigned as f64 * f64::EPSILON;
+            assert!(
+                (actual - expected).abs() <= tolerance * expected.abs().max(1.0),
+                "independent report invariant: cost sum; actual={actual}, expected={expected}"
+            );
+        }
+    }
 }
 
 fn statistics(bytes: &[u8]) {
