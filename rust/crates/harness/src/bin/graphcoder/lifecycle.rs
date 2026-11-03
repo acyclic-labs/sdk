@@ -16,9 +16,15 @@ type Failure = Box<dyn std::error::Error>;
 pub(super) async fn text_failure(
     output: InheritedOutput,
     cause: &(dyn std::error::Error + 'static),
-    _shutdown: Shutdown,
+    shutdown: Shutdown,
 ) {
-    let _ = output.write_owned(format!("graphcoder: {cause}\n")).await;
+    // Error text is best effort after the operation has failed. Graceful
+    // shutdown must still join that failure when stderr has no byte credit.
+    tokio::select! {
+        biased;
+        _ = shutdown => {},
+        _ = output.write_owned(format!("graphcoder: {cause}\n")) => {},
+    }
 }
 
 /// Refusal to admit explicitly configured diagnostic text before dispatch.
