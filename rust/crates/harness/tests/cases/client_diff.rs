@@ -499,7 +499,7 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
         &fixture.files,
         volume,
         (&expensive_base, &expensive_current),
-        &AgentPageRequest::new(1024, 2048, None).expect("finite computation credit"),
+        &AgentPageRequest::new(128, 2048, None).expect("finite computation credit"),
     )
     .await?;
     assert_eq!(bounded.len(), 1);
