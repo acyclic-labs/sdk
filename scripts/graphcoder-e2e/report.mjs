@@ -9,7 +9,7 @@ const operandFormat = { depth: null, maxArrayLength: null, maxStringLength: null
 // representation, including cycles, BigInts and undefined, without invoking
 // custom inspectors or getters. Work follows only the selected failure's bytes.
 export function failureReport(error) {
-  const report = { error: error?.stack ?? String(error) };
+  const report = { error: error instanceof Error ? error.stack : inspect(error, operandFormat) };
   if (error instanceof AssertionError) {
     report.assertion = { operator: error.operator,
       actual: inspect(error.actual, operandFormat), expected: inspect(error.expected, operandFormat) };
@@ -84,7 +84,7 @@ export async function publishReport(path, report, io = {
   const cancel = () => {
     if (!signal?.aborted) return false;
     report.pass = false;
-    report.cancellation = signal.reason?.message ?? String(signal.reason);
+    report.cancellation = failureReport(signal.reason).error;
     return true;
   };
   const publish = async () => {
