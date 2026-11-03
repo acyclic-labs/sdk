@@ -29,6 +29,14 @@ struct State {
     forget_io: bool,
 }
 
+impl State {
+    fn take_start_waiter(&mut self) -> Option<Waker> {
+        std::mem::take(&mut self.waiting_start)
+            .then(|| self.driver.clone())
+            .flatten()
+    }
+}
+
 // Sole handoff lock. Never nested with executor, schedule, channel or provider
 // locks; future polls, callbacks, wakes and original I/O happen outside it.
 pub(super) struct Host {
@@ -137,8 +145,7 @@ impl Host {
             // Parking does not make the callback ready.
             // A driver that yielded before startup must now produce this
             // callback's reply. Wake it once at the original parking event.
-            let parked_driver = state.waiting_start.then(|| state.driver.clone()).flatten();
-            state.waiting_start = false;
+            let parked_driver = state.take_start_waiter();
             if state.detached && state.ready {
                 state.ready = false;
                 self.pool.resume();
@@ -278,8 +285,7 @@ impl Drop for Finished {
         let driver = {
             let mut state = lock(&self.0.state);
             state.phase = Phase::Finished;
-            let driver = state.waiting_start.then(|| state.driver.clone()).flatten();
-            state.waiting_start = false;
+            let driver = state.take_start_waiter();
             driver
         };
         self.0.changed.notify_one();
