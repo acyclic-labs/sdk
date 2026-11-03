@@ -52,9 +52,13 @@ To split a serial matrix into diagnostic selections, pass a zero-based `INDEX/CO
 after the two executable paths. Run partitions sequentially, with a fresh
 `E2E_OUTPUT` directory for each. Each exports `partition.json`; a partition
 never qualifies the platform. Collect all receipts with
-`node scripts/graphcoder-e2e/serial.mjs --collect FRESH_OUTPUT PARTITION.json ...`.
+`node scripts/graphcoder-e2e/serial.mjs --collect GRAPHCODER MOCK_MODEL FRESH_OUTPUT PARTITION.json ...`.
 Collection rejects missing or duplicate partitions, changed executable/source
-identities, changed case definitions and missing suite receipts. Case assertions
+identities, changed case definitions and missing suite receipts. Collection binds
+the supplied executables and current acceptance/runtime closure once, using the
+same environment as the partitions. Receipts must match that intended identity,
+even when every receipt agrees on an older source. The final matrix retains the
+checked binding. Collection hashes the admitted inputs but launches no case. Case assertions
 and the nine-second active scope stay unchanged. A failed partition is retained;
 collection does not execute or retry any case.
 
@@ -68,7 +72,7 @@ the reports and retiring every process/mount. Helper scratch is removed at its
 completion barrier. The secondary Windows case directory remains a distinct
 fixture; two directories on D: do not constitute a ReFS-versus-NTFS proof.
 
-`coverage.json` maps every A1–A26 target to real case identities and names the
+`coverage.json` maps every A1â€“A26 target to real case identities and names the
 owner of remaining scope gaps. Missing rows, unknown identities, duplicate
 identities, unmapped cases and recorded gaps fail qualification. A mapped row
 does not assert that every part of its target has been proven.
