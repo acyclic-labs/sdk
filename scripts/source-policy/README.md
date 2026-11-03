@@ -23,8 +23,9 @@ const failures = newProjectPollingSites(before, after, dispositions, {inScope});
 ```
 
 Snapshots are `Map<string, string>` values using repository-relative POSIX paths.
-The analyzer resolves local JavaScript imports only against those maps; it never
-loads a consumer's filesystem. Missing current dependencies and malformed
+Relative imports prefer an exact supplied script, then use the parser's module
+resolver and supplied package manifests. Resolution is cached for that snapshot;
+it never loads a consumer's filesystem. Missing current dependencies and malformed
 current source fail closed. A malformed predecessor authorizes no current site.
 Malformed source and package manifests report the shared `SourceSyntaxError`.
 `projectPollingSites(sources)` inventories candidates;

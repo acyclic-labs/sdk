@@ -105,6 +105,7 @@ export function projectPollingSites(sources, {historical = false} = {}) {
  const sites = [];
  const errors = [];
  const workspaceNames = new Set();
+ const files = new Map();
  for (const [file, source] of sources) {
   let unit;
   try {
@@ -117,6 +118,7 @@ export function projectPollingSites(sources, {historical = false} = {}) {
      throw new SourceSyntaxError(`${file}: ${error.message}`);
     }
     if (typeof manifest?.name === 'string') workspaceNames.add(manifest.name);
+    files.set('/' + file, source);
    }
   }
   catch (error) {
@@ -127,19 +129,23 @@ export function projectPollingSites(sources, {historical = false} = {}) {
    continue;
   }
   for (const site of unit.sites) sites.push(site);
-  if (script(file)) units.set(file, unit);
+  if (script(file)) { units.set(file, unit); files.set('/' + file, source); }
  }
  if (errors.length === 1) throw errors[0];
  if (errors.length) throw new AggregateError(errors, errors.map(error => error.message).join('\n'));
- const scripts = new Map([...units.keys()].map(file => ['/' + file, sources.get(file)]));
+ const scripts = [...units.keys()].map(file => '/' + file);
+ const options = {
+  allowJs: true, noLib: true, noResolve: false, noEmit: true,
+  target: ts.ScriptTarget.Latest, module: ts.ModuleKind.ESNext,
+  moduleResolution: ts.ModuleResolutionKind.Bundler, moduleDetection: ts.ModuleDetectionKind.Force,
+ };
+ const moduleCache = ts.createModuleResolutionCache('/', file => file, options);
  const resolveModule = (name, containingFile) => {
   if (!name.startsWith('.')) return undefined;
   const base = posix.resolve(posix.dirname(containingFile), name);
-  const stem = base.replace(/\.(?:[cm]?js|jsx)$/, '');
-  for (const candidate of [base, stem + '.ts', stem + '.tsx', stem + '.mts', stem + '.cts', base + '.ts', base + '.js', base + '.mjs', base + '.cjs', base + '/index.ts', base + '/index.js', base + '/index.mjs']) {
-   if (scripts.has(candidate)) return {resolvedFileName: candidate};
-  }
-  return undefined;
+  if (units.has(base.slice(1))) return {resolvedFileName: base};
+  const resolved = ts.resolveModuleName(name, containingFile, options, host, moduleCache).resolvedModule;
+  return resolved && units.has(resolved.resolvedFileName.slice(1)) ? resolved : undefined;
  };
  /** @type {import('typescript-parser').CompilerHost} */
  const host = {
@@ -147,15 +153,11 @@ export function projectPollingSites(sources, {historical = false} = {}) {
   getDefaultLibFileName: () => '/__no_default_lib.d.ts',
   writeFile() { throw new Error('source analysis must not emit files'); },
   getCurrentDirectory: () => '/', getDirectories: () => [],
-  fileExists: file => scripts.has(file), readFile: file => scripts.get(file),
+  fileExists: file => files.has(file), readFile: file => files.get(file),
   getCanonicalFileName: file => file, useCaseSensitiveFileNames: () => true, getNewLine: () => '\n',
   resolveModuleNames: (names, containingFile) => names.map(name => resolveModule(name, containingFile)),
  };
- const program = ts.createProgram([...scripts.keys()], {
-  allowJs: true, noLib: true, noResolve: false, noEmit: true,
-  target: ts.ScriptTarget.Latest, module: ts.ModuleKind.ESNext,
-  moduleResolution: ts.ModuleResolutionKind.Bundler, moduleDetection: ts.ModuleDetectionKind.Force,
- }, host);
+ const program = ts.createProgram(scripts, options, host);
  const checker = program.getTypeChecker();
  const localModule = name => name.startsWith('.') || workspaceNames.has(name.split('/').slice(0, name.startsWith('@') ? 2 : 1).join('/'));
  /** @type {Map<string, Dependency>} */
@@ -222,7 +224,7 @@ export function projectPollingSites(sources, {historical = false} = {}) {
   symbolQueue.push(symbol);
   return value;
  };
- const roots = new Map([...scripts.keys()].map(file => [file, dependency(file + ':initialization', required(units, file.slice(1)).fingerprint)]));
+ const roots = new Map(scripts.map(file => [file, dependency(file + ':initialization', required(units, file.slice(1)).fingerprint)]));
  /** @type {Reference[]} */
  const references = [];
  /** @type {{node: import('typescript-parser').Node, owner: Dependency, target: Dependency}[]} */

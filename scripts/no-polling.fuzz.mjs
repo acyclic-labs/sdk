@@ -103,11 +103,27 @@ export function fuzzProject(data, {project = projectPollingSites, validate = val
   'changed runtime module did not reopen its unchanged caller');
  assert.ok(project(new Map([[caller, load]])).some(site => site.file === caller && site.kind === 'unresolved-local-helper'),
   'missing runtime module producer was accepted');
+ const exact = new Map(loaded).set('lib/helper.js', 'Bun.sleep(3); export const value = 1;');
+ assert.ok(newProjectPollingSites(exact, new Map(exact).set('lib/helper.js', 'Bun.sleep(4);')).some(site => site.file === caller),
+  'exact runtime source edit did not reopen its caller');
+ assert.ok(!newProjectPollingSites(exact, new Map(exact).set(helper, 'Bun.sleep(4);')).some(site => site.file === caller),
+  'shadowed source changed the exact runtime dependency');
  const typeOnly = new Map(loaded).set(caller, "import type original = require('../lib/helper.js');");
  assert.deepEqual(project(typeOnly).filter(site => site.file === caller), [], 'type-only import executed its producer');
  const passiveCycle = new Map([[helper, "import '../svc/consumer.js'; export const value = 1;"],
   [caller, "import '../lib/helper.js'; export const value = 2;"]]);
  assert.deepEqual(project(passiveCycle), [], 'passive module cycle became callable work');
+ // These source extensions are accepted by the shipped parser. Relative
+ // extensionless imports must retain the same producer identity as explicit ones.
+ const relativeHelper = ['lib/helper.jsx', 'lib/helper/index.tsx', 'lib/helper/index.jsx', 'lib/helper/entry.ts'][variant % 4];
+ const relativeLoad = "import {settle} from '../lib/helper'; settle();";
+ const relative = new Map([[relativeHelper, 'export function settle() { return Bun.sleep(1); }'], [caller, relativeLoad]]);
+ if (variant % 4 === 3) relative.set('lib/helper/package.json', '{"main":"entry.js"}');
+ assert.ok(project(relative).some(site => site.file === caller && site.kind === 'polling-helper-reference'),
+  'relative source resolution lost dependency on its producer');
+ assert.ok(newProjectPollingSites(relative, new Map(relative).set(relativeHelper,
+  'export function settle() { return Bun.sleep(2); }')).some(site => site.file === caller),
+  'relative producer edit did not reopen its caller');
  const raw = new TextDecoder().decode(new Uint8Array(data));
  // Parser acceptance is determined by the same production unit boundary.
  // Accepted bytes must also survive graph construction, independent of order.
@@ -212,7 +228,8 @@ export function fuzzProject(data, {project = projectPollingSites, validate = val
   project(new Map([[packageFile, 'null']]));
   let valid = true;
   try { JSON.parse(raw); } catch { valid = false; }
-  const untrusted = new Map([[packageFile, raw]]);
+  const untrusted = new Map([[packageFile, raw], [root + '/index.ts', 'export const value = 1;'],
+   [caller, `import '../${root}';`]]);
   if (valid) project(untrusted);
   else assert.throws(() => project(untrusted), SourceSyntaxError);
  }

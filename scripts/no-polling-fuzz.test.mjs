@@ -24,6 +24,11 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
   'a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0', 'a[0].localeCompare(b[0])');
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), {project: collation.projectPollingSites}),
   {name: 'AssertionError', message: /snapshot enumeration/});
+ const resolution = await mutant('./source-policy/project.mjs',
+  'ts.resolveModuleName(name, containingFile, options, host, moduleCache).resolvedModule',
+  "name.endsWith('/helper') ? undefined : ts.resolveModuleName(name, containingFile, options, host, moduleCache).resolvedModule");
+ assert.throws(() => targets.fuzzProject(Buffer.from([0]), {project: resolution.projectPollingSites}),
+  {name: 'AssertionError', message: /relative source resolution/});
  for (const [original, replacement, seed, message] of [
   ['ts.isImportEqualsDeclaration(node) && !node.isTypeOnly', 'false', 1, /lost runtime module initialization/],
   ['node.expression.kind === ts.SyntaxKind.ImportKeyword', 'false', 2, /lost runtime module initialization/],
