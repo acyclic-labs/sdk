@@ -526,10 +526,10 @@ macro_rules! client_operations {
             /// Methods emitted with this client's canonical operation table.
             pub const RPC_METHODS: &[&str] = &[$(stringify!($method)),*];
             $(
-            #[doc = concat!("Executes the semantic ", $name, " operation.")]
-            pub async fn $method(&self, request: &domain::$input) -> Result<domain::$output, Error> {
+            #[doc = concat!("Consumes the admitted request for the semantic ", $name, " operation.")]
+            pub async fn $method(&self, request: domain::$input) -> Result<domain::$output, Error> {
                 self.stage(async {
-                    let input = wire::$input::from(request.clone());
+                    let input = wire::$input::from(request);
                     validate_operation_request!($input, $name, &input)?;
                     self.dispatch(input, None, |input| async move {
                         self.inner.clone().$method(input).await

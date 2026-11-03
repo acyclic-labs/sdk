@@ -152,7 +152,7 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
             std::future::ready(Ok("renewed".into()))
         }));
         let typed = domain::InvokeActorRequest::try_from(renewed.clone())?;
-        assert_eq!(client.invoke_actor(&typed).await?.body(), &[8]);
+        assert_eq!(client.invoke_actor(typed.clone()).await?.body(), &[8]);
         let output = client.call("InvokeActor", &renewed.encode_to_vec()).await?;
         assert_eq!(
             wire::InvokeActorResponse::decode(output.as_slice())?.body,
@@ -174,7 +174,7 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
             ));
         }
         assert!(matches!(
-            client.invoke_actor(&typed).await,
+            client.invoke_actor(typed.clone()).await,
             Err(Error::Stopped(acyclic_auth::operation::Stopped::Deadline))
         ));
         assert_eq!(renewals.load(Ordering::Relaxed), 2);
@@ -206,7 +206,7 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
                 },
             ));
             assert!(matches!(
-                client.invoke_actor(&typed).await,
+                client.invoke_actor(typed.clone()).await,
                 Err(Error::Stopped(acyclic_auth::operation::Stopped::Cancelled))
             ));
         }
@@ -255,7 +255,7 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
                             body,
                             vec![],
                         );
-                        client.invoke_actor(&request).await?
+                        client.invoke_actor(request).await?
                     };
                     Ok::<_, Box<dyn std::error::Error>>(response)
                 });
@@ -276,6 +276,7 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
                 release.send("fixture".into()).unwrap();
                 assert_eq!(work.await?.body(), vec![7; length]);
             }
+            eprintln!("request admission bound={bound} bytes={admission_bytes:?}");
             assert_eq!(
                 admission_bytes[0], admission_bytes[1],
                 "admitted request must not copy payload storage"
