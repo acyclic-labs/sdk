@@ -1,7 +1,7 @@
 """Check production signal/wake/owner models against actual source defects.
 
 Run in a disposable checkout: python3 rust/crates/native-runtime/tests/signal-control.py /tmp/native-signal-control
-Select a retained model with --wake, --owners, --host, --ownership, --claim or --descriptor.
+Select a retained control with --wake, --owners, --host, --host-events, --ownership, --claim or --descriptor.
 """
 import hashlib
 import json
@@ -12,8 +12,8 @@ import sys
 
 
 def main():
-    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--ownership", "--claim", "--descriptor")):
-        raise RuntimeError("arguments: expected evidence directory, optional model and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--ownership|--claim|--descriptor [mutation]]")
+    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--host-events", "--ownership", "--claim", "--descriptor")):
+        raise RuntimeError("arguments: expected evidence directory, optional control and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--host-events|--ownership|--claim|--descriptor [mutation]]")
     mode = sys.argv[2] if len(sys.argv) >= 3 else "--signal"
     root = Path(__file__).resolve().parents[4]
     output = Path(sys.argv[1]).resolve()
@@ -31,6 +31,7 @@ def main():
         "--wake": ("wake_loom.rs", (wake,), "--native-wake"),
         "--owners": ("owner_count_loom.rs", (owners, owners.parent / "owners/model.rs"), "--native-owner"),
         "--host": ("../src/testing/host/models.rs", (host, host.parent / "host/pool.rs"), "--native-host"),
+        "--host-events": ("../src/testing/host/tests.rs", (host,), "--native-host-events"),
         "--ownership": ("../src/ownership/model.rs", (ownership,), "--ownership"),
         "--claim": ("../src/claim/model.rs", (claim,), "--native-claim"),
         "--descriptor": ("../src/descriptor/model.rs", (descriptor,), "--native-descriptor"),
@@ -93,6 +94,13 @@ qualificationMain([process.argv[1]], (command, args, options) => spawnSync(comma
              b"let parked_driver = state.take_start_waiter();",
              b"let parked_driver = { state.waiting_start = false; None::<Waker> };",
              "deadlock; threads ="),
+        ]
+    elif mode == "--host-events":
+        mutations = [
+            ("invented-callback", host,
+             b"let parked_driver = state.take_start_waiter();",
+             b"state.ready = true; let parked_driver = state.take_start_waiter();",
+             "parking invented callback readiness"),
         ]
     elif mode == "--ownership":
         mutations = [
