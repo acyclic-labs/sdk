@@ -601,27 +601,30 @@ fn request_operation(
                 drop(waiting);
                 // Withdrawn, so no later owner serves a request nobody awaits.
                 // Whatever the exited owner committed stays keyed by `operation`.
-                remove_projection(&request_path)?;
-                return Err(Error::Indeterminate(operation));
+                return Error::after_cleanup(
+                    Err(Error::Indeterminate(operation)),
+                    remove_projection(&request_path),
+                );
             }
         };
     drop(waiting);
     // Withdrawing the request retires its reply and any saved result. Every
     // effect is an agent commit keyed by this operation.
-    remove_projection(&request_path)?;
-    let result = result?;
-    if result.get("completion").and_then(Value::as_str) == Some("indeterminate") {
-        return Err(Error::Indeterminate(operation));
-    }
-    result.get("ok").cloned().ok_or_else(|| {
-        Error::Conflict(
-            result
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("harness returned no outcome")
-                .into(),
-        )
-    })
+    let result = result.and_then(|result| {
+        if result.get("completion").and_then(Value::as_str) == Some("indeterminate") {
+            return Err(Error::Indeterminate(operation));
+        }
+        result.get("ok").cloned().ok_or_else(|| {
+            Error::Conflict(
+                result
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("harness returned no outcome")
+                    .into(),
+            )
+        })
+    });
+    Error::after_cleanup(result, remove_projection(&request_path))
 }
 
 fn reply_path(status: &Path, operation: OperationId) -> PathBuf {
@@ -773,8 +776,7 @@ pub async fn serve_until(
     let result = serve_requests(&owner, files, session, &notices, shutdown).await;
     drop(watcher);
     drop(local);
-    owner.retire().await?;
-    result
+    Error::after_cleanup(result, owner.retire().await)
 }
 
 /// The request names notifications reported since the owner last looked,
