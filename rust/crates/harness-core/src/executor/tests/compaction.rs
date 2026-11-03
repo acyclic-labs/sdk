@@ -545,7 +545,14 @@ async fn oversized_summary_input_rejects_before_accounting_or_journal_publicatio
 async fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled() -> Result<()> {
     for (capacity, output, source_length, fault, counts, expected) in [
         (100, 1_024, 1, None, 0, "selected model capacity is invalid"),
-        (131_072, 8_192, 1, None, 0, "summary output exceeds"),
+        (
+            131_072,
+            8_192,
+            1,
+            None,
+            0,
+            "requested output exceeds selected model capacity",
+        ),
         (4_096, 1_024, 5_000, None, 1, "summary input exceeds"),
         (
             131_072,

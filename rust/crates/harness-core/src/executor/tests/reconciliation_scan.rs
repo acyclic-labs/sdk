@@ -176,14 +176,15 @@ async fn drive(modes: &[Mode]) -> Result<()> {
     let output = loop {
         match executor.execute(input.clone(), &journal).await {
             Ok(output) => break output,
-            Err(Error::Indeterminate(_)) => {}
+            Err(error) if error.uncertain() => {}
             Err(error) => return Err(error),
         }
         retries += 1;
         assert!(retries <= lost, "{modes:?}: retry made no progress");
         let before = settlements(&journal).len();
         match reconciling.execute(input.clone(), &journal).await {
-            Ok(_) | Err(Error::Indeterminate(_)) => {}
+            Ok(_) => {}
+            Err(error) if error.uncertain() => {}
             Err(error) => return Err(error),
         }
         assert_eq!(
@@ -230,12 +231,6 @@ async fn drive(modes: &[Mode]) -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn denied_call_does_not_block_reconciling_a_later_uncertain_call() -> Result<()> {
-    drive(&[Mode::Deny, Mode::Lost]).await?;
-    drive(&[Mode::Ghost, Mode::Lost]).await
-}
-
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(64))]
 
@@ -243,16 +238,20 @@ proptest::proptest! {
     /// uncertain and unstarted calls in one response is reconciled exactly once, in order.
     #[test]
     fn every_call_in_a_response_reconciles_exactly_once(
-        modes in proptest::collection::vec(
-            proptest::prop_oneof![
-                proptest::strategy::Just(Mode::Deny),
-                proptest::strategy::Just(Mode::Ghost),
-                proptest::strategy::Just(Mode::Ok),
-                proptest::strategy::Just(Mode::Fail),
-                proptest::strategy::Just(Mode::Lost),
-            ],
-            1..=5,
-        )
+        modes in proptest::prop_oneof![
+            proptest::strategy::Just(vec![Mode::Deny, Mode::Lost]),
+            proptest::strategy::Just(vec![Mode::Ghost, Mode::Lost]),
+            proptest::collection::vec(
+                proptest::prop_oneof![
+                    proptest::strategy::Just(Mode::Deny),
+                    proptest::strategy::Just(Mode::Ghost),
+                    proptest::strategy::Just(Mode::Ok),
+                    proptest::strategy::Just(Mode::Fail),
+                    proptest::strategy::Just(Mode::Lost),
+                ],
+                1..=5,
+            ),
+        ]
     ) {
         tokio::runtime::Builder::new_current_thread()
             .build()

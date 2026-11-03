@@ -269,7 +269,7 @@ async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
         selected_context: None,
     };
     let narrow = Limits {
-        file_bytes: 1,
+        render_bytes: "bounded".len() as u64 - 1,
         ..Limits::default()
     };
     assert!(matches!(
