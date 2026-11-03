@@ -26,7 +26,8 @@ real cache implementation; each must fail the unchanged oracle.
 
 Run the deterministic property, corpus coverage and negative controls with
 `cargo test -p acyclic-fs --lib cache::decoded_properties`. Run the fuzzer from
-this directory with `cargo fuzz run decoded_cache corpus/decoded_cache`.
+this directory with
+`cargo fuzz run --features fuzz-targets decoded_cache corpus/decoded_cache`.
 Semantic corpus coverage does not establish compiler branch coverage or native,
 distributed, restart, decoder-grammar or physical final-alias coverage. Those
 remain separate checks.
