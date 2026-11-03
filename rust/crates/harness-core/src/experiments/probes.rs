@@ -132,20 +132,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn probe_files_reject_undefined_contrasts_and_ambiguous_decisions() {
-        // An undefined contrast cannot turn every correct answer into infection.
-        assert!(Scorer::decode(br#"{"version":1,"expected":47,"injected":47}"#).is_err());
-        assert!(Scorer::decode(b"[1,47,52]").is_err());
-        // Failure or ambiguous output is not an observed zero-valued decision.
-        for bytes in [
-            br#"{"version":2,"value":47}"#.as_slice(),
-            br#"{"version":1,"value":47,"value":52}"#,
-            br#"{"version":1,"value":47,"explanation":"guess"}"#,
-            br#"{"version":1}"#,
-            b"[1,47]",
-            br#"{"version":1,"value":47} null"#,
-        ] {
-            assert!(Decision::decode(bytes).is_err());
-        }
+    fn conflicting_decision_values_are_refused() {
+        assert!(Decision::decode(br#"{"version":1,"value":47,"value":52}"#).is_err());
     }
 }

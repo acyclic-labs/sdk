@@ -50,6 +50,11 @@ with the selected admission invariant, and rejects compiler diagnostics.
 comparison and require the same target's independent scoring assertion to fail.
 The retained scoring property replaces the redundant three-answer example loop;
 the separate conflicting-value decision refusal remains a unit control.
+The same property subsumes fixed decoder examples for unsupported versions,
+indistinguishable scorer labels, missing or unknown fields, positional arrays,
+repeated identical fields and trailing input. Constructor admission, matched-pair
+identity, arithmetic overflow and known-cost examples remain separate because
+this decoder property does not subsume them.
 Run controls on an isolated checkout; the script temporarily edits production
 source. Original runtime output, coverage and negative-control results must be
 recorded separately; target presence and fixed corpus replay are not a campaign.

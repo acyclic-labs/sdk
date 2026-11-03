@@ -203,23 +203,6 @@ mod tests {
         let high = Observation::new([7; 32], 0, 1, Some(f64::MAX), None)?;
         let low = Observation::new([7; 32], 0, 0, Some(-f64::MAX), None)?;
         assert!(high.difference(&low).is_err());
-        let mut invalid = serde_json::to_value(&baseline)?;
-        invalid["version"] = 1.into();
-        assert!(Observation::decode(&serde_json::to_vec(&invalid)?).is_err());
-        let object = serde_json::to_string(&baseline)?;
-        let duplicate = format!("{{\"version\":2,{}", &object[1..]);
-        assert!(Observation::decode(duplicate.as_bytes()).is_err());
-        assert!(Observation::decode(format!("{object} null").as_bytes()).is_err());
-        let row = serde_json::to_value(&baseline)?;
-        let sequence = serde_json::json!([
-            row["version"],
-            row["population"],
-            row["replicate"],
-            row["arm"],
-            row["score"],
-            row["cost_usd"]
-        ]);
-        assert!(Observation::decode(&serde_json::to_vec(&sequence)?).is_err());
         Ok(())
     }
 
