@@ -521,6 +521,7 @@ impl Error {
                 Err(Self::Cleanup(CleanupFailure {
                     code: classification.code(),
                     outcome: HeadlessOutcome::from_error(classification),
+                    operation_id: primary.operation_id().or_else(|| cleanup.operation_id()),
                     uncertain: primary.uncertain() || cleanup.uncertain(),
                     effect_uncertain: primary.leaves_effect_uncertain()
                         || cleanup.leaves_effect_uncertain(),
@@ -529,6 +530,21 @@ impl Error {
                     causes: Box::new([primary, cleanup]),
                 }))
             }
+        }
+    }
+
+    /// The original uncertain operation, including a failed cleanup's receipt
+    /// when the primary failure has none. Nested cleanups retain this identity
+    /// at their join, so reading it never traverses their causes.
+    #[must_use]
+    pub fn operation_id(&self) -> Option<OperationId> {
+        match self {
+            Self::Indeterminate(id)
+            | Self::CommandIndeterminate {
+                operation_id: id, ..
+            } => Some(*id),
+            Self::Cleanup(failure) => failure.operation_id,
+            _ => None,
         }
     }
 
@@ -869,6 +885,7 @@ pub struct CleanupFailure {
     causes: Box<[Error; 2]>,
     code: crate::wire::ErrorCode,
     outcome: HeadlessOutcome,
+    operation_id: Option<OperationId>,
     uncertain: bool,
     effect_uncertain: bool,
     outcome_uncertain: bool,
@@ -1096,7 +1113,11 @@ mod cleanup_tests {
         for original in 0..7 {
             for retirement in 0..7 {
                 let primary = cause(original);
-                let cleanup = cause(retirement);
+                let cleanup = if retirement == 4 {
+                    Error::Indeterminate(OperationId::from_bytes([8; 16]))
+                } else {
+                    cause(retirement)
+                };
                 let primary_code = primary.code();
                 let cleanup_code = cleanup.code();
                 let uncertain = primary.uncertain() || cleanup.uncertain();
@@ -1110,6 +1131,18 @@ mod cleanup_tests {
                 };
                 assert_eq!(failure.primary().code(), primary_code);
                 assert_eq!(failure.cleanup().code(), cleanup_code);
+                let expected_operation = if original == 4 {
+                    OperationId::from_bytes([7; 16]).to_string()
+                } else if retirement == 4 {
+                    OperationId::from_bytes([8; 16]).to_string()
+                } else {
+                    String::new()
+                };
+                assert_eq!(
+                    crate::wire_codec::encode_error(&joined).operation_id,
+                    expected_operation,
+                    "wire cleanup must retain the original operation receipt"
+                );
                 if original == 4 {
                     assert!(matches!(failure.primary(), Error::Indeterminate(id)
                         if *id == OperationId::from_bytes([7; 16])));
@@ -1137,6 +1170,11 @@ mod cleanup_tests {
                 assert_eq!(nested.uncertain(), uncertain);
                 assert_eq!(nested.leaves_effect_uncertain(), effect_uncertain);
                 assert_eq!(nested.leaves_outcome_uncertain(), outcome_uncertain);
+                assert_eq!(
+                    crate::wire_codec::encode_error(&nested).operation_id,
+                    expected_operation,
+                    "later cleanup must retain the original operation receipt"
+                );
             }
             let error = Error::after_cleanup::<()>(Err(cause(original)), Ok(())).unwrap_err();
             assert_eq!(error.code(), cause(original).code());

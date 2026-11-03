@@ -1,0 +1,20 @@
+diff --git b/rust/crates/harness-core/src/wire_codec/errors.rs a/rust/crates/harness-core/src/wire_codec/errors.rs
+index 5ec861bd48..380fbe7229 100644
+--- b/rust/crates/harness-core/src/wire_codec/errors.rs
++++ a/rust/crates/harness-core/src/wire_codec/errors.rs
+@@ -5,8 +5,12 @@ pub fn encode_error(error: &Error) -> wire::Error {
+     wire::Error {
+         code: error.code() as i32,
+         message: error.to_string(),
+-        operation_id: error
+-            .operation_id()
+-            .map_or_else(String::new, |id| id.to_string()),
++        operation_id: match error {
++            Error::Indeterminate(id)
++            | Error::CommandIndeterminate {
++                operation_id: id, ..
++            } => id.to_string(),
++            _ => String::new(),
++        },
+     }
+ }
