@@ -231,6 +231,36 @@ fn append(
     }
 }
 
+/// The socket and ledger halves of the Open's joined invocation publication.
+fn open_effects(
+    socket: &StreamPath,
+    epochs: &StreamPath,
+    segment: &StreamPath,
+    expected_epoch: u64,
+    opened: OpenedWire,
+) -> Vec<Effect> {
+    vec![
+        append(
+            socket.clone(),
+            vec![opened.encode_to_vec().into()],
+            vec![
+                CommitCondition::Absent {
+                    path: socket.clone(),
+                },
+                CommitCondition::Tail {
+                    path: epochs.clone(),
+                    expected: expected_epoch,
+                },
+            ],
+        ),
+        append(
+            segment.clone(),
+            vec![ledger_record(LedgerKind::Opened(opened))],
+            Vec::new(),
+        ),
+    ]
+}
+
 /// Pacing for retries of one keyed request whose outcome is unknown.
 struct Undecided {
     delay: u32,
@@ -1217,26 +1247,13 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                         actor: actor.clone(),
                         inbox: input.as_str().into(),
                     };
-                    Ok(vec![
-                        append(
-                            socket.clone(),
-                            vec![opened.encode_to_vec().into()],
-                            vec![
-                                CommitCondition::Absent {
-                                    path: socket.clone(),
-                                },
-                                CommitCondition::Tail {
-                                    path: epochs.clone(),
-                                    expected: ledger.epochs,
-                                },
-                            ],
-                        ),
-                        append(
-                            segment.clone(),
-                            vec![ledger_record(LedgerKind::Opened(opened))],
-                            Vec::new(),
-                        ),
-                    ])
+                    Ok(open_effects(
+                        &socket,
+                        &epochs,
+                        &segment,
+                        ledger.epochs,
+                        opened,
+                    ))
                 })
                 .await;
             match attempt {

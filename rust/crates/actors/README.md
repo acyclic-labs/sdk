@@ -316,3 +316,11 @@ classification and retained-custody defects. The command restores production
 source, then runs both original models. It covers the in-memory Store and
 composition path; physical recovery and distributed ownership are separate
 obligations.
+
+`python3 scripts/qualify-actors-ready.py` runs the six Loom models of the
+production ready queue and checks that unchanged model assertions reject
+production mutations that lose a running wake, omit dispatcher registration,
+retain a cancelled registration, drop a due wake, omit alarm rearming
+or admit an obsolete alarm generation. Pass control names printed by the
+command to select individual defects. The wake/park model covers the queue
+handoff itself; it does not model Stream publication or runtime activation.
