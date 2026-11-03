@@ -7,7 +7,7 @@ export function fuzz(data) {
   const bytes = Buffer.from(data);
   const expected = bytes.toString("utf8").split("\n");
   if (expected.at(-1) === "") expected.pop();
-  for (const requireNewline of [false, true]) for (const fragmented of [false, true]) {
+  for (const requireNewline of [false, true]) for (const partition of ["whole", "bytes", "input"]) {
     const received = [];
     let refused = false;
     const lines = new Lines(line => {
@@ -15,7 +15,8 @@ export function fuzz(data) {
       if (received.length % 2 === 1) { refused = true; return false; }
     });
     for (let offset = 0; offset < bytes.length;) {
-      const end = fragmented ? Math.min(bytes.length, offset + 1 + bytes[offset]) : bytes.length;
+      const end = partition === "whole" ? bytes.length
+        : Math.min(bytes.length, offset + (partition === "bytes" ? 1 : 1 + bytes[offset]));
       refused = false;
       const room = lines.write(bytes.subarray(offset, end));
       assert.equal(room, !refused, "one refused frame must retain chunk backpressure");

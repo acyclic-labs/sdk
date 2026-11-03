@@ -14,7 +14,14 @@ test("decoder fuzz targets retain captured native and shipping seeds across byte
   const seeds = [Buffer.alloc(0), wire(ready), failed, acknowledged,
     ...Object.values(shipping).map(value => Buffer.from(value.stdout))];
   assert.equal((await report(wire(ready))).capability.ready, true);
-  assert.deepEqual((await report(failed)).termination.execution_failure, termination.execution_failure);
+  for (const field of ["generation", "request_id"]) {
+    const foreign = { ...acknowledgement, [field]: "0".repeat(32) };
+    const result = await report(wire(foreign));
+    assert.equal(result.termination.report_acknowledged, false, "the first frame cannot choose its own owner");
+    assert.equal(result.termination.control_failure, "foreign-or-invalid-acknowledgement");
+  }
+  assert.deepEqual((await report(failed, { generation: termination.generation, requestId: acknowledgement.request_id }))
+    .termination.execution_failure, termination.execution_failure);
   for (const tail of [wire(ready).subarray(0, -2), Buffer.from("{\n")]) {
     const result = await report(Buffer.concat([acknowledged, tail]));
     assert.equal(result.termination.report_acknowledged, true);
