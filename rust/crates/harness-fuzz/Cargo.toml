@@ -90,7 +90,8 @@ code-mode = ["core", "acyclic-harness-core/filesystem", "dep:tokio"]
 native-skill-records = ["core", "acyclic-harness-core/filesystem-local", "acyclic-harness-core/native-execution"]
 native-settings = ["core", "dep:tempfile"]
 client = ["dep:acyclic-harness-client", "dep:acyclic-stream"]
-runtime = ["native-settings", "filesystem-local", "native-execution", "dep:acyclic-harness", "dep:acyclic-native-runtime", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
+native-input = ["dep:acyclic-harness", "acyclic-harness/filesystem-local", "acyclic-harness/native-execution"]
+runtime = ["native-settings", "filesystem-local", "native-execution", "native-input", "acyclic-harness/terminal", "acyclic-harness/tui", "acyclic-harness/grpc", "acyclic-harness/test-support", "acyclic-harness/search-http", "acyclic-harness/objects", "dep:acyclic-native-runtime", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
 # Harness sources included by `#[path]` gate native helpers on these features;
 # the fuzz runtime compiles them as the native harness it depends on does.
 filesystem-access = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem"]
@@ -106,7 +107,7 @@ blake3.workspace = true
 base64 = "=0.22.1"
 clap.workspace = true
 acyclic-harness-client = { path = "../harness-client", features = ["agents"], optional = true }
-acyclic-harness = { path = "../harness", features = ["terminal", "tui", "filesystem-local", "native-execution", "grpc", "test-support", "search-http", "objects"], optional = true }
+acyclic-harness = { path = "../harness", default-features = false, optional = true }
 diffy = { workspace = true, optional = true }
 serde-saphyr = { version = "=2.0.0", features = ["serialize"], optional = true }
 libfuzzer-sys = "0.4"
@@ -174,7 +175,7 @@ bench = false
 [[bin]]
 name = "native_input"
 path = "fuzz_targets/native_input.rs"
-required-features = ["runtime"]
+required-features = ["native-input"]
 test = false
 doc = false
 bench = false

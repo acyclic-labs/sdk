@@ -106,6 +106,13 @@ additional_controls = {
             "null",
             b"command request unknown fields must be refused",
         ),
+        (
+            "plugin/src/input.rs",
+            b"input.take(65_537).read_to_end(&mut bytes)?;",
+            b"input.take(1).read_to_end(&mut bytes)?;",
+            "null",
+            b"native input admission changed its original JSON",
+        ),
     ],
     "command_result": [
         (
@@ -184,6 +191,7 @@ def require(condition, step):
 
 def run(target, seed, witness, *, capture=False, runs=0):
     options = {
+        "native_input": ["--no-default-features", "--features", "native-input"],
         "command_result": ["--no-default-features", "--features", "core"],
         "native_workspace": ["--no-default-features"],
         "native_settings": ["--no-default-features", "--features", "native-settings"],
