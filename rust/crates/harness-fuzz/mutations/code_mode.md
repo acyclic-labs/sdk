@@ -64,3 +64,16 @@ Apply `mutations/code_mode_cancel_succeeds.patch` to make the production cancell
 selection return null instead of its interruption. The unchanged oracle must fail
 at `parent cancellation must retain its interruption`. This wrong-success mutation
 keeps the original cancellation wake and introduces no never-settled future.
+
+Quoted inputs also run at their exact JSON UTF-8 byte allowance and one byte
+below it, retaining the native ledger through original encoding and retirement.
+The independent Rust JSON string encoding supplies the expected byte length and
+value; both the accepted and refused boundary must match exactly. This replaces
+the redundant second denied-construction run, rather than increasing engine runs
+for valid UTF-8 input. JSON string encoding always includes its two quotes, so the
+one-byte decrement cannot underflow.
+
+Apply `mutations/code_mode_output_extra_byte.patch` to let the original interpreter
+accept one extra byte. The unchanged oracle must fail at `quoted output must
+refuse one byte beyond its admission`, including on empty input. Restore the
+mutation before collecting original coverage.

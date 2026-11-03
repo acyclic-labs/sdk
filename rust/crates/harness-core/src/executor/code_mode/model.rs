@@ -24,11 +24,17 @@ pub async fn check(input: &[u8]) {
     let definitions: acyclic_stream::OwnedBytes = serde_json::to_vec(&definitions).unwrap().into();
     let text = String::from_utf8_lossy(input);
     let literal = serde_json::to_string(text.as_ref()).unwrap();
-    for source in [std::str::from_utf8(input).ok(), Some(literal.as_str())]
-        .into_iter()
-        .flatten()
-    {
-        for deny_allocation in [false, true] {
+    for (source, maximum, deny_allocation) in [
+        (
+            std::str::from_utf8(input).ok(),
+            literal.len().max(4096),
+            false,
+        ),
+        (Some(literal.as_str()), literal.len(), false),
+        (Some(literal.as_str()), literal.len() - 1, false),
+        (Some(literal.as_str()), literal.len(), true),
+    ] {
+        if let Some(source) = source {
             let work = native_work(deny_allocation);
             let baseline = work.live_allocation_bytes();
             let allocator = EngineAllocator::new(Some(&work));
@@ -42,7 +48,7 @@ pub async fn check(input: &[u8]) {
                 definitions.clone(),
                 send,
                 tokio_util::sync::CancellationToken::new(),
-                literal.len().max(4096),
+                maximum,
                 allocator,
                 16,
             )
@@ -52,7 +58,15 @@ pub async fn check(input: &[u8]) {
                 assert!(result.is_err());
                 assert!(failure.lock().unwrap().is_some());
             } else if source == literal.as_str() && failure.lock().unwrap().is_none() {
-                assert_eq!(result.unwrap(), serde_json::Value::String(text.to_string()));
+                if maximum < literal.len() {
+                    assert_eq!(
+                        result,
+                        Err("JavaScript result exceeds admitted output".into()),
+                        "quoted output must refuse one byte beyond its admission"
+                    );
+                } else {
+                    assert_eq!(result.unwrap(), serde_json::Value::String(text.to_string()));
+                }
             }
         }
     }
