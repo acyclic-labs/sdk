@@ -167,3 +167,22 @@ lock-order assertion stay unchanged. This checks explicit close publication with
 one reader through included production source and its Loom adapter. It does not
 qualify implicit producer loss, transport retirement, poison recovery, value
 destructors, external wire, physical restarts or multiple nodes.
+
+The Signal and Gate registration models include the shipping notification
+methods. Their original wake callbacks inspect the corresponding mutex with
+`try_lock`, before recording the notification. The existing private-state fault
+branches are distinct from moving the actual shipping guard across its callback:
+
+```sh
+git apply rust/crates/stream/models/mutations/notification_lock_order.patch
+RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream-models --features model-checking --test session_model registration_cannot_lose_a_wakeup -- --nocapture
+git apply --reverse rust/crates/stream/models/mutations/notification_lock_order.patch
+```
+
+This selection contains the two original Signal/Gate positive registration
+models. The mutant must fail both original `wake must run outside` lock-order
+assertions; byte-identical restored production must pass both. The model bodies,
+callbacks and assertions stay unchanged. This checks one producer and waiter
+through the included production methods and Loom mutexes; waiter replacement,
+producer loss, poisoning, value destruction, external wire, physical restarts and
+multiple nodes remain separate obligations.
