@@ -309,3 +309,10 @@ logic, signing key or second StreamLedger belongs in Actors. Objects grants keep
 their original immutable Objects authority. Platform authority admission and
 trailer-preserving fetch are separate public contracts, not implicit effects of
 this state binding.
+
+Run `python3 scripts/qualify-actors-publication.py` from the repository root
+to check the existing native publication models against actual refusal
+classification and retained-custody defects. The command restores production
+source, then runs both original models. It covers the in-memory Store and
+composition path; physical recovery and distributed ownership are separate
+obligations.
