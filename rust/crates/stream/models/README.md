@@ -209,3 +209,26 @@ Arc reference counts are not instrumented. RawWaker clone callbacks, concurrent
 replacement, producer loss, poisoned mutexes, queued-value destruction, external
 wire, physical restarts and multiple nodes remain separate obligations. No
 production operations or allocations are added.
+
+The existing pool peer-isolation model also retains two silent transport
+responses through the shipping `Pool::read` method. Production frame rejection
+drops the rejected peer's actual `Link`. Its pending read must be notified,
+complete with the original node and epoch, and release its response when the
+dispatcher discards it. The healthy peer's response must remain pending and
+retained while its actual route delivers a record and admits another open.
+
+```sh
+git apply rust/crates/stream/models/mutations/response_read_cancellation.patch
+RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream --no-default-features --features grpc,model-checking --test main client_pool_loom::malformed_node_cannot_terminate_independent_routes_or_opens -- --exact --nocapture
+git apply --reverse rust/crates/stream/models/mutations/response_read_cancellation.patch
+```
+
+The mutation makes the actual read wait only for the peer. The unchanged model
+must reject it at `link loss must notify its pending response read`; restored
+production must pass. The response streams deliberately never produce bytes or
+EOF: this checks ownership and cancellation, not a wire decoder or physical
+transport. The fixture bypasses public connection admission. Registration races
+remain covered by the component models; current-main public admission, real
+transport retirement, source coverage and physical restarts remain separate.
+No production operations, allocations or waits are added. This two-node history
+does not prove asymptotic cost of the pool's maps or route scans.
