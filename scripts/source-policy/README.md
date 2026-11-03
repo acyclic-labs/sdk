@@ -52,8 +52,8 @@ oracles reject planted defects in the production lexer, dependency graph and
 disposition validation. Add `--experimental-test-coverage` before `--test` to
 report visited branches; the report does not establish runtime liveness.
 `fuzzSource(file, bytes, api)` also accepts the actual exports of a separately
-loaded package or source mutation. Its diagnostics, coordinates and unchanged
-source check all use that same module, including its `SourceSyntaxError` class.
+loaded package or source mutation. Format admission, diagnostics, coordinates and
+the unchanged source check all use that module, including its `SourceSyntaxError` class.
 `fuzzProject(bytes, {source, graph})` takes the matching source and project module
 exports; dependency deltas, disposition admission and typed refusals all use that
 pair. Its authored `projectCorpus` seeds are shared with installed-module checks.

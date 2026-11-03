@@ -20,6 +20,8 @@ async function mutant(file, original, replacement) {
 
 test('source fuzz oracles reject planted decoder, graph and disposition defects', async () => {
  for (const [original, replacement, file, source] of [
+  ['return cFamily.test(file) || ', 'return false || ', 'control.c', ''],
+  ['(?:rs|[cm]?[jt]s|', '(?:[cm]?[jt]s|', 'control.rs', ''],
   ['throw new SourceSyntaxError(', 'throw new Error(', 'control.ts', '}'],
   ['const malformed = message => new SourceSyntaxError(', 'const malformed = message => new Error(', 'control.ps1', '<#'],
   ['sites.push({file, line: t.line, kind, fingerprint, start: t.start});',

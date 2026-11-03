@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import * as sourcePolicy from './source-policy/index.mjs';
 import * as projectPolicy from './source-policy/project.mjs';
-const {pollingSites, supportedSource} = sourcePolicy;
 
 // Original host/parser captures, with provenance retained in each source file.
 export const sourceCorpus = [
@@ -28,7 +27,7 @@ export const projectCorpus = [
 
 // Byte-oriented source mutations, not captured tool output. Exercise the real
 // tokenizer: decoding must preserve raw candidates and expose escaped ones.
-export function fuzz(data, analyze = pollingSites) {
+export function fuzz(data, analyze = sourcePolicy.pollingSites) {
  const text = new TextDecoder().decode(new Uint8Array(data));
  for (const command of ['sleep`' + text + '` 1', 'Start-S`leep ' + text,
   'Thread.' + '\\'.repeat(data.length + 1) + 'u0053leep(' + text + ')']) {
@@ -85,7 +84,7 @@ export function fuzz(data, analyze = pollingSites) {
 // Raw untrusted bytes reach every caller-selected production language parser.
 // Syntax refusal is valid; a crash or a diagnostic of another type is not.
 export function fuzzSource(file, data, api = sourcePolicy) {
- assert.ok(supportedSource(file));
+ assert.ok(api.supportedSource(file), 'production module excluded supported source: ' + file);
  const source = new TextDecoder().decode(new Uint8Array(data));
  let sites;
  try { sites = api.pollingSites(file, source); }
