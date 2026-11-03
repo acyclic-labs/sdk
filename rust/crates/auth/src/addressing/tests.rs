@@ -201,23 +201,6 @@ fn resource_version_refusal_precedes_fields() -> Result<(), Box<dyn std::error::
     assert_eq!(ResourceIdentity::decode(&encoded)?.encode(), encoded);
     Ok(())
 }
-fn label_contract(validate: impl Fn(&[u8]) -> bool) -> bool {
-    ["a", "0", "worker-1"]
-        .iter()
-        .all(|s| validate(s.as_bytes()))
-        && [
-            "", "A", "a.b", "a_b", "-a", "a-", "a:443", "é", "a\0", "*.x",
-        ]
-        .iter()
-        .all(|s| !validate(s.as_bytes()))
-        && validate(&[b'a'; 63])
-        && !validate(&[b'a'; 64])
-}
-#[test]
-fn negative_control_unvalidated_labels_fail_dns_contract() {
-    assert!(label_contract(|label| validate_dns_label(label).is_ok()));
-    assert!(!label_contract(|_| true));
-}
 #[test]
 fn rejects_tls_and_signature_aliases() -> Result<(), DnsError> {
     let host = "worker.account.example.com";

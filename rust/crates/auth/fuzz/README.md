@@ -123,5 +123,12 @@ They contain actual SDK route-pattern writer output with caller URL context in
 a NUL-separated fuzz tuple. That tuple is not a product format. Run
 `python3 negative-control.py addressing-fragment` to remove the production URL
 fragment guard and require the unchanged routing-refusal assertion to fail.
-The runner restores the source and checks oracle custody. DNS-label branch
-coverage and the other addressing guards need separate qualification.
+The same oracle constructs lowercase LDH labels with letter or digit edges,
+checks single-byte and 63-byte boundaries, and requires invalid aliases, empty
+labels and 64-byte labels to refuse. Both the existing arbitrary-byte property
+and fuzz entrances call it, including for non-UTF-8 input. Run
+`python3 negative-control.py addressing-case` or `addressing-length` to weaken
+the production character or length guard. Each must fail its unchanged semantic
+assertion. These replace the fixed label table's mock-validator control.
+The runner restores the source and checks oracle custody. Complete source and
+branch coverage, and the other addressing guards, need separate qualification.
