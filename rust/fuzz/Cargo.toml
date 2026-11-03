@@ -13,9 +13,11 @@ process-arguments = ["dep:serde_json"]
 default = ["native"]
 agent = ["dep:acyclic-harness-core"]
 experiments = ["dep:acyclic-harness-core", "dep:serde_json"]
-native = ["dep:acyclic-fs", "dep:acyclic-harness", "dep:prost", "dep:serde_json"]
+native = ["dep:acyclic-fs", "dep:acyclic-harness", "dep:prost", "dep:serde_json", "owner-record"]
+owner-record = ["dep:acyclic-native-runtime"]
 
 [dependencies]
+acyclic-native-runtime = { path = "../crates/native-runtime", optional = true }
 acyclic-proto-build = { path = "../../compatibility", optional = true }
 acyclic-fs = { path = "../crates/filesystem", default-features = false, optional = true }
 acyclic-harness-core = { path = "../crates/harness-core", default-features = false, optional = true }
@@ -98,6 +100,14 @@ bench = false
 [[bin]]
 name = "native_claim_record"
 path = "fuzz_targets/native_claim_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "native_owner_record"
+required-features = ["owner-record"]
+path = "fuzz_targets/native_owner_record.rs"
 test = false
 doc = false
 bench = false
