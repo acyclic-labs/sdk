@@ -88,3 +88,23 @@ cargo test --locked -p acyclic-stream --no-default-features --features session -
 Restore the patch before using that command as the positive control. The former
 matrix always supplied no binding and no progress; it could not detect this fence
 omission or a mistaken credit-free lookahead for finite replies.
+
+The local replay model calls the production `require_accepted` durability handoff,
+`flush_through` and publication wait. Its `REQUIRE = false` control selects a
+model branch; it does not itself demonstrate detection of a production defect.
+`mutations/replay_durability_requirement.patch` removes the production promotion
+of the original appended frame into the required durability cut. Apply it and run
+the unchanged positive oracle:
+
+```sh
+git apply rust/crates/stream/models/mutations/replay_durability_requirement.patch
+RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream --no-default-features --features local,model-checking --test main local_replay_model::replay_and_flush_preserve_durability -- --exact --nocapture
+git apply --reverse rust/crates/stream/models/mutations/replay_durability_requirement.patch
+```
+
+The mutant must fail at `replay omitted the original durability requirement`;
+the same command on restored production source must pass. This model exercises
+the unreserved handoff with no native work budget. Its volatile journal fixture
+and inline blocking adapter do not qualify native reservation, root ownership,
+physical worker cancellation or OS durability failures. The public reopen and
+emitted-history recovery properties remain separate and are kept.
