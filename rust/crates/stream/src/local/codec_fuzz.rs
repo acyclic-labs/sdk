@@ -1,10 +1,33 @@
 use super::*;
 
 pub(crate) fn check(bytes: &[u8]) -> bool {
-    let _ = decode_header(bytes, LocalStreamLimits::default());
-    if let Ok(value) = decode_snapshot(bytes, LocalStreamLimits::default()) {
-        if !encode_snapshot(LocalStreamLimits::default(), value.epoch, &value.state)
-            .is_ok_and(|encoded| encoded == bytes)
+    let limits = LocalStreamLimits::default();
+    let incarnation = bytes
+        .iter()
+        .take(16)
+        .fold(0u128, |value, byte| (value << 8) | u128::from(*byte));
+    let epoch = incarnation as u64;
+    // Challenge admission with the actual writers as well as arbitrary bytes:
+    // rejecting every input must not satisfy a decoder's round-trip oracle.
+    let Ok(header) = encode_header(limits, epoch) else {
+        return false;
+    };
+    if !decode_header(&header, limits).is_ok_and(|value| value == epoch) {
+        return false;
+    }
+    let Ok(snapshot) = encode_snapshot(limits, epoch, bytes) else {
+        return false;
+    };
+    if !decode_snapshot(&snapshot, limits)
+        .is_ok_and(|value| value.epoch == epoch && value.state == bytes)
+        || !decode_incarnation(&encode_incarnation(incarnation))
+            .is_ok_and(|value| value == incarnation)
+    {
+        return false;
+    }
+    let _ = decode_header(bytes, limits);
+    if let Ok(value) = decode_snapshot(bytes, limits) {
+        if !encode_snapshot(limits, value.epoch, &value.state).is_ok_and(|encoded| encoded == bytes)
         {
             return false;
         }
