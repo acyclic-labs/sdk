@@ -788,3 +788,12 @@ maximum, independently of the route verifier. Its retained real read packet is
 also tried with a zero-byte admission; `object_read_maximum.patch` removes the
 actual production maximum check. The unchanged property must catch that guard
 omission. This does not qualify every range or content-integrity branch.
+
+PUT acknowledgements use one independent digest and logical-length assertion
+for both unary routes and batch members. The same property admits the retained
+created, existing and manifest service replies before changing each reply's
+digest or length separately. `object_put_identity.patch` and
+`object_put_length.patch` omit the respective production acknowledgement check;
+the unchanged oracle must catch both omissions. This qualifies those admission
+branches, with the original typed producer-loss check retained; it does not
+establish remote durability or physical release.

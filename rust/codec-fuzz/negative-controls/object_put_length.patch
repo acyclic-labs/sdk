@@ -1,0 +1,11 @@
+--- a/rust/crates/objects/src/convert.rs
++++ b/rust/crates/objects/src/convert.rs
+@@ -273,7 +273,7 @@
+     let put = put(value)?;
+     if put
+         .verified()
+-        .is_some_and(|verified| verified.digest != requested || verified.length != length)
++        .is_some_and(|verified| verified.digest != requested)
+     {
+         return Err(wire::ErrorCode::Unavailable.into());
+     }
