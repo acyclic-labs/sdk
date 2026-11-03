@@ -155,6 +155,7 @@ pub mod identity_codec_fuzz {
         }
         check!(MachineId, CheckpointId, OperationId, IdempotencyKey);
         check_image_digest(bytes);
+        check_oci_reference(bytes);
     }
 
     fn check_image_digest(bytes: &[u8]) {
@@ -184,6 +185,61 @@ pub mod identity_codec_fuzz {
                     .unwrap(),
                 digest
             );
+        }
+    }
+
+    fn check_oci_reference(bytes: &[u8]) {
+        fn checked(reference: &str) -> Option<Image> {
+            let image = Image::oci(reference).ok()?;
+            let Image::ManagedOci(digest) = &image else {
+                panic!("OCI reference must select a managed image");
+            };
+            let split = reference.len().saturating_sub(64);
+            let name = reference
+                .get(..split)
+                .and_then(|prefix| prefix.strip_suffix("@sha256:"));
+            assert!(
+                name.is_some_and(|name| !name.is_empty())
+                    && reference.get(split..).is_some_and(|text| {
+                        text.eq_ignore_ascii_case(&hex::encode(digest.as_bytes()))
+                    }),
+                "admitted OCI reference must retain a name and exact digest"
+            );
+            Some(image)
+        }
+        if let Ok(reference) = std::str::from_utf8(bytes) {
+            let _ = checked(reference);
+        }
+        if let Ok(raw) = <[u8; 32]>::try_from(bytes) {
+            let digest = hex::encode(raw);
+            let suffix = format!("@sha256:{digest}");
+            let expected = Image::managed(raw).ok();
+            for name in [&digest, &suffix] {
+                assert_eq!(
+                    checked(&format!("{name}{suffix}")),
+                    expected,
+                    "original digest writer must survive OCI reference admission"
+                );
+            }
+            assert_eq!(
+                checked(&format!("{digest}@sha256:{}", digest.to_ascii_uppercase())),
+                expected,
+                "OCI digest admission must preserve hexadecimal case equivalence"
+            );
+            assert!(
+                Image::oci(&suffix).is_err(),
+                "OCI reference admission must reject a missing name"
+            );
+            for malformed in [
+                digest.clone(),
+                format!("{digest}{suffix}f"),
+                format!("{digest}@sha256:g{}", digest.get(1..).unwrap()),
+            ] {
+                assert!(
+                    Image::oci(malformed).is_err(),
+                    "OCI reference admission must reject malformed digest syntax"
+                );
+            }
         }
     }
 

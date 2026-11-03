@@ -864,8 +864,25 @@ exact width and nonzero original bits. Its original public writers supply the
 positive forms, and the zero-array writer supplies the refusal forms. Apply
 `negative-controls/machines-image-zero.patch` and require the unchanged property
 to fail at `public image digest admission must retain nonzero bits`, then restore
-the production source and require that property to pass. This check covers
-digest admission; OCI reference parsing has a separate input grammar.
+the production source and require that property to pass.
+
+The same identity target checks `Image::oci` with arbitrary UTF-8 and grammar
+inputs derived from the retained digest bytes through the hexadecimal writer.
+It checks the original digest, last-separator selection, case equivalence and
+rejection of missing names, separators, invalid lengths and invalid hexadecimal
+text. These generated grammar inputs are not registry or service captures. The
+zero-digest corpus supplies refusal forms. This subsumes
+`managed_oci_requires_an_immutable_digest` without a separate example test.
+
+```sh
+git apply rust/codec-fuzz/negative-controls/machines-oci-name.patch
+cargo test --locked -p acyclic-machines --no-default-features --features grpc,test-support --lib contract::identity::resource_identity_tests::public_identity_admission_preserves_syntax_and_nonzero_bits -- --exact --nocapture
+git apply -R rust/codec-fuzz/negative-controls/machines-oci-name.patch
+```
+
+Require `OCI reference admission must reject a missing name`, then restore the
+original source and require the same property to pass. A compiler failure does
+not qualify this production mutation.
 
 The existing Machine result-page RPC property also supplies the simulator's
 original observations to the same `MachineState` semantic oracle. The public
