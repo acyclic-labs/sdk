@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { collect, runSuites, partition,acceptanceBinding } from "./serial.mjs";
+import { collect, runSuites, partition, variants, acceptanceBinding } from "./serial.mjs";
 import {mkdtemp,mkdir,readFile,writeFile,rename,rm,copyFile,symlink} from 'node:fs/promises';
 import {dirname,join} from 'node:path';
 import {nativeHost} from '../../plugin/tests/hosts/native-host.mjs';
