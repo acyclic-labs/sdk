@@ -608,6 +608,53 @@ fn projection_reads_cannot_wake_either_endpoint() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn workspace_shutdown_retains_its_cause_when_retirement_refuses() -> Result<()> {
+    let checkout = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    let local = Arc::new(
+        LocalHarness::open(
+            LocalHarnessConfig::native_host(checkout.path())
+                .state_directory(state.path().join("owner")),
+        )
+        .await?,
+    );
+    let mut failures = Vec::new();
+    for shutdown in [
+        Err(Error::Cancelled),
+        Err(Error::Unsupported("original shutdown producer".into())),
+        Ok(()),
+    ] {
+        let expected = shutdown.as_ref().err().map(Error::code);
+        // The extra public harness handle makes the original retirement
+        // refuse disconnect after it has joined view cleanup. No replacement
+        // producer or injected filesystem result supplies that refusal.
+        let failure = serve_until(Arc::clone(&local), async move { shutdown })
+            .await
+            .expect_err("the retained harness handle must refuse retirement");
+        failures.push((expected, failure));
+    }
+    Arc::try_unwrap(local)
+        .map_err(|_| Error::Conflict("workspace owner retained after retirement".into()))?
+        .disconnect()
+        .await?;
+    // Release the actual harness before any regression assertion can fail.
+    for (expected, failure) in failures {
+        assert_eq!(
+            failure.code(),
+            expected.unwrap_or(crate::wire::ErrorCode::Conflict),
+            "retirement must retain the original shutdown classification: {failure}"
+        );
+        assert!(
+            failure
+                .to_string()
+                .contains("native owner still has live harness handles"),
+            "the original retirement refusal must also survive: {failure}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn workspace_projection_uses_shared_results_without_client_state() -> Result<()> {
     rejected_requests_end_without_owner_exit()?;
     let registry = Arc::new(Mutex::<Registry>::default());
