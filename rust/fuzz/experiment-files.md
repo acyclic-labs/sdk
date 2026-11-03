@@ -27,8 +27,17 @@ known or unknown prices. Independent category counts check every report rate
 and cost denominator. One nonzero integer cost avoids copying a floating-point
 sum into the oracle. The retained `report-denominator` mutation replaces the
 assigned denominator with valid decisions in the actual production report.
-Arbitrary nonzero cost histories and clustered numerical state remain separate
-validation obligations; the generated history does not subsume their controls.
+Arbitrary nonzero cost histories remain a separate validation obligation; the
+generated report history does not subsume their controls.
+Clustered statistics also run through the public `Cluster` and `PairedStats`
+transitions. Generated integer clusters are compared with independent batch
+sums and direct residuals, rather than another online QR implementation.
+Parallel histories with refused nonfinite observations and an empty cluster
+must yield identical subsequent public estimates. The retained `statistics-mean`
+mutation drops the centered mean in the actual production estimate.
+This bounded numerical domain does not replace large-offset, overflow or
+arbitrary floating-point input controls. Comparisons use a numerical precision
+budget scaled by input length; it is not a formal rounding-error proof.
 
 Run a campaign with an explicit budget using cargo-fuzz's supported toolchain:
 
@@ -93,6 +102,11 @@ unrelated answer, so that answer remains distinct from truth and injection.
 assignment before the four category controls. Every cost is known; the other
 original JSON seeds start with an unpriced assignment. This is target input,
 not a provider recording or a new persisted product format.
+`statistics-baseline` is empty target input: the numerical property then checks
+exactly the original unequal-cluster case `[1,3]`, `[5]`, `[-2,0,2]`. Nonempty
+inputs add signed-byte integer clusters in chunks of three. The property replaces
+the unit test's duplicate direct-residual assertions; its large common-offset
+and power-planning checks remain.
 No provider payload is fabricated or relabeled.
 
 The target excludes the separate assignment/streaming analysis formats and

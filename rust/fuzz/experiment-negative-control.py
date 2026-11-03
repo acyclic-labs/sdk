@@ -72,6 +72,11 @@ CASES = {
         "let assigned = self.valid as f64;", "trials-priced",
         "independent report invariant: rates",
     ),
+    "statistics-mean": (
+        "experiments/stats.rs", "let difference = self.anchor + mean;",
+        "let difference = self.anchor;", "trials-priced",
+        "independent statistics invariant: batch projection",
+    ),
 }
 
 

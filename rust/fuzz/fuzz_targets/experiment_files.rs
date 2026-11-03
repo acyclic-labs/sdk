@@ -5,6 +5,7 @@ use acyclic_harness_core::experiments::{
     Observation,
     probes::{Decision, Scorer},
     reports::AssignedTrials,
+    stats::{Cluster, PairedStats},
 };
 use libfuzzer_sys::fuzz_target;
 use serde_json::{Value, json};
@@ -119,6 +120,100 @@ fn trials(bytes: &[u8], scorer: &Scorer, expected: i64) {
         ),
         "independent report invariant: costs"
     );
+}
+
+fn statistics(bytes: &[u8]) {
+    // The original unequal-cluster example is the empty-input case. Remaining
+    // bytes add bounded integer observations, grouped without retaining rows.
+    let groups = || {
+        [&[1, 3][..], &[5][..], &[254, 0, 2][..]]
+            .into_iter()
+            .chain(bytes.chunks(3))
+    };
+    let value = |byte: &u8| f64::from(*byte as i8);
+    let mut original = PairedStats::default();
+    let mut refused = PairedStats::default();
+    for group in groups() {
+        let mut cluster = Cluster::default();
+        for difference in group.iter().map(value) {
+            cluster
+                .push(difference)
+                .expect("integer observation admits");
+        }
+        let mut after_refusal = cluster;
+        assert!(
+            after_refusal.push(f64::NAN).is_err(),
+            "independent statistics invariant: nonfinite refusal"
+        );
+        original.push(cluster).expect("integer cluster admits");
+        refused
+            .push(after_refusal)
+            .expect("independent statistics invariant: refused cluster retains admission");
+    }
+    let estimate = original.estimate().expect("independent clusters estimate");
+    assert!(
+        refused.push(Cluster::default()).is_err(),
+        "independent statistics invariant: empty cluster refusal"
+    );
+    let after = refused.estimate().expect("refused history still estimates");
+    assert_eq!(
+        (
+            after.pairs,
+            after.clusters,
+            after.difference,
+            after.paired_se,
+            after.clustered_se
+        ),
+        (
+            estimate.pairs,
+            estimate.clusters,
+            estimate.difference,
+            estimate.paired_se,
+            estimate.clustered_se
+        ),
+        "independent statistics invariant: refusal preserves estimates"
+    );
+
+    let pairs = bytes.len() as u64 + 6;
+    let clusters = bytes.chunks(3).len() as u64 + 3;
+    assert_eq!(
+        (estimate.pairs, estimate.clusters),
+        (pairs, clusters),
+        "independent statistics invariant: independent sample counts"
+    );
+    // Batch sums/residuals are independent of the production online QR update.
+    // Integer sums fit i128 for any addressable slice; no rounding accumulation
+    // enters the reference mean. Variances use direct centered residuals.
+    let sum: i128 = groups().flatten().map(|byte| i128::from(*byte as i8)).sum();
+    let n = pairs as f64;
+    let g = clusters as f64;
+    let mean = sum as f64 / n;
+    let paired = groups()
+        .flatten()
+        .map(|byte| (value(byte) - mean).powi(2))
+        .sum::<f64>();
+    let clustered = groups()
+        .map(|group| {
+            let sum: i128 = group.iter().map(|byte| i128::from(*byte as i8)).sum();
+            (sum as f64 - group.len() as f64 * mean).powi(2)
+        })
+        .sum::<f64>();
+    // Compare numerical projections at a precision budget proportional to the
+    // current input's arithmetic work, without a second online state machine.
+    let tolerance = 64.0 * n * f64::EPSILON;
+    for (actual, expected) in [
+        (estimate.difference, mean),
+        (estimate.paired_se, (paired / (n - 1.0) / n).sqrt()),
+        (
+            estimate.clustered_se,
+            (g / (g - 1.0) * clustered / n / n).sqrt(),
+        ),
+    ] {
+        assert!(
+            (actual - expected).abs() <= tolerance * expected.abs().max(1.0),
+            "independent statistics invariant: batch projection; actual={actual}, expected={expected}"
+        );
+    }
 }
 
 fn rejects(admits: Admits, value: &Value) {
@@ -305,4 +400,5 @@ fuzz_target!(|bytes: &[u8]| {
         }
     }
     trials(bytes, &valid_scorer, expected);
+    statistics(bytes);
 });
