@@ -1,7 +1,7 @@
 use super::*;
 use crate::OwnedBytes as Bytes;
 use crate::verification::{block_on, check, check_with_bound};
-use futures::TryFutureExt as _;
+use futures::{Stream as _, TryFutureExt as _};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 // Use the same model executor as snapshot workers: production tasks own their
