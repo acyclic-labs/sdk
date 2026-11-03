@@ -77,7 +77,7 @@ try {
   if (built.status !== 0) fail("generated harness", `exit ${built.status}; signal ${built.signal}`);
   const retirementFile = "typescript/packages/harness/test/json-retirement.test.ts";
   const restoredBoundary = (metadata || array) && !red;
-  const parameters = ["test", testFile, ...(restoredBoundary ? [retirementFile] : []),
+  const parameters = ["test", `./${testFile}`, ...(restoredBoundary ? [`./${retirementFile}`] : []),
     "--test-name-pattern", restoredBoundary
       ? `^(?:${test}|canonical admission releases JavaScript references after intrinsic failures)$` : `^${test}$`];
   const result = run("JSON admission", "bun", parameters);
