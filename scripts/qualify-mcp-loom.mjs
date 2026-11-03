@@ -161,6 +161,13 @@ export function qualifyNativeOwnerLoom(run = runCommand) {
   });
 }
 
+export function qualifyNativeClaimLoom(run = runCommand) {
+  return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", [], run, {
+    kind: "--lib", targetCfg: [], env: loomEnvironment(),
+    suites: [["claim::model::", 8]],
+  });
+}
+
 export function qualifyNativeHostLoom(run = runCommand) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
     kind: "--lib", targetCfg: [], env: loomEnvironment(),
@@ -278,6 +285,7 @@ const fixedModels = {
   "--native-host": qualifyNativeHostLoom,
   "--native-wake": qualifyNativeWakeLoom,
   "--native-owner": qualifyNativeOwnerLoom,
+  "--native-claim": qualifyNativeClaimLoom,
   "--guest": qualifyGuestLoom,
   "--session-fs": qualifySessionFsLoom, "--ownership": qualifyOwnershipLoom,
   "--native-registry": qualifyNativeRegistryLoom,

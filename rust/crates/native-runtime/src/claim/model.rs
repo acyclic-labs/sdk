@@ -331,56 +331,6 @@ impl Host for Sim {
     }
 }
 
-/// A host that fails open, as the first claim protocol did: an unreadable
-/// claim file reads as empty, and a probe that cannot answer reads as dead.
-#[derive(Clone)]
-struct FailOpen(Sim);
-
-impl Host for FailOpen {
-    type File = SimFile;
-    type Key = usize;
-
-    fn open(&self, path: &Path, create: bool) -> io::Result<SimFile> {
-        self.0.open(path, create)
-    }
-    fn identity(&self, file: &SimFile, path: &Path) -> io::Result<usize> {
-        self.0.identity(file, path)
-    }
-    fn try_lock(&self, file: &SimFile) -> io::Result<bool> {
-        self.0.try_lock(file)
-    }
-    fn lock(&self, file: &SimFile) -> io::Result<()> {
-        self.0.lock(file)
-    }
-    fn unlock(&self, file: &SimFile) -> io::Result<()> {
-        self.0.unlock(file)
-    }
-    fn read(&self, file: &SimFile) -> io::Result<Vec<u8>> {
-        Ok(self.0.read(file).unwrap_or_default())
-    }
-    fn write(&self, file: &SimFile, bytes: &[u8]) -> io::Result<()> {
-        self.0.write(file, bytes)
-    }
-    fn process(&self) -> Option<&Process> {
-        self.0.process()
-    }
-    fn established(&self) -> Option<&Process> {
-        self.0.established()
-    }
-    fn liveness(&self, process: &Process, probes: &mut u64) -> Liveness {
-        match self.0.liveness(process, probes) {
-            Liveness::Unknown => Liveness::Dead,
-            known => known,
-        }
-    }
-    fn token(&self) -> u64 {
-        self.0.token()
-    }
-    fn table(&self) -> &Table<usize> {
-        self.0.table()
-    }
-}
-
 type Findings = std::sync::Arc<std::sync::Mutex<Option<String>>>;
 
 fn report(findings: &Findings, finding: String) {
@@ -474,7 +424,7 @@ fn process_death_ends_a_lock_wait_without_releasing_another_holders_lock() {
 
 /// The owner holds the store while the other process's reads of the claim
 /// file fail, or its liveness probes cannot answer: the other must refuse.
-fn uncertain(fail_open: bool, unreadable: bool) {
+fn uncertain(unreadable: bool) {
     explore(move |findings| {
         let world = Arc::new(Mutex::new(World::new(2, findings)));
         {
@@ -491,15 +441,9 @@ fn uncertain(fail_open: bool, unreadable: bool) {
         let probe = other.clone();
         let contender = loom::thread::spawn(move || {
             let path = Path::new("store");
-            if fail_open {
-                protocol::acquire(FailOpen(probe), path)
-                    .map(|claim| *claim.key())
-                    .ok()
-            } else {
-                protocol::acquire(probe, path)
-                    .map(|claim| *claim.key())
-                    .ok()
-            }
+            protocol::acquire(probe, path)
+                .map(|claim| *claim.key())
+                .ok()
         });
         // Checked here, so a breach is this model's panic, not a thread's.
         if let Some(key) = contender.join().map_err(failed)? {
@@ -534,24 +478,12 @@ impl Sim {
 
 #[test]
 fn an_unreadable_claim_file_refuses() {
-    uncertain(false, true);
+    uncertain(true);
 }
 
 #[test]
 fn an_owner_of_unknown_liveness_refuses() {
-    uncertain(false, false);
-}
-
-#[test]
-#[should_panic(expected = "two live owners")]
-fn reading_an_unreadable_claim_as_empty_admits_two_owners() {
-    uncertain(true, true);
-}
-
-#[test]
-#[should_panic(expected = "two live owners")]
-fn treating_unknown_liveness_as_death_admits_two_owners() {
-    uncertain(true, false);
+    uncertain(false);
 }
 
 /// One process claims a store, its claim file is renamed away, and another of

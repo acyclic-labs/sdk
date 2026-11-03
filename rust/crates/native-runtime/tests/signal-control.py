@@ -1,7 +1,7 @@
 """Check production signal/wake/owner models against actual source defects.
 
 Run in a disposable checkout: python3 rust/crates/native-runtime/tests/signal-control.py /tmp/native-signal-control
-Select wake-token, final-owner, host or shared ownership with --wake, --owners, --host or --ownership.
+Select wake-token, final-owner, host, shared ownership or claims with --wake, --owners, --host, --ownership or --claim.
 """
 import hashlib
 import json
@@ -12,8 +12,8 @@ import sys
 
 
 def main():
-    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--ownership")):
-        raise RuntimeError("arguments: expected evidence directory, optional model and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--ownership [mutation]]")
+    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--ownership", "--claim")):
+        raise RuntimeError("arguments: expected evidence directory, optional model and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--ownership|--claim [mutation]]")
     mode = sys.argv[2] if len(sys.argv) >= 3 else "--signal"
     root = Path(__file__).resolve().parents[4]
     output = Path(sys.argv[1]).resolve()
@@ -24,12 +24,14 @@ def main():
     owners = root / "rust/crates/native-runtime/src/health/owners.rs"
     host = root / "rust/crates/native-runtime/src/testing/host.rs"
     ownership = root / "rust/crates/native-runtime/src/ownership/mod.rs"
+    claim = root / "rust/crates/native-runtime/src/claim/protocol.rs"
     target, sources, selection = {
         "--signal": ("process_signal_loom.rs", (signal, outcome), "--native-signal"),
         "--wake": ("wake_loom.rs", (wake,), "--native-wake"),
         "--owners": ("owner_count_loom.rs", (owners, owners.parent / "owners/model.rs"), "--native-owner"),
         "--host": ("../src/testing/host/models.rs", (host, host.parent / "host/pool.rs"), "--native-host"),
         "--ownership": ("../src/ownership/model.rs", (ownership,), "--ownership"),
+        "--claim": ("../src/claim/model.rs", (claim,), "--native-claim"),
     }[mode]
     oracle = root / "rust/crates/native-runtime/tests" / target
     qualifier = root / "scripts/qualify-mcp-loom.mjs"
@@ -45,10 +47,10 @@ def main():
             # select the unchanged oracle that decides this specific defect.
             selected = ["node", "--input-type=module", "-e", """
 import { spawnSync } from 'node:child_process';
-import { qualifyOwnershipLoom } from './scripts/qualify-mcp-loom.mjs';
-qualifyOwnershipLoom((command, args, options) => spawnSync(command,
-  command === 'cargo' ? args : [process.argv[1], '--exact', '--nocapture'], options));
-""", "ownership::model::" + test]
+import { qualificationMain } from './scripts/qualify-mcp-loom.mjs';
+qualificationMain([process.argv[1]], (command, args, options) => spawnSync(command,
+  command === 'cargo' ? args : [process.argv[2], '--exact', '--nocapture'], options));
+""", selection, ("claim" if mode == "--claim" else "ownership") + "::model::" + test]
         result = subprocess.run(selected, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         log = output / (label + ".log")
         log.write_bytes(result.stdout)
@@ -108,6 +110,17 @@ qualifyOwnershipLoom((command, args, options) => spawnSync(command,
             ("async-release-wake", ownership,
              b"self.0.asynchronous.notify_waiters();", b"// omitted original asynchronous notification",
              "deadlock; threads =", "release_waits_for_the_actual_owner_and_retained_fence"),
+        ]
+    elif mode == "--claim":
+        mutations = [
+            ("unreadable-record", claim,
+             b"Contents::decode(&host.read(&file)?);",
+             b"Contents::decode(&host.read(&file).unwrap_or_default());",
+             "two live owners", "an_unreadable_claim_file_refuses"),
+            ("unknown-owner", claim,
+             b'Liveness::Unknown => Some(contention("store claimed by a process of unknown liveness")),',
+             b"Liveness::Unknown => None,",
+             "two live owners", "an_owner_of_unknown_liveness_refuses"),
         ]
     if len(sys.argv) == 4:
         mutations = [mutation for mutation in mutations if mutation[0] == sys.argv[3]]
