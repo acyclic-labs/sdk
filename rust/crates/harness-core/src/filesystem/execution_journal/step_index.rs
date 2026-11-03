@@ -404,6 +404,13 @@ where
         self.refresh_cached_summary(query.operation, &mut cache, io)
             .await?;
         let summary = cache.summary();
+        // The authenticated empty tail already proves every selection empty.
+        if summary.tail == 0 {
+            return Ok(Some(Entries {
+                tail: 0,
+                entries: Funded::new(io)?,
+            }));
+        }
         let Some(recovery) = summary.recovery.filter(|recovery| recovery.indexed) else {
             return Ok(None);
         };
