@@ -5,7 +5,6 @@ use super::*;
 /// their encoded buffers shared and exercises the explicit copy boundary.
 struct ContinuingModel {
     turns: u32,
-    warm: bool,
     seen: AtomicUsize,
 }
 
@@ -15,7 +14,7 @@ impl ContinuingModel {
         request: &crate::model::PreparedModelRequest,
         dispatch: crate::model::ModelDispatch,
     ) -> Result<Vec<ModelEvent>> {
-        if self.warm && dispatch.step > 0 && request.cached_message_digests(None, None)?.is_none() {
+        if dispatch.step > 0 && request.cached_message_digests(None, None)?.is_none() {
             return Err(Error::Invalid(
                 "stock turn lost its admitted request continuation".into(),
             ));
@@ -25,7 +24,7 @@ impl ContinuingModel {
                 "stock continuation lost or duplicated messages".into(),
             ));
         }
-        if [0, 1, 10, 100, 1_000].contains(&dispatch.step) {
+        if [0, 1, 10].contains(&dispatch.step) || dispatch.step == self.turns {
             let canonical = crate::contract::canonical_json_bytes(request.request())?;
             if request.bytes() != canonical
                 || request.request_digest() != *blake3::hash(&canonical).as_bytes()
@@ -71,9 +70,11 @@ impl ModelProvider for ContinuingModel {
 }
 
 #[tokio::test]
-async fn one_stock_turn_continues_its_admitted_request_from_one_to_a_thousand_steps() -> Result<()>
-{
-    for turns in [1, 16, 17, 100, 1_000] {
+async fn one_stock_turn_preserves_admitted_continuations_across_step_limits() -> Result<()> {
+    // Exercise both sides of the message-vector growth boundary and each step
+    // limit outcome here. The shared continuation properties measure encoding,
+    // validation and buffer growth through 1,000 messages independently.
+    for turns in [1, 16, 17, 32] {
         let budgets = if turns == 17 {
             vec![None, Some(1), Some(turns + 1)]
         } else {
@@ -82,7 +83,6 @@ async fn one_stock_turn_continues_its_admitted_request_from_one_to_a_thousand_st
         for max_steps in budgets {
             let provider = Arc::new(ContinuingModel {
                 turns,
-                warm: true,
                 seen: AtomicUsize::new(0),
             });
             let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
@@ -266,7 +266,6 @@ async fn continued_tool_results_stop_before_aggregate_render_overflow_is_publish
     };
     let provider = Arc::new(ContinuingModel {
         turns: 10,
-        warm: true,
         seen: AtomicUsize::new(0),
     });
     let executor = uncompacted_executor(

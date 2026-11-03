@@ -96,6 +96,8 @@ fn invocation(root: &Path) -> Invocation {
     }
 }
 
+// A declared native binding may leave the primary root, but resolving a
+// symlink within it must never leave that binding's own authorized root.
 #[test]
 fn bound_volume_cwd_keeps_its_authority() {
     use proptest::prelude::*;
@@ -103,9 +105,9 @@ fn bound_volume_cwd_keeps_its_authority() {
     let root = temp.path().join("view");
     let native = temp.path().join("native");
     let outside = temp.path().join("outside");
-    std::fs::create_dir(&root).unwrap();
-    std::fs::create_dir(&native).unwrap();
-    std::fs::create_dir(&outside).unwrap();
+    for directory in [&root, &native, &outside] {
+        std::fs::create_dir(directory).unwrap();
+    }
     std::os::unix::fs::symlink(&outside, native.join(".escape")).unwrap();
     let native = native.canonicalize().unwrap();
     let mut mounts = table(root.canonicalize().unwrap()).unwrap();
