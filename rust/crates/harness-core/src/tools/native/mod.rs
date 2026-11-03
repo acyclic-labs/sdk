@@ -2,7 +2,8 @@
 //!
 //! The family profile layer (`profile/native/*.md`) pins each declaration's
 //! capability, variant name and revision; these files pin the exact public
-//! names, descriptions and input schemas a model of that family was trained on.
+//! descriptions and input schemas. Command declarations use the shared `shell`
+//! name while preserving each family's argument adapter.
 use crate::{
     Error, Result,
     model::NativeToolProfile,
@@ -114,6 +115,7 @@ impl NativeTools {
                 .projection_schema
                 .clone_from(&original.definition.projection_schema);
             let name = definition.name.clone();
+            let revision = definition.revision.clone();
             let adapter = Arc::new(adapter::Adapter {
                 arguments: Arc::clone(arguments),
                 original,
@@ -131,6 +133,7 @@ impl NativeTools {
                 &mut None,
                 None,
             )?;
+            tools.select_model_version(&name, &revision)?;
             match presented
                 .iter_mut()
                 .find(|(offered, _)| offered == capability)

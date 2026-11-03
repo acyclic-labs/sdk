@@ -185,7 +185,7 @@
     }
   },
   {
-    "name": "Bash",
+    "name": "shell",
     "description": "Executes Bash commands with an optional timeout.",
     "parametersJsonSchema": {
       "type": "object",

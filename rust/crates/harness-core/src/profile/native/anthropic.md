@@ -19,7 +19,7 @@ tools:
   - {capability: glob, variant: Glob, revision: claude-agent-sdk-0.3.316-v1}
   - {capability: search, variant: Grep, revision: claude-agent-sdk-0.3.316-v1}
   - capability: shell
-    variant: Bash
+    variant: shell
     revision: claude-agent-sdk-0.3.316-v1
     arguments: {command: $command, timeout_ms: $timeout}
     refuse: [run_in_background, dangerouslyDisableSandbox]

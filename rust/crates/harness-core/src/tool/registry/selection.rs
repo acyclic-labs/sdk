@@ -110,12 +110,16 @@ impl ToolRegistry {
 
     /// Presents capability `name` to the model as `natives`, declarations
     /// already registered and selected under their own names. Calls under the
-    /// capability's own name are no longer offered.
+    /// capability's own name are no longer offered, unless that is the one
+    /// declaration being presented; its selected revision then stays callable.
     pub(crate) fn present_natively(&mut self, name: &str, natives: Vec<String>) -> Result<()> {
         let selection = Arc::make_mut(&mut self.data)
             .selected
             .get_mut(name)
             .ok_or_else(|| Error::NotFound(format!("tool {name}")))?;
+        if natives.len() == 1 && natives[0] == name {
+            return Ok(());
+        }
         *selection = ModelSelection::Native(natives);
         Ok(())
     }

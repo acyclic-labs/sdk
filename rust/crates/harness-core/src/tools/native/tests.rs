@@ -1,45 +1,63 @@
 use super::*;
-use acyclic_model_render::{Family, ToolDeclarations};
-
-fn render(family: Family, tools: &[ToolDefinition]) -> Result<Vec<u8>> {
-    let declarations = tools
-        .iter()
-        .map(|tool| tool.model_declaration(std::borrow::Cow::Borrowed(tool.name.as_str())))
-        .collect();
-    let declarations = ToolDeclarations::new(family, declarations)
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-    serde_json::to_vec(&declarations).map_err(|error| Error::Invalid(error.to_string()))
-}
 
 #[test]
-fn pinned_family_tool_lists_preserve_public_contract_bytes() -> Result<()> {
-    for (profile, family, golden) in [
-        (
-            NativeToolProfile::Anthropic,
-            Family::Anthropic,
-            include_str!("golden/anthropic.json"),
-        ),
-        (
-            NativeToolProfile::Openai,
-            Family::Responses,
-            include_str!("golden/openai.json"),
-        ),
-        (
-            NativeToolProfile::Google,
-            Family::Gemini,
-            include_str!("golden/google.json"),
-        ),
+fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Result<()> {
+    for profile in [
+        NativeToolProfile::Anthropic,
+        NativeToolProfile::Openai,
+        NativeToolProfile::Google,
     ] {
-        let mut tools = definitions(profile)?;
-        let actual = render(family, &tools)?;
+        let mut registry = crate::tools::registry(&["shell".into()], |_| true, Vec::new())?;
+        let original = registry
+            .get("shell", None, None)?
+            .unwrap()
+            .definition
+            .clone();
+        bind(&mut registry, profile)?;
+        let selected = registry
+            .get("shell", None, None)?
+            .expect("the canonical shell remains directly callable");
+        if profile != NativeToolProfile::Openai {
+            let offered = definitions(profile)?
+                .into_iter()
+                .find(|definition| definition.name == "shell")
+                .expect("the family declares its canonical shell");
+            assert_eq!(selected.definition.revision, offered.revision);
+            assert_eq!(selected.definition.input_schema, offered.input_schema);
+            let capability = selected
+                .executor
+                .capability()
+                .expect("the family adapter retains the original capability");
+            assert_eq!(capability.definition, original);
+            assert_eq!(selected.definition.output_schema, original.output_schema);
+            assert_eq!(
+                selected.definition.projection_schema,
+                original.projection_schema
+            );
+        } else {
+            // The unmapped profile keeps the selected stock executor.
+            assert_eq!(selected.definition, original);
+        }
+        let expected = vec![selected.definition.clone()];
+        assert_eq!(registry.definitions(None)?, expected);
         assert_eq!(
-            actual,
-            golden.trim_end_matches('\n').as_bytes(),
-            "{profile:?}"
+            registry
+                .definitions_for_grants(&crate::Capabilities::new(["tool:call:shell"]), None)?,
+            expected
         );
-        // Ordering is part of the cache prefix and signature-bearing request.
-        tools.reverse();
-        assert_ne!(render(family, &tools)?, actual);
+        assert!(
+            registry
+                .definitions_for_grants(&crate::Capabilities::new(["tool:call:read"]), None)?
+                .is_empty()
+        );
+        for retired in ["Bash", "run_shell_command"] {
+            assert!(registry.get(retired, None, None)?.is_none());
+        }
     }
+    // Canonical presentation cannot create a missing selection.
+    assert!(matches!(
+        ToolRegistry::default().present_natively("shell", vec!["shell".into()]),
+        Err(Error::NotFound(_)),
+    ));
     Ok(())
 }
