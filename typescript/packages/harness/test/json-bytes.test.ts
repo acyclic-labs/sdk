@@ -64,7 +64,7 @@ test("external JSON bytes preserve engine tokens or refuse before rounding", () 
         "external JSON input lost original token precision or value");
     }
   }), {
-    seed: 1, numRuns: 1000,
+    seed: 1, numRuns: 1000, includeErrorInReport: true,
     examples: [[tokenInput(String(2n ** 64n))], [tokenInput(String(-(2n ** 63n) - 1n))]],
   });
 });
