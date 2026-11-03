@@ -135,6 +135,16 @@ disable the actual package and home/file exemptions independently. Each must
 fail at `native Pi resource reference was rebased as a local path`; these checks
 do not establish how Pi itself interprets or opens those references.
 
+Generated non-path policy requests also compare their original argument bytes
+with `parent_flags` before checking child inheritance. Claude settings contain
+an arbitrary JSON string inside an authored object, with empty, space, tab or
+newline prefixes. This input-to-parent relation covers inline settings and the
+other generated policy values for all three hosts. It replaces the literal
+inline-settings example in the physical path test. The retained
+`mutations/native_launch_inline.patch` makes the original inline-settings
+branch classify every value as a local path; it must fail at
+`native launch changed non-path policy bytes`.
+
 The separate `native_child_arguments_allocate_only_the_returned_vector_and_strings`
 unit measures actual allocation counts for fresh and resumed arguments of all
 three hosts, including Pi's empty policy. It requires exactly one result vector

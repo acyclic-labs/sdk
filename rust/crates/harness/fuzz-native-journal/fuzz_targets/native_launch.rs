@@ -224,6 +224,16 @@ libfuzzer_sys::fuzz_target!(|input: &[u8]| {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         flags.extend(["--model".into(), encoded.into()]);
+        if host == "claude-code" {
+            let whitespace = ["", " ", "\t", "\n"][input.len() % 4];
+            flags[1] = format!("{whitespace}{}", serde_json::json!({"policy": encoded}));
+        }
+        let inherited =
+            launch::parent_flags(host, &flags, cwd).expect("admitted non-path policy was refused");
+        assert!(
+            inherited.starts_with(&flags),
+            "native launch changed non-path policy bytes"
+        );
         policy(host, &flags, cwd, &reference);
         paths(host, &flags, cwd, &non_unicode, encoded);
         if host != "pi" {

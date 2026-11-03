@@ -77,18 +77,6 @@ fn relative_parent_paths_keep_their_targets_when_child_cwd_changes() -> Result {
             }
         }
     }
-    let inline = [
-        "--settings",
-        " {\"sandbox\":{\"enabled\":true}}",
-        "--permission-mode",
-        "default",
-    ]
-    .map(str::to_owned);
-    let flags = parent_flags("claude-code", &inline, &workspace)?;
-    assert_eq!(
-        flags.first_chunk::<4>().ok_or("inline settings absent")?,
-        &inline
-    );
     for relative in [
         "extensions/missing.ts",
         "./extensions/missing.ts",
