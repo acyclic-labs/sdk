@@ -246,6 +246,10 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
         return Err("merge preview did not retain its read projection".into());
     };
     assert_eq!(conflicts.value.len(), 3);
+    // The unresolved frontier remains owned until the preview is consumed.
+    // Range retirement must preserve both that backing and the caller buffer.
+    assert!(conflicts.bytes > 0);
+    let preview_scratch = prior.bytes + conflicts.bytes;
     let shared_id = unbounded!(main, stat("/shared"))?.file_id;
     let shared_conflict = crate::MergeConflict::File(shared_id);
     // Range output retires on the same original ledger, preserving the
@@ -276,12 +280,12 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
         );
         assert_eq!(
             accounting.standalone_parts().unwrap().0.scratch_bytes(),
-            prior.bytes + read.logical_owned_bytes
+            preview_scratch + read.logical_owned_bytes
         );
         read.retire(&mut accounting)?;
         assert_eq!(
             accounting.standalone_parts().unwrap().0.scratch_bytes(),
-            prior.bytes
+            preview_scratch
         );
     }
     for range in [
@@ -307,7 +311,7 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
         );
         assert_eq!(
             accounting.standalone_parts().unwrap().0.scratch_bytes(),
-            prior.bytes
+            preview_scratch
         );
     }
     assert!(
