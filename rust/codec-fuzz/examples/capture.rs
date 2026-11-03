@@ -768,13 +768,12 @@ fn agent_prefix() -> String {
 
 fn capture_agent_controls(manifest: &mut String) -> Result<(), Box<dyn Error>> {
     for (name, bytes) in acyclic_codec_fuzz::agent_controls::seeds()? {
-        save(
-            "agent_controls",
-            &name,
-            &bytes,
-            "acyclic_codec_fuzz::agent_controls::seeds via PreparedCommand/AgentBinding/encode_agent_reply; NUL separates command from reply",
-            manifest,
-        )?;
+        let producer = if name.starts_with("assembled-") {
+            "PreparedCommand/AgentBinding public writers; NUL separates the Staged invocation from its whole command; one part with the original BLAKE3 digest"
+        } else {
+            "acyclic_codec_fuzz::agent_controls::seeds via PreparedCommand/AgentBinding/encode_agent_reply; NUL separates command from reply"
+        };
+        save("agent_controls", &name, &bytes, producer, manifest)?;
     }
     Ok(())
 }
