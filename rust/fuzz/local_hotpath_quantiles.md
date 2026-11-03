@@ -21,4 +21,5 @@ The retained `floor-rank.patch` changes the actual constructor from ceiling to
 floor division. Apply it with `git apply rust/fuzz/local_hotpath_quantiles/floor-rank.patch`
 and run the same property. The unchanged oracle must reject that source mutation.
 Restore it with `git apply -R rust/fuzz/local_hotpath_quantiles/floor-rank.patch`
-before the positive check. Execution qualification is pending.
+before the positive check. The generated property passes with the original
+constructor and rejects this actual rank mutation through the count oracle.
