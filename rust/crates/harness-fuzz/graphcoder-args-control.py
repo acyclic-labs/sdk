@@ -77,6 +77,22 @@ controls = {
     ),
 }
 additional_controls = {
+    "native_marketplace": [
+        (
+            "plugin/src/install/marketplace.rs",
+            b'let name = entry.get("name").and_then(Value::as_str).ok_or_else(|| {\n                format!("step=admit Codex marketplace: native marketplace name absent; {RECOVERY}")\n            })?;',
+            b'let name = entry.get("name").and_then(Value::as_str).unwrap_or("foreign");',
+            "missing-name",
+            b"every native marketplace must retain its name",
+        ),
+        (
+            "plugin/src/install/marketplace.rs",
+            b"root.zip(original).filter(|_| local)",
+            b"root.zip(original)",
+            "nonlocal-type",
+            b"native source must have local root and origin",
+        ),
+    ],
     "event_projection": [
         (
             "rust/crates/harness-client/src/event_projection.rs",
