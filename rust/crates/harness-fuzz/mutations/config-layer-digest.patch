@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-core/src/config/evaluate.rs
++++ b/rust/crates/harness-core/src/config/evaluate.rs
+@@ -123,7 +123,7 @@
+         chain.push(Link {
+             layer: layer.name.to_owned(),
+             generation: layer.generation.to_owned(),
+-            module_digest: blake3::Hash::from_bytes(evaluated.digest)
++            module_digest: blake3::Hash::from_bytes([0; 32])
+                 .to_hex()
+                 .to_string(),
+             form: evaluated.form,
