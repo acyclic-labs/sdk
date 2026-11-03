@@ -587,10 +587,14 @@ fn saturated_native_submission_leaves_the_simulated_driver_available() {
         .unwrap()
         .exclusive_threads();
     let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
         .build()
         .unwrap();
     let (schedule, mut events) = Schedule::seeded(23);
     runtime.block_on(async {
+        tokio::time::pause();
+        let deadline = tokio::time::sleep(std::time::Duration::from_secs(30));
+        tokio::pin!(deadline);
         let mut root = Box::pin(schedule.scope(async {
             let (send, mut receive) = mpsc::unbounded_channel();
             let mut workers = Vec::new();
@@ -627,8 +631,10 @@ fn saturated_native_submission_leaves_the_simulated_driver_available() {
         }));
         loop {
             tokio::select! {
-                () = &mut root => break,
+                biased;
                 event = events.recv() => event.unwrap().release(),
+                () = &mut root => break,
+                () = &mut deadline => panic!("native work exceeded the simulated deadline"),
             }
         }
         drop(root);
