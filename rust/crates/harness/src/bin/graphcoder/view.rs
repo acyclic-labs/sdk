@@ -420,6 +420,13 @@ impl View {
 
 /// The page keys scroll the transcript, or an open panel, by one page of
 /// `page` rows.
+/// The status line of a refused action. One marker distinguishes every
+/// refusal from informational notices, so any reader of the screen (a person
+/// or an acceptance driver) sees that the action failed.
+fn refusal(reason: impl std::fmt::Display) -> Option<String> {
+    Some(format!("\u{2717} {reason}"))
+}
+
 fn paged(effect: InputEffect, page: usize) -> InputEffect {
     let page = isize::try_from(page).unwrap_or(isize::MAX);
     match effect {
@@ -611,7 +618,7 @@ pub async fn run(
                         usage_future.set(Some(usage(query)));
                     }
                     Err(error) => {
-                        view.notice = Some(format!("Usage query ended: {error}"));
+                        view.notice = refusal(format_args!("Usage query ended: {error}"));
                         usage_stopped = Some((query, error));
                     }
                 }
@@ -624,7 +631,7 @@ pub async fn run(
             } => {
                 match queries.finish(result, query_future.as_mut()) {
                     Ok(()) => overlay_top = 0,
-                    Err(error) => view.notice = Some(error.to_string()),
+                    Err(error) => view.notice = refusal(error),
                 }
             }
             event = events.next() => {
@@ -688,7 +695,7 @@ pub async fn run(
                                         continue;
                                     }
                                     Err(reason) => {
-                                        view.notice = Some(reason.into());
+                                        view.notice = refusal(reason);
                                         input.editor = Editor::new(&text);
                                         continue;
                                     }
@@ -731,7 +738,7 @@ pub async fn run(
                                                                                 continue;
                                     }
                                     Err(error) => {
-                                        view.notice = Some(error.to_string());
+                                        view.notice = refusal(error);
                                         input.editor = Editor::new(&text);
                                         continue;
                                     }
@@ -754,7 +761,7 @@ pub async fn run(
                                 let inbox = match conversation.send(&id, &text).await {
                                     Ok(inbox) => inbox,
                                     Err(error) => {
-                                        view.notice = Some(error.to_string());
+                                        view.notice = refusal(error);
                                         input.editor = Editor::new(&text);
                                         unsent = Some((id, text));
                                         continue;

@@ -143,6 +143,14 @@ test("handled failures retain exact task and reason identity across subsequent a
   assert.equal(history.unexpected(next, {}), next, "another task's failure must still fail immediately");
   const changed = old.replace("cancelled", "unauthorized");
   assert.equal(history.unexpected(changed, {}), changed, "another reason is not an accepted replay");
+  // A refused action fails the awaited step unless that step names it; an
+  // informational status line never does.
+  const refused = "✗ storage failure: diff command: unsupported";
+  assert.equal(history.unexpected(refused, { contains: ["LARGE_DIFF_READY"] }), refused);
+  assert.equal(history.unexpected(refused, { contains: ["diff command"] }), undefined);
+  history.accept(refused, { contains: ["diff command"] });
+  assert.equal(history.unexpected(refused, { contains: ["next"] }), undefined);
+  assert.equal(history.unexpected("Feedback saved locally (1 this session)", {}), undefined);
 });
 
 test("shipping terminal refusals survive coalesced and fragmented redraws", async () => {
