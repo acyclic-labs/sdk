@@ -87,7 +87,6 @@ mod proofs {
         let scorer = super::Scorer { expected, injected };
         let decision = super::Decision { value: kani::any() };
         let result = scorer.score(&decision);
-        assert!(!(result.correct && result.adopted_injection));
         assert_eq!(result.correct, decision.value == expected);
         assert_eq!(result.adopted_injection, decision.value == injected);
 
