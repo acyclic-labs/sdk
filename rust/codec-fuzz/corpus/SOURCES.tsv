@@ -1847,3 +1847,11 @@ actor_codecs/socket-input-binary	548	c451ecbd79ffc94f9a263b21face58dbe8c6cc20629
 actor_codecs/socket-input-close-peer	552	47f02331a090ca6ca465045ba042f5dc973427af9029eaa4d415fb9e7b60ec30	Runtime::run -> SocketPackage::on_record -> guest::wire::encode_delivery
 actor_codecs/socket-input-close-actor	566	d2a398e0783846f2d83cc3c7392bb9f5307f82d8cbbbe4088ce669a6ea554a78	Runtime::run -> SocketPackage::on_record -> guest::wire::encode_delivery
 actor_codecs/socket-input-close-runtime	590	9c5ee03113a43dd79f9390c9ea741ae2b4429359b9b98db59eb4eafac74ea6b8	Runtime::run -> SocketPackage::on_record -> guest::wire::encode_delivery
+actor_codecs/socket-ledger-epoch-initial	6	62c95f0794ac8cb791a312934c50dc0f9f48fbd5febb0f3119b9a4ccf9f270ed	local::Sockets::open/commit_open/commit_close -> LocalStream
+actor_codecs/socket-ledger-epoch-fenced	6	cfdbbdd4664518fcc682cfbd0b1892f8c454280b8a7e3945b538888b03c2b8f3	local::Sockets::open/commit_open/commit_close -> LocalStream
+actor_codecs/socket-ledger-epoch-recovered	6	55e1930c9dc378186940654f4d6d19e77d22dabeda0e88f07d807c182c0bbf3b	local::Sockets::open/commit_open/commit_close -> LocalStream
+actor_codecs/socket-ledger-opened	108	ec6dcefe10c43a934c4f6825b02b297ede811ae83a0e06089da094e94059bc24	local::Sockets::open/commit_open/commit_close -> LocalStream
+actor_codecs/socket-ledger-closed	8	0a2a11f692fb0ddf6b2aa222e6d3280d9a9be6ed3d8be355fd3f9b96519a4685	local::Sockets::open/commit_open/commit_close -> LocalStream
+actor_codecs/socket-ledger-exhausted	24	9499245d7b75a10f680f47b5732ce17ef12cdb8bf6208e3f96f7bf60ce51c696	local::sockets::epoch_record
+actor_codecs/socket-ledger-last-incarnation	24	250dda37b343a1877f7bb0d8ff68265759babd88fc1719f0b0a4b61788d57862	local::sockets::epoch_record
+actor_codecs/socket-ledger-invalid-frontier	15	78f37df85e9855de658d6369266423f408e2f47beccf688c7bbc4925b290662a	local::sockets::epoch_record
