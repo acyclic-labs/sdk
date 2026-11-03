@@ -129,7 +129,7 @@ fn generation(byte: u8) -> GenerationId {
 fn object(byte: u8) -> ObjectId {
     ObjectId {
         storage: None,
-        kind: ObjectKind::Blob,
+        kind: ObjectKind::BlobChunk,
         digest: object_digest(&[byte; 64]),
     }
 }

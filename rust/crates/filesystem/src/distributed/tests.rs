@@ -197,8 +197,8 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
     let baseline = work.allocations.live_bytes();
     work.budget.peak_allocation_bytes = work.spent().peak_allocation_bytes.max(baseline + 8192);
     for _ in 0..32 {
-        // Admit the real epoch read, then refuse the record read on the same
-        // cumulative frame. Its temporary epoch backing must retire on error.
+        // One coherent heads read admits the record and epoch heads together,
+        // so a budget short of both refuses before any read or scratch.
         let before = work.spent().authority_records_read;
         work.budget.authority_records_read = before + 1;
         assert!(matches!(
@@ -210,7 +210,7 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
                 }
             ))
         ));
-        assert_eq!(work.spent().authority_records_read, before + 1);
+        assert_eq!(work.spent().authority_records_read, before);
         assert_eq!(
             work.allocations.scratch_bytes(),
             29,
@@ -218,7 +218,7 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
         );
         work.budget.authority_records_read = BUDGET.authority_records_read;
         store.policy_cut(authority, &mut work).await?;
-        assert_eq!(work.spent().authority_records_read, before + 3);
+        assert_eq!(work.spent().authority_records_read, before + 2);
         assert_eq!(work.allocations.scratch_bytes(), 29);
         let head = store.head(authority, &mut work).await?;
         assert_eq!(head.sequence, Sequence::new(1));

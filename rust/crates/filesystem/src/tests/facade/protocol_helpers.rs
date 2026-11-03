@@ -236,35 +236,46 @@ pub(super) async fn assert_authority_volume_identity_fails_closed() -> TestResul
             )
         })?;
     let proposal = creation_commit(OperationId::from_bytes([227; 16]), encoded, &mut accounting)?;
-    let appended = authority
+    // The authority's generation index refuses a creation record naming
+    // another volume, so the misidentified record never becomes durable.
+    let refused = authority
         .compare_and_append(
             crate::GuardedAppend {
                 authority_id,
                 epoch: head.epoch,
                 expected: Head::genesis(head.epoch),
-                commit: proposal,
+                commit: proposal.clone(),
                 permit: PublicationPermit::Unrestricted,
             },
             &mut work,
             None::<&mut ()>,
         )
         .await
-        .map_err(|error| error.into_error(std::convert::identity))?;
-    let AppendOutcome::Committed(creation) = appended else {
-        return Err("fixture creation did not commit".into());
-    };
+        .map_err(|error| error.into_error(std::convert::identity));
     assert!(matches!(
-        fs.read_creation_record(expected, B, &cancel).await,
-        Err(OperationFailure {
-            error: FsError::VolumeMismatch,
-            ..
-        })
+        refused,
+        Err(crate::AuthorityStoreError::CorruptStatic(_))
     ));
+    assert_eq!(
+        authority.head(authority_id, &mut work).await?,
+        Head::genesis(head.epoch)
+    );
+    // Records from any other writer are still checked on read.
+    let creation = DurableCommit {
+        epoch: head.epoch,
+        sequence: Sequence::new(1),
+        operation_id: proposal.operation_id,
+        fingerprint: proposal.fingerprint,
+        previous_digest: Digest::from_bytes([0; 32]),
+        digest: Digest::from_bytes([0; 32]),
+        payload: proposal.payload,
+        settled_at_micros: None,
+    };
     let mut payload = Vec::from(b"acyclic-fs-publish-generation-v1\0".as_slice());
-    payload.extend_from_slice(&1_u16.to_le_bytes());
+    payload.extend_from_slice(&4_u16.to_le_bytes());
     payload.extend_from_slice(&wrong.into_bytes());
-    payload.push(root.kind.canonical_tag());
-    payload.extend_from_slice(root.digest.as_bytes());
+    payload.extend_from_slice(&root.to_bytes());
+    payload.push(0);
     let publication = DurableCommit {
         sequence: Sequence::new(2),
         payload: payload.into(),
