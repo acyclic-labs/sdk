@@ -167,3 +167,21 @@ The retained request seeds and their SHA-256 digests are:
 | `missing-value` | `dfa99913ec3738de2968c58d601846d4efc06a0cdf871c9ded10b536e6dcd6ca` |
 | `empty` | `4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945` |
 | `partial-json` | `795c797dd7cbb280e5d38dd4ce2ddc06d48fb65eed17b365311392c20c6c1f68` |
+
+Native request presence is checked by the real-file custody control:
+
+```sh
+cargo test --locked -p acyclic-harness --features filesystem-local,native-execution --lib local::host_files::tests::request_observation_failure_preserves_accepted_work_until_real_withdrawal -- --exact --nocapture
+```
+
+It uses the production request serializer, immutable projection writer and
+`Served` admission/dispatch/reply path. At queued, running and answered phases,
+a real OS path error must retain accepted ownership and its original cause;
+only an actual absent projection withdraws. It also checks zero directory
+rescans for named events. No decoder, filesystem-error model or alternate
+completion producer is introduced. The retained `native_request_presence.patch`
+restores the original error-as-withdrawal defect and must fail at
+`observation failure was treated as withdrawal`; `native_request_scan.patch`
+forces actual directory scans and must fail at
+`named request observation scanned history`. These are component controls;
+original caller/owner cancellation and physical retirement remain separate.

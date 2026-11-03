@@ -1304,6 +1304,102 @@ fn endpoint_projection_cannot_follow_a_workspace_symlink() -> Result<()> {
 }
 
 #[test]
+fn request_observation_failure_preserves_accepted_work_until_real_withdrawal() -> Result<()> {
+    // Exercise the original file writer, admission, dispatch and reply paths
+    // at each custody phase. The OS error comes from the real request path.
+    for phase in 0..3 {
+        let root = tempfile::tempdir().map_err(storage)?;
+        let requests = root.path().join("requests");
+        let retained = root.path().join("retained");
+        let status = root.path().join("status");
+        std::fs::create_dir(&requests).map_err(storage)?;
+        std::fs::create_dir(&status).map_err(storage)?;
+        let held = acyclic_fs::hold_root(&status).map_err(native_file_error)?;
+        let session = uuid::Uuid::new_v4();
+        let operation = OperationId::new();
+        let name = OsString::from(format!("{operation}.json"));
+        let path = requests.join(&name);
+        let request = Request {
+            session,
+            operation,
+            action: HostAction::Open {
+                host: "codex".into(),
+                session: "retained-request".into(),
+            },
+        };
+        immutable(&path, &serde_json::to_vec(&request).map_err(storage)?)?;
+        let mut served = Served::default();
+        let touched = || Touched {
+            names: BTreeSet::from([name.clone()]),
+            rescan: false,
+            failure: None,
+        };
+        served.touch(&requests, session, touched())?;
+        assert_eq!(
+            served.rescans, 0,
+            "named request observation scanned history"
+        );
+        if phase >= 1 {
+            let started = served.start();
+            assert_eq!(started.len(), 1);
+            assert_eq!(started[0].operation, operation);
+        }
+        if phase == 2 {
+            served.answer(&held, operation, Ok(serde_json::json!({"original": true})))?;
+        }
+        // A successful observation cannot retire accepted work.
+        served.touch(&requests, session, touched())?;
+        std::fs::rename(&requests, &retained).map_err(storage)?;
+        std::fs::write(&requests, b"not a directory").map_err(storage)?;
+        let cause = std::fs::symlink_metadata(&path).unwrap_err();
+        assert_ne!(cause.kind(), std::io::ErrorKind::NotFound);
+        let Err(error) = served.touch(&requests, session, touched()) else {
+            panic!("observation failure was treated as withdrawal");
+        };
+        assert!(matches!(error, Error::Storage(_)));
+        assert!(error.to_string().contains(&cause.to_string()));
+        assert!(
+            error
+                .to_string()
+                .contains("observe native request presence")
+        );
+        assert!(
+            match served.known.get(&operation) {
+                Some(Tracked::Queued) => phase == 0,
+                Some(Tracked::Running { withdrawn: false }) => phase == 1,
+                Some(Tracked::Answered) => phase == 2,
+                _ => false,
+            },
+            "observation failure retired accepted work"
+        );
+        assert_eq!(served.rescans, 0);
+        // Recovery observes the same input; only its actual removal withdraws.
+        std::fs::remove_file(&requests).map_err(storage)?;
+        std::fs::rename(&retained, &requests).map_err(storage)?;
+        served.touch(&requests, session, touched())?;
+        remove_projection(&path)?;
+        served.touch(&requests, session, touched())?;
+        if phase == 1 {
+            assert!(matches!(
+                served.known.get(&operation),
+                Some(Tracked::Running { withdrawn: true })
+            ));
+            served.answer(&held, operation, Ok(Value::Null))?;
+        }
+        assert!(served.start().is_empty());
+        assert!(served.known.is_empty());
+        assert!(
+            std::fs::read_dir(&status)
+                .map_err(storage)?
+                .next()
+                .is_none()
+        );
+        assert_eq!(served.rescans, 0);
+    }
+    Ok(())
+}
+
+#[test]
 fn notifications_name_requests_and_only_overflow_rescans() -> Result<()> {
     use notify::event::{AccessKind, CreateKind, Flag, RemoveKind};
     let root = tempfile::tempdir().map_err(storage)?;
