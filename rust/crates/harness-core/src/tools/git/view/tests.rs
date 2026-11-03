@@ -15,9 +15,18 @@ async fn fixture() -> TestResult<(
     let filesystem =
         LocalFs::local(acyclic_fs::LocalOptions::new(directory.path().join("fs"))).await?;
     let store = LocalCoreStateStore::new(directory.path().join("core"));
+    let workspace = registered_workspace(&filesystem, &store, "project").await?;
+    Ok((directory, filesystem, store, workspace))
+}
+
+async fn registered_workspace(
+    filesystem: &LocalFs,
+    store: &LocalCoreStateStore,
+    name: &str,
+) -> TestResult<LocalWorkspace> {
     let workspace = filesystem
         .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
-            "project",
+            name,
             acyclic_fs::VolumeInitialization {
                 config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
                 access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
@@ -33,7 +42,7 @@ async fn fixture() -> TestResult<(
     WorkspaceGraph::new(store.clone())
         .register_root(&workspace)
         .await?;
-    Ok((directory, filesystem, store, workspace))
+    Ok(workspace)
 }
 
 async fn execute(
@@ -133,24 +142,7 @@ async fn saved_command_replay_authenticates_its_original_repository_sources() ->
     restored.current_branch = branch;
     restored.revision += 1;
     assert!(GitCompatStore::compare_and_swap(&store, main.id(), expected, restored).await?);
-    let foreign = filesystem
-        .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
-            "foreign-replay-source",
-            acyclic_fs::VolumeInitialization {
-                config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
-                access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
-            },
-            OperationId::new(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            None,
-        )
-        .await?
-        .value
-        .workspace();
-    WorkspaceGraph::new(store.clone())
-        .register_root(&foreign)
-        .await?;
+    let foreign = registered_workspace(&filesystem, &store, "foreign-replay-source").await?;
     let mut state = GitCompatStore::load(&store, main.id())
         .await?
         .ok_or("missing repository")?;
@@ -403,8 +395,21 @@ async fn manual_binary_resolution_can_continue_without_committing_markers() -> T
 
 #[tokio::test]
 async fn delete_modify_conflicts_accept_manual_content_and_deletion() -> TestResult {
-    for (ours_deleted, delete_resolution) in [(false, false), (true, false), (false, true)] {
-        let (_directory, filesystem, store, main) = fixture().await?;
+    let (_directory, filesystem, store, main) = fixture().await?;
+    let cases = [
+        (main, false, false),
+        (
+            registered_workspace(&filesystem, &store, "project").await?,
+            true,
+            false,
+        ),
+        (
+            registered_workspace(&filesystem, &store, "project").await?,
+            false,
+            true,
+        ),
+    ];
+    for (main, ours_deleted, delete_resolution) in cases {
         let repository = main.id();
         main.write_text("/note", "base\n").await?;
         execute(
