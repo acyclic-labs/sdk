@@ -59,7 +59,10 @@ pub fn check(bytes: &[u8]) {
     for delimiter in ['\r', '\n', '\0'] {
         let mut forged = value.to_owned();
         forged.push(delimiter);
-        assert!(matches!(resolve(&forged), Err(CredentialError::Invalid)));
+        assert!(
+            matches!(resolve(&forged), Err(CredentialError::Invalid)),
+            "credential transport delimiter must refuse"
+        );
     }
     assert_eq!(request.as_str().as_bytes(), bytes);
 }

@@ -29,3 +29,11 @@ delimiters to fail. The original `auth/v2-opaque-bearer` shared capture remains
 owned by `rust/codec-fuzz/examples/capture.rs`. Its byte-for-byte copy in
 `credential/v2-opaque-bearer` is also admitted by the credential property, so
 ordinary property validation exercises the retained real-writer input.
+
+With nightly Rust and cargo-fuzz installed, run `python3 negative-control.py`
+from this directory. It removes only the production delimiter-admission check,
+then requires the unchanged credential fuzzer to reject that defect using the
+captured bearer input. Compilation failures do not satisfy the control. The
+script restores the original source bytes and checks that the oracle did not
+change. A successful control qualifies this defect, not complete coverage of
+credential cache, source changes or transport implementations.
