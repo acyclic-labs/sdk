@@ -114,7 +114,7 @@ fn capability_name(grant: &Grant) -> Result<Option<String>> {
 }
 
 /// The original exact grant remains certified; the filesystem owns refinement.
-pub(super) fn filesystem_grant(capability: &VerifiedCapability) -> Result<&Grant> {
+pub(super) fn filesystem_grant(capability: &VerifiedCapability) -> Result<(&Grant, String)> {
     for caveat in &capability
         .blocks()
         .last()
@@ -123,10 +123,10 @@ pub(super) fn filesystem_grant(capability: &VerifiedCapability) -> Result<&Grant
     {
         if let CaveatKind::Grants(grants) = &caveat.kind {
             for grant in &grants.grants {
-                if capability_name(grant)?
-                    .is_some_and(|name| name.starts_with(acyclic_fs::access::SCOPE_PREFIX))
+                if let Some(name) = capability_name(grant)?
+                    && name.starts_with(acyclic_fs::access::SCOPE_PREFIX)
                 {
-                    return Ok(grant);
+                    return Ok((grant, name));
                 }
             }
         }

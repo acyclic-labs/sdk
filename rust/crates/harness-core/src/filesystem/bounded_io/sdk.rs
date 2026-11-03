@@ -97,18 +97,7 @@ impl PreparationIo {
         ),
     ) -> Result<T> {
         recorded?;
-        result.map_err(|error| {
-            let error = error.into();
-            #[cfg(not(target_arch = "wasm32"))]
-            if matches!(self, PreparationIo::Owned { budget, .. } if *budget == WorkBudget::UNBOUNDED) {
-                return match error {
-                    Error::NativeWorkspace { source, .. } => map_error(*source),
-                    Error::NativeFilesystem { source, .. } => map_error(WorkspaceError::Filesystem(*source)),
-                    error => error,
-                };
-            }
-            error
-        })
+        result.map_err(Into::into)
     }
 }
 
