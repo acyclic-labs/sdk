@@ -21,6 +21,41 @@ fn roundtrip<T: Serialize + DeserializeOwned + PartialEq + Debug>(bytes: &[u8]) 
     Some(value)
 }
 
+fn epoch(value: &e::Epoch) {
+    let foreign = if value.key.source == source() {
+        StreamPath::new("corpus/foreign/conversation").unwrap()
+    } else {
+        source()
+    };
+    for through in [0, value.cursor(), u64::MAX] {
+        for keep_summary in [false, true] {
+            let mut changed = value.clone();
+            changed.key.through = through;
+            if !keep_summary {
+                changed.summary = None;
+            }
+            for requested in [&value.key.source, &foreign] {
+                for prefix in [0, through.saturating_sub(1), through, u64::MAX] {
+                    let expected = if requested != &value.key.source {
+                        Err(e::InvalidEpoch::Source)
+                    } else if through > prefix {
+                        Err(e::InvalidEpoch::OutsidePrefix)
+                    } else if (through == 0) == changed.summary.is_some() {
+                        Err(e::InvalidEpoch::MissingCoverage)
+                    } else {
+                        Ok(())
+                    };
+                    assert_eq!(
+                        changed.validate(requested, prefix),
+                        expected,
+                        "epoch admission contract changed",
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn summary(value: &e::SummaryRef) {
     let original = serde_json::to_value(value).unwrap();
     for version in [0, 2, u32::MAX] {
@@ -420,13 +455,16 @@ pub(super) fn check(bytes: &[u8]) {
         summary(&value);
     }
     let _ = roundtrip::<e::SummaryOutcome>(bytes);
-    let _ = roundtrip::<e::Epoch>(bytes);
+    if let Some(value) = roundtrip::<e::Epoch>(bytes) {
+        epoch(&value);
+    }
     let _ = roundtrip::<e::SummaryKey>(bytes);
     let mut record = envelope().clone();
     record.value = bytes.to_vec().into();
     let Ok(snapshot) = e::Snapshot::decode(&record, &source(), u64::MAX) else {
         return;
     };
+    epoch(snapshot.epoch());
     snapshot_transitions(&snapshot);
     let state = snapshot.state();
     assert!(
