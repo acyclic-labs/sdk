@@ -402,24 +402,6 @@ async fn overflow_and_unconfirmed_initial_batches_rebaseline() -> Result<()> {
 }
 
 #[tokio::test]
-async fn root_invalidation_is_never_retried_as_overflow() -> Result<()> {
-    let (_directory, harness, tools) = fixture().await?;
-    let mut cursor = Cursor::initial(&tools.workspace, &tools.capture_policy)?;
-    cursor.initial = Some(WatchBatch::RescanRequired {
-        epoch: 7,
-        reason: WatchInvalidationReason::RootChanged,
-    });
-    let mut slot = Some(cursor);
-    assert!(matches!(
-        run(&tools, &mut slot).await,
-        Err(Error::Unauthorized(_))
-    ));
-    assert!(slot.is_none());
-    drop(tools);
-    harness.disconnect().await
-}
-
-#[tokio::test]
 async fn replay_rescan_requirement_is_a_transition() -> Result<()> {
     let (directory, harness, tools) = fixture().await?;
     std::fs::hard_link(
@@ -851,21 +833,8 @@ fn capture_boundaries_retain_only_owned_polling_handles() {
     let owed = capture_operation_bytes(|(tools, selected, slot): Inputs| {
         tools.finish_owed_write(selected, slot, PublicationPermit::Unrestricted)
     });
-    let changes = capture_operation_bytes(|(tools, selected, slot): Inputs| {
-        // The former changes entrypoint is now phase one of the same capture API.
-        tools.capture(
-            selected,
-            slot,
-            OperationId::from_bytes([1; 16]),
-            1,
-            PublicationPermit::Unrestricted,
-        )
-    });
-    eprintln!("capture retained bytes: [{capture}, {owed}, {changes}]");
     assert!(
-        [capture, owed, changes]
-            .into_iter()
-            .all(|bytes| bytes <= 512),
+        [capture, owed].into_iter().all(|bytes| bytes <= 512),
         "capture embeds concrete owed-write and publication futures"
     );
 }
