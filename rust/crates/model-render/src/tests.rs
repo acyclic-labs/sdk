@@ -142,24 +142,46 @@ proptest! {
     fn append_fork_and_alloy_schedules_match_reference(
         schedule in prop::collection::vec((prop::sample::select(&FAMILIES), 0..3_u8, any::<bool>(), any::<bool>(), any::<bool>(), ".{0,80}"), 0..100),
     ) {
-        let mut branches = [Vec::new(), Vec::new()];
+        let targets: Vec<_> = FAMILIES.into_iter().flat_map(|family| ["producing-provider", "other-provider"].map(move |provider| {
+            let field = match family { Family::Responses => "input", Family::Gemini => "contents", _ => "messages" };
+            (family, provider, header_for(family, provider), field)
+        })).collect();
+        let closer = tail();
+        let initial = (
+            Vec::new(),
+            targets.iter().map(|(_, _, header, _)| bytes(header, &[])).collect::<Vec<_>>(),
+            targets.iter().map(|(family, provider, _, _)| reference(*family, provider, &[])).collect::<Vec<_>>(),
+        );
+        let mut branches = [initial.clone(), initial];
         for (family, kind, fork, child, other_provider, text) in schedule {
             let [parent, child_branch] = &mut branches;
             if fork { *child_branch = parent.clone(); }
-            let branch = if child { child_branch } else { parent };
-            let targets: Vec<_> = FAMILIES.into_iter().flat_map(|family| ["producing-provider", "other-provider"].map(move |provider| (family, provider))).collect();
-            let old: Vec<_> = targets.iter().map(|(family, provider)| bytes(&header_for(*family, provider), branch)).collect();
+            let (branch, previous, expected) = if child { child_branch } else { parent };
             let kind = match kind { 0 => ItemKind::Message, 1 => ItemKind::Reasoning, _ => ItemKind::GuardedMessage };
-            branch.push(item_for(family, kind, &text, if other_provider { "other-provider" } else { "producing-provider" }));
+            let next = item_for(family, kind, &text, if other_provider { "other-provider" } else { "producing-provider" });
+            // The reference retains the original inputs, independently of the
+            // persisted/reopened branch. Only the new item needs projection.
+            for ((target, provider, _, field), expected) in targets.iter().zip(expected.iter_mut()) {
+                let addition = reference(*target, provider, std::slice::from_ref(&next));
+                expected[*field].as_array_mut().unwrap().extend(addition[*field].as_array().unwrap().iter().cloned());
+            }
+            branch.push(next);
             // Serialization is the actual persisted representation. Reopening
             // validates the raw bytes again without normalizing them.
             let stored = serde_json::to_vec(branch).unwrap();
             let reopened: Vec<WireItem> = serde_json::from_slice(&stored).unwrap();
-            for ((target, provider), previous) in targets.into_iter().zip(old) {
-                let out = bytes(&header_for(target, provider), &reopened);
-                prop_assert_eq!(serde_json::from_slice::<Value>(&out).unwrap(), reference(target, provider, &reopened));
-                let prefix = previous.get(..previous.len() - tail().bytes().len()).unwrap();
+            for ((_, _, header, _), (previous, expected)) in targets.iter().zip(previous.iter_mut().zip(expected.iter())) {
+                let mut out = Vec::new();
+                render(header, &reopened, &closer, &mut out).unwrap();
+                prop_assert_eq!(&serde_json::from_slice::<Value>(&out).unwrap(), expected);
+                let prefix = previous.get(..previous.len() - closer.bytes().len()).unwrap();
                 prop_assert!(out.starts_with(prefix), "append changed an earlier segment");
+                *previous = out;
+            }
+        }
+        for (branch, _, expected) in branches {
+            for ((target, provider, _, _), expected) in targets.iter().zip(expected) {
+                prop_assert_eq!(expected, reference(*target, provider, &branch));
             }
         }
     }
@@ -378,34 +400,6 @@ fn missing_foreign_message_binding_refuses_instead_of_dropping_history() {
         .unwrap()
         .get(),
         source.wire().get()
-    );
-}
-
-#[test]
-fn old_reencoding_and_foreign_text_paths_violate_the_oracles() {
-    let source = item(Family::Responses, ItemKind::Reasoning, "private continuity");
-    let normalized =
-        serde_json::to_string(&serde_json::from_str::<Value>(source.wire().get()).unwrap())
-            .unwrap();
-    assert_ne!(normalized, source.wire().get());
-    assert!(
-        seg(
-            &self::target(Family::Anthropic, "producing-provider"),
-            &source
-        )
-        .unwrap()
-        .is_none()
-    );
-    // Actual former policy: readable foreign reasoning became ordinary text.
-    let foreign_text_fallback = Some(source.wire());
-    assert_ne!(
-        seg(
-            &self::target(Family::Anthropic, "producing-provider"),
-            &source
-        )
-        .unwrap()
-        .is_some(),
-        foreign_text_fallback.is_some()
     );
 }
 

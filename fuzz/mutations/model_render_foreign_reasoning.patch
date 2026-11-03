@@ -1,0 +1,11 @@
+diff --git a/rust/crates/model-render/src/render.rs b/rust/crates/model-render/src/render.rs
+--- a/rust/crates/model-render/src/render.rs
++++ b/rust/crates/model-render/src/render.rs
+@@ -238,7 +238,7 @@
+     match select(item.kind(), same_family, same_owner) {
+         Selection::Native => Ok(Some(item.wire())),
+-        Selection::Drop => Ok(None),
++        Selection::Drop => Ok(Some(item.wire())),
+         Selection::Projection => item
+             .projection(target.family)
+             .map(Some)
