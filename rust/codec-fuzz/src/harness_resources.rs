@@ -870,6 +870,15 @@ pub(super) fn check(bytes: &[u8]) {
     epoch(snapshot.epoch());
     snapshot_confirmation(&record);
     let state = snapshot.state();
+    if let Some(head) = state.cursor().checked_sub(1) {
+        // Reach the reducer directly: epoch admission otherwise masks this
+        // guard. Remove pending work so its range cannot conceal cursor loss.
+        assert_eq!(
+            e::protocol::State::restore(state.generation(), state.cursor(), None, head),
+            Err(e::protocol::Refusal::Range),
+            "producer cursor beyond source head admitted",
+        );
+    }
     assert!(
         matches!(
             e::Snapshot::decode(
