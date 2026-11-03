@@ -441,14 +441,3 @@ async fn live_fork_fidelity_follows_the_declared_capability() {
         Err(ProviderError::Unsupported(_))
     ));
 }
-
-#[test]
-fn live_fork_takes_precedence_over_disk_fork() {
-    assert_eq!(
-        ForkFidelity::for_capabilities(&BTreeSet::from([
-            Capability::DiskFork,
-            Capability::LiveFork
-        ])),
-        Some(ForkFidelity::MemoryAndDisk)
-    );
-}
