@@ -20,10 +20,12 @@ elif choice.startswith("addressing-"):
         "addressing-field-endian": "addressing.rs",
         "addressing-resource-tail": "addressing.rs",
         "addressing-resource-version": "format.rs",
+        "addressing-resource-domain": "format.rs",
         "addressing-resource-admission": "addressing.rs",
         "addressing-actor": "addressing/actor.rs",
         "addressing-actor-tail": "addressing/actor.rs",
         "addressing-actor-version": "format.rs",
+        "addressing-actor-domain": "format.rs",
         "addressing-actor-admission": "addressing/actor.rs",
         "addressing-name-length": "addressing/actor.rs",
         "addressing-name-character": "addressing/actor.rs",
@@ -54,6 +56,14 @@ try:
     oracle_hashes = {path: hashlib.sha256(path.read_bytes()).digest() for path in oracles}
     newline = b"\r\n" if b"\r\n" in original else b"\n"
     mutations = {
+        "addressing-resource-domain": (
+            b".strip_prefix(domain)", b".get(domain.len()..)",
+            "identity domain must retain typed refusal", "resource",
+        ),
+        "addressing-actor-domain": (
+            b".strip_prefix(domain)", b".get(domain.len()..)",
+            "identity domain must retain typed refusal", "actor",
+        ),
         "addressing-host-numeric": (
             b"return Err(DnsError::NumericHost);", b"()",
             "numeric DNS host must retain typed refusal", "resource-hostname",
