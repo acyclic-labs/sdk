@@ -238,6 +238,20 @@ additional_controls = {
             "project-server",
             b"selected file I/O must not be admitted or reclassified",
         ),
+        (
+            "rust/crates/harness-core/src/native_settings.rs",
+            b"Self::snapshot(config, true, false).await?.mcp",
+            b"Self::snapshot(config, true, true).await?.mcp",
+            "project-server",
+            b"MCP-only startup must ignore hook-only sections and sources",
+        ),
+        (
+            "rust/crates/harness-core/src/native_settings.rs",
+            b"Self::snapshot(config, false, true).await?.hooks",
+            b"Self::snapshot(config, false, false).await?.hooks",
+            "project-server",
+            b"hook-only startup must refuse selected invalid hooks",
+        ),
     ],
 }
 

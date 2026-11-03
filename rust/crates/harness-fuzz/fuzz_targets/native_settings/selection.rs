@@ -16,8 +16,8 @@ fn workspace(
     ))
 }
 
-fn selected(snapshot: &NativeSettings, expected: &str) {
-    let mut servers = snapshot.mcp.servers();
+fn selected(snapshot: &acyclic_harness_core::mcp::McpConfig, expected: &str) {
+    let mut servers = snapshot.servers();
     let (name, server) = servers
         .next()
         .expect("winning declaration must remain present");
@@ -87,11 +87,7 @@ pub(super) fn inactive(bytes: &[u8]) {
     };
     write(&path, &document);
     for load_mcp in [false, true] {
-        let mut config = SettingsConfig::new(&files.workspace, &files.home)
-            .codex_home(&files.codex)
-            .trust_project_hooks(true)
-            .trust_project_mcp(true)
-            .maximum_file_bytes(u32::MAX.into());
+        let mut config = files.config(true, true, u32::MAX.into());
         config.load_mcp = load_mcp;
         let result = futures::executor::block_on(NativeSettings::load(config));
         if load_mcp {
@@ -110,6 +106,43 @@ pub(super) fn inactive(bytes: &[u8]) {
     }
 }
 
+pub(super) fn partial(bytes: &[u8]) {
+    // Refine the original MCP startup property through both public queries.
+    let files = Files::new();
+    let number = i64::from_le_bytes(
+        bytes
+            .get(..8)
+            .and_then(|bytes| bytes.try_into().ok())
+            .unwrap_or_default(),
+    );
+    let invalid = match bytes.first().copied().unwrap_or(0) % 4 {
+        0 => number.to_string(),
+        1 => "false".into(),
+        2 => "'invalid'".into(),
+        _ => "[]".into(),
+    };
+    write(
+        &files.codex.join("config.toml"),
+        format!("hooks = {invalid}\n[mcp_servers.selected]\ncommand='winner'\n").as_bytes(),
+    );
+    let config = std::sync::Arc::new(files.config(true, true, 512));
+    for document in [&b"{}"[..], &b"{invalid JSON"[..]] {
+        for path in [
+            files.home.join(".claude/settings.json"),
+            files.workspace.join(".claude/settings.json"),
+        ] {
+            write(&path, document);
+        }
+        let snapshot = futures::executor::block_on(NativeSettings::load_mcp(config.clone()))
+            .expect("MCP-only startup must ignore hook-only sections and sources");
+        selected(&snapshot, "winner");
+        assert!(
+            futures::executor::block_on(NativeSettings::load_hooks(config.clone())).is_err(),
+            "hook-only startup must refuse selected invalid hooks"
+        );
+    }
+}
+
 pub(super) fn check() {
     let invalid = json!({"selected":{"command":42,"args":["discard"]},"disabled":{"command":42}});
     let valid = json!({"selected":{"command":"winner"},"disabled":{"enabled":false,"command":42}});
@@ -122,7 +155,7 @@ pub(super) fn check() {
         let snapshot = files
             .load(true)
             .expect("winning scope must replace lower invalid declarations");
-        selected(&snapshot, "winner");
+        selected(&snapshot.mcp, "winner");
         scope(&files, winner, &invalid);
         assert!(
             files.load(true).is_err(),
@@ -151,7 +184,7 @@ pub(super) fn check() {
         for trusted in [false, true] {
             let snapshot = workspace(&files, &configured, trusted)
                 .expect("selected workspace entries must retain their winning declaration");
-            selected(&snapshot, "winner");
+            selected(&snapshot.mcp, "winner");
         }
         document["projects"][key.to_string_lossy().as_ref()]["mcpServers"] = invalid.clone();
         write(&home, &serde_json::to_vec(&document).unwrap());
