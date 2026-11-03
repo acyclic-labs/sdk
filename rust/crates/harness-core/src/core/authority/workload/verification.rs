@@ -45,7 +45,7 @@ pub(crate) fn check_filesystem_refinement(parent: &acyclic_fs::access::Capabilit
     ungranted.parent_proof = Some(*child.proof);
     ungranted.capabilities = Capabilities::default();
     let label = child.capabilities.iter().next().unwrap().to_owned();
-    let mut caveats = facts(&ungranted, &resource(&issuer.audience)?, None)?;
+    let mut caveats = facts(&ungranted, &resource(&issuer.audience)?, None, None)?;
     caveats.push(Caveat {
         kind: CaveatKind::Label(label.clone()),
     });

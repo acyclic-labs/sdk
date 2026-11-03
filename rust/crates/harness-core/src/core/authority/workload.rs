@@ -269,7 +269,7 @@ pub(super) fn resource(audience: &Authority) -> Result<String> {
     };
     Ok(format!("harness:/{kind}/{}", audience.id))
 }
-fn resource_grant(resource: &str, prefix: bool, action: &str) -> Grant {
+fn resource_grant(resource: impl Into<String>, prefix: bool, action: &str) -> Grant {
     Grant {
         kind: GrantKind::Resource(ResourceGrant {
             resource: ResourcePattern {
@@ -285,33 +285,43 @@ fn grant(resource: &str, prefix: bool) -> GrantSet {
         grants: vec![resource_grant(resource, prefix, ACTION)],
     }
 }
-/// Execution on `audience` plus one exact grant per capability.
-fn scope_grants(audience: &str, capabilities: &Capabilities) -> GrantSet {
+/// Execution on `audience` plus one exact grant per capability. Delegation
+/// retains the certified filesystem grant; a signed label carries refinement.
+fn scope_grants(
+    audience: &str,
+    capabilities: &Capabilities,
+    filesystem: Option<(&str, &Grant)>,
+) -> GrantSet {
     let mut grants = grant(audience, false);
     grants
         .grants
         .extend(capabilities.0.iter().map(|capability| {
-            resource_grant(
-                &format!(
-                    "{CAPABILITIES}{}",
-                    acyclic_auth::encode_component(capability.as_bytes())
-                ),
-                false,
-                HOLD,
-            )
+            if let Some((label, filesystem)) = filesystem
+                && capability == label
+            {
+                return filesystem.clone();
+            }
+            let mut name = CAPABILITIES.to_owned();
+            acyclic_auth::append_component(capability.as_bytes(), &mut name);
+            resource_grant(name, false, HOLD)
         }));
     grants
 }
 /// The typed facts of one block of `scope` for `audience`. A block names
 /// its agent only when it differs from `holder`, the agent the chain names
 /// so far; an acting agent is never dropped.
-fn facts(scope: &Scope, audience: &str, holder: Option<AgentId>) -> Result<Vec<Caveat>> {
+fn facts(
+    scope: &Scope,
+    audience: &str,
+    holder: Option<AgentId>,
+    filesystem: Option<(&str, &Grant)>,
+) -> Result<Vec<Caveat>> {
     let mut caveats = vec![
         Caveat {
             kind: CaveatKind::Label(format!("{SCOPE}{}", scope.id)),
         },
         Caveat {
-            kind: CaveatKind::Grants(scope_grants(audience, &scope.capabilities)),
+            kind: CaveatKind::Grants(scope_grants(audience, &scope.capabilities, filesystem)),
         },
     ];
     if scope.agent == holder {
@@ -365,13 +375,13 @@ pub(super) fn issue(
         match parent {
             Some(parent) => std::sync::Arc::new(keys.certify(
                 timestamp,
-                scope_grants(&name, &scope.capabilities),
+                scope_grants(&name, &scope.capabilities, None),
                 Some(parent),
             )?),
             None => keys.root_signer(timestamp)?,
         }
     };
-    let mut caveats = facts(scope, &name, None)?;
+    let mut caveats = facts(scope, &name, None, None)?;
     caveats.push(Caveat {
         kind: CaveatKind::Audience(ResourcePattern {
             name,
@@ -446,33 +456,30 @@ pub(super) fn append(
     holder: Option<AgentId>,
     expires: Option<u64>,
 ) -> Result<()> {
-    let mut caveats = facts(scope, &resource(audience)?, holder)?;
-    if let Some(label) = scope
+    let filesystem = if let Some(label) = scope
         .capabilities
         .with_prefix(acyclic_fs::access::SCOPE_PREFIX)
         .next()
     {
-        let name = format!(
-            "{CAPABILITIES}{}",
-            acyclic_auth::encode_component(label.as_bytes())
-        );
-        let certified = admission::filesystem_grant(capability)?;
-        if !matches!(&certified.kind, GrantKind::Resource(resource) if resource.resource.name == name)
-        {
-            for caveat in &mut caveats {
-                if let CaveatKind::Grants(grants) = &mut caveat.kind {
-                    for grant in &mut grants.grants {
-                        if matches!(&grant.kind, GrantKind::Resource(resource) if resource.resource.name == name)
-                        {
-                            *grant = certified.clone();
-                        }
-                    }
-                }
-            }
-            caveats.push(Caveat {
-                kind: CaveatKind::Label(label.to_owned()),
-            });
-        }
+        let (grant, certified) = admission::filesystem_grant(capability)?;
+        Some((label, grant, certified))
+    } else {
+        None
+    };
+    let mut caveats = facts(
+        scope,
+        &resource(audience)?,
+        holder,
+        filesystem
+            .as_ref()
+            .map(|(label, grant, _)| (*label, *grant)),
+    )?;
+    if let Some((label, _, certified)) = filesystem
+        && label != certified
+    {
+        caveats.push(Caveat {
+            kind: CaveatKind::Label(label.to_owned()),
+        });
     }
     if let Some(expires) = expires {
         caveats.push(Caveat {
