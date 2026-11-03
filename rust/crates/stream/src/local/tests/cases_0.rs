@@ -729,18 +729,16 @@ async fn invalid_headers_and_snapshot_state_fail_without_repairing_disk()
         (encode_header(limits, 2)?, false),
     ] {
         std::fs::write(&journal_path, &header)?;
-        for _ in 0..2 {
-            let result = LocalStream::open(directory.path(), limits).await;
-            assert!(if unsupported {
-                matches!(
-                    result,
-                    Err(LocalStreamError::UnsupportedVersion { format: "journal" })
-                )
-            } else {
-                matches!(result, Err(LocalStreamError::Corrupt))
-            });
-            assert_eq!(std::fs::read(&journal_path)?, header);
-        }
+        let result = LocalStream::open(directory.path(), limits).await;
+        assert!(if unsupported {
+            matches!(
+                result,
+                Err(LocalStreamError::UnsupportedVersion { format: "journal" })
+            )
+        } else {
+            matches!(result, Err(LocalStreamError::Corrupt))
+        });
+        assert_eq!(std::fs::read(&journal_path)?, header);
     }
     // Keep the checksum valid so rejection must enforce the snapshot version.
     let header = encode_header(limits, 0)?;
@@ -762,14 +760,12 @@ async fn invalid_headers_and_snapshot_state_fail_without_repairing_disk()
             .ok_or(StreamError::InvalidArgument)?
             .copy_from_slice(&checksum);
         std::fs::write(&snapshot_path, &obsolete)?;
-        for _ in 0..2 {
-            assert!(matches!(
-                LocalStream::open(directory.path(), limits).await,
-                Err(LocalStreamError::UnsupportedVersion { format: "snapshot" })
-            ));
-            assert_eq!(std::fs::read(&journal_path)?, header);
-            assert_eq!(std::fs::read(&snapshot_path)?, obsolete);
-        }
+        assert!(matches!(
+            LocalStream::open(directory.path(), limits).await,
+            Err(LocalStreamError::UnsupportedVersion { format: "snapshot" })
+        ));
+        assert_eq!(std::fs::read(&journal_path)?, header);
+        assert_eq!(std::fs::read(&snapshot_path)?, obsolete);
     }
     // A checksummed snapshot with invalid semantic state must not authorize
     let header = encode_header(limits, 0)?;
@@ -782,6 +778,14 @@ async fn invalid_headers_and_snapshot_state_fail_without_repairing_disk()
     ));
     assert_eq!(std::fs::read(&journal_path)?, header);
     assert_eq!(std::fs::read(&snapshot_path)?, invalid);
+    // Every subsequent open checks release after the previous refusal; the
+    // final semantic refusal must also leave the original root usable.
+    std::fs::write(&snapshot_path, encode_snapshot(limits, 0, &state)?)?;
+    let recovered = LocalStream::open(directory.path(), limits).await?;
+    assert_eq!(
+        recovered.tail(StreamPath::new("missing")?).await,
+        Err(StreamError::NotFound)
+    );
     Ok(())
 }
 
@@ -825,13 +829,11 @@ async fn recovery_rejects_receipt_overcapacity_without_rewriting_the_prefix()
     damaged.extend_from_slice(&frame.encoded);
     damaged.extend_from_slice(&[9, 8, 7]);
     std::fs::write(&path, &damaged)?;
-    for _ in 0..2 {
-        assert!(matches!(
-            LocalStream::open(directory.path(), limits).await,
-            Err(LocalStreamError::Replay(StreamError::Capacity))
-        ));
-        assert_eq!(std::fs::read(&path)?, damaged);
-    }
+    assert!(matches!(
+        LocalStream::open(directory.path(), limits).await,
+        Err(LocalStreamError::Replay(StreamError::Capacity))
+    ));
+    assert_eq!(std::fs::read(&path)?, damaged);
     std::fs::write(&path, before)?;
     let reopened = LocalStream::open(directory.path(), limits).await?;
     assert_eq!(reopened.append(first).await?, outcome);
