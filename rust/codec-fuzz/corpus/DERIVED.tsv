@@ -1,0 +1,3 @@
+# Explicitly generated mutations; not captured outputs
+# path	bytes	sha256	original	original_sha256	mutation
+harness_codecs/usage-llamacpp-text-literal-extension	605	90bb2b3ec20d98bd4282a873056a313e7fb060618ef347c3820e9b377ee682e8	harness_codecs/usage-llamacpp-text-json	3f09b364bdc680997f4fa88ff8c03cc10bac933f7240c293bbbec8434a702313	insert after initial {: "extra":{"$serde_json::private::RawValue":"null","nested":[]},; all original bytes retained; original provenance in SOURCES.tsv

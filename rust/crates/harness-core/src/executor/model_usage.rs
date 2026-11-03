@@ -372,6 +372,9 @@ mod tests {
             cache_write in proptest::option::of(any::<u64>()),
             reasoning in proptest::option::of(any::<u64>()),
         ) {
+            codec_fuzz::check(include_bytes!(
+                "../../../../codec-fuzz/corpus/harness_codecs/usage-llamacpp-text-literal-extension"
+            ));
             // Generated protocol-field mutations, never captured transcripts.
             let dialects = [
                 serde_json::json!({"usage":{"input_tokens":input,"output_tokens":output,
@@ -391,13 +394,14 @@ mod tests {
                     let mut extended = metadata.clone();
                     extended["extra"] = serde_json::json!({(marker): "null", "nested": []});
                     let mut bytes = serde_json::to_vec(&extended).unwrap();
-                    prop_assert!(codec_fuzz::check_metadata_bytes(&bytes).is_ok());
                     let event = serde_json::json!({"kind": "completed", "metadata": extended});
                     let restored: ModelEvent =
                         serde_json::from_slice(&serde_json::to_vec(&event).unwrap()).unwrap();
                     prop_assert_eq!(restored, ModelEvent::Completed { metadata: extended });
+                    codec_fuzz::check(&bytes);
                     bytes.extend_from_slice(b" null");
                     prop_assert!(codec_fuzz::check_metadata_bytes(&bytes).is_err());
+                    codec_fuzz::check(&bytes);
                 }
                 prop_assert_eq!(ModelTokenUsage::reported(metadata), ModelTokenUsage {
                     input: Some(input), output: Some(output), cached,
