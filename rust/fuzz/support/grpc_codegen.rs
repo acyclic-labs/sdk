@@ -1,12 +1,15 @@
 use acyclic_grpc_observability::codegen::observe_clients;
+use std::io;
 use syn::visit::Visit;
 
 /// Every accepted transformation is reversible without changing any original
 /// item, signature or body. This checks the production transformer itself.
-pub fn check(source: &str) -> Option<usize> {
-    let observed = observe_clients(source, "actors").ok()?;
-    let original = syn::parse_file(source).expect("observer accepted invalid Rust");
-    let mut restored = syn::parse_file(&observed).expect("observer emitted invalid Rust");
+pub(super) fn check(source: &str) -> io::Result<Option<usize>> {
+    let Ok(observed) = observe_clients(source, "actors") else {
+        return Ok(None);
+    };
+    let original = syn::parse_file(source).map_err(io::Error::other)?;
+    let mut restored = syn::parse_file(&observed).map_err(io::Error::other)?;
     assert_eq!(original.items.len(), restored.items.len());
     let mut methods = 0;
     for (before, after) in original.items.iter().zip(&mut restored.items) {
@@ -20,17 +23,19 @@ pub fn check(source: &str) -> Option<usize> {
             continue;
         };
         let syn::Item::Mod(after) = after else {
-            panic!("observer changed a client module's item kind");
+            return Err(io::Error::other(
+                "observer changed a client module's item kind",
+            ));
         };
         let (_, after_items) = after
             .content
             .as_mut()
-            .expect("observer removed client contents");
+            .ok_or_else(|| io::Error::other("observer removed client contents"))?;
         assert!(observed.contains("acyclic.actors.grpc.call"));
         assert_eq!(after_items.len(), before_items.len() + 1);
         let helper = after_items
             .pop()
-            .expect("observer omitted its span factory");
+            .ok_or_else(|| io::Error::other("observer omitted its span factory"))?;
         assert!(
             matches!(helper, syn::Item::Fn(function) if function.sig.ident == "observed_call_span")
         );
@@ -47,9 +52,11 @@ pub fn check(source: &str) -> Option<usize> {
                     continue;
                 }
                 let syn::ImplItem::Fn(after) = after else {
-                    panic!("observer changed a client method's item kind");
+                    return Err(io::Error::other(
+                        "observer changed a client method's item kind",
+                    ));
                 };
-                after.block = original_body(&after.block, &before.block);
+                after.block = original_body(&after.block, &before.block)?;
                 methods += 1;
             }
         }
@@ -58,15 +65,17 @@ pub fn check(source: &str) -> Option<usize> {
         prettyplease::unparse(&restored),
         prettyplease::unparse(&original)
     );
-    Some(methods)
+    Ok(Some(methods))
 }
 
-fn original_body(observed: &syn::Block, original: &syn::Block) -> syn::Block {
+fn original_body(observed: &syn::Block, original: &syn::Block) -> io::Result<syn::Block> {
     let [syn::Stmt::Expr(syn::Expr::Await(awaited), None)] = observed.stmts.as_slice() else {
-        panic!("observer must emit exactly one awaited call");
+        return Err(io::Error::other(
+            "observer must emit exactly one awaited call",
+        ));
     };
     let syn::Expr::Call(call) = awaited.base.as_ref() else {
-        panic!("observer lost the call boundary");
+        return Err(io::Error::other("observer lost the call boundary"));
     };
     assert!(path(
         &call.func,
@@ -75,7 +84,7 @@ fn original_body(observed: &syn::Block, original: &syn::Block) -> syn::Block {
     assert_eq!(call.args.len(), 2);
     let mut arguments = call.args.iter();
     let Some(syn::Expr::Call(span)) = arguments.next() else {
-        panic!("observer lost the span factory");
+        return Err(io::Error::other("observer lost the span factory"));
     };
     assert!(path(&span.func, &["observed_call_span"]));
     assert_eq!(span.args.len(), 1);
@@ -84,7 +93,7 @@ fn original_body(observed: &syn::Block, original: &syn::Block) -> syn::Block {
         ..
     })) = span.args.first()
     else {
-        panic!("observer lost the original RPC name");
+        return Err(io::Error::other("observer lost the original RPC name"));
     };
     let mut names = RpcNames::default();
     names.visit_block(original);
@@ -93,13 +102,13 @@ fn original_body(observed: &syn::Block, original: &syn::Block) -> syn::Block {
         "observer changed RPC identity"
     );
     let Some(syn::Expr::Async(body)) = arguments.next() else {
-        panic!("observer lost the original async body");
+        return Err(io::Error::other("observer lost the original async body"));
     };
     assert!(
         body.capture.is_none(),
         "observer changed async capture semantics"
     );
-    body.block.clone()
+    Ok(body.block.clone())
 }
 
 fn path(expression: &syn::Expr, names: &[&str]) -> bool {

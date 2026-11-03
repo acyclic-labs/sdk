@@ -6,6 +6,7 @@ mod oracle;
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     if let Ok(source) = std::str::from_utf8(bytes) {
-        oracle::check(source);
+        let result = oracle::check(source);
+        assert!(result.is_ok(), "{result:?}");
     }
 });

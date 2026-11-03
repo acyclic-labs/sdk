@@ -4,7 +4,7 @@ use acyclic_observability::{Slo, SloError, Snapshot, Verdict};
 
 /// Use the public persisted decoder, writer and evaluator, including refusals.
 /// Each successful decode is exercised even when its semantic admission fails.
-pub fn check(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+pub(super) fn check(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let Ok(slo) = serde_json::from_slice::<Slo>(bytes) else {
         return Ok(());
     };
@@ -83,7 +83,7 @@ pub fn check(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Check admitted cohorts independently of persisted file framing. Counts must
 /// fit one histogram bucket, as required by the production snapshot writer.
-pub fn evidence(slo: &Slo, counts: [u64; 3]) -> Result<(), SloError> {
+pub(super) fn evidence(slo: &Slo, counts: [u64; 3]) -> Result<(), SloError> {
     let mut snapshot = Snapshot {
         operation: slo.operation.clone(),
         rpc: slo.rpc.clone(),
@@ -135,7 +135,9 @@ pub fn evidence(slo: &Slo, counts: [u64; 3]) -> Result<(), SloError> {
 }
 
 /// Endpoints of the public base-two bucket, clipped to real Duration capacity.
-pub fn latency_bounds(bucket: u32) -> Result<[std::time::Duration; 2], Box<dyn std::error::Error>> {
+pub(super) fn latency_bounds(
+    bucket: u32,
+) -> Result<[std::time::Duration; 2], Box<dyn std::error::Error>> {
     use std::time::Duration;
     let (low, high) = if bucket == 0 {
         (0, 0)
@@ -162,7 +164,10 @@ pub fn latency_bounds(bucket: u32) -> Result<[std::time::Duration; 2], Box<dyn s
 /// Differential conformance to real Metrics recording and live SLO projection.
 /// Endpoint substitutions must produce identical histograms; their exact sample
 /// verdicts bound every duration the public histogram can represent between them.
-pub fn histogram(slo: &Slo, buckets: &[(u32, u8)]) -> Result<(), Box<dyn std::error::Error>> {
+pub(super) fn histogram(
+    slo: &Slo,
+    buckets: &[(u32, u8)],
+) -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_observability::{__tracing as tracing, Metrics, Outcome, Sample, Sink};
     use tracing::callsite::Callsite;
     let callsite = tracing::callsite! {
@@ -186,8 +191,10 @@ pub fn histogram(slo: &Slo, buckets: &[(u32, u8)]) -> Result<(), Box<dyn std::er
             _ => Outcome::Incomplete,
         };
         ok += u128::from(outcome == Outcome::Ok);
-        for (endpoint, elapsed) in latency_bounds(bucket)?.into_iter().enumerate() {
-            records[endpoint].record(&Sample {
+        for ((record, exact), elapsed) in
+            records.iter().zip(&mut exact).zip(latency_bounds(bucket)?)
+        {
+            record.record(&Sample {
                 span_id: &id,
                 parent_id: None,
                 durability: None,
@@ -204,8 +211,7 @@ pub fn histogram(slo: &Slo, buckets: &[(u32, u8)]) -> Result<(), Box<dyn std::er
                 error_kind: None,
             });
             if let Some(objective) = &selected.latency {
-                exact[endpoint] +=
-                    u128::from(elapsed.as_nanos() <= u128::from(objective.maximum_ns));
+                *exact += u128::from(elapsed.as_nanos() <= u128::from(objective.maximum_ns));
             }
         }
     }
@@ -248,7 +254,7 @@ pub fn histogram(slo: &Slo, buckets: &[(u32, u8)]) -> Result<(), Box<dyn std::er
 
 /// Capture the production writer's complete v1 shape, then explicit corruptions.
 #[cfg(test)]
-pub fn corpus() -> Result<Vec<(&'static str, Vec<u8>)>, serde_json::Error> {
+pub(super) fn corpus() -> Result<Vec<(&'static str, Vec<u8>)>, serde_json::Error> {
     let mut slo = Slo {
         version: 1,
         operation: "acyclic.test.operation".into(),

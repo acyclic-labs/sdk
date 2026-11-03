@@ -100,10 +100,10 @@ fn persisted_slo_corpus_and_mutations() -> Result<(), Box<dyn std::error::Error>
         }
         oracle::check(bytes)?;
         for cut in 0..bytes.len() {
-            oracle::check(&bytes[..cut])?;
+            oracle::check(bytes.get(..cut).ok_or("missing original corpus prefix")?)?;
             for bit in 0..8 {
                 let mut mutated = bytes.clone();
-                mutated[cut] ^= 1 << bit;
+                *mutated.get_mut(cut).ok_or("missing original corpus byte")? ^= 1 << bit;
                 oracle::check(&mutated)?;
             }
         }
