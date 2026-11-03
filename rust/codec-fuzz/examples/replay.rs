@@ -54,6 +54,7 @@ fn selects(selected: Option<&str>, name: &str) -> bool {
 }
 
 fn replay(selected: Option<&str>, entry: Option<&str>) -> Result<usize, Box<dyn Error>> {
+    std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))?;
     let mut expectations = external_expectations()?;
     expectations.retain(|name, _| selects(selected, name));
     let sources = [

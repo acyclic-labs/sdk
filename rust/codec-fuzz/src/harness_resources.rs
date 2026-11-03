@@ -260,6 +260,102 @@ fn residency(previous: ModelCacheResidency) {
     }
 }
 
+// Preparation retains one producer even when its terminal outcome is replayed.
+fn snapshot_preparations(snapshot: &e::Snapshot) {
+    use e::protocol::{Pending, Refusal};
+    let before = snapshot.state();
+    for through in [
+        before.cursor(),
+        before.cursor().saturating_add(1),
+        before.pending().map_or(u64::MAX, |pending| pending.through),
+        u64::MAX,
+    ] {
+        let summary = snapshot.epoch().key.digest_through(through);
+        let mut foreign = summary;
+        foreign[0] ^= 1;
+        for head in [through.saturating_sub(1), through, u64::MAX] {
+            let expected = |identity| {
+                if through <= before.cursor() || through > head {
+                    Err(Refusal::Range)
+                } else if before.pending().is_some_and(|pending| {
+                    (pending.summary, pending.through) != (identity, through)
+                }) {
+                    Err(Refusal::Busy)
+                } else {
+                    Ok(())
+                }
+            };
+            for identity in [
+                summary,
+                before.pending().map_or(summary, |pending| pending.summary),
+                foreign,
+            ] {
+                let mut state = before;
+                let result = expected(identity);
+                assert_eq!(
+                    state.prepare(identity, through, head),
+                    result,
+                    "producer preparation admission changed",
+                );
+                if result.is_err() || before.pending().is_some() {
+                    assert_eq!(
+                        state, before,
+                        "preparation changed existing producer custody"
+                    );
+                } else {
+                    assert_eq!(
+                        (state.generation(), state.cursor()),
+                        (before.generation(), before.cursor())
+                    );
+                    assert_eq!(
+                        state.pending(),
+                        Some(Pending {
+                            summary: identity,
+                            generation: before.generation(),
+                            through,
+                            completion: None,
+                        }),
+                        "new preparation lost producer custody"
+                    );
+                }
+            }
+            let mut changed = snapshot.clone();
+            let result = changed.prepare(through, head);
+            if let Err(refusal) = expected(summary) {
+                assert!(
+                    matches!(result, Err(e::SnapshotError::Transition(actual)) if actual == refusal),
+                    "snapshot preparation admission changed",
+                );
+                assert_eq!(
+                    &changed, snapshot,
+                    "refused preparation changed snapshot custody"
+                );
+            } else {
+                assert_eq!(
+                    result.unwrap(),
+                    summary,
+                    "snapshot preparation identity changed"
+                );
+                let mut state = before;
+                state.prepare(summary, through, head).unwrap();
+                assert_eq!(
+                    changed.state(),
+                    state,
+                    "snapshot preparation lost producer custody"
+                );
+                assert_eq!(changed.epoch(), snapshot.epoch());
+                assert_eq!(changed.outcome(), snapshot.outcome());
+                if before.pending().is_some() {
+                    assert_eq!(
+                        &changed, snapshot,
+                        "replayed preparation changed snapshot custody"
+                    );
+                }
+            }
+        }
+    }
+}
+
 // Mutate the actual writer's completion field, then compare public transitions
 // with both the wire contract and the production scalar reducer.
 fn snapshot_completions(original: &Value, body: &e::SummaryRef) {
@@ -649,6 +745,7 @@ pub(super) fn check(bytes: &[u8]) {
     // Serde also admits positional struct fields. Mutate the same writer's
     // canonical object spelling instead of assuming the admitted input's shape.
     let original: Value = serde_json::from_slice(&written).unwrap();
+    snapshot_preparations(&snapshot);
     snapshot_transitions(&snapshot, &original);
     record.value = written.into();
     assert_eq!(

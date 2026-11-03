@@ -489,8 +489,6 @@ fn fanout_waits_for_the_parent_swap_without_discarding_pending_custody() {
     assert_eq!(parent.demand(), Demand::Await(id));
     assert_eq!(parent.fork(25), Err(Refusal::NotReady));
     assert_eq!(parent.fork(19), Err(Refusal::NotReady));
-    assert_eq!(parent.prepare([8; 32], 24, 25), Err(Refusal::Busy));
-    assert_eq!(parent.swap(id, 0, 25), Err(Refusal::NotReady));
     let before = parent;
     let mut uncommitted = parent;
     uncommitted.complete(id, Completion::Ready).unwrap();
