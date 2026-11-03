@@ -45,8 +45,8 @@ try:
             raise RuntimeError("expected exactly one production mutation site")
         source.write_bytes(original.replace(check, replacement))
         command = ["cargo", "+nightly", "fuzz", "run", "--dev"]
-        if target := os.environ.get("CARGO_TARGET_DIR"):
-            command += ["--target-dir", target]
+        if cargo_target := os.environ.get("CARGO_TARGET_DIR"):
+            command += ["--target-dir", cargo_target]
         command += [target, "corpus/" + target + "/" + seed, "--", "-runs=1"]
         step = "detect " + choice + " through the " + target + " fuzzer"
         result = subprocess.run(
