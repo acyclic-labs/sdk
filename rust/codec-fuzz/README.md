@@ -214,6 +214,21 @@ unchanged assertion must reject it at
 `archive reported a completed child again`. Both checks inspect finite
 committed inputs rather than waiting for a missing report.
 
+The native deadline component property uses the production controlled clock,
+three child forks and two storage reopens. It checks the exact pending actor
+tuple before a deadline, replacement after delivery, and invalidation by both
+cancel and archive without running a stale continuation:
+
+```sh
+cargo test --locked --manifest-path rust/Cargo.toml --all-features -p acyclic-harness-core --test main agent_model::runtime::native_reopen_preserves_and_replaces_deadlines_until_control_clears_them -- --exact
+```
+
+`agent-alarm-set-omission.patch` and `agent-alarm-clear-omission.patch` each
+change the actual handler's alarm lowering. The unchanged finite-read property
+must reject them at `pending deadline lost` and `control retained deadline`,
+respectively. These are native storage component controls with a scripted
+driver; they do not establish provider-driven restart or formal refinement.
+
 After a reviewed protobuf schema change, refresh only the named protobuf
 producers and their table selectors:
 

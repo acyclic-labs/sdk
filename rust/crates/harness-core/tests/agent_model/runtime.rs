@@ -530,12 +530,151 @@ async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed
             );
             let mut expected = committed;
             expected.closed = true;
+            expected.dropped_before = expected.dropped_before.max(inbox);
             assert_eq!(host.state(&child).await?, expected);
             let archived = host.runtime().store().load(&host.actor(&child)?).await?;
             let archived = archived.state().expect("archived child actor");
             assert_eq!(archived.cursor(INBOX), Some(inbox + 1));
             assert!(archived.alarm().pending().is_none());
         }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_reopen_preserves_and_replaces_deadlines_until_control_clears_them() -> Result {
+    use acyclic_actors::local::ControlledClock;
+    use acyclic_stream::LocalStream;
+
+    for archive in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let (clock, mut time) = ControlledClock::new(0);
+        let clock = Arc::new(clock);
+        let within = ActorReference::new(b"account", b"agents", b"owner")?;
+        let waiting = |checkpoint: &[u8], timeout, outs| TurnStep {
+            reserved_children: 0,
+            checkpoint: Some(checkpoint.to_vec()),
+            outs,
+            wait: Wait::Until(Until::sleep(timeout)),
+            drops: None,
+        };
+        let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
+        let host = AgentHost::new(
+            provider.clone(),
+            super::script(vec![waiting(
+                b"first",
+                10,
+                ["a", "b", "c"]
+                    .into_iter()
+                    .map(|name| Out::Spawn {
+                        profile: None,
+                        history: None,
+                        intent: intent(name),
+                        brief: None,
+                        volumes: Vec::new(),
+                    })
+                    .collect(),
+            )]),
+            within.clone(),
+            ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+            clock.clone(),
+        )?;
+        let root = host.create(&intent("create"), adopted(id(1))).await?;
+        host.drain(&root).await?;
+        let input = InboxRecord::ApprovalRequested(ApprovalRequested {
+            child: root.child(&id(2))?,
+            id: intent("start"),
+        });
+        host.send(&root, &user(), &input).await?;
+        assert_eq!(
+            host.drain_event(&root).await?,
+            Some(10),
+            "pending deadline lost"
+        );
+        let first = host.state(&root).await?;
+        assert_eq!(first.open_children.len(), 3);
+        for child in &first.open_children {
+            host.drain(child).await?;
+        }
+        let snapshot = host.runtime().store().load(&host.actor(&root)?).await?;
+        let first_actor = snapshot.state().ok_or("missing waiting actor")?.clone();
+        drop(host);
+        drop(provider);
+
+        let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
+        let host = AgentHost::new(
+            provider.clone(),
+            super::script(vec![waiting(b"second", 20, Vec::new())]),
+            within.clone(),
+            ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+            clock.clone(),
+        )?;
+        assert_eq!(host.drain_event(&root).await?, Some(10));
+        assert_eq!(host.state(&root).await?, first, "deadline fired early");
+        let snapshot = host.runtime().store().load(&host.actor(&root)?).await?;
+        assert_eq!(snapshot.state(), Some(&first_actor));
+        time.advance_to(10)?;
+        assert_eq!(
+            host.drain_event(&root).await?,
+            Some(30),
+            "delivered deadline was not replaced"
+        );
+        let second = host.state(&root).await?;
+        assert_eq!(
+            second.turn.as_ref().map(|turn| turn.checkpoint.as_slice()),
+            Some(b"second".as_slice())
+        );
+        let snapshot = host.runtime().store().load(&host.actor(&root)?).await?;
+        let second_actor = snapshot.state().ok_or("missing resumed actor")?.clone();
+        assert!(second_actor.alarm().generation() > first_actor.alarm().generation());
+        assert_eq!(second_actor.alarm().pending(), Some(30));
+        drop(host);
+        drop(provider);
+
+        let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
+        let host = AgentHost::new(
+            provider,
+            super::script(Vec::new()),
+            within.clone(),
+            ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+            clock.clone(),
+        )?;
+        assert_eq!(host.drain_event(&root).await?, Some(30));
+        let snapshot = host.runtime().store().load(&host.actor(&root)?).await?;
+        assert_eq!(snapshot.state(), Some(&second_actor));
+        let delivered = if archive {
+            host.archive(&root, &user(), &intent("stop")).await?
+        } else {
+            host.send(
+                &root,
+                &user(),
+                &InboxRecord::Cancel(Control {
+                    by: user(),
+                    id: intent("stop"),
+                }),
+            )
+            .await?
+        };
+        assert!(matches!(delivered, Delivered::Committed { .. }));
+        assert_eq!(
+            host.drain_event(&root).await?,
+            None,
+            "control retained deadline"
+        );
+        let stopped = host.state(&root).await?;
+        assert_eq!(stopped.closed, archive);
+        assert_eq!(stopped.turn, None);
+        let snapshot = host.runtime().store().load(&host.actor(&root)?).await?;
+        let stopped_actor = snapshot.state().ok_or("missing stopped actor")?.clone();
+        assert!(stopped_actor.alarm().generation() > second_actor.alarm().generation());
+        assert!(stopped_actor.alarm().pending().is_none());
+        time.advance_to(30)?;
+        // Finite delivery must leave the cleared generation untouched. The
+        // empty driver refuses an early, duplicate or stale continuation.
+        assert_eq!(host.drain_event(&root).await?, None);
+        assert_eq!(host.state(&root).await?, stopped);
+        let snapshot = host.runtime().store().load(&host.actor(&root)?).await?;
+        assert_eq!(snapshot.state(), Some(&stopped_actor));
     }
     Ok(())
 }
