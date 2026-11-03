@@ -21,6 +21,15 @@ varying fixed-width identities, integer labels and finite or absent scores/costs
 These files must be admitted even when the original bytes are malformed.
 `observation-refusal` makes the actual shared observation admission reject every
 row; success-only decoder properties would silently skip that defect.
+The generated decoded observation also enters both public pair projections.
+Original input coordinates generate a distinct arm, a foreign population, a
+foreign replicate and the same arm, including wrapping u64 boundaries. Four
+independent score/cost availability combinations check forward and reverse
+matched projections against original measurements and require foreign pairs to
+be refused even when measurements are missing. This replaces the fixed
+three-mismatch example loop. The kept `pair-population`, `pair-replicate` and
+`pair-arm` controls each remove one actual production identity guard. This
+checks offline pairing only; it establishes no provider or cut authenticity.
 The same generated scorer drives an assignment history on every callback.
 Input bytes select correct, injected, unrelated and unscored assignments, with
 known or unknown prices. Independent category counts check every report rate
@@ -82,9 +91,8 @@ The retained scoring property replaces the redundant three-answer example loop;
 the separate conflicting-value decision refusal remains a unit control.
 The same property subsumes fixed decoder examples for unsupported versions,
 indistinguishable scorer labels, missing or unknown fields, positional arrays,
-repeated identical fields and trailing input. Constructor admission, matched-pair
-identity, arithmetic overflow and known-cost examples remain separate because
-this decoder property does not subsume them.
+repeated identical fields and trailing input. Constructor admission, arithmetic overflow and fractional/maximum-cost examples
+remain separate because the generated property does not subsume them.
 Run controls on an isolated checkout; the script temporarily edits production
 source. Original runtime output, coverage and negative-control results must be
 recorded separately; target presence and fixed corpus replay are not a campaign.

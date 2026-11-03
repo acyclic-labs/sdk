@@ -178,24 +178,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn malformed_rows_and_mismatched_pairs_never_reach_statistics()
+    fn invalid_measurements_and_score_overflow_are_refused()
     -> Result<(), Box<dyn std::error::Error>> {
         // Authored analysis inputs, not captured provider output.
-        let baseline = Observation::new([7; 32], 0, 0, Some(1.0), None)?;
-        let treatment = Observation::new([7; 32], 0, 1, Some(3.0), Some(0.01))?;
-        let encoded = serde_json::to_vec(&treatment)?;
-        assert_eq!(
-            Observation::decode(&encoded)?.difference(&baseline)?,
-            Some(2.0)
-        );
-        for row in [
-            Observation::new([7; 32], 1, 1, None, None)?,
-            Observation::new([8; 32], 0, 1, None, None)?,
-            Observation::new([7; 32], 0, 0, None, None)?,
-        ] {
-            assert!(row.difference(&baseline).is_err());
-            assert!(row.cost_difference(&baseline).is_err());
-        }
         assert!(Observation::new([7; 32], 0, 1, Some(f64::INFINITY), None).is_err());
         for cost in [-1.0, f64::INFINITY, f64::NAN] {
             assert!(Observation::new([7; 32], 0, 1, None, Some(cost)).is_err());

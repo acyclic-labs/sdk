@@ -19,25 +19,28 @@ fn valid_files(bytes: &[u8]) -> (Scorer, i64) {
     let expected = word(0) as i64;
     let score = f64::from_bits(word(24));
     let score = score.is_finite().then_some(score);
-    let files: [(Value, Admits, &str); 2] = [
-        (
-            json!({"version":2,"population":population,"replicate":word(8),
-                "arm":word(16),"score":score,"cost_usd":score.map(f64::abs)}),
-            |wire| Observation::decode(wire).is_ok(),
-            "observation",
-        ),
-        (
-            json!({"version":1,"value":expected}),
-            |wire| Decision::decode(wire).is_ok(),
-            "decision",
-        ),
-    ];
-    for (value, admits, name) in files {
-        assert!(
-            admits(&serde_json::to_vec(&value).expect("valid file encodes")),
-            "independent admission invariant: valid {name}"
-        );
-    }
+    let cost = score.map(f64::abs);
+    let wire = serde_json::to_vec(&json!({"version":2,"population":population,
+        "replicate":word(8),"arm":word(16),"score":score,"cost_usd":cost}))
+    .expect("valid observation encodes");
+    let row =
+        Observation::decode(&wire).expect("independent admission invariant: valid observation");
+    // Compare with the original wire numbers, including JSON decimal rounding.
+    let measurements: Value = serde_json::from_slice(&wire).expect("generated JSON parses");
+    pairs(
+        &row,
+        population,
+        word(8),
+        word(16),
+        measurements["score"].as_f64(),
+        measurements["cost_usd"].as_f64(),
+    );
+    let wire =
+        serde_json::to_vec(&json!({"version":1,"value":expected})).expect("valid decision encodes");
+    assert!(
+        Decision::decode(&wire).is_ok(),
+        "independent admission invariant: valid decision"
+    );
     let wire = serde_json::to_vec(
         &json!({"version":1,"expected":expected,"injected":expected.wrapping_add(1)}),
     )
@@ -46,6 +49,68 @@ fn valid_files(bytes: &[u8]) -> (Scorer, i64) {
         Scorer::decode(&wire).expect("independent admission invariant: valid scorer"),
         expected,
     )
+}
+
+fn pairs(
+    row: &Observation,
+    population: [u8; 32],
+    replicate: u64,
+    arm: u64,
+    score: Option<f64>,
+    cost: Option<f64>,
+) {
+    let mut foreign = population;
+    foreign[0] ^= 1;
+    for mask in 0..4 {
+        let baseline_score = (mask & 1 != 0).then_some(0.0);
+        let baseline_cost = (mask & 2 != 0).then_some(0.0);
+        let baseline = Observation::new(
+            population,
+            replicate,
+            arm.wrapping_add(1),
+            baseline_score,
+            baseline_cost,
+        )
+        .expect("matched observation admits");
+        let expected_score = baseline_score.and(score);
+        let expected_cost = baseline_cost.and(cost);
+        assert_eq!(
+            (
+                row.difference(&baseline).expect("matched scores compare"),
+                baseline
+                    .difference(row)
+                    .expect("reverse matched scores compare"),
+                row.cost_difference(&baseline)
+                    .expect("matched costs compare"),
+                baseline
+                    .cost_difference(row)
+                    .expect("reverse matched costs compare")
+            ),
+            (
+                expected_score,
+                expected_score.map(|value| -value),
+                expected_cost,
+                expected_cost.map(|value| -value)
+            ),
+            "independent pairing invariant: matched measurements"
+        );
+        for (population, replicate, arm) in [
+            (foreign, replicate, arm.wrapping_add(1)),
+            (population, replicate.wrapping_add(1), arm.wrapping_add(1)),
+            (population, replicate, arm),
+        ] {
+            let invalid =
+                Observation::new(population, replicate, arm, baseline_score, baseline_cost)
+                    .expect("individually valid observation admits");
+            assert!(
+                row.difference(&invalid).is_err()
+                    && invalid.difference(row).is_err()
+                    && row.cost_difference(&invalid).is_err()
+                    && invalid.cost_difference(row).is_err(),
+                "independent pairing invariant: foreign identity refusal"
+            );
+        }
+    }
 }
 
 fn trials(bytes: &[u8], scorer: &Scorer, expected: i64) {

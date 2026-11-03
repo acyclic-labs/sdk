@@ -87,6 +87,18 @@ CASES = {
         "self.assigned = assigned;\n        let known_cost_usd = if let Some(cost) = cost_usd {",
         "trials-priced", "independent report invariant: refusal preserves report",
     ),
+    "pair-population": (
+        "experiments/mod.rs", "row.population != baseline.population", "false",
+        "trials-priced", "independent pairing invariant: foreign identity refusal",
+    ),
+    "pair-replicate": (
+        "experiments/mod.rs", "row.replicate != baseline.replicate", "false",
+        "trials-priced", "independent pairing invariant: foreign identity refusal",
+    ),
+    "pair-arm": (
+        "experiments/mod.rs", "row.arm == baseline.arm", "false",
+        "trials-priced", "independent pairing invariant: foreign identity refusal",
+    ),
 }
 
 
