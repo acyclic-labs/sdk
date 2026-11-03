@@ -146,3 +146,21 @@ credit before returning its live buffer. The unchanged property must reject it a
 `bridge bytes must retain the original credit after the engine view retires`.
 This mutation changes the production copy boundary and adds no allocator or
 parallel accounting model. Restore it before collecting original coverage.
+
+The target also checks the owned-Value argument decoder through the same private
+`PreparationIo::decode` entry used by stock tool calls. The reference calls the
+production typed decoder with the same Root schema and record depth; its successful
+value supplies the existing reply property, replacing that property's separate
+unbounded JSON parse. The native adapter must preserve the value or the typed
+syntax/admission refusal. Successful values retain enough original credit for
+their owned storage, syntax diagnostics retain their original custody, and both
+release that credit on destruction. This checks the native decode component;
+stock journal, authorization and tool admission remain distinct obligations.
+
+Apply `mutations/code_mode_omit_argument_credit.patch` to remove the decoded
+value's bytes from the production adapter's reservation. The unchanged target
+must reject a valid JSON input at `decoded argument storage must retain its
+native admission`. The generated number-expansion seed exercises this case
+without a captured-host-fixture claim. Restore the patch before collecting
+original coverage. This uses the original reservation and ledger, with no
+additional decoder, charge callback model or public entry point.

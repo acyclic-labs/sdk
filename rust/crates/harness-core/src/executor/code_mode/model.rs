@@ -26,11 +26,99 @@ pub async fn check(input: &[u8]) {
     let definitions: OwnedBytes = serde_json::to_vec(&definitions).unwrap().into();
     let text = String::from_utf8_lossy(input);
     let literal = serde_json::to_string(text.as_ref()).unwrap();
+    let value = check_arguments(input);
     check_bridge(&text).await;
     check_programs(input, &definitions, &literal, &text).await;
     check_progress(&definitions).await;
-    check_replies(input, &definitions, &tool_name, &literal, &text).await;
+    check_replies(input, value, &definitions, &tool_name, &literal, &text).await;
     check_settlement(&definitions, &tool_name, &literal).await;
+}
+
+fn check_arguments(input: &[u8]) -> Option<serde_json::Value> {
+    use crate::executor::json::{JsonBounds, JsonValueSchema};
+    use crate::wire::ErrorCode;
+    // Refine the same owned-Value decoder through the caller's original native
+    // adapter. Its scoped admission, rather than a test callback, owns storage.
+    let expected = crate::executor::json::json_from_slice_bounded(
+        std::marker::PhantomData::<serde_json::Value>,
+        input,
+        JsonBounds {
+            maximum_bytes: input.len() as u64,
+            maximum_items: u64::MAX,
+            maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
+        },
+        Some(ErrorCode::Invalid),
+        Some(&JsonValueSchema::Root),
+        &mut |_| Ok(()),
+    );
+    let work = native_work(false);
+    let baseline = work.live_allocation_bytes();
+    let io = crate::filesystem::PreparationIo::from_native_work(&work).unwrap();
+    let result = io.decode(
+        std::marker::PhantomData::<serde_json::Value>,
+        input,
+        ErrorCode::Invalid,
+    );
+    match (&result, &expected) {
+        (Ok((value, held)), Ok(expected)) => {
+            assert_eq!(
+                value, expected,
+                "native argument admission must preserve the decoded value"
+            );
+            let owned = std::mem::size_of::<serde_json::Value>() as u64
+                + crate::executor::json::json_value_retained_owned_bytes(value).unwrap();
+            assert!(
+                held.bytes() >= owned,
+                "decoded argument storage must retain its native admission"
+            );
+            assert_eq!(work.live_allocation_bytes(), baseline + held.bytes());
+        }
+        (
+            Err(crate::Error::NativeJson {
+                code,
+                source,
+                custody,
+            }),
+            Err(crate::Error::NativeJson {
+                code: expected_code,
+                source: expected_source,
+                ..
+            }),
+        ) => {
+            assert_eq!(code, expected_code);
+            assert_eq!(source.classify(), expected_source.classify());
+            assert_eq!(
+                (source.line(), source.column()),
+                (expected_source.line(), expected_source.column())
+            );
+            let custody = custody
+                .as_ref()
+                .expect("native argument diagnostic must retain its admission");
+            assert_eq!(work.live_allocation_bytes(), baseline + custody.bytes());
+        }
+        (
+            Err(crate::Error::NativeJsonAdmission { code, kind }),
+            Err(crate::Error::NativeJsonAdmission {
+                code: expected_code,
+                kind: expected_kind,
+            }),
+        ) => assert_eq!((code, kind), (expected_code, expected_kind)),
+        (
+            Err(crate::Error::NativeBoundary { code, reason }),
+            Err(crate::Error::NativeBoundary {
+                code: expected_code,
+                reason: expected_reason,
+            }),
+        ) => assert_eq!((code, reason), (expected_code, expected_reason)),
+        _ => panic!(
+            "native argument admission differs from the production decoder: {:?}; {expected:?}",
+            result.as_ref().map(|(value, _)| value)
+        ),
+    }
+    drop(result);
+    drop(io);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    expected.ok()
 }
 
 async fn check_bridge(text: &str) {
@@ -201,6 +289,7 @@ async fn check_progress(definitions: &OwnedBytes) {
 
 async fn check_replies(
     input: &[u8],
+    value: Option<serde_json::Value>,
     definitions: &OwnedBytes,
     tool_name: &str,
     literal: &str,
@@ -212,7 +301,7 @@ async fn check_replies(
         "let result; try {{ result = {{ok:true,value:await tools[{tool_name}]({{}})}}; }} \
          catch (error) {{ result = {{ok:false,value:String(error.message)}}; }} result"
     );
-    let success = serde_json::from_slice(input).unwrap_or_else(|_| {
+    let success = value.unwrap_or_else(|| {
         serde_json::json!([
             null, false, true, i64::MIN, u64::MAX, -0.0, 1.25, text,
             [], {}, {"nested": [text]}
