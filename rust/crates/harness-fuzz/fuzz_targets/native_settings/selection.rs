@@ -62,6 +62,54 @@ fn scope(files: &Files, role: usize, value: &Value) {
     write(&path, &bytes);
 }
 
+pub(super) fn inactive(bytes: &[u8]) {
+    let files = Files::new();
+    write(
+        &files.home.join(".claude/settings.json"),
+        br#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"guard"}]}]}}"#,
+    );
+    let role = usize::from(bytes.first().copied().unwrap_or(0) % 4);
+    let invalid = Value::String(String::from_utf8_lossy(bytes).into_owned());
+    let path = match role {
+        0 => files.home.join(".claude.json"),
+        1 => files.codex.join("config.toml"),
+        2 => files.workspace.join(".mcp.json"),
+        _ => files.workspace.join(".codex/config.toml"),
+    };
+    let document = if role == 0 {
+        serde_json::to_vec(&invalid).unwrap()
+    } else if role == 2 {
+        serde_json::to_vec(&json!({"mcpServers":invalid})).unwrap()
+    } else {
+        toml::to_string(&json!({"mcp_servers":invalid}))
+            .unwrap()
+            .into_bytes()
+    };
+    write(&path, &document);
+    for load_mcp in [false, true] {
+        let mut config = SettingsConfig::new(&files.workspace, &files.home)
+            .codex_home(&files.codex)
+            .trust_project_hooks(true)
+            .trust_project_mcp(true)
+            .maximum_file_bytes(u32::MAX.into());
+        config.load_mcp = load_mcp;
+        let result = futures::executor::block_on(NativeSettings::load(config));
+        if load_mcp {
+            assert!(
+                result.is_err(),
+                "active invalid MCP sections must be refused"
+            );
+        } else {
+            let snapshot = result.expect("inactive MCP sections must not block hooks");
+            assert!(
+                !snapshot.hooks.is_empty(),
+                "selected hooks must remain present"
+            );
+            assert!(snapshot.mcp.server_names().next().is_none());
+        }
+    }
+}
+
 pub(super) fn check() {
     let invalid = json!({"selected":{"command":42,"args":["discard"]},"disabled":{"command":42}});
     let valid = json!({"selected":{"command":"winner"},"disabled":{"enabled":false,"command":42}});
