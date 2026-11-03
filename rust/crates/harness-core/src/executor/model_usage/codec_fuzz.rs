@@ -67,9 +67,7 @@ pub fn check_metadata(metadata: &Value) {
 /// A row round trip checks syntax/value preservation, not terminal authority.
 /// Both operations are synchronous and wait on no external producer.
 pub fn check(bytes: &[u8]) {
-    if let Ok(metadata) = serde_json::from_slice::<Value>(bytes) {
-        check_metadata(&metadata);
-    }
+    let _ = check_metadata_bytes(bytes);
     if let Ok(record) = serde_json::from_slice::<ModelUsageRecord>(bytes) {
         let encoded = serde_json::to_vec(&record).expect("accepted usage row encodes");
         let restored: ModelUsageRecord =
@@ -79,4 +77,12 @@ pub fn check(bytes: &[u8]) {
             serde_json::to_value(restored).unwrap()
         );
     }
+}
+
+pub(super) fn check_metadata_bytes(bytes: &[u8]) -> serde_json::Result<()> {
+    let mut decoder = serde_json::Deserializer::from_slice(bytes);
+    let metadata = crate::deserialize_json_value(&mut decoder)?;
+    decoder.end()?;
+    check_metadata(&metadata);
+    Ok(())
 }

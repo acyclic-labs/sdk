@@ -452,6 +452,17 @@ accepted-byte identity. Contextual oracles retain original caller identities,
 protected content and authority; parsing checkpoint or index syntax grants no
 signature, digest or selected-step authority.
 
+The `harness_codecs` metadata hook uses the same literal-key JSON decoder as
+`ModelEvent::Completed`, then compares usage counters with independent path/set
+consensus. The existing usage property compares production event decoding with
+byte-hook acceptance for explicit RawValue/Number extension mutations and
+refuses trailing values. These are generated protocol mutations, not captures.
+`mutations/model-usage-metadata-default-decoder.patch` restores the mismatched
+decoder and must fail that unchanged property; `model-usage-default-zero.patch`
+still tests counter conservation. The original `usage-llamacpp-text-json` corpus
+and its `SOURCES.tsv` provenance remain unchanged. Neither hook establishes
+durable terminal authority.
+
 Fixed ID work is bounded by 113 bytes and allocates nothing. Variable codecs
 perform work proportional to supplied bytes and returned items. Framing controls
 check input consumption, typed EOF and finite producer loss; funded controls
