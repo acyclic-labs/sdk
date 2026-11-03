@@ -4,6 +4,8 @@ use acyclic_harness_core::native_settings::{NativeSettings, SettingsConfig};
 use std::path::{Path, PathBuf};
 #[path = "native_settings/mcp.rs"]
 mod mcp;
+#[path = "native_settings/model.rs"]
+mod model;
 #[path = "native_settings/selection.rs"]
 mod selection;
 
@@ -68,6 +70,7 @@ fn write(path: &Path, bytes: &[u8]) {
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     mcp::check(bytes);
+    model::check(bytes);
     selection::inactive(bytes);
     let (&role, document) = bytes.split_first().unwrap_or((&0, &[]));
     let files = Files::new();
