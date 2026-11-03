@@ -94,6 +94,7 @@ fn destination_fences_survive_ancestor_relocation_and_retire_through_original_pa
 
 #[test]
 fn a_missing_destination_or_parent_is_named_exactly() -> Result<(), Box<dyn std::error::Error>> {
+    registry::initialize()?;
     let root = tempfile::tempdir()?;
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .map_err(|(error, _)| error)?;
