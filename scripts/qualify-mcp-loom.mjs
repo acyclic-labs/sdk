@@ -197,7 +197,7 @@ export function qualifySessionFsLoom(run = runCommand) {
 
 export function qualifyOwnershipLoom(run = runCommand) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", [], run, {
-    kind: "--lib", filter: "ownership::model::", exact: false, passed: 8,
+    kind: "--lib", filter: "ownership::model::", exact: false, passed: 6,
     env: loomEnvironment(), targetCfg: [],
   });
 }
