@@ -84,7 +84,11 @@ inline!(
     str,
     uuid::Uuid
 );
-owned_enum!(crate::conversation::VolumeOperation { Read, Write });
+owned_enum!(crate::conversation::VolumeOperation {
+    Read,
+    Write,
+    Delete
+});
 impl OwnedBytes for String {
     fn owned_heap_bytes(&self) -> Result<u64> {
         Ok(self.capacity() as u64)
