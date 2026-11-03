@@ -185,6 +185,16 @@ export function qualifyNativeHostEvents(run = runCommand) {
   });
 }
 
+export function qualifyNativeOwnerEnvelope(run = runCommand) {
+  return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", [], run, {
+    kind: "--lib", targetCfg: [], filters: [
+      "owner_record::tests::every_corrupted_byte_and_truncated_prefix_is_rejected_before_decode",
+      "owner_record::tests::protected_record_round_trips_through_the_single_codec",
+      "owner_record::tests::envelope_bounds_are_checked_before_protection_or_caller_allocation",
+    ],
+  });
+}
+
 export function qualifyNativeHostLoom(run = runCommand) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
     kind: "--lib", targetCfg: [], env: loomEnvironment(),
@@ -305,6 +315,7 @@ const fixedModels = {
   "--native-claim": qualifyNativeClaimLoom,
   "--native-descriptor": qualifyNativeDescriptorLoom,
   "--native-host-events": qualifyNativeHostEvents,
+  "--native-owner-envelope": qualifyNativeOwnerEnvelope,
   "--guest": qualifyGuestLoom,
   "--session-fs": qualifySessionFsLoom, "--ownership": qualifyOwnershipLoom,
   "--native-registry": qualifyNativeRegistryLoom,

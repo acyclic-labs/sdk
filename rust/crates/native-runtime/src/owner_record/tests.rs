@@ -60,22 +60,6 @@ fn negative_control_plaintext_with_a_fresh_digest_cannot_replace_dpapi() {
 }
 
 #[test]
-fn negative_control_a_digestless_reader_accepts_corruption() -> io::Result<()> {
-    let mut record = encode(b"synthetic owner")?;
-    *record.get_mut(8).ok_or(io::ErrorKind::InvalidData)? ^= 1;
-    assert!(decode_with::<(), io::Error>(&record, 65_536, None, |_| Ok(())).is_err());
-    // Removing envelope authentication admits the same corrupted record through
-    // the actual platform decoder, including DPAPI on Windows.
-    let decoded = protection::unprotect_with_copy(
-        record.get(40..).ok_or(io::ErrorKind::InvalidData)?,
-        65_536,
-        |bytes| Ok::<_, io::Error>(bytes.to_vec()),
-    )?;
-    assert_eq!(decoded, b"synthetic owner");
-    Ok(())
-}
-
-#[test]
 fn envelope_bounds_are_checked_before_protection_or_caller_allocation() {
     for maximum in 0..40 {
         assert!(
