@@ -13,6 +13,11 @@ fn is_switch(host: &str, name: &str) -> bool {
     host == "pi" && name == "--no-extensions"
 }
 
+/// Decodes the root's serialized argument vector at the child-owner boundary.
+pub fn inherited_arguments(encoded: &str) -> Result<Vec<String>> {
+    serde_json::from_str(encoded).map_err(storage)
+}
+
 /// Admits only explicit native policy options the host allows, with
 /// exactly one sandbox and approval choice where the host has them.
 pub fn validate(host: &str, args: &[String]) -> Result<()> {

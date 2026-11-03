@@ -26,6 +26,9 @@ use std::task::{Context, Poll, Waker};
 mod answer;
 use answer::NativeAnswer;
 
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod readiness_validation;
+
 mod tools;
 pub use tools::serve;
 
@@ -159,13 +162,14 @@ impl NativeChildren {
     /// through this owner, so it settles their orphaned turns once and runs
     /// their queued inputs; it never polls the harness afterwards.
     pub fn open(host: &str) -> Result<Self> {
-        let flags: Vec<String> =
-            serde_json::from_str(&std::env::var("ACYCLIC_HOST_ARGS").map_err(|_| {
+        let flags = {
+            let encoded = std::env::var("ACYCLIC_HOST_ARGS").map_err(|_| {
                 invalid(
                     "launch the native parent with acyclic host HOST -- POLICY_ARGS before spawning",
                 )
-            })?)
-            .map_err(storage)?;
+            })?;
+            launch::inherited_arguments(&encoded)?
+        };
         let cwd = PathBuf::from(
             std::env::var_os("ACYCLIC_WORKSPACE")
                 .ok_or_else(|| invalid("native workspace context absent"))?,
@@ -708,34 +712,6 @@ mod framing {
     use super::*;
 
     #[test]
-    fn a_receipt_follows_its_child_to_a_remounted_view() {
-        let parent = AgentPath::root(&crate::agent::AgentId::from_bytes([1; 16]));
-        let Ok(child) = parent.child(&crate::agent::AgentId::from_bytes([2; 16])) else {
-            panic!("a child path nests under its root");
-        };
-        let reply = |task: &AgentPath, cwd: &str| serde_json::json!({"task": task, "cwd": cwd});
-        let Ok(receipt) = Receipt::accepted(&reply(&child, "/w/.views/a")) else {
-            panic!("the first reply names the child");
-        };
-        // An idle child's view was released; the next exchange mounted it
-        // elsewhere, and its turn runs there.
-        assert_eq!(
-            receipt.confirm(&reply(&child, "/w/.views/b")).ok(),
-            Some(PathBuf::from("/w/.views/b"))
-        );
-        // Negative control: a reply naming another task is still refused.
-        assert!(matches!(
-            receipt.confirm(&reply(&parent, "/w/.views/b")),
-            Err(Error::Conflict(_))
-        ));
-        assert!(
-            receipt
-                .confirm(&serde_json::json!({"task": child}))
-                .is_err()
-        );
-    }
-
-    #[test]
     fn oversized_native_events_are_omitted_once_without_wedging_the_stream() {
         let mut events = acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT);
         let mut omitted = 0;
@@ -758,21 +734,13 @@ mod framing {
     /// fired key wakes the server once; a quiet key is never queued.
     #[test]
     fn only_fired_registrations_reach_the_ready_queue() {
-        let ready = Arc::new(Ready::default());
-        let wakes = (0..1000)
-            .map(|index| {
-                Waker::from(Arc::new(ChildWake {
-                    key: format!("child-{index}"),
-                    ready: Arc::clone(&ready),
-                }))
-            })
-            .collect::<Vec<_>>();
-        let server = Waker::noop();
-        assert!(ready.poll(&Context::from_waker(server)).is_pending());
-        wakes[7].wake_by_ref();
-        wakes[7].wake_by_ref();
-        assert!(ready.poll(&Context::from_waker(server)).is_ready());
-        assert_eq!(ready.take(), BTreeSet::from(["child-7".to_owned()]));
-        assert!(ready.take().is_empty(), "999 quiet children were queued");
+        // Replacement, duplicate coalescing, consumption, early readiness and
+        // re-registration use the same oracle as arbitrary fuzz schedules.
+        readiness_validation::verify(
+            &[
+                0, 1, 0x47, 0x47, 1, 0x80, 0x80, 0x4c, 1, 0x80, 1, 0xc7, 0x80,
+            ],
+            1000,
+        );
     }
 }

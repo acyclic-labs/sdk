@@ -1,0 +1,9 @@
+--- a/rust/crates/harness/src/local/host_workspace.rs
++++ b/rust/crates/harness/src/local/host_workspace.rs
+@@ -30,3 +30,3 @@
+-        Err(Error::Invalid(
+-            "child reference is not one portable path component".into(),
+-        ))
++        Err(Error::Invalid(format!(
++            "child reference {reference:?} is not one portable path component"
++        )))

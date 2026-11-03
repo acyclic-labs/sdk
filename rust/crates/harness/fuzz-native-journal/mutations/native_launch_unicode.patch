@@ -1,0 +1,11 @@
+diff --git a/rust/crates/harness/src/local/host_process/launch.rs b/rust/crates/harness/src/local/host_process/launch.rs
+--- a/rust/crates/harness/src/local/host_process/launch.rs
++++ b/rust/crates/harness/src/local/host_process/launch.rs
+@@ -136,2 +136 @@
+-                .to_str()
+-                .ok_or_else(|| invalid("non-Unicode native configuration path"))?
++                .to_string_lossy()
+@@ -146,2 +145 @@
+-            cwd.to_str()
+-                .ok_or_else(|| invalid("non-Unicode workspace"))?
++            cwd.to_string_lossy()

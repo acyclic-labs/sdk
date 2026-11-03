@@ -1,0 +1,6 @@
+diff --git a/rust/crates/harness/src/local/host_process/launch.rs b/rust/crates/harness/src/local/host_process/launch.rs
+--- a/rust/crates/harness/src/local/host_process/launch.rs
++++ b/rust/crates/harness/src/local/host_process/launch.rs
+@@ -183 +183 @@
+-    if session.is_some_and(|reference| reference.starts_with('-')) {
++    if false && session.is_some_and(|reference| reference.starts_with('-')) {

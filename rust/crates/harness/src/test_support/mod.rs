@@ -3,6 +3,73 @@
 pub use acyclic_harness_core::test_support::*;
 pub use acyclic_harness_search::test_support::{ScriptedSearch, ScriptedSearchProvider};
 
+/// Checks arbitrary sequential schedules against the native child ready queue.
+/// This exercises the production registrations, queue and waiter callbacks;
+/// physical event-hub concurrency remains a separate contract.
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub fn check_native_readiness(input: &[u8]) {
+    crate::local::host_process::children::readiness_validation::verify(input, 16);
+}
+
+/// Checks the native mount-reference parser used before committing a spawn.
+/// Arbitrary bytes cover refusal; generated portable components also require
+/// admission, so rejecting every input cannot satisfy the safety oracle.
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub fn check_native_child_reference(input: &[u8]) {
+    use crate::local::host_workspace::child_reference;
+    use std::path::{Component, Path};
+
+    if let Ok(reference) = std::str::from_utf8(input) {
+        match child_reference(reference) {
+            Ok(()) => {
+                let mut components = Path::new(reference).components();
+                assert!(
+                    matches!(components.next(), Some(Component::Normal(name)) if name == reference)
+                        && components.next().is_none(),
+                    "admitted reference escaped its single child component"
+                );
+                assert!(
+                    reference.len() <= 255
+                        && reference
+                            .chars()
+                            .all(|character| character.is_ascii_alphanumeric()
+                                || matches!(character, '-' | '_' | '.')),
+                    "admitted reference cannot be represented by the portable mount alphabet"
+                );
+            }
+            Err(crate::Error::Invalid(message)) => assert!(
+                message.len() <= 64,
+                "child-reference refusal retained unbounded input: {} bytes",
+                message.len()
+            ),
+            Err(error) => panic!("child-reference refusal lost its invalid-input type: {error}"),
+        }
+    }
+
+    // This is an input generator, not a second parser. Its bounded output is
+    // one filesystem component; the original arbitrary input is never cut.
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.";
+    let mut portable = String::from("a");
+    portable.extend(
+        input
+            .iter()
+            .take(254)
+            .map(|byte| char::from(ALPHABET[usize::from(*byte) % ALPHABET.len()])),
+    );
+    assert!(
+        child_reference(&portable).is_ok(),
+        "generated portable child component was refused"
+    );
+}
+
 #[cfg(feature = "test-support")]
 pub(crate) mod model_view_work;
 #[cfg(feature = "test-support")]

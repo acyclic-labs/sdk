@@ -30,3 +30,31 @@ path = "fuzz_targets/native_staging_selection.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "native_receipt"
+path = "fuzz_targets/native_receipt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "native_child_reference"
+path = "fuzz_targets/native_child_reference.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "native_readiness"
+path = "fuzz_targets/native_readiness.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "native_launch"
+path = "fuzz_targets/native_launch.rs"
+test = false
+doc = false
+bench = false

@@ -1,0 +1,11 @@
+--- a/rust/crates/harness/src/local/host_process/launch.rs
++++ b/rust/crates/harness/src/local/host_process/launch.rs
+@@ -115,7 +115,7 @@
+         };
+         let inherited_path = match (host, name.as_str()) {
+             (_, "--add-dir") | ("claude-code", "--plugin-dir") | ("pi", "--session-dir") => true,
+-            ("claude-code", "--settings") => !value.trim_start().starts_with('{'),
++            ("claude-code", "--settings") => true,
+             ("pi", "--extension") => ![
+                 "npm:", "git:", "github:", "http:", "https:", "ssh:", "builtin:",
+             ]
