@@ -25,8 +25,37 @@ pub(crate) fn check(bytes: &[u8]) -> bool {
     {
         return false;
     }
-    // Version admission precedes payload interpretation, including checksums.
     let changed = (incarnation as u8).max(1);
+    // Persisted capacities belong to the opening configuration. Even a valid
+    // container must refuse a different caller's limits.
+    let other_limits = LocalStreamLimits {
+        compaction_operations: if limits.compaction_operations == 1 {
+            2
+        } else {
+            1
+        },
+        ..limits
+    };
+    if !matches!(
+        decode_header(&header, other_limits),
+        Err(LocalStreamError::Corrupt)
+    ) || !matches!(
+        decode_snapshot(&snapshot, other_limits),
+        Err(LocalStreamError::Corrupt)
+    ) {
+        return false;
+    }
+    // Corrupt the actual writer's checksum without changing its payload.
+    let checksum_byte = snapshot.len() - 1;
+    snapshot[checksum_byte] ^= changed;
+    if !matches!(
+        decode_snapshot(&snapshot, limits),
+        Err(LocalStreamError::Corrupt)
+    ) {
+        return false;
+    }
+    snapshot[checksum_byte] ^= changed;
+    // Version admission precedes payload interpretation, including checksums.
     header[HEADER_MAGIC.len() - 2] ^= changed;
     snapshot[SNAPSHOT_MAGIC.len() - 2] ^= changed;
     encoded_incarnation[INCARNATION_MAGIC.len() - 2] ^= changed;
