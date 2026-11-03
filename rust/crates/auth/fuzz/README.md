@@ -56,3 +56,22 @@ invalid-alphabet and NUL suffixes must refuse through both entrances. Raw JSON
 also reaches the field adapter, including non-string input. These checks admit
 format only; they do not authenticate the decoded capability or qualify an
 enclosing product message.
+
+`trust_record` retains signed records captured by the actual `Issuer` and
+`AccountRoot` writers in `examples/trust_corpus.rs`. Regenerate from
+`rust/crates/auth` with `cargo run --locked --example trust_corpus`.
+`corpus/trust-record-sources.tsv` records each producer, length and SHA-256.
+All signing keys are public deterministic test keys. The records cover a foreign
+account keyring/checkpoint, an advanced selected-account floor and consecutive
+environment rotations. A record is tried intact before separator-based sequences,
+since signed wire bytes may contain the sequence separator.
+
+Replay keeps only records admitted by the original selected-account scope and
+compares custody with the actual follower, rather than with a local writer that
+may lag accepted external records. The maximum observed served floor survives
+unavailable intervals. Environment changes still exclude the fixed-anchor
+account replay assertion; this target does not qualify rotation catchup or live
+source-loss topology. `python3 negative-control.py trust-target` removes the
+production follower scope guard and requires the unchanged target's disjointness
+assertion to fail. It restores the source and never counts a build error as
+mutation detection.
