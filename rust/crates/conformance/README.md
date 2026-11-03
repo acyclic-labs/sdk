@@ -159,9 +159,11 @@ terminal, rather than a fabricated successful transfer. These terminal samples
 do not count still-active jobs, queue latency, final backing retirement or native
 Worker execution, and supply no authenticated physical admission binding.
 Run the deterministic observer controls with
-`cargo test --locked -p acyclic-test-support scale::tests`. They execute an
-injected scan, real per-agent threads, virtual timer registrations and a lost
-event producer; these controls validate the observer, not production liveness.
+`cargo test --locked -p acyclic-test-support scale::tests`. Generated observations
+pass through the original `Sample` and `Report` implementations and an independent
+mean and maximum oracle. The controls reject missing counters, growing work and
+idle resources, and malformed reports. They validate the report checker;
+native resource ownership and producer liveness require their original-path controls.
 
 Select core operation names with `--operations`, for example
 `--operations 'actors.create,actors.durable_write,actors.warm_read,actors.wake'`.
