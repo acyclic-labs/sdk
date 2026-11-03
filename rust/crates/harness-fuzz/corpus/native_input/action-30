@@ -1,0 +1,1 @@
+{"kind":"session","parent":"harness/agents/0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d","reference":"caller child","action":{"kind":"complete","claim":{"agent":"harness/agents/0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d","operation":"13131313-1313-1313-1313-131313131313","turn":18446744073709551615},"outcome":{"Failed":{"message":"caller failure"}}},"next":false}
