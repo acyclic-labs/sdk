@@ -33,23 +33,30 @@ const snapshots = fc.memo<Snapshot>(depth => {
   return fc.oneof(leaf, items, fields);
 });
 
-test("canonical admission selects Map entries before evaluating their values", () => {
-  const selected = new Map<string, unknown>();
-  let reads = 0;
-  const child = Object.defineProperty({}, "value", {
-    enumerable: true,
-    get() {
-      // A live traversal revisits this child through the appended entry. Fail
-      // on that second visit so the progress regression never needs a timeout.
-      if (++reads > 1) throw new Error("canonical admission revisited an appended Map entry");
-      selected.set("late", child);
-      return "selected";
-    },
-  });
-  selected.set("first", child);
-  expect(contracts.decodeClientJson(contracts.encodeCanonicalJson(selected)))
-    .toEqual({ first: { value: "selected" } });
-  expect(reads).toBe(1);
+test("canonical admission selects entries before evaluating their values", () => {
+  for (const selected of [new Map<string, unknown>(), [] as unknown[]]) {
+    const kind = Array.isArray(selected) ? "Array" : "Map";
+    let reads = 0;
+    const child = Object.defineProperty({}, "value", {
+      enumerable: true,
+      get() {
+        // Fail a live Map revisit without a timeout. Array iteration fixes its
+        // length, so also replace a later element to detect live value reads.
+        if (++reads > 1) throw new Error(`canonical admission revisited an appended ${kind} entry`);
+        if (Array.isArray(selected)) {
+          selected[1] = "changed";
+          selected.push(child);
+        } else selected.set("late", child);
+        return "selected";
+      },
+    });
+    if (Array.isArray(selected)) selected.push(child, "retained");
+    else selected.set("first", child);
+    assert.deepEqual(contracts.decodeClientJson(contracts.encodeCanonicalJson(selected)),
+      Array.isArray(selected) ? [{ value: "selected" }, "retained"] : { first: { value: "selected" } },
+      `canonical admission did not retain selected ${kind} entries`);
+    expect(reads).toBe(1);
+  }
 
   // Map entries define the admitted input; unrelated metadata must neither
   // invoke caller code nor determine the allocation used to select entries.
