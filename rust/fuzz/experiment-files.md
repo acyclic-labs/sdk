@@ -186,3 +186,13 @@ baseline only when both operands are nonzero. They use the existing
 `trials-priced` and `decision` seeds. Measurement availability still uses the
 independent original bits. Fixed nonzero score and unscored-cost subtraction
 examples are subsumed; maximum-cost and nonfinite/overflow controls remain.
+
+Original scalar types are checked before comparing decoded measurements:
+observations admit only absent/null or numeric score/cost fields, and decisions
+require an i64 value. A wrong type coerced to None must not compare equal to a
+missing measurement. Three retained mutations change the actual private field
+deserializer while preserving the original object/version/duplicate checks.
+Their three authored seeds change only score, cost or decision value to a JSON
+string in the existing own-format observation/decision files. They are not
+external-provider fixtures. The two observation fields share one type property;
+the scorer already checks its original fields with as_i64.

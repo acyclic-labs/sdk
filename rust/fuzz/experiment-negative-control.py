@@ -32,6 +32,38 @@ CASES = {
         "        Ok(row)",
         "observation-known", "independent observation invariant: identity field arm",
     ),
+    "observation-score-type": (
+        "experiments/mod.rs",
+        "    score: Option<f64>,\n    cost_usd: Option<f64>,\n}",
+        "    #[serde(deserialize_with = \"coerce_number\")]\n"
+        "    score: Option<f64>,\n    cost_usd: Option<f64>,\n}\n\n"
+        "fn coerce_number<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<Option<f64>, D::Error> {\n"
+        "    let value: serde_json::Value = serde::Deserialize::deserialize(decoder)?;\n"
+        "    Ok(value.as_f64())\n}",
+        "observation-score-string", "independent observation invariant: numeric type score",
+    ),
+    "observation-cost-type": (
+        "experiments/mod.rs",
+        "    score: Option<f64>,\n    cost_usd: Option<f64>,\n}",
+        "    score: Option<f64>,\n"
+        "    #[serde(deserialize_with = \"coerce_number\")]\n"
+        "    cost_usd: Option<f64>,\n}\n\n"
+        "fn coerce_number<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<Option<f64>, D::Error> {\n"
+        "    let value: serde_json::Value = serde::Deserialize::deserialize(decoder)?;\n"
+        "    Ok(value.as_f64())\n}",
+        "observation-cost-string", "independent observation invariant: numeric type cost_usd",
+    ),
+    "decision-value-type": (
+        "experiments/probes.rs",
+        "struct DecisionFile {\n    version: u32,\n    value: i64,\n}",
+        "struct DecisionFile {\n    version: u32,\n"
+        "    #[serde(deserialize_with = \"coerce_integer\")]\n"
+        "    value: i64,\n}\n\n"
+        "fn coerce_integer<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<i64, D::Error> {\n"
+        "    let value: serde_json::Value = serde::Deserialize::deserialize(decoder)?;\n"
+        "    Ok(value.as_i64().unwrap_or_default())\n}",
+        "decision-value-string", "independent decision invariant: integer value",
+    ),
     "scorer-distinct": (
         "experiments/probes.rs", " || scorer.expected == scorer.injected", "", "scorer-equal",
         "independent admission invariant: distinguishable scorer",

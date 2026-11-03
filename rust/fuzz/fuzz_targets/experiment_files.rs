@@ -464,12 +464,16 @@ fn object(bytes: &[u8], admits: Admits, version: u64, fields: &[&str], required:
 
 fn decision(bytes: &[u8]) {
     if Decision::decode(bytes).is_ok() {
-        object(
+        let value = object(
             bytes,
             |b| Decision::decode(b).is_ok(),
             1,
             &["version", "value"],
             &["version", "value"],
+        );
+        assert!(
+            value["value"].as_i64().is_some(),
+            "independent decision invariant: integer value"
         );
     }
 }
@@ -536,9 +540,14 @@ fuzz_target!(|bytes: &[u8]| {
         let encoded: Value = serde_json::from_slice(&canonical).expect("observation encodes JSON");
         identities(&encoded, &value);
         for field in ["score", "cost_usd"] {
+            let original = &value[field];
+            assert!(
+                original.is_null() || original.as_f64().is_some(),
+                "independent observation invariant: numeric type {field}"
+            );
             assert_eq!(
                 encoded[field].as_f64(),
-                value[field].as_f64(),
+                original.as_f64(),
                 "independent observation invariant: numeric field {field}"
             );
         }
