@@ -46,3 +46,15 @@ settlement query`. After exact source restoration, the same scenario must pass.
 The scenario counts actual native stream head reads, checks the root observer's
 settled cursor, and retains the original parent/child volume, context and
 authority assertions. Explicit replay cursors keep their original semantics.
+
+# Retained workspace diff authority control
+
+From the repository root, apply `diff-retained-authority.patch` and run:
+
+```sh
+cargo nextest run --locked -p acyclic-harness --features hosting,test-support --test main -E 'test(workspace_diff_pages_exact_changes_since_the_fork_base)'
+```
+
+The unchanged test must fail at `retained diff pages require the requesting
+reader's authority`. A compilation failure does not qualify the mutation.
+Reverse the production patch and require the same test to pass.

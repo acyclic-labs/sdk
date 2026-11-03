@@ -603,12 +603,15 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
         .map(serde_json::to_string)
         .transpose()
         .expect("cursor");
-    assert!(matches!(
-        pages
-            .page(&unlisted, volume, (&base, &current), &page(1, next))
-            .await,
-        Err(acyclic_harness::Error::Unauthorized(_))
-    ));
+    assert!(
+        matches!(
+            pages
+                .page(&unlisted, volume, (&base, &current), &page(1, next))
+                .await,
+            Err(acyclic_harness::Error::Unauthorized(_))
+        ),
+        "retained diff pages require the requesting reader's authority"
+    );
     Ok(())
 }
 
