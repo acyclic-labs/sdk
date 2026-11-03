@@ -46,6 +46,27 @@ fn summary(value: &e::SummaryRef) {
 fn residency(previous: ModelCacheResidency) {
     let mut foreign_clock = previous.clock_domain;
     foreign_clock[0] ^= 1;
+    let mut foreign_scope = previous.key;
+    foreign_scope.credential_scope[0] ^= 1;
+    let mut foreign_prefix = previous.key;
+    foreign_prefix.prefix_digest[0] ^= 1;
+    for key in [foreign_scope, foreign_prefix] {
+        assert_eq!(
+            ModelCacheResidency::observe(
+                key,
+                Some(previous),
+                previous.clock_domain,
+                previous.observed_at_ns,
+                ModelCacheAccess::Miss,
+            ),
+            Err(if previous.version == ModelCacheResidency::VERSION {
+                ModelCacheError::KeyMismatch
+            } else {
+                ModelCacheError::Version
+            }),
+            "foreign cache key admitted",
+        );
+    }
     let seconds = previous.written_at_ns.unwrap_or(u64::MAX);
     for at in [0, previous.observed_at_ns, u64::MAX] {
         let supported = previous.version == ModelCacheResidency::VERSION;
@@ -77,80 +98,96 @@ fn residency(previous: ModelCacheResidency) {
             "foreign clock cache update admitted",
         );
         let ttl = ModelCacheTtl::Explicit { seconds };
-        for access in [
-            ModelCacheAccess::Write(ModelCacheTtl::ProviderManaged),
-            ModelCacheAccess::Write(ttl),
-            ModelCacheAccess::Hit { refresh: None },
-            ModelCacheAccess::Hit {
-                refresh: Some(ModelCacheTtl::ProviderManaged),
-            },
-            ModelCacheAccess::Hit { refresh: Some(ttl) },
-            ModelCacheAccess::Miss,
-        ] {
-            let result = ModelCacheResidency::observe(
-                previous.key,
-                Some(previous),
-                previous.clock_domain,
-                at,
-                access,
-            );
-            if !supported {
-                assert_eq!(result, Err(ModelCacheError::Version));
-                continue;
-            }
-            if at < previous.observed_at_ns {
-                assert_eq!(result, Err(ModelCacheError::TimeReversed));
-                continue;
-            }
-            // Wider arithmetic checks both multiplication and addition
-            // independently of the production checked-u64 implementation.
-            let deadline = u128::from(at) + u128::from(seconds) * 1_000_000_000;
-            let refreshes = matches!(
-                access,
-                ModelCacheAccess::Write(ModelCacheTtl::Explicit { .. })
-                    | ModelCacheAccess::Hit {
-                        refresh: Some(ModelCacheTtl::Explicit { .. })
+        for prior in [None, Some(previous)] {
+            for access in [
+                ModelCacheAccess::Write(ModelCacheTtl::ProviderManaged),
+                ModelCacheAccess::Write(ttl),
+                ModelCacheAccess::Hit { refresh: None },
+                ModelCacheAccess::Hit {
+                    refresh: Some(ModelCacheTtl::ProviderManaged),
+                },
+                ModelCacheAccess::Hit { refresh: Some(ttl) },
+                ModelCacheAccess::Miss,
+            ] {
+                let result = ModelCacheResidency::observe(
+                    previous.key,
+                    prior,
+                    previous.clock_domain,
+                    at,
+                    access,
+                );
+                if prior.is_some_and(|value| value.version != ModelCacheResidency::VERSION) {
+                    assert_eq!(result, Err(ModelCacheError::Version));
+                    continue;
+                }
+                if prior.is_some_and(|value| at < value.observed_at_ns) {
+                    assert_eq!(result, Err(ModelCacheError::TimeReversed));
+                    continue;
+                }
+                // Wider arithmetic checks both multiplication and addition
+                // independently of the production checked-u64 implementation.
+                let deadline = u128::from(at) + u128::from(seconds) * 1_000_000_000;
+                let refreshes = matches!(
+                    access,
+                    ModelCacheAccess::Write(ModelCacheTtl::Explicit { .. })
+                        | ModelCacheAccess::Hit {
+                            refresh: Some(ModelCacheTtl::Explicit { .. })
+                        }
+                );
+                if refreshes && deadline > u128::from(u64::MAX) {
+                    assert_eq!(
+                        result,
+                        Err(ModelCacheError::DeadlineOverflow),
+                        "cache lifetime overflow admitted"
+                    );
+                    continue;
+                }
+                let next = result.unwrap();
+                assert_eq!(
+                    (next.version, next.key, next.clock_domain),
+                    (
+                        ModelCacheResidency::VERSION,
+                        previous.key,
+                        previous.clock_domain
+                    )
+                );
+                assert_eq!(next.observed_at_ns, at);
+                assert_eq!(
+                    next.written_at_ns,
+                    if matches!(access, ModelCacheAccess::Write(_)) {
+                        Some(at)
+                    } else {
+                        prior.and_then(|value| value.written_at_ns)
                     }
-            );
-            if refreshes && deadline > u128::from(u64::MAX) {
-                assert_eq!(result, Err(ModelCacheError::DeadlineOverflow));
-                continue;
+                );
+                assert_eq!(
+                    next.last_hit_at_ns,
+                    if matches!(access, ModelCacheAccess::Hit { .. }) {
+                        Some(at)
+                    } else {
+                        prior.and_then(|value| value.last_hit_at_ns)
+                    }
+                );
+                let expiry = match access {
+                    ModelCacheAccess::Miss => Some(at),
+                    ModelCacheAccess::Hit { refresh: None } => prior
+                        .and_then(|value| value.expires_at_ns)
+                        .filter(|end| at < *end),
+                    _ if refreshes => Some(u64::try_from(deadline).unwrap()),
+                    _ => None,
+                };
+                assert_eq!(next.expires_at_ns, expiry, "cache residency expiry changed");
+                assert_eq!(
+                    ModelCacheResidency::observe(
+                        next.key,
+                        Some(next),
+                        next.clock_domain,
+                        at,
+                        access,
+                    ),
+                    Ok(next)
+                );
             }
-            let next = result.unwrap();
-            assert_eq!(
-                (next.version, next.key, next.clock_domain),
-                (previous.version, previous.key, previous.clock_domain)
-            );
-            assert_eq!(next.observed_at_ns, at);
-            assert_eq!(
-                next.written_at_ns,
-                if matches!(access, ModelCacheAccess::Write(_)) {
-                    Some(at)
-                } else {
-                    previous.written_at_ns
-                }
-            );
-            assert_eq!(
-                next.last_hit_at_ns,
-                if matches!(access, ModelCacheAccess::Hit { .. }) {
-                    Some(at)
-                } else {
-                    previous.last_hit_at_ns
-                }
-            );
-            let expiry = match access {
-                ModelCacheAccess::Miss => Some(at),
-                ModelCacheAccess::Hit { refresh: None } => {
-                    previous.expires_at_ns.filter(|end| at < *end)
-                }
-                _ if refreshes => Some(u64::try_from(deadline).unwrap()),
-                _ => None,
-            };
-            assert_eq!(next.expires_at_ns, expiry);
-            assert_eq!(
-                ModelCacheResidency::observe(next.key, Some(next), next.clock_domain, at, access,),
-                Ok(next)
-            );
         }
     }
 }
