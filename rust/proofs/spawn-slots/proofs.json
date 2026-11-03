@@ -98,8 +98,8 @@
       "controls": [
         {
           "file": "rust/crates/harness-core/src/agent/checkpoint.rs",
-          "before": "    Ok(state)\n}\n\n#[cfg(test)]",
-          "after": "    state.reserved_children = 0;\n    Ok(state)\n}\n\n#[cfg(test)]",
+          "before": "    Ok(state)\n}",
+          "after": "    state.reserved_children = 0;\n    Ok(state)\n}",
           "expected": "The unchanged native reopen oracle rejects loss of the three reserved spawns; compilation failure does not qualify the control."
         }
       ],
