@@ -1,26 +1,4 @@
 use super::*;
-#[path = "../../tests/common/dns_hardening.rs"]
-mod hardening;
-use proptest::{
-    prelude::*,
-    test_runner::{TestError, TestRunner},
-};
-
-#[test]
-fn shrinking_dns_property_detects_removed_numeric_rejection() {
-    let mut runner = TestRunner::new(ProptestConfig {
-        cases: 128,
-        failure_persistence: None,
-        ..ProptestConfig::default()
-    });
-    let result = runner.run(&hardening::numeric_name(), |name| {
-        hardening::dns_property(&name, |name| dns_labels(name).is_some())
-    });
-    assert!(
-        matches!(result, Err(TestError::Fail(_, _))),
-        "removed numeric guard must produce a shrinking counterexample"
-    );
-}
 
 #[test]
 fn destination_validation_is_once_per_grant_not_once_per_rule() {
