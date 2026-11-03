@@ -114,6 +114,7 @@ async fn evicted_dispatches_keep_admission_and_old_retries_keep_identity() -> Re
         .await?;
         journal.append(operation, "call", &call, Some(&io))?.await?;
         for step in 1..=100 {
+            let before = io.receipt();
             journal
                 .append(
                     operation,
@@ -122,6 +123,15 @@ async fn evicted_dispatches_keep_admission_and_old_retries_keep_identity() -> Re
                     Some(&io),
                 )?
                 .await?;
+            let after = io.receipt();
+            assert!(
+                after.authority_records_read - before.authority_records_read <= 4 * 258,
+                "append exceeded fixed-width index work at step {step}"
+            );
+            assert!(
+                after.bytes_encoded - before.bytes_encoded < 4_096,
+                "append encoding exceeded the fixed per-append bound at step {step}"
+            );
             let cache = journal.verified.lock().await;
             let summary = cache.summary();
             assert!(
