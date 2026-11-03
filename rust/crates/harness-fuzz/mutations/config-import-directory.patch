@@ -1,0 +1,14 @@
+diff --git a/rust/crates/harness-core/src/config/evaluate.rs b/rust/crates/harness-core/src/config/evaluate.rs
+--- a/rust/crates/harness-core/src/config/evaluate.rs
++++ b/rust/crates/harness-core/src/config/evaluate.rs
+@@ -292,9 +292,7 @@
+         )
+     };
+     let name = if specifier.starts_with('.') {
+-        let mut directory: Vec<&str> = importer
+-            .rsplit_once('/')
+-            .map_or_else(Vec::new, |(d, _)| d.split('/').collect());
++        let mut directory: Vec<&str> = Vec::new();
+         let mut rest = specifier;
+         loop {
+             if let Some(after) = rest.strip_prefix("./") {
