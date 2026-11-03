@@ -603,6 +603,157 @@ pub fn actor_seeds()
         );
         seeds.push((name, bytes, "guest::wire::encode_transition"));
     }
+    seeds.extend(futures::executor::block_on(actor_alarm_seeds())?);
+    Ok(seeds)
+}
+
+// Obtain persisted tuples from the original Store publication path, rather
+// than manufacturing State fields or a parallel alarm record format.
+async fn actor_alarm_seeds()
+-> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn std::error::Error>> {
+    use acyclic_actors::{
+        guest::{AlarmChange, Effect, Transition, Trigger},
+        local::{PreparedPublish, State, Store, Subscription},
+    };
+    use acyclic_auth::addressing::ActorReference;
+    use acyclic_stream::{
+        CommitCondition, CommitMutation, IdempotencyKey, MemoryStream, ReadRequest, StreamPath,
+        StreamProvider as _, StreamProviderExt as _,
+    };
+    use bytes::Bytes;
+    use futures::TryStreamExt as _;
+    use std::{collections::BTreeMap, sync::Arc};
+
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), StreamPath::new("codec/alarms")?);
+    let actor = ActorReference::new(b"account", b"namespace", b"alarm-codec")?;
+    let input = StreamPath::new("codec/alarm-input")?;
+    let checkpoint = acyclic_actors::reservation::initial_checkpoint(7)?;
+    let mut create = PreparedPublish::foreign(IdempotencyKey::unique());
+    for effect in store.create(
+        &actor,
+        BTreeMap::from([(
+            "inbox".into(),
+            Subscription {
+                path: input.clone(),
+                cursor: 0,
+            },
+        )]),
+        Some(checkpoint.clone()),
+    )? {
+        create.join(effect)?;
+    }
+    create.join(Effect {
+        conditions: vec![CommitCondition::Absent {
+            path: input.clone(),
+        }],
+        mutation: CommitMutation::Append {
+            path: input.clone(),
+            records: vec![
+                Bytes::from_static(b"set").into(),
+                Bytes::from_static(b"clear").into(),
+            ],
+        },
+    })?;
+    PreparedPublish::settle(&provider.commit(create.into_request()?).await?)?;
+    let inputs: Vec<_> = provider
+        .read(ReadRequest {
+            key: None,
+            path: input,
+            from: 0,
+            limit: 2,
+            at_least: Default::default(),
+        })
+        .await?
+        .try_collect()
+        .await?;
+    assert_eq!(inputs.len(), 2, "alarm seed inputs must be committed");
+    let mut snapshot = store
+        .claim(&store.load(&actor).await?, 1, IdempotencyKey::unique())
+        .await?;
+    let mut seeds = Vec::new();
+    for (name, trigger, alarm, cursor, generation, deadline, pending) in [
+        (
+            "state-alarm-set-v2",
+            Trigger::Record {
+                subscription: "inbox".into(),
+                sequence: 0,
+            },
+            AlarmChange::Set {
+                deadline_unix_ms: 42,
+            },
+            1,
+            1,
+            Some(42),
+            Some(42),
+        ),
+        (
+            "state-alarm-delivered-v2",
+            Trigger::Alarm {
+                generation: 1,
+                now_unix_ms: 42,
+            },
+            AlarmChange::Keep,
+            1,
+            1,
+            Some(42),
+            None,
+        ),
+        (
+            "state-alarm-clear-v2",
+            Trigger::Record {
+                subscription: "inbox".into(),
+                sequence: 1,
+            },
+            AlarmChange::Clear,
+            2,
+            2,
+            None,
+            None,
+        ),
+    ] {
+        let delivered = match &trigger {
+            Trigger::Record { sequence, .. } => Some(&inputs[usize::try_from(*sequence)?]),
+            Trigger::Alarm { .. } => None,
+        };
+        store
+            .publish(
+                &snapshot,
+                1,
+                &trigger,
+                delivered,
+                Transition {
+                    response: None,
+                    checkpoint: checkpoint.clone(),
+                    alarm,
+                    effects: Vec::new(),
+                    participant: None,
+                },
+                IdempotencyKey::unique(),
+            )
+            .await?;
+        snapshot = store.load(&actor).await?;
+        let state = snapshot.state().ok_or("published alarm state is absent")?;
+        assert_eq!(
+            (
+                state.cursor("inbox"),
+                state.alarm().generation(),
+                state.alarm().deadline_unix_ms(),
+                state.alarm().pending()
+            ),
+            (Some(cursor), generation, deadline, pending),
+            "persisted alarm writer must retain its committed tuple"
+        );
+        assert_eq!(state.checkpoint(), Some(&checkpoint));
+        assert_eq!(state.epoch(), 1);
+        let bytes = state.encode();
+        assert_eq!(State::decode(&bytes)?, *state);
+        seeds.push((
+            name,
+            bytes,
+            "local::Store::publish and local::State::encode",
+        ));
+    }
     Ok(seeds)
 }
 

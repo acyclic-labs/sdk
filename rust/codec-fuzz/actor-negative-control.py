@@ -32,8 +32,10 @@ def main():
         return capture()
     if sys.argv[1:] == ["--alarms"]:
         return alarms()
+    if sys.argv[1:] == ["--persisted-alarms"]:
+        return persisted_alarms()
     if sys.argv[1:]:
-        raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms|--capture]")
+        raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms|--persisted-alarms|--capture]")
     original = {path: path.read_bytes() for path in (PRODUCTION, ORACLE)}
     needle = b"Ok(Self::decode_bound(record)?.map(|(_, invocation)| invocation))"
     source = original[PRODUCTION]
@@ -107,6 +109,45 @@ def alarms():
     finally:
         for path, value in original.items():
             path.write_bytes(value)
+
+
+def persisted_alarms():
+    production = ROOT.parent / "crates/actors/src/local/record.rs"
+    manifest = ROOT / "corpus/SOURCES.tsv"
+    original = {path: path.read_bytes() for path in (production, ORACLE, manifest)}
+    source, oracle = original[production], original[ORACLE]
+    plant = b"delivered_generation: record.alarm_delivered_generation,"
+    admission = b"    seeds.extend(futures::executor::block_on(actor_alarm_seeds())?);"
+    if b"\r\n" in oracle:
+        admission += b"\r\n"
+    else:
+        admission += b"\n"
+    if source.count(plant) != 1 or oracle.count(admission) != 1:
+        raise RuntimeError("persisted alarm mutation anchor changed; recovery: inspect "
+                           "State::decode and actor_alarm_seeds before running "
+                           "python3 actor-negative-control.py --persisted-alarms")
+    captured = False
+    try:
+        for label, value in (("persisted alarm production", source), ("persisted alarm oracle", oracle)):
+            print(f"{label} sha256={hashlib.sha256(value).hexdigest()}", flush=True)
+        production.write_bytes(source.replace(plant, b"delivered_generation: None,"))
+        ORACLE.write_bytes(oracle.replace(admission, b""))
+        manifest.write_bytes(b"".join(row for row in original[manifest].splitlines(keepends=True)
+                                     if not row.startswith(b"actor_codecs/state-alarm-")))
+        run("create-only State oracle misses lost delivery generation", "accepted")
+        manifest.write_bytes(original[manifest])
+        ORACLE.write_bytes(oracle)
+        run("same oracle detects production lost delivery generation", "rejected",
+            "persisted alarm writer must retain its committed tuple")
+        production.write_bytes(source)
+        capture()
+        captured = True
+    finally:
+        for path, value in original.items():
+            # Keep newly captured provenance on success; only a temporary
+            # mutation-phase manifest view needs restoration on failure.
+            if path != manifest or not captured:
+                path.write_bytes(value)
 
 
 def capture():

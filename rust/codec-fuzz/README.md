@@ -49,6 +49,17 @@ repeating source mutations already qualified on unchanged decoder/oracle paths.
 Versioned invocation and State writer captures retain the earlier corpus and
 provenance, including transitions that contain the earlier State version.
 
+`python3 actor-negative-control.py --persisted-alarms` covers the deployed
+State codec after actual Store publications: a committed input sets an alarm,
+its firing preserves the deadline while consuming the generation, and a second
+committed input clears it. The shared producer checks the expected cursor and
+alarm tuple after each publication. The control removes delivery-generation
+decoding in production, shows the create-only oracle misses it, and requires the
+unchanged expanded oracle to reject it before capturing original writer bytes.
+These finite MemoryStream publications cover the persisted codec and Store
+transition path; physical restart, membership and runtime scheduling remain
+separate obligations.
+
 Refresh only the current agent record and checkpoint writers with:
 
 ```sh
