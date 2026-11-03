@@ -65,6 +65,46 @@ fn paths(host: &str, flags: &[String], cwd: &Path, non_unicode: &Path, value: &s
             }
         }
     }
+    if host == "pi" {
+        for (option, prefix) in [
+            ("--extension", "npm:"),
+            ("--extension", "git:"),
+            ("--extension", "github:"),
+            ("--extension", "http:"),
+            ("--extension", "https:"),
+            ("--extension", "ssh:"),
+            ("--extension", "builtin:"),
+            ("--extension", " \tnpm:"),
+            ("--extension", "file://"),
+            ("--session-dir", "file://"),
+            ("--extension", "~/"),
+            ("--session-dir", "~/"),
+        ] {
+            let reference = format!("{prefix}{value}");
+            let mut supplied = flags.to_vec();
+            supplied.extend([option.into(), reference.clone()]);
+            let inherited = launch::parent_flags(host, &supplied, cwd)
+                .expect("admitted Pi resource reference was refused");
+            assert_eq!(
+                inherited.last(),
+                Some(&reference),
+                "native Pi resource reference was rebased as a local path"
+            );
+        }
+        for option in options {
+            for reference in std::iter::once("~").chain(cfg!(windows).then_some("~\\home")) {
+                let mut supplied = flags.to_vec();
+                supplied.extend([(*option).into(), reference.into()]);
+                let inherited = launch::parent_flags(host, &supplied, cwd)
+                    .expect("admitted Pi home reference was refused");
+                assert_eq!(
+                    inherited.last().map(String::as_str),
+                    Some(reference),
+                    "native Pi home reference was rebased as a local path"
+                );
+            }
+        }
+    }
 }
 
 fn policy(host: &str, flags: &[String], cwd: &Path, reference: &str) {

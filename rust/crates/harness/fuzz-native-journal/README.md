@@ -124,6 +124,17 @@ lossy conversion. They must fail at `native path policy changed its root target`
 and `native launch accepted a non-Unicode policy root`, respectively. The physical
 collision control remains distinct: this target does not resolve or open paths.
 
+The same path oracle checks that Pi package/URL references (including leading
+whitespace in its package syntax), file URLs and home references keep their
+original bytes instead of being anchored as local paths. Both extension and
+session-directory options exercise their shared home/file exemptions. Native
+Windows home separators are included on Windows. These are authored policy
+requests, not recorded native CLI responses. The retained
+`mutations/native_launch_package.patch` and `mutations/native_launch_home.patch`
+disable the actual package and home/file exemptions independently. Each must
+fail at `native Pi resource reference was rebased as a local path`; these checks
+do not establish how Pi itself interprets or opens those references.
+
 The separate `native_child_arguments_allocate_only_the_returned_vector_and_strings`
 unit measures actual allocation counts for fresh and resumed arguments of all
 three hosts, including Pi's empty policy. It requires exactly one result vector
