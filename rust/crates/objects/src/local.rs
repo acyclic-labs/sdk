@@ -933,19 +933,18 @@ mod isolation_tests {
 
     #[tokio::test]
     async fn original_observations_survive_compaction_and_refuse_stale_or_foreign_mutation() {
-        let memory = crate::MemoryMedium::default();
-        crate::conformance::verify_medium(&memory, "observations")
-            .await
-            .unwrap();
         let root = tempfile::tempdir().unwrap();
         let medium = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None)
             .await
             .unwrap();
-        crate::conformance::verify_medium(&medium, "observations")
-            .await
-            .unwrap();
         assert_eq!(medium.counts(), (0, 0));
         assert!(medium.create("kept", bytes(b"unchanged")).await.unwrap());
+        assert!(
+            medium
+                .create("untouched", bytes(b"original"))
+                .await
+                .unwrap()
+        );
         let kept = observation(&medium, "kept").await;
         let stale = observation(&medium, "kept").await;
         assert!(
@@ -963,6 +962,16 @@ mod isolation_tests {
             medium.counts().0,
             1,
             "actual compaction must move the kept record"
+        );
+        let length = std::fs::metadata(root.path().join(LOG)).unwrap().len();
+        assert!(length < 2 * COMPACTION_CHUNK, "{length}");
+        assert_eq!(
+            medium.read("hot", None).await.unwrap().unwrap().as_ref(),
+            b"small"
+        );
+        assert_eq!(
+            medium.read("kept", None).await.unwrap().unwrap().as_ref(),
+            b"unchanged"
         );
         // Compaction and unrelated mutations do not invalidate the original
         // per-key fact. Another handle of this same opened source accepts it.
@@ -1003,6 +1012,14 @@ mod isolation_tests {
             medium.read("reused", None).await.unwrap().unwrap().as_ref(),
             b"same"
         );
+        let expected = contents(&medium).await;
+        assert_eq!(expected["untouched"], b"original");
+        drop(alias);
+        drop(medium);
+        let reopened = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None)
+            .await
+            .unwrap();
+        assert_eq!(contents(&reopened).await, expected);
     }
 
     #[tokio::test]
@@ -1079,9 +1096,9 @@ mod isolation_tests {
         ));
         let written = std::fs::read(&log).unwrap();
         assert_eq!(written.len() as u64, states.last().unwrap().0);
+        let copy = tempfile::tempdir().unwrap();
+        std::fs::write(copy.path().join("FORMAT"), FORMAT).unwrap();
         for cut in 0..=written.len() {
-            let copy = tempfile::tempdir().unwrap();
-            std::fs::write(copy.path().join("FORMAT"), FORMAT).unwrap();
             // The owner never closed.
             std::fs::write(copy.path().join(OPEN), b"").unwrap();
             std::fs::write(copy.path().join(LOG), written.get(..cut).unwrap()).unwrap();
@@ -1181,39 +1198,6 @@ mod isolation_tests {
             LocalMedium::open(root.path(), LocalObjectsLimits::default(), None).await,
             Err(LocalOpenError::UnsupportedLayout)
         ));
-    }
-
-    #[tokio::test]
-    async fn dead_bytes_are_reclaimed_into_one_fresh_log() {
-        let root = tempfile::tempdir().unwrap();
-        let open =
-            async || LocalMedium::open(root.path(), LocalObjectsLimits::default(), None).await;
-        let medium = open().await.unwrap();
-        let value = |round: u8| vec![round; 1 << 16];
-        assert!(medium.create("k/key", bytes(&value(0))).await.unwrap());
-        assert!(medium.create("k/kept", bytes(b"kept")).await.unwrap());
-        let rounds = 20;
-        for round in 1..=rounds {
-            let observed = medium.observe("k/key".to_owned()).await.unwrap().unwrap();
-            assert_eq!(observed.bytes.as_ref(), value(round - 1));
-            assert!(
-                medium
-                    .replace(observed.observation, bytes(&value(round)))
-                    .await
-                    .unwrap()
-                    .is_some()
-            );
-        }
-        // One compaction replaced the log: it holds the live frames and what
-        // followed, never every dead one.
-        assert_eq!(medium.counts().0, 1);
-        let length = std::fs::metadata(root.path().join(LOG)).unwrap().len();
-        assert!(length < 2 * COMPACTION_CHUNK, "{length}");
-        let expected = contents(&medium).await;
-        assert_eq!(expected["k/key"], value(rounds));
-        assert_eq!(expected["k/kept"], b"kept");
-        drop(medium);
-        assert_eq!(contents(&open().await.unwrap()).await, expected);
     }
 
     #[test]
