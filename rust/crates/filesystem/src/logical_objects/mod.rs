@@ -79,16 +79,12 @@ impl<P: ?Sized, S> LogicalObjectStore<P, S> {
 }
 
 macro_rules! operate {
-    ($context:ident, $work:ident, $body:expr) => {{ operate!($context, $work, false, $body) }};
-    ($context:ident, $work:ident, $keep_output:expr, $body:expr) => {{
+    ($context:ident, $work:ident, $body:expr) => {{
         let mut accounting = $context.read_accounting()?;
         let mut $work = accounting
             .allocation_scope()
             .map_err(crate::async_storage::object_error)?;
         let result = $body;
-        if $keep_output && result.is_ok() {
-            $work.keep();
-        }
         result.map_err(crate::async_storage::object_error)
     }};
 }
@@ -99,14 +95,20 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
         maximum: u64,
         context: &mut AuthorityWork<'_>,
     ) -> Result<ObjectRead, ObjectStoreError> {
-        let read = operate!(
-            context,
-            work,
-            true,
-            self.fetch::<STORED>(id, maximum, &mut work)
+        let read = {
+            let mut accounting = context.read_accounting()?;
+            let mut scope = accounting
+                .allocation_scope()
+                .map_err(crate::async_storage::object_error)?;
+            let (read, _allocation) = self
+                .fetch::<STORED>(id, maximum, &mut scope)
                 .await
-                .map(|(read, _)| read)
-        )?;
+                .map_err(crate::async_storage::object_error)?;
+            scope
+                .keep_bytes(read.retention.owned_bytes())
+                .map_err(crate::async_storage::object_error)?;
+            read
+        };
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = context.original
             && matches!(read.retention, ObjectReadRetention::Owned { .. })
@@ -120,12 +122,17 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
         requests: &[ObjectReadRequest],
         context: &mut AuthorityWork<'_>,
     ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
-        let (reads, allocation) = operate!(
-            context,
-            work,
-            true,
-            self.fetch_batch::<STORED>(requests, &mut work).await
-        )?;
+        let mut accounting = context.read_accounting()?;
+        let mut scope = accounting
+            .allocation_scope()
+            .map_err(crate::async_storage::object_error)?;
+        let (reads, allocation, retained) = self
+            .fetch_batch::<STORED>(requests, &mut scope)
+            .await
+            .map_err(crate::async_storage::object_error)?;
+        scope
+            .keep_bytes(retained)
+            .map_err(crate::async_storage::object_error)?;
         match allocation {
             KernelOwnedAllocation::Standalone => Ok((reads, None)),
             #[cfg(not(target_arch = "wasm32"))]

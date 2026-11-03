@@ -135,12 +135,8 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
                 }
             }
         }?;
-        let retained = match read.retention {
-            ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
-            ObjectReadRetention::Shared => 0,
-        };
         scope
-            .keep_bytes(retained)
+            .keep_bytes(read.retention.owned_bytes())
             .map_err(crate::async_storage::object_error)?;
         Ok(read)
     }

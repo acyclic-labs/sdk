@@ -712,6 +712,15 @@ pub enum ObjectReadRetention {
     },
 }
 
+impl ObjectReadRetention {
+    pub(crate) const fn owned_bytes(self) -> u64 {
+        match self {
+            Self::Shared => 0,
+            Self::Owned { logical_bytes } => logical_bytes,
+        }
+    }
+}
+
 /// Immutable bytes plus explicit retention evidence for zero-copy and peak allocation accounting.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObjectRead {
