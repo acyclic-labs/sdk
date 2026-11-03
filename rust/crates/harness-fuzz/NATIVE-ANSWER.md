@@ -28,8 +28,12 @@ wrong-typed text, terminal type, refusal metadata, success flags, Pi roles,
 stop reasons and content, replay after refusal, and multi-byte answer boundaries.
 Unrelated captured metadata is removed from those copies. The inserted text and
 mutated events are negative/property inputs, never claimed as captured output.
-`malformed-derived.jsonl` prefixes the original Codex bytes with invalid UTF-8,
-truncates its last event, and appends scalar/array JSON inputs.
+`malformed-derived.jsonl` removes only the original Codex turn-start event,
+prefixes its unchanged preview and terminal with invalid UTF-8, and appends
+scalar/array JSON inputs plus an incomplete copy of the terminal. The original
+preview and terminal must recover after framing loss without a reset. This
+replaces the old malformed seed, whose intervening turn-start erased the loss
+state before recovery was checked.
 
 Replay the same oracle without libFuzzer instrumentation:
 
@@ -59,3 +63,11 @@ oracle must reject the original recorded Codex seed with `preview completed a
 turn`. Restore the source before accepting the target's positive result. This
 control mutates production code, rather than weakening the oracle or inventing a
 second decoder.
+
+The retained `mutations/native-answer-sticky-loss.patch` plants permanent loss
+until a new turn-start in the production reducer. Apply it from the repository
+root and replay the same named corpus test above; it must fail with `lost
+preview` on `malformed-derived.jsonl`. Reverse the patch, then require the same
+unchanged corpus oracle to pass. This distinguishes recovery from reset, without
+adding an example test or a parallel state model. The mutation is never linked
+into the shipping implementation.
