@@ -11,14 +11,16 @@ ORACLE = ROOT / "src/lib.rs"
 COMMAND = ["cargo", "run", "--locked", "--example", "replay", "--", "actor_codecs"]
 
 
-def run(step, expected, diagnostic="invocation writer must be admitted"):
-    result = subprocess.run(COMMAND, cwd=ROOT, capture_output=True, text=True)
+def run(step, expected, diagnostic="invocation writer must be admitted", entry=None):
+    command = COMMAND + ([entry] if entry else [])
+    result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
     output = result.stdout + result.stderr
     print(f"STEP {step}\n{output}", flush=True)
     if expected == "rejected":
         valid = (result.returncode != 0
                  and diagnostic in output
-                 and "decoder oracle actor_codecs/" in output)
+                 and ("decoder oracle actor_codecs/" in output if entry is None
+                      else "corpus replay failed:" in output))
     else:
         valid = result.returncode == 0 and "replayed " in output and " captured inputs" in output
     if not valid:
@@ -38,10 +40,12 @@ def main():
         return persisted_alarms()
     if sys.argv[1:] == ["--call-records"]:
         return call_records()
+    if sys.argv[1:] == ["--call-schedules"]:
+        return call_schedules()
     if sys.argv[1:] == ["--sockets"]:
         return sockets()
     if sys.argv[1:]:
-        raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms|--persisted-alarms|--reservation-book|--call-records|--sockets|--capture]")
+        raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms|--persisted-alarms|--reservation-book|--call-records|--call-schedules|--sockets|--capture]")
     original = {path: path.read_bytes() for path in (PRODUCTION, ORACLE)}
     needle = b"Ok(Self::decode_bound(record)?.map(|(_, invocation)| invocation))"
     source = original[PRODUCTION]
@@ -192,11 +196,7 @@ def call_records():
     producer = oracle.index(b"acyclic_actors::call::model::codec_seeds(clock)")
     start = oracle.rindex(b"    for (name, bytes)", 0, producer)
     end = oracle.index(b"    for (name, bytes) in acyclic_actors::reservation::codec_fuzz::seeds()?", start)
-    schedule = (b"    futures::executor::block_on(acyclic_actors::call::model::check(bytes))\n"
-                b'        .expect("original call protocol must conserve its committed receipts");\n')
-    if b"\r\n" in oracle:
-        schedule = schedule.replace(b"\n", b"\r\n")
-    if source.count(cancellation) != 1 or oracle.count(schedule) != 1:
+    if source.count(cancellation) != 1:
         raise RuntimeError("call mutation anchor changed; recovery: inspect "
                            "Journal::apply and actor_codecs before running "
                            "python3 actor-negative-control.py --call-records")
@@ -205,13 +205,52 @@ def call_records():
         for label, value in (("call production", source), ("call oracle", oracle)):
             print(f"{label} sha256={hashlib.sha256(value).hexdigest()}", flush=True)
         production.write_bytes(mutant)
-        ORACLE.write_bytes((oracle[:start] + oracle[end:]).replace(schedule, b""))
+        ORACLE.write_bytes(oracle[:start] + oracle[end:])
         run("unbound call oracle misses lost accepted cancellation context", "accepted")
         ORACLE.write_bytes(oracle)
         run("same oracle detects lost accepted cancellation context", "rejected",
             "call reader must retain its acceptance context")
         production.write_bytes(source)
         capture()
+    finally:
+        for path, value in original.items():
+            path.write_bytes(value)
+
+
+def call_schedules():
+    production = ROOT.parent / "crates/actors/src/call.rs"
+    model = production.with_name("call") / "model.rs"
+    original = {path: path.read_bytes() for path in (production, model, ORACLE)}
+    source, driver, oracle = original[production], original[model], original[ORACLE]
+    entry = b"pub async fn check(bytes: &[u8]) -> Result<(), String> {"
+    guard = b"path: self.settled.clone(),\n        })\n        .chain"
+    replacement = b"path: self.settled.clone(),\n        }).filter(|_| false)\n        .chain"
+    previous = (b"    futures::executor::block_on(acyclic_actors::call::model::check(bytes))\n"
+                b'        .expect("original call protocol must conserve its committed receipts");\n')
+    boundary = b"    use acyclic_actors::{guest::wire, local::State};"
+    if b"\r\n" in source:
+        guard, replacement = (value.replace(b"\n", b"\r\n") for value in (guard, replacement))
+    if b"\r\n" in oracle:
+        previous = previous.replace(b"\n", b"\r\n")
+    if source.count(guard) != 1 or driver.count(entry) != 1 or oracle.count(boundary) != 1:
+        raise RuntimeError("call schedule anchor changed; recovery: inspect CallPath::open, "
+                           "model::check and actor_codecs before python3 actor-negative-control.py --call-schedules")
+    try:
+        for label, value in (("call production", source), ("call model", driver), ("codec oracle", oracle)):
+            print(f"{label} sha256={hashlib.sha256(value).hexdigest()}", flush=True)
+        model.write_bytes(driver.replace(entry, entry +
+            b' return Err("decoder input drove a call schedule".into());'))
+        ORACLE.write_bytes(oracle.replace(boundary, previous + boundary))
+        run("previous decoder target drives unrelated schedule", "rejected",
+            "decoder input drove a call schedule")
+        ORACLE.write_bytes(oracle)
+        run("decoder target performs no arbitrary schedule", "accepted")
+        model.write_bytes(driver)
+        production.write_bytes(source.replace(guard, replacement))
+        run("same retained schedule oracle rejects missing settlement guard", "rejected",
+            "call record after its terminal", "call_record")
+        production.write_bytes(source)
+        run("original schedules retain their committed receipts", "accepted", entry="call_record")
     finally:
         for path, value in original.items():
             path.write_bytes(value)
@@ -233,7 +272,7 @@ def sockets():
     writer = b"    seeds.extend(actor_socket_seeds()?);"
     start = oracle.index(b"    use acyclic_actors::sockets::{SocketFrame, SocketOpen};",
                          oracle.index(b"pub fn actor_codecs("))
-    end = oracle.index(b"    futures::executor::block_on", start)
+    end = oracle.index(b"    use acyclic_actors::{guest::wire, local::State};", start)
     if oracle.count(writer) != 1 or any(source.count(anchor) != 1 for anchor, _, _ in plants):
         raise RuntimeError("socket source anchor changed; recovery: inspect the original "
                            "socket decoders and shared target before python3 actor-negative-control.py --sockets")

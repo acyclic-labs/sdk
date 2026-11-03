@@ -39,7 +39,7 @@ fn external_expectations() -> Result<BTreeMap<String, (String, String)>, Box<dyn
     Ok(expectations)
 }
 
-fn replay(selected: Option<&str>) -> Result<usize, Box<dyn Error>> {
+fn replay(selected: Option<&str>, entry: Option<&str>) -> Result<usize, Box<dyn Error>> {
     let mut expectations = external_expectations()?;
     let sources = [
         ("corpus", std::fs::read_to_string("corpus/SOURCES.tsv")?),
@@ -83,7 +83,7 @@ fn replay(selected: Option<&str>) -> Result<usize, Box<dyn Error>> {
                 None
             };
             match std::panic::catch_unwind(|| {
-                acyclic_codec_fuzz::exercise(target, &bytes)?;
+                acyclic_codec_fuzz::exercise(entry.unwrap_or(target), &bytes)?;
                 if let Some((codec, method)) = &expectation {
                     acyclic_codec_fuzz::admit_external(codec, method, &bytes)
                         .map_err(|error| format!("positive external admission {name}: {error}"))?;
@@ -112,8 +112,10 @@ fn replay(selected: Option<&str>) -> Result<usize, Box<dyn Error>> {
 }
 
 fn main() {
-    let selected = std::env::args().nth(1);
-    match std::panic::catch_unwind(|| replay(selected.as_deref())) {
+    let mut arguments = std::env::args().skip(1);
+    let selected = arguments.next();
+    let entry = arguments.next();
+    match std::panic::catch_unwind(|| replay(selected.as_deref(), entry.as_deref())) {
         Ok(Ok(count)) => println!("replayed {count} captured inputs"),
         Ok(Err(error)) => {
             eprintln!(

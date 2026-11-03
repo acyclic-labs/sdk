@@ -107,6 +107,9 @@ pub fn exercise(target: &str, bytes: &[u8]) -> Result<(), String> {
         "auth" => auth(bytes),
         "identities" => identities(bytes),
         "actor_codecs" => actor_codecs(bytes),
+        "call_record" => {
+            futures::executor::block_on(acyclic_actors::call::model::check(bytes))?;
+        }
         "filesystem_codecs" => filesystem_codecs(bytes),
         "filesystem_pages" => filesystem_pages::check(bytes),
         "machine_journal" => {
@@ -996,8 +999,6 @@ pub fn actor_codecs(bytes: &[u8]) {
         assert_eq!(SocketFrame::decode(&frame.clone().encode()).unwrap(), frame);
     }
     actor_socket_verdict(bytes);
-    futures::executor::block_on(acyclic_actors::call::model::check(bytes))
-        .expect("original call protocol must conserve its committed receipts");
     use acyclic_actors::{guest::wire, local::State};
     assert!(acyclic_actors::reservation::codec_fuzz::check(bytes));
     if let Ok(checkpoint) = serde_json::from_slice::<acyclic_actors::guest::Checkpoint>(bytes) {

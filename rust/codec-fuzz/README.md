@@ -40,8 +40,8 @@ also demonstrates that conditional round trips alone miss that mutation and
 restores both source files on exit. Corpus replay does not establish instrumented
 fuzz coverage or distributed recovery guarantees.
 
-The same Actors target drives `call::model::check` through the original commit
-builders, provider and journal, and feeds committed Stream wire envelopes to
+The `call_record` target drives `call::model::check` through the original commit
+builders, provider and journal. The `actor_codecs` target feeds committed Stream wire envelopes to
 `Entry::decode`, `fence` and `Journal::apply`. Its positive records are captured
 from actual commits with a fixed provider clock and stable retry identities.
 Admission distinguishes cancellation before acceptance from the indeterminate
@@ -51,6 +51,13 @@ the unchanged expanded oracle must reject that same production defect. Existing
 Host producer admission already rejects a call decoder which refuses every
 record. This finite provider model does not establish physical
 recovery, distributed ownership or complete branch coverage.
+
+Call schedules reuse the original Actors corpus and its provenance without
+copying it: `cargo run --locked --example replay -- actor_codecs call_record`
+or `cargo +nightly fuzz run --fuzz-dir . call_record corpus/actor_codecs`.
+These bytes select arbitrary schedules; they are not a call wire format.
+Decoder replay performs no per-input call commits. Keep schedule exploration
+in `call_record` so larger codec captures do not expand unrelated histories.
 
 `python3 actor-negative-control.py --alarms` checks the original guest transition
 decoder with independent mutations that lose `Set` or `Clear`. It first shows
@@ -457,3 +464,8 @@ initiator alias is accepted and normalised by the original decoder.
 reject production open refusal, lost close codes and skipped subprotocol checks,
 then captures the original restored writers. These codec controls do not cover
 the separate inbox `InputWire` or prove physical session/recovery behavior.
+
+`python3 actor-negative-control.py --call-schedules` restores the former decoder
+schedule drive and requires a production schedule-entry refusal to expose it.
+The separated decoder must still replay; the unchanged schedule entry must
+reject removal of the actual settlement guard, then replay the original corpus.
