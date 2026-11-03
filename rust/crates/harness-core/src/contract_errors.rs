@@ -490,44 +490,6 @@ fn filesystem_error_code(source: &acyclic_fs::FsError) -> ErrorCode {
     }
 }
 
-#[cfg(feature = "filesystem")]
-pub(crate) fn workspace_error_code(source: &acyclic_fs::WorkspaceError) -> ErrorCode {
-    use acyclic_fs::WorkspaceError;
-    match source {
-        WorkspaceError::AccessDenied => ErrorCode::Unauthorized,
-        WorkspaceError::Filesystem(source) => filesystem_error_code(source),
-        WorkspaceError::NotFound => ErrorCode::NotFound,
-        WorkspaceError::RetentionConflict
-        | WorkspaceError::StaleGeneration
-        | WorkspaceError::StaleSource
-        | WorkspaceError::StaleIdentity => ErrorCode::Conflict,
-        WorkspaceError::Name(_)
-        | WorkspaceError::Path(_)
-        | WorkspaceError::NamespacePath(_)
-        | WorkspaceError::ReadLimitExceeded
-        | WorkspaceError::NotRegularFile
-        | WorkspaceError::NotDirectory
-        | WorkspaceError::IsDirectory
-        | WorkspaceError::DirectoryNotEmpty
-        | WorkspaceError::ForeignGeneration
-        | WorkspaceError::IncompatibleWorkspace
-        | WorkspaceError::NoCommonAncestor
-        | WorkspaceError::LineageLimit
-        | WorkspaceError::JoinLimit
-        | WorkspaceError::StaleTarget
-        | WorkspaceError::InvalidMergeResolution
-        | WorkspaceError::ChangeSetContinuity
-        | WorkspaceError::ChangedPathLimit
-        | WorkspaceError::EmptyContentSet
-        | WorkspaceError::NotFork
-        | WorkspaceError::ContentLengthOverflow
-        | WorkspaceError::Work(_)
-        | WorkspaceError::WorkMerge { .. } => ErrorCode::Invalid,
-        WorkspaceError::Cancelled(_) => ErrorCode::Cancelled,
-        WorkspaceError::Engine(_) => ErrorCode::Storage,
-    }
-}
-
 /// Wire classification of a retained Machines cause.
 #[cfg(feature = "machines")]
 const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::wire::ErrorCode {
@@ -552,6 +514,44 @@ const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::
 }
 
 impl Error {
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn workspace_error_code(source: &acyclic_fs::WorkspaceError) -> ErrorCode {
+        use acyclic_fs::WorkspaceError;
+        match source {
+            WorkspaceError::AccessDenied => ErrorCode::Unauthorized,
+            WorkspaceError::Filesystem(source) => filesystem_error_code(source),
+            WorkspaceError::NotFound => ErrorCode::NotFound,
+            WorkspaceError::RetentionConflict
+            | WorkspaceError::StaleGeneration
+            | WorkspaceError::StaleSource
+            | WorkspaceError::StaleIdentity => ErrorCode::Conflict,
+            WorkspaceError::Name(_)
+            | WorkspaceError::Path(_)
+            | WorkspaceError::NamespacePath(_)
+            | WorkspaceError::ReadLimitExceeded
+            | WorkspaceError::NotRegularFile
+            | WorkspaceError::NotDirectory
+            | WorkspaceError::IsDirectory
+            | WorkspaceError::DirectoryNotEmpty
+            | WorkspaceError::ForeignGeneration
+            | WorkspaceError::IncompatibleWorkspace
+            | WorkspaceError::NoCommonAncestor
+            | WorkspaceError::LineageLimit
+            | WorkspaceError::JoinLimit
+            | WorkspaceError::StaleTarget
+            | WorkspaceError::InvalidMergeResolution
+            | WorkspaceError::ChangeSetContinuity
+            | WorkspaceError::ChangedPathLimit
+            | WorkspaceError::EmptyContentSet
+            | WorkspaceError::NotFork
+            | WorkspaceError::ContentLengthOverflow
+            | WorkspaceError::Work(_)
+            | WorkspaceError::WorkMerge { .. } => ErrorCode::Invalid,
+            WorkspaceError::Cancelled(_) => ErrorCode::Cancelled,
+            WorkspaceError::Engine(_) => ErrorCode::Storage,
+        }
+    }
+
     /// Join an operation with cleanup that has already completed. Neither
     /// concrete cause is discarded. An uncertain cleanup takes precedence over
     /// a settled operation's wire class, so an adapter cannot report settlement.
@@ -669,7 +669,7 @@ impl Error {
             | Self::NativeSchema { code, .. }
             | Self::NativeReservation { code, .. } => *code,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::NativeWorkspace { source, .. } => workspace_error_code(source),
+            Self::NativeWorkspace { source, .. } => Self::workspace_error_code(source),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeFilesystem { source, .. } => filesystem_error_code(source),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

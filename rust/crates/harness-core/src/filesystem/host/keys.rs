@@ -93,7 +93,7 @@ fn content_identity_path_io(
 
 pub(crate) fn map_error(error: WorkspaceError) -> Error {
     use crate::wire::ErrorCode;
-    match crate::contract_errors::workspace_error_code(&error) {
+    match Error::workspace_error_code(&error) {
         ErrorCode::Unauthorized => Error::Unauthorized(error.to_string()),
         ErrorCode::Unsupported => {
             Error::FilesystemAccessConfiguration("unauthenticated principal facts")
