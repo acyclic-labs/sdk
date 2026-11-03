@@ -5,7 +5,6 @@ use std::sync::atomic::Ordering;
 #[test]
 fn public_child_exit_watch_preserves_original_owner_and_deadline() -> io::Result<()> {
     use std::io::Write as _;
-    use std::os::fd::AsFd as _;
     // Exercise the exported API on an actual direct child, not a ProcessTree
     // or an alternate pidfd implementation. Its input EOF is also terminal.
     let spawn = |mode| {
@@ -23,9 +22,13 @@ fn public_child_exit_watch_preserves_original_owner_and_deadline() -> io::Result
     };
     let mut child = spawn("gated")?;
     let watch = crate::ChildExitWatch::open(&mut child)?.expect("live child");
-    let readiness_fd = watch.as_fd().as_raw_fd();
     let early = watch.wait_until(Instant::now());
     let still_running = child.try_wait()?;
+    // Releasing readiness while the original input producer still gates exit
+    // must leave launch, signal and reap authority with that same Child.
+    drop(watch);
+    let after_drop = child.try_wait()?;
+    let watch = crate::ChildExitWatch::open(&mut child)?.expect("original child still live");
     child.stdin.take().unwrap().write_all(&[1])?;
     let ready = watch.wait_until(Instant::now() + Duration::from_secs(2));
     // Reap only through the original owner. The retained pidfd can still
@@ -34,7 +37,10 @@ fn public_child_exit_watch_preserves_original_owner_and_deadline() -> io::Result
     ready?;
     assert_eq!(early.unwrap_err().kind(), io::ErrorKind::TimedOut);
     assert!(still_running.is_none(), "deadline must not signal or reap");
-    assert!(readiness_fd >= 0);
+    assert!(
+        after_drop.is_none(),
+        "dropping readiness must not signal or reap"
+    );
     assert_eq!(status.code(), Some(37));
     watch.wait_until(Instant::now())?;
     drop(watch);
