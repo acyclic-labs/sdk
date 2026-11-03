@@ -1,5 +1,6 @@
 """Replay one shipped input corpus and detect its production admission defect."""
 import argparse
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -28,6 +29,13 @@ controls = {
         b"if self.version != 1 {",
         "wrong-operation",
         b"cursor admission must retain operation, version and opaque validity",
+    ),
+    "native_input": (
+        "plugin/src/input.rs",
+        b"if bytes.len() > 65_536 {",
+        b"if false {",
+        "null",
+        b"native input exceeds its admitted byte bound",
     ),
 }
 
@@ -86,13 +94,53 @@ def qualify(target):
     print(f"{target}: production corpus and planted-defect oracle passed", flush=True)
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("target", nargs="?", choices=controls, default="graphcoder_args")
-    target = parser.parse_args().target
-    recovery = f"{recovery} {target}"
+def binding_oracle_regression():
+    source = root / "rust/crates/harness-fuzz/fuzz_targets/graphcoder_input.rs"
+    original = source.read_bytes()
+    corrected = (
+        b"                let original: acyclic_harness::interaction::ApprovalBinding =\n"
+        b"                    serde_json::from_value(fields[\"binding\"].clone()).unwrap();\n"
+        b"                assert_eq!(binding, original);"
+    )
+    stale = original.replace(
+        corrected,
+        b"                assert_eq!(fields[\"binding\"], serde_json::to_value(binding).unwrap());",
+    )
+    # This must be the exact original oracle, not a parallel failing example.
+    require(
+        hashlib.sha256(stale).hexdigest()
+        == "688bd1ba9de86b3ee2b05dfab135c226ee0271a6402d6e23b4856a203dfbb4f2",
+        "restore exact original binding oracle for red-first regression",
+    )
     try:
-        qualify(target)
+        source.write_bytes(stale)
+        code, found = run(
+            "graphcoder_input",
+            "rust/crates/harness-fuzz/corpus/graphcoder_input/approval-alternate-uuid",
+            b"panicked at rust/crates/harness-fuzz/fuzz_targets/graphcoder_input.rs:26:",
+        )
+        require(code != 0 and found, "original oracle must reject a valid alternate UUID")
+    finally:
+        source.write_bytes(original)
+    require(source.read_bytes() == original, "restore corrected binding oracle")
+    print("original binding oracle RED reproduced; corrected oracle restored", flush=True)
+
+
+if __name__ == "__main__":
+    class Parser(argparse.ArgumentParser):
+        def error(self, message):
+            raise RuntimeError(f"admit control selection: {message}")
+
+    parser = Parser(description=__doc__)
+    parser.add_argument("targets", nargs="*", choices=controls)
+    target = "selection"
+    try:
+        targets = parser.parse_args().targets or ["graphcoder_args"]
+        for target in targets:
+            recovery = f"python3 rust/crates/harness-fuzz/graphcoder-args-control.py {target}"
+            if target == "graphcoder_input":
+                binding_oracle_regression()
+            qualify(target)
     except (OSError, RuntimeError) as error:
         print(f"step=qualify {target} fuzz oracle: {error}; recovery: {recovery}", file=sys.stderr)
         sys.exit(1)

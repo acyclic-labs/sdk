@@ -22,6 +22,12 @@ cannot satisfy the negative control. Run from the repository root:
 python3 rust/crates/harness-fuzz/graphcoder-args-control.py graphcoder_input
 ```
 
+Binding identity is compared after the original typed decoder: UUID spelling
+may change without changing its identity. The alternate UUID seed is an authored
+user request. The kept regression restores the exact original oracle (verified
+by its source digest), requires its false refusal at that seed, and restores the
+corrected oracle before qualifying production admission.
+
 This is decoder qualification, not conversation or authority qualification.
 `cancel: false` decodes and is refused later by dispatch. A structurally decoded
 approval still needs the existing intent/binding authorization before execution.
