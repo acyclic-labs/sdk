@@ -37,3 +37,11 @@ captured bearer input. Compilation failures do not satisfy the control. The
 script restores the original source bytes and checks that the oracle did not
 change. A successful control qualifies this defect, not complete coverage of
 credential cache, source changes or transport implementations.
+
+The same oracle also exercises the production capability text codec and its
+JSON field adapter. Binary inputs round-trip through the actual writers;
+arbitrary accepted text must have its canonical spelling, and padding,
+invalid-alphabet and NUL suffixes must refuse through both entrances. Raw JSON
+also reaches the field adapter, including non-string input. These checks admit
+format only; they do not authenticate the decoded capability or qualify an
+enclosing product message.

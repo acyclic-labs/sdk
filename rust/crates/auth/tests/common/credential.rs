@@ -1,6 +1,7 @@
 //! Transport custody admits opaque bytes without interpreting token claims.
 use acyclic_auth::credential::{
-    CredentialError, CredentialProvider, ResolvedCredential, bearer_bytes, valid_credential,
+    CredentialError, CredentialProvider, ResolvedCredential, bearer_bytes, capability_from_text,
+    capability_serde, capability_text, valid_credential,
 };
 use futures::FutureExt;
 use std::sync::{
@@ -26,8 +27,40 @@ fn resolve(value: &str) -> Result<ResolvedCredential, CredentialError> {
     result
 }
 
-/// Check real provider admission, progress and exact bearer transport bytes.
+fn capability_format(bytes: &[u8]) {
+    let text = capability_text(bytes);
+    assert_eq!(capability_from_text(&text).unwrap(), bytes);
+    let mut json = Vec::new();
+    capability_serde::serialize(bytes, &mut serde_json::Serializer::new(&mut json)).unwrap();
+    assert_eq!(serde_json::from_slice::<String>(&json).unwrap(), text);
+    let mut input = serde_json::Deserializer::from_slice(&json);
+    assert_eq!(capability_serde::deserialize(&mut input).unwrap(), bytes);
+    for suffix in ['=', '!', '\0'] {
+        let mut invalid = text.clone();
+        invalid.push(suffix);
+        assert!(capability_from_text(&invalid).is_err());
+        let invalid_json = serde_json::to_vec(&invalid).unwrap();
+        let mut input = serde_json::Deserializer::from_slice(&invalid_json);
+        assert!(capability_serde::deserialize(&mut input).is_err());
+    }
+    // An arbitrary accepted text has exactly its original canonical spelling.
+    if let Ok(text) = std::str::from_utf8(bytes)
+        && let Ok(decoded) = capability_from_text(text)
+    {
+        assert_eq!(capability_text(&decoded), text);
+    }
+    // Raw JSON reaches the actual field adapter, including non-string inputs.
+    let mut input = serde_json::Deserializer::from_slice(bytes);
+    if let Ok(decoded) = capability_serde::deserialize(&mut input) {
+        let mut original = serde_json::Deserializer::from_slice(bytes);
+        let text: String = serde::Deserialize::deserialize(&mut original).unwrap();
+        assert_eq!(capability_text(&decoded), text);
+    }
+}
+
+/// Check real text codecs, provider admission, progress and exact bearer bytes.
 pub fn check(bytes: &[u8]) {
+    capability_format(bytes);
     let Ok(value) = std::str::from_utf8(bytes) else {
         return;
     };
