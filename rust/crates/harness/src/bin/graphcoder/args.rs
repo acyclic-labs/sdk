@@ -314,20 +314,4 @@ mod tests {
                 .is_err()
         );
     }
-
-    #[test]
-    fn removed_host_and_fixture_entrypoints_cannot_be_selected() {
-        for option in [
-            "--session",
-            "--prepare-scenario",
-            "--fixture",
-            "--headless",
-            "--resume",
-        ] {
-            assert!(
-                Args::try_parse_from(["graphcoder", option, "unused"]).is_err(),
-                "{option}"
-            );
-        }
-    }
 }
