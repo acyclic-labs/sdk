@@ -17,7 +17,7 @@ Run the retained shared oracle and both existing recorded inference controls:
 
 ```sh
 cargo test --locked -p acyclic-conformance --features inference --test main inference::captured_
-cargo fuzz run --fuzz-dir fuzz inference_manifest -- -runs=128 -seed=1 -max_len=65536
+cargo fuzz run --fuzz-dir fuzz --features inference_manifest inference_manifest -- -runs=128 -seed=1 -max_len=65536
 ```
 
 `mutations/inference_manifest_rate.patch` removes the production blank-rate-source
@@ -26,3 +26,6 @@ blank provenance refusal. Restore the patch before the positive command.
 The fuzzer uses the identical oracle. Execution, sanitizer and source-branch
 coverage results must be recorded separately; retaining this target does not
 establish those results.
+
+The target's feature opts into inference dependencies; unrelated fuzz targets
+do not compile that provider and transport stack.

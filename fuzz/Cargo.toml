@@ -7,10 +7,13 @@ edition = "2024"
 [package.metadata]
 cargo-fuzz = true
 
+[features]
+inference_manifest = ["dep:acyclic-conformance"]
+
 [dependencies]
 libfuzzer-sys = "0.4"
 acyclic-actors = { path = "../rust/crates/actors" }
-acyclic-conformance = { path = "../rust/crates/conformance", features = ["inference"] }
+acyclic-conformance = { path = "../rust/crates/conformance", features = ["inference"], optional = true }
 serde_json = "1"
 acyclic-objects = { path = "../rust/crates/objects", default-features = false }
 acyclic-stream = { path = "../rust/crates/stream", default-features = false, features = ["serde"] }
@@ -47,6 +50,7 @@ bench = false
 [[bin]]
 name = "inference_manifest"
 path = "fuzz_targets/inference_manifest.rs"
+required-features = ["inference_manifest"]
 test = false
 doc = false
 bench = false
