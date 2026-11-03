@@ -357,6 +357,7 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
     }
     let mut prefix_saving = None;
     for (entry, mode, prefix, [before, after, repeated]) in observations {
+        let reopens = matches!(entry, Entry::Observe);
         if prefix == 16 {
             prefix_saving = None;
         }
@@ -378,10 +379,10 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
                 .filter(|event| event.0 == "open workspace")
                 .count()
         };
-        // Every reuse opens the workspace once; only a first non-create read
-        // opens it again to select the generation it then retains.
+        // Create and retry already retain the generation. Only observing a
+        // publication enters the retained-read path exercised by the mutation.
         assert_eq!(opens(&after.1), 1, "{entry:?} {mode:?}");
-        let first = if matches!(entry, Entry::Create) { 1 } else { 2 };
+        let first = 1 + usize::from(reopens);
         assert_eq!(opens(&before.1), first, "{entry:?} {mode:?}");
         let observed = |trace: Vec<(&'static str, u64)>| {
             trace
@@ -421,23 +422,15 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
             old_trace.drain(duplicate..duplicate + 2);
         }
         assert_eq!(old_trace, new_trace);
-        // A create publication's first read already reuses its retained
-        // generation, so it costs exactly what every later reuse costs.
-        let reused = if matches!(entry, Entry::Create) {
-            (before.0.1.count_total, before.0.1.bytes_total)
-                == (after.0.1.count_total, after.0.1.bytes_total)
-        } else {
+        let reused = if reopens {
             allocation_bound(before.0.1, after.0.1)
+        } else {
+            before.0.1 == after.0.1
         };
         assert!(
             reused,
             "{entry:?} {mode:?}: {:?} -> {:?}",
-            before.0.1,
-            after.0.1
-        );
-        assert!(
-            !allocation_bound(before.0.1, before.0.1),
-            "restoring the real reopen must fail the same bound"
+            before.0.1, after.0.1
         );
         let saving = (
             before.0.1.count_total - after.0.1.count_total,
@@ -474,10 +467,18 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
             "{entry:?} {mode:?}: redundant read work"
         );
         if mode.is_some() {
-            assert!(
-                before.0.3 > before.0.4 + overhead,
-                "the real reopen must fail the same work bound"
-            );
+            if reopens {
+                assert!(
+                    before.0.3 > before.0.4 + overhead,
+                    "the real reopen must fail the same work bound"
+                );
+            } else {
+                assert_eq!(
+                    before.0.3,
+                    before.0.4 + overhead,
+                    "{entry:?} already retains its generation before the first read"
+                );
+            }
         }
         eprintln!(
             "retained {entry:?} mode={mode:?} prefix={prefix} saved={saving:?} allocations={allocation_saving:?} work={work_saving:?} retained_items={}",
