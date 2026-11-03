@@ -40,6 +40,10 @@ fn draft_history_and_keymap_views_follow_their_injected_files()
         load_history(&history_path)?.entries(),
         &["external\nhistory"]
     );
+    std::fs::write(&history_path, "")?;
+    let empty = load_history(&history_path)?;
+    assert!(empty.generation() > 0, "an empty file is a loaded snapshot");
+    assert!(empty.entries().is_empty());
     let keymap_path = directory.path().join("config/keymap.json");
     InputKeymap::parse(r#"{"bindings":{"Ctrl+l":"cursor.line-start"}}"#)
         .map_err(|errors| format!("{errors:?}"))?
@@ -75,7 +79,9 @@ fn external_editor_success_cancellation_and_cleanup() -> Result<(), Box<dyn std:
         edit_external(
             "original",
             &path,
-            Some("sh -c 'printf edited > \"$1\"' editor-test")
+            Some(
+                "sh -c 'IFS= read -r original < \"$1\"; [ \"$original\" = original ] && printf edited > \"$1\"' editor-test"
+            )
         )?,
         Some("edited".into())
     );

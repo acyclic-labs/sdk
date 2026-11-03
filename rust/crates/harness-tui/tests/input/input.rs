@@ -338,18 +338,14 @@ fn cancelling_reverse_search_preserves_down_to_the_original_draft() {
 }
 
 #[test]
-fn edited_submissions_append_to_the_shared_history_file() -> Result<(), Box<dyn std::error::Error>>
-{
-    use acyclic_harness_tui::{load_history, save_history};
-    let directory = tempfile::tempdir()?;
-    let path = directory.path().join("input-history.json");
-    std::fs::write(&path, r#"["first"]"#)?;
+fn edited_submissions_append_to_the_shared_history_snapshot()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_harness_tui::{format_history, parse_history};
     let mut input = PromptInput::new(Editor::new("working draft"));
-    input.replace_history(load_history(&path)?);
+    input.replace_history(parse_history(r#"["first"]"#)?);
     input.edit_message("old-message".into(), "original");
     // A live-query snapshot changes history while the prior message is edited.
-    std::fs::write(&path, r#"["first","external"]"#)?;
-    input.replace_history(load_history(&path)?);
+    input.replace_history(parse_history(r#"["first","external"]"#)?);
     input.external_result(Some("edited\r\nmessage"), 0);
     assert_eq!(
         press(&mut input, KeyCode::Enter, M::NONE, 1),
@@ -360,8 +356,8 @@ fn edited_submissions_append_to_the_shared_history_file() -> Result<(), Box<dyn 
         }]
     );
     assert_eq!(input.editor.text(), "working draft");
-    save_history(&path, input.history())?;
-    input.replace_history(load_history(&path)?);
+    let saved = format_history(input.history())?;
+    input.replace_history(parse_history(&saved)?);
     assert_eq!(
         input.history().entries(),
         &["first", "external", "edited\nmessage"]
@@ -374,26 +370,24 @@ fn edited_submissions_append_to_the_shared_history_file() -> Result<(), Box<dyn 
     press(&mut input, KeyCode::End, M::CONTROL, 5);
     press(&mut input, KeyCode::Down, M::NONE, 6);
     assert_eq!(input.editor.text(), "working draft");
-    assert_eq!(load_history(&path)?.entries(), input.history().entries());
+    assert_eq!(parse_history(&saved)?.entries(), input.history().entries());
     Ok(())
 }
 
 #[test]
 fn history_reload_invalidates_navigation_saved_by_edit_or_search()
 -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_harness_tui::load_history;
-    let directory = tempfile::tempdir()?;
-    let path = directory.path().join("history.json");
+    use acyclic_harness_tui::parse_history;
     for search in [false, true] {
         for replacement in [
             r#"["replacement"]"#,
-            "",
             "[]",
             r#"["first","second","third","fourth","fifth"]"#,
         ] {
-            std::fs::write(&path, r#"["first","second","third","fourth","fifth"]"#)?;
             let mut input = PromptInput::new(Editor::new("working draft"));
-            input.replace_history(load_history(&path)?);
+            input.replace_history(parse_history(
+                r#"["first","second","third","fourth","fifth"]"#,
+            )?);
             press(&mut input, KeyCode::Home, M::CONTROL, 0);
             press(&mut input, KeyCode::Up, M::NONE, 1);
             press(&mut input, KeyCode::Up, M::NONE, 2);
@@ -406,11 +400,10 @@ fn history_reload_invalidates_navigation_saved_by_edit_or_search()
                 input.edit_message("message".into(), "edited message");
             }
             let generation = input.history().generation();
-            std::fs::write(&path, replacement)?;
-            let snapshot = load_history(&path)?;
+            let snapshot = parse_history(replacement)?;
             assert!(
                 snapshot.generation() > 0,
-                "every file load has a generation"
+                "every loaded snapshot has a generation"
             );
             let entries = snapshot.entries().to_vec();
             input.replace_history(snapshot);

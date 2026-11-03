@@ -220,186 +220,223 @@ pub(super) mod linux {
         raw.make_raw();
         tcsetattr(&stdin, OptionalActions::Now, &raw)?;
         let mut control = UnixStream::connect(root.join("control"))?;
-        let mut header = [0; 9];
-        control.read_exact(&mut header)?;
-        let begin = header[0];
-        let length = u64::from_le_bytes(header[1..].try_into().unwrap());
-        if begin == b'S' {
-            let mut resized = [0];
-            stdin.lock().read_exact(&mut resized)?;
-            assert_eq!(resized, *b"G", "screen resize command completed");
-        }
         let mut output = io::stdout().lock();
-        // The test harness has already printed its preamble in this PTY.
-        // Both renderers diff against an initially blank, default-styled grid;
-        // establish that baseline once, before any original frame bytes.
-        output.write_all(b"\x1b[0m\x1b[2J\x1b[H")?;
-        write_frame(&mut control, &mut output, length)?;
-        let mut reply = Vec::new();
-        stdin.lock().read_until(b'R', &mut reply)?;
-        if !reply.starts_with(b"\x1b[") || !reply.ends_with(b"R") {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "emulator DSR reply missing; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture",
-            ));
-        }
-        control.write_all(b"R")?;
-        if begin == b'S' {
-            let mut copied = [0];
-            stdin.lock().read_exact(&mut copied)?;
-            assert_eq!(copied, *b"H", "screen hardcopy command completed");
-            control.write_all(b"H")?;
-        }
-        // Hold the screen until its one snapshot has been taken. Dropping the
-        // original parent socket releases this wait, including failure paths.
-        assert_eq!(control.read(&mut [0])?, 0);
-        Ok(())
-    }
-    pub(crate) fn capture(tool: &str, bytes: &[u8]) -> Vec<String> {
-        let dir = tempfile::Builder::new()
-            .permissions(std::fs::Permissions::from_mode(0o700))
-            .tempdir()
-            .unwrap();
-        let root = dir.path();
-        let dump = root.join("screen.txt");
-        let config = root.join("tmux.conf");
-        let socket = root.join("tmux.sock");
-        let listener = UnixListener::bind(root.join("control")).unwrap();
-        let name = format!(
-            "acyclic-region-{}-{}",
-            std::process::id(),
-            root.file_name().unwrap().to_string_lossy()
-        );
-        let test = format!(
-            "terminal_regions::native_profiles::linux::{}",
-            if tool == "tmux" {
-                "tmux_capture_pane_agrees_with_the_rendered_screen"
-            } else {
-                "screen_hardcopy_agrees_with_the_rendered_screen"
+        loop {
+            let mut header = [0; 9];
+            // The socket owns the session lifetime. EOF between frames ends it;
+            // EOF inside a declared frame remains an error in write_frame.
+            if control.read(&mut header[..1])? == 0 {
+                return Ok(());
             }
-        );
-        let binary = std::env::current_exe().unwrap();
-        let (errors, error_writer) = io::pipe().unwrap();
-        let mut command = Command::new(tool);
-        command.env("TERM", "xterm-256color").env("SCREENDIR", root);
-        command.stdout(if tool == "screen" {
-            Stdio::from(error_writer.try_clone().unwrap())
-        } else {
-            Stdio::null()
-        });
-        let watch = if tool == "tmux" {
-            std::fs::write(&config, "set -g status off\n").unwrap();
-            let watch =
-                rustix::fs::inotify::init(rustix::fs::inotify::CreateFlags::CLOEXEC).unwrap();
-            rustix::fs::inotify::add_watch(&watch, root, rustix::fs::inotify::WatchFlags::CREATE)
+            control.read_exact(&mut header[1..])?;
+            let begin = header[0];
+            let length = u64::from_le_bytes(header[1..].try_into().unwrap());
+            if begin == b'S' {
+                let mut resized = [0];
+                stdin.lock().read_exact(&mut resized)?;
+                assert_eq!(resized, *b"G", "screen resize command completed");
+            }
+            // Each capture starts at the same blank/default baseline as a new
+            // terminal, including margins left by a negative-control frame.
+            output.write_all(b"\x1b[0m\x1b[r\x1b[2J\x1b[H")?;
+            write_frame(&mut control, &mut output, length)?;
+            let mut reply = Vec::new();
+            stdin.lock().read_until(b'R', &mut reply)?;
+            if !reply.starts_with(b"\x1b[") || !reply.ends_with(b"R") {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "emulator DSR reply missing; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture",
+                ));
+            }
+            control.write_all(b"R")?;
+            if begin == b'S' {
+                let mut copied = [0];
+                stdin.lock().read_exact(&mut copied)?;
+                assert_eq!(copied, *b"H", "screen hardcopy command completed");
+                control.write_all(b"H")?;
+            }
+        }
+    }
+    pub(crate) struct Capture {
+        control: UnixStream,
+        session: Session,
+        directory: tempfile::TempDir,
+        tool: String,
+        name: String,
+    }
+    impl Capture {
+        pub(crate) fn new(tool: &str) -> Self {
+            let dir = tempfile::Builder::new()
+                .permissions(std::fs::Permissions::from_mode(0o700))
+                .tempdir()
                 .unwrap();
-            command.args([
-                "-D",
-                "-S",
-                socket.to_str().unwrap(),
-                "-f",
-                config.to_str().unwrap(),
-            ]);
-            Some(watch)
-        } else {
-            command.args(["-c", "/dev/null", "-DmS", &name]);
-            command.arg(&binary).args(["--exact", &test, "--nocapture"]);
-            None
-        };
-        let child = command
-            .env(CHILD_ROOT, root)
-            .stdin(Stdio::null())
-            .stderr(error_writer)
-            .spawn()
-            .unwrap();
-        // Explicitly release the parent's diagnostic write ends before waiting.
-        drop(command);
-        let session = Session::new(child, errors).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        if let Some(watch) = watch {
-            let mut buffer = [std::mem::MaybeUninit::uninit(); 4096];
-            let mut events = rustix::fs::inotify::Reader::new(&watch, &mut buffer);
-            while !socket.exists() {
-                session.wait(&watch, deadline).unwrap();
-                let event = events.next().unwrap();
-                assert!(
-                    !event.events().intersects(
-                        rustix::fs::inotify::ReadFlags::IGNORED
-                            | rustix::fs::inotify::ReadFlags::QUEUE_OVERFLOW
-                    ),
-                    "emulator socket watch lost; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture"
+            let root = dir.path();
+            let config = root.join("tmux.conf");
+            let socket = root.join("tmux.sock");
+            let listener = UnixListener::bind(root.join("control")).unwrap();
+            let name = format!(
+                "acyclic-region-{}-{}",
+                std::process::id(),
+                root.file_name().unwrap().to_string_lossy()
+            );
+            let test = format!(
+                "terminal_regions::native_profiles::linux::{}",
+                if tool == "tmux" {
+                    "tmux_capture_pane_agrees_with_the_rendered_screen"
+                } else {
+                    "screen_hardcopy_agrees_with_the_rendered_screen"
+                }
+            );
+            let binary = std::env::current_exe().unwrap();
+            let (errors, error_writer) = io::pipe().unwrap();
+            let mut command = Command::new(tool);
+            command.env("TERM", "xterm-256color").env("SCREENDIR", root);
+            command.stdout(if tool == "screen" {
+                Stdio::from(error_writer.try_clone().unwrap())
+            } else {
+                Stdio::null()
+            });
+            let watch = if tool == "tmux" {
+                std::fs::write(&config, "set -g status off\n").unwrap();
+                let watch =
+                    rustix::fs::inotify::init(rustix::fs::inotify::CreateFlags::CLOEXEC).unwrap();
+                rustix::fs::inotify::add_watch(
+                    &watch,
+                    root,
+                    rustix::fs::inotify::WatchFlags::CREATE,
+                )
+                .unwrap();
+                command.args([
+                    "-D",
+                    "-S",
+                    socket.to_str().unwrap(),
+                    "-f",
+                    config.to_str().unwrap(),
+                ]);
+                Some(watch)
+            } else {
+                command.args(["-c", "/dev/null", "-DmS", &name]);
+                command.arg(&binary).args(["--exact", &test, "--nocapture"]);
+                None
+            };
+            let child = command
+                .env(CHILD_ROOT, root)
+                .stdin(Stdio::null())
+                .stderr(error_writer)
+                .spawn()
+                .unwrap();
+            // Explicitly release the parent's diagnostic write ends before waiting.
+            drop(command);
+            let session = Session::new(child, errors).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            if let Some(watch) = watch {
+                let mut buffer = [std::mem::MaybeUninit::uninit(); 4096];
+                let mut events = rustix::fs::inotify::Reader::new(&watch, &mut buffer);
+                while !socket.exists() {
+                    session.wait(&watch, deadline).unwrap();
+                    let event = events.next().unwrap();
+                    assert!(
+                        !event.events().intersects(
+                            rustix::fs::inotify::ReadFlags::IGNORED
+                                | rustix::fs::inotify::ReadFlags::QUEUE_OVERFLOW
+                        ),
+                        "emulator socket watch lost; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture"
+                    );
+                }
+                let shell = format!(
+                    "exec {} --exact {} --nocapture",
+                    shell_words::quote(binary.to_str().unwrap()),
+                    test
+                );
+                checked(Command::new(tool).env("SCREENDIR", root).args([
+                    "-S",
+                    socket.to_str().unwrap(),
+                    "new-session",
+                    "-d",
+                    "-x",
+                    "24",
+                    "-y",
+                    "8",
+                    &shell,
+                ]));
+            }
+            session.wait(&listener, deadline).unwrap();
+            let (control, _) = listener.accept().unwrap();
+            if tool == "screen" {
+                checked(Command::new(tool).env("SCREENDIR", root).args([
+                    "-S",
+                    &name,
+                    "-X",
+                    "eval",
+                    "width 24 8",
+                ]));
+            }
+            Self {
+                control,
+                session,
+                directory: dir,
+                tool: tool.into(),
+                name,
+            }
+        }
+        pub(crate) fn capture(&mut self, bytes: &[u8]) -> Vec<String> {
+            let root = self.directory.path();
+            let socket = root.join("tmux.sock");
+            let dump = root.join("screen.txt");
+            let tool = self.tool.as_str();
+            let name = &self.name;
+            let session = &self.session;
+            let control = &mut self.control;
+            let deadline = Instant::now() + Duration::from_secs(2);
+            if tool == "screen" {
+                checked(
+                    Command::new(tool)
+                        .env("SCREENDIR", root)
+                        .args(["-S", name, "-X", "stuff", "G"]),
                 );
             }
-            let shell = format!(
-                "exec {} --exact {} --nocapture",
-                shell_words::quote(binary.to_str().unwrap()),
-                test
-            );
-            checked(Command::new(tool).env("SCREENDIR", root).args([
-                "-S",
-                socket.to_str().unwrap(),
-                "new-session",
-                "-d",
-                "-x",
-                "24",
-                "-y",
-                "8",
-                &shell,
-            ]));
-        }
-        session.wait(&listener, deadline).unwrap();
-        let (mut control, _) = listener.accept().unwrap();
-        if tool == "screen" {
-            checked(Command::new(tool).env("SCREENDIR", root).args([
-                "-S",
-                &name,
-                "-X",
-                "eval",
-                "width 24 8",
-                "stuff G",
-            ]));
-        }
-        let mut header = [0; 9];
-        header[0] = if tool == "screen" { b'S' } else { b'G' };
-        header[1..].copy_from_slice(&u64::try_from(bytes.len()).unwrap().to_le_bytes());
-        control.write_all(&header).unwrap();
-        control.write_all(bytes).unwrap();
-        session.wait(&control, deadline).unwrap();
-        let mut consumed = [0];
-        control.read_exact(&mut consumed).unwrap();
-        assert_eq!(
-            consumed, *b"R",
-            "original emulator consumption acknowledgement"
-        );
-        let text = if tool == "tmux" {
-            String::from_utf8(checked(Command::new(tool).env("SCREENDIR", root).args([
-                "-S",
-                socket.to_str().unwrap(),
-                "capture-pane",
-                "-p",
-                "-t",
-                "0",
-            ])))
-            .unwrap()
-        } else {
-            let hardcopy = format!("hardcopy {}", shell_words::quote(dump.to_str().unwrap()));
-            checked(
-                Command::new(tool)
-                    .env("SCREENDIR", root)
-                    .args(["-S", &name, "-X", "eval", &hardcopy, "stuff H"]),
-            );
+            let mut header = [0; 9];
+            header[0] = if tool == "screen" { b'S' } else { b'G' };
+            header[1..].copy_from_slice(&u64::try_from(bytes.len()).unwrap().to_le_bytes());
+            control.write_all(&header).unwrap();
+            control.write_all(bytes).unwrap();
             session.wait(&control, deadline).unwrap();
+            let mut consumed = [0];
             control.read_exact(&mut consumed).unwrap();
             assert_eq!(
-                consumed, *b"H",
-                "hardcopy completed before its one file read"
+                consumed, *b"R",
+                "original emulator consumption acknowledgement"
             );
-            std::fs::read_to_string(&dump).unwrap()
-        };
-        text.lines()
-            .take(8)
-            .map(|row| format!("{row:<24}"))
-            .collect()
+            let text = if tool == "tmux" {
+                String::from_utf8(checked(Command::new(tool).env("SCREENDIR", root).args([
+                    "-S",
+                    socket.to_str().unwrap(),
+                    "capture-pane",
+                    "-p",
+                    "-t",
+                    "0",
+                ])))
+                .unwrap()
+            } else {
+                let hardcopy = format!("hardcopy {}", shell_words::quote(dump.to_str().unwrap()));
+                checked(
+                    Command::new(tool)
+                        .env("SCREENDIR", root)
+                        .args(["-S", &name, "-X", "eval", &hardcopy, "stuff H"]),
+                );
+                session.wait(&control, deadline).unwrap();
+                control.read_exact(&mut consumed).unwrap();
+                assert_eq!(
+                    consumed, *b"H",
+                    "hardcopy completed before its one file read"
+                );
+                std::fs::read_to_string(&dump).unwrap()
+            };
+            text.lines()
+                .take(8)
+                .map(|row| format!("{row:<24}"))
+                .collect()
+        }
     }
     #[test]
     fn incomplete_frame_cannot_request_consumption() {
@@ -455,15 +492,16 @@ pub(super) mod linux {
             frame_child(Path::new(&root)).unwrap();
             return;
         }
+        let mut terminal = Capture::new(tool);
         assert_eq!(
-            capture(tool, b""),
+            terminal.capture(b""),
             vec![" ".repeat(usize::from(WIDTH)); usize::from(HEIGHT)],
             "the original harness preamble cannot become the renderer baseline"
         );
         for (bytes, expected) in fixtures() {
-            assert_eq!(capture(tool, &bytes), expected, "{tool} region screen");
+            assert_eq!(terminal.capture(&bytes), expected, "{tool} region screen");
             assert_ne!(
-                capture(tool, &without_scrolling(&bytes)),
+                terminal.capture(&without_scrolling(&bytes)),
                 expected,
                 "removing production scroll sequences must fail the same screen oracle"
             );

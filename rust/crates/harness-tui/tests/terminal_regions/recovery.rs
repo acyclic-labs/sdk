@@ -163,12 +163,13 @@ fn failed_abort_and_writer_unwind_reset_margins_before_same_size_repaint() {
 #[cfg(target_os = "linux")]
 #[test]
 fn native_tmux_observes_recovered_margins_after_failed_abort_and_writer_unwind() {
+    let mut terminal = native_profiles::linux::Capture::new("tmux");
     for panic in [false, true] {
         let (bytes, control, expected) = recovered(panic, b"\x1b[3;6r".len());
-        let expected = native_profiles::linux::capture("tmux", &expected);
-        assert_eq!(native_profiles::linux::capture("tmux", &bytes), expected);
+        let expected = terminal.capture(&expected);
+        assert_eq!(terminal.capture(&bytes), expected);
         assert_ne!(
-            native_profiles::linux::capture("tmux", &control),
+            terminal.capture(&control),
             expected,
             "omitting reset must fail the native screen oracle"
         );
