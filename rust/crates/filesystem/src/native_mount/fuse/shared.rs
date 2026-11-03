@@ -108,7 +108,7 @@ impl Drop for SharedViewEntry {
 
 impl SharedViews {
     pub(super) fn new(uid: u32, gid: u32) -> Arc<Self> {
-        let now = SystemTime::now();
+        let now = super::super::clock::Clock::capture().now();
         Arc::new(Self {
             views: Arc::new(NamedViews::new(MAX_SERIAL)),
             root_attr: FileAttr {

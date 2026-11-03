@@ -34,6 +34,13 @@ pub(super) use tests::packets::trace_kernel_packets;
 #[cfg(test)]
 pub(super) use tests::write_gate::pause_next_write_after_admission;
 
+#[cfg(feature = "test-support")]
+pub(super) fn shared_root_times() -> [SystemTime; 4] {
+    let root = shared::SharedViews::new(0, 0);
+    let attr = &root.root_attr;
+    [attr.atime, attr.mtime, attr.ctime, attr.crtime]
+}
+
 const ROOT_INODE: u64 = 1;
 /// Inodes per view of a shared instance. A view's inodes are
 /// `serial * VIEW_INODE_SPAN + 1 ..`, so the high bits name the view.
