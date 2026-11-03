@@ -285,28 +285,61 @@ fn snapshot_completions(original: &Value, body: &e::SummaryRef) {
             expected_demand,
             "snapshot terminal demand changed"
         );
+        let mut state = before.state();
+        if !matches!(prior, Some(e::SummaryOutcome::Ready(_))) {
+            assert_eq!(
+                state.swap(summary, state.generation(), u64::MAX),
+                Err(Refusal::NotReady),
+                "producer swap admission changed",
+            );
+            assert_eq!(
+                state,
+                before.state(),
+                "refused swap changed producer custody"
+            );
+        }
+        let mut foreign = summary;
+        foreign[0] ^= 1;
         for desired in [
             e::SummaryOutcome::Failed,
             e::SummaryOutcome::Ready(body.clone()),
         ] {
-            let accepted = prior.is_none() || prior.as_ref() == Some(&desired);
             let completion = match &desired {
                 e::SummaryOutcome::Failed => Completion::Failed,
                 e::SummaryOutcome::Ready(_) => Completion::Ready,
             };
-            let mut state = before.state();
-            assert_eq!(
-                state.complete(summary, completion),
-                if accepted {
+            for identity in [summary, foreign] {
+                let expected_result = if identity != summary {
+                    Err(Refusal::Stale)
+                } else if prior.is_none() || prior.as_ref() == Some(&desired) {
                     Ok(())
                 } else {
                     Err(Refusal::Contradiction)
-                },
-                "producer completion admission changed",
-            );
-            let mut changed = before.clone();
-            let result = changed.complete(summary, desired.clone());
-            if accepted {
+                };
+                let mut state = before.state();
+                assert_eq!(
+                    state.complete(identity, completion),
+                    expected_result,
+                    "producer completion admission changed"
+                );
+                let mut changed = before.clone();
+                let result = changed.complete(identity, desired.clone());
+                if let Err(refusal) = expected_result {
+                    assert!(
+                        matches!(result, Err(e::SnapshotError::Transition(actual)) if actual == refusal),
+                        "snapshot completion admission changed"
+                    );
+                    assert_eq!(
+                        changed, before,
+                        "refused completion changed snapshot custody"
+                    );
+                    assert_eq!(
+                        state,
+                        before.state(),
+                        "refused completion changed producer custody"
+                    );
+                    continue;
+                }
                 result.unwrap();
                 wire["snapshot"]["pending"]["completion"] = serde_json::to_value(&desired).unwrap();
                 record.value = serde_json::to_vec(&wire).unwrap().into();
@@ -322,28 +355,11 @@ fn snapshot_completions(original: &Value, body: &e::SummaryRef) {
                 );
                 assert_eq!(
                     state.demand(),
-                    match desired {
+                    match &desired {
                         e::SummaryOutcome::Failed => Demand::Failed(summary),
                         e::SummaryOutcome::Ready(_) => Demand::Swap(summary),
                     },
                     "snapshot terminal demand changed"
-                );
-            } else {
-                assert!(
-                    matches!(
-                        result,
-                        Err(e::SnapshotError::Transition(Refusal::Contradiction))
-                    ),
-                    "snapshot completion admission changed"
-                );
-                assert_eq!(
-                    changed, before,
-                    "refused completion changed snapshot custody"
-                );
-                assert_eq!(
-                    state,
-                    before.state(),
-                    "refused completion changed producer custody"
                 );
             }
         }

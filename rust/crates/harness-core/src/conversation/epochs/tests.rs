@@ -514,26 +514,6 @@ fn fanout_waits_for_the_parent_swap_without_discarding_pending_custody() {
 }
 
 #[test]
-fn producer_failure_is_terminal_and_cannot_be_relabelled_ready() {
-    let id = [3; 32];
-    let mut state = State::default();
-    state.prepare(id, 1, 1).unwrap();
-    state.complete(id, Completion::Failed).unwrap();
-    assert_eq!(state.demand(), Demand::Failed(id));
-    assert_eq!(
-        state.complete(id, Completion::Ready),
-        Err(Refusal::Contradiction)
-    );
-    assert_eq!(state.swap(id, 0, 1), Err(Refusal::NotReady));
-    let unchanged = state;
-    assert_eq!(
-        state.complete([4; 32], Completion::Ready),
-        Err(Refusal::Stale)
-    );
-    assert_eq!(state, unchanged);
-}
-
-#[test]
 fn restoration_retains_pending_custody_and_refuses_torn_epoch_state() {
     let id = [5; 32];
     let mut state = State::default();
