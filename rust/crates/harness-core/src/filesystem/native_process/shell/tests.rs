@@ -96,40 +96,63 @@ fn invocation(root: &Path) -> Invocation {
     }
 }
 
-proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
-    // A declared native binding may leave the primary root, but resolving a
-    // symlink within it must never leave that binding's own authorized root.
-    #[test]
-    fn bound_volume_cwd_keeps_its_authority(component in "[a-z]{1,12}", escape in proptest::bool::ANY) {
-        use proptest::prelude::*;
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("view");
-        let native = temp.path().join("native");
-        let outside = temp.path().join("outside");
-        std::fs::create_dir(&root).unwrap();
-        std::fs::create_dir_all(native.join(&component)).unwrap();
-        std::fs::create_dir(&outside).unwrap();
-        std::os::unix::fs::symlink(&outside, native.join(".escape")).unwrap();
-        let native = native.canonicalize().unwrap();
-        let mut mounts = table(root.canonicalize().unwrap()).unwrap();
-        for (relative, mount) in mounts.mounts_mut() {
-            if !relative.is_empty() {
-                mount.native_root = Some(native.clone());
-            }
-        }
-        let suffix = if escape { ".escape" } else { &component };
-        let result = prepare(ShellInput {
-            command: "pwd".into(), cwd: Some(format!(".volumes/data/{suffix}")), timeout_ms: None, target: None,
-        }, &mounts, invocation(&mounts.root), 1);
-        if escape {
-            prop_assert!(matches!(result, Err(Error::Invalid(_))));
-        } else {
-            let prepared = result.unwrap();
-            prop_assert_eq!(prepared.cwd, native.join(&component));
-            prop_assert_eq!(prepared.environment.get("ACYCLIC_VOLUME_DATA").unwrap(), native.to_str().unwrap());
+#[test]
+fn bound_volume_cwd_keeps_its_authority() {
+    use proptest::prelude::*;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("view");
+    let native = temp.path().join("native");
+    let outside = temp.path().join("outside");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir(&native).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, native.join(".escape")).unwrap();
+    let native = native.canonicalize().unwrap();
+    let mut mounts = table(root.canonicalize().unwrap()).unwrap();
+    for (relative, mount) in mounts.mounts_mut() {
+        if !relative.is_empty() {
+            mount.native_root = Some(native.clone());
         }
     }
+    // All cases use the same original authority. Only the requested component
+    // and escape decision vary; no case publishes or changes this mount table.
+    let mut config = ProptestConfig::with_cases(32);
+    config.source_file = Some(file!());
+    config.test_name = Some(concat!(
+        module_path!(),
+        "::bound_volume_cwd_keeps_its_authority"
+    ));
+    proptest::test_runner::TestRunner::new(config)
+        .run(
+            &("[a-z]{1,12}", proptest::bool::ANY),
+            |(component, escape)| {
+                std::fs::create_dir_all(native.join(&component)).unwrap();
+                let suffix = if escape { ".escape" } else { &component };
+                let result = prepare(
+                    ShellInput {
+                        command: "pwd".into(),
+                        cwd: Some(format!(".volumes/data/{suffix}")),
+                        timeout_ms: None,
+                        target: None,
+                    },
+                    &mounts,
+                    invocation(&mounts.root),
+                    1,
+                );
+                if escape {
+                    prop_assert!(matches!(result, Err(Error::Invalid(_))));
+                } else {
+                    let prepared = result.unwrap();
+                    prop_assert_eq!(prepared.cwd, native.join(&component));
+                    prop_assert_eq!(
+                        prepared.environment.get("ACYCLIC_VOLUME_DATA").unwrap(),
+                        native.to_str().unwrap()
+                    );
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
 }
 
 #[tokio::test]
