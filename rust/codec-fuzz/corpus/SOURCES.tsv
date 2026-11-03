@@ -1899,3 +1899,6 @@ harness_codecs/agent-v13-state-wait	2135	3d246c8b4d30c4607a828a1b686738029f70b9a
 harness_codecs/agent-v13-checkpoint-archive	461	46174049077ab12c43f1057db0995a84b86528fac4de314ba57d0fcc670928f2	harness-core canonical agent record, effect and checkpoint encoders
 harness_codecs/agent-v13-checkpoint-envelope-archive	1489	f1a150cc88f9c783c4ec77cdf1e225b2cd7923afafb79c70e26d3b7c633f340f	harness-core canonical agent record, effect and checkpoint encoders
 harness_codecs/agent-v13-state-archive	1884	e3d440a00d58201508f9f15752c7968299efeaf266dd5f9736d950630fba4325	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v13-spawn-positional	691	37a5f8bdfde667adc9f924f4fd145a7f001544b51c3f71125524a54a65a3215d	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v13-spawn-history-positional	695	6617c37bec2698b543bab7720ba1f1e3c64b9c49cb49963cbc504fb2eef84bf3	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v13-spawn-and-history-positional	667	2e74b79588a3dfe65e0f79549108777e47f13f673f7bf23aaaaeb571bd84eab9	harness-core canonical agent record, effect and checkpoint encoders

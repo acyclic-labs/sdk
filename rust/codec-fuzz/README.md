@@ -195,6 +195,14 @@ Replaying the retained `harness_codecs/agent-v13-spawn-history` input through
 arbitrary-input oracle without invoking the separate writer assertion or
 regenerating captures.
 
+The same reader admits named and positional MessagePack structs. The original
+spawn-history seed and the retained `spawn-positional`,
+`spawn-history-positional` and `spawn-and-history-positional` seeds cover all
+four representations of the spawn and its history selection. The independent
+history projection accepts both field names and positional slots. Restoring its
+old map-only pointer makes the existing writer property reject a valid
+positional spawn; the production reader still retains the selected history.
+
 The state mutation changes the production checkpoint decoder. Replaying the
 retained `harness_codecs/agent-v13-state-wait` input through `harness_codecs`
 tests the arbitrary-input writer comparison without running the seed producer.
