@@ -260,6 +260,31 @@ fn residency(previous: ModelCacheResidency) {
     }
 }
 
+// Forks retain the entire settled state and refuse every pending producer.
+fn snapshot_forks(snapshot: &e::Snapshot) {
+    use e::protocol::Refusal;
+    let before = snapshot.state();
+    for common in [
+        0,
+        before.cursor().saturating_sub(1),
+        before.cursor(),
+        u64::MAX,
+    ] {
+        let expected = if before.cursor() > common {
+            Err(Refusal::Range)
+        } else if before.pending().is_some() {
+            Err(Refusal::NotReady)
+        } else {
+            Ok(before)
+        };
+        assert_eq!(
+            before.fork(common),
+            expected,
+            "producer fork admission changed"
+        );
+    }
+}
+
 // Preparation retains one producer even when its terminal outcome is replayed.
 fn snapshot_preparations(snapshot: &e::Snapshot) {
     use e::protocol::{Pending, Refusal};
@@ -270,7 +295,9 @@ fn snapshot_preparations(snapshot: &e::Snapshot) {
         before.pending().map_or(u64::MAX, |pending| pending.through),
         u64::MAX,
     ] {
-        let summary = snapshot.epoch().key.digest_through(through);
+        let mut key = snapshot.epoch().key.clone();
+        key.through = through;
+        let summary = key.digest();
         let mut foreign = summary;
         foreign[0] ^= 1;
         for head in [through.saturating_sub(1), through, u64::MAX] {
@@ -513,6 +540,14 @@ fn snapshot_transitions(snapshot: &e::Snapshot, wire: &Value) {
     );
     assert_eq!(replay, *snapshot, "refused swap changed snapshot custody");
     next.summary = Some(body.clone());
+    assert!(
+        matches!(
+            replay.swap(snapshot.state().generation() ^ 1, next.clone(), u64::MAX),
+            Err(e::SnapshotError::Transition(e::protocol::Refusal::Stale))
+        ),
+        "snapshot stale generation admitted",
+    );
+    assert_eq!(replay, *snapshot, "refused swap changed snapshot custody");
     replay
         .swap(snapshot.state().generation(), next.clone(), u64::MAX)
         .unwrap();
@@ -521,6 +556,17 @@ fn snapshot_transitions(snapshot: &e::Snapshot, wire: &Value) {
     assert_eq!(replay.state().cursor(), pending.through);
     assert!(replay.state().pending().is_none());
     assert!(replay.outcome().is_none());
+    let mut settled = replay.state();
+    assert_eq!(
+        settled.swap(pending.summary, generation, u64::MAX),
+        Err(e::protocol::Refusal::Stale),
+        "unprepared producer swap admitted",
+    );
+    assert_eq!(
+        settled,
+        replay.state(),
+        "refused swap changed producer custody"
+    );
 }
 
 // Receipt fields are fuzz mutations of the real envelope, not publication
@@ -745,6 +791,7 @@ pub(super) fn check(bytes: &[u8]) {
     // Serde also admits positional struct fields. Mutate the same writer's
     // canonical object spelling instead of assuming the admitted input's shape.
     let original: Value = serde_json::from_slice(&written).unwrap();
+    snapshot_forks(&snapshot);
     snapshot_preparations(&snapshot);
     snapshot_transitions(&snapshot, &original);
     record.value = written.into();

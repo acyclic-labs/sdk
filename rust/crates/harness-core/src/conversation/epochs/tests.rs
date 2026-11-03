@@ -482,36 +482,6 @@ fn snapshot_request<'io>(
 }
 
 #[test]
-fn fanout_waits_for_the_parent_swap_without_discarding_pending_custody() {
-    let id = [7; 32];
-    let mut parent = State::default();
-    parent.prepare(id, 20, 25).unwrap();
-    assert_eq!(parent.demand(), Demand::Await(id));
-    assert_eq!(parent.fork(25), Err(Refusal::NotReady));
-    assert_eq!(parent.fork(19), Err(Refusal::NotReady));
-    let before = parent;
-    let mut uncommitted = parent;
-    uncommitted.complete(id, Completion::Ready).unwrap();
-    assert_eq!(before.demand(), Demand::Await(id));
-    assert_eq!(uncommitted.fork(25), Err(Refusal::NotReady));
-    parent = uncommitted;
-    parent.swap(id, 0, 30).unwrap();
-    let child = parent.fork(25).unwrap();
-    assert_eq!(parent.cursor(), 20);
-    assert_eq!(child.cursor(), 20);
-    assert_eq!(parent.swap(id, 0, 30), Err(Refusal::Stale));
-    assert_eq!(child.fork(19), Err(Refusal::Range));
-    let mut failed = before;
-    failed.complete(id, Completion::Failed).unwrap();
-    assert_eq!(failed.fork(25), Err(Refusal::NotReady));
-    // The former projection dropped a pending slot when its cut lay beyond the
-    // fork, permitting fan-out while the parent still awaited its producer.
-    let dropped_pending = State::restore(0, 0, None, 19).unwrap();
-    assert!(dropped_pending.fork(19).is_ok());
-    assert_eq!(before.fork(19), Err(Refusal::NotReady));
-}
-
-#[test]
 fn restoration_retains_pending_custody_and_refuses_torn_epoch_state() {
     let id = [5; 32];
     let mut state = State::default();
