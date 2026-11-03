@@ -71,15 +71,16 @@ async function terminalControls(run, host) {
 
 async function treeControl(run, host, interruption) {
   const stop = new AbortController(), input = new PassThrough();
+  const inputClosed = once(input, 'close');
   const reason = new Error('original caller cancellation');
   let peer, peerClosed, pending = '', originalHost, spawns = 0;
   // Observe Node's original ChildProcess; no replacement spawn or host is used.
   const spawned = ({process}) => { originalHost = process; spawns++; };
   subscribe('child_process', spawned);
   let result;
-  try {
+  const execute = async signal => {
     result = await run(process.execPath, [script, 'tree'], {
-      host, signal: stop.signal, input,
+      host, signal, input,
       async onOutput(stream, bytes) {
         if (stream !== 'stdout' || peer) return;
         pending += bytes.toString('utf8');
@@ -94,17 +95,34 @@ async function treeControl(run, host, interruption) {
         assert.equal(spawns, 1);
         assert.equal(originalHost.spawnfile, host);
         if (interruption === 'caller') stop.abort(reason);
-        else assert.ok(originalHost.kill('SIGKILL'), 'the original host must still own this live tree');
+        else if (interruption === 'host-loss') {
+          assert.ok(originalHost.kill('SIGKILL'), 'the original host must still own this live tree');
+        } else {
+          // The owned OS signal cancels this same accepted native tree. Keep
+          // the output callback pending until its original input is closed.
+          process.kill(process.pid, interruption);
+          await inputClosed;
+        }
       },
     });
+  };
+  let signalReason;
+  try {
+    if (interruption.startsWith('SIG')) {
+      await assert.rejects(withProcessSignals(execute), error => {
+        signalReason = error;
+        return error.signal === interruption;
+      });
+    } else await execute(stop.signal);
   } finally { unsubscribe('child_process', spawned); }
   await peerClosed; // Native custody, including owner loss, produces this EOF.
   assert.ok(peer, 'the descendant must actually have accepted a connection');
   assert.ok(input.destroyed);
-  if (interruption === 'caller') {
+  if (interruption !== 'host-loss') {
     assert.ok(result.completion.cancelled);
     assert.ok(result.completion.process_tree_retired);
-    assert.ok(result.failures.some(failure => failure.phase === 'abort' && failure.error === reason));
+    assert.ok(result.failures.some(failure => failure.phase === 'abort'
+      && failure.error === (signalReason ?? reason)));
   } else {
     assert.equal(result.code, null, 'host loss cannot certify the selected root status');
     assert.ok(result.hostStatus.signal || result.hostStatus.code !== 0);
@@ -284,6 +302,9 @@ if (mode === 'signal-owner') {
   assert.ok(missing.failures.some(failure => failure.phase === 'retirement'));
 
   await treeControl(commandProcess, host, 'caller');
+  if (process.platform !== 'win32') {
+    for (const signal of ['SIGINT', 'SIGTERM']) await treeControl(commandProcess, host, signal);
+  }
   await treeControl(commandProcess, host, 'host-loss');
   const lostFailure = production.replace("retain('retirement', error);", '');
   assert.notEqual(lostFailure, production, 'production retirement failure retention must exist');
