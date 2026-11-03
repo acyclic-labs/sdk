@@ -27,8 +27,7 @@ fn default_image_discovery_validates_the_immutable_result_and_explicit_images_st
 }
 
 #[test]
-fn wire_decoders_reject_nil_and_duplicate_capabilities() {
-    assert!(decode_machine(Some(&wire::MachineId { value: vec![0; 16] })).is_err());
+fn compatibility_rejects_duplicate_capabilities() {
     let capabilities = BTreeSet::from([Capability::ElasticCpu]);
     assert!(
         decode_compatibility(

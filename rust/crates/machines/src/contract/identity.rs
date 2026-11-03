@@ -1,6 +1,6 @@
 use super::*;
 
-fn admit_uuid(value: Uuid) -> Result<Uuid, IdentityError> {
+pub(crate) fn admit_uuid(value: Uuid) -> Result<Uuid, IdentityError> {
     if value.is_nil() {
         return Err(IdentityError);
     }
@@ -109,8 +109,99 @@ impl MachineId {
     }
 }
 
+/// Shared oracle for the public byte, text and serde identity admissions.
+#[cfg(any(test, feature = "test-support"))]
+pub mod identity_codec_fuzz {
+    use super::*;
+
+    /// UUID syntax is owned by the UUID library; each public identity must add
+    /// exactly the non-nil constraint and preserve all original bits.
+    pub fn check(bytes: &[u8]) {
+        #[cfg(all(feature = "grpc", feature = "test-support"))]
+        crate::grpc::codec_fuzz::check_identities(bytes);
+        let expected_bytes = <[u8; 16]>::try_from(bytes)
+            .ok()
+            .filter(|value| value.iter().any(|byte| *byte != 0));
+        let expected_text = std::str::from_utf8(bytes).ok().and_then(|text| {
+            Uuid::parse_str(text)
+                .ok()
+                .filter(|value| !value.is_nil())
+                .map(|value| *value.as_bytes())
+        });
+        let expected_json = serde_json::from_slice::<Uuid>(bytes)
+            .ok()
+            .filter(|value| !value.is_nil())
+            .map(|value| *value.as_bytes());
+        macro_rules! check {
+            ($($identity:ident),+ $(,)?) => { $(
+                let admitted = <[u8; 16]>::try_from(bytes)
+                    .ok()
+                    .and_then(|raw| $identity::from_bytes(raw).ok());
+                assert_eq!(admitted.map($identity::as_bytes), expected_bytes,
+                    "public identity byte admission must retain non-nil bits");
+                assert_eq!(std::str::from_utf8(bytes).ok()
+                    .and_then(|text| $identity::parse(text).ok())
+                    .map($identity::as_bytes), expected_text,
+                    "public identity text admission must retain non-nil bits");
+                assert_eq!(serde_json::from_slice::<$identity>(bytes).ok()
+                    .map($identity::as_bytes), expected_json,
+                    "public identity serde admission must retain non-nil bits");
+                if let Some(id) = admitted {
+                    assert_eq!($identity::parse(&id.to_string()), Ok(id));
+                    assert_eq!(serde_json::from_slice::<$identity>(
+                        &serde_json::to_vec(&id).unwrap()).unwrap(), id);
+                }
+            )+ };
+        }
+        check!(MachineId, CheckpointId, OperationId, IdempotencyKey);
+    }
+
+    /// Capture the original public identity writers and the UUID library's nil
+    /// writer as a refusal input. The four identity types share these formats.
+    pub fn seeds() -> Vec<(&'static str, Vec<u8>)> {
+        let id = MachineId::from_digest([1; 32]);
+        let nil = Uuid::nil();
+        vec![
+            ("machine-bytes", id.as_bytes().to_vec()),
+            ("machine-text", id.to_string().into_bytes()),
+            ("machine-json", serde_json::to_vec(&id).unwrap()),
+            ("machine-nil-bytes", nil.as_bytes().to_vec()),
+            ("machine-nil-text", nil.to_string().into_bytes()),
+            ("machine-nil-json", serde_json::to_vec(&nil).unwrap()),
+        ]
+    }
+}
+
 #[cfg(test)]
 mod resource_identity_tests {
+    use proptest::prelude::*;
+
+    #[test]
+    fn public_identity_admission_matches_uuid_syntax_and_non_nil_bits() {
+        use super::identity_codec_fuzz::check;
+        use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
+        for (_, bytes) in super::identity_codec_fuzz::seeds() {
+            check(&bytes);
+        }
+        let strategy = (
+            proptest::collection::vec(any::<u8>(), 0..128),
+            any::<[u8; 16]>(),
+        );
+        TestRunner::new_with_rng(
+            Config::with_cases(64),
+            TestRng::deterministic_rng(RngAlgorithm::ChaCha),
+        )
+        .run(&strategy, |(bytes, raw)| {
+            check(&bytes);
+            check(&raw);
+            let original = uuid::Uuid::from_bytes(raw);
+            check(original.to_string().as_bytes());
+            check(&serde_json::to_vec(&original).unwrap());
+            Ok(())
+        })
+        .unwrap();
+    }
+
     #[test]
     fn normalization_preserves_revision_one_bytes_and_domains()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -170,14 +261,6 @@ mod resource_identity_tests {
         assert_eq!(account.into_bytes(), b"account");
         assert_eq!(restored, id);
         assert_ne!(retained.as_bytes(), id.to_string().as_bytes());
-        assert!(super::MachineId::from_bytes([0; 16]).is_err());
-        let wire = serde_json::to_string(&id)?;
-        assert_eq!(serde_json::from_str::<super::MachineId>(&wire)?, id);
-        let nil = serde_json::to_string(&uuid::Uuid::nil())?;
-        assert!(serde_json::from_str::<super::MachineId>(&nil).is_err());
-        assert!(serde_json::from_str::<super::CheckpointId>(&nil).is_err());
-        assert!(serde_json::from_str::<super::OperationId>(&nil).is_err());
-        assert!(serde_json::from_str::<super::IdempotencyKey>(&nil).is_err());
         Ok(())
     }
 }

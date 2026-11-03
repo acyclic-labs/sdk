@@ -32,6 +32,37 @@ where
     result.ok()
 }
 
+fn identity<T: Copy>(
+    bytes: &[u8],
+    actual: Result<T, ProviderError>,
+    original: impl Fn(T) -> [u8; 16],
+) -> Result<T, ProviderError> {
+    let expected = <[u8; 16]>::try_from(bytes)
+        .ok()
+        .filter(|raw| raw.iter().any(|byte| *byte != 0));
+    assert_eq!(
+        actual.as_ref().ok().copied().map(original),
+        expected,
+        "wire identity admission must retain exactly sixteen non-nil original bytes"
+    );
+    if let Err(error) = &actual {
+        assert!(matches!(error, ProviderError::Rejected(_)));
+    }
+    actual
+}
+
+/// Feed the generated protobuf writers with original public identity bytes and
+/// their malformed descendants, using the same oracle as the protobuf targets.
+pub fn check_identities(bytes: &[u8]) {
+    macro_rules! check {
+        ($($name:ident),+ $(,)?) => { $(
+            let value = wire::$name { value: bytes.to_vec() };
+            check(concat!("acyclic.machines.v1.", stringify!($name)), &value.encode_to_vec());
+        )+ };
+    }
+    check!(MachineId, CheckpointId, OperationId, IdempotencyKey);
+}
+
 /// Admit arbitrary protobuf output with the caller's retained identity. These
 /// checks do not dispatch a request, replace a provider, or wait for a producer.
 pub fn check(name: &str, bytes: &[u8]) {
@@ -41,17 +72,36 @@ pub fn check(name: &str, bytes: &[u8]) {
     let operation = OperationId::from_digest([3; 32]);
     match name {
         "acyclic.machines.v1.MachineId" => {
-            let _ = project::<wire::MachineId, _>(bytes, |value| decode_machine(Some(&value)));
+            let _ = project::<wire::MachineId, _>(bytes, |value| {
+                identity(
+                    &value.value,
+                    decode_machine(Some(&value)),
+                    MachineId::as_bytes,
+                )
+            });
         }
         "acyclic.machines.v1.CheckpointId" => {
-            let _ =
-                project::<wire::CheckpointId, _>(bytes, |value| decode_checkpoint(Some(&value)));
+            let _ = project::<wire::CheckpointId, _>(bytes, |value| {
+                identity(
+                    &value.value,
+                    decode_checkpoint(Some(&value)),
+                    CheckpointId::as_bytes,
+                )
+            });
         }
         "acyclic.machines.v1.OperationId" => {
-            let _ = project::<wire::OperationId, _>(bytes, |value| decode_operation(Some(&value)));
+            let _ = project::<wire::OperationId, _>(bytes, |value| {
+                identity(
+                    &value.value,
+                    decode_operation(Some(&value)),
+                    OperationId::as_bytes,
+                )
+            });
         }
         "acyclic.machines.v1.IdempotencyKey" => {
-            let _ = project::<wire::IdempotencyKey, _>(bytes, |value| decode_uuid(&value.value));
+            let _ = project::<wire::IdempotencyKey, _>(bytes, |value| {
+                identity(&value.value, decode_uuid(&value.value), |id| *id.as_bytes())
+            });
         }
         "acyclic.machines.v1.Image" => {
             if let Some(image) =

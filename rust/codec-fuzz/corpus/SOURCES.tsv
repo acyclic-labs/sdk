@@ -1947,3 +1947,9 @@ actor_codecs/call-error-v2	143	60b0abac44ff00b27fd6a8b76afb12923462e0e2666c15fce
 actor_codecs/call-cancelled-accepted-v2	140	abd44aff76f6df5be7587895bf6e3fbc851929de985257337e4cf8106bb244fa	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
 actor_codecs/call-cancelled-v2	93	bd7b5327f2078fa26059b9405f6679507ee3d29b70014b627e61f8423e0a64b7	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
 actor_codecs/call-indeterminate-v2	98	7b124a5c11ff1be2bd2b441967c5d219da6e1eaefac08b305b118698d01a3e8c	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
+ids/machine-bytes	16	f1c69c0477968db4825425c0c697dd88092f7d54e192e96a8ae2c58bcba1ea31	Machines public as_bytes/Display/Serialize writers; UUID nil writer for refusal
+ids/machine-text	36	fc01e8565e160ac9c25a90fc1d4eaf3cb298f29bfe6766d9a0f5bebdb2777e25	Machines public as_bytes/Display/Serialize writers; UUID nil writer for refusal
+ids/machine-json	38	f144552e7ec6609f103cf63d01d7172a8169e2330874e08cabd935502e9d7427	Machines public as_bytes/Display/Serialize writers; UUID nil writer for refusal
+ids/machine-nil-bytes	16	374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb	Machines public as_bytes/Display/Serialize writers; UUID nil writer for refusal
+ids/machine-nil-text	36	12b9377cbe7e5c94e8a70d9d23929523d14afa954793130f8a3959c7b849aca8	Machines public as_bytes/Display/Serialize writers; UUID nil writer for refusal
+ids/machine-nil-json	38	36b6647187901ac4413731fb4bfcc0acaf826e0443d5fdbcfae119480fc63216	Machines public as_bytes/Display/Serialize writers; UUID nil writer for refusal

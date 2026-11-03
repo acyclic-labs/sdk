@@ -840,3 +840,21 @@ service reply and checks decoded cardinality before zip-based comparisons.
 guard to reject only missing replies; the unchanged property must reject its
 extra reply. The earlier count-guard control still covers missing members.
 This is a derived adversarial input, not an additional captured service packet.
+The existing `ids` target also exercises all four public Machines UUID identities
+through byte, text and serde admission and the generated protobuf writers. Its
+oracle checks exact width, non-nil admission and retention of every original bit.
+The gRPC width adapter delegates nil admission to the public identity core. Six
+retained public/UUID writer captures supply byte, text and JSON forms, including
+nil refusals; `corpus/SOURCES.tsv` retains their producers and hashes.
+
+```sh
+git apply rust/codec-fuzz/negative-controls/machines-identity-nil.patch
+cargo test --locked -p acyclic-machines --no-default-features --features grpc,test-support --lib contract::identity::resource_identity_tests::public_identity_admission_matches_uuid_syntax_and_non_nil_bits -- --exact --nocapture
+git apply -R rust/codec-fuzz/negative-controls/machines-identity-nil.patch
+```
+
+The unchanged property must reject the planted production nil acceptance at
+`wire identity admission must retain exactly sixteen non-nil original bytes`.
+After exact source restoration, require the same property to pass. Compiler
+failures do not qualify the control. Source coverage, instrumented campaigns and
+physical service/platform qualification remain separate obligations.

@@ -517,6 +517,15 @@ fn capture() -> Result<(), Box<dyn Error>> {
         "WindowsUsnCheckpoint::to_bytes",
         &mut manifest,
     )?;
+    for (name, bytes) in acyclic_machines::identity_codec_fuzz::seeds() {
+        save(
+            "ids",
+            name,
+            &bytes,
+            "Machines public as_bytes/Display/Serialize writers; UUID nil writer for refusal",
+            &mut manifest,
+        )?;
+    }
     for (name, bytes) in acyclic_machines::codec_fuzz::seeds()? {
         save(
             "machine_journal",
