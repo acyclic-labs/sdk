@@ -2,7 +2,9 @@ The `native_answer` target includes the shipping
 `harness/src/local/host_process/children/answer.rs` reducer directly, with the
 original `Outcome` type and answer bound. It starts at the parsed event boundary
 used by `children::output`; it does not model process execution, physical
-retirement or the line codec's frame-size admission.
+retirement or the line codec's frame-size admission. The old recorded-terminal
+example is subsumed by this same corpus property; its unique lazy truncation
+work assertion remains in the replay control.
 
 The oracle checks event redelivery, previews without terminals, original
 failure/cancellation, reset, unknown events, maximal UTF-8 answer prefixes and
@@ -36,8 +38,8 @@ cargo test --locked -p acyclic-harness-fuzz --no-default-features --features cor
 From `rust/crates/harness-fuzz`, use the retained target and corpus:
 
 ```sh
-cargo +nightly fuzz run native_answer --no-default-features --features core -- -runs=10000
-cargo +nightly fuzz coverage native_answer --no-default-features --features core
+cargo +nightly fuzz run --fuzz-dir . native_answer --no-default-features --features core -- -runs=10000
+cargo +nightly fuzz coverage --fuzz-dir . native_answer --no-default-features --features core
 ```
 
 Coverage must be read for the included shipping `answer.rs`, separately from the
