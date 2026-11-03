@@ -590,6 +590,7 @@ export class Spool {
     assert.ok(this.#path, "event history requires a transcript");
     await this.#written;
     if (this.#broken) throw this.#broken;
+    if (this.#completed === 0) return [];
     // Exactly the completed lines: a later write may already have put part
     // of its line in the file.
     const completed = this.#completed;

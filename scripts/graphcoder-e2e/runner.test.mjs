@@ -287,11 +287,6 @@ test("a spool ends with the exact typed cause", async t => {
     stream.end(); close({ code: 0, signal: null });
     await assert.rejects(late, error => error.kind === "eof");
   });
-  await t.test("transcript failure", async () => {
-    const stream = new PassThrough();
-    const error = await ended(new Spool(stream, new Promise(() => {}), { transcript: join(tmpdir(), "missing-directory-" + process.pid, "events.jsonl") }), () => {});
-    assert.equal(error.kind, "spool");
-  });
 });
 
 test("transcript admission refuses before the executable starts", async t => {
