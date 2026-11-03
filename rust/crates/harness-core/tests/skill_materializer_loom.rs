@@ -5,6 +5,32 @@
 #[path = "../src/context/skill_materializer.rs"]
 mod skill_materializer;
 
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    use std::{
+        sync::Arc,
+        task::{Context, Poll, Wake, Waker},
+    };
+
+    struct Unpark(loom::thread::Thread);
+    impl Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    // Tokio may clone a waker while holding its uninstrumented wait-list lock.
+    // Clone/drop only std::Arc here; the model event is the actual wake.
+    let waker = Waker::from(Arc::new(Unpark(loom::thread::current())));
+    let mut context = Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(value) => return value,
+            Poll::Pending => loom::thread::park(),
+        }
+    }
+}
+
 fn schedule<const SERIALIZE: bool>() {
     use loom::sync::{
         Arc,
@@ -17,7 +43,7 @@ fn schedule<const SERIALIZE: bool>() {
             let owner = owner.clone();
             let head = head.clone();
             loom::thread::spawn(move || {
-                let _guard = SERIALIZE.then(|| loom::future::block_on(Box::pin(owner.enter())));
+                let _guard = SERIALIZE.then(|| block_on(owner.enter()));
                 let pinned = head.load(Ordering::SeqCst);
                 loom::thread::yield_now();
                 assert!(
@@ -74,7 +100,7 @@ fn cancelled_waiter_does_not_take_the_next_owners_wake() {
 
     loom::model(|| {
         let owner = skill_materializer::SkillMaterializer::new();
-        let held = loom::future::block_on(Box::pin(owner.enter()));
+        let held = block_on(owner.enter());
         let wakes = Arc::new(Wakes(AtomicUsize::new(0)));
         let waker = Waker::from(wakes.clone());
         let mut context = Context::from_waker(&waker);
