@@ -22,6 +22,10 @@ UTF-8 `stdout` and `stderr`. Omit `maxBuffer` for unbounded capture or pass an
 explicit per-stream byte budget. Use `commandProcess` to stream output without
 retaining it. Capture retains bytes already written when cancellation occurs;
 only exceeding the explicit capture budget stops accumulation.
+Pass `stdio` to forward any standard stream directly to a caller-owned file
+descriptor or inherited stream. Only piped outputs reach `onOutput` or capture;
+the caller keeps its forwarded descriptors open. Extra descriptors and IPC
+channels are unsupported.
 
 The native owner admits the selected command, waits on OS exit events and
 retires its descendants on completion or cancellation. The cancellation channel

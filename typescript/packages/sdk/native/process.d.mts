@@ -25,6 +25,8 @@ export interface ProcessOptions {
   input?: string | NodeJS.ArrayBufferView | Readable;
   env?: NodeJS.ProcessEnv;
   cwd?: string | URL;
+  /** Standard streams are inherited through the native owner. Extra descriptors and IPC are unsupported. */
+  stdio?: import('node:child_process').StdioOptions;
   /** Accepted writes must settle; cancellation remains armed through their join. */
   onOutput?: (stream: 'stdout' | 'stderr', bytes: Buffer, active: boolean) => void | Promise<void>;
   onClose?: (result: Omit<ProcessResult, 'failures'>) => void;

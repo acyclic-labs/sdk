@@ -59,6 +59,36 @@ async function captureCancellationControl(run, host) {
   }
 }
 
+async function descriptorControl(host, input, original) {
+  const directory = await mkdtemp(join(tmpdir(), 'process-descriptors-'));
+  let stdout, stderr;
+  try {
+    stdout = await open(join(directory, 'stdout'), 'wx', 0o600);
+    stderr = await open(join(directory, 'stderr'), 'wx', 0o600);
+    for (const forwarded of [1, 2, 3]) {
+      const observed = {stdout: [], stderr: []};
+      const result = await commandProcess(process.execPath, [script, 'echo'], {
+        host, input: forwarded === 3 ? undefined : input, signal: AbortSignal.timeout(2000),
+        stdio: ['pipe', forwarded & 1 ? stdout.fd : 'pipe', forwarded & 2 ? stderr.fd : 'pipe'],
+        onOutput: (stream, bytes) => { observed[stream].push(bytes); },
+      });
+      assert.equal(result.code, 0);
+      assert.deepEqual(result.failures, []);
+      for (const [stream, bit] of [['stdout', 1], ['stderr', 2]]) {
+        assert.equal(Buffer.concat(observed[stream]).toString('utf8'), forwarded & bit ? '' : original[stream],
+          'forwarded descriptors must bypass capture and preserve the other original pipe');
+      }
+    }
+    for (const stream of ['stdout', 'stderr']) {
+      assert.equal(await readFile(join(directory, stream), 'utf8'), original[stream].repeat(stream === 'stdout' ? 1 : 2),
+        'the original native child must write through the caller descriptor');
+    }
+  } finally {
+    await Promise.all([stdout?.close(), stderr?.close()]);
+    await rm(directory, {recursive: true});
+  }
+}
+
 async function terminalControls(run, host) {
   // The same real native close must preserve synchronous status failures and
   // both terminal failure paths, including work accepted after root exit.
@@ -356,6 +386,7 @@ if (mode === 'signal-owner') {
   assert.equal(captured.stdout, input.toString());
   assert.equal(captured.stderr, 'native stderr π\n');
   await captureCancellationControl(commandCapture, host);
+  await descriptorControl(host, input, captured);
 
   const unfinishedInput = new PassThrough();
   const normal = await commandProcess(process.execPath, [script, 'exit'], {...options, input: unfinishedInput});

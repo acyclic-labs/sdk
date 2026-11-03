@@ -18,6 +18,7 @@ const signalNames = new Map(Object.entries(constants.signals).map(([name, number
  * onOutput owns each accepted chunk until its returned promise settles.
  */
 export async function commandProcess(program, args, {host, signal, input, env, cwd,
+  stdio = [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
   onOutput, onClose, onTerminal} = {}) {
   if (typeof host !== 'string' || !isAbsolute(host)) throw new TypeError(
     'step=process-host-admission; recovery=pass host as the absolute installed acyclic-process-host executable');
@@ -25,6 +26,9 @@ export async function commandProcess(program, args, {host, signal, input, env, c
     || args.some(argument => typeof argument !== 'string')
     || (input !== undefined && typeof input !== 'string' && !ArrayBuffer.isView(input) && !(input instanceof Readable))) {
     throw new TypeError('step=process-command-admission; recovery=pass a program, string arguments and optional string, byte view or Readable input');
+  }
+  if (stdio === 'ipc' || (Array.isArray(stdio) && (stdio.length > 3 || stdio.includes('ipc')))) {
+    throw new TypeError('step=process-stdio-admission; recovery=pass only stdin, stdout and stderr without an IPC channel');
   }
   signal?.throwIfAborted();
   const directory = await mkdtemp(join(tmpdir(), 'acyclic-process-'));
@@ -81,7 +85,7 @@ export async function commandProcess(program, args, {host, signal, input, env, c
     signal?.throwIfAborted();
     child = spawn(host, ['--control', endpoint, '--completion', receipt,
       '--invocation', invocation, '--inherit-input', '--', program, ...args], {
-      env, cwd, windowsHide: true, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+      env, cwd, windowsHide: true, stdio,
     });
     closed = new Promise(resolve => {
       child.once('error', error => fail('spawn', error));
@@ -116,6 +120,7 @@ export async function commandProcess(program, args, {host, signal, input, env, c
       completionRead = readCompletion({code, signal});
     });
     const output = async (stream, source) => {
+      if (!source) return;
       try {
         for await (const bytes of source) {
           try { await onOutput?.(stream, bytes, failures.size === 0); }
@@ -125,7 +130,7 @@ export async function commandProcess(program, args, {host, signal, input, env, c
     };
     outputClosed = Promise.all([output('stdout', child.stdout), output('stderr', child.stderr)]);
     inputClosed = child.stdin
-      ? pipeline(input instanceof Readable ? input : Readable.from([ArrayBuffer.isView(input)
+      ? pipeline(input instanceof Readable ? input : Readable.from(input === undefined ? [] : [ArrayBuffer.isView(input)
         ? Buffer.from(input.buffer, input.byteOffset, input.byteLength) : input]), child.stdin)
         .catch(error => {
           if (!(rootClosed || stopped) || !['ERR_STREAM_PREMATURE_CLOSE', 'ERR_STREAM_DESTROYED'].includes(error.code)) {
