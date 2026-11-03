@@ -11,18 +11,17 @@ fn parse(input: &[u8]) -> Option<Options> {
     Options::parse_from(text.split('\0').map(str::to_owned)).ok()
 }
 
-pub(crate) fn admitted(input: &[u8]) -> bool {
-    parse(input).is_some()
-}
-
-pub(crate) fn check(input: &[u8]) {
+pub(crate) fn check(input: &[u8]) -> bool {
     // Positive admission is part of this same fuzz entry: reject-all parser
     // mutations must fail even when arbitrary bytes are otherwise refused.
-    assert!(admitted(include_bytes!(
-        "corpus/local_hotpath_options/accepted-minimum"
-    )));
+    assert!(
+        parse(include_bytes!(
+            "corpus/local_hotpath_options/accepted-minimum"
+        ))
+        .is_some()
+    );
     let Some(options) = parse(input) else {
-        return;
+        return false;
     };
     assert!(options.proofs || options.samples != 0);
     assert_ne!(options.setup_credit, 0);
@@ -43,4 +42,5 @@ pub(crate) fn check(input: &[u8]) {
     // Exercise the original command producer with the same accepted strings.
     // Executing that command in a native shell remains a separate obligation.
     let _ = options.recovery();
+    true
 }
