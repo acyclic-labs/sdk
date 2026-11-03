@@ -1721,6 +1721,10 @@ object_revisions/put-revision	62	a7da6e958f37beaf14d54013d359f4335dd8a8a91d053bc
 object_persistence/local-put-empty	45	16f9ca60ca7e5680bdb3edfed7a3621fcd606f5e1c3655892d90b7545969fa5c	acyclic_objects::codec_fuzz::seeds
 object_persistence/local-put-utf8	66	cf0d88eb2b70d59bce935c610b70dccc9c1f5104bf9c2e7092583ea1e96b14ca	acyclic_objects::codec_fuzz::seeds
 object_persistence/local-remove	55	78453976378043a8ef2e2ba83666ada8a6b0b46241b55e4bd01c4d2b96ff5e01	acyclic_objects::codec_fuzz::seeds
+protobuf/acyclic.objects.v1.PutBlobsRequest-batch	130	b3426a091c2a9019ca004405765e9efd6d97d5c2d8b0fc4fd8a98075e207ab71	SDK semantic_seeds production wire writers (first 8 bytes select type)
+protobuf/acyclic.objects.v1.PutBlobsResponse-batch	96	c8cd3eccb8c2431738754cc5d5211e69d853e8f80774663c3ea6443eb111ff28	SDK semantic_seeds production wire writers (first 8 bytes select type)
+protobuf_json/acyclic.objects.v1.PutBlobsRequest-batch	232	b340ad19a6f28b450102c90f74631d23808cbcd2f3bf8b9fd93ada049adb9de0	Objects json::encode_binary or shared acyclic_protobuf_json::encode from SDK semantic_seeds writer output (first 8 bytes select type)
+protobuf_json/acyclic.objects.v1.PutBlobsResponse-batch	233	436a77eec4cd5df7e578ca16687a3866397007709feb0c6361ef1c4cf3cefe15	Objects json::encode_binary or shared acyclic_protobuf_json::encode from SDK semantic_seeds writer output (first 8 bytes select type)
 agent_controls/binding	28	8a6e14020e9b6d660869668cd873ccdf0c130470e8df80eba6a02941148817b8	acyclic_codec_fuzz::agent_controls::seeds via PreparedCommand/AgentBinding/encode_agent_reply; NUL separates command from reply
 agent_controls/command-root	15	0c7db1f10e1daaad62b5a58e3cd779dc19ded0fbdd5b44d760e95e9f0fdcb659	acyclic_codec_fuzz::agent_controls::seeds via PreparedCommand/AgentBinding/encode_agent_reply; NUL separates command from reply
 agent_controls/invocation-root-0	45	ca94801bec3ce4a618cb8ab5c59cb886fe0037628b1116636258ed885f3a1a9c	acyclic_codec_fuzz::agent_controls::seeds via PreparedCommand/AgentBinding/encode_agent_reply; NUL separates command from reply
