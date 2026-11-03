@@ -2190,10 +2190,8 @@ impl Crashing {
         if self.disk.lock().unwrap().refused.is_empty() {
             return Ok(false);
         }
-        let result = Store::new(self.clone())
-            .account(b"account")?
-            .revisions()
-            .await;
+        let blobs = Store::new(self.clone()).account(b"account")?;
+        let result = blobs.revisions().await;
         if !matches!(result, Err(error) if error.code == ErrorCode::Unsupported) {
             return Err("unrecognized metadata was not refused as Unsupported".into());
         }
