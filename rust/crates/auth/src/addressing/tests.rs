@@ -185,8 +185,6 @@ fn rejects_tls_and_signature_aliases() -> Result<(), DnsError> {
         "x@worker.account.example.com",
         "work%65r.account.example.com",
         "worker..example.com",
-        "127.0.0.1",
-        "0x7f000001",
     ] {
         assert!(CanonicalHost::parse(alias).is_err(), "{alias:?}");
     }

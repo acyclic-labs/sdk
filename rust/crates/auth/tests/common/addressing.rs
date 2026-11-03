@@ -1,7 +1,7 @@
 //! Addresses must retain the identities and route decisions they carry.
 use acyclic_auth::addressing::{
-    ActorReference, CanonicalHost, IdentityError, NamespaceId, ResourceIdentity, RouteError,
-    RoutePattern, WorkerRoute, select_route, validate_actor_id, validate_dns_label,
+    ActorReference, CanonicalHost, DnsError, IdentityError, NamespaceId, ResourceIdentity,
+    RouteError, RoutePattern, WorkerRoute, select_route, validate_actor_id, validate_dns_label,
 };
 
 const DOMAIN: &str = "run.example.com";
@@ -87,6 +87,31 @@ fn label(bytes: &[u8]) {
         validate_dns_label(&value).is_err(),
         "oversized DNS label must refuse"
     );
+    value.truncate(63);
+    value[0] = b'a';
+    value[60] = b'a';
+    let label = std::str::from_utf8(&value).unwrap();
+    // Four valid labels of 63/63/63/61 bytes reach the 253-byte host boundary.
+    let mut maximum = format!("{label}.{label}.{label}.{}", &label[..61]);
+    assert_eq!(
+        CanonicalHost::parse(&maximum).unwrap().as_str(),
+        maximum,
+        "maximum DNS host must admit"
+    );
+    maximum.push('a');
+    assert_eq!(
+        CanonicalHost::parse(&maximum),
+        Err(DnsError::HostTooLong),
+        "oversized DNS host must refuse"
+    );
+    let number = bytes.first().copied().unwrap_or(0);
+    for tail in [number.to_string(), format!("0x{number:x}")] {
+        assert_eq!(
+            CanonicalHost::parse(&format!("{label}.{tail}")),
+            Err(DnsError::NumericHost),
+            "numeric DNS host must retain typed refusal"
+        );
+    }
     let _ = validate_dns_label(bytes);
 }
 

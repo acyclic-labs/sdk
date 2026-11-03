@@ -54,6 +54,14 @@ try:
     oracle_hashes = {path: hashlib.sha256(path.read_bytes()).digest() for path in oracles}
     newline = b"\r\n" if b"\r\n" in original else b"\n"
     mutations = {
+        "addressing-host-numeric": (
+            b"return Err(DnsError::NumericHost);", b"()",
+            "numeric DNS host must retain typed refusal", "resource-hostname",
+        ),
+        "addressing-host-length": (
+            b"if host.len() > 253 {", b"if false && host.len() > 253 {",
+            "oversized DNS host must refuse", "resource-hostname",
+        ),
         "addressing-name-length": (
             b"(1..=128).contains(&bytes.len())", b"true",
             "namespace name aliases must refuse", "actor",
