@@ -133,16 +133,19 @@ pub fn check(bytes: &[u8]) -> bool {
     match publications(Some(value)).now_or_never() {
         Some(Ok((_, publications))) => {
             for publication in publications {
-                if !persistence::encode_observation(&publication.observation, usize::MAX).is_ok_and(
-                    |bytes| {
-                        persistence::decode_observation(&bytes, usize::MAX)
-                            == Ok(publication.observation)
-                    },
-                ) || !persistence::encode_envelope(&publication.envelope, usize::MAX).is_ok_and(
-                    |bytes| {
-                        persistence::decode_envelope(&bytes, usize::MAX) == Ok(publication.envelope)
-                    },
-                ) {
+                if !wire_records_admitted(&publication.envelope)
+                    || !persistence::encode_observation(&publication.observation, usize::MAX)
+                        .is_ok_and(|bytes| {
+                            persistence::decode_observation(&bytes, usize::MAX)
+                                == Ok(publication.observation)
+                        })
+                    || !persistence::encode_envelope(&publication.envelope, usize::MAX).is_ok_and(
+                        |bytes| {
+                            persistence::decode_envelope(&bytes, usize::MAX)
+                                == Ok(publication.envelope)
+                        },
+                    )
+                {
                     return false;
                 }
             }
@@ -204,6 +207,36 @@ pub fn check(bytes: &[u8]) -> bool {
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     if !crate::local::codec_fuzz::check(bytes) {
         return false;
+    }
+    true
+}
+
+fn wire_records_admitted(envelope: &crate::CommittedEnvelope) -> bool {
+    let foreign = crate::StreamPath::new("codec/other").expect("canonical fixture path");
+    for mutation in &envelope.mutations {
+        let records = match mutation {
+            crate::CommittedMutation::Append(append) => &append.records,
+            crate::CommittedMutation::Fork(fork) => &fork.records,
+        };
+        let mut encoded = Vec::with_capacity(records.len());
+        for record in records {
+            // Persisted envelopes already exercise the elided-origin path.
+            // The same spelled origin must work without a follow context and
+            // when following another path, preserving the original record.
+            let value = crate::wire_codec::record_wire(record.clone(), None);
+            for followed in [None, Some(&foreign)] {
+                if crate::wire_codec::record(value.clone(), followed) != Ok(record.clone()) {
+                    return false;
+                }
+            }
+            encoded.push(value);
+        }
+        if crate::wire_codec::read_response_records(crate::wire_codec::read_response_wire(
+            encoded.clone(),
+        )) != Ok(encoded)
+        {
+            return false;
+        }
     }
     true
 }

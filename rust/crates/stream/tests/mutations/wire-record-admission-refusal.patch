@@ -1,0 +1,18 @@
+--- a/rust/crates/stream/src/wire_codec/records.rs
++++ b/rust/crates/stream/src/wire_codec/records.rs
+@@ -4,2 +4,9 @@
+ pub fn record(value: wire::Record, followed: Option<&StreamPath>) -> Result<Record, StreamError> {
++    match std::env::var("ACYCLIC_CODEC_WIRE_REFUSAL").ok().as_deref() {
++        Some("no-context") if followed.is_none() => return Err(StreamError::InvalidArgument),
++        Some("foreign-origin") if followed.is_some() && !value.origin.is_empty() => {
++            return Err(StreamError::InvalidArgument);
++        }
++        _ => {}
++    }
+     let origin = match (value.origin.is_empty(), followed) {
+@@ -165,2 +172,5 @@
+ pub fn read_response_records(value: wire::ReadResponse) -> Result<Vec<wire::Record>, StreamError> {
++    if std::env::var("ACYCLIC_CODEC_WIRE_REFUSAL").ok().as_deref() == Some("read-response") {
++        return Err(StreamError::Unavailable);
++    }
+     use prost::Message;
