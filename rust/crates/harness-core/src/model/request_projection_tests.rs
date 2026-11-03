@@ -392,27 +392,69 @@ proptest! {
 }
 
 #[test]
-fn tool_error_fuzz_corpus_round_trips_only_admitted_exchanges() {
-    let seeds: [(&[u8], bool); 4] = [
-        (
-            include_bytes!("../../../harness-fuzz/corpus/model_request/error-bound"),
-            true,
-        ),
-        (
-            include_bytes!("../../../harness-fuzz/corpus/model_request/error-refused"),
-            true,
-        ),
-        (
-            include_bytes!("../../../harness-fuzz/corpus/model_request/error-control"),
-            false,
-        ),
-        (
-            include_bytes!("../../../harness-fuzz/corpus/model_request/error-unpaired"),
-            false,
-        ),
+fn request_writer_corpus_preserves_admission_and_refuses_obsolete_fields() {
+    assert!(
+        crate::contract::json_from_slice::<ModelRequest>(include_bytes!(
+            "../../../harness-fuzz/corpus/model_request/obsolete-pinned"
+        ))
+        .is_err()
+    );
+    let mut pinned = request().unwrap();
+    exchange(&mut pinned);
+    for message in &mut pinned.messages[1..] {
+        match &mut message.content {
+            ModelContent::Part(ModelContentPart::ToolCall(call)) => {
+                call.name = "echo@schema-2".into()
+            }
+            ModelContent::Part(ModelContentPart::ToolResult { name, .. }) => {
+                *name = "echo@schema-2".into()
+            }
+            _ => unreachable!(),
+        }
+    }
+    let bound = answered("echo", json!("é"), error("tool refused the call"));
+    let mut unpaired = bound.clone();
+    let ModelContent::Part(ModelContentPart::ToolResult { call_id, .. }) =
+        &mut unpaired.messages[2].content
+    else {
+        unreachable!()
+    };
+    *call_id = "unissued".into();
+    let mut refused = bound.clone();
+    refused.tools[0].projection_schema = Value::Bool(false);
+    let mut instructions = request().unwrap();
+    instructions.tools.clear();
+    instructions.messages = vec![
+        project_instruction(
+            &crate::model::instruction_tests::file("nested/AGENTS.md", "rules", "rules").into(),
+            None,
+        )
+        .unwrap(),
     ];
-    for (bytes, admitted) in seeds {
-        let request = crate::contract::json_from_slice(bytes).unwrap();
+    let mut corpus = Vec::new();
+    for (name, request, admitted) in [
+        ("pinned", pinned, true),
+        ("error-bound", bound, true),
+        (
+            "error-refused",
+            answered("missing", json!("é"), error("tool refused the call")),
+            true,
+        ),
+        (
+            "error-control",
+            answered("echo", json!("é"), error("bad\nmessage")),
+            false,
+        ),
+        ("error-unpaired", unpaired, false),
+        ("refused", refused, true),
+        ("project-instructions", instructions, true),
+    ] {
+        let bytes = crate::contract::canonical_json_bytes(&request).unwrap();
+        assert_eq!(
+            PreparedModelRequest::decode(&bytes, Limits::default(), None).is_ok(),
+            admitted,
+            "{name}"
+        );
         let prepared = PreparedModelRequest::prepare(request, Limits::default(), None);
         assert_eq!(prepared.is_ok(), admitted);
         if let Ok(prepared) = prepared {
@@ -421,7 +463,12 @@ fn tool_error_fuzz_corpus_round_trips_only_admitted_exchanges() {
             assert_eq!(decoded.request(), prepared.request());
             assert_eq!(decoded.request_digest(), prepared.request_digest());
         }
+        corpus.push((name, bytes));
     }
+    eprintln!(
+        "MODEL_REQUEST_WRITER_CORPUS {}",
+        serde_json::to_string(&corpus).unwrap()
+    );
 }
 
 #[test]
