@@ -106,6 +106,14 @@ pub fn check(bytes: &[u8]) -> usize {
                     }
                 } else {
                     assert!(matches!(current.outcome, Some(Outcome::Failed { .. })));
+                    if let Some(message) = event.get("result").and_then(Value::as_str) {
+                        assert_eq!(
+                            current.outcome,
+                            Some(Outcome::Failed {
+                                message: message.into()
+                            })
+                        );
+                    }
                 }
             }
             Some("message_end")
@@ -129,7 +137,18 @@ pub fn check(bytes: &[u8]) -> usize {
                         }
                     }
                     Some("error") => {
-                        assert!(matches!(current.outcome, Some(Outcome::Failed { .. })))
+                        assert!(matches!(current.outcome, Some(Outcome::Failed { .. })));
+                        if let Some(message) = event
+                            .pointer("/message/errorMessage")
+                            .and_then(Value::as_str)
+                        {
+                            assert_eq!(
+                                current.outcome,
+                                Some(Outcome::Failed {
+                                    message: message.into()
+                                })
+                            );
+                        }
                     }
                     Some("aborted") => assert_eq!(current.outcome, Some(Outcome::Cancelled)),
                     _ => assert!(current.outcome.is_none()),
@@ -157,4 +176,19 @@ pub fn check(bytes: &[u8]) -> usize {
         same(&once, &lost);
     }
     accepted
+}
+
+/// Preserve the original unique cost control alongside the wider corpus property.
+#[cfg(test)]
+pub fn check_prefix_work() {
+    let original = "a".repeat(ANSWER_LIMIT - 1);
+    let mut visits = 0;
+    let retained = answer::bounded(
+        [original.as_str(), "😀"]
+            .into_iter()
+            .chain(std::iter::repeat_n("unread", 100_000))
+            .inspect(|_| visits += 1),
+    );
+    assert_eq!(retained, original);
+    assert_eq!(visits, 2, "truncation visited the unread tail");
 }
