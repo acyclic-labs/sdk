@@ -783,86 +783,32 @@ and producer provenance. The exporter uses the same pair writer, admission and
 golden comparison as other protobuf captures; consecutive exports must keep
 both indexes and selected packets byte-identical.
 
-The same GET projection checks admitted body bytes against the caller's original
-maximum, independently of the route verifier. Its retained real read packet is
-also tried with a zero-byte admission; `object_read_maximum.patch` removes the
-actual production maximum check. The unchanged property must catch that guard
-omission. This does not qualify every range or content-integrity branch.
+The Objects controls below extend the same semantic writer property or persisted
+writer property. Each uses the production entry point and independently held
+writer/request operands. Mutated packets are derived adversarial inputs, not
+additional provider captures. For each production patch, first admit the original
+writer, then compare the parent oracle's result with the unchanged refined oracle,
+and restore exact production bytes. This qualifies only the named predicate.
 
-PUT acknowledgements use one independent digest and logical-length assertion
-for both unary routes and batch members. The same property admits the retained
-created, existing and manifest service replies before changing each reply's
-digest or length separately. `object_put_identity.patch` and
-`object_put_length.patch` omit the respective production acknowledgement check;
-the unchanged oracle must catch both omissions. This qualifies those admission
-branches, with the original typed producer-loss check retained; it does not
-establish remote durability or physical release.
+| Property and independent obligation | Kept production negative controls |
+| --- | --- |
+| GET: original maximum admitted bytes, including zero | `object_read_maximum.patch` |
+| Unary and batch PUT: original digest and logical length through one assertion | `object_put_identity.patch`, `object_put_length.patch` |
+| GET: original offset, complete selection length, digest of a complete blob; a selected slice is derived from the retained read | `object_read_start.patch`, `object_read_length.patch`, `object_read_content.patch` |
+| LIST: strict digest ordering, continuation identity, original limit and exclusive cursor; retained two-member page with swapped/repeated entries and changed continuation, zero/one/unbounded limits | `object_list_order.patch`, `object_list_cursor.patch`, `object_list_limit.patch`, `object_list_after.patch` |
+| DELETE: explicit original outcome; only Deleted may return reclaimed references, using retained referenced-deletion and HEAD writers | `object_delete_outcome.patch`, `object_delete_unspecified.patch`, `object_delete_references.patch` |
+| HEAD/GET: one metadata assertion for explicit kind, logical length and ordered references, using retained HEAD and LIST writers | `object_head_kind.patch`, `object_head_unspecified.patch`, `object_head_references.patch` |
+| Unary and batch PUT: one explicit outcome assertion; retained created response with derived true/false/absent Unknown discriminator | `object_put_unknown.patch` |
+| Persisted writer: public ByteRange resolver against sorted input-derived bounds, FULL empty/nonempty, explicit empty/reversed/oversized selections and open-ended selections from an interior or out-of-bounds start | `object_range_empty.patch`, `object_range_open_end.patch` |
+| Persisted writer: envelope fixed width across marking/epoch restamps and admission of the rewritten value; exact epoch truncation and invalid presence tag in a complete writer body | `object_envelope_width.patch`, `object_envelope_tag.patch` |
+| Persisted writer: unknown kind and definitely nonzero nonce for an absent deleter, isolated in complete writer bodies; typed Corrupt without a stopped cause | `object_envelope_kind.patch`, `object_envelope_padding.patch` |
 
-The GET projection independently checks the original requested offset, complete
-selection length and digest of a complete blob. The same retained writer packet
-supplies altered-offset, altered-content and truncated-selection operands; a
-selected slice is explicitly derived from the original bytes, not recorded as a
-second provider capture. `object_read_start.patch`, `object_read_length.patch`
-and `object_read_content.patch` omit the corresponding production predicates.
-The unchanged property must catch each omission. Manifest logical-content
-authentication, every range-refusal branch and remote topology remain open.
-
-The listing projection independently checks strict digest ordering, continuation
-identity, the caller's limit and the exclusive original cursor. The retained
-two-member service page supplies swapped, repeated and changed-continuation
-operands; those mutations are derived inputs, not additional captures. Zero and
-one-member limits and an unbounded limit with a cursor exercise each request
-bound separately. `object_list_order.patch`, `object_list_cursor.patch`,
-`object_list_limit.patch` and `object_list_after.patch` each omit the actual
-production predicate. The same writer property must catch every omission.
-Malformed digest branches, full pagination state and remote topology remain open.
-
-The deletion projection binds each admitted result to its explicit original
-wire outcome and permits reclaimed references only for `Deleted`. The retained
-referenced-deletion and head writers supply derived outcomes and references;
-these operands are not additional provider captures. `object_delete_outcome.patch`
-changes a production outcome, `object_delete_unspecified.patch` admits an unspecified
-status, and `object_delete_references.patch` drops the non-deletion reference
-guard. The same writer property must catch each actual production mutation.
-Reference framing, physical reclamation and distributed deletion remain open.
-
-HEAD and GET share one independent metadata projection for explicit kind,
-logical length and ordered reference bytes. The retained head and list writers
-supply derived kind/reference combinations, not new provider captures.
-`object_head_kind.patch`, `object_head_unspecified.patch` and
-`object_head_references.patch` change the actual shared production converter;
-the same writer property must catch each defect. Complete manifest producer
-coverage, reference framing, physical custody and remote topology remain open.
-
-Unary and batch PUT acknowledgements share the same explicit outcome check.
-The retained created response supplies derived true, false and absent unknown
-outcomes; these are adversarial inputs, not captured indeterminate operations.
-`object_put_unknown.patch` admits the actual production false discriminator;
-the unchanged writer property must detect that admission. Indeterminate
-execution, remote durability and complete outcome-branch coverage remain open.
-
-The existing `object_persistence` oracle also checks the public `ByteRange`
-resolver against sorted input-derived bounds and empty, reversed and oversized
-selections. This subsumes the mixed manifest round-trip example without adding
-another target or corpus. `negative-controls/object_range_empty.patch` removes
-its production empty-selection refusal; the unchanged writer-corpus property
-must reject that defect. These are component checks, with no range-transport,
-complete branch-coverage or physical-storage qualification implied.
-
-The same persisted writer oracle compares envelope widths across marking and
-restamping, admits the rewritten value, and refuses an unknown presence tag in
-a complete actual writer body. This subsumes the separate envelope example;
-truncating before changing the tag could hide its admission behind a short-read
-refusal. `object_envelope_width.patch` plants a paired variable-width writer and
-decoder; `object_envelope_tag.patch` admits the invalid tag. The unchanged corpus
-property must reject both. These checks do not establish deletion progress,
-physical reclamation, full format-branch coverage or distributed durability.
-
-The same envelope property derives an unknown kind and a definitely nonzero
-nonce for an absent deleter from the complete writer body. It checks typed
-`Corrupt` without an attached stopped cause. `object_envelope_kind.patch` and
-`object_envelope_padding.patch` omit those production guards; qualify each by
-showing the parent oracle misses it and the unchanged refined oracle fails.
-The existing golden test remains: exact bytes and every truncated prefix are
-distinct guarantees. These checks do not establish full branch coverage, crash
-frontiers, physical release or remote topology.
+The persisted writer property subsumes the mixed manifest/range and envelope
+examples. Keep the shared golden test: exact bytes and every truncated prefix
+are distinct guarantees. An invalid tag must be changed in a complete body;
+truncating first could hide invalid admission behind a short-read refusal.
+The original typed producer-loss check also remains. These controls do not
+establish full source-branch coverage, malformed digest/reference framing,
+manifest logical-content authentication, complete pagination/range-refusal
+states, indeterminate execution, remote topology, crash frontiers, deletion
+progress, physical reclamation or distributed durability.

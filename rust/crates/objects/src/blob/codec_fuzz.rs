@@ -123,6 +123,22 @@ pub fn check(bytes: &[u8]) -> bool {
         (ByteRange::FULL, 0, Some(0..0)),
         (ByteRange::FULL, length, Some(0..length)),
         (
+            ByteRange {
+                start: length / 2,
+                end: None,
+            },
+            length,
+            Some(length / 2..length),
+        ),
+        (
+            ByteRange {
+                start: 1,
+                end: None,
+            },
+            0,
+            None,
+        ),
+        (
             ByteRange::new(start, end),
             length,
             (start < end).then_some(start..end),
