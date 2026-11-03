@@ -51,7 +51,7 @@ impl Scanner {
 
 #[cfg(test)]
 #[cfg(not(loom))]
-#[path = "../../fuzz/git_markers_oracle.rs"]
+#[path = "../../tests/support/git_markers_oracle.rs"]
 mod oracle;
 
 #[cfg(all(test, not(loom)))]

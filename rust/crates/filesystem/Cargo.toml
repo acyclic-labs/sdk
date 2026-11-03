@@ -1,5 +1,5 @@
 [package]
-include = ["Cargo.toml", "build.rs", "README.md", "src/**", "build/**", "vendor/**", "examples/**", "tests/**", "benches/**", "conformance/**", "fixtures/**", "fuzz/corpus/**", "fuzz/git_markers_oracle.rs"]
+include = ["Cargo.toml", "build.rs", "README.md", "src/**", "build/**", "vendor/**", "examples/**", "tests/**", "benches/**", "conformance/**", "fixtures/**", "fuzz/corpus/**"]
 autotests = false
 name = "acyclic-fs"
 version = "0.2.0"

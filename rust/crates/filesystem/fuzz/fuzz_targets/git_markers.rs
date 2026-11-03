@@ -2,7 +2,7 @@
 #![no_main]
 #[path = "../../src/git_compat/merge_markers.rs"]
 mod markers;
-#[path = "../git_markers_oracle.rs"]
+#[path = "../../tests/support/git_markers_oracle.rs"]
 mod oracle;
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
