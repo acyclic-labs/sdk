@@ -13,6 +13,11 @@ mod objects;
 mod stream_http;
 mod warm;
 
+pub fn object_seeds()
+-> Result<Vec<(&'static str, &'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
+    objects::seeds()
+}
+
 pub(super) fn project<W, S, E>(
     bytes: &[u8],
     decode: impl Fn(W) -> Result<S, E>,

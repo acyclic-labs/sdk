@@ -121,7 +121,9 @@ fn save(
         // A schema insertion can move the generated table slot without
         // changing this named producer's packet. Refresh only that selector;
         // the original payload must still compare equal through its decoder.
-        if std::env::args().any(|arg| arg == "--only-protobuf") {
+        if std::env::args()
+            .any(|arg| matches!(arg.as_str(), "--only-protobuf" | "--only-objects-protobuf"))
+        {
             let (selector, _) = bytes
                 .split_first_chunk::<8>()
                 .ok_or("protobuf producer has no selector")?;
@@ -189,6 +191,22 @@ fn capture() -> Result<(), Box<dyn Error>> {
         let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?;
         capture_actors(&mut manifest)?;
         return finish_latest(&manifest, prefix);
+    }
+    if std::env::args().any(|arg| arg == "--only-objects-protobuf") {
+        let semantic = acyclic_codec_fuzz::object_semantic_seeds()?;
+        let names = semantic
+            .iter()
+            .flat_map(|(message, variant, _)| {
+                ["protobuf", "protobuf_json"].map(|target| format!("{target}/{message}-{variant}"))
+            })
+            .collect::<std::collections::HashSet<_>>();
+        let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
+            .lines()
+            .filter(|line| !names.contains(line.split('\t').next().unwrap_or(line)))
+            .map(|line| format!("{line}\n"))
+            .collect::<String>();
+        capture_semantic_protobuf(&semantic, &mut manifest)?;
+        return finish_selected(&manifest, |name| names.contains(name));
     }
     if std::env::args().any(|arg| arg == "--only-agents") {
         let prefix = agent_prefix();
@@ -676,53 +694,73 @@ fn capture() -> Result<(), Box<dyn Error>> {
     finish(&manifest, "")
 }
 
-fn capture_protobuf(
+fn capture_protobuf_pair(
+    index: usize,
+    name: &str,
+    payload: &[u8],
+    semantic: bool,
+    manifest: &mut String,
+) -> Result<(), Box<dyn Error>> {
+    let decoder = DECODERS
+        .get(index)
+        .ok_or("protobuf producer has no decoder")?;
+    let selector = u64::try_from(index)?.to_le_bytes();
+    let mut binary = selector.to_vec();
+    binary.extend_from_slice(payload);
+    save(
+        "protobuf",
+        name,
+        &binary,
+        if semantic {
+            "SDK semantic_seeds production wire writers (first 8 bytes select type)"
+        } else {
+            "prost::Message::default().encode_to_vec (first 8 bytes select type)"
+        },
+        manifest,
+    )?;
+    let mut json = selector.to_vec();
+    json.extend_from_slice(&json_seed(decoder, payload)?);
+    save(
+        "protobuf_json",
+        name,
+        &json,
+        if semantic {
+            "Objects json::encode_binary or shared acyclic_protobuf_json::encode from SDK semantic_seeds writer output (first 8 bytes select type)"
+        } else {
+            "Objects json::encode_binary or shared acyclic_protobuf_json::encode from typed protobuf default output (first 8 bytes select type)"
+        },
+        manifest,
+    )
+}
+
+fn capture_semantic_protobuf(
     semantic: &[(&str, &str, Vec<u8>)],
     manifest: &mut String,
 ) -> Result<(), Box<dyn Error>> {
-    let mut pair = |index: usize, name: &str, payload: &[u8], semantic: bool| {
-        let decoder = DECODERS
-            .get(index)
-            .ok_or("protobuf producer has no decoder")?;
-        let selector = u64::try_from(index)?.to_le_bytes();
-        let mut binary = selector.to_vec();
-        binary.extend_from_slice(payload);
-        save(
-            "protobuf",
-            name,
-            &binary,
-            if semantic {
-                "SDK semantic_seeds production wire writers (first 8 bytes select type)"
-            } else {
-                "prost::Message::default().encode_to_vec (first 8 bytes select type)"
-            },
-            manifest,
-        )?;
-        let mut json = selector.to_vec();
-        json.extend_from_slice(&json_seed(decoder, payload)?);
-        save(
-            "protobuf_json",
-            name,
-            &json,
-            if semantic {
-                "Objects json::encode_binary or shared acyclic_protobuf_json::encode from SDK semantic_seeds writer output (first 8 bytes select type)"
-            } else {
-                "Objects json::encode_binary or shared acyclic_protobuf_json::encode from typed protobuf default output (first 8 bytes select type)"
-            },
-            manifest,
-        )
-    };
-    for (index, decoder) in DECODERS.iter().enumerate() {
-        pair(index, decoder.name, &(decoder.seed)(), false)?;
-    }
     for (message, variant, payload) in semantic {
         let index = DECODERS
             .iter()
             .position(|decoder| decoder.name == *message)
             .ok_or("semantic seed has no generated message decoder")?;
-        pair(index, &format!("{message}-{variant}"), payload, true)?;
+        capture_protobuf_pair(
+            index,
+            &format!("{message}-{variant}"),
+            payload,
+            true,
+            manifest,
+        )?;
     }
     Ok(())
+}
+
+fn capture_protobuf(
+    semantic: &[(&str, &str, Vec<u8>)],
+    manifest: &mut String,
+) -> Result<(), Box<dyn Error>> {
+    for (index, decoder) in DECODERS.iter().enumerate() {
+        capture_protobuf_pair(index, decoder.name, &(decoder.seed)(), false, manifest)?;
+    }
+    capture_semantic_protobuf(semantic, manifest)
 }
 
 #[cfg(feature = "storage-schedules")]
@@ -846,6 +884,10 @@ fn finish_latest(manifest: &str, replaced_prefix: &str) -> Result<(), Box<dyn Er
 }
 
 fn finish(manifest: &str, replaced_prefix: &str) -> Result<(), Box<dyn Error>> {
+    finish_selected(manifest, |name| name.starts_with(replaced_prefix))
+}
+
+fn finish_selected(manifest: &str, selected: impl Fn(&str) -> bool) -> Result<(), Box<dyn Error>> {
     if std::env::args().any(|arg| matches!(arg.as_str(), "--accept-goldens" | "--extend-goldens")) {
         let path = Path::new("../../compatibility/frames/golden.hex");
         let previous = std::fs::read_to_string(path)?;
@@ -854,13 +896,14 @@ fn finish(manifest: &str, replaced_prefix: &str) -> Result<(), Box<dyn Error>> {
             .filter(|line| {
                 !line
                     .strip_prefix("corpus/")
-                    .is_some_and(|name| name.starts_with(replaced_prefix))
+                    .and_then(|frame| frame.split_whitespace().next())
+                    .is_some_and(&selected)
             })
             .map(|line| format!("{line}\n"))
             .collect::<String>();
         for line in manifest.lines().filter(|line| !line.starts_with('#')) {
             let name = line.split('\t').next().ok_or("missing capture name")?;
-            if !name.starts_with(replaced_prefix) {
+            if !selected(name) {
                 continue;
             }
             let bytes = std::fs::read(Path::new("corpus").join(name))?;

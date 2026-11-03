@@ -1,0 +1,13 @@
+diff --git a/rust/crates/objects/src/convert.rs b/rust/crates/objects/src/convert.rs
+--- a/rust/crates/objects/src/convert.rs
++++ b/rust/crates/objects/src/convert.rs
+@@ -250,8 +250,7 @@
+ ) -> Result<crate::Object, Error> {
+     let head = head(value.info.as_ref().ok_or_else(invalid)?)?;
+     let selected = selection.resolve(head.length)?;
+-    if head.digest != requested
+-        || value.start != selected.start
++    if value.start != selected.start
+         || value.body.len() as u64 != selected.end - selected.start
+         || value.body.len() as u64 > maximum
+         || (head.kind == Kind::Blob

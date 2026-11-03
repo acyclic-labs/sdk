@@ -1,0 +1,13 @@
+diff --git a/rust/crates/objects/src/convert.rs b/rust/crates/objects/src/convert.rs
+--- a/rust/crates/objects/src/convert.rs
++++ b/rust/crates/objects/src/convert.rs
+@@ -333,9 +333,6 @@
+ /// Checks an envelope against the digest it was read for.
+ pub(crate) fn headed(value: &wire::BlobInfo, requested: Digest) -> Result<Head, Error> {
+     let head = head(value)?;
+-    if head.digest != requested {
+-        return Err(wire::ErrorCode::Unavailable.into());
+-    }
+     Ok(head)
+ }
+ 
