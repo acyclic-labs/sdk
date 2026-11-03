@@ -18,6 +18,11 @@ documentation = "https://docs.rs/acyclic-harness"
 name = "main"
 path = "tests/main.rs"
 
+[[test]]
+name = "native_receipt"
+path = "tests/native_receipt.rs"
+required-features = ["filesystem-local", "native-execution"]
+
 
 
 [lib]

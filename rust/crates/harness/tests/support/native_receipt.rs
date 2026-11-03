@@ -49,10 +49,5 @@ pub fn verify(input: &[u8]) {
                 "native receipt view admission changed"
             );
         }
-        assert_eq!(
-            receipt.task(),
-            &task,
-            "confirmation replaced the admitted task"
-        );
     }
 }

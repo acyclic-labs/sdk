@@ -1,6 +1,4 @@
-#![cfg(all(feature = "filesystem-local", feature = "native-execution"))]
-
-#[path = "../fuzz-native-journal/oracles/native_receipt.rs"]
+#[path = "support/native_receipt.rs"]
 mod contract;
 
 use acyclic_harness::OperationId;
