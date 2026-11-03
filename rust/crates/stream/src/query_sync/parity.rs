@@ -111,7 +111,7 @@ pub(crate) fn negative() {
 // The same bounded operation traces run against Tokio and the substituted
 // watch, including cancellation of pending changed futures and publisher loss.
 #[cfg(loom)]
-pub(crate) fn watch() {
+pub(crate) fn watch(steps: u16) {
     #[derive(Debug, PartialEq, Eq)]
     enum Event {
         Changed(Poll<bool>),
@@ -171,13 +171,11 @@ pub(crate) fn watch() {
             events
         }};
     }
-    for steps in 0u16..256 {
-        assert_eq!(
-            trace!(super::watch::channel, steps),
-            trace!(tokio::sync::watch::channel, steps),
-            "watch trace {steps} differs from Tokio"
-        );
-    }
+    assert_eq!(
+        trace!(super::watch::channel, steps),
+        trace!(tokio::sync::watch::channel, steps),
+        "watch trace {steps} differs from Tokio"
+    );
 }
 
 #[cfg(test)]

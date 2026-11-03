@@ -28,7 +28,9 @@ fn lock_negative_control_retains_an_unpolled_reader_reservation() {
 }
 #[test]
 fn watch_publication_cancellation_and_loss_match_tokio() {
-    loom::model(query_sync::parity::watch);
+    for steps in 0u16..256 {
+        loom::model(move || query_sync::parity::watch(steps));
+    }
 }
 mod cursor {
     use super::{StreamError, pull};
