@@ -163,7 +163,7 @@ impl Settlement {
             input,
         } = self;
         if let Err(error) = &committed
-            && !matches!(error, StreamError::Unavailable | StreamError::Refused(_))
+            && !error.uncertain()
             && let Some(phase) = phase.as_deref_mut()
         {
             *phase = CommitPhase::Uncommitted;
@@ -176,7 +176,9 @@ impl Settlement {
                 released.and(observed)?;
                 outcome
             }
-            (Err(StreamError::Unavailable), Some(operation)) => {
+            // The phase above and this recovery read the one primitive
+            // predicate: an undecided commit is always recovered by its key.
+            (Err(error), Some(operation)) if error.uncertain() => {
                 released?;
                 let before = quota.retained();
                 match inspect_idempotency(client, key, &binding, operation, quota, phase).await? {

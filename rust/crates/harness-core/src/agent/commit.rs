@@ -340,9 +340,7 @@ pub async fn submit<P: crate::store::JournalProvider + ?Sized>(
     match provider.commit(request.clone()).await {
         Ok(CommitOutcome::Committed(receipt)) => Ok(Submitted::Committed(receipt)),
         Ok(CommitOutcome::Conflict(conflicts)) => Ok(classify(conflicts)),
-        Err(StreamError::Unavailable | StreamError::Refused(_) | StreamError::DeadlineElapsed) => {
-            Err(Error::Unknown(Box::new(request)))
-        }
+        Err(error) if error.uncertain() => Err(Error::Unknown(Box::new(request))),
         Err(error) => Err(Error::Stream(error)),
     }
 }
