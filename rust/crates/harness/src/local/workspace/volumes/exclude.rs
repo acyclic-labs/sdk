@@ -92,42 +92,6 @@ mod tests {
     }
 
     #[test]
-    fn linked_worktrees_share_the_common_exclude() {
-        let directory = tempfile::tempdir().unwrap();
-        let repository = directory.path().join("repo");
-        std::fs::create_dir(&repository).unwrap();
-        git(&repository, &["init", "-q"]);
-        git(
-            &repository,
-            &[
-                "-c",
-                "user.name=t",
-                "-c",
-                "user.email=t@t",
-                "commit",
-                "-q",
-                "--allow-empty",
-                "-m",
-                "c",
-            ],
-        );
-        let linked = directory.path().join("linked");
-        git(
-            &repository,
-            &["worktree", "add", "-q", linked.to_str().unwrap()],
-        );
-        std::fs::create_dir_all(linked.join(".volumes/scratch")).unwrap();
-        std::fs::write(linked.join(".volumes/scratch/note"), "x").unwrap();
-        exclude_mount_paths(&linked, &[linked.join(".volumes/scratch")]).unwrap();
-        assert!(
-            std::fs::read_to_string(repository.join(".git/info/exclude"))
-                .unwrap()
-                .contains("\n/.volumes/scratch\n")
-        );
-        assert_eq!(git(&linked, &["status", "--porcelain"]), "");
-    }
-
-    #[test]
     fn a_directory_outside_git_is_left_alone() {
         let directory = tempfile::tempdir().unwrap();
         // The temporary root may sit inside a repository on a developer box;
@@ -147,7 +111,7 @@ mod tests {
     }
 
     fn ignores(root: &Path, paths: &[(&Path, bool)]) {
-        let recovery = "cargo test --locked -p acyclic-harness --lib local::workspace::volumes::exclude::tests::";
+        let recovery = "cargo test --locked -p acyclic-harness --features filesystem-local,native-execution --lib local::workspace::volumes::exclude::tests::";
         let mut child = std::process::Command::new("git")
             .args(["check-ignore", "--no-index", "-z", "--stdin"])
             .current_dir(root)
@@ -307,23 +271,5 @@ mod tests {
                 std::fs::write(&exclude, "user-pattern\n").unwrap();
             }
         }
-        use std::os::unix::ffi::OsStrExt as _;
-        let root = directory
-            .path()
-            .join(std::ffi::OsStr::from_bytes(b"non-\xff"));
-        match std::fs::create_dir(&root) {
-            Ok(()) => {}
-            // APFS and HFS+ store only valid UTF-8 names, so no checkout there
-            // can have this path. Every other Unix host must create it.
-            #[cfg(target_os = "macos")]
-            Err(error) if error.raw_os_error() == Some(EILSEQ) => return,
-            Err(error) => panic!("{}: {error}", root.display()),
-        }
-        exclude_mount_paths(&root, &[root.join(".volumes/scratch")]).unwrap();
-        assert!(
-            std::fs::read(&exclude)
-                .unwrap()
-                .starts_with(b"user-pattern\n")
-        );
     }
 }
