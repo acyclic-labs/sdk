@@ -201,8 +201,8 @@ fn sync_filesystem_impl(path: &Path) -> io::Result<()> {
             "syncfs",
             u64::from(file.as_raw_fd().cast_unsigned()),
             || {
-                // SAFETY: syncfs acts only on this live descriptor.
                 #[allow(unsafe_code, reason = "syncfs acts only on the held descriptor")]
+                // SAFETY: syncfs acts only on this live descriptor.
                 if unsafe { libc::syncfs(file.as_raw_fd()) } == 0 {
                     Ok(())
                 } else {
@@ -406,8 +406,8 @@ pub(super) fn resize_file(
     #[cfg(unix)]
     let result = {
         use std::os::fd::AsRawFd as _;
-        // SAFETY: ftruncate acts only on this live descriptor with the validated length.
         #[allow(unsafe_code, reason = "ftruncate acts only on the held descriptor")]
+        // SAFETY: ftruncate acts only on this live descriptor with the validated length.
         if unsafe { libc::ftruncate(file.as_raw_fd(), size) } == 0 {
             Ok(())
         } else {
