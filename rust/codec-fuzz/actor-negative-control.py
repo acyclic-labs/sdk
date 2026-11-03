@@ -2,6 +2,7 @@
 """Require the unchanged Actors fuzz oracle to detect production reject-all drift."""
 import hashlib
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -27,6 +28,7 @@ def run(step, expected, diagnostic="invocation writer must be admitted", entry=N
         raise RuntimeError(f"{step}: expected {expected}; recovery after correcting the "
                            f"reported source or oracle: python3 actor-negative-control.py"
                            f" {' '.join(sys.argv[1:])}")
+    return output
 
 
 def main():
@@ -42,10 +44,12 @@ def main():
         return call_records()
     if sys.argv[1:] == ["--call-schedules"]:
         return call_schedules()
+    if sys.argv[1:] == ["--replay-diagnostics"]:
+        return replay_diagnostics()
     if sys.argv[1:] == ["--sockets"]:
         return sockets()
     if sys.argv[1:]:
-        raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms|--persisted-alarms|--reservation-book|--call-records|--call-schedules|--sockets|--capture]")
+        raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms|--persisted-alarms|--reservation-book|--call-records|--call-schedules|--replay-diagnostics|--sockets|--capture]")
     original = {path: path.read_bytes() for path in (PRODUCTION, ORACLE)}
     needle = b"Ok(Self::decode_bound(record)?.map(|(_, invocation)| invocation))"
     source = original[PRODUCTION]
@@ -254,6 +258,36 @@ def call_schedules():
     finally:
         for path, value in original.items():
             path.write_bytes(value)
+
+
+def replay_diagnostics():
+    model = ROOT.parent / "crates/actors/src/call/model.rs"
+    original = model.read_bytes()
+    anchor = b"pub async fn check(bytes: &[u8]) -> Result<(), String> {"
+    if original.count(anchor) != 1:
+        raise RuntimeError("schedule entry changed; recovery: inspect model::check before "
+                           "python3 actor-negative-control.py --replay-diagnostics")
+    print("call model sha256=" + hashlib.sha256(original).hexdigest(), flush=True)
+    try:
+        for failure in (b'return Err("replay recovery control".into());',
+                        b'panic!("replay recovery control");'):
+            model.write_bytes(original.replace(anchor, anchor + failure))
+            output = run("actual schedule failure retains its reproduction", "rejected",
+                         "replay recovery control", "call_record")
+            diagnostic = re.search(
+                r"decoder oracle (actor_codecs/[^\s]+) \(entry call_record\) failed:", output)
+            if (diagnostic is None or
+                "recovery: cargo +nightly fuzz run --fuzz-dir . call_record corpus/" +
+                    diagnostic[1] not in output or
+                "recovery after correcting the reported mismatch: "
+                    "cargo run --locked --example replay -- actor_codecs call_record" not in output):
+                raise RuntimeError("replay recovery lost the actual entry or captured input; "
+                                   "recovery: correct examples/replay.rs then python3 "
+                                   "actor-negative-control.py --replay-diagnostics")
+        model.write_bytes(original)
+        run("restored production replays original decoder inputs", "accepted")
+    finally:
+        model.write_bytes(original)
 
 
 def sockets():
