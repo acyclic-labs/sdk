@@ -26,6 +26,10 @@ fn lock_admission_and_cancellation_match_tokio() {
 fn lock_negative_control_retains_an_unpolled_reader_reservation() {
     loom::model(query_sync::parity::negative);
 }
+#[test]
+fn watch_publication_cancellation_and_loss_match_tokio() {
+    loom::model(query_sync::parity::watch);
+}
 mod cursor {
     use super::{StreamError, pull};
     type FollowFrames = futures::stream::LocalBoxStream<'static, Result<Vec<u8>, StreamError>>;
