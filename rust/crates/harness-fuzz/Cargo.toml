@@ -126,6 +126,13 @@ tokio-util = { workspace = true, features = ["codec"], optional = true }
 which = { version = "=8.0.6", optional = true }
 
 [[bin]]
+name = "native_marketplace"
+path = "fuzz_targets/native_marketplace.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "native_model_selection"
 path = "fuzz_targets/native_model_selection.rs"
 test = false
