@@ -108,6 +108,78 @@ pub(crate) fn negative() {
     admitted!(super::RwLock::stalled_reader_control(()));
 }
 
+// The same bounded operation traces run against Tokio and the substituted
+// watch, including cancellation of pending changed futures and publisher loss.
+#[cfg(loom)]
+pub(crate) fn watch() {
+    #[derive(Debug, PartialEq, Eq)]
+    enum Event {
+        Changed(Poll<bool>),
+        Value(u8),
+        Receivers(usize),
+    }
+    macro_rules! trace {
+        ($channel:path, $steps:expr) => {{
+            let (sender, mut first) = $channel(0u8);
+            let mut second = sender.subscribe();
+            let mut spare = Some(sender.clone());
+            let mut sender = Some(sender);
+            let mut events = Vec::new();
+            let mut steps = $steps;
+            for _ in 0..4 {
+                match steps & 3 {
+                    0 => {
+                        let mut changed = Box::pin(first.changed());
+                        events.push(Event::Changed(poll!(changed).map(|value| value.is_ok())));
+                    }
+                    1 => {
+                        if let Some(sender) = sender.as_ref().or(spare.as_ref()) {
+                            sender.send_modify(|value| *value += 1);
+                        }
+                    }
+                    2 => {
+                        if let Some(sender) = sender.as_ref().or(spare.as_ref()) {
+                            second = sender.subscribe();
+                        }
+                        let mut changed = Box::pin(second.changed());
+                        events.push(Event::Changed(poll!(changed).map(|value| value.is_ok())));
+                    }
+                    _ => {
+                        if spare.is_some() {
+                            drop(spare.take());
+                        } else {
+                            drop(sender.take());
+                        }
+                    }
+                }
+                if let Some(sender) = sender.as_ref().or(spare.as_ref()) {
+                    events.push(Event::Value(*sender.borrow()));
+                    events.push(Event::Receivers(sender.receiver_count()));
+                }
+                steps >>= 2;
+            }
+            drop((sender, spare));
+            // An unseen final publication precedes the terminal result. A
+            // cancelled changed future cannot consume that publication.
+            for receiver in [&mut first, &mut second] {
+                for _ in 0..2 {
+                    let mut changed = Box::pin(receiver.changed());
+                    events.push(Event::Changed(poll!(changed).map(|value| value.is_ok())));
+                }
+                events.push(Event::Value(*receiver.borrow_and_update()));
+            }
+            events
+        }};
+    }
+    for steps in 0u16..256 {
+        assert_eq!(
+            trace!(super::watch::channel, steps),
+            trace!(tokio::sync::watch::channel, steps),
+            "watch trace {steps} differs from Tokio"
+        );
+    }
+}
+
 #[cfg(test)]
 #[cfg(not(loom))]
 #[test]
