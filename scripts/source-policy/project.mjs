@@ -129,7 +129,7 @@ export function projectPollingSites(sources, {historical = false} = {}) {
    continue;
   }
   for (const site of unit.sites) sites.push(site);
-  if (script(file)) { units.set(file, unit); files.set('/' + file, source); }
+  if (script(file) && !unit.parsed?.isDeclarationFile) { units.set(file, unit); files.set('/' + file, source); }
  }
  if (errors.length === 1) throw errors[0];
  if (errors.length) throw new AggregateError(errors, errors.map(error => error.message).join('\n'));

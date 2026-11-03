@@ -29,6 +29,10 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
   "name.endsWith('/helper') ? undefined : ts.resolveModuleName(name, containingFile, options, host, moduleCache).resolvedModule");
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), {project: resolution.projectPollingSites}),
   {name: 'AssertionError', message: /relative source resolution/});
+ const declarations = await mutant('./source-policy/project.mjs',
+  'script(file) && !unit.parsed?.isDeclarationFile', 'script(file)');
+ assert.throws(() => targets.fuzzProject(Buffer.from([0]), {project: declarations.projectPollingSites}),
+  {name: 'AssertionError', message: /declaration hid executable producer/});
  for (const [original, replacement, seed, message] of [
   ['ts.isImportEqualsDeclaration(node) && !node.isTypeOnly', 'false', 1, /lost runtime module initialization/],
   ['node.expression.kind === ts.SyntaxKind.ImportKeyword', 'false', 2, /lost runtime module initialization/],

@@ -124,6 +124,30 @@ export function fuzzProject(data, {project = projectPollingSites, validate = val
  assert.ok(newProjectPollingSites(relative, new Map(relative).set(relativeHelper,
   'export function settle() { return Bun.sleep(2); }')).some(site => site.file === caller),
   'relative producer edit did not reopen its caller');
+ const [declaration, executable] = [['lib/declared.d.ts', 'lib/declared.js'],
+  ['lib/declared/index.d.mts', 'lib/declared/index.mjs'],
+  ['lib/declared/index.d.cts', 'lib/declared/index.cjs']][variant % 3];
+ const declaredLoad = "import {settle} from '../lib/declared';";
+ const declared = new Map([[declaration, 'export declare function settle(): void;'],
+  [executable, 'export function settle() { return Bun.sleep(1); }'], [caller, declaredLoad]]);
+ if (variant % 3) declared.set('lib/declared/package.json', JSON.stringify({
+  types: declaration.split('/').at(-1), main: executable.split('/').at(-1),
+ }));
+ const called = new Map(declared).set(caller, declaredLoad + ' settle();');
+ assert.ok(project(called).some(site => site.file === caller && site.kind === 'polling-helper-reference'),
+  'declaration hid executable producer');
+ assert.ok(newProjectPollingSites(declared, called).some(site => site.file === caller),
+  'declaration authorized a new executable reference');
+ assert.ok(newProjectPollingSites(called, new Map(called).set(executable,
+  'export function settle() { return Bun.sleep(2); }')).some(site => site.file === caller),
+  'executable edit behind declaration did not reopen caller');
+ assert.ok(!newProjectPollingSites(called, new Map(called).set(declaration,
+  'export declare function settle(value: number): void;')).some(site => site.file === caller),
+  'type declaration changed executable dependency');
+ const missingExecutable = new Map(called);
+ missingExecutable.delete(executable);
+ assert.ok(project(missingExecutable).some(site => site.file === caller && site.kind === 'unresolved-local-helper'),
+  'declaration substituted for missing executable producer');
  const raw = new TextDecoder().decode(new Uint8Array(data));
  // Parser acceptance is determined by the same production unit boundary.
  // Accepted bytes must also survive graph construction, independent of order.
