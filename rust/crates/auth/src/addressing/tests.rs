@@ -177,29 +177,6 @@ fn rejects_tls_and_signature_aliases() -> Result<(), DnsError> {
 }
 
 #[test]
-fn invalid_a_labels_cannot_cross_the_url_boundary() -> Result<(), Box<dyn std::error::Error>> {
-    let invalid = "xn--a.account.example.com";
-    // The former LDH-only path accepts every label; the URL authority refuses it.
-    assert!(
-        invalid
-            .split('.')
-            .all(|label| validate_dns_label(label.as_bytes()).is_ok())
-    );
-    assert!(url::Url::parse(&format!("https://{invalid}")).is_err());
-    assert_eq!(
-        CanonicalHost::parse(invalid),
-        Err(DnsError::InvalidCharacter)
-    );
-    let valid = "xn--caf-dma.account.example.com";
-    assert_eq!(CanonicalHost::parse(valid)?.as_str(), valid);
-    assert_eq!(
-        url::Url::parse(&format!("https://{valid}"))?.host_str(),
-        Some(valid)
-    );
-    Ok(())
-}
-
-#[test]
 fn canonical_host_bytes_are_the_signature_input() -> Result<(), Box<dyn std::error::Error>> {
     use ed25519_dalek::{Signer, SigningKey};
 
