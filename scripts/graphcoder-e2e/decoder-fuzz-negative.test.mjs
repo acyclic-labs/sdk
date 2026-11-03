@@ -30,6 +30,11 @@ test("decoder fuzz oracles reject planted production defects", () => {
     ["process-report.mjs", 'Date.now() > request.deadline_unix_ms', "false", "report"],
     ["process-report.mjs", 'this.#finish(this.#ownerExited ? "exited" : "write-failed", error.code ?? "transport-error");',
       'this.#finish(this.#ownerExited ? "exited" : "write-failed", "lost-source-cause");', "report"],
+    ["process.mjs", 'if (this.#unique) { this.#settle(new SpoolEnded("duplicate",',
+      'if (false) { this.#settle(new SpoolEnded("duplicate",', "spool"],
+    ["process.mjs", "if (!this.#state.open) return true;", "if (false) return true;", "spool"],
+    ["process.mjs", "if (!this.#path) return Promise.resolve(indexed);",
+      "if (!this.#path) return Promise.resolve({});", "spool"],
   ];
   for (const [file, before, after, oracle] of mutations) {
     // Mutate the actual imported implementation, never a parallel model. A
@@ -48,7 +53,10 @@ test("decoder fuzz oracles reject planted production defects", () => {
         return { ...loaded, source: source.replace(${JSON.stringify(before)}, ${JSON.stringify(after)}) };
       } });
       try {
-        ${oracle === "assertions" ? `
+        ${oracle === "spool" ? `
+          const { fuzz } = await import('./spool.fuzz.mjs');
+          await fuzz(Buffer.from([123, 10]));
+        ` : oracle === "assertions" ? `
           const { fuzz } = await import('./assertions.fuzz.mjs');
           fuzz(Buffer.alloc(0));
         ` : oracle === "utf8" ? `

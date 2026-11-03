@@ -256,27 +256,8 @@ test("case selection rejects misspellings before starting either executable", as
   } finally { await processes.close(); }
 });
 
-test("spool waits handle every fragmentation boundary without timers or history", async () => {
-  const bytes = JSON.stringify({ event: "request", case: "λ", step: 0 }) + "\n";
-  for (let boundary = 0; boundary <= bytes.length; boundary++) {
-    const stream = new PassThrough();
-    const events = new Spool(stream, new Promise(() => {}), { key: event => [event.case] });
-    const awaited = events.next(event => event.case === "λ");
-    stream.write(bytes.slice(0, boundary)); stream.write(bytes.slice(boundary));
-    assert.equal((await awaited).step, 0);
-    // A keyed wait also answers from the index; `next` sees only later events.
-    assert.equal((await events.keyed("λ")).step, 0);
-    stream.end();
-  }
-});
-
 test("a spool ends with the exact typed cause", async t => {
   const ended = async (events, feed) => { const waiting = events.next(() => false); feed(); return waiting.then(() => assert.fail("resolved"), error => error); };
-  await t.test("malformed line", async () => {
-    const stream = new PassThrough();
-    const error = await ended(new Spool(stream, new Promise(() => {})), () => stream.end("broken JSON\n"));
-    assert.ok(error instanceof SpoolEnded); assert.equal(error.kind, "malformed"); assert.match(error.message, /broken JSON/);
-  });
   await t.test("source EOF carries the source result", async () => {
     const stream = new PassThrough();
     let close; const closed = new Promise(resolve => { close = resolve; });
@@ -288,13 +269,6 @@ test("a spool ends with the exact typed cause", async t => {
     assert.equal(error.kind, "eof"); assert.equal(error.detail.code, 3);
     assert.equal(results.length, waits.length, "the original EOF settles every ordinary wait, repeated key and distinct key");
     assert.ok(results.every(result => result === error), "all consumers retain the same terminal cause");
-  });
-  await t.test("duplicate unique key", async () => {
-    const stream = new PassThrough();
-    const events = new Spool(stream, new Promise(() => {}), { key: event => [event.id], unique: true });
-    const error = await ended(events, () => stream.write('{"id":1}\n{"id":1}\n'));
-    assert.equal(error.kind, "duplicate");
-    assert.equal(events.sequence, 2);
   });
   await t.test("early event: next never sees it, and EOF ends the wait exactly", async () => {
     const stream = new PassThrough();
