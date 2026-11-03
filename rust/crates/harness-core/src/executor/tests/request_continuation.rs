@@ -74,12 +74,8 @@ fn one_stock_turn_preserves_admitted_continuations_across_step_limits() -> Resul
     use acyclic_test_support::differential::{Operation, observe};
 
     #[cfg(not(target_arch = "wasm32"))]
-    let prefix_decodes = |trace: &[Operation]| {
-        trace
-            .iter()
-            .filter(|(kind, _)| *kind == "execution-record-decoded")
-            .count()
-    };
+    let visits =
+        |trace: &[Operation], event: &str| trace.iter().filter(|(kind, _)| *kind == event).count();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -132,9 +128,9 @@ fn one_stock_turn_preserves_admitted_continuations_across_step_limits() -> Resul
             );
             #[cfg(not(target_arch = "wasm32"))]
             assert_eq!(
-                prefix_decodes(&_trace),
+                visits(&_trace, "execution-replay-requested"),
                 0,
-                "ordinary continuation replayed its journal prefix at {turns} steps ({max_steps:?})"
+                "ordinary continuation requested journal replay at {turns} steps ({max_steps:?})"
             );
             if let Some(maximum) = max_steps.filter(|maximum| *maximum <= turns) {
                 assert!(
@@ -187,9 +183,9 @@ fn one_stock_turn_preserves_admitted_continuations_across_step_limits() -> Resul
             let replayed = replayed?;
             #[cfg(not(target_arch = "wasm32"))]
             assert_eq!(
-                prefix_decodes(&_trace),
+                visits(&_trace, "execution-replay-requested"),
                 0,
-                "restored continuation replayed its journal prefix at {turns} steps ({max_steps:?})"
+                "restored continuation requested journal replay at {turns} steps ({max_steps:?})"
             );
             assert_eq!(replayed.text, output.text);
             assert_eq!(replayed.steps, output.steps);
@@ -198,8 +194,9 @@ fn one_stock_turn_preserves_admitted_continuations_across_step_limits() -> Resul
             assert_eq!(tool.0.load(Ordering::SeqCst), turns as usize);
             assert_eq!(provider.seen.load(Ordering::SeqCst), turns as usize + 1);
             // Read one original record through the same journal's replay
-            // entry point. This control prevents a disconnected observer from
-            // making the zero-prefix assertions pass silently.
+            // entry point. Indexed point reads share the record decoder, so
+            // observe replay requests separately from decoded records. This
+            // control keeps both observations connected to the real journal.
             #[cfg(not(target_arch = "wasm32"))]
             if turns == 32 {
                 let (record, _trace) = observe::<_, _, Operation>(
@@ -211,7 +208,8 @@ fn one_stock_turn_preserves_admitted_continuations_across_step_limits() -> Resul
                     },
                 );
                 assert_eq!(record?.len(), 1);
-                assert_eq!(prefix_decodes(&_trace), 1);
+                assert_eq!(visits(&_trace, "execution-replay-requested"), 1);
+                assert_eq!(visits(&_trace, "execution-record-decoded"), 1);
             }
         }
     }
