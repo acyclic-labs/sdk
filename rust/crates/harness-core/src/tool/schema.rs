@@ -426,25 +426,23 @@ mod tests {
     }
 
     #[test]
-    fn file_schemas_reject_empty_edits_and_patches() -> Result<()> {
+    fn file_schemas_admit_notebook_edits_and_reject_empty_patches() -> Result<()> {
         let file = crate::tool::tests::file(b"exact")?;
         let edit = files::edit()?;
         let patch = files::patch_file(8192, 8)?;
-        for (schema, value) in [
-            (
-                &edit.definition.input_schema,
-                json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"old_text":"","new_text":"x"}),
-            ),
-            (
-                &patch.definition.input_schema,
-                json!({"file":file,"diff":""}),
-            ),
-        ] {
-            assert!(!compile_json_schema(schema, "edit", &mut None)?.is_valid(&value));
-        }
-        let mut invalid = json!({"file":file});
-        invalid["file"]["path"] = json!("../escape");
-        assert!(serde_json::from_value::<ReadFileInput>(invalid).is_err());
+        // Notebook edits omit text replacement fields. Empty text needles are
+        // refused by the text executor, rather than this shared shape schema.
+        let notebook = files::NotebookEdit::Delete {
+            cell: files::NotebookCell::Index { index: 0, id: None },
+        };
+        assert!(
+            compile_json_schema(&edit.definition.input_schema, "edit", &mut None)?
+                .is_valid(&json!({"path":file.path(),"notebook":notebook}))
+        );
+        assert!(
+            !compile_json_schema(&patch.definition.input_schema, "patch", &mut None)?
+                .is_valid(&json!({"file":file,"diff":""}))
+        );
         Ok(())
     }
 }

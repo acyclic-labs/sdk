@@ -198,7 +198,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             )
             .await?
             .value,
-        json!({"file":source,"text":"one two"})
+        json!({"file":files::FileReadSource::Content(source.clone()),"text":"one two"})
     );
     for wrong_context in [
         ToolContext::new(task.clone(), OperationId::new(), "read")?,
