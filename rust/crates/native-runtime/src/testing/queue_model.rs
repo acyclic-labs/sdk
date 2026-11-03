@@ -9,7 +9,6 @@ enum Fault {
     None,
     Wake,
     Accounting,
-    Cause,
 }
 
 struct Woken(AtomicUsize);
@@ -224,13 +223,6 @@ fn terminal(drop_observer: bool, disposition: Disposition, fault: Fault) {
         if pending && !drop_observer {
             assert_ne!(flag.0.load(Ordering::SeqCst), 0, "terminal wake lost");
         }
-        if matches!(fault, Fault::Cause) {
-            // Erase only the original retained cause, keeping its kind and
-            // message. The worker, terminal and observer ownership stay real.
-            let mut state = state.lock().unwrap();
-            let error = state.result.take().unwrap().unwrap_err();
-            state.result = Some(Err(std::io::Error::new(error.kind(), error.to_string())));
-        }
         let outcome = match observer.as_mut() {
             Some(task) => poll_task(task, &mut cx),
             None => {
@@ -266,6 +258,9 @@ fn capacity_release_races_registration_on_the_real_queue() {
 }
 
 #[test]
+// The source control --native-terminal stringifies task_completion's actual
+// retained error. This same oracle must reject the lost typed cause; the model
+// does not manufacture a replacement result or prove OS producer retirement.
 fn physical_completion_races_observer_drop_on_the_real_terminal() {
     for disposition in [
         Disposition::Returned,
@@ -323,12 +318,6 @@ fn broken_panicked_terminal_accounting_is_detected() {
 #[should_panic(expected = "terminal accounting lost")]
 fn broken_failed_terminal_accounting_is_detected() {
     terminal(true, Disposition::Failed, Fault::Accounting);
-}
-
-#[test]
-#[should_panic(expected = "original worker failure cause replaced")]
-fn replaced_worker_failure_cause_is_detected() {
-    terminal(false, Disposition::Failed, Fault::Cause);
 }
 
 /// Result observation and abandonment race the worker's final shared release.

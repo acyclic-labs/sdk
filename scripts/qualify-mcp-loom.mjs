@@ -129,7 +129,6 @@ export function qualifyNativeProgressLoom(run = runCommand) {
       "testing::queue_model::broken_terminal_accounting_is_detected",
       "testing::queue_model::broken_panicked_terminal_accounting_is_detected",
       "testing::queue_model::broken_failed_terminal_accounting_is_detected",
-      "testing::queue_model::replaced_worker_failure_cause_is_detected",
       "testing::queue_model::shared_state_funding_survives_observation_and_worker_release",
       "testing::queue_model::premature_shared_state_refund_is_detected",
       "testing::queue_model::premature_panicked_shared_state_refund_is_detected",
@@ -157,6 +156,13 @@ export function qualifyNativeDurability(run = runCommand, physical = false) {
     filters: [physical
       ? "testing::durability::tests::every_write_cut_preserves_its_exact_prefix_and_cause"
       : "testing::durability::models::concurrent_writers_cannot_clear_the_crash_boundary"],
+  });
+}
+
+export function qualifyNativeTerminalLoom(run = runCommand) {
+  return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
+    kind: "--lib", targetCfg: [], env: loomEnvironment(),
+    filters: ["testing::queue_model::physical_completion_races_observer_drop_on_the_real_terminal"],
   });
 }
 
@@ -329,6 +335,7 @@ const fixedModels = {
   "--native-owner-envelope": qualifyNativeOwnerEnvelope,
   "--native-durability": qualifyNativeDurability,
   "--native-durability-io": run => qualifyNativeDurability(run, true),
+  "--native-terminal": qualifyNativeTerminalLoom,
   "--guest": qualifyGuestLoom,
   "--session-fs": qualifySessionFsLoom, "--ownership": qualifyOwnershipLoom,
   "--native-registry": qualifyNativeRegistryLoom,

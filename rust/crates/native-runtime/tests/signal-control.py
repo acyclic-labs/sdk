@@ -1,7 +1,7 @@
 """Check production signal/wake/owner models against actual source defects.
 
 Run in a disposable checkout: python3 rust/crates/native-runtime/tests/signal-control.py /tmp/native-signal-control
-Select a retained control with --wake, --owners, --host, --host-events, --ownership, --claim, --descriptor, --owner-envelope, --durability or --durability-io.
+Select a retained control with --wake, --owners, --host, --host-events, --ownership, --claim, --descriptor, --owner-envelope, --durability, --durability-io or --native-terminal.
 """
 import hashlib
 import json
@@ -12,8 +12,8 @@ import sys
 
 
 def main():
-    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--host-events", "--ownership", "--claim", "--descriptor", "--owner-envelope", "--durability", "--durability-io")):
-        raise RuntimeError("arguments: expected evidence directory, optional control and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--host-events|--ownership|--claim|--descriptor|--owner-envelope|--durability|--durability-io [mutation]]")
+    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--host-events", "--ownership", "--claim", "--descriptor", "--owner-envelope", "--durability", "--durability-io", "--native-terminal")):
+        raise RuntimeError("arguments: expected evidence directory, optional control and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--host-events|--ownership|--claim|--descriptor|--owner-envelope|--durability|--durability-io|--native-terminal [mutation]]")
     mode = sys.argv[2] if len(sys.argv) >= 3 else "--signal"
     root = Path(__file__).resolve().parents[4]
     output = Path(sys.argv[1]).resolve()
@@ -28,6 +28,7 @@ def main():
     descriptor = root / "rust/crates/native-runtime/src/descriptor/cache.rs"
     envelope = root / "rust/crates/native-runtime/src/owner_record/mod.rs"
     durability = root / "rust/crates/native-runtime/src/testing/durability.rs"
+    blocking = root / "rust/crates/native-runtime/src/blocking/mod.rs"
     target, sources, selection = {
         "--signal": ("process_signal_loom.rs", (signal, outcome), "--native-signal"),
         "--wake": ("wake_loom.rs", (wake,), "--native-wake"),
@@ -40,6 +41,7 @@ def main():
         "--owner-envelope": ("../src/owner_record/tests.rs", (envelope,), "--native-owner-envelope"),
         "--durability": ("../src/testing/durability/models.rs", (durability,), "--native-durability"),
         "--durability-io": ("../src/testing/durability/tests.rs", (durability,), "--native-durability-io"),
+        "--native-terminal": ("../src/testing/queue_model.rs", (blocking,), "--native-terminal"),
     }[mode]
     oracle = root / "rust/crates/native-runtime/tests" / target
     qualifier = root / "scripts/qualify-mcp-loom.mjs"
@@ -167,6 +169,13 @@ qualificationMain([process.argv[1]], (command, args, options) => spawnSync(comma
             ("physical-write", durability,
              b"        write(offered)", b"        Ok(offered.len())",
              "assertion `left == right` failed"),
+        ]
+    elif mode == "--native-terminal":
+        mutations = [
+            ("worker-failure-cause", blocking,
+             b".result = Some(result);",
+             b".result = Some(result.map_err(|error| io::Error::new(error.kind(), error.to_string())));",
+             "original worker failure cause replaced"),
         ]
     if len(sys.argv) == 4:
         mutations = [mutation for mutation in mutations if mutation[0] == sys.argv[3]]

@@ -140,7 +140,7 @@ test("progress qualification requires the cleanup and runnable-wake models and c
 });
 
 test("native progress qualification instruments the real mutex and requires every ownership model", () => {
-  for (const missing of [null, ...Array.from({ length: 26 }, (_, index) => index + 1)]) {
+  for (const missing of [null, ...Array.from({ length: 25 }, (_, index) => index + 1)]) {
     let models = 0;
     const run = (command, args, options) => {
       if (command === "cargo") {
@@ -151,7 +151,7 @@ test("native progress qualification instruments the real mutex and requires ever
       assert.match(args[0], /^testing::(?:(?:queue_)?model::|durability::models::)/);
       return {status: 0, stdout: summary(++models === missing ? 0 : 1, 0, 4)};
     };
-    if (missing === null) { qualifyNativeProgressLoom(run); assert.equal(models, 26); }
+    if (missing === null) { qualifyNativeProgressLoom(run); assert.equal(models, 25); }
     else assert.throws(() => qualifyNativeProgressLoom(run), /requires a nonzero/);
   }
 });
