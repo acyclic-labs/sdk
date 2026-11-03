@@ -180,14 +180,6 @@ mod tests {
     #[test]
     fn invalid_measurements_and_score_overflow_are_refused()
     -> Result<(), Box<dyn std::error::Error>> {
-        // Authored analysis inputs, not captured provider output.
-        let baseline = Observation::new([7; 32], 0, 0, Some(1.0), None)?;
-        let treatment = Observation::new([7; 32], 0, 1, Some(3.0), Some(0.01))?;
-        let encoded = serde_json::to_vec(&treatment)?;
-        assert_eq!(
-            Observation::decode(&encoded)?.difference(&baseline)?,
-            Some(2.0)
-        );
         assert!(Observation::new([7; 32], 0, 1, Some(f64::INFINITY), None).is_err());
         for cost in [-1.0, f64::INFINITY, f64::NAN] {
             assert!(Observation::new([7; 32], 0, 1, None, Some(cost)).is_err());
@@ -199,16 +191,9 @@ mod tests {
     }
 
     #[test]
-    fn paired_cost_retains_unscored_trials_without_imputing_unknown_values()
+    fn maximum_cost_difference_is_finite_in_both_directions()
     -> Result<(), Box<dyn std::error::Error>> {
         // Authored analysis inputs, not captured provider output.
-        let baseline = Observation::new([7; 32], 0, 0, None, Some(1.0))?;
-        let treatment = Observation::new([7; 32], 0, 1, None, Some(3.0))?;
-        let treatment = Observation::decode(&serde_json::to_vec(&treatment)?)?;
-        assert_eq!(treatment.difference(&baseline)?, None);
-        assert_eq!(treatment.cost_difference(&baseline)?, Some(2.0));
-        assert_eq!(baseline.cost_difference(&treatment)?, Some(-2.0));
-
         let known = Observation::new([7; 32], 0, 0, Some(0.0), Some(0.0))?;
         let maximum = Observation::new([7; 32], 0, 1, None, Some(f64::MAX))?;
         assert_eq!(maximum.cost_difference(&known)?, Some(f64::MAX));

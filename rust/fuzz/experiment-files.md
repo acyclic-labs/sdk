@@ -175,3 +175,14 @@ as standalone observation input. Identity corruption must fail that comparison
 before pair projections can fail. The retained `observation-identity` mutation
 still requires the original arm-field assertion, keeping source identity and
 pair admission controls distinct without accepting an unrelated earlier panic.
+
+The same pair property also receives a decoded signed-byte score and byte cost,
+with a baseline in 1..=256. Expected forward differences use exact i16
+subtraction before conversion to f64; reverse projections negate that reference.
+This reaches two nonzero operands, which the arbitrary finite row's zero
+baseline cannot expose even with reverse projections. The retained
+`pair-nonzero-baseline-cost` and `pair-nonzero-baseline-score` mutations drop the
+baseline only when both operands are nonzero. They use the existing
+`trials-priced` and `decision` seeds. Measurement availability still uses the
+independent original bits. Fixed nonzero score and unscored-cost subtraction
+examples are subsumed; maximum-cost and nonfinite/overflow controls remain.

@@ -38,6 +38,28 @@ fn valid_files(bytes: &[u8]) -> (Scorer, i64) {
         word(16),
         measurements["score"].as_f64(),
         measurements["cost_usd"].as_f64(),
+        0.0,
+    );
+    // Bounded integer subtraction is an exact reference for nonzero baselines.
+    let baseline = i16::from(population[1]) + 1;
+    let score = (population[0] & 2 != 0).then_some(i16::from(population[0] as i8));
+    let cost = (population[0] & 4 != 0).then_some(i16::from(population[2]) + 1);
+    let value = json!({"version":2,"population":population,
+        "replicate":word(8),"arm":word(16),"score":score,"cost_usd":cost});
+    let wire = serde_json::to_vec(&value).expect("integer observation encodes");
+    let row = Observation::decode(&wire).expect("integer observation admits");
+    identities(
+        &serde_json::to_value(&row).expect("integer observation projects"),
+        &value,
+    );
+    pairs(
+        &row,
+        population,
+        word(8),
+        word(16),
+        score.map(|value| f64::from(value - baseline)),
+        cost.map(|value| f64::from(value - baseline)),
+        f64::from(baseline),
     );
     let wire =
         serde_json::to_vec(&json!({"version":1,"value":expected})).expect("valid decision encodes");
@@ -69,14 +91,15 @@ fn pairs(
     population: [u8; 32],
     replicate: u64,
     arm: u64,
-    score: Option<f64>,
-    cost: Option<f64>,
+    score_difference: Option<f64>,
+    cost_difference: Option<f64>,
+    baseline: f64,
 ) {
     let mut foreign = population;
     foreign[0] ^= 1;
     for mask in 0..4 {
-        let baseline_score = (mask & 1 != 0).then_some(0.0);
-        let baseline_cost = (mask & 2 != 0).then_some(0.0);
+        let baseline_score = (mask & 1 != 0).then_some(baseline);
+        let baseline_cost = (mask & 2 != 0).then_some(baseline);
         let baseline = Observation::new(
             population,
             replicate,
@@ -85,8 +108,8 @@ fn pairs(
             baseline_cost,
         )
         .expect("matched observation admits");
-        let expected_score = baseline_score.and(score);
-        let expected_cost = baseline_cost.and(cost);
+        let expected_score = baseline_score.and(score_difference);
+        let expected_cost = baseline_cost.and(cost_difference);
         assert_eq!(
             (
                 row.difference(&baseline).expect("matched scores compare"),

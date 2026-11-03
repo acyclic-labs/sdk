@@ -108,6 +108,16 @@ CASES = {
         "        }\n",
         "trials-priced", "independent pairing invariant: matched measurements",
     ),
+    "pair-nonzero-baseline-cost": (
+        "experiments/mod.rs", ".map(|(cost, baseline)| cost - baseline)",
+        ".map(|(cost, baseline)| if cost != 0.0 && baseline != 0.0 { cost } else { cost - baseline })",
+        "trials-priced", "independent pairing invariant: matched measurements",
+    ),
+    "pair-nonzero-baseline-score": (
+        "experiments/mod.rs", "let difference = score - baseline;",
+        "let difference = if score != 0.0 && baseline != 0.0 { score } else { score - baseline };",
+        "decision", "independent pairing invariant: matched measurements",
+    ),
     "planning-ceiling": (
         "experiments/stats.rs", ".powi(2)).ceil();", ".powi(2)).floor();",
         "decision", "independent planning invariant: rational ceiling",
