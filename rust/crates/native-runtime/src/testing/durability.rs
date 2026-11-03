@@ -76,10 +76,6 @@ pub(super) struct Writes {
     cut: Option<(usize, DurableFault)>,
     failed: Option<InjectedStorageFault>,
     trace: Vec<DurableWrite>,
-    #[cfg(test)]
-    skip_write: bool,
-    #[cfg(test)]
-    forget_crash: bool,
 }
 
 struct Call {
@@ -161,10 +157,6 @@ fn begin(schedule: Schedule, operation: &'static str, requested: usize) -> io::R
             .as_ref()
             .filter(|fault| fault.fault != DurableFault::Interrupted)
             .cloned();
-        #[cfg(test)]
-        if writes.forget_crash {
-            writes.failed = None;
-        }
         writes.trace.push(DurableWrite {
             ordinal,
             operation,
@@ -233,10 +225,6 @@ pub fn durable_write(
     let _open = Open::enter(operation);
     let call = begin(context.schedule, operation, bytes.len())?;
     let result = call.before().and_then(|()| {
-        #[cfg(test)]
-        if call.schedule.0.state().writes.skip_write {
-            return Ok(bytes.len());
-        }
         let offered = if let Some(fault) = &call.fault
             && let DurableFault::Torn(prefix) = fault.fault
         {

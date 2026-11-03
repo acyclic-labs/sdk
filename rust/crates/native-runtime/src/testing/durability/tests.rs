@@ -295,13 +295,3 @@ proptest::proptest! {
         proptest::prop_assert_eq!(trace.iter().map(|call| call.transferred.unwrap()).sum::<usize>(), bytes.len());
     }
 }
-
-#[test]
-#[should_panic(expected = "acknowledged bytes were lost")]
-fn negative_control_skipping_the_original_file_write_loses_acknowledged_bytes() {
-    let (schedule, _) = Schedule::seeded(71);
-    schedule.0.state().writes.skip_write = true;
-    let (bytes, results) = write_pair(&schedule);
-    assert!(results.into_iter().all(|result| result.is_ok()));
-    assert_eq!(bytes, b"firstsecond", "acknowledged bytes were lost");
-}

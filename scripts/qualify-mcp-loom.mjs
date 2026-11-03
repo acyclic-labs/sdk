@@ -139,6 +139,7 @@ export function qualifyNativeProgressLoom(run = runCommand) {
       "testing::queue_model::premature_cancelled_waiter_refund_is_detected",
       "testing::queue_model::release_broadcast_reaches_every_waiter_across_concurrent_cancellation",
       "testing::queue_model::head_only_capacity_wake_is_detected",
+      "testing::durability::models::concurrent_writers_cannot_clear_the_crash_boundary",
     ],
   });
 }
@@ -146,6 +147,16 @@ export function qualifyNativeProgressLoom(run = runCommand) {
 export function qualifyNativeSignalLoom(run = runCommand) {
   return qualifyLoom("acyclic-native-runtime", "process_signal_loom", [], run, {
     suites: [["", 2]],
+  });
+}
+
+export function qualifyNativeDurability(run = runCommand, physical = false) {
+  return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
+    kind: "--lib", targetCfg: [],
+    ...(physical ? {} : { env: loomEnvironment() }),
+    filters: [physical
+      ? "testing::durability::tests::every_write_cut_preserves_its_exact_prefix_and_cause"
+      : "testing::durability::models::concurrent_writers_cannot_clear_the_crash_boundary"],
   });
 }
 
@@ -316,6 +327,8 @@ const fixedModels = {
   "--native-descriptor": qualifyNativeDescriptorLoom,
   "--native-host-events": qualifyNativeHostEvents,
   "--native-owner-envelope": qualifyNativeOwnerEnvelope,
+  "--native-durability": qualifyNativeDurability,
+  "--native-durability-io": run => qualifyNativeDurability(run, true),
   "--guest": qualifyGuestLoom,
   "--session-fs": qualifySessionFsLoom, "--ownership": qualifyOwnershipLoom,
   "--native-registry": qualifyNativeRegistryLoom,
