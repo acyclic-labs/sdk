@@ -33,6 +33,20 @@ Refresh only the current agent record and checkpoint writers with:
 cargo run --locked --example capture -- --only-agents --extend-goldens
 ```
 
+Capture the public agent command, binding, invocation and reply writers with:
+
+```sh
+cargo run --locked --example capture -- --only-agent-controls --extend-goldens
+cargo +nightly fuzz run --fuzz-dir . agent_controls -- -runs=1000
+```
+
+The target preserves canonical invocation framing, command/reply correlation,
+Unknown request bytes and readable content. Reply corpus entries prefix their
+actual JSON command and a NUL separator; this selector is not a product format.
+Malformed base64 is derived from admitted content while retaining its original
+encoded length and range. These are SDK writer captures, not hosted traffic or
+evidence of authentication, dispatch, restart or distributed progress.
+
 Agent capture names include the shared record version. Previous captures and
 their provenance stay unchanged; waiting-status and checkpoint seeds retain
 both a retained action binding and an explicit absent binding for external hosts.

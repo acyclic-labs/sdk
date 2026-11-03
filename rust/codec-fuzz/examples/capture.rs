@@ -174,6 +174,24 @@ fn save(
 
 fn capture() -> Result<(), Box<dyn Error>> {
     std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))?;
+    if std::env::args().any(|arg| arg == "--only-agent-controls") {
+        let prefix = "agent_controls/";
+        let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
+            .lines()
+            .filter(|line| !line.starts_with(prefix))
+            .map(|line| format!("{line}\n"))
+            .collect::<String>();
+        for (name, bytes) in acyclic_codec_fuzz::agent_controls::seeds()? {
+            save(
+                "agent_controls",
+                &name,
+                &bytes,
+                "acyclic_codec_fuzz::agent_controls::seeds via PreparedCommand/AgentBinding/encode_agent_reply; NUL separates command from reply",
+                &mut manifest,
+            )?;
+        }
+        return finish(&manifest, prefix);
+    }
     if std::env::args().any(|arg| arg == "--only-agents") {
         let prefix = agent_prefix();
         let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?

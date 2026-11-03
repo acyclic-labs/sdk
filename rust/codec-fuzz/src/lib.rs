@@ -1,5 +1,6 @@
 //! On-demand oracles call the production decoders; no alternate wire parser.
 use prost::Message;
+pub mod agent_controls;
 pub mod auth_addressing;
 pub mod auth_capability;
 pub mod auth_credential;
@@ -109,6 +110,7 @@ pub fn exercise(target: &str, bytes: &[u8]) -> Result<(), String> {
             assert!(acyclic_machines::results::codec_fuzz::check(bytes));
         }
         "harness_codecs" => harness_codecs(bytes),
+        "agent_controls" => agent_controls::check(bytes),
         "inference_http" => inference_http::check(bytes),
         _ => return Err(format!("unknown corpus target {target}")),
     }
