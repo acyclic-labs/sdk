@@ -221,7 +221,7 @@ def marketplace_corpus():
     return corpus
 
 
-def qualify(target, runs=0):
+def qualify(target, runs=0, selected_controls=None):
     corpus = f"rust/crates/harness-fuzz/corpus/{target}"
     if target == "native_marketplace":
         corpus = marketplace_corpus()
@@ -230,9 +230,10 @@ def qualify(target, runs=0):
         code, _ = run(target, corpus, witness, capture=True)
         require(code == 0, f"capture original serialized {target} corpus")
         require((root / corpus / seed).is_file(), "retain original writer seed")
-    for filename, guard, replacement, seed, witness in [
-        controls[target], *additional_controls.get(target, []),
-    ]:
+    mutations = [controls[target], *additional_controls.get(target, [])]
+    if selected_controls is not None:
+        mutations = [mutations[index] for index in selected_controls]
+    for filename, guard, replacement, seed, witness in mutations:
         source = root / filename
         original = source.read_bytes()
         require(original.count(guard) == 1, f"locate original {target} admission")
@@ -293,10 +294,17 @@ def selection(argv=None):
     parser = Parser(description=__doc__)
     parser.add_argument("targets", nargs="*", metavar="TARGET")
     parser.add_argument("--runs", type=int, default=0, help="finite restored-source campaign units")
+    parser.add_argument("--control", type=int, action="append", help="zero-based source mutation; default: all")
     arguments = parser.parse_args(argv)
     arguments.targets = arguments.targets or ["graphcoder_args"]
     require(all(target in controls for target in arguments.targets), "admit known control targets")
     require(arguments.runs >= 0, "admit finite nonnegative campaign units")
+    if arguments.control is not None:
+        require(len(set(arguments.control)) == len(arguments.control), "admit unique mutation indices")
+        require(all(
+            0 <= index < 1 + len(additional_controls.get(target, []))
+            for target in arguments.targets for index in arguments.control
+        ), "admit existing mutation indices")
     return arguments
 
 
@@ -308,7 +316,7 @@ if __name__ == "__main__":
             recovery = f"python3 rust/crates/harness-fuzz/graphcoder-args-control.py {target}"
             if target == "graphcoder_input":
                 binding_oracle_regression()
-            qualify(target, arguments.runs)
+            qualify(target, arguments.runs, arguments.control)
     except (OSError, RuntimeError) as error:
         print(f"step=qualify {target} fuzz oracle: {error}; recovery: {recovery}", file=sys.stderr)
         sys.exit(1)
