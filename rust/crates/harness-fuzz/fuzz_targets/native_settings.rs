@@ -28,6 +28,14 @@ impl Files {
     }
 
     fn load(&self, trusted: bool) -> acyclic_harness_core::Result<NativeSettings> {
+        self.load_bounded(trusted, 512)
+    }
+
+    fn load_bounded(
+        &self,
+        trusted: bool,
+        maximum: u64,
+    ) -> acyclic_harness_core::Result<NativeSettings> {
         // Use the shipped entry and its original native IO completion channel.
         // No test-only constructor or ambient user configuration is selected.
         futures::executor::block_on(NativeSettings::load(
@@ -35,7 +43,7 @@ impl Files {
                 .codex_home(&self.codex)
                 .trust_project_hooks(trusted)
                 .trust_project_mcp(trusted)
-                .maximum_file_bytes(512),
+                .maximum_file_bytes(maximum),
         ))
     }
 }
@@ -129,6 +137,18 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
                 files.load(true).is_err(),
                 "valid over-bound settings must be refused"
             );
+            write(&path, &[0xff]);
+            assert!(
+                files.load(true).is_err(),
+                "selected invalid UTF-8 must be refused"
+            );
+            write(&path, start);
+            for maximum in [0, u64::MAX] {
+                assert!(
+                    files.load_bounded(true, maximum).is_err(),
+                    "settings bounds must be positive and finite"
+                );
+            }
         }
     });
 });
