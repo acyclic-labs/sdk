@@ -88,3 +88,16 @@ and `negative-control.py issuance-reply` independently remove the original
 canonicality guards and must trigger their distinct unchanged assertions.
 These controls exercise wire admission, not the serving store's atomic commit,
 current-authority checks, transport or cancellation topology.
+
+`secret_ref` calls the production reference JSON and protobuf admission through
+one test-support oracle. `examples/secret_ref_corpus.rs` captures the original
+writers, including maximum-u64 versions, escaped names and Unicode. Regenerate
+from `rust/crates/auth` with `cargo run --locked --example secret_ref_corpus`.
+`corpus/secret-reference-sources.tsv` records each capture's producer, length and
+SHA-256. These inputs contain reference metadata only, without secret values.
+The oracle checks string and numeric version identity, unknown-field and invalid
+version refusal, and exact canonical protobuf admission. Run
+`python3 negative-control.py secret-json` or `secret-wire` to remove the actual
+JSON unknown-field or protobuf canonicality guard. Each must fail its unchanged
+semantic assertion; the runner restores source bytes. This target does not
+qualify secret-value custody, catalog providers or live operation cancellation.
