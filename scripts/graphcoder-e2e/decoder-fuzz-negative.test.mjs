@@ -4,6 +4,9 @@ import { Worker } from "node:worker_threads";
 
 for (const group of ["serial", "decoder", "frames"]) test(`${group} fuzz oracles reject planted production defects`, async () => {
   const mutations = [
+    ["serial.mjs", 'assert.match(value, /^\\d+\\/[1-9]\\d*$/, "partition must be zero-based INDEX/COUNT");',
+      'void value;', "serial"],
+    ["serial.mjs", 'count <= cases.length', 'true', "serial"],
     ["serial.mjs", 'assert.deepEqual(first.binding, binding, "partition differs from expected acceptance identity");',
       'void binding;', "serial"],
     ["serial.mjs", 'binding: first.binding', 'binding: undefined', "serial"],
