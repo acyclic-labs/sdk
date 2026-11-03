@@ -1,0 +1,12 @@
+--- a/rust/crates/conformance/benches/local_hotpath/options.rs
++++ b/rust/crates/conformance/benches/local_hotpath/options.rs
+@@ -96,9 +96,6 @@
+                             .copied()
+                             .find(|operation| operation.name() == name)
+                             .ok_or_else(|| format!("unknown core operation {name}"))?;
+-                        if operations.contains(&operation) {
+-                            return Err(format!("duplicate operation {name}").into());
+-                        }
+                         operations.push(operation);
+                     }
+                 }

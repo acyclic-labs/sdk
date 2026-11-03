@@ -10,12 +10,14 @@ cargo-fuzz = true
 [features]
 proto-descriptors = ["dep:acyclic-proto-build"]
 process-arguments = ["dep:serde_json"]
+local-hotpath-options = ["dep:acyclic-test-support"]
 default = ["native"]
 agent = ["dep:acyclic-harness-core"]
 experiments = ["agent", "dep:serde_json"]
 native = ["dep:acyclic-fs", "dep:acyclic-harness", "dep:prost", "dep:serde_json"]
 
 [dependencies]
+acyclic-test-support = { path = "../crates/test-support", optional = true }
 acyclic-proto-build = { path = "../../compatibility", optional = true }
 acyclic-fs = { path = "../crates/filesystem", default-features = false, optional = true }
 acyclic-harness-core = { path = "../crates/harness-core", default-features = false, optional = true }
@@ -109,3 +111,15 @@ path = "fuzz_targets/native_claim_record.rs"
 test = false
 doc = false
 bench = false
+[[bin]]
+name = "local_hotpath_options"
+required-features = ["local-hotpath-options"]
+path = "fuzz_targets/local_hotpath_options.rs"
+test = false
+doc = false
+bench = false
+
+[[test]]
+name = "local_hotpath_options"
+required-features = ["local-hotpath-options"]
+path = "tests/local_hotpath_options.rs"
