@@ -483,14 +483,12 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
             admitted_close_fixture(&sockets, &format!("paged-{index}")).await?;
         }
         LEDGER_ENCODINGS.set(0);
-        let allocation = provider.pause_write(false);
+        let (allocation, allocated) = provider.pause_write(false);
         let mut compact = Box::pin(shared.compact());
-        assert!(futures::poll!(&mut compact).is_pending());
-        assert!(provider.pause.lock().unwrap().is_none());
-        let first_page = provider.pause_write(false);
+        paused(&mut compact, allocated).await?;
+        let (first_page, copying) = provider.pause_write(false);
         allocation.send(()).map_err(|_| "lost allocation request")?;
-        assert!(futures::poll!(&mut compact).is_pending());
-        assert!(provider.pause.lock().unwrap().is_none());
+        paused(&mut compact, copying).await?;
         assert_eq!(
             LEDGER_ENCODINGS.get(),
             count.min(PAGE as usize),
@@ -543,17 +541,15 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
             admitted_close_fixture(&sockets, "unrelated-close").await?;
         let (connection, inbox, _last, open, _frames) =
             close_fixture(&sockets, "delayed-open").await?;
-        let release = provider.pause_write(committed);
+        let (release, entered) = provider.pause_write(committed);
         let mut opening = Box::pin(shared.commit_open(&connection, &open));
-        assert!(futures::poll!(&mut opening).is_pending());
-        assert!(provider.pause.lock().unwrap().is_none());
+        paused(&mut opening, entered).await?;
         let release = if lose_reply {
-            let retry = executor.pause_retry();
+            let (retry, entered) = executor.pause_retry();
             // Acceptance is real; losing its reply returns Unavailable to the
             // original retry path. Keep that retry parked until after rotation.
             drop(release);
-            assert!(futures::poll!(&mut opening).is_pending());
-            assert!(executor.retry.lock().unwrap().is_none());
+            paused(&mut opening, entered).await?;
             retry
         } else {
             release
@@ -566,11 +562,7 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
                 .try_write()
                 .map_err(|_| "delayed Open blocked compaction")?,
         );
-        let mut compact = Box::pin(shared.compact());
-        match futures::poll!(&mut compact) {
-            std::task::Poll::Ready(result) => result?,
-            std::task::Poll::Pending => return Err("delayed Open blocked compaction I/O".into()),
-        }
+        shared.compact().await?;
         assert_eq!(
             shared.live.load(Ordering::Acquire),
             1 + usize::from(committed)
@@ -585,11 +577,9 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
                 Close::new(1000, "independent", SocketCloseInitiator::Actor),
             )
             .ok_or("missing original Close owner")?;
-        let mut closing = executor.take()?;
-        assert!(
-            futures::poll!(&mut closing).is_ready(),
-            "delayed Open blocked an unrelated Close"
-        );
+        // The original Open remains parked while this producer completes.
+        // Completion may require executor turns even with no contended lock.
+        executor.take()?.await;
         completion.await?;
         assert!(matches!(
             SocketFrame::decode(&last.await?)?,
@@ -612,7 +602,6 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
             copied + 1,
             "a delayed reply counted an Open already copied by compaction"
         );
-        drop(compact);
         drop(sockets);
         let recovered = Sockets::open(
             Store::new(provider, root()?),
@@ -646,7 +635,7 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
             admitted_close_fixture(&sockets, "delayed-close").await?;
         let (unrelated, unrelated_inbox, unrelated_last, _frames) =
             admitted_close_fixture(&sockets, "unrelated-close").await?;
-        let release = provider.pause_write(committed);
+        let (release, entered) = provider.pause_write(committed);
         let completion = shared
             .begin_close(
                 &connection,
@@ -654,13 +643,11 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
             )
             .ok_or("missing delayed Close owner")?;
         let mut closing = executor.take()?;
-        assert!(futures::poll!(&mut closing).is_pending());
-        assert!(provider.pause.lock().unwrap().is_none());
+        paused(&mut closing, entered).await?;
         let release = if lose_reply {
-            let retry = executor.pause_retry();
+            let (retry, entered) = executor.pause_retry();
             drop(release);
-            assert!(futures::poll!(&mut closing).is_pending());
-            assert!(executor.retry.lock().unwrap().is_none());
+            paused(&mut closing, entered).await?;
             retry
         } else {
             release
@@ -671,11 +658,7 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
                 .try_write()
                 .map_err(|_| "delayed Close blocked compaction")?,
         );
-        let mut compact = Box::pin(shared.compact());
-        match futures::poll!(&mut compact) {
-            std::task::Poll::Ready(result) => result?,
-            std::task::Poll::Pending => return Err("delayed Close blocked compaction I/O".into()),
-        }
+        shared.compact().await?;
         let copied = 2 - usize::from(committed);
         assert_eq!(shared.live.load(Ordering::Acquire), copied);
         assert_eq!(
@@ -690,21 +673,14 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
                 Close::new(1000, "independent", SocketCloseInitiator::Actor),
             )
             .ok_or("missing unrelated Close owner")?;
-        let mut independent_work = executor.take()?;
-        assert!(
-            futures::poll!(&mut independent_work).is_ready(),
-            "delayed Close blocked another socket's Close"
-        );
+        executor.take()?.await;
         independent.await?;
         assert!(matches!(
             SocketFrame::decode(&unrelated_last.await?)?,
             SocketFrame::Close { code: 1000, .. }
         ));
         release.send(()).map_err(|_| "lost delayed Close request")?;
-        assert!(
-            futures::poll!(&mut closing).is_ready(),
-            "Close did not settle after rotation"
-        );
+        closing.await;
         completion.await?;
         assert!(matches!(
             SocketFrame::decode(&last.await?)?,
@@ -725,7 +701,6 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
                 .len(),
             copied + 1 + usize::from(!committed)
         );
-        drop(compact);
         drop(sockets);
         let recovered = Sockets::open(
             Store::new(provider, root()?),
@@ -819,7 +794,7 @@ struct ControlledStream {
     inner: MemoryStream,
     meet: Option<tokio::sync::Barrier>,
     reads: std::sync::atomic::AtomicUsize,
-    pause: std::sync::Mutex<Option<(bool, oneshot::Receiver<()>)>>,
+    pause: std::sync::Mutex<Option<(bool, oneshot::Sender<()>, oneshot::Receiver<()>)>>,
     /// Captured from the actual MemoryStream acceptance, before its reply.
     accepted:
         std::sync::Mutex<Option<(acyclic_stream::WriteRequest, acyclic_stream::WriteOutcome)>>,
@@ -827,16 +802,31 @@ struct ControlledStream {
 }
 
 impl ControlledStream {
-    fn pause_write(&self, after: bool) -> oneshot::Sender<()> {
+    fn pause_write(&self, after: bool) -> (oneshot::Sender<()>, oneshot::Receiver<()>) {
         let (release, resumed) = oneshot::channel();
+        let (entered, observed) = oneshot::channel();
         assert!(
             self.pause
                 .lock()
                 .unwrap()
-                .replace((after, resumed))
+                .replace((after, entered, resumed))
                 .is_none()
         );
-        release
+        (release, observed)
+    }
+}
+
+/// Drive actual work to its held event, including executor yields. A lost
+/// producer is an error; an early completion cannot count as a parked request.
+async fn paused(
+    work: impl std::future::Future + Unpin,
+    entered: oneshot::Receiver<()>,
+) -> TestResult {
+    match futures::future::select(entered, work).await {
+        futures::future::Either::Left((result, _)) => Ok(result?),
+        futures::future::Either::Right(_) => {
+            Err("operation completed before its controlled wait".into())
+        }
     }
 }
 
@@ -909,11 +899,12 @@ impl StreamProvider for ControlledStream {
                 return Ok(result);
             }
             match pause {
-                Some((false, resumed)) => {
+                Some((false, entered, resumed)) => {
+                    entered.send(()).expect("lost held-write observer");
                     resumed.await.map_err(|_| StreamError::Unavailable)?;
                     self.inner.write(request).await
                 }
-                Some((true, resumed)) => {
+                Some((true, entered, resumed)) => {
                     let original = request.clone();
                     let result = self.inner.write(request).await;
                     if let Ok(outcome) = &result {
@@ -926,6 +917,7 @@ impl StreamProvider for ControlledStream {
                         ));
                         *self.accepted.lock().unwrap() = Some((original, outcome.clone()));
                     }
+                    entered.send(()).expect("lost accepted-write observer");
                     resumed.await.map_err(|_| StreamError::Unavailable)?;
                     result
                 }
@@ -967,7 +959,7 @@ async fn concurrent_hosts_cannot_share_an_incarnation() -> TestResult {
 #[derive(Default)]
 struct HeldCloseExecutor {
     tasks: std::sync::Mutex<VecDeque<BoxProviderFuture<'static, ()>>>,
-    retry: std::sync::Mutex<Option<oneshot::Receiver<()>>>,
+    retry: std::sync::Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
 }
 
 impl Executor for HeldCloseExecutor {
@@ -978,18 +970,26 @@ impl Executor for HeldCloseExecutor {
     fn sleep(&self, milliseconds: u32) -> BoxProviderFuture<'static, ()> {
         let retry = self.retry.lock().unwrap().take();
         Box::pin(async move {
-            let retry = retry.expect("a decided socket operation must not retry");
+            let (entered, retry) = retry.expect("a decided socket operation must not retry");
             assert_eq!(milliseconds, 1, "unexpected additional transport retry");
+            entered.send(()).expect("lost transport-retry observer");
             retry.await.expect("lost original transport-retry producer");
         })
     }
 }
 
 impl HeldCloseExecutor {
-    fn pause_retry(&self) -> oneshot::Sender<()> {
+    fn pause_retry(&self) -> (oneshot::Sender<()>, oneshot::Receiver<()>) {
         let (release, retry) = oneshot::channel();
-        assert!(self.retry.lock().unwrap().replace(retry).is_none());
-        release
+        let (entered, observed) = oneshot::channel();
+        assert!(
+            self.retry
+                .lock()
+                .unwrap()
+                .replace((entered, retry))
+                .is_none()
+        );
+        (release, observed)
     }
 
     fn take(&self) -> Result<BoxProviderFuture<'static, ()>, &'static str> {
