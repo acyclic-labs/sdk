@@ -147,20 +147,9 @@ fn observation() -> Result<IdempotencyObservation, StreamError> {
 }
 
 #[test]
-fn bounds_and_malformed_persistence_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
+fn malformed_persistence_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let value = observation()?;
     let bytes = encode_observation(&value, BOUND)?;
-    assert_eq!(decode_observation(&bytes, BOUND)?, value);
-    for maximum in [0, bytes.len() - 1] {
-        assert_eq!(
-            encode_observation(&value, maximum),
-            Err(StreamError::LimitExceeded)
-        );
-        assert_eq!(
-            decode_observation(&bytes, maximum),
-            Err(StreamError::LimitExceeded)
-        );
-    }
     for end in 0..bytes.len() {
         assert!(decode_observation(bytes.get(..end).ok_or("invalid cut")?, BOUND).is_err());
     }

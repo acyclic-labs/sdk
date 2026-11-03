@@ -1,0 +1,33 @@
+--- a/rust/crates/stream/src/persistence.rs
++++ b/rust/crates/stream/src/persistence.rs
+@@ -97,7 +97,8 @@
+ }
+ 
+ fn bound(length: usize, maximum: usize) -> Result<(), StreamError> {
+-    if maximum == 0 || length > maximum {
++    let exclusive = std::env::var("ACYCLIC_CODEC_FACT_BOUND").as_deref() == Ok("exclusive");
++    if maximum == 0 || length > maximum || (exclusive && length == maximum) {
+         return Err(StreamError::LimitExceeded);
+     }
+     Ok(())
+@@ -107,14 +108,18 @@
+         .len()
+         .checked_add(value.encoded_len())
+         .ok_or(StreamError::LimitExceeded)?;
+-    bound(length, maximum)?;
++    if std::env::var("ACYCLIC_CODEC_FACT_BOUND").as_deref() != Ok("encode") {
++        bound(length, maximum)?;
++    }
+     let mut output = Vec::with_capacity(length);
+     output.extend_from_slice(magic);
+     value.encode_raw(&mut output);
+     Ok(output)
+ }
+ pub(crate) fn decode<T: Message + Default>(input: &[u8], maximum: usize) -> Result<T, StreamError> {
+-    bound(input.len(), maximum)?;
++    if std::env::var("ACYCLIC_CODEC_FACT_BOUND").as_deref() != Ok("decode") {
++        bound(input.len(), maximum)?;
++    }
+     let value = T::decode(input).map_err(|_| StreamError::InvalidArgument)?;
+     // Persistence fails closed on unknown fields, duplicate fields and alternate
+     if value.encode_to_vec() != input {
