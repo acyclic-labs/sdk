@@ -181,13 +181,18 @@ pub(super) async fn filesystem_demand(root: std::path::PathBuf) -> Result<(), St
     Ok(())
 }
 
-pub(super) fn sqlite_wal_child(path: &Path) -> Result<(), String> {
-    use rusqlite::Connection;
-
-    let writer = Connection::open(path).map_err(|error| error.to_string())?;
-    writer
-        .busy_timeout(Duration::from_secs(2))
+fn sqlite_connection(path: &Path) -> Result<rusqlite::Connection, String> {
+    let connection = rusqlite::Connection::open(path).map_err(|error| error.to_string())?;
+    // These sequential consumers have no release event to wait on. Contention
+    // must surface at its original statement instead of retrying internally.
+    connection
+        .busy_timeout(Duration::ZERO)
         .map_err(|error| error.to_string())?;
+    Ok(connection)
+}
+
+pub(super) fn sqlite_wal_child(path: &Path) -> Result<(), String> {
+    let writer = sqlite_connection(path)?;
     let mode: String = writer
         .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
         .map_err(|error| error.to_string())?;
@@ -200,7 +205,29 @@ pub(super) fn sqlite_wal_child(path: &Path) -> Result<(), String> {
              BEGIN IMMEDIATE; INSERT INTO entries VALUES (1, 'first'); COMMIT;",
         )
         .map_err(|error| error.to_string())?;
-    let reader = Connection::open(path).map_err(|error| error.to_string())?;
+    let reader = sqlite_connection(path)?;
+    // Both original connections must refuse a held writer, then admit the
+    // same statement after that owner releases it. No retry loop participates.
+    for (owner, contender) in [(&writer, &reader), (&reader, &writer)] {
+        owner
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|error| error.to_string())?;
+        match contender.execute_batch("BEGIN IMMEDIATE") {
+            Err(rusqlite::Error::SqliteFailure(error, _))
+                if error.code == rusqlite::ErrorCode::DatabaseBusy => {}
+            outcome => {
+                return Err(format!(
+                    "step=sqlite-held-writer expected typed Busy, got {outcome:?}; recovery command: cargo run --locked -p acyclic-conformance --features local-runner --bin qualify -- --sqlite-verify-child {path:?}"
+                ));
+            }
+        }
+        owner
+            .execute_batch("ROLLBACK")
+            .map_err(|error| error.to_string())?;
+        contender
+            .execute_batch("BEGIN IMMEDIATE; ROLLBACK")
+            .map_err(|error| error.to_string())?;
+    }
     reader
         .execute_batch("BEGIN")
         .map_err(|error| error.to_string())?;
@@ -239,7 +266,7 @@ pub(super) fn sqlite_wal_child(path: &Path) -> Result<(), String> {
 }
 
 pub(super) fn sqlite_verify_child(path: &Path) -> Result<(), String> {
-    let connection = rusqlite::Connection::open(path).map_err(|error| error.to_string())?;
+    let connection = sqlite_connection(path)?;
     let count: i64 = connection
         .query_row("SELECT count(*) FROM entries", [], |row| row.get(0))
         .map_err(|error| error.to_string())?;
