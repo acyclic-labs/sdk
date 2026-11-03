@@ -74,7 +74,19 @@ fn genesis() -> e::Snapshot {
 fn encoded(snapshot: &e::Snapshot) -> acyclic_harness_core::Result<Vec<u8>> {
     let io = io();
     let owner = snapshot.encode(StreamPath::new("corpus/agent/epochs").unwrap(), &io)?;
-    Ok(owner.parts().1.to_vec())
+    let bytes = owner.parts().1.to_vec();
+    let mut record = envelope().clone();
+    record.value = bytes.clone().into();
+    let restored = e::Snapshot::decode(&record, &source(), u64::MAX)
+        .expect("original writer snapshot refused");
+    // A decoder/encoder round trip alone can preserve the same loss twice.
+    // Compare against the original producer before any admission has occurred.
+    assert_eq!(
+        (restored.epoch(), restored.state(), restored.outcome()),
+        (snapshot.epoch(), snapshot.state(), snapshot.outcome()),
+        "writer snapshot lost epoch or producer custody",
+    );
+    Ok(bytes)
 }
 
 // Keep the original envelope from one real writer/commit/read. Fuzzing replaces
