@@ -168,7 +168,8 @@ test("serial qualification requires every OS case, volume variant, exit and comp
   assert.deepEqual(variants(cases, "win32").map(test => test.id), ["case", "case-ntfs"]);
   assert.deepEqual(variants(cases, "linux").map(test => test.id), ["case"]);
   // Each filesystem variant is its own suite and so owns its own envelope.
-  const receipts = ["case", "case-ntfs"].map(id => ({ code: 0, report: { platform: "win32", selected: [id],
+  const receipts = ["case", "case-ntfs"].map(id => ({ code: 0, execution: { code: 0, signal: null },
+    report: { platform: "win32", selected: [id],
     qualification: false, coverage, seconds: 0.2,
     results: [{ case: id, platform: "win32", status: "pass" }] } }));
   assert.equal(collect(cases, receipts, "win32", coverage).pass, true);
@@ -205,7 +206,7 @@ test("a missing or malformed suite receipt cannot stop later cases or erase the 
   const launched = [];
   const receipts = await runSuites(cases, async test => {
     launched.push(test.id);
-    return { code: test.id === "missing" ? 1 : 0,
+    return { code: test.id === "missing" ? 1 : 0, signal: null,
       stdout: `${test.id}: complete capture`, stderr: `${test.id}: diagnostic` };
   }, async test => {
     if (test.id === "missing") throw new Error("ENOENT: missing matrix.json");

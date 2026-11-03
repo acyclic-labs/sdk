@@ -4,6 +4,9 @@ import { collectPartitions, acceptanceBinding } from "./serial.mjs";
 import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
+
+const nativeFailure = JSON.parse(readFileSync(new URL("./fixtures/native-execution-failure.json", import.meta.url))).capture;
 
 // These are generated internal receipts, never captured native tool output.
 // Arbitrary input varies the identities; the original collector owns admission.
@@ -15,7 +18,7 @@ export function fuzz(data) {
     cases: createHash("sha256").update(JSON.stringify(cases)).digest("hex"), source: { "serial.mjs": hash("source") } };
   const bundles = cases.map((item, index) => ({ index, count: 2, platform: "linux", binding,
     inventory: cases.map(item => item.id), selected: [item.id], coverage,
-    receipts: [{ code: 0, execution: { expired: false, cancelled: false, signal: null },
+    receipts: [{ code: 0, execution: { code: 0, expired: false, cancelled: false, signal: null },
       report: { platform: "linux", selected: [item.id], qualification: false,
       coverage, seconds: 0.1, limit_seconds: 10,
       results: [{ case: item.id, platform: "linux", status: "pass" }] } }] }));
@@ -63,9 +66,21 @@ export function fuzz(data) {
   }
   const red = structuredClone(bundles); red[1].receipts[0].code = 1;
   assert.equal(collectPartitions(cases, red, "linux", coverage, binding).pass, false);
+  for (const status of ["refused", "incomplete"]) {
+    const ended = structuredClone(bundles), receipt = ended[1].receipts[0];
+    receipt.code = nativeFailure.code;
+    receipt.execution = nativeFailure;
+    receipt.report.results[0].status = status;
+    const report = collectPartitions(cases, ended, "linux", coverage, binding);
+    assert.equal(report.pass, false);
+    assert.equal(report.results[1].status, status, "retain the original non-success disposition");
+    assert.deepEqual(report.suites[1].execution, nativeFailure);
+  }
   // An original owner terminal remains authoritative even if a late report
   // and its outer process exit both claim success.
-  for (const execution of [{ expired: true }, { cancelled: true }, { signal: "SIGTERM" }]) {
+  for (const execution of [{ code: 0, signal: null, expired: true },
+    { code: 0, signal: null, cancelled: true }, { code: 0, signal: "SIGTERM" },
+    undefined, { signal: null }, nativeFailure, { ...nativeFailure, code: 0 }]) {
     const ended = structuredClone(bundles);
     ended[1].receipts[0].execution = execution;
     const report = collectPartitions(cases, ended, "linux", coverage, binding);
