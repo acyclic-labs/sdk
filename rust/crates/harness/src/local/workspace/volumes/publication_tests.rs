@@ -401,22 +401,25 @@ async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> 
         options: scratch.options.clone(),
         task_view_admission: Arc::clone(&scratch.task_view_admission),
         native: StateArc::new(AsyncMutex::new(None)),
-        users: StateArc::new(crate::sync::SyncMutex::new(1)),
+        users: StateArc::new(crate::sync::SyncMutex::new(0)),
         execution: StateArc::new(AsyncMutex::new(())),
     });
     let table = super::super::mounts::owner(
         &mounts.root,
         &mounts.named(None)?.1.view.volume,
         None,
-        [("aaa", busy), ("home", Arc::clone(scratch))]
+        [("aaa", Arc::clone(&busy)), ("home", Arc::clone(scratch))]
             .map(|(name, source)| (name.to_owned(), mount.view.volume.clone(), Some(source))),
     )?;
-    let project = async || {
-        let root = projection_root(&scratch.destination, HOME_PATH)?;
-        drop(scratch.enter(root, HOME_PATH, false).await?);
-        Ok::<_, Error>(())
-    };
-    project().await?;
+    let busy_claim = busy
+        .enter(
+            projection_root(&busy.destination, ".volumes/aaa")?,
+            ".volumes/aaa",
+            false,
+        )
+        .await?;
+    let root_path = projection_root(&scratch.destination, HOME_PATH)?;
+    drop(scratch.enter(root_path, HOME_PATH, false).await?);
     assert!(matches!(
         retire(&table).await,
         Err(Error::Conflict(message)) if message.contains("native workers")
@@ -426,24 +429,9 @@ async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> 
         "a conflict stranded a later projection"
     );
     assert!(!scratch.destination.exists());
-    // Negative control: the former loop stopped at the first conflict. The
-    // same oracle sees the later projection remain mounted.
-    project().await?;
-    let former = async {
-        for (_, mount) in table.mounts() {
-            if let Some(source) = &mount.view.source {
-                Box::pin(source.retire()).await?;
-            }
-        }
-        Ok::<_, Error>(())
-    };
-    assert!(former.await.is_err());
-    assert!(
-        scratch.native().await.is_some(),
-        "oracle missed a stranded projection"
-    );
-    retire(mounts).await?;
-    assert!(scratch.native().await.is_none());
+    busy.abandon(busy_claim).await?;
+    assert!(busy.native().await.is_none());
+    assert!(!busy.destination.exists());
     Ok(())
 }
 

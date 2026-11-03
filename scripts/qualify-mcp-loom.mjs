@@ -168,6 +168,19 @@ export function qualifyNativePublicationMutations(run = runCommand) {
   }, run);
 }
 
+export function qualifyNativeRetirementMutations(run = runCommand) {
+  return qualifyNativeSourceMutation({
+    name: "NativeRetirement", selector: "--native-retirement-mutations",
+    source: "workspace/volumes", model: "workspace/volumes/publication_tests",
+    test: "local::workspace::volumes::publication_tests::retirement_continues_past_a_volume_a_worker_still_owns",
+    mutation: [
+      "keep_first(&mut retired, Box::pin(source.retire()).await);",
+      "Box::pin(source.retire()).await?;",
+      "a conflict stranded a later projection",
+    ],
+  }, run);
+}
+
 function qualifyNativeSourceMutation({ name, selector, source, model, test, mutation }, run) {
   const recovery = `node scripts/qualify-mcp-loom.mjs ${selector}`;
   const qualify = (run, expectedFailure) => qualifyLoom("acyclic-harness", "acyclic_harness",
@@ -435,6 +448,7 @@ const fixedModels = {
   "--native-scope-mutations": qualifyNativeScopeMutations,
   "--native-cancellation-mutations": qualifyNativeCancellationMutations,
   "--native-publication-mutations": qualifyNativePublicationMutations,
+  "--native-retirement-mutations": qualifyNativeRetirementMutations,
   "--fs-policy": qualifyFsPolicyLoom,
 };
 const selectableModels = {
