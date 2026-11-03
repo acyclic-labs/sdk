@@ -49,6 +49,15 @@ sums and direct residuals, rather than another online QR implementation.
 Parallel histories with refused nonfinite observations and an empty cluster
 must yield identical subsequent public estimates. The retained `statistics-mean`
 mutation drops the centered mean in the actual production estimate.
+The same fold observes empty and single-cluster prefixes and requires the
+public independent-cluster admission refusal. A late nonfinite error cannot
+stand in for that refusal. After refusing an overflowing finite cluster, the
+entire subsequent public estimate must still equal the untouched history.
+`statistics-clusters` removes the actual independent-cluster guard;
+`statistics-refusal` commits the actual next state before finite validation.
+These properties replace the fixed hundred-replicate/generic-error example and
+its partial private-field refusal assertions. The nonfinite planning
+intermediate remains a separate control.
 This bounded numerical domain does not replace large-offset, overflow or
 arbitrary floating-point input controls. Comparisons use a numerical precision
 budget scaled by input length; it is not a formal rounding-error proof.

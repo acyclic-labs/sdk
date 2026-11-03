@@ -103,6 +103,15 @@ CASES = {
         "experiments/stats.rs", ".powi(2)).ceil();", ".powi(2)).floor();",
         "decision", "independent planning invariant: rational ceiling",
     ),
+    "statistics-clusters": (
+        "experiments/stats.rs", "self.clusters < 2 || ", "",
+        "statistics-baseline", "independent statistics invariant: independent cluster admission",
+    ),
+    "statistics-refusal": (
+        "experiments/stats.rs", "        for value in [\n            next.pairs.mean,",
+        "        *self = next;\n        for value in [\n            next.pairs.mean,",
+        "statistics-baseline", "independent statistics invariant: refusal preserves estimates",
+    ),
 }
 
 

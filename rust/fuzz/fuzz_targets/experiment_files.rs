@@ -2,7 +2,7 @@
 #![no_main]
 
 use acyclic_harness_core::experiments::{
-    Observation,
+    Error, Observation,
     probes::{Decision, Scorer},
     reports::AssignedTrials,
     stats::{Cluster, PairedStats, required_clusters},
@@ -211,6 +211,18 @@ fn trials(bytes: &[u8], scorer: &Scorer, expected: i64) {
     }
 }
 
+fn insufficient_clusters(stats: &PairedStats) {
+    assert!(
+        matches!(
+            stats.estimate(),
+            Err(Error::Statistics(
+                "at least two independent clusters are required"
+            ))
+        ),
+        "independent statistics invariant: independent cluster admission"
+    );
+}
+
 fn statistics(bytes: &[u8]) {
     // The original unequal-cluster example is the empty-input case. Remaining
     // bytes add bounded integer observations, grouped without retaining rows.
@@ -222,7 +234,8 @@ fn statistics(bytes: &[u8]) {
     let value = |byte: &u8| f64::from(*byte as i8);
     let mut original = PairedStats::default();
     let mut refused = PairedStats::default();
-    for group in groups() {
+    insufficient_clusters(&original);
+    for (index, group) in groups().enumerate() {
         let mut cluster = Cluster::default();
         for difference in group.iter().map(value) {
             cluster
@@ -235,6 +248,9 @@ fn statistics(bytes: &[u8]) {
             "independent statistics invariant: nonfinite refusal"
         );
         original.push(cluster).expect("integer cluster admits");
+        if index == 0 {
+            insufficient_clusters(&original);
+        }
         refused
             .push(after_refusal)
             .expect("independent statistics invariant: refused cluster retains admission");
@@ -244,7 +260,15 @@ fn statistics(bytes: &[u8]) {
         refused.push(Cluster::default()).is_err(),
         "independent statistics invariant: empty cluster refusal"
     );
-    let after = refused.estimate().expect("refused history still estimates");
+    let mut extreme = Cluster::default();
+    extreme.push(f64::MAX).expect("finite singleton admits");
+    assert!(
+        refused.push(extreme).is_err(),
+        "independent statistics invariant: overflow refusal"
+    );
+    let after = refused
+        .estimate()
+        .expect("independent statistics invariant: refusal preserves estimates");
     assert_eq!(
         (
             after.pairs,

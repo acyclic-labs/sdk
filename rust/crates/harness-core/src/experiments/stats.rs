@@ -208,31 +208,9 @@ mod tests {
     }
 
     #[test]
-    fn refusal_does_not_mutate_and_dependent_replicates_do_not_create_clusters() -> Result<(), Error>
-    {
-        let mut cluster = Cluster::default();
-        for _ in 0..100 {
-            cluster.push(2.0)?;
-        }
-        let before = cluster;
-        assert!(cluster.push(f64::NAN).is_err());
-        assert_eq!(cluster.count, before.count);
-        assert_eq!(cluster.mean, before.mean);
-        let mut stats = PairedStats::default();
-        stats.push(cluster)?;
-        assert!(stats.estimate().is_err());
-        let before = stats;
-        let mut extreme = Cluster::default();
-        extreme.push(f64::MAX)?;
-        assert!(stats.push(extreme).is_err());
-        assert_eq!(stats.clusters, before.clusters);
-        assert_eq!(stats.pairs.count, before.pairs.count);
-        assert_eq!(stats.pairs.mean, before.pairs.mean);
-        assert!(required_clusters(1.0, 0.0, 1.96, 0.84).is_err());
+    fn planning_refuses_nonfinite_intermediates() {
         // NaN intermediates must be refused before applying the minimum:
         // f64::max would otherwise turn (MAX + MAX) * 0 into two clusters.
         assert!(required_clusters(0.0, 1.0, f64::MAX, f64::MAX).is_err());
-        assert!(stats.push(Cluster::default()).is_err());
-        Ok(())
     }
 }
