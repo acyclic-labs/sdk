@@ -25,6 +25,11 @@ test("decoder fuzz oracles reject planted production defects", () => {
       "value.success === false", "assertions"],
     ["process-report.mjs", 'if (this.#ownerExited && this.#ended) this.#finish("exited");',
       'if (false) this.#finish("exited");', "report"],
+    ["process-report.mjs", 'this.#invalid(error.code ?? "transport-error");',
+      'this.#finish("write-failed", error.code ?? "transport-error");', "report"],
+    ["process-report.mjs", 'Date.now() > request.deadline_unix_ms', "false", "report"],
+    ["process-report.mjs", 'this.#finish(this.#ownerExited ? "exited" : "write-failed", error.code ?? "transport-error");',
+      'this.#finish(this.#ownerExited ? "exited" : "write-failed", "lost-source-cause");', "report"],
   ];
   for (const [file, before, after, oracle] of mutations) {
     // Mutate the actual imported implementation, never a parallel model. A

@@ -51,7 +51,7 @@ export class ProcessReport {
     });
     channel.on("data", chunk => lines.write(chunk));
     channel.on("error", error => {
-      this.#finish("write-failed", error.code ?? "transport-error");
+      this.#invalid(error.code ?? "transport-error");
       ended();
     });
     const ended = () => {
