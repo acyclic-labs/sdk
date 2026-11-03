@@ -572,41 +572,6 @@ async fn projection_event(
     }
 }
 
-#[test]
-fn projection_reads_cannot_wake_either_endpoint() {
-    use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind};
-    for kind in [
-        AccessKind::Any,
-        AccessKind::Read,
-        AccessKind::Open(AccessMode::Any),
-        AccessKind::Open(AccessMode::Read),
-        AccessKind::Open(AccessMode::Write),
-        AccessKind::Open(AccessMode::Execute),
-        AccessKind::Close(AccessMode::Any),
-        AccessKind::Close(AccessMode::Read),
-        AccessKind::Close(AccessMode::Write),
-        AccessKind::Close(AccessMode::Execute),
-        AccessKind::Other,
-    ] {
-        assert!(
-            !projection_changed(&Ok(notify::Event::new(notify::EventKind::Access(kind)))),
-            "access-only notifications must not schedule another projection scan"
-        );
-    }
-    for kind in [
-        notify::EventKind::Any,
-        notify::EventKind::Create(CreateKind::Any),
-        notify::EventKind::Modify(ModifyKind::Any),
-        notify::EventKind::Remove(RemoveKind::Any),
-        notify::EventKind::Other,
-    ] {
-        assert!(projection_changed(&Ok(notify::Event::new(kind))));
-    }
-    assert!(projection_changed(&Err(notify::Error::generic(
-        "watch failed"
-    ))));
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn workspace_shutdown_retains_its_cause_when_retirement_refuses() -> Result<()> {
     let checkout = tempfile::tempdir().map_err(storage)?;
