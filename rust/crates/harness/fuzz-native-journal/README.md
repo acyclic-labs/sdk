@@ -124,6 +124,16 @@ lossy conversion. They must fail at `native path policy changed its root target`
 and `native launch accepted a non-Unicode policy root`, respectively. The physical
 collision control remains distinct: this target does not resolve or open paths.
 
+The separate `native_child_arguments_allocate_only_the_returned_vector_and_strings`
+unit measures actual allocation counts for fresh and resumed arguments of all
+three hosts, including Pi's empty policy. It requires exactly one result vector
+and one allocation per nonempty returned string. Argument-value assertions live
+in the shared byte target instead of being repeated in this allocation control.
+The retained `mutations/native_launch_allocations.patch` clones and drops the
+actual completed argument vector; the unchanged allocation assertion must fail
+at `native arguments must allocate only their nonempty strings and one result vector`.
+The fault changes production work while preserving the returned arguments.
+
 The retained request seeds and their SHA-256 digests are:
 
 | Seed | SHA-256 |

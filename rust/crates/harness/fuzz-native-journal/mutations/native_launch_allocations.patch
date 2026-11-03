@@ -1,0 +1,4 @@
+--- a/rust/crates/harness/src/local/host_process/launch.rs
++++ b/rust/crates/harness/src/local/host_process/launch.rs
+@@ -222,0 +223 @@
++    drop(arguments.clone());

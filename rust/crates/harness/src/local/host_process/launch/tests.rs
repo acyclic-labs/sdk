@@ -4,25 +4,6 @@ use std::path::PathBuf;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-fn measured_child_arguments(
-    host: &str,
-    flags: &[String],
-    cwd: &Path,
-    session: Option<&str>,
-) -> Result<Vec<OsString>> {
-    let mut command = None;
-    let allocations = acyclic_test_support::measure(|| {
-        command = Some(child_arguments(host, flags, cwd, session));
-    });
-    let command = command.ok_or("native argument result absent")??;
-    assert_eq!(
-        allocations.count_total,
-        command.len() as u64 + 1,
-        "native arguments must allocate only their nonempty strings and one result vector"
-    );
-    Ok(command)
-}
-
 #[test]
 fn relative_parent_paths_keep_their_targets_when_child_cwd_changes() -> Result {
     let fixture = tempfile::tempdir()?;
@@ -175,52 +156,20 @@ fn relative_parent_paths_keep_their_targets_when_child_cwd_changes() -> Result {
 }
 
 #[test]
-fn native_launch_preserves_policy_cwd_and_resume_without_bypass() -> Result {
-    let supplied = [
-        "--sandbox",
-        "workspace-write",
-        "--ask-for-approval",
-        "never",
-    ]
-    .map(str::to_owned);
-    let flags = parent_flags("codex", &supplied, Path::new("workspace"))?;
-    let (policy, roots) = flags
-        .split_at_checked(supplied.len())
-        .ok_or("inherited policy absent")?;
-    assert_eq!(policy, supplied);
-    assert_eq!(roots, ["--add-dir", "workspace"]);
-    let command = measured_child_arguments("codex", &flags, Path::new("view"), Some("resume-id"))?;
-    assert_eq!(
-        command
-            .iter()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>(),
-        [
-            "--sandbox",
-            "workspace-write",
-            "--ask-for-approval",
-            "never",
-            "--add-dir",
-            "workspace",
-            "exec",
-            "--json",
-            "--cd",
-            "view",
-            "resume",
-            "resume-id",
-            "-"
-        ]
-    );
-    Ok(())
-}
-
-#[test]
-fn claude_and_pi_children_preserve_native_options_and_resume_references() -> Result {
-    for (host, flags, resume_option) in [
+fn native_child_arguments_allocate_only_the_returned_vector_and_strings() -> Result {
+    for (host, supplied) in [
+        (
+            "codex",
+            vec![
+                "--sandbox",
+                "workspace-write",
+                "--ask-for-approval",
+                "never",
+            ],
+        ),
         (
             "claude-code",
             vec!["--settings", "policy.json", "--permission-mode", "default"],
-            "--resume",
         ),
         (
             "pi",
@@ -231,72 +180,23 @@ fn claude_and_pi_children_preserve_native_options_and_resume_references() -> Res
                 "--session-dir",
                 "native-sessions",
             ],
-            "--session",
         ),
-        (
-            "pi",
-            vec![
-                "--thinking",
-                "high",
-                "--no-extensions",
-                "--session-dir",
-                "native-sessions",
-            ],
-            "--session",
-        ),
-        (
-            "pi",
-            vec![
-                "--thinking",
-                "high",
-                "--session-dir",
-                "native-sessions",
-                "--no-extensions",
-            ],
-            "--session",
-        ),
+        ("pi", vec![]),
     ] {
-        let supplied = flags.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        let supplied = supplied.into_iter().map(str::to_owned).collect::<Vec<_>>();
         let flags = parent_flags(host, &supplied, Path::new("workspace"))?;
-        if host == "pi" {
+        for session in [None, Some("native-reference")] {
+            let mut command = None;
+            let allocations = acyclic_test_support::measure(|| {
+                command = Some(child_arguments(host, &flags, Path::new("view"), session));
+            });
+            let command = command.ok_or("native argument result absent")??;
             assert_eq!(
-                flags
-                    .windows(2)
-                    .find(|pair| pair[0] == "--session-dir")
-                    .ok_or("native session directory absent")?[1],
-                Path::new("workspace")
-                    .join("native-sessions")
-                    .to_string_lossy()
-                    .into_owned()
-            );
-            assert_eq!(
-                flags.iter().position(|flag| flag == "--no-extensions"),
-                supplied.iter().position(|flag| flag == "--no-extensions")
-            );
-        } else {
-            assert_eq!(
-                flags.get(supplied.len()..).ok_or("workspace root absent")?,
-                ["--add-dir", "workspace"]
+                allocations.count_total,
+                command.len() as u64 + 1,
+                "native arguments must allocate only their nonempty strings and one result vector"
             );
         }
-        let command = measured_child_arguments(
-            host,
-            &flags,
-            Path::new("admitted-view"),
-            Some("native-reference"),
-        )?;
-        let arguments = command
-            .iter()
-            .map(|argument| argument.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        assert!(arguments.windows(flags.len()).any(|window| window == flags));
-        assert!(
-            arguments
-                .windows(2)
-                .any(|pair| pair == [resume_option, "native-reference"])
-        );
     }
-    let fresh = measured_child_arguments("pi", &[], Path::new("view"), None)?;
-    assert_eq!(fresh, ["--mode", "json", "-p"]);
     Ok(())
 }
