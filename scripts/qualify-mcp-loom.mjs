@@ -14,6 +14,8 @@ export const gateQualifications = [
   { args: ["--hook-lifecycle", "--all-features"] },
   { args: ["--native-registry"] },
   { args: ["--e2e-progress"] }, { args: ["--native-progress"] },
+  { args: ["--native-signal"] }, { args: ["--native-wake"] },
+  { args: ["--native-owner"] },
   { args: ["--timer"] }, { args: ["--guest"] },
   { args: ["--fs-binding", "--all-features"] },
   { args: ["--fs-policy"] },
