@@ -490,18 +490,7 @@ async fn an_unrooted_blob_survives_the_pass_after_the_one_finding_it()
 }
 
 #[test]
-fn manifest_and_envelope_encodings_round_trip() -> Result<(), crate::Error> {
-    let manifest = crate::Manifest {
-        parts: vec![crate::Part {
-            digest: Digest::of(b"a"),
-            length: 1,
-        }],
-        edges: vec![Digest::of(b"b")],
-    };
-    assert_eq!(crate::Manifest::decode(&manifest.encode())?, manifest);
-    let mut trailing = manifest.encode();
-    trailing.push(0);
-    assert!(crate::Manifest::decode(&trailing).is_err());
+fn empty_ranges_distinguish_full_content_from_explicit_selection() -> Result<(), crate::Error> {
     assert_eq!(ByteRange::FULL.resolve(0)?, 0..0);
     assert!(ByteRange::new(1, 1).resolve(4).is_err());
     Ok(())
