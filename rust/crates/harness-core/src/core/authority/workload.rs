@@ -10,8 +10,12 @@ use ed25519_dalek::SigningKey;
 mod admission;
 mod retained;
 mod revocation;
+#[cfg(any(test, feature = "test-support"))]
+mod verification;
 use retained::RetainedAuthentication;
 pub(super) use revocation::revoke;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use verification::check_filesystem_refinement;
 
 pub(super) struct AuthenticatedWorkload {
     capability: std::sync::Arc<VerifiedCapability>,
@@ -59,8 +63,9 @@ fn authenticate(
 }
 
 // Scope facts, format v1: each block's label names its scope, its grants
-// hold the audience and one exact grant per capability, and a lineage entry
-// names a new acting agent. Chains of any other form are refused.
+// hold the audience and one exact grant per capability. A signed filesystem
+// label refines its original exact grant through the filesystem subset rule;
+// a lineage entry names a new acting agent. Other scope forms are refused.
 const SCOPE: &str = "acyclic.harness.scope.v1:";
 const AGENT: &str = "acyclic.harness.agent:";
 const CAPABILITIES: &str = "harness:/capabilities/";
@@ -442,6 +447,33 @@ pub(super) fn append(
     expires: Option<u64>,
 ) -> Result<()> {
     let mut caveats = facts(scope, &resource(audience)?, holder)?;
+    if let Some(label) = scope
+        .capabilities
+        .with_prefix(acyclic_fs::access::SCOPE_PREFIX)
+        .next()
+    {
+        let name = format!(
+            "{CAPABILITIES}{}",
+            acyclic_auth::encode_component(label.as_bytes())
+        );
+        let certified = admission::filesystem_grant(capability)?;
+        if !matches!(&certified.kind, GrantKind::Resource(resource) if resource.resource.name == name)
+        {
+            for caveat in &mut caveats {
+                if let CaveatKind::Grants(grants) = &mut caveat.kind {
+                    for grant in &mut grants.grants {
+                        if matches!(&grant.kind, GrantKind::Resource(resource) if resource.resource.name == name)
+                        {
+                            *grant = certified.clone();
+                        }
+                    }
+                }
+            }
+            caveats.push(Caveat {
+                kind: CaveatKind::Label(label.to_owned()),
+            });
+        }
+    }
     if let Some(expires) = expires {
         caveats.push(Caveat {
             kind: CaveatKind::ExpiresAtUnixSeconds(expires),

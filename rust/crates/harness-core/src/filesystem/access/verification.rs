@@ -47,6 +47,9 @@ pub fn check_access_record(bytes: &[u8]) -> Result<()> {
     if bytes.len() > 4096 {
         return Ok(());
     }
+    if let Ok(capability) = serde_json::from_slice::<Capability>(bytes) {
+        crate::core::check_filesystem_refinement(&capability)?;
+    }
     if let Ok(operation) = serde_json::from_slice::<VolumeOperation>(bytes) {
         let encoded =
             serde_json::to_vec(&operation).map_err(|error| Error::Storage(error.to_string()))?;
