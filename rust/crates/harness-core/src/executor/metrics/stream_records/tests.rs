@@ -110,7 +110,10 @@ async fn projection_allocation_cost_is_independent_of_record_value_size() -> Res
     let stream =
         Stream::new(Arc::new(MemoryStream::default()), "payloads").map_err(export_error)?;
     let mut allocations = None;
-    for (sequence, length) in [0, 1, 65537].into_iter().enumerate() {
+    for (sequence, length) in [0, 1, acyclic_stream::MAX_RECORD_BYTES]
+        .into_iter()
+        .enumerate()
+    {
         stream
             .append(
                 bytes::Bytes::from(vec![7; length]),
