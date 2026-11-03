@@ -107,6 +107,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             } else {
                 None
             };
+            let mut checked_actions = [false; 2];
             for record in &receipt.1 {
                 let (file, action) = match (&record.source, &record.file) {
                     (None, Some(file)) => (file, Action::Create),
@@ -114,7 +115,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     (Some(file), None) => (file, Action::Delete),
                     (None, None) => return Err(io.invalid("empty conditional publication member")),
                 };
-                require_change_ceiling(action, volume, access.ceiling, io)?;
+                require_change_ceiling(action, volume, access.ceiling, &mut checked_actions, io)?;
                 file.validate(&mut Some(&mut io.history_io()))?;
                 if file.volume() != volume {
                     return Err(io.invalid("conditional receipt volume differs"));
@@ -195,9 +196,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let mut records = crate::model::vec_with_capacity(changes.len(), Some(io))?;
             // The ordered receipt contains source identity and resulting
             // descriptors, never another copy of the file contents.
+            let mut checked_actions = [false; 2];
             for change in changes {
                 crate::model::charge_items(Some(io), 1)?;
-                require_change_ceiling(change_action(change), volume, ceiling, io)?;
+                require_change_ceiling(
+                    change_action(change),
+                    volume,
+                    ceiling,
+                    &mut checked_actions,
+                    io,
+                )?;
                 crate::conversation::validate_content_path(
                     change.path(),
                     &mut Some(&mut io.history_io()),
@@ -576,8 +584,13 @@ fn require_change_ceiling(
     action: Action,
     volume: &VolumeRef,
     ceiling: Option<&crate::Capabilities>,
+    checked_actions: &mut [bool; 2],
     io: &PreparationIo,
 ) -> Result<()> {
+    let checked = &mut checked_actions[usize::from(action == Action::Delete)];
+    if *checked {
+        return Ok(());
+    }
     let operation = if action == Action::Delete {
         VolumeOperation::Delete
     } else {
@@ -598,6 +611,7 @@ fn require_change_ceiling(
             "content caller lacks the requested filesystem action grant",
         ));
     }
+    *checked = true;
     Ok(())
 }
 
