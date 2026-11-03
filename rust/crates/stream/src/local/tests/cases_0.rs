@@ -503,8 +503,8 @@ impl UnixMillisClock for TestClock {
     }
 }
 
-#[tokio::test]
-async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
+#[test]
+fn every_partial_current_frame_recovers_only_the_accepted_prefix()
 -> Result<(), Box<dyn std::error::Error>> {
     use futures::TryStreamExt as _;
 
@@ -553,132 +553,144 @@ async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
             )?,
         })
     };
-    let provider = LocalStream::open(directory.path(), limits).await?;
-    provider
-        .append(AppendRequest {
-            path: paths[0].clone(),
-            records: vec![body(b"a", b"alice")?, body(b"z", b"bob")?],
-            if_tail: Some(0),
-            idempotency_key: IdempotencyKey::new("seed")?,
-        })
-        .await?;
-    for pair in paths[..3].windows(2) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let captures = runtime.block_on(async {
+        let provider = LocalStream::open(directory.path(), limits).await?;
         provider
-            .fork(ForkRequest {
-                source: pair[0].clone(),
-                destination: pair[1].clone(),
-                at_tail: Some(2),
-                exclude: Vec::new(),
-                idempotency_key: IdempotencyKey::unique(),
+            .append(AppendRequest {
+                path: paths[0].clone(),
+                records: vec![body(b"a", b"alice")?, body(b"z", b"bob")?],
+                if_tail: Some(0),
+                idempotency_key: IdempotencyKey::new("seed")?,
             })
             .await?;
-    }
-    let requests = [
-        WriteRequest::Append(AppendRequest {
-            path: paths[0].clone(),
-            records: vec![body(b"b", b"alice")?],
-            if_tail: Some(2),
-            idempotency_key: IdempotencyKey::new("partial-append")?,
-        }),
-        WriteRequest::Commit(CommitRequest {
-            deadline_unix_millis: None,
-            conditions: vec![
-                crate::CommitCondition::Tail {
-                    path: paths[2].clone(),
-                    expected: 2,
-                },
-                crate::CommitCondition::Absent {
-                    path: paths[3].clone(),
-                },
-            ],
-            mutations: vec![
-                crate::CommitMutation::Append {
-                    path: paths[2].clone(),
-                    records: vec![body(b"b", b"bob")?, body(b"a", b"alice")?],
-                },
-                crate::CommitMutation::Fork {
-                    source: paths[2].clone(),
-                    destination: paths[3].clone(),
-                    at_tail: 2,
+        for pair in paths[..3].windows(2) {
+            provider
+                .fork(ForkRequest {
+                    source: pair[0].clone(),
+                    destination: pair[1].clone(),
+                    at_tail: Some(2),
                     exclude: Vec::new(),
-                    records: vec![body(b"c", b"alice")?],
-                },
-            ],
-            idempotency_key: IdempotencyKey::new("partial-commit")?,
-        }),
-    ];
-    // Capture the actual journal emitted by the public provider, including its
-    // canonical commands, sampled times, checksums and inherited identities.
-    let mut captures = Vec::new();
-    for (index, request) in requests.into_iter().enumerate() {
-        let key = match &request {
-            WriteRequest::Append(request) => &request.idempotency_key,
-            WriteRequest::Fork(request) => &request.idempotency_key,
-            WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => {
-                &request.idempotency_key
-            }
+                    idempotency_key: IdempotencyKey::unique(),
+                })
+                .await?;
         }
-        .clone();
-        let before = records(&provider, &paths).await?;
-        let prefix = std::fs::read(&path)?;
-        assert!(matches!(
-            provider.write(request).await?,
-            crate::WriteOutcome::Append(AppendOutcome::Committed(_))
-                | crate::WriteOutcome::Commit(CommitOutcome::Committed(_))
-        ));
-        let bytes = std::fs::read(&path)?;
-        assert!(bytes.starts_with(&prefix));
-        let frame = bytes[prefix.len()..].to_vec();
-        let after = records(&provider, &paths).await?;
-        assert_eq!(
-            after
-                .iter()
-                .map(|records| records.as_ref().map(Vec::len))
-                .collect::<Vec<_>>(),
-            if index == 0 {
-                vec![Some(3), Some(2), Some(2), None]
-            } else {
-                vec![Some(3), Some(2), Some(4), Some(3)]
+        let requests = [
+            WriteRequest::Append(AppendRequest {
+                path: paths[0].clone(),
+                records: vec![body(b"b", b"alice")?],
+                if_tail: Some(2),
+                idempotency_key: IdempotencyKey::new("partial-append")?,
+            }),
+            WriteRequest::Commit(CommitRequest {
+                deadline_unix_millis: None,
+                conditions: vec![
+                    crate::CommitCondition::Tail {
+                        path: paths[2].clone(),
+                        expected: 2,
+                    },
+                    crate::CommitCondition::Absent {
+                        path: paths[3].clone(),
+                    },
+                ],
+                mutations: vec![
+                    crate::CommitMutation::Append {
+                        path: paths[2].clone(),
+                        records: vec![body(b"b", b"bob")?, body(b"a", b"alice")?],
+                    },
+                    crate::CommitMutation::Fork {
+                        source: paths[2].clone(),
+                        destination: paths[3].clone(),
+                        at_tail: 2,
+                        exclude: Vec::new(),
+                        records: vec![body(b"c", b"alice")?],
+                    },
+                ],
+                idempotency_key: IdempotencyKey::new("partial-commit")?,
+            }),
+        ];
+        // Capture the actual journal emitted by the public provider, including its
+        // canonical commands, sampled times, checksums and inherited identities.
+        let mut captures = Vec::new();
+        for (index, request) in requests.into_iter().enumerate() {
+            let key = match &request {
+                WriteRequest::Append(request) => &request.idempotency_key,
+                WriteRequest::Fork(request) => &request.idempotency_key,
+                WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => {
+                    &request.idempotency_key
+                }
             }
-        );
-        if let Some(copy) = &after[3] {
-            assert_eq!(Some(&copy[..2]), before[2].as_deref());
+            .clone();
+            let before = records(&provider, &paths).await?;
+            let prefix = std::fs::read(&path)?;
+            assert!(matches!(
+                provider.write(request).await?,
+                crate::WriteOutcome::Append(AppendOutcome::Committed(_))
+                    | crate::WriteOutcome::Commit(CommitOutcome::Committed(_))
+            ));
+            let bytes = std::fs::read(&path)?;
+            assert!(bytes.starts_with(&prefix));
+            let frame = bytes[prefix.len()..].to_vec();
+            let after = records(&provider, &paths).await?;
+            assert_eq!(
+                after
+                    .iter()
+                    .map(|records| records.as_ref().map(Vec::len))
+                    .collect::<Vec<_>>(),
+                if index == 0 {
+                    vec![Some(3), Some(2), Some(2), None]
+                } else {
+                    vec![Some(3), Some(2), Some(4), Some(3)]
+                }
+            );
+            if let Some(copy) = &after[3] {
+                assert_eq!(Some(&copy[..2]), before[2].as_deref());
+            }
+            let observed = provider
+                .inspect_idempotency(key.clone())
+                .await?
+                .ok_or("written frame has no retained outcome")?;
+            captures.push((key, prefix, frame, before, after, observed.outcome));
         }
-        let observed = provider
-            .inspect_idempotency(key.clone())
-            .await?
-            .ok_or("written frame has no retained outcome")?;
-        captures.push((key, prefix, frame, before, after, observed.outcome));
-    }
-    drop(provider);
+        drop(provider);
+        Ok::<_, Box<dyn std::error::Error>>(captures)
+    })?;
 
     for (key, prefix, frame, before, after, outcome) in &captures {
-        for cut in 0..=frame.len() {
-            let mut bytes = prefix.clone();
-            bytes.extend_from_slice(&frame[..cut]);
-            std::fs::write(&path, &bytes)?;
-            let reopened = LocalStream::open(directory.path(), limits).await?;
-            let complete = cut == frame.len();
-            assert_eq!(
-                &records(&reopened, &paths).await?,
-                if complete { after } else { before },
-                "frame {key:?}, cut {cut} exposed a partial namespace or record"
-            );
-            assert_eq!(
-                reopened
-                    .inspect_idempotency(key.clone())
-                    .await?
-                    .map(|observed| observed.outcome),
-                complete.then(|| outcome.clone()),
-                "frame {key:?}, cut {cut} changed retry acceptance"
-            );
-            drop(reopened);
-            assert_eq!(
-                std::fs::read(&path)?,
-                if complete { &bytes } else { prefix }.as_slice(),
-                "recovery changed the accepted prefix"
-            );
-        }
+        journal_cuts(0..frame.len() + 1, |cut| {
+            let paths = &paths;
+            async move {
+                let directory = tempfile::tempdir()?;
+                let path = directory.path().join(JOURNAL_FILE);
+                let mut bytes = prefix.clone();
+                bytes.extend_from_slice(&frame[..cut]);
+                std::fs::write(&path, &bytes)?;
+                let reopened = LocalStream::open(directory.path(), limits).await?;
+                let complete = cut == frame.len();
+                assert_eq!(
+                    &records(&reopened, &paths).await?,
+                    if complete { after } else { before },
+                    "frame {key:?}, cut {cut} exposed a partial namespace or record"
+                );
+                assert_eq!(
+                    reopened
+                        .inspect_idempotency(key.clone())
+                        .await?
+                        .map(|observed| observed.outcome),
+                    complete.then(|| outcome.clone()),
+                    "frame {key:?}, cut {cut} changed retry acceptance"
+                );
+                drop(reopened);
+                assert_eq!(
+                    std::fs::read(&path)?,
+                    if complete { &bytes } else { prefix }.as_slice(),
+                    "recovery changed the accepted prefix"
+                );
+                Ok(())
+            }
+        })?;
     }
     // A whole checksummed noncanonical command is never a torn append.
     let (_, prefix, frame, ..) = captures.last().ok_or("missing emitted frame")?;
@@ -689,13 +701,20 @@ async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
     bytes.extend_from_slice(&length);
     bytes.extend_from_slice(&payload);
     bytes.extend_from_slice(&frame_checksum(&length, &payload));
-    std::fs::write(&path, &bytes)?;
-    assert!(matches!(
-        LocalStream::open(directory.path(), limits).await,
-        Err(LocalStreamError::Corrupt)
-    ));
-    assert_eq!(std::fs::read(&path)?, bytes);
-    Ok(())
+    journal_cuts(0..1, |_| {
+        let bytes = &bytes;
+        async move {
+            let directory = tempfile::tempdir()?;
+            let path = directory.path().join(JOURNAL_FILE);
+            std::fs::write(&path, bytes)?;
+            assert!(matches!(
+                LocalStream::open(directory.path(), limits).await,
+                Err(LocalStreamError::Corrupt)
+            ));
+            assert_eq!(std::fs::read(&path)?, *bytes);
+            Ok(())
+        }
+    })
 }
 
 #[tokio::test]
@@ -950,23 +969,26 @@ async fn barrier_policy_uses_full_flush_and_preserves_exact_replay()
     Ok(())
 }
 
-#[tokio::test]
-async fn a_journal_torn_before_its_header_completed_is_created_again()
+#[test]
+fn a_journal_torn_before_its_header_completed_is_created_again()
 -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    let path = directory.path().join(JOURNAL_FILE);
     let limits = LocalStreamLimits::default();
     let header = encode_header(limits, 0)?;
-    for cut in 0..header.len() {
-        std::fs::write(
-            &path,
-            header.get(..cut).ok_or(StreamError::InvalidArgument)?,
-        )?;
-        let provider = LocalStream::open(directory.path(), limits).await?;
-        drop(provider);
-        assert_eq!(std::fs::read(&path)?, header);
-    }
-    Ok(())
+    journal_cuts(0..header.len(), |cut| {
+        let header = &header;
+        async move {
+            let directory = tempfile::tempdir()?;
+            let path = directory.path().join(JOURNAL_FILE);
+            std::fs::write(
+                &path,
+                header.get(..cut).ok_or(StreamError::InvalidArgument)?,
+            )?;
+            let provider = LocalStream::open(directory.path(), limits).await?;
+            drop(provider);
+            assert_eq!(std::fs::read(&path)?, *header);
+            Ok(())
+        }
+    })
 }
 
 /// A mutation made under `deferring_durability` is visible at once and
