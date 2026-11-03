@@ -36,16 +36,27 @@ async fn output(
     }
 }
 
-async fn until(
+pub(super) async fn until(
     host: &AgentHost<Observed>,
     work: impl std::future::Future<Output = Result>,
 ) -> Result {
-    let running = host.run(|_, _| {});
-    futures::pin_mut!(work, running);
-    match futures::future::select(running, work).await {
+    let (report, failure) = futures::channel::oneshot::channel::<super::Failure>();
+    let report = std::sync::Mutex::new(Some(report));
+    let running = host.run(|actor, error| {
+        if let Some(report) = report
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            let _ = report.send(format!("discovery delivery for {actor:?} failed: {error}").into());
+        }
+    });
+    futures::pin_mut!(work, failure, running);
+    match futures::future::select(running, futures::future::select(work, failure)).await {
         Either::Left((Err(error), _)) => Err(error.into()),
         Either::Left((Ok(never), _)) => match never {},
-        Either::Right((result, _)) => result,
+        Either::Right((Either::Left((result, _)), _)) => result,
+        Either::Right((Either::Right((error, _)), _)) => Err(error?),
     }
 }
 

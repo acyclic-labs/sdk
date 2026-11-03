@@ -69,9 +69,9 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     let root = host
         .create(&vectors::intent("timeout")?, fixtures::adopted())
         .await?;
-    if host.runtime().drain().await.is_empty() {
-        return Err("guest timeout did not surface a failure".into());
-    }
+    super::dispatcher::until(&host, std::future::pending())
+        .await
+        .expect_err("guest timeout did not surface a failure");
     if aborted.load(Ordering::SeqCst) != 1 {
         return Err("timed-out guest turn was not aborted".into());
     }
