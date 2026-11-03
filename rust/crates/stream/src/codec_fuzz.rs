@@ -142,16 +142,21 @@ pub fn check(bytes: &[u8]) -> bool {
     // The provider is private and has no competing lock holders or external
     // producers. A pending operation violates this synchronous oracle's progress
     // contract; reject it immediately rather than waiting on another task.
+    let version_change = bytes.first().copied().unwrap_or(0).max(1);
     match publications(Some(value)).now_or_never() {
         Some(Ok((_, publications))) => {
             for publication in publications {
                 if !wire_records_admitted(&publication.envelope)
                     || !persisted_fact_admitted(
+                        persistence::OBSERVATION_MAGIC,
+                        version_change,
                         &publication.observation,
                         persistence::encode_observation,
                         persistence::decode_observation,
                     )
                     || !persisted_fact_admitted(
+                        persistence::ENVELOPE_MAGIC,
+                        version_change,
                         &publication.envelope,
                         persistence::encode_envelope,
                         persistence::decode_envelope,
@@ -231,24 +236,40 @@ pub fn check(bytes: &[u8]) -> bool {
 }
 
 fn persisted_fact_admitted<T: PartialEq>(
+    magic: &[u8],
+    version_change: u8,
     value: &T,
     encode: fn(&T, usize) -> Result<Vec<u8>, StreamError>,
     decode: fn(&[u8], usize) -> Result<T, StreamError>,
 ) -> bool {
-    let Ok(bytes) = encode(value, usize::MAX) else {
+    let Ok(mut bytes) = encode(value, usize::MAX) else {
         return false;
     };
-    let Some(short) = bytes.len().checked_sub(1) else {
+    if !bytes.starts_with(magic) {
         return false;
-    };
+    }
     // Include the format header in the real byte cap. Exact-size admission
     // distinguishes an inclusive limit from an unlimited-only roundtrip.
-    decode(&bytes, bytes.len()).as_ref() == Ok(value)
-        && encode(value, bytes.len()).as_deref() == Ok(bytes.as_slice())
-        && [0, short].into_iter().all(|maximum| {
-            matches!(encode(value, maximum), Err(StreamError::LimitExceeded))
-                && matches!(decode(&bytes, maximum), Err(StreamError::LimitExceeded))
+    if decode(&bytes, bytes.len()).as_ref() != Ok(value)
+        || encode(value, bytes.len()).as_deref() != Ok(bytes.as_slice())
+        || [0, bytes.len() - 1].into_iter().any(|maximum| {
+            !matches!(encode(value, maximum), Err(StreamError::LimitExceeded))
+                || !matches!(decode(&bytes, maximum), Err(StreamError::LimitExceeded))
         })
+        || !matches!(
+            decode(&bytes[magic.len()..], usize::MAX),
+            Err(StreamError::InvalidArgument)
+        )
+    {
+        return false;
+    }
+    // Change only the actual v1 writer's version, then omit its entire payload
+    // and grant no byte capacity. Version refusal must precede both checks.
+    bytes[magic.len() - 2] ^= version_change;
+    matches!(
+        decode(&bytes[..magic.len()], 0),
+        Err(StreamError::Unsupported)
+    )
 }
 
 fn wire_records_admitted(envelope: &crate::CommittedEnvelope) -> bool {
