@@ -139,6 +139,12 @@ unchanged typed refusal assertion to fail. These shared checks subsume the
 numeric entries in the hostname alias example.
 The runner restores the source and checks oracle custody. Complete source and
 branch coverage, and the other addressing guards, need separate qualification.
+The original URL/IDNA boundary control is shared by both fuzz callers too:
+an invalid LDH A-label must retain `InvalidCharacter`, while a valid A-label
+keeps its exact URL authority. This replaces the separate example without
+dropping its production URL-parser assertions. Run
+`python3 negative-control.py addressing-host-url` to bypass the actual URL host
+parser with its unvalidated input; the unchanged typed refusal must fail.
 
 Binary actor/resource admission uses this same oracle before text admission.
 The original empty account/id constructor assertions also live here, outside
