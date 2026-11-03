@@ -77,6 +77,22 @@ controls = {
     ),
 }
 additional_controls = {
+    "native_input": [
+        (
+            "rust/crates/harness/src/local/host_owner.rs",
+            b'#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]',
+            b'#[serde(tag = "kind", rename_all = "snake_case")]',
+            "null",
+            b"native action unknown fields must be refused",
+        ),
+        (
+            "rust/crates/harness/src/local/host_owner/sessions.rs",
+            b'#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]',
+            b'#[serde(tag = "kind", rename_all = "snake_case")]',
+            "null",
+            b"native session action unknown fields must be refused",
+        ),
+    ],
     "command_result": [
         (
             "rust/crates/harness/src/client/command_result.rs",
@@ -239,7 +255,7 @@ def qualify(target, runs=0, selected_controls=None):
     corpus = f"rust/crates/harness-fuzz/corpus/{target}"
     if target == "native_marketplace":
         corpus = marketplace_corpus()
-    if target in {"event_projection", "command_result"}:
+    if target in {"event_projection", "command_result", "native_input"}:
         _, _, _, seed, witness = controls[target]
         code, _ = run(target, corpus, witness, capture=True)
         require(code == 0, f"capture original serialized {target} corpus")
