@@ -84,3 +84,7 @@ acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 [[test]]
 name = "main"
 path = "tests/main.rs"
+
+[[example]]
+name = "issuance_corpus"
+required-features = ["test-support"]

@@ -1,0 +1,7 @@
+# Original SDK writer output; public deterministic test keys
+issuance-request	187	a29b551f456da10f1fb43b2f398a17b587038179d6cb94e0f3e32d59d2f8cd70	issuance::Request::new from original testing::root verified claims; operation[7;32], issuer key[2;32], environment=test
+issuance-accepted	340	9be630720aba995689c8426b47599a95f78ceb97237728b4f44a3f50369d69d3	issuance::Reply::into_wire(issuance-accepted); accepted certificate from original AccountRoot::certify_request
+issuance-denied	40	d184ecd3c8ac077453790e1b1f16465e6d9f12c0b452e31b998ffa67c550c1eb	issuance::Reply::into_wire(issuance-denied); accepted certificate from original AccountRoot::certify_request
+issuance-conflict	40	37f6cbdf8b2f741b069335eb54165c07d0f29667293b289fe7c3c66a3a6b171f	issuance::Reply::into_wire(issuance-conflict); accepted certificate from original AccountRoot::certify_request
+issuance-issuer-changed	40	36f1534bce3d78f20eb2e0aa45af7dffc0e51014b775830ee6d3d6ee1dbd15a4	issuance::Reply::into_wire(issuance-issuer-changed); accepted certificate from original AccountRoot::certify_request
+issuance-unknown	38	dd5c59731e0a55151196e504528f5ff62e73dd2644eae5aaa3aa51851fdd30b2	issuance::Reply::into_wire(issuance-unknown); accepted certificate from original AccountRoot::certify_request

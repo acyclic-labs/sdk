@@ -159,6 +159,12 @@ pub struct SecretRef {
     version: u64,
 }
 
+/// Shared conformance oracle for the original reference admission entrances.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+#[path = "../tests/common/secret_ref.rs"]
+pub mod testing;
+
 impl SecretRef {
     /// Admits a nonempty control-free scope and name and a written version.
     pub fn new(scope: String, name: String, version: u64) -> Result<Self, Error> {

@@ -86,10 +86,22 @@ fn execution_concurrency_cannot_be_widened_by_attenuation() -> Result<(), Box<dy
         .grants = set(parent.clone());
     let mut widened = parent.clone();
     widened.max_concurrency = Some(3);
+    assert_eq!(
+        attenuate(
+            &[root.clone()],
+            vec![Caveat {
+                kind: CaveatKind::Grants(set(widened)),
+            }],
+            vec![6; 32],
+        ),
+        Err(Error::Invalid)
+    );
+    let mut narrowed = parent.clone();
+    narrowed.max_concurrency = Some(1);
     let child = attenuate(
         &[root.clone()],
         vec![Caveat {
-            kind: CaveatKind::Grants(set(widened)),
+            kind: CaveatKind::Grants(set(narrowed)),
         }],
         vec![6; 32],
     )?;
@@ -104,7 +116,7 @@ fn execution_concurrency_cannot_be_widened_by_attenuation() -> Result<(), Box<dy
     )?;
     let attributes = RecordAttributes::default();
     let mut usage = limits(None);
-    for concurrency in [0, 2, 3, u64::MAX] {
+    for concurrency in [0, 1, 2, 3, u64::MAX] {
         usage.concurrency = Some(concurrency);
         let mut facts = request(
             Target::Resource {
@@ -116,10 +128,10 @@ fn execution_concurrency_cannot_be_widened_by_attenuation() -> Result<(), Box<dy
         );
         facts.cpu_millis = 10;
         facts.memory_bytes = 100;
-        for blocks in [
-            std::slice::from_ref(&root),
-            child.as_slice(),
-            inherited.as_slice(),
+        for (blocks, ceiling) in [
+            (std::slice::from_ref(&root), 2),
+            (child.as_slice(), 1),
+            (inherited.as_slice(), 2),
         ] {
             assert_eq!(
                 permits(
@@ -129,7 +141,7 @@ fn execution_concurrency_cannot_be_widened_by_attenuation() -> Result<(), Box<dy
                     acyclic_auth::authority::Scope::Exact
                 )
                 .is_ok(),
-                concurrency <= 2
+                concurrency <= ceiling
             );
         }
     }

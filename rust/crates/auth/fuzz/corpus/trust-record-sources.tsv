@@ -1,0 +1,6 @@
+# SDK trust writer captures; public deterministic test keys, environment=test, time=100
+foreign-keyring	152	4e4a89da1320c09efa8870519f34f21f00ddc6ffd4176c34aa8ba0d8ab038195	Issuer::genesis(other, signing-key[3;32],100)[0]
+foreign-checkpoint	81	286974b1c5b40fb16acf31e161c0fc9a947cc0cf44f31600db3fb24b470b8329	Issuer::genesis(other, signing-key[3;32],100)[1]
+selected-epoch	154	11e00931fcb65930f117523fd8f0da5fb3d9fb8b53d92816f4d0bcb5ff74c190	AccountRoot::raise_minimum_epoch(2,100); original account key[2;32]
+environment-rotation	149	e0340c20f002adb521ca085f01d3b301f683751ac8089d97e76926ac1a0e4e77	Issuer::environment_keyring; original key[1;32] -> key[9;32]
+environment-successor	149	e311212b60b5baab1830f1a36a071b255958429fd4b8d76c5f1973adb9dbad2d	Issuer::environment_keyring; key[9;32] -> original key[1;32]
