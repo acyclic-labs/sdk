@@ -3,6 +3,8 @@
 The `native_claim_record` target includes the production claim codec directly.
 It checks arbitrary bytes, writer round trips, bounded admission, torn writes,
 checksum rejection, domain separation, all five field lengths and trailing data.
+Checksum-valid short bodies and invalid PID/token widths exercise grammar refusal
+without relying on a random checksum collision.
 Grammar mutations use the production writer and checksum, not another parser.
 
 Capture the initial corpus and run the bounded instrumented control with:

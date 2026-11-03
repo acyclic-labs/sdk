@@ -66,19 +66,33 @@ pub fn check(bytes: &[u8]) {
     let choice = usize::from(u16::from_le_bytes(std::array::from_fn(|i| {
         bytes.get(i).copied().unwrap_or(0)
     })));
-    let cut = 1 + choice % (encoded.len() - 1);
-    assert_eq!(Contents::decode(&encoded[..cut]), Contents::Torn);
+    let cut = choice % encoded.len();
+    assert_eq!(
+        Contents::decode(&encoded[..cut]),
+        if cut == 0 {
+            Contents::Empty
+        } else {
+            Contents::Torn
+        }
+    );
 
     // Reach malformed grammar through the real writer and checksum, rather
     // than waiting for random input to collide with a valid checksum.
-    match choice % 7 {
+    match choice % 10 {
         0 => encoded[choice % MAGIC.len()] ^= 0xff,
         1..=5 => {
-            let offset = fields[choice % 7 - 1];
+            let offset = fields[choice % 10 - 1];
             encoded[offset..offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
         }
-        _ => {
+        6 => {
             encoded.insert(body, 0);
+        }
+        7 | 8 => {
+            let offset = fields[if choice % 10 == 7 { 0 } else { 4 }];
+            encoded[offset..offset + 4].copy_from_slice(&0_u32.to_le_bytes());
+        }
+        _ => {
+            encoded.drain(choice / 10 % body..body);
         }
     }
     let body = encoded.len() - 8;
@@ -96,6 +110,7 @@ pub fn check(bytes: &[u8]) {
 }
 
 /// Capture real codec outputs; callers retain these bytes as corpus inputs.
+#[cfg(not(fuzzing))]
 pub fn seeds() -> Vec<(&'static str, Vec<u8>)> {
     let empty = value(&[]);
     let mut boundary = value(b"native\0\xff\nlock");

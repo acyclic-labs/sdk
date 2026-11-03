@@ -1,3 +1,4 @@
+//! Exercise persisted native claim admission through the production codec.
 #![no_main]
 
 #[path = "../native_claim_record.rs"]
