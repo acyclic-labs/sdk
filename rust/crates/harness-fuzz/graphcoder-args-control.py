@@ -88,6 +88,13 @@ additional_controls = {
     ],
     "native_settings": [
         (
+            "rust/crates/harness-core/src/mcp/config.rs",
+            b"#[serde(default, deny_unknown_fields)]",
+            b"#[serde(default)]",
+            "unknown-server",
+            b"invalid selected MCP declaration must be refused",
+        ),
+        (
             "rust/crates/harness-core/src/native_settings.rs",
             b"if hooks && config.trust_project_hooks {",
             b"if hooks {",
