@@ -327,6 +327,9 @@ pub struct AuthorityIssuer {
     verifier: AuthorityVerifier,
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use workload::check_filesystem_refinement;
+
 impl AuthorityIssuer {
     /// Issue an authenticated descendant that can only narrow its parent.
     /// The agent, issuer, ancestry, expiry and revocation chain are preserved.
