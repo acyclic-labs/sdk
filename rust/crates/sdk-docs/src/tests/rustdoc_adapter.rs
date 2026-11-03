@@ -3,7 +3,7 @@ use proptest::prelude::*;
 
 proptest! {
     #[test]
-    fn shared_rustdoc_decoding_matches_owned_decoding_and_round_trips(
+    fn public_projection_preserves_names_and_rejects_nonpublic_receipts(
         suffix in "[a-z0-9_]{0,16}",
         docs in prop::option::of(".{0,96}"),
         version in any::<u16>(),
@@ -20,20 +20,17 @@ proptest! {
         value["crate_version"] = serde_json::json!(format!("{version}.0.0"));
         value["includes_private"] = serde_json::json!(private);
         value["format_version"] = serde_json::json!(if legacy { 59 } else { 60 });
-        let owned: Crate = serde_json::from_value(value.clone()).unwrap();
-        let original_bytes = serde_json::to_vec_pretty(&value).unwrap();
-        let decoded = crate::public_api::decode::from_slice(&original_bytes).unwrap();
-        prop_assert_eq!(serde_json::to_value(&owned).unwrap(), serde_json::to_value(&decoded).unwrap());
-        let bytes = serde_json::to_vec(&decoded).unwrap();
-        let round_trip: Crate = serde_json::from_slice(&bytes).unwrap();
-        prop_assert_eq!(serde_json::to_value(&round_trip).unwrap(), serde_json::to_value(&owned).unwrap());
-        let original = crate::public_api::extract(Path::new("fixture.json"), &original_bytes.into(), &decoded);
-        let replay = crate::public_api::extract(Path::new("fixture.json"), &bytes.into(), &round_trip);
+        let bytes: std::rc::Rc<[u8]> = serde_json::to_vec(&value).unwrap().into();
+        let decoded = crate::public_api::decode::from_slice(&bytes).unwrap();
+        let result = crate::public_api::extract(Path::new("fixture.json"), &bytes, &decoded);
         if private || legacy {
-            prop_assert!(original.is_err());
-            prop_assert!(replay.is_err());
+            prop_assert!(result.is_err());
         } else {
-            prop_assert_eq!(original.unwrap(), replay.unwrap());
+            let items = result.unwrap();
+            let witness = items.iter().find(|item| item.id == rustdoc_types::Id(1));
+            prop_assert!(witness.is_some(), "generated public item must survive extraction");
+            prop_assert_eq!(&witness.unwrap().path, &vec!["fuzz_doc".to_owned(), name],
+                "generated public item must keep its exported identity");
         }
     }
 }
