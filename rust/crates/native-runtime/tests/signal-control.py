@@ -1,7 +1,7 @@
 """Check production signal/wake/owner models against actual source defects.
 
 Run in a disposable checkout: python3 rust/crates/native-runtime/tests/signal-control.py /tmp/native-signal-control
-Select wake-token, final-owner, host, shared ownership or claims with --wake, --owners, --host, --ownership or --claim.
+Select a retained model with --wake, --owners, --host, --ownership, --claim or --descriptor.
 """
 import hashlib
 import json
@@ -12,8 +12,8 @@ import sys
 
 
 def main():
-    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--ownership", "--claim")):
-        raise RuntimeError("arguments: expected evidence directory, optional model and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--ownership|--claim [mutation]]")
+    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--ownership", "--claim", "--descriptor")):
+        raise RuntimeError("arguments: expected evidence directory, optional model and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--ownership|--claim|--descriptor [mutation]]")
     mode = sys.argv[2] if len(sys.argv) >= 3 else "--signal"
     root = Path(__file__).resolve().parents[4]
     output = Path(sys.argv[1]).resolve()
@@ -25,6 +25,7 @@ def main():
     host = root / "rust/crates/native-runtime/src/testing/host.rs"
     ownership = root / "rust/crates/native-runtime/src/ownership/mod.rs"
     claim = root / "rust/crates/native-runtime/src/claim/protocol.rs"
+    descriptor = root / "rust/crates/native-runtime/src/descriptor/cache.rs"
     target, sources, selection = {
         "--signal": ("process_signal_loom.rs", (signal, outcome), "--native-signal"),
         "--wake": ("wake_loom.rs", (wake,), "--native-wake"),
@@ -32,6 +33,7 @@ def main():
         "--host": ("../src/testing/host/models.rs", (host, host.parent / "host/pool.rs"), "--native-host"),
         "--ownership": ("../src/ownership/model.rs", (ownership,), "--ownership"),
         "--claim": ("../src/claim/model.rs", (claim,), "--native-claim"),
+        "--descriptor": ("../src/descriptor/model.rs", (descriptor,), "--native-descriptor"),
     }[mode]
     oracle = root / "rust/crates/native-runtime/tests" / target
     qualifier = root / "scripts/qualify-mcp-loom.mjs"
@@ -50,7 +52,7 @@ import { spawnSync } from 'node:child_process';
 import { qualificationMain } from './scripts/qualify-mcp-loom.mjs';
 qualificationMain([process.argv[1]], (command, args, options) => spawnSync(command,
   command === 'cargo' ? args : [process.argv[2], '--exact', '--nocapture'], options));
-""", "--", selection, ("claim" if mode == "--claim" else "ownership") + "::model::" + test]
+""", "--", selection, oracle.parent.name + "::model::" + test]
         result = subprocess.run(selected, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         log = output / (label + ".log")
         log.write_bytes(result.stdout)
@@ -121,6 +123,17 @@ qualificationMain([process.argv[1]], (command, args, options) => spawnSync(comma
              b'Liveness::Unknown => Some(contention("store claimed by a process of unknown liveness")),',
              b"Liveness::Unknown => None,",
              "two live owners", "an_owner_of_unknown_liveness_refuses"),
+        ]
+    elif mode == "--descriptor":
+        mutations = [
+            ("replaced-file", descriptor,
+             b"if self.cache.files.identity(&file)? != identity {",
+             b"if self.cache.files.identity(&file)? != identity && false {",
+             "another file under the cached name was used", "a_file_replaced_while_closed_is_refused"),
+            ("close-error", descriptor,
+             b".get_or_insert(error.kind());",
+             b".take().unwrap_or(error.kind());",
+             "a write lost as its descriptor closed was never reported", "a_flush_that_fails_as_a_descriptor_closes_fails_the_next_use"),
         ]
     if len(sys.argv) == 4:
         mutations = [mutation for mutation in mutations if mutation[0] == sys.argv[3]]
