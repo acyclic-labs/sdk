@@ -48,13 +48,8 @@ fn remount(
 }
 
 #[inline(never)]
-fn scenario(
-    destination: &Path,
-    base: rustix::fs::Statx,
-    helper_stat: rustix::fs::Stat,
-    broken: bool,
-) {
-    let kernel = kernel::Kernel::install(base, helper_stat, broken, true);
+fn scenario(destination: &Path, base: rustix::fs::Statx, helper_stat: rustix::fs::Stat) {
+    let kernel = kernel::Kernel::install(base, helper_stat, true);
     let pinned = linux::Pinned::open(destination).unwrap().unwrap();
     let peer_kernel = kernel.clone();
     let peer_destination = destination.to_path_buf();
@@ -84,7 +79,7 @@ fn remount_first(
     helper_stat: rustix::fs::Stat,
     retained: bool,
 ) {
-    let kernel = kernel::Kernel::install(base, helper_stat, false, false);
+    let kernel = kernel::Kernel::install(base, helper_stat, false);
     let pinned = linux::Pinned::open(destination).unwrap().unwrap();
     let mounted = remount(destination, &kernel).unwrap();
     if retained {
@@ -135,25 +130,9 @@ fn real_recovery_owner_keeps_fence_through_helper_exit_with_negative_control() {
             move || remount_first(&contended_destination, base, helper_stat, retained),
         );
     }
-    let positive_destination = destination.clone();
     check_case("recovery-first", move || {
-        scenario(&positive_destination, base, helper_stat, false)
+        scenario(&destination, base, helper_stat)
     });
-    let error = std::panic::catch_unwind(move || {
-        check_case("early-release", move || {
-            scenario(&destination, base, helper_stat, true)
-        })
-    })
-    .expect_err("early release of the real fence was accepted");
-    let message = error
-        .downcast_ref::<String>()
-        .map(String::as_str)
-        .or_else(|| error.downcast_ref::<&str>().copied())
-        .unwrap_or("");
-    assert!(
-        message.contains("helper detached a live remount after early fence release")
-            || message.contains("remount acquired the fence before helper exit")
-            || message.contains("recovery fence released before helper exit"),
-        "{message}"
-    );
+    // The kept recovery-early-release source mutation runs these same custody
+    // assertions against the production ordering, without a test-only branch.
 }
