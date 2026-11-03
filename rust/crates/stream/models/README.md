@@ -148,3 +148,22 @@ external wire, authority changes, producer loss, physical restarts, non-owner
 topology and source coverage remain separate. Ordinary `Arc` reference counts
 are not instrumented by Loom. One modeled source does not establish constant
 cost across the scheduler's source map or multiple queued hints.
+
+The outbound response-reader model polls the production `Outbound::cancelled`
+future while `Outbound::close` publishes through its original `Gate`. A queued
+frame reader and a response reader have separate wake registrations. Removing
+the gate publication must therefore be detected independently of draining frames
+or waking the queued frame reader:
+
+```sh
+git apply rust/crates/stream/models/mutations/outbound_close_publication.patch
+RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream-models --features model-checking --test session_model outbound::closing_a_link_wakes_its_response_reader_without_nesting_locks -- --exact --nocapture
+git apply --reverse rust/crates/stream/models/mutations/outbound_close_publication.patch
+```
+
+The mutant must fail at `closing a node must cancel its pending response read`;
+restored production must pass the same command. The original model and its wake
+lock-order assertion stay unchanged. This checks explicit close publication with
+one reader through included production source and its Loom adapter. It does not
+qualify implicit producer loss, transport retirement, poison recovery, value
+destructors, external wire, physical restarts or multiple nodes.
