@@ -31,25 +31,44 @@ fn gauge_publication(publish_before_release: bool, final_owner: bool) {
         });
         // A second independent publisher can overwrite the first's dirty bit.
         // The release sequence must carry both owners' updates to consumption.
-        let second = (AtomicUsize::new(2), AtomicU64::new(5));
+        let second = Arc::new((AtomicUsize::new(2), AtomicU64::new(5)));
         accounting::retire(&dirty, || {
             second.0.fetch_sub(1, Ordering::Release);
         });
-        let mut paid = [5u64; 2];
+        let mut entries = [(first, 5u64), (second, 5u64)];
+        let refused = accounting::reconcile(
+            &dirty,
+            &mut entries,
+            |entry| accounting::retained(entry.0.load(Ordering::Relaxed), &entry.1),
+            |_, _| Err::<(), _>("ledger refused"),
+        );
+        assert_eq!(refused, Err("ledger refused"));
+        assert_eq!(
+            entries.each_ref().map(|(_, paid)| *paid),
+            [5, 5],
+            "refusal acknowledged unpaid retirement"
+        );
+        assert!(
+            dirty.load(Ordering::Acquire),
+            "refusal lost its dirty event"
+        );
         let mut consume = || {
-            if accounting::take_dirty(&dirty) {
-                for (paid, (owners, bytes)) in paid.iter_mut().zip([&*first, &second]) {
-                    let actual = accounting::retained(owners.load(Ordering::Relaxed), bytes);
-                    assert!(actual <= *paid);
-                    *paid = actual;
-                }
-            }
+            accounting::reconcile(
+                &dirty,
+                &mut entries,
+                |entry| accounting::retained(entry.0.load(Ordering::Relaxed), &entry.1),
+                |paid, actual| {
+                    assert!(actual <= paid);
+                    Ok::<_, ()>(())
+                },
+            )
+            .unwrap();
         };
         consume();
         publisher.join().unwrap();
         consume();
         assert_eq!(
-            paid,
+            entries.map(|(_, paid)| paid),
             [if final_owner { 0 } else { 3 }, 0],
             "retirement accounting was stranded"
         );

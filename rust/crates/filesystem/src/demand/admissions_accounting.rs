@@ -29,14 +29,21 @@ impl NativeProofAccounting {
             self.retired.swap(0, Ordering::AcqRel)
         }
     }
-}
-
-pub(super) fn acquire_final_owner(owners: usize) -> bool {
-    if owners != 1 {
-        return false;
+    pub(super) fn drain_for_final_owner(
+        &self,
+        owners: usize,
+        paid_non_native: u64,
+    ) -> Result<Option<u64>, crate::WorkError> {
+        if owners != 1 {
+            return Ok(None);
+        }
+        // Arc's relaxed strong-count observation needs an acquire fence before
+        // draining updates published before the last publisher's release decrement.
+        fence(Ordering::Acquire);
+        Self::ALLOCATION_BYTES
+            .checked_add(paid_non_native)
+            .and_then(|bytes| bytes.checked_add(self.take_retired()))
+            .map(Some)
+            .ok_or(crate::WorkError::Overflow)
     }
-    // Arc's relaxed strong-count observation needs an acquire fence before
-    // draining updates published before the last publisher's release decrement.
-    fence(Ordering::Acquire);
-    true
 }

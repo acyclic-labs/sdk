@@ -16,6 +16,31 @@ pub(crate) fn publish(dirty: &AtomicBool) {
 pub(crate) fn take_dirty(dirty: &AtomicBool) -> bool {
     dirty.load(Ordering::Acquire) && dirty.swap(false, Ordering::AcqRel)
 }
+// Consume and acknowledge the same entries that published the dirty event.
+// Failed recording leaves the original entry paid and republishes that event.
+pub(crate) fn reconcile<T, E>(
+    dirty: &AtomicBool,
+    entries: &mut [(T, u64)],
+    mut observe: impl FnMut(&T) -> u64,
+    mut record: impl FnMut(u64, u64) -> Result<(), E>,
+) -> Result<Option<(bool, bool)>, E> {
+    if !take_dirty(dirty) {
+        return Ok(None);
+    }
+    let mut empty = true;
+    let mut retired = false;
+    for (owner, paid) in entries {
+        let actual = observe(owner);
+        if let Err(error) = record(*paid, actual) {
+            publish(dirty);
+            return Err(error);
+        }
+        *paid = actual;
+        empty &= actual == 0;
+        retired |= actual == 0;
+    }
+    Ok(Some((empty, retired)))
+}
 pub(crate) fn retire(dirty: &AtomicBool, release_owner: impl FnOnce()) {
     // Uniqueness must be observable before cleanup is published. Reversing
     // these operations can strand the slot after the dirty flag is consumed.

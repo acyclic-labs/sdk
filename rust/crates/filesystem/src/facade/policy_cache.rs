@@ -41,7 +41,7 @@ struct State {
 /// memory credit while an open handle still uses the policy.
 pub(super) struct PolicyCache {
     state: SharedMutex<State>,
-    pub(super) compilation: SharedMutex<()>,
+    compilation: SharedMutex<()>,
 }
 
 impl Default for PolicyCache {
@@ -58,6 +58,26 @@ impl Default for PolicyCache {
 }
 
 impl PolicyCache {
+    /// Payload reads precede this call; only compilation is serialized. The
+    /// second lookup joins a concurrent compiler without paying its work again.
+    pub(super) fn get_or_compile(
+        &self,
+        volume: VolumeId,
+        revision: Revision,
+        compile: impl FnOnce() -> Result<Arc<CompiledPolicy>, FsError>,
+    ) -> Result<Arc<CompiledPolicy>, FsError> {
+        let _compilation = self
+            .compilation
+            .lock()
+            .map_err(|_| FsError::InvalidAccessPolicy)?;
+        if let Some(view) = self.get(volume, revision) {
+            return Ok(view);
+        }
+        let compiled = compile()?;
+        self.insert(volume, revision, Arc::clone(&compiled))?;
+        Ok(compiled)
+    }
+
     pub(super) fn get(&self, volume: VolumeId, revision: Revision) -> Option<Arc<CompiledPolicy>> {
         let mut state = self.state.lock().ok()?;
         // Renormalize without changing order before the counter can wrap.

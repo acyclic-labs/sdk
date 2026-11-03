@@ -132,11 +132,9 @@ impl DemandWork {
             shared.retire_native(retired);
             return Err(error.into_work_or(crate::WorkError::Overflow));
         }
-        if accounting::acquire_final_owner(Arc::strong_count(shared)) {
-            let bytes = NativeProofAccounting::ALLOCATION_BYTES
-                .checked_add(self.roots.paid_non_native)
-                .and_then(|bytes| bytes.checked_add(shared.take_retired()))
-                .ok_or(crate::WorkError::Overflow)?;
+        if let Some(bytes) =
+            shared.drain_for_final_owner(Arc::strong_count(shared), self.roots.paid_non_native)?
+        {
             drop(self.roots.proof_accounting.take());
             self.roots.paid_non_native = 0;
             self.allocations
@@ -182,37 +180,31 @@ impl DemandWork {
         let Some(dirty) = self.roots.native_mount_dirty.as_ref() else {
             return self.prune_native_mount_admissions();
         };
-        if !mount_accounting::take_dirty(dirty) {
-            return Ok(());
-        }
-        let mut empty = true;
-        let mut retired_mount = false;
-        for entry in &mut self.roots.native_mount_admissions.0 {
-            let actual = mount_bytes(entry);
-            let recorded = if actual < entry.1 {
-                self.allocations
-                    .release(entry.1 - actual)
-                    .map_err(|error| error.into_work_or(crate::WorkError::Overflow))
-            } else if actual > entry.1 {
-                self.allocations
-                    .record_owned_bytes(actual - entry.1, &mut self.work)
-                    .map_err(|error| error.into_work_or(crate::WorkError::Overflow))
-            } else {
+        let Some((empty, retired_mount)) = mount_accounting::reconcile(
+            dirty,
+            &mut self.roots.native_mount_admissions.0,
+            |gauge| mount_accounting::retained(Arc::strong_count(gauge), gauge),
+            |paid, actual| {
+                if actual < paid {
+                    self.allocations
+                        .release(paid - actual)
+                        .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
+                } else if actual > paid {
+                    self.allocations
+                        .record_owned_bytes(actual - paid, &mut self.work)
+                        .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
+                }
+                if actual > paid
+                    && let Err(error) = self.work.verify(self.budget)
+                {
+                    failure.get_or_insert(error);
+                }
                 Ok(())
-            };
-            if let Err(error) = recorded {
-                mount_accounting::publish(dirty);
-                return Err(error);
-            }
-            if actual > entry.1
-                && let Err(error) = self.work.verify(self.budget)
-            {
-                failure.get_or_insert(error);
-            }
-            entry.1 = actual;
-            empty &= actual == 0;
-            retired_mount |= actual == 0;
-        }
+            },
+        )?
+        else {
+            return Ok(());
+        };
         if retired_mount {
             self.prune_native_mount_admissions()?;
         }
