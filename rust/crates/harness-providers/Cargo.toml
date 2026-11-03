@@ -19,7 +19,7 @@ local = ["dep:acyclic-harness", "acyclic-harness/filesystem-local", "acyclic-har
 # The browser content reader lives in the facade's wasm bindings.
 browser = ["acyclic-harness-core/browser", "dep:acyclic-harness", "acyclic-harness/browser", "dep:tsify", "dep:serde-wasm-bindgen"]
 wasm-journal = ["browser", "acyclic-harness/wasm-journal"]
-fuzzing = []
+fuzzing = ["acyclic-harness-core/test-support"]
 
 [dependencies]
 acyclic-model-render = { path = "../model-render", version = "=0.2.0" }

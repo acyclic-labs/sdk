@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/executor/model_usage.rs b/rust/crates/harness-core/src/executor/model_usage.rs
+--- a/rust/crates/harness-core/src/executor/model_usage.rs
++++ b/rust/crates/harness-core/src/executor/model_usage.rs
+@@ -36,7 +36,7 @@ impl ModelTokenUsage {
+                 }
+                 result = Some(observed);
+             }
+-            result
++            Some(result.unwrap_or_default())
+         };
+         Self {
+             input: counter(&[

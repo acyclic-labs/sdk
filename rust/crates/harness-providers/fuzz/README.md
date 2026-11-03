@@ -33,6 +33,24 @@ oracle. Each must also decode successfully, so equal refusals cannot qualify a
 positive capture. Run it individually with the `fuzzing` feature before claiming
 that replay at a changed source revision.
 
+The same stream oracle passes each original `Completed` metadata value to
+`executor::model_usage_codec_fuzz::check_metadata`. This checks all five token
+counters against independent set consensus over the admitted metadata paths,
+including explicit zero, absent values, malformed values and contradictory
+aliases. It does not prove that a provider parser retained every wire field;
+that requires an independent captured-response expectation. The existing
+`harness_codecs` target also reaches this oracle on arbitrary JSON and checks
+the durable usage row's typed JSON round trip. Row syntax does not establish
+that a journal committed an authoritative terminal observation.
+
+The retained `rust/codec-fuzz/mutations/model-usage-default-zero.patch` plants a
+production decoder defect that substitutes zero for absent counters. Apply it
+from the repository root and run the unchanged
+`usage_dialects_preserve_units_absence_and_malformed_controls` property. The
+control must fail; a compilation failure does not qualify the negative control.
+Target source, corpus replay, sanitizer campaign, source coverage and mutation
+execution are distinct results and must be reported separately.
+
 The `http_failure` target reaches the actual HTTP refusal path, including
 context overflow JSON, status-sensitive body consumption, bounded diagnostics
 and a body producer that ends in a typed error. Its first two bytes are the
