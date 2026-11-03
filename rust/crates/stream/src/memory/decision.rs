@@ -48,9 +48,9 @@ impl<T, F: FnOnce(&mut State, bool, Option<u64>) -> Result<T, StreamError>> Deci
             }
             // The publication owner excludes competing state transitions.
             // Readers can keep using the last accepted state during I/O.
-            #[cfg(not(loom))]
+            #[cfg(not(all(loom, feature = "local")))]
             drop(state);
-            #[cfg(loom)]
+            #[cfg(all(loom, feature = "local"))]
             let state = crate::verification::fault_is(
                 crate::verification::Fault::HoldStateDuringDurability,
             )
@@ -58,7 +58,7 @@ impl<T, F: FnOnce(&mut State, bool, Option<u64>) -> Result<T, StreamError>> Deci
             // Failure or cancellation drops the uninstalled plan. There is
             // no visible mutation or notification before this succeeds.
             let at_millis = persist.await?;
-            #[cfg(loom)]
+            #[cfg(all(loom, feature = "local"))]
             drop(state);
             let mut state = core.state.write().await;
             self.install_at(core, &mut state, true, at_millis)
@@ -101,7 +101,7 @@ impl MemoryStream {
             use crate::replicated::Execution;
             use crate::{WriteOutcome, WriteRequest};
             let _publication = self.publication.lock().await;
-            #[cfg(loom)]
+            #[cfg(all(loom, feature = "local"))]
             let _publication = (!crate::verification::fault_is(
                 crate::verification::Fault::ReleasePendingPublication,
             ))

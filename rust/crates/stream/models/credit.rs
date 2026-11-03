@@ -35,13 +35,14 @@ fn disposal(broken: bool) {
         });
         let dropping = super::Arc::clone(&storage);
         let dropping = loom::thread::spawn(move || {
-            let mut discarded = std::mem::take(&mut *dropping.lock().unwrap());
+            let discarded = std::mem::take(&mut *dropping.lock().unwrap());
             if broken {
-                for delivery in &mut discarded {
-                    delivery.value.take();
+                for delivery in discarded {
+                    std::mem::forget(delivery);
                 }
+            } else {
+                drop(discarded);
             }
-            drop(discarded);
         });
         consuming.join().unwrap();
         dropping.join().unwrap();

@@ -3,12 +3,8 @@ compile_error!(
     r#"STEP_FAILED stream-models: Loom synchronization is disabled; recovery: RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --manifest-path rust/crates/stream/models/Cargo.toml --features model-checking --test session_model"#
 );
 
-mod error {
-    use thiserror::Error;
-    include!("../src/lib/error.rs");
-}
-use acyclic_stream::wire;
-pub use error::StreamError;
+pub use acyclic_stream::StreamError;
+use acyclic_stream::{StreamSelection, wire};
 #[path = "../src/runtime/sync.rs"]
 mod sync;
 use sync::{Arc, AtomicU64, Mutex, Ordering};
@@ -28,11 +24,13 @@ mod gate {
     include!("../src/session/gate.rs");
     include!("gate.rs");
 }
-mod signal {
+pub(crate) mod signal {
     include!("../src/runtime/signal.rs");
     include!("signal.rs");
 }
-type ReleaseSender = Arc<signal::Signal<credit::Released>>;
+mod runtime {
+    pub(crate) use super::signal;
+}
 mod credit {
     include!("../src/session/client/credit.rs");
     include!("credit.rs");
@@ -205,15 +203,4 @@ proptest::proptest! {
     ) {
         acyclic_stream::session::verify_reserved_capacity(frames, largest);
     }
-}
-
-#[test]
-fn latest_consumption_and_movement_share_the_production_cursor_model() {
-    progress::verify_latest_progress(false);
-}
-
-#[test]
-#[should_panic(expected = "a stale delivery cannot advance the fenced resume cut")]
-fn latest_negative_control_advances_after_its_generation_was_fenced() {
-    progress::verify_latest_progress(true);
 }

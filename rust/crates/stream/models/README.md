@@ -32,7 +32,7 @@ Stream owner at `b5899587789ad2152b29beaab1ee85e843a25645`:
 | Generated reserved-slot capacities | The existing frame/record-size inputs exercise actual source admission for uncredited latest, credited ordinary, and globally full cases. |
 | Cursor movement and stale generation | Included `client/progress.rs`, with the real generated `acyclic_stream::wire::SessionCursor`. |
 | Atomic anchored resume cut; split-observation negative | Both `consume_record` and `consume_progress` race `fence` and `subscription`. Sequence and preceding immutable commit must move together; both stale consumption methods must refuse. |
-| Conflated latest movement | The existing separate production latest-generation model and its negative control remain. |
+| Conflated latest movement | `tests/client_pool_loom.rs` runs the production `session::verify_latest_progress` model and its generation-split negative control. The standalone target does not repeat that same pair. |
 
 The former child-only opaque-consumption model called the removed
 `consume_opaque`. The product retired child subscriptions: `session.proto`
