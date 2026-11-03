@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { createWriteStream, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -152,7 +153,9 @@ async function transcriptFailure(directory) {
   const terminal = spool.next(() => false).catch(error => error);
   const missing = spool.keyed(Symbol("missing transcript key")).catch(error => error);
   const history = spool.history().catch(error => error);
-  const cause = await terminal, error = await failed;
+  const error = await failed;
+  assert.equal(spool.ended?.kind, "spool", "the original writer failure must end the spool before any waiter join");
+  const cause = await terminal;
   assert.equal(error.code, "ENOENT");
   assert.equal(cause.kind, "spool");
   assert.equal(cause.detail, error);
@@ -167,6 +170,61 @@ async function transcriptFailure(directory) {
   await finished(source);
   assert.equal(spool.sequence, 0, "later source output cannot replace the writer refusal");
   assert.equal(spool.ended, cause);
+}
+
+// Native file closure is the finite observation boundary, including when the
+// original source chunk is held for drain. Inspect the terminal before joining
+// its waiters, so a lost transition fails an assertion instead of hanging.
+async function withdrawal(directory) {
+  for (const mode of ["retained", "empty", "queued", "source"]) {
+    const source = new PassThrough();
+    const transcript = createWriteStream(join(directory, `${mode}-withdrawn.jsonl`), { highWaterMark: 1 });
+    if (mode === "retained") {
+      const retired = once(transcript, "close");
+      transcript.destroy(); await retired;
+    }
+    let close;
+    const closed = new Promise(resolve => { close = resolve; });
+    const spool = new Spool(source, closed, { key, transcript });
+    const written = finished(transcript).then(() => undefined, error => error);
+    const pending = [spool.next(() => false), spool.keyed(Symbol("withdrawn missing key"))]
+      .map(promise => promise.catch(error => error));
+    if (mode === "queued") {
+      source.write(original); source.write(distinct);
+      assert.equal(spool.sequence, 1, "the second captured chunk waits for the original writer drain");
+    }
+    if (mode === "source") {
+      const drained = once(source, "close");
+      close(captured); source.destroy();
+      await drained;
+    } else {
+      transcript.destroy();
+      await written;
+    }
+    const cause = spool.ended;
+    assert.equal(cause?.kind, mode === "source" ? "eof" : "spool",
+      "original close must publish the terminal before waiter joins");
+    if (mode === "source") assert.equal(cause.detail, captured);
+    else {
+      // The queued write callback reports destroyed; otherwise the original
+      // finished observer supplies premature close. All readers retain it.
+      assert.equal(cause.detail.code, mode === "queued" ? "ERR_STREAM_DESTROYED" : "ERR_STREAM_PREMATURE_CLOSE");
+      assert.equal(cause.cause, cause.detail);
+    }
+    for (const waiting of pending) assert.equal(await waiting, cause);
+    assert.equal(transcript.listenerCount("drain"), 0, "terminal admission releases the original drain observer");
+    if (mode !== "source") {
+      await assert.rejects(spool.history(), error => error === cause);
+      if (mode === "queued") await assert.rejects(spool.keyed(event.id), error => error === cause);
+      source.end(original); close(captured);
+      await finished(source);
+    }
+    await written;
+    assert.equal(spool.sequence, mode === "queued" ? 1 : 0, "withdrawal cannot admit later or queued source bytes");
+    assert.equal(spool.ended, cause, "later physical completion cannot replace the original terminal");
+    await assert.rejects(spool.next(() => true), error => error === cause);
+    await assert.rejects(spool.keyed(Symbol("late missing key")), error => error === cause);
+  }
 }
 
 // Mutate the original completed file, then compare its two indexed ranges and
@@ -218,6 +276,7 @@ export async function fuzz(data) {
     for (const mode of ["key", "listener", "predicate", "stream", "closed"])
       await failure(bytes, mode, sourceError);
     await transcriptFailure(directory);
+    await withdrawal(directory);
     await persisted(bytes, join(directory, "mutated.jsonl"));
     for (const input of [bytes, Buffer.concat([bytes, original]), Buffer.concat([original, bytes]),
       Buffer.concat([original, original, bytes]), Buffer.concat([original, distinct, bytes])])
