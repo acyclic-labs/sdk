@@ -222,30 +222,16 @@ pub(super) fn snapshot_js_json(
         }
         serde_json::Value::Array(snapshot)
     } else if is_map {
-        let mut failure = None;
+        let map = value.unchecked_ref::<js_sys::Map>();
+        let mut entries = Vec::with_capacity(map.size() as usize);
+        // Select before evaluating child getters: they can append to the same
+        // Map, whose live iteration would otherwise keep admitting new work.
+        map.for_each(&mut |child, key| entries.push((key, child)));
         let mut snapshot = serde_json::Map::new();
-        value
-            .unchecked_ref::<js_sys::Map>()
-            .for_each(&mut |child, key| {
-                if failure.is_some() {
-                    return;
-                }
-                let key = match checked_js_string(key, "JSON object key") {
-                    Ok(key) => key,
-                    Err(error) => {
-                        failure = Some(error);
-                        return;
-                    }
-                };
-                match snapshot_js_json(&child, ancestors) {
-                    Ok(admitted) => {
-                        snapshot.insert(key, admitted);
-                    }
-                    Err(error) => failure = Some(error),
-                }
-            });
-        if let Some(error) = failure {
-            return Err(error);
+        for (key, child) in entries {
+            let key = checked_js_string(key, "JSON object key")?;
+            let admitted = snapshot_js_json(&child, ancestors)?;
+            snapshot.insert(key, admitted);
         }
         serde_json::Value::Object(snapshot)
     } else {

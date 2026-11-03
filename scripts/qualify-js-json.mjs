@@ -54,7 +54,8 @@ const receipt = `${JSON.stringify({
   source: git("HEAD"), tree: git("HEAD^{tree}"), build, test: ["bun", ...parameters],
   result: red ? "expected semantic red" : "pass", artifacts: artifacts.map(path => ({ path, sha256: hash(path) })),
 }, null, 2)}\n`;
-try { writeFileSync(new URL("../javascript-json-qualification.json", import.meta.url), receipt); }
+const receiptName = red ? "javascript-json-qualification.json" : "javascript-json-fixed-qualification.json";
+try { writeFileSync(new URL(`../${receiptName}`, import.meta.url), receipt); }
 catch (error) { fail("qualification receipt", String(error)); }
 console.log(red ? "PASS: original Map traversal defect reached the unchanged semantic assertion."
   : "PASS: generated Map admission control passed.");
