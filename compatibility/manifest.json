@@ -14,7 +14,7 @@
       "version": "0.2.0",
       "crateVersion": "0.2.0",
       "schemaDigest": "sha256:7c34419f478f01c5cbb9e63ffdde636d3c2dde7d3cb763073d24b2a5296e7c4d",
-      "descriptorDigest": "sha256:5de0bb6bff54a8f3cc6fe869c30ccc14314538319e91ea3b4ea7cb48557a4bb2"
+      "descriptorDigest": "sha256:de63b54df7f044d122baab9a5396807f861d75a9ac063a3560d318ef4d2802aa"
     },
     "harness": {
       "version": "0.2.0",
