@@ -13,8 +13,9 @@ const bytes = args.includes("--bytes");
 const quoted = args.includes("--quoted");
 const metadata = args.includes("--metadata");
 const array = args.includes("--array");
+const number = args.includes("--number");
 const reuse = args.find(arg => arg.startsWith("--reuse="))?.slice("--reuse=".length);
-const recovery = `node scripts/qualify-js-json.mjs${retirement ? " --retirement" : bytes ? " --bytes" : metadata ? " --metadata" : array ? " --array" : ""}${red ? " --red" : ""}${quoted ? " --quoted" : ""}${reuse ? ` --reuse=${JSON.stringify(reuse)}` : ""}`;
+const recovery = `node scripts/qualify-js-json.mjs${retirement ? " --retirement" : bytes ? " --bytes" : metadata ? " --metadata" : array ? " --array" : number ? " --number" : ""}${red ? " --red" : ""}${quoted ? " --quoted" : ""}${reuse ? ` --reuse=${JSON.stringify(reuse)}` : ""}`;
 const test = bytes ? "external JSON bytes preserve engine tokens or refuse before rounding"
   : retirement ? "canonical admission releases JavaScript references after intrinsic failures"
   : "canonical admission selects entries before evaluating their values";
@@ -28,10 +29,10 @@ const run = (step, command, parameters, options = {}) => {
   if (result.error) fail(step, result.error.message);
   return result;
 };
-if (args.some(arg => !["--red", "--retirement", "--bytes", "--quoted", "--metadata", "--array"].includes(arg) && !arg.startsWith("--reuse="))
-  || new Set(args).size !== args.length || Number(retirement) + Number(bytes) + Number(metadata) + Number(array) > 1 || quoted && !(bytes && red)
+if (args.some(arg => !["--red", "--retirement", "--bytes", "--quoted", "--metadata", "--array", "--number"].includes(arg) && !arg.startsWith("--reuse="))
+  || new Set(args).size !== args.length || Number(retirement) + Number(bytes) + Number(metadata) + Number(array) + Number(number) > 1 || quoted && !(bytes && red)
   || args.filter(arg => arg.startsWith("--reuse=")).length > 1 || args.includes("--reuse=") || reuse && red) {
-  fail("arguments", "expected one control (--retirement, --bytes, --metadata or --array), optional --red, --quoted only with --bytes --red, or --reuse=<receipt> without --red");
+  fail("arguments", "expected one control (--retirement, --bytes, --metadata, --array or --number), optional --red, --quoted only with --bytes --red, or --reuse=<receipt> without --red");
 }
 
 const production = new URL("../rust/crates/harness/src/wasm/json.rs", import.meta.url);
@@ -41,14 +42,16 @@ let mutation;
 let artifactsCustody;
 let reused;
 try {
-  if ((bytes || metadata || array) && red) {
+  if ((bytes || metadata || array || number) && red) {
     try { original = readFileSync(production, "utf8"); }
     catch (error) { fail("read production admission source", String(error)); }
-    const entrance = array ? "        let items = js_sys::Array::from_iterable(value.unchecked_ref::<js_sys::Array>())?;"
+    const entrance = number ? "        if !crate::conversation::is_exact_js_number(number) {"
+      : array ? "        let items = js_sys::Array::from_iterable(value.unchecked_ref::<js_sys::Array>())?;"
       : metadata ? "        let mut entries = Vec::new();"
       : quoted ? "        if quoted {" : "    reject_out_of_range_integer_tokens(bytes)?;";
     if (original.split(entrance).length !== 2) fail("admission mutation", "expected exactly one production entrance");
-    const replacement = array ? "        let items = value.unchecked_ref::<js_sys::Array>();"
+    const replacement = number ? "        if false && !crate::conversation::is_exact_js_number(number) {"
+      : array ? "        let items = value.unchecked_ref::<js_sys::Array>();"
       : metadata ? `        let size = js_sys::Reflect::get(value, &JsValue::from_str("size"))?
             .as_f64()
             .filter(|size| (0.0..=f64::from(u32::MAX)).contains(size) && size.fract() == 0.0)
@@ -125,7 +128,8 @@ try {
     ? result.status !== 0 && result.signal === null && output.includes(bytes
       ? quoted ? "external JSON input was refused despite engine token admission"
         : "external JSON input admission disagrees with engine token oracle" : retirement
-        ? "JavaScript refusal retained original input" : array
+        ? "JavaScript refusal retained original input" : number
+          ? "canonical admission accepted an unsafe JavaScript Number" : array
           ? "canonical admission did not retain selected Array entries" : metadata
           ? "canonical Map admission evaluated unrelated size metadata" : "canonical admission revisited an appended Map entry")
       && /0 pass\b/u.test(output) && /1 fail\b/u.test(output)
@@ -166,7 +170,8 @@ try {
       sha256: hash(path),
     })),
   }, null, 2)}\n`;
-  const receiptName = array ? `javascript-json-array-${red ? "red" : "fixed"}.json`
+  const receiptName = number ? `javascript-json-number-${red ? "red" : "fixed"}.json`
+    : array ? `javascript-json-array-${red ? "red" : "fixed"}.json`
     : metadata ? `javascript-json-metadata-${red ? "red" : "fixed"}.json`
     : bytes ? `javascript-json-bytes-${quoted ? "quoted-" : ""}${red ? "red" : "fixed"}.json`
     : retirement ? `javascript-json-retirement-${red ? "red" : "fixed"}.json`
