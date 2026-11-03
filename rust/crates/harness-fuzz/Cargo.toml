@@ -10,7 +10,7 @@ cargo-fuzz = true
 [[bin]]
 name = "native_answer"
 path = "fuzz_targets/native_answer.rs"
-required-features = ["core"]
+required-features = ["native-answer"]
 test = false
 doc = false
 bench = false
@@ -37,6 +37,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(fuzzing)", 'c
 [features]
 default = ["runtime"]
 core = ["dep:acyclic-harness-core", "dep:futures"]
+native-answer = ["core", "dep:acyclic-native-runtime"]
 runtime = ["core", "filesystem-local", "native-execution", "dep:acyclic-harness", "dep:acyclic-native-runtime", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:tempfile", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
 # Harness sources included by `#[path]` gate native helpers on these features;
 # the fuzz runtime compiles them as the native harness it depends on does.
