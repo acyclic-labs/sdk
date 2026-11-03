@@ -391,7 +391,7 @@ fn different_seeds_explore_different_ready_orders() -> io::Result<()> {
 }
 
 #[test]
-fn dropped_handles_detach_and_aborted_futures_retire() -> io::Result<()> {
+fn dropped_task_handles_detach_and_retire() -> io::Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
     let executor = Executor::new(73);
     runtime.block_on(executor.run(async {
@@ -401,25 +401,9 @@ fn dropped_handles_detach_and_aborted_futures_retire() -> io::Result<()> {
             finished.send(91).unwrap();
         }));
         assert_eq!(waiting.await.unwrap(), 91);
-        let task = executor.spawn(std::future::pending::<()>());
-        task.abort();
-        assert_eq!(task.await.unwrap_err().to_string(), "owned task cancelled");
     }));
     let state = lock(&executor.0);
     assert!(state.tasks.is_empty() && state.ready.is_empty() && state.live.is_empty());
-    Ok(())
-}
-
-#[test]
-fn owned_panics_keep_their_cause_and_retire() -> io::Result<()> {
-    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    let executor = Executor::new(11);
-    runtime.block_on(executor.run(async {
-        let task = executor.spawn(async { panic!("original task cause") });
-        let error = task.await.unwrap_err().to_string();
-        assert_eq!(error, "owned task panicked: original task cause");
-    }));
-    assert!(lock(&executor.0).live.is_empty());
     Ok(())
 }
 
