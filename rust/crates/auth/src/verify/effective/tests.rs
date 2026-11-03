@@ -25,22 +25,11 @@ fn holder(count: usize) -> VerifiedCapability {
     cap
 }
 
-fn work(cap: &VerifiedCapability, broken: bool) -> usize {
+fn work(cap: &VerifiedCapability) -> usize {
     FILTER_WORK.with(|work| work.set(0));
     for clause in cap.effective().filters() {
         assert_eq!(clause.subject_id(), "issuer");
         assert_eq!(clause.lineage().collect::<Vec<_>>(), vec!["issuer"]);
-        if broken {
-            // Restore the former two descendant scans per filter. Count the
-            // same caveat visits as the production traversal above.
-            for _ in 0..2 {
-                for block in cap.blocks.iter().skip(clause.declaring_block() + 1) {
-                    for _ in &block.caveats {
-                        filter_work();
-                    }
-                }
-            }
-        }
     }
     FILTER_WORK.with(|work| work.get())
 }
@@ -51,7 +40,6 @@ proptest! {
     fn filter_projection_work_is_linear(count in 8..128usize) {
         let small = holder(count);
         let large = holder(count * 2);
-        prop_assert_eq!(work(&large, false), work(&small, false) * 2);
-        prop_assert!(work(&large, true) > work(&small, true) * 3);
+        prop_assert_eq!(work(&large), work(&small) * 2);
     }
 }

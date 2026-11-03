@@ -1,0 +1,18 @@
+--- a/rust/crates/auth/src/verify/effective.rs
++++ b/rust/crates/auth/src/verify/effective.rs
+@@ -114,2 +114,15 @@
+                     filter_work();
++                    let visible_lineage = self.capability.principal.lineage.len()
++                        - self.capability.blocks[index + 1..]
++                            .iter()
++                            .flat_map(|block| &block.caveats)
++                            .map(|caveat| {
++                                #[cfg(test)]
++                                filter_work();
++                                match &caveat.kind {
++                                    CaveatKind::LineageAppend(lineage) => lineage.ids.len(),
++                                    _ => 0,
++                                }
++                            })
++                            .sum::<usize>();
+                     (index, caveat, visible_lineage)
