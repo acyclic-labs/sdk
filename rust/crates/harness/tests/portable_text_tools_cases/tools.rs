@@ -407,13 +407,22 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             .await,
         Err(Error::Conflict(_))
     ));
-    for (writer_binding, grants) in [
+    for (writer_binding, grants, expected) in [
         (
             None,
             Capabilities::new([read_cap.clone(), write_cap.clone()]),
+            Error::Invalid("file version belongs to another selected volume".into()),
         ),
-        (Some(writer.clone()), Capabilities::new([write_cap.clone()])),
-        (Some(writer.clone()), Capabilities::new([read_cap.clone()])),
+        (
+            Some(writer.clone()),
+            Capabilities::new([write_cap.clone()]),
+            Error::Unauthorized("file tool requires original source read grant".into()),
+        ),
+        (
+            Some(writer.clone()),
+            Capabilities::new([read_cap.clone()]),
+            Error::Unauthorized("task scope cannot write this volume".into()),
+        ),
     ] {
         let restricted = content_context(
             reader.clone(),
@@ -421,15 +430,16 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             grants,
         )
         .await?;
-        assert!(matches!(
-            tool.executor
-                .execute(
-                    invocation.clone(),
-                    Some(ToolContext::new(restricted, operation, "edit")?)
-                )
-                .await,
-            Err(Error::Unauthorized(_))
-        ));
+        let refusal = tool
+            .executor
+            .execute(
+                invocation.clone(),
+                Some(ToolContext::new(restricted, operation, "edit")?),
+            )
+            .await
+            .expect_err("restricted edit must not publish");
+        assert_eq!(refusal.code(), expected.code(), "{refusal:?}");
+        assert_eq!(refusal.to_string(), expected.to_string());
     }
     assert_eq!(
         task.read_file(&user, None).await?.as_ref(),
@@ -486,15 +496,21 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         ]),
     )
     .await?;
-    assert!(matches!(
-        tool.executor
-            .execute(
-                invocation.clone(),
-                Some(ToolContext::new(foreign_context, operation, "edit")?)
-            )
-            .await,
-        Err(Error::Unauthorized(_))
-    ));
+    let refusal = tool
+        .executor
+        .execute(
+            invocation.clone(),
+            Some(ToolContext::new(foreign_context, operation, "edit")?),
+        )
+        .await
+        .expect_err("a foreign destination must not publish");
+    assert!(
+        matches!(
+            refusal,
+            Error::Invalid(ref reason) if reason == "file version belongs to another selected volume"
+        ),
+        "{refusal:?}"
+    );
     assert_eq!(foreign.calls.load(Ordering::SeqCst), 0);
     assert!(matches!(
         tool.executor.execute(invocation.clone(), None).await,
