@@ -24,6 +24,7 @@ pub fn check(bytes: &[u8]) {
     );
     for captured in [
         include_bytes!("../corpus/agent_controls/actor-response-root-0").as_slice(),
+        include_bytes!("../corpus/agent_controls/actor-response-refused").as_slice(),
         include_bytes!("../corpus/agent_controls/assembled-cancel").as_slice(),
     ] {
         let separator = captured.iter().position(|byte| *byte == 0).unwrap();
