@@ -22,3 +22,15 @@ branch. The planted-bug control removes `&& !inherit_input` from the production
 parser, then runs the same `process_host_argument_fuzz` property. It must reject
 the now-admitted duplicate option. Restore the guard before replaying the
 ordinary property. Measured branch coverage remains a separate obligation.
+
+The retained `process_host_arguments` byte fuzzer includes the exact same
+production argument module. It checks literal OS-string round trips, endpoint
+admission and duplicate-flag refusal. The original recorded status is an oracle
+only for these exact captured bytes; mutated records do not inherit it.
+
+```sh
+cargo run --locked -p acyclic-sdk-fuzz --no-default-features --features process-arguments --bin process_host_arguments -- rust/crates/native-runtime/src/process_tree/external_host/corpus/linux-arguments.json
+```
+
+Passing a file replays that corpus without an open-ended fuzzing campaign.
+The same production duplicate-input-guard removal must fail this replay too.
