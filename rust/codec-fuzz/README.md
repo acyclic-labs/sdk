@@ -378,6 +378,18 @@ Only their selector changes; new message writers get new captures, and entries
 for deleted message types are removed. Other targets and their goldens stay
 unchanged. The ordinary changed-value and changed-selector controls still run.
 
+Capture only the original Objects service writer outputs, without invoking other
+service producers or default-message writers:
+
+```sh
+cargo run --locked --example capture -- --only-objects-protobuf --extend-goldens
+```
+
+This uses the same protobuf and protobuf JSON capture path, original Objects
+producer, admission oracle and golden checks. It replaces only the selected writer
+names; previous variants and unrelated provenance and goldens remain unchanged.
+Repeating this command must leave both indexes byte-identical.
+
 Capture exercises each emitted input and compares it with the single
 `compatibility/frames/golden.hex` baseline. Protobuf messages and their JSON
 projections compare values through the original descriptor codecs, since map
@@ -714,3 +726,65 @@ reject removal of the actual settlement guard, then replay the original corpus.
 Mutation-only controls leave captured inputs and provenance unchanged. Their final
 replay still admits production writers. Use `--capture` explicitly when adding
 original writer inputs; it remains the single corpus and golden update path.
+
+The Objects semantic oracle first admits its original public binary client
+through the real account's route dispatch and writer, once per process. This
+keeps a reject-all server from passing syntax equivalence or scripted-response
+checks. The writer includes two batch members with independent digests and
+lengths, and the request selector includes `PutBlobsRequest` on `blobs/put-batch`.
+`object_batch_route_refusal.patch` makes that actual route refuse every batch;
+the unchanged `original_service_writers_satisfy_the_semantic_oracle` property
+and fuzz entry must reject it. The property enters with the retained original
+service-writer request in `corpus/protobuf/acyclic.objects.v1.PutBlobRequest-created`;
+its eight-byte type selector is harness configuration, followed by original wire
+bytes. This is local production-path admission, not distributed or physical
+durability qualification. Arbitrary batch-response semantic coverage remains
+separate from batch request dispatch and this positive-writer check.
+
+The batch producer runs after earlier unary captures, preserving their account
+state. The existing shared capture tool compares those packets with their
+retained goldens; a second golden-comparison property is unnecessary. The original populated batch request and response are retained under both
+binary and JSON targets through that same producer.
+
+The Objects writer admission also opens the real account's availability feed
+through its public binary client and the shared production cursor writer. It
+requires that original opening cursor to decode, and refuses a zero incarnation
+derived from that packet. The same protobuf target checks arbitrary cursor
+identity admission. `object_availability_cursor.patch` drops the production
+zero-incarnation refusal. This qualifies cursor identity only: the source's
+random incarnation is not a deterministic golden, and retained real HTTP/gRPC
+cursor corpus, change/terminal/cancellation states and branch coverage remain
+open. Non-Objects packets do not run the Objects writer baseline.
+
+The same Objects semantic target admits arbitrary `PutBlobsResponse` bytes
+through the public batch client. It checks the original member count, each
+input digest and length, member outcome and refusal, canonical re-encoding,
+and original producer loss. `object_batch_member_count.patch` removes the
+production reply-count guard; the unchanged property must reject a missing
+member. The retained default protobuf writer reaches that refusal branch; it
+is syntax support, not a captured service response. Actual two-member service
+writer admission runs first. Populated batch packets from the actual service
+writer are retained alongside that default packet. Full branch coverage and distributed or physical guarantees
+remain separate obligations.
+
+HEAD and GET also compare each admitted public result's digest with the
+original request, independently of their shared route verifier. The same
+property starts with retained original `BlobInfo-selected` and
+`GetBlobResponse-selected` writer packets, then changes only their acknowledged
+digest. `object_head_identity.patch` and `object_read_identity.patch` remove
+the respective production identity checks; the unchanged property must reject
+each omission. This qualifies request identity, not all range, content,
+transport or topology branches.
+
+The Objects-only export refreshes the first eight bytes that select a generated
+test decoder when earlier schema entries move. The original protobuf or JSON
+payload after that selector must stay unchanged, as must unrelated corpus rows
+and producer provenance. The exporter uses the same pair writer, admission and
+golden comparison as other protobuf captures; consecutive exports must keep
+both indexes and selected packets byte-identical.
+
+The same GET projection checks admitted body bytes against the caller's original
+maximum, independently of the route verifier. Its retained real read packet is
+also tried with a zero-byte admission; `object_read_maximum.patch` removes the
+actual production maximum check. The unchanged property must catch that guard
+omission. This does not qualify every range or content-integrity branch.

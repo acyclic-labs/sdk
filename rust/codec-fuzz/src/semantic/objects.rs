@@ -6,7 +6,7 @@ use acyclic_objects::{
 };
 use acyclic_stream::OwnedBytes;
 use bytes::Bytes;
-use futures::FutureExt as _;
+use futures::{FutureExt as _, StreamExt as _};
 use prost::Message;
 use std::{
     fmt::Debug,
@@ -18,6 +18,7 @@ use std::{
 };
 
 const BODY: &[u8] = b"canonical object decoder";
+const BATCH_BODY: &[u8] = b"other batch member";
 
 fn body() -> OwnedBytes {
     OwnedBytes::from_static(BODY)
@@ -114,14 +115,103 @@ fn compare<W: Message + Default, T: Debug + PartialEq>(
     );
 }
 
+fn batch(bytes: &[u8]) {
+    let run = |packet: Bytes, lost| {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let verified = Arc::new(Mutex::new(None));
+        let client = BinaryObjects::new(Response {
+            route: "blobs/put-batch",
+            body: packet.clone(),
+            lost,
+            calls: calls.clone(),
+            verified: verified.clone(),
+        });
+        let results = ready(client.put_batch(vec![
+            (body(), Vec::new()),
+            (OwnedBytes::from_static(BATCH_BODY), Vec::new()),
+        ]));
+        assert_eq!(results.len(), 2, "a batch answers every original member");
+        let unavailable = Error::from(wire::ErrorCode::Unavailable);
+        if lost
+            || verified
+                .lock()
+                .expect("batch response custody")
+                .as_ref()
+                .is_some_and(Result::is_err)
+        {
+            assert!(results.iter().all(|result| result == &Err(unavailable.clone())));
+        } else {
+            let reply = wire::PutBlobsResponse::decode(packet).expect("admitted batch wire");
+            for ((result, item), expected) in results.iter().zip(reply.results).zip([
+                (digest(), BODY.len() as u64),
+                (Digest::of(BATCH_BODY), BATCH_BODY.len() as u64),
+            ]) {
+                match (item.outcome, result) {
+                    (Some(wire::put_result::Outcome::Error(code)), Err(error)) => {
+                        assert_eq!(error.code as i32, code, "member refusal remains typed");
+                    }
+                    (Some(wire::put_result::Outcome::Put(reply)), Ok(put)) => {
+                        use acyclic_objects::Put;
+                        use wire::put_response::Outcome;
+                        assert!(
+                            matches!(
+                                (reply.outcome, put),
+                                (Some(Outcome::Created(_)), Put::Created { .. })
+                                    | (Some(Outcome::AlreadyExists(_)), Put::AlreadyExists { .. })
+                                    | (Some(Outcome::Unknown(true)), Put::Unknown)
+                            ),
+                            "member outcome remains original"
+                        );
+                        if let Some(value) = put.verified() {
+                            assert_eq!((value.digest, value.length), expected);
+                        }
+                    }
+                    _ => panic!("batch admission changed a member outcome"),
+                }
+            }
+        }
+        ready(client.flush(None)).expect("original batch producer settles");
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        results
+    };
+    let original = run(Bytes::copy_from_slice(bytes), false);
+    match wire::PutBlobsResponse::decode(bytes) {
+        Ok(value) => assert_eq!(run(value.encode_to_vec().into(), false), original),
+        Err(_) => assert!(original.iter().all(Result::is_err)),
+    }
+    run(Bytes::new(), true);
+}
+
 pub(super) fn check(name: &str, bytes: &[u8]) {
+    if !name.starts_with("acyclic.objects.v1.") {
+        return;
+    }
+    // Syntax equivalence and a scripted response cannot detect a server that
+    // refuses every request. Admit the original service writers once per
+    // process before comparing arbitrary packets through the same client.
+    static WRITERS: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    WRITERS.get_or_init(|| {
+        seeds().expect("original Objects service writers must be admitted");
+    });
     request(name, bytes);
+    if name == "acyclic.objects.v1.AvailabilityCursor"
+        && let Ok(cursor) = wire::AvailabilityCursor::decode(bytes)
+    {
+        let valid =
+            cursor.incarnation.len() == 16 && cursor.incarnation.iter().any(|byte| *byte != 0);
+        assert_eq!(
+            acyclic_objects::AvailabilityCursor::try_from(cursor).is_ok(),
+            valid,
+            "cursor admission must match its wire identity"
+        );
+    }
     macro_rules! response {
         ($wire:ident, $route:literal, |$client:ident| $call:expr) => {
             compare::<wire::$wire, _>(bytes, $route, |$client| ready($call))
         };
     }
     match name {
+        "acyclic.objects.v1.PutBlobsResponse" => batch(bytes),
         "acyclic.objects.v1.PutResponse" => {
             response!(PutResponse, "blobs/put", |client| client
                 .put(body(), Vec::new()));
@@ -142,6 +232,15 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
             ] {
                 compare::<wire::GetBlobResponse, _>(bytes, "blobs/get", |client| {
                     ready(client.get(digest(), range, maximum)).map(|object| {
+                        assert_eq!(
+                            object.head().digest,
+                            digest(),
+                            "read answers the original requested digest"
+                        );
+                        assert!(
+                            object.body().len() as u64 <= maximum,
+                            "read respects original byte admission"
+                        );
                         (
                             object.head().clone(),
                             object.start(),
@@ -152,7 +251,16 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
             }
         }
         "acyclic.objects.v1.BlobInfo" => {
-            response!(BlobInfo, "blobs/head", |client| client.head(digest()));
+            compare::<wire::BlobInfo, _>(bytes, "blobs/head", |client| {
+                ready(client.head(digest())).map(|head| {
+                    assert_eq!(
+                        head.digest,
+                        digest(),
+                        "head answers the original requested digest"
+                    );
+                    head
+                })
+            });
         }
         "acyclic.objects.v1.DeleteBlobResponse" => {
             response!(DeleteBlobResponse, "blobs/delete", |client| client
@@ -185,6 +293,7 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
 fn request(name: &str, bytes: &[u8]) {
     let route = match name {
         "acyclic.objects.v1.PutBlobRequest" => "blobs/put",
+        "acyclic.objects.v1.PutBlobsRequest" => "blobs/put-batch",
         "acyclic.objects.v1.PutManifestRequest" => "blobs/put-manifest",
         "acyclic.objects.v1.GetBlobRequest" => "blobs/get",
         "acyclic.objects.v1.HeadBlobRequest" => "blobs/head",
@@ -248,6 +357,7 @@ impl Transport for Capture {
                 _ => panic!("the memory producer settles a durable put"),
             },
             "blobs/put-manifest" => messages!("PutManifestRequest", "PutResponse", "manifest"),
+            "blobs/put-batch" => messages!("PutBlobsRequest", "PutBlobsResponse", "batch"),
             "blobs/get" => messages!("GetBlobRequest", "GetBlobResponse", "selected"),
             "blobs/head" => messages!("HeadBlobRequest", "BlobInfo", "selected"),
             "blobs/list" => messages!("ListBlobsRequest", "ListBlobsResponse", "ordered"),
@@ -295,8 +405,84 @@ pub(super) fn seeds() -> Result<Vec<Seed>, Box<dyn std::error::Error>> {
         client.delete(digest()).await?;
         client.collect().await?;
         client.usage().await?;
+        let mut availability = Box::pin(acyclic_objects::route::availability_frames(
+            client.availability(digest()).await?,
+        ));
+        let opening = availability
+            .next()
+            .await
+            .expect("original availability writer emits its opening cursor")?;
+        acyclic_objects::AvailabilityCursor::try_from(opening.clone())?;
+        // This is a mutation of the original source's packet, never a second
+        // producer or evidence of a different account's physical availability.
+        let mut zero = opening;
+        zero.incarnation.fill(0);
+        assert!(
+            acyclic_objects::AvailabilityCursor::try_from(zero).is_err(),
+            "original cursor with a zero incarnation must be refused"
+        );
+        // Keep prior service-writer captures unchanged when extending the corpus.
+        let other = BATCH_BODY;
+        let batch = client
+            .put_batch(vec![
+                (body(), Vec::new()),
+                (OwnedBytes::from_static(other), Vec::new()),
+            ])
+            .await;
+        assert_eq!(batch.len(), 2, "original batch answers every member");
+        for (put, expected) in batch.into_iter().zip([
+            (digest(), BODY.len() as u64),
+            (Digest::of(other), other.len() as u64),
+        ]) {
+            let put = put?;
+            let verified = put.verified().expect("original batch writer");
+            assert_eq!((verified.digest, verified.length), expected);
+        }
         Ok::<_, Error>(())
     })?;
     let seeds = std::mem::take(&mut *outputs.lock().expect("capture output custody"));
     Ok(seeds)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn original_service_writers_satisfy_the_semantic_oracle() {
+        let captured = acyclic_proto_build::golden::frame(
+            "corpus/protobuf/acyclic.objects.v1.PutBlobRequest-created",
+        )
+        .expect("retained original service request");
+        super::check("acyclic.objects.v1.PutBlobRequest", &captured[8..]);
+        let captured = acyclic_proto_build::golden::frame(
+            "corpus/protobuf/acyclic.objects.v1.PutBlobsResponse",
+        )
+        .expect("retained original protobuf batch writer");
+        super::check("acyclic.objects.v1.PutBlobsResponse", &captured[8..]);
+        let captured = acyclic_proto_build::golden::frame(
+            "corpus/protobuf/acyclic.objects.v1.BlobInfo-selected",
+        )
+        .expect("retained original service head writer");
+        super::check("acyclic.objects.v1.BlobInfo", &captured[8..]);
+        use prost::Message;
+        let mut wrong =
+            super::wire::BlobInfo::decode(&captured[8..]).expect("original service head wire");
+        wrong.digest.as_mut().expect("original head digest").blake3[0] ^= 1;
+        super::check("acyclic.objects.v1.BlobInfo", &wrong.encode_to_vec());
+        let captured = acyclic_proto_build::golden::frame(
+            "corpus/protobuf/acyclic.objects.v1.GetBlobResponse-selected",
+        )
+        .expect("retained original service read writer");
+        super::check("acyclic.objects.v1.GetBlobResponse", &captured[8..]);
+        let mut wrong = super::wire::GetBlobResponse::decode(&captured[8..])
+            .expect("original service read wire");
+        wrong
+            .info
+            .as_mut()
+            .expect("original read head")
+            .digest
+            .as_mut()
+            .expect("original read digest")
+            .blake3[0] ^= 1;
+        super::check("acyclic.objects.v1.GetBlobResponse", &wrong.encode_to_vec());
+    }
 }

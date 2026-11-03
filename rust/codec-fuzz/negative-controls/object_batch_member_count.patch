@@ -1,0 +1,13 @@
+diff --git a/rust/crates/objects/src/convert.rs b/rust/crates/objects/src/convert.rs
+--- a/rust/crates/objects/src/convert.rs
++++ b/rust/crates/objects/src/convert.rs
+@@ -309,9 +309,6 @@
+     expected: &[(Digest, u64)],
+     revision: Option<&acyclic_stream::Revision>,
+ ) -> Result<Vec<Result<Put, Error>>, Error> {
+-    if value.results.len() != expected.len() {
+-        return Err(wire::ErrorCode::Unavailable.into());
+-    }
+     value
+         .results
+         .iter()
