@@ -13,6 +13,15 @@ use prost::Message as _;
 /// A NUL after a JSON command selects its following raw or JSON reply. This is
 /// corpus framing only: all protocol parsing stays in the shipping entry points.
 pub fn check(bytes: &[u8]) {
+    // Conditional arbitrary-input checks cannot detect an admission path that
+    // refuses everything. Retain the original public writer's positive witness.
+    assert!(
+        matches!(
+            PreparedCommand::decode(include_bytes!("../corpus/agent_controls/command-root")),
+            Ok(AgentCommand::Root {})
+        ),
+        "captured writer command refused"
+    );
     if let Ok(command) = PreparedCommand::from_bytes(bytes.to_vec()) {
         assert_eq!(command.command(), bytes);
         let decoded = command.decoded().unwrap();
