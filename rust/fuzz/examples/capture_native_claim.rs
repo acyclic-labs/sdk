@@ -1,5 +1,5 @@
 //! Capture persisted claim corpus bytes through the production writer.
-#[path = "../native_claim_record.rs"]
+#[path = "../../crates/native-runtime/tests/claim_codec/oracle.rs"]
 mod native_claim_record;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

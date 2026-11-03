@@ -1,5 +1,5 @@
 //! The persisted claim codec itself, including its checksum for grammar mutations.
-#[path = "../crates/native-runtime/src/claim/record.rs"]
+#[path = "../../src/claim/record.rs"]
 mod record;
 
 use record::{Contents, MAGIC, Process, RECORD_LIMIT, Record};
@@ -105,6 +105,23 @@ pub fn check(bytes: &[u8]) {
             Contents::decode(&encoded),
             Contents::Torn,
             "claim grammar widened"
+        );
+    }
+}
+
+/// Exhaust every cut of an original writer seed during routine validation.
+/// Fuzz inputs retain the constant-number-of-cuts check above for throughput.
+#[cfg(test)]
+pub fn check_prefixes(bytes: &[u8]) {
+    for cut in 0..bytes.len() {
+        assert_eq!(
+            Contents::decode(&bytes[..cut]),
+            if cut == 0 {
+                Contents::Empty
+            } else {
+                Contents::Torn
+            },
+            "partial claim admitted at cut {cut}"
         );
     }
 }

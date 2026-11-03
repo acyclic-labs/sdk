@@ -31,7 +31,7 @@ def main():
     artifacts = output / "artifacts"
     artifacts.mkdir()
     codec = root / "rust/crates/native-runtime/src/claim/record.rs"
-    oracle = root / "rust/fuzz/native_claim_record.rs"
+    oracle = root / "rust/crates/native-runtime/tests/claim_codec/oracle.rs"
     original = codec.read_bytes()
     oracle_hash = digest(oracle.read_bytes())
     lock = root / "Cargo.lock"
@@ -64,7 +64,7 @@ def main():
 
     try:
         if routine:
-            corpus = root / "rust/fuzz/corpus/native_claim_record"
+            corpus = root / "rust/crates/native-runtime/tests/claim_codec/corpus"
             command = ["cargo", "test", "--locked", "-p", "acyclic-native-runtime", "--test", "native_claim_record", "--", "--nocapture"]
         else:
             capture = output / ("capture-native-claim.exe" if os.name == "nt" else "capture-native-claim")
