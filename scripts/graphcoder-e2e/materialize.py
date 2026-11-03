@@ -27,6 +27,17 @@ def _hash(stream):
     return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def native_path(path):
+    """Use one absolute spelling for native I/O and ownership comparisons."""
+    if os.name != "nt":
+        return path
+    path = path.absolute()
+    name = str(path)
+    if name.startswith("\\\\?\\"):
+        return path
+    return Path("\\\\?\\UNC\\" + name[2:] if name.startswith("\\\\") else "\\\\?\\" + name)
+
+
 def _reserve_windows(stream, size):
     import msvcrt
 
@@ -85,7 +96,7 @@ def reserved_file(path, size):
     would release the capacity they just admitted. The exclusive path remains
     available to the caller for retaining a failed transfer's evidence.
     """
-    with path.open("xb+") as stream:
+    with native_path(path).open("xb+") as stream:
         if os.name == "nt":
             _reserve_windows(stream, size)
         elif size:
@@ -127,12 +138,12 @@ def materialize(archive, expected_sha256, inventory, parent, identity=None):
     inventory maps canonical member names to {sha256, bytes}, supplied by the
     producer admission. No retry or overwrite of an earlier identity occurs.
     """
-    archive, parent = Path(archive), Path(parent).resolve(strict=True)
+    archive, parent = native_path(Path(archive)), native_path(Path(parent)).resolve(strict=True)
     if not parent.is_dir() or not inventory or not re.fullmatch(r"[a-f0-9]{64}", expected_sha256):
         raise ValueError("archive, inventory and owned parent are required")
     if os.name == "nt":
         scratch = os.environ.get("E2E_SCRATCH_ROOT")
-        if not scratch or not Path(scratch).is_absolute() or not parent.is_relative_to(Path(scratch).resolve(strict=True)):
+        if not scratch or not Path(scratch).is_absolute() or not parent.is_relative_to(native_path(Path(scratch)).resolve(strict=True)):
             raise ValueError("STEP_FAILED materialization-root; recovery: set E2E_SCRATCH_ROOT to the absolute owned parent before materializing")
     for name, row in inventory.items():
         member_path(name)
