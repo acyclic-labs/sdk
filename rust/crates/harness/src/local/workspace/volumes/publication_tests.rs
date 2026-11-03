@@ -353,27 +353,18 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
         [".volumes/home", ".volumes/zzz"]
     );
     let ran = std::sync::atomic::AtomicBool::new(false);
-    let second_entry = blocked.native().await;
-    let mut scope = Box::pin(native_scope(&table, async |claims| {
+    let error = native_scope(&table, async |claims| {
         ran.store(true, std::sync::atomic::Ordering::Relaxed);
         Ok(((), claims))
-    }));
-    tokio::select! {
-        result = &mut scope => panic!("scope returned before the first physical entry: {result:?}"),
-        () = async {
-            loop {
-                if scratch.native().await.is_some() {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        } => {}
-    }
-    assert!(futures::poll!(&mut scope).is_pending());
-    drop(second_entry);
-    scope
-        .await
-        .expect_err("a regular file cannot become the second projection");
+    })
+    .await
+    .expect_err("a regular file cannot become the second projection");
+    // The second binding's refusal proves that ordered entry passed the first
+    // binding. An earlier mount failure must not make retirement pass vacuously.
+    assert!(
+        matches!(error, Error::Conflict(message) if message == "volume alias replaces a project file"),
+        "scope did not reach the authored blocker"
+    );
     assert!(!ran.into_inner());
     assert!(
         scratch.native().await.is_none(),

@@ -135,6 +135,26 @@ export function qualifyProjectionCustodyMutationsLoom(run = runCommand) {
   ]], recovery, run);
 }
 
+export function qualifyNativeScopeMutations(run = runCommand) {
+  const recovery = "node scripts/qualify-mcp-loom.mjs --native-scope-mutations";
+  const qualify = (run, expectedFailure) => qualifyLoom("acyclic-harness", "acyclic_harness",
+    ["--features", "filesystem-local,native-execution,test-support"], run, {
+      kind: "--lib", modelFeatures: [], targetCfg: [], expectedFailure, recovery,
+      filter: "local::workspace::volumes::publication_tests::failed_scope_entry_retires_the_projections_it_entered",
+    });
+  return qualifySourceMutationsLoom({
+    name: "NativeScope", recovery,
+    source: "../rust/crates/harness/src/local/workspace/volumes.rs",
+    model: "../rust/crates/harness/src/local/workspace/volumes/publication_tests.rs",
+    mutations: [[
+      "let _ = leave_all(std::mem::take(&mut claims.entries)).await;",
+      "claims.entries.clear();",
+      "failed later entry stranded the earlier projection",
+    ]],
+    qualify, restored: run => qualify(run),
+  }, run);
+}
+
 function qualifyProjectionSourceMutations(mutations, recovery, run) {
   const prefix = "local::workspace::projection::tests::";
   const oracles = Object.fromEntries(mutations.map(([, , message, test]) => [message, `${prefix}${test}`]));
@@ -388,6 +408,7 @@ const fixedModels = {
   "--skill-materializer-mutations": qualifySkillMaterializerMutationsLoom,
   "--projection-mutations": qualifyProjectionMutationsLoom,
   "--projection-custody-mutations": qualifyProjectionCustodyMutationsLoom,
+  "--native-scope-mutations": qualifyNativeScopeMutations,
   "--fs-policy": qualifyFsPolicyLoom,
 };
 const selectableModels = {
