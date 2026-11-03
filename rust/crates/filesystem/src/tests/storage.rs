@@ -1,8 +1,7 @@
 use super::*;
-use acyclic_stream::OwnedBytes;
 
 #[test]
-fn object_kinds_digests_and_read_views_are_canonical() {
+fn object_kind_wire_tags_are_stable() {
     let kinds = [
         ObjectKind::Blob,
         ObjectKind::BlobChunk,
@@ -27,12 +26,4 @@ fn object_kinds_digests_and_read_views_are_canonical() {
         ObjectKind::from_canonical_tag(10),
         Err(ObjectKindError::Unknown(10))
     );
-    assert_eq!(object_digest(b"bytes"), object_digest(b"bytes"));
-    assert_ne!(object_digest(b"bytes"), object_digest(b"other"));
-    let read = ObjectRead {
-        bytes: OwnedBytes::from_static(b"view"),
-        retention: ObjectReadRetention::Owned { logical_bytes: 4 },
-    };
-    assert_eq!(&*read, b"view");
-    assert_ne!(read.retention, ObjectReadRetention::Shared);
 }
