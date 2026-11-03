@@ -161,14 +161,18 @@ async fn closure(
 ) -> Result<std::result::Result<Vec<(String, Module)>, String>> {
     let mut modules = BTreeMap::new();
     match strip(path, source) {
-        Ok(module) => modules.insert(path.to_owned(), module),
+        Ok(module) => modules.insert(path.to_owned(), (module, true)),
         Err(error) => return Ok(Err(error)),
     };
-    // Depth-first, so an import of a module still on the path is a cycle.
+    // The retained module records whether its dependency walk is still active.
+    // A completed shared dependency is reused without scanning the active path.
     let mut stack = vec![(path.to_owned(), 0_usize)];
     let mut order = Vec::new();
     while let Some((current, index)) = stack.last().cloned() {
-        let Some(next) = modules[&current].imports.get(index).cloned() else {
+        let Some(next) = modules[&current].0.imports.get(index).cloned() else {
+            if let Some((_, active)) = modules.get_mut(&current) {
+                *active = false;
+            }
             stack.pop();
             order.push(current);
             continue;
@@ -176,10 +180,12 @@ async fn closure(
         if let Some(top) = stack.last_mut() {
             top.1 += 1;
         }
-        if stack.iter().any(|(name, _)| *name == next) {
-            return Ok(Err(format!("import cycle through {next}")));
-        }
-        if modules.contains_key(&next) {
+        #[cfg(any(test, feature = "test-support"))]
+        model::dependency_checked();
+        if let Some((_, active)) = modules.get(&next) {
+            if *active {
+                return Ok(Err(format!("import cycle through {next}")));
+            }
             continue;
         }
         let Some(bytes) = tree.read(&next).await? else {
@@ -188,14 +194,14 @@ async fn closure(
             )));
         };
         match strip(&next, &bytes) {
-            Ok(module) => modules.insert(next.clone(), module),
+            Ok(module) => modules.insert(next.clone(), (module, true)),
             Err(error) => return Ok(Err(error)),
         };
         stack.push((next, 0));
     }
     Ok(Ok(order
         .into_iter()
-        .filter_map(|name| modules.remove(&name).map(|module| (name, module)))
+        .filter_map(|name| modules.remove(&name).map(|(module, _)| (name, module)))
         .collect()))
 }
 
