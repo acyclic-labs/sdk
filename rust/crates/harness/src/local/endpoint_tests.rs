@@ -61,6 +61,29 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
         connection.execute(&AgentCommand::Root {}).await?,
         AgentReply::Root { .. }
     ));
+    let session = crate::OperationId::from_bytes(connection.root.id_bytes());
+    let AgentReply::ClientFiles { snapshot } = connection
+        .execute(&AgentCommand::ClientFiles {
+            agent: connection.root.clone(),
+            session,
+            paths: vec!["layout.json".into()],
+            after: None,
+        })
+        .await?
+    else {
+        return Err(Error::Invalid(
+            "client files query returned another reply".into(),
+        ));
+    };
+    let files = AgentCommand::ClientFiles {
+        agent: connection.root.clone(),
+        session,
+        paths: vec!["layout.json".into()],
+        after: Some(snapshot.generation),
+    };
+    let waiting_files = connection.execute(&files);
+    tokio::pin!(waiting_files);
+    assert!(futures::poll!(&mut waiting_files).is_pending());
     // The same real session without an in-process owner has no local cause to add.
     let mut remote = connection.clone();
     remote._host = None;
@@ -94,6 +117,16 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
         .failure()
         .ok_or_else(|| Error::Invalid("original failure was lost".into()))?
         .to_string();
+    let files_error = message(
+        waiting_files
+            .await
+            .err()
+            .ok_or_else(|| Error::Invalid("closed producer answered client files".into()))?,
+    );
+    assert!(
+        files_error.contains(&cause),
+        "client files lost original provider cause: {files_error}"
+    );
     let command = message(
         connection
             .execute(&AgentCommand::Root {})

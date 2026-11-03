@@ -68,6 +68,16 @@ pub enum AgentReply {
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
     },
+    /// Requested session files at one committed generation.
+    ClientFiles {
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown"))]
+        snapshot: acyclic_harness_core::client_files::ClientFiles,
+    },
+    /// Exact generation produced by the conditional publication.
+    ClientFilesPublished {
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown"))]
+        generation: acyclic_harness_core::resources::GenerationRef,
+    },
     /// Prompt, cancellation or approval inbox delivery.
     Delivered { delivery: Delivered },
     /// Spawn publication, including the canonical child path.
@@ -377,6 +387,38 @@ fn validate_reply(
     bytes: usize,
 ) -> Result<(), CommandError> {
     let page = match (reply, command) {
+        (AgentReply::ClientFilesPublished { .. }, AgentCommand::PublishClientFiles { .. }) => {
+            return Ok(());
+        }
+        (
+            AgentReply::ClientFiles { snapshot },
+            AgentCommand::ClientFiles {
+                agent,
+                session,
+                paths,
+                after,
+            },
+        ) => {
+            return if after.as_ref() != Some(&snapshot.generation)
+                && snapshot.files.len() == paths.len()
+                && paths.iter().all(|path| {
+                    snapshot.files.get(path).is_some_and(|file| {
+                        file.as_ref().is_none_or(|file| {
+                            file.file.path() == path
+                                && acyclic_harness_core::client_files::volume(
+                                    file.file.volume().provider().clone(),
+                                    agent,
+                                    *session,
+                                )
+                                .is_ok_and(|volume| &volume == file.file.volume())
+                        })
+                    })
+                }) {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
         (AgentReply::Root { .. }, AgentCommand::Root {})
         | (AgentReply::Bound { .. }, AgentCommand::Bind { .. })
         | (AgentReply::Settlement { .. }, AgentCommand::Settlement { .. })

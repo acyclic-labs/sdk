@@ -443,46 +443,11 @@ impl CommandResolution {
                 // The choices are configuration data, shared with the renderer.
                 cycle(&mut settings, "diff_mode", "diff_modes")?;
                 let mut changes = config(CommandFileRoot::Config, "settings.json", settings.into());
-                let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
-                layout.insert("open_view".into(), json!("diff"));
-                layout.insert("view_input".into(), Value::Null);
-                layout.insert("view_request".into(), json!(operation));
-                changes.extend(config(
-                    CommandFileRoot::Session,
-                    "layout.json",
-                    layout.into(),
-                ));
+                changes.extend(view_changes(snapshot, Some(query), operation)?);
                 return Ok(changes);
             }
             CommandQuery::Attention => Self::attention_changes(snapshot, operation),
-            query => {
-                let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
-                if *query == CommandQuery::Find {
-                    layout.insert("search_query".into(), json!(""));
-                    layout.insert("search_index".into(), json!(0));
-                }
-                layout.insert(
-                    "view_input".into(),
-                    if matches!(
-                        query,
-                        CommandQuery::Find | CommandQuery::Theme | CommandQuery::Feedback
-                    ) {
-                        serde_json::to_value(query).map_err(codec)?
-                    } else {
-                        Value::Null
-                    },
-                );
-                layout.insert("view_request".into(), json!(operation));
-                layout.insert(
-                    "open_view".into(),
-                    serde_json::to_value(query).map_err(codec)?,
-                );
-                return Ok(config(
-                    CommandFileRoot::Session,
-                    "layout.json",
-                    layout.into(),
-                ));
-            }
+            query => view_changes(snapshot, Some(query), operation),
         }
     }
     fn attention_changes(
@@ -565,11 +530,26 @@ fn document(
     root: CommandFileRoot,
     path: &str,
 ) -> Result<Map<String, Value>> {
-    match snapshot.get(&root).and_then(|files| files.get(path)) {
-        None => Ok(Map::new()),
-        Some(Value::Object(object)) => Ok(object.clone()),
-        _ => Err(Error::Invalid(format!("{path} must be a JSON object"))),
-    }
+    let object = match snapshot.get(&root).and_then(|files| files.get(path)) {
+        None => {
+            let mut object = Map::new();
+            if root == CommandFileRoot::Session && path == "layout.json" {
+                object.insert("version".into(), json!(1));
+            }
+            object
+        }
+        Some(value @ Value::Object(_)) => {
+            if root == CommandFileRoot::Session && path == "layout.json" {
+                layout_view(value)?;
+            }
+            value
+                .as_object()
+                .ok_or_else(|| Error::Invalid("layout must be an object".into()))?
+                .clone()
+        }
+        _ => return Err(Error::Invalid(format!("{path} must be a JSON object"))),
+    };
+    Ok(object)
 }
 
 fn toggle(document: &mut Map<String, Value>, key: &str) -> Result<()> {
@@ -601,4 +581,60 @@ fn cycle(document: &mut Map<String, Value>, key: &str, choices: &str) -> Result<
     let next = values[next].clone();
     document.insert(key.into(), next);
     Ok(())
+}
+
+/// Checks the versioned session layout before a consumer renders or edits it.
+/// Unknown fields remain owned by their original projections.
+pub fn layout_view(layout: &Value) -> Result<Option<&str>> {
+    let object = layout
+        .as_object()
+        .ok_or_else(|| Error::Invalid("layout.json must be an object".into()))?;
+    if object.get("version").and_then(Value::as_u64) != Some(1) {
+        return Err(Error::Invalid(
+            "unsupported layout.json version; expected 1".into(),
+        ));
+    }
+    match object.get("open_view") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(view)) => Ok(Some(view)),
+        _ => Err(Error::Invalid(
+            "layout.json open_view must be a string or null".into(),
+        )),
+    }
+}
+
+/// Opens or closes a view through the session's authoritative layout file.
+/// Config-changing commands compose this with their own config publication.
+pub fn view_changes(
+    snapshot: &CommandFileSnapshot,
+    query: Option<&CommandQuery>,
+    operation: OperationId,
+) -> Result<Vec<CommandFileChange>> {
+    let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
+    if query == Some(&CommandQuery::Find) {
+        layout.insert("search_query".into(), json!(""));
+        layout.insert("search_index".into(), json!(0));
+    }
+    layout.insert(
+        "view_input".into(),
+        if matches!(
+            query,
+            Some(CommandQuery::Find | CommandQuery::Theme | CommandQuery::Feedback)
+        ) {
+            serde_json::to_value(query).map_err(codec)?
+        } else {
+            Value::Null
+        },
+    );
+    layout.insert("view_request".into(), json!(operation));
+    layout.insert(
+        "open_view".into(),
+        serde_json::to_value(query).map_err(codec)?,
+    );
+    Ok(config_change(
+        operation,
+        CommandFileRoot::Session,
+        "layout.json",
+        layout.into(),
+    ))
 }
