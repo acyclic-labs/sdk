@@ -111,7 +111,18 @@ error or an unrelated panic is not a qualifying negative control. Run with
 `cargo fuzz run native_launch --fuzz-dir rust/crates/harness/fuzz-native-journal`.
 This checks the in-process format and policy boundary; it does not qualify the
 OS environment handoff, native CLI parsing, credential inheritance, physical
-processes, non-Unicode working directories, concurrency or all platforms.
+processes, concurrency or all platforms.
+
+The same target supplies relative and absolute configuration paths and requires
+their inherited targets to remain rooted at the original workspace. It also
+constructs native non-Unicode working directories from arbitrary input bytes
+(invalid UTF-8 on Unix, an unpaired UTF-16 surrogate on Windows), without touching
+the filesystem. Both relative configuration paths and the appended workspace
+root must return the original typed refusal rather than a lossy replacement.
+Retained mutations omit path anchoring and replace both Unicode checks with
+lossy conversion. They must fail at `native path policy changed its root target`
+and `native launch accepted a non-Unicode policy root`, respectively. The physical
+collision control remains distinct: this target does not resolve or open paths.
 
 The retained request seeds and their SHA-256 digests are:
 

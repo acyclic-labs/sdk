@@ -2,7 +2,70 @@
 
 use acyclic_harness::{Error, local::host_process::launch};
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+fn non_unicode_root(input: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        let mut bytes = b"/native-root/".to_vec();
+        bytes.extend_from_slice(input);
+        bytes.push(0xff);
+        OsString::from_vec(bytes).into()
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStringExt;
+        let units = "C:\\native-root\\"
+            .encode_utf16()
+            .chain(input.iter().copied().map(u16::from))
+            .chain([0xd800])
+            .collect::<Vec<_>>();
+        OsString::from_wide(&units).into()
+    }
+}
+
+fn paths(host: &str, flags: &[String], cwd: &Path, non_unicode: &Path, value: &str) {
+    let options: &[&str] = match host {
+        "codex" => &["--add-dir"],
+        "claude-code" => &["--plugin-dir", "--add-dir", "--settings"],
+        _ => &["--session-dir", "--extension"],
+    };
+    let relative = format!("configuration/{value}");
+    let absolute = cwd.join(&relative);
+    for option in options {
+        for value in [relative.as_str(), absolute.to_str().expect("Unicode root")] {
+            let mut supplied = flags.to_vec();
+            if *option == "--settings" {
+                // Replace the required inline settings, retaining its cardinality.
+                supplied[1] = value.into();
+            } else {
+                supplied.extend([(*option).into(), value.into()]);
+            }
+            let inherited = launch::parent_flags(host, &supplied, cwd)
+                .expect("admitted path policy was refused");
+            let index = if *option == "--settings" {
+                1
+            } else {
+                flags.len() + 1
+            };
+            assert_eq!(
+                Path::new(&inherited[index]),
+                absolute,
+                "native path policy changed its root target"
+            );
+            if value == relative {
+                assert!(
+                    matches!(
+                        launch::parent_flags(host, &supplied, non_unicode),
+                        Err(Error::Invalid(_))
+                    ),
+                    "native launch accepted a non-Unicode policy root"
+                );
+            }
+        }
+    }
+}
 
 fn policy(host: &str, flags: &[String], cwd: &Path, reference: &str) {
     let inherited = launch::parent_flags(host, flags, cwd)
@@ -81,6 +144,7 @@ libfuzzer_sys::fuzz_target!(|input: &[u8]| {
         "/native-root"
     });
     let reference = format!("native-{encoded}");
+    let non_unicode = non_unicode_root(input);
     for (host, required) in [
         (
             "codex",
@@ -121,6 +185,16 @@ libfuzzer_sys::fuzz_target!(|input: &[u8]| {
             .collect::<Vec<_>>();
         flags.extend(["--model".into(), encoded.into()]);
         policy(host, &flags, cwd, &reference);
+        paths(host, &flags, cwd, &non_unicode, encoded);
+        if host != "pi" {
+            assert!(
+                matches!(
+                    launch::parent_flags(host, &flags, &non_unicode),
+                    Err(Error::Invalid(_))
+                ),
+                "native launch accepted a non-Unicode workspace root"
+            );
+        }
         for (index, pair) in required.chunks_exact(2).enumerate() {
             let mut missing = flags.clone();
             missing.drain(2 * index..2 * index + 2);
