@@ -63,6 +63,44 @@ pub fn check_identities(bytes: &[u8]) {
     check!(MachineId, CheckpointId, OperationId, IdempotencyKey);
 }
 
+fn machine_page(
+    page: wire::MachinePage,
+    after: Option<MachineId>,
+    limit: u32,
+) -> Result<MachinePage, ProviderError> {
+    let actual = decode_machine_page(page.clone(), after, limit);
+    let machines = page
+        .machines
+        .into_iter()
+        .map(MachineObservation::try_from)
+        .collect::<Result<Vec<_>, _>>();
+    let next = page
+        .next
+        .as_ref()
+        .map(|id| decode_machine(Some(id)))
+        .transpose();
+    let expected = machines.ok().zip(next.ok()).and_then(|(machines, next)| {
+        let ordered = machines
+            .iter()
+            .zip(machines.iter().skip(1))
+            .all(|(left, right)| left.id < right.id);
+        let follows =
+            after.is_none_or(|cursor| machines.first().is_none_or(|first| first.id > cursor));
+        let bounded = u32::try_from(machines.len()).is_ok_and(|count| count <= limit);
+        let retained = next.is_none() || next == machines.last().map(|machine| machine.id);
+        (ordered && follows && bounded && retained).then_some(MachinePage { machines, next })
+    });
+    assert_eq!(
+        actual.as_ref().ok(),
+        expected.as_ref(),
+        "machine page admission retains original order, credit and cursor"
+    );
+    if let Err(error) = &actual {
+        assert!(matches!(error, ProviderError::Rejected(_)));
+    }
+    actual
+}
+
 /// Admit arbitrary protobuf output with the caller's retained identity. These
 /// checks do not dispatch a request, replace a provider, or wait for a producer.
 pub fn check(name: &str, bytes: &[u8]) {
@@ -178,6 +216,21 @@ pub fn check(name: &str, bytes: &[u8]) {
                 );
             }
         }
+        "acyclic.machines.v1.MachinePage" => {
+            for limit in [1, MAX_PAGE_SIZE] {
+                if let Some(original) =
+                    project::<wire::MachinePage, _>(bytes, |page| machine_page(page, None, limit))
+                {
+                    if let Some(first) = original.machines.first() {
+                        let _ = machine_page(
+                            wire::MachinePage::decode(bytes).unwrap(),
+                            Some(first.id),
+                            limit,
+                        );
+                    }
+                }
+            }
+        }
         "acyclic.machines.v1.CheckpointState" => {
             if project::<wire::CheckpointState, _>(bytes, |value| {
                 decode_checkpoint_observation(&value, checkpoint)
@@ -251,6 +304,24 @@ pub fn capture_machine(original: &MachineObservation) -> Result<Vec<u8>, Provide
     );
     let bytes = value.encode_to_vec();
     check("acyclic.machines.v1.MachineState", &bytes);
+    Ok(bytes)
+}
+
+/// Capture an actual provider's list page through the shared serving writer and
+/// require its original cursor and caller credit to survive the client decoder.
+pub fn capture_machine_page(
+    original: &MachinePage,
+    after: Option<MachineId>,
+    limit: u32,
+) -> Result<Vec<u8>, ProviderError> {
+    let value = wire::MachinePage::try_from(original.clone())?;
+    assert_eq!(
+        machine_page(value.clone(), after, limit)?,
+        *original,
+        "original machine page must retain its producer observations and cursor"
+    );
+    let bytes = value.encode_to_vec();
+    check("acyclic.machines.v1.MachinePage", &bytes);
     Ok(bytes)
 }
 

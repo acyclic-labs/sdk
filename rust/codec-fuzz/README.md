@@ -874,3 +874,11 @@ The planted Running-to-Suspended decoder change must fail at `original machine
 response must retain its producer observation`. Require the same property to
 pass after exact restoration. This binds the existing codec oracle to the
 original producer value; physical provider qualification remains separate.
+
+The same public-client property also reads original simulator list pages through
+the shared `MachinePage` serving conversion. Its one page admission oracle checks
+original observations, strict ordering, caller credit and continuation ownership;
+the protobuf and JSON fuzz targets share that oracle. Retained
+`negative-controls/machines-page-{credit,cursor,order}.patch` controls remove each
+production decoder guard in turn. Older captured pages retain their original
+provenance until their current descriptor selector binding is qualified.

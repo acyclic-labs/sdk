@@ -70,9 +70,27 @@ operation_service! {
     (fork, ForkCheckpointRequest, MachineAdmissions),
     (fork_machine, ForkMachineRequest, MachineAdmissions),
     (inspect_checkpoint, InspectCheckpointRequest, CheckpointState),
-    (list_machines, ListMachinesRequest, MachinePage),
     (events, EventsRequest, EventPage),
     (usage, UsageRequest, UsageReceipt);
+    async fn list_machines(&self, request: Request<wire::ListMachinesRequest>)
+        -> Result<Response<wire::MachinePage>, Status> {
+        let WatchReply::Script(script) = &self.watch else {
+            return Err(Status::unimplemented("list_machines"));
+        };
+        let original = {
+            let mut script = script.lock().expect("observation script");
+            let original = script.results.clone().ok_or_else(|| Status::unimplemented("list_machines"))?;
+            script.calls.push("list_machines");
+            original
+        };
+        let request = request.into_inner();
+        let after = request.after.as_ref().map(|id| decode_machine(Some(id))).transpose()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let page = original.list_machines(after, request.limit).await
+            .map_err(|error| Status::failed_precondition(error.to_string()))?;
+        Ok(Response::new(page.try_into()
+            .map_err(|error: ProviderError| Status::failed_precondition(error.to_string()))?))
+    }
     async fn read_results(&self, request: Request<wire::ReadResultsRequest>)
         -> Result<Response<wire::ResultPage>, Status> {
         let WatchReply::Script(script) = &self.watch else {

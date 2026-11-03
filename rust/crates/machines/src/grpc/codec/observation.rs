@@ -1,5 +1,20 @@
 use super::*;
 
+impl TryFrom<MachinePage> for wire::MachinePage {
+    type Error = ProviderError;
+
+    fn try_from(value: MachinePage) -> Result<Self, Self::Error> {
+        Ok(Self {
+            machines: value
+                .machines
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
+            next: value.next.map(encode_machine),
+        })
+    }
+}
+
 pub(in super::super) fn decode_machine_page(
     page: wire::MachinePage,
     after: Option<MachineId>,

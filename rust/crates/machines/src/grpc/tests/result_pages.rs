@@ -114,9 +114,34 @@ async fn machines_call_remote_pages_keep_original_cut_and_credit_without_inspect
             Err(ProviderError::Indeterminate(key))
         );
     }
+    let mut after = None;
+    for _ in 0..2 {
+        let page = original.list_machines(after, credit.get()).await?;
+        assert_eq!(remote.list_machines(after, credit.get()).await?, page);
+        #[cfg(feature = "test-support")]
+        {
+            use prost::Message as _;
+            let bytes = codec_fuzz::capture_machine_page(&page, after, credit.get())?;
+            for end in 0..=bytes.len() {
+                codec_fuzz::check("acyclic.machines.v1.MachinePage", &bytes[..end]);
+            }
+            let mut changed = wire::MachinePage::decode(bytes.as_slice())?;
+            changed.next = changed
+                .machines
+                .first()
+                .and_then(|machine| machine.machine.clone());
+            codec_fuzz::check("acyclic.machines.v1.MachinePage", &changed.encode_to_vec());
+        }
+        after = page.next;
+    }
     assert_eq!(
         script.lock().expect("original script").calls,
-        [vec!["read_results"; 2], vec!["watch"; replies.len()]].concat()
+        [
+            vec!["read_results"; 2],
+            vec!["watch"; replies.len()],
+            vec!["list_machines"; 2]
+        ]
+        .concat()
     );
     let _ = shutdown.send(());
     server.await??;
