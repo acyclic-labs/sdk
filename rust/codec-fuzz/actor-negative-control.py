@@ -32,10 +32,12 @@ def main():
         return capture()
     if sys.argv[1:] == ["--alarms"]:
         return alarms()
+    if sys.argv[1:] == ["--reservation-book"]:
+        return reservation_book()
     if sys.argv[1:] == ["--persisted-alarms"]:
         return persisted_alarms()
     if sys.argv[1:]:
-        raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms|--persisted-alarms|--capture]")
+        raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms|--persisted-alarms|--reservation-book|--capture]")
     original = {path: path.read_bytes() for path in (PRODUCTION, ORACLE)}
     needle = b"Ok(Self::decode_bound(record)?.map(|(_, invocation)| invocation))"
     source = original[PRODUCTION]
@@ -148,6 +150,34 @@ def persisted_alarms():
             # mutation-phase manifest view needs restoration on failure.
             if path != manifest or not captured:
                 path.write_bytes(value)
+
+
+def reservation_book():
+    production = ROOT.parent / "crates/actors/src/reservation.rs"
+    writers = ROOT.parent / "crates/actors/src/reservation/codec_fuzz.rs"
+    original = {path: path.read_bytes() for path in (production, writers)}
+    source, oracle = original[production], original[writers]
+    anchor = b"    pub fn validate(&self) -> Result<(), GuestError> {"
+    admission = b"    seeds.extend(futures::executor::block_on(publication_seeds())?);"
+    if source.count(anchor) != 1 or oracle.count(admission) != 1:
+        raise RuntimeError("reservation mutation anchor changed; recovery: inspect "
+                           "Book::validate and publication_seeds before running "
+                           "python3 actor-negative-control.py --reservation-book")
+    mutant = source.replace(anchor, anchor + b"\n        if self.used != 0 { return Err(invalid()); }")
+    try:
+        for label, value in (("reservation production", source), ("reservation oracle", oracle)):
+            print(f"{label} sha256={hashlib.sha256(value).hexdigest()}", flush=True)
+        production.write_bytes(mutant)
+        writers.write_bytes(oracle.replace(admission, b""))
+        run("empty Book oracle misses refusal of valid populated state", "accepted")
+        writers.write_bytes(oracle)
+        run("same oracle detects production populated Book refusal", "rejected",
+            "reservation writer must admit its populated checkpoint")
+        production.write_bytes(source)
+        capture()
+    finally:
+        for path, value in original.items():
+            path.write_bytes(value)
 
 
 def capture():

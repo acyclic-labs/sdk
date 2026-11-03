@@ -420,3 +420,14 @@ with the caller's original key before releasing IO. The plant must fail at
 require the unchanged control to pass. Successful publication and later
 admission while a read is held remain covered; no timeout, polling or physical
 provider claim is involved.
+
+Reservation producer admission also runs the shipped `Host::wake`, `Package`
+and `Store` with original enqueued invocation records and a controlled clock.
+The existing Actors target compares Granted/Exhausted/Expired/Released/Stale
+results and the populated and released checkpoint against the original owner,
+generation, capacity and deadline. Release uses the actual returned grant.
+`python3 actor-negative-control.py --reservation-book` shows that empty-only
+admission misses a production `Book::validate` which refuses populated state;
+the unchanged producer oracle must catch that same defect. Captures are emitted
+by the original production writers. This finite MemoryStream path does not
+establish physical restart, distributed ownership or instrumented coverage.
