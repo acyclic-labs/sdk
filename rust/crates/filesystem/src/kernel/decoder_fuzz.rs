@@ -161,6 +161,13 @@ fn check_inner<const OMIT_COMPLETION: bool, const PLANTED: bool>(input: &[u8]) -
         maximum_name_bytes: 256,
         ..DecodeLimits::default()
     };
+    if kind % KINDS == 2 {
+        super::file_table::check_fuzz::<true>(
+            bytes,
+            limits,
+            usize::from(u16::from_le_bytes([controls[3], controls[4]])),
+        );
+    }
     let decoded = decode::<PLANTED>(kind % KINDS, bytes, limits, &mut |step| {
         let before = matches!(
             step,
@@ -402,6 +409,25 @@ mod tests {
                 input[1..3].fill(255); input[4] = 0;
                 for length in 0..bytes.len() { check(&input[..6 + length]); }
             }
+        }
+    }
+
+    #[test]
+    fn file_table_writer_corpus_reaches_the_shared_differential_oracle() {
+        for bytes in [
+            include_bytes!("../../fuzz/corpus/decoder_work/file-table-empty-leaf").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/file-table-internal").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/file-table-single-fifo").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/inline-file-table").as_slice(),
+        ] {
+            assert!(check_inner::<false>(bytes), "original writer seed refused");
+        }
+        for bytes in [
+            include_bytes!("../../fuzz/corpus/decoder_work/file-table-trailing").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/file-table-unordered").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/truncated-inline-payload").as_slice(),
+        ] {
+            assert!(!check_inner::<false>(bytes), "malformed seed admitted");
         }
     }
 
