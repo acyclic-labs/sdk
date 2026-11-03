@@ -95,7 +95,7 @@ async fn carrier_io_publishes_without_blocking_its_coordinator() -> Result<()> {
     .expect_err("an accepted write retains its original owner");
     assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
     release.send(()).map_err(storage)?;
-    let files = pending.await?;
+    let mut files = pending.await?;
     assert!(
         report.snapshot().is_empty(),
         "physical completion retires its wait"
@@ -103,6 +103,40 @@ async fn carrier_io_publishes_without_blocking_its_coordinator() -> Result<()> {
     let reply: Value = serde_json::from_slice(&regular_bytes(&reply_path(&status, operation))?)
         .map_err(storage)?;
     assert_eq!(reply["ok"], serde_json::json!({"reply": 7}));
+    // Publishing a diagnostic does not retire its original allocation. Use a
+    // real rejected directory read and keep that exact cause until withdrawal.
+    let original = regular_bytes(&files.requests).expect_err("a directory is not a reply");
+    let diagnostic = |cause: &Error| match cause {
+        Error::Invalid(message) | Error::Storage(message) => message.as_ptr(),
+        cause => panic!("directory refusal must retain its diagnostic: {cause}"),
+    };
+    let original_diagnostic = diagnostic(&original);
+    let original_code = original.code();
+    let failed = OperationId::new();
+    files
+        .served
+        .known
+        .insert(failed, Tracked::Running { withdrawn: false });
+    files = files
+        .apply(failed, move |files| {
+            files.served.answer(&files.status, failed, Err(original))
+        })
+        .await?;
+    let Some(Tracked::Answered(Some(cause))) = files.served.known.get(&failed) else {
+        panic!("published failure must retain its original cause until withdrawal");
+    };
+    assert_eq!(cause.code(), original_code);
+    assert_eq!(diagnostic(cause), original_diagnostic);
+    files = files
+        .apply(failed, move |files| {
+            files.served.withdraw(&files.requests, failed)
+        })
+        .await?;
+    assert!(!files.served.known.contains_key(&failed));
+    assert!(matches!(
+        regular_bytes(&reply_path(&status, failed)),
+        Err(Error::NotFound(_))
+    ));
     drop(files);
     acyclic_native_runtime::FileLock::try_acquire(
         probe,
@@ -151,6 +185,45 @@ async fn carrier_io_producer_loss_keeps_its_failure_and_releases_its_files() -> 
         })
         .await;
     assert!(matches!(result, Err(Error::Storage(cause)) if cause == mpsc::RecvError.to_string()));
+    acyclic_native_runtime::FileLock::try_acquire(
+        probe,
+        acyclic_native_runtime::FileLockMode::Shared,
+    )
+    .map_err(storage)?;
+
+    let (_checkout, mut files, probe) = carrier_io()?;
+    let operation = OperationId::new();
+    let original = regular_bytes(&files.requests).expect_err("a directory is not a reply");
+    let message = original.to_string();
+    let code = original.code();
+    files
+        .served
+        .known
+        .insert(operation, Tracked::Running { withdrawn: false });
+    files = files
+        .apply(operation, move |files| {
+            files
+                .served
+                .answer(&files.status, operation, Err(original))?;
+            let path = reply_path(files.status.path(), operation);
+            remove_projection(&path)?;
+            std::fs::create_dir(path).map_err(storage)
+        })
+        .await?;
+    let cleanup = remove_projection(&reply_path(files.status.path(), operation))
+        .expect_err("a directory cannot be retired as a reply file");
+    let result = files
+        .apply(operation, move |files| {
+            files.served.withdraw(&files.requests, operation)
+        })
+        .await;
+    let Err(Error::Cleanup(causes)) = result else {
+        panic!("failed withdrawal must retain the original reply and retirement causes");
+    };
+    assert_eq!(causes.primary().code(), code);
+    assert_eq!(causes.primary().to_string(), message);
+    assert_eq!(causes.cleanup().code(), cleanup.code());
+    assert_eq!(causes.cleanup().to_string(), cleanup.to_string());
     acyclic_native_runtime::FileLock::try_acquire(
         probe,
         acyclic_native_runtime::FileLockMode::Shared,

@@ -845,8 +845,8 @@ enum Tracked {
     Queued,
     /// Dispatched; `withdrawn` once its file disappeared.
     Running { withdrawn: bool },
-    /// Its reply is published.
-    Answered,
+    /// Its reply is published; original failure custody ends at withdrawal.
+    Answered(Option<Box<Error>>),
 }
 
 /// The owner's active requests. Each reply is published and retired by its
@@ -976,26 +976,37 @@ impl Served {
 
     /// Withdrawal retires only this request's reply, if already published.
     fn withdraw(&mut self, requests: &Path, operation: OperationId) -> Result<()> {
-        let Some(tracked) = self.known.remove(&operation) else {
+        let std::collections::hash_map::Entry::Occupied(mut tracked) = self.known.entry(operation)
+        else {
             return Ok(());
         };
-        match tracked {
+        match tracked.get_mut() {
             Tracked::Queued => {}
-            Tracked::Running { .. } => {
+            Tracked::Running { withdrawn } => {
                 // Its dispatch still runs; its reply will not be published.
-                self.known
-                    .insert(operation, Tracked::Running { withdrawn: true });
+                *withdrawn = true;
+                return Ok(());
             }
-            Tracked::Answered => {
-                let directory = requests.parent().ok_or_else(|| {
-                    Error::Invalid("native request directory has no parent".into())
-                })?;
-                match remove_projection(&reply_path(&directory.join("status"), operation)) {
+            Tracked::Answered(cause) => {
+                let withdrawal = requests
+                    .parent()
+                    .ok_or_else(|| Error::Invalid("native request directory has no parent".into()))
+                    .and_then(|directory| {
+                        remove_projection(&reply_path(&directory.join("status"), operation))
+                    });
+                match withdrawal {
                     Ok(()) | Err(Error::NotFound(_)) => {}
-                    Err(error) => return Err(error),
+                    Err(error) => {
+                        // Original failure custody moves into the owner error.
+                        return Error::after_cleanup(
+                            cause.take().map_or(Ok(()), |cause| Err(*cause)),
+                            Err(error),
+                        );
+                    }
                 }
             }
         }
+        drop(tracked.remove());
         Ok(())
     }
 
@@ -1020,13 +1031,21 @@ impl Served {
         operation: OperationId,
         outcome: Result<Value>,
     ) -> Result<()> {
-        let Some(Tracked::Running { withdrawn }) = self.known.remove(&operation) else {
+        let std::collections::hash_map::Entry::Occupied(mut tracked) = self.known.entry(operation)
+        else {
             return Ok(());
         };
-        if withdrawn {
+        let Tracked::Running { withdrawn } = tracked.get() else {
+            return Ok(());
+        };
+        if *withdrawn {
+            drop(tracked.remove());
             return Ok(());
         }
-        let bytes = crate::client::encode_command_result(0, &outcome, MAXIMUM_BYTES)?;
+        let bytes = match crate::client::encode_command_result(0, &outcome, MAXIMUM_BYTES) {
+            Ok(bytes) => bytes,
+            Err(error) => return Error::after_cleanup(outcome.map(drop), Err(error)),
+        };
         match status.publish_immutable(
             Path::new(&format!("{operation}.json")),
             &bytes,
@@ -1038,9 +1057,11 @@ impl Served {
             // a caller cannot terminate unrelated dispatches by occupying it.
             Err(acyclic_fs::demand::DemandError::Io(error))
                 if error.kind() == std::io::ErrorKind::InvalidData => {}
-            Err(error) => return Err(native_file_error(error)),
+            Err(error) => {
+                return Error::after_cleanup(outcome.map(drop), Err(native_file_error(error)));
+            }
         }
-        self.known.insert(operation, Tracked::Answered);
+        tracked.insert(Tracked::Answered(outcome.err().map(Box::new)));
         Ok(())
     }
 }
