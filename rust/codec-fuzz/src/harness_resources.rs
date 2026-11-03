@@ -468,12 +468,15 @@ pub(super) fn check(bytes: &[u8]) {
     snapshot_transitions(&snapshot);
     let state = snapshot.state();
     assert!(
-        e::Snapshot::decode(
-            &record,
-            &StreamPath::new("corpus/foreign/conversation").unwrap(),
-            u64::MAX,
-        )
-        .is_err()
+        matches!(
+            e::Snapshot::decode(
+                &record,
+                &StreamPath::new("corpus/foreign/conversation").unwrap(),
+                u64::MAX,
+            ),
+            Err(e::SnapshotError::Epoch(e::InvalidEpoch::Source)),
+        ),
+        "snapshot foreign source admission changed",
     );
     if state.pending().is_none()
         && let Some(head) = state.cursor().checked_sub(1)
@@ -506,12 +509,24 @@ pub(super) fn check(bytes: &[u8]) {
         changed["snapshot"]["pending"]["generation"] = generation.into();
     }
     record.value = serde_json::to_vec(&changed).unwrap().into();
-    assert!(e::Snapshot::decode(&record, &source(), u64::MAX).is_err());
+    assert!(
+        matches!(
+            e::Snapshot::decode(&record, &source(), u64::MAX),
+            Err(e::SnapshotError::Transition(e::protocol::Refusal::Stale)),
+        ),
+        "snapshot generation parity admission changed",
+    );
     for version in ["0", "1", "3"] {
         let mut changed = original.clone();
         changed["version"] = version.into();
         record.value = serde_json::to_vec(&changed).unwrap().into();
-        assert!(e::Snapshot::decode(&record, &source(), u64::MAX).is_err());
+        assert!(
+            matches!(
+                e::Snapshot::decode(&record, &source(), u64::MAX),
+                Err(e::SnapshotError::Encoding(_)),
+            ),
+            "unsupported snapshot version admitted",
+        );
     }
     if let Some(pending) = state.pending() {
         // Leave the epoch generation unchanged to reach the restored pending
