@@ -60,6 +60,16 @@ repository root, run the same instrumented target and corpus expecting
 `captured writer command refused`, then reverse the patch and require the same
 corpus to pass. This control checks positive admission; it does not replace the
 malformed-input controls.
+The same oracle requires the retained `actor-response-root-0` and
+`assembled-cancel` captures to enter their original invocation, response and
+assembly paths. Their existing arbitrary-input checks report admission to this
+positive witness instead of silently skipping a refused capture. The kept
+`agent-invocation-reject-all.patch` and `agent-assembly-reject-all.patch` change
+the corresponding production success returns. Each must fail the same target
+at `captured writer invocation refused` or `captured writer assembly refused`,
+respectively; reverse each patch before requiring the original corpus to pass.
+These two fixed captures add bounded validation work per fuzz input and no
+shipping work, new parser, transport or fixture producer.
 Malformed base64 is derived from admitted content while retaining its original
 encoded length and range. Writer inputs include content encoding to JSON field
 names, so wire mutation must preserve those fields. Quiet Usage and Events

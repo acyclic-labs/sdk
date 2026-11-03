@@ -22,6 +22,23 @@ pub fn check(bytes: &[u8]) {
         ),
         "captured writer command refused"
     );
+    for captured in [
+        include_bytes!("../corpus/agent_controls/actor-response-root-0").as_slice(),
+        include_bytes!("../corpus/agent_controls/assembled-cancel").as_slice(),
+    ] {
+        let separator = captured.iter().position(|byte| *byte == 0).unwrap();
+        let call =
+            AgentCall::decode(&captured[..separator]).expect("captured writer invocation refused");
+        let body = &captured[separator + 1..];
+        if matches!(call.command(), AgentCommand::Staged { .. }) {
+            assert!(assembled(&call, body), "captured writer assembly refused");
+        } else {
+            assert!(
+                actor_response(&call, body),
+                "captured writer response refused"
+            );
+        }
+    }
     if let Ok(command) = PreparedCommand::from_bytes(bytes.to_vec()) {
         assert_eq!(command.command(), bytes);
         let decoded = command.decoded().unwrap();
@@ -91,13 +108,13 @@ fn with_unknown_field(bytes: &[u8]) -> Vec<u8> {
     changed
 }
 
-fn actor_response(call: &AgentCall, bytes: &[u8]) {
+fn actor_response(call: &AgentCall, bytes: &[u8]) -> bool {
     let mut route = call.invocation().clone();
     let command = PreparedCommand::from_bytes(std::mem::take(&mut route.body)).unwrap();
     route.invocation_order = None;
     let binding = AgentBinding::new(&route.encode_to_vec()).unwrap();
     let Ok(invocation) = binding.prepare(&command) else {
-        return;
+        return false;
     };
     // Only the transport is supplied here; the public send path owns response
     // admission. This immediate byte source models no network or authority.
@@ -107,7 +124,7 @@ fn actor_response(call: &AgentCall, bytes: &[u8]) {
         }))
     };
     let Ok(result) = exchange(bytes) else {
-        return;
+        return false;
     };
     let response = acyclic_actors::wire::InvokeActorResponse::decode(bytes).unwrap();
     assert_eq!(response.encode_to_vec(), bytes);
@@ -132,11 +149,12 @@ fn actor_response(call: &AgentCall, bytes: &[u8]) {
         ),
         "actor status discarded"
     );
+    true
 }
 
-fn assembled(head: &AgentCall, bytes: &[u8]) {
+fn assembled(head: &AgentCall, bytes: &[u8]) -> bool {
     let Ok(call) = head.assembled(bytes) else {
-        return;
+        return false;
     };
     let AgentCommand::Staged { agent, command, .. } = head.command() else {
         panic!("assembly admitted a non-staged head");
@@ -184,6 +202,7 @@ fn assembled(head: &AgentCall, bytes: &[u8]) {
         foreign.assembled(bytes).is_err(),
         "assembled command changed its admitted kind"
     );
+    true
 }
 
 fn success(reply: &AgentReply, command: &AgentCommand) {
