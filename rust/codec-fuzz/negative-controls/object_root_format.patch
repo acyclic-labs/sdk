@@ -1,0 +1,11 @@
+--- a/rust/crates/objects/src/local.rs
++++ b/rust/crates/objects/src/local.rs
+@@ -615,7 +615,7 @@
+     match std::fs::read(&format) {
+         Ok(bytes) if bytes == FORMAT => {}
+         Ok(bytes) if bytes == FILE_PER_KEY_FORMAT => return Err(LocalOpenError::UnsupportedLayout),
+-        Ok(_) => return Err(LocalOpenError::Corrupt),
++        Ok(_) => {},
+         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+             let mut created = std::fs::File::create(&format)?;
+             created.write_all(FORMAT)?;

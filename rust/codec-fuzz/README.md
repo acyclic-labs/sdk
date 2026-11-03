@@ -294,3 +294,15 @@ production error adapter to an IO error while preserving the `Trailing` stage.
 The original stage-only property misses this defect; the cause assertion must
 reject it. Objects/shared correspondence covers wrapper mappings and quotas;
 it is not independent parser evidence after centralisation.
+
+The existing `object_schedule` oracle also reads the original root's `FORMAT`
+from the actual `LocalMedium::open` writer. After awaiting its original owned
+close, it derives empty, truncated and extended headers and supplies the
+arbitrary payload as another header. The same public native open must refuse
+foreign bytes and preserve both header and log; restoring the captured header
+must reopen the original value. These checks run once outside the measured
+mutation, retaining its existing physical counters. The original legacy-layout
+control keeps its distinct typed refusal obligation. `object_root_format.patch`
+removes the production foreign-format refusal; the unchanged root oracle must
+reject that acceptance. This adds no parser, test, target, polling or production
+IO, and does not establish a power-loss or full source-branch guarantee.
