@@ -30,13 +30,14 @@ async function statusBindingControl(run, host) {
   let original, corrupted, originalStatus, spawns = 0;
   const spawned = ({process: child}) => {
     spawns++;
-    const at = child.spawnargs.indexOf('--completion');
-    assert.ok(at > 0);
-    const receipt = child.spawnargs[at + 1];
     // This listener precedes the bridge's exit listener. The original native
     // owner has retired its tree and closed its receipt before exit; corrupt
     // only its actual status field before the original reader consumes it.
     child.once('exit', (code, signal) => {
+      // The diagnostic publishes at construction, before spawnargs exists.
+      const at = child.spawnargs.indexOf('--completion');
+      assert.ok(at > 0);
+      const receipt = child.spawnargs[at + 1];
       const bytes = readFileSync(receipt);
       original = JSON.parse(bytes);
       originalStatus = {code, signal};
