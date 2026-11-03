@@ -24,11 +24,13 @@ mod gate {
     include!("../src/session/gate.rs");
     include!("gate.rs");
 }
-mod signal {
+pub(crate) mod signal {
     include!("../src/runtime/signal.rs");
     include!("signal.rs");
 }
-type ReleaseSender = Arc<signal::Signal<credit::Released>>;
+mod runtime {
+    pub(crate) use super::signal;
+}
 mod credit {
     include!("../src/session/client/credit.rs");
     include!("credit.rs");
