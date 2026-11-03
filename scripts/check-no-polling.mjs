@@ -1,6 +1,7 @@
 import {execFileSync} from 'node:child_process';
 import {existsSync, readFileSync, writeFileSync} from 'node:fs';
 import {resolve} from 'node:path';
+import {gitBatchSources} from './source-policy/git.mjs';
 
 export async function checkNoPolling(args, {cwd = process.cwd(), env = process.env, logger = console} = {}) {
  const [base, output] = args;
@@ -32,22 +33,7 @@ export async function checkNoPolling(args, {cwd = process.cwd(), env = process.e
    const input = unique.map(file => revision + ':' + file + '\n').join('');
    const original = git(['cat-file', '--batch'], {input});
    const dispositions = JSON.parse(readFileSync(resolve(cwd, 'scripts/no-polling-dispositions.json'), 'utf8'));
-   let at = 0;
-   const beforeSources = new Map();
-   for (const file of unique) {
-    const headerEnd = original.indexOf(10, at);
-    if (headerEnd < 0) throw new Error('truncated Git object header for ' + file);
-    const header = original.subarray(at, headerEnd).toString('utf8');
-    at = headerEnd + 1;
-    if (!header.endsWith(' missing')) {
-     const fields = header.split(' ');
-     const size = Number(fields[2]);
-     if (fields[1] !== 'blob' || !Number.isSafeInteger(size) || size < 0 || at + size >= original.length) throw new Error('invalid Git object for ' + file);
-     const before = original.subarray(at, at + size);
-     at += size + 1;
-     beforeSources.set(file, before.toString('utf8'));
-    }
-   }
+   const beforeSources = gitBatchSources(unique, original);
    const refused = newProjectPollingSites(beforeSources, afterSources, dispositions, {inScope: sourceInScope});
    if (refused.length) {
     for (const site of refused) logger.error(`step=no-polling file=${site.file}:${site.line} kind=${site.kind} fingerprint=${site.fingerprint}`);

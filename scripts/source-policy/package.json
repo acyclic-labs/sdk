@@ -6,9 +6,10 @@
   "license": "Apache-2.0",
   "exports": {
     ".": "./index.mjs",
-    "./project": "./project.mjs"
+    "./project": "./project.mjs",
+    "./git": "./git.mjs"
   },
-  "files": ["index.mjs", "project.mjs", "README.md"],
+  "files": ["index.mjs", "project.mjs", "git.mjs", "README.md"],
   "dependencies": {
     "typescript-parser": "npm:typescript@6.0.3"
   }

@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "producer": {
+    "version": "git version 2.46.0.windows.1",
+    "revision": "db29a43ec8d15d4c006c579d2c30e6ee98d5062d",
+    "command": [
+      "git",
+      "cat-file",
+      "--batch"
+    ],
+    "input": "db29a43ec8d15d4c006c579d2c30e6ee98d5062d:scripts/no-polling-scope.mjs\ndb29a43ec8d15d4c006c579d2c30e6ee98d5062d:scripts/no-polling-dispositions.json\ndb29a43ec8d15d4c006c579d2c30e6ee98d5062d:missing-source-capture.ts\n",
+    "expectedCommand": [
+      "git",
+      "show",
+      "<revision>:<file>"
+    ]
+  },
+  "files": [
+    "scripts/no-polling-scope.mjs",
+    "scripts/no-polling-dispositions.json",
+    "missing-source-capture.ts"
+  ],
+  "bytes": "MGQ5NTNlZDhkYzlkZGUyNjBiY2NhYTcxNjcyM2Y0ZTU4YzhjYzZkOSBibG9iIDM2MwppbXBvcnQge3N1cHBvcnRlZFNvdXJjZX0gZnJvbSAnLi9zb3VyY2UtcG9saWN5L2luZGV4Lm1qcyc7CgpleHBvcnQgZnVuY3Rpb24gc291cmNlSW5TY29wZShmaWxlKSB7CiAvLyBFeGFjdCBkaXNwb3NpdGlvbnMgYXJlIGRlY2xhcmF0aXZlIHBvbGljeSwgbmV2ZXIgZXhlY3V0YWJsZSBzb3VyY2UuCiByZXR1cm4gZmlsZSAhPT0gJ3NjcmlwdHMvbm8tcG9sbGluZy1kaXNwb3NpdGlvbnMuanNvbicgJiYgc3VwcG9ydGVkU291cmNlKGZpbGUpCiAgJiYgKGZpbGUgPT09ICdwYWNrYWdlLmpzb24nIHx8IC9eKD86cnVzdFwvY3JhdGVzXC98dHlwZXNjcmlwdFwvcGFja2FnZXNcL3xzY3JpcHRzXC98cGx1Z2luXC8pLy50ZXN0KGZpbGUpKTsKfQoKZmU1MTQ4OGM3MDY2ZjY2ODdlZjY4MGQ2YmZhYTRmNzc2OGVmMjA1YyBibG9iIDMKW10KCmRiMjlhNDNlYzhkMTVkNGMwMDZjNTc5ZDJjMzBlNmVlOThkNTA2MmQ6bWlzc2luZy1zb3VyY2UtY2FwdHVyZS50cyBtaXNzaW5nCg==",
+  "sources": [
+    [
+      "scripts/no-polling-scope.mjs",
+      "import {supportedSource} from './source-policy/index.mjs';\n\nexport function sourceInScope(file) {\n // Exact dispositions are declarative policy, never executable source.\n return file !== 'scripts/no-polling-dispositions.json' && supportedSource(file)\n  && (file === 'package.json' || /^(?:rust\\/crates\\/|typescript\\/packages\\/|scripts\\/|plugin\\/)/.test(file));\n}\n"
+    ],
+    [
+      "scripts/no-polling-dispositions.json",
+      "[]\n"
+    ]
+  ]
+}

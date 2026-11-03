@@ -49,3 +49,13 @@ the recorded host corpus, byte mutations and dependency properties. The same
 oracles reject planted defects in the production lexer, dependency graph and
 disposition validation. Add `--experimental-test-coverage` before `--test` to
 report visited branches; the report does not establish runtime liveness.
+
+`@acyclic-labs/source-policy/git` exports `gitBatchSources(files, buffer)` for
+callers that already read `git cat-file --batch`. Supply the unique file keys in
+request order and the original Node `Buffer`; the result maps present blobs to
+UTF-8 source and omits missing objects. It rejects incomplete responses, malformed
+blob headers, unsafe sizes, missing body terminators and extra response bytes
+with `GitBatchSyntaxError`. Revision selection and process I/O stay with callers.
+The decoder advances once through the supplied bytes, with no I/O or extra body
+copy. Run `node --test scripts/no-polling-git-fuzz.test.mjs` for the original Git
+capture, damaged-frame corpus and retained production mutation controls.
