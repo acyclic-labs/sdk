@@ -109,9 +109,8 @@ pub fn check(bytes: &[u8]) {
     }
 }
 
-/// Exhaust every cut of an original writer seed during routine validation.
-/// Fuzz inputs retain the constant-number-of-cuts check above for throughput.
-#[cfg(test)]
+/// Exhaust every cut of an original writer seed outside the fuzz hot path.
+#[cfg(not(fuzzing))]
 pub fn check_prefixes(bytes: &[u8]) {
     for cut in 0..bytes.len() {
         assert_eq!(
@@ -127,7 +126,7 @@ pub fn check_prefixes(bytes: &[u8]) {
 }
 
 /// Capture real codec outputs; callers retain these bytes as corpus inputs.
-#[cfg(all(not(fuzzing), not(test)))]
+#[cfg(not(fuzzing))]
 pub fn seeds() -> Vec<(&'static str, Vec<u8>)> {
     let empty = value(&[]);
     let mut boundary = value(b"native\0\xff\nlock");

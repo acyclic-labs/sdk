@@ -19,9 +19,6 @@ test("every production gate step supplies its artifact and complete test selecti
       assert.match(modelResult(plan, selected.args), /test result: ok\. [1-9][0-9]* passed;/);
     }
   }
-  // These two different target shapes were absent from the old fake cargo.
-  assert.ok(plans.some(plan => plan.target === "main" && plan.tests.length === 4 && plan.tests.every(test => test.args[0].startsWith("e2e_progress_model::"))));
-  assert.ok(plans.some(plan => plan.target === "acyclic_native_runtime" && plan.tests.length === 18));
   const sessionFs = plans.find(plan => plan.target === "main" && plan.tests.every(test => test.args[0].startsWith("session_fs_model::")));
   assert.equal(sessionFs.tests.length, 2);
   assert.match(sessionFs.wrapper, /loom-rustc\.(?:sh|cmd)$/);

@@ -50,6 +50,9 @@ cargo test --locked -p acyclic-native-runtime --test native_claim_record
 
 It also checks every truncated prefix of each retained writer seed, preserving
 the exhaustive routine coverage without adding quadratic work to fuzz inputs.
+The capture producer checks these prefixes once per seed, and routine replay
+also verifies that the current production writer emits the retained bytes.
+The producer remains available when Cargo compiles the example with `cfg(test)`.
 
 The same source-defect control can qualify this routine test without repeating
 the fuzz campaign: append `--routine` to the Python command above. It first
