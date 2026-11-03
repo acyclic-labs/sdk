@@ -469,7 +469,7 @@ pub async fn run(
     resume: bool,
 ) -> Result<u8, Failure> {
     let mut ui = session::Session::open(&conversation).await?;
-    if !resume && ui.open_view()?.is_some() {
+    if !resume && ui.open_view().is_some() {
         ui.select(&conversation, None).await?;
     }
     let mut tty = Tty::open()?;
@@ -506,7 +506,7 @@ pub async fn run(
     let mut query_future = std::pin::pin!(None);
     if resume {
         apply_open_view(
-            ui.open_view()?.as_deref(),
+            ui.open_view(),
             &mut overlay,
             &mut queries,
             query_future.as_mut(),
@@ -626,7 +626,7 @@ pub async fn run(
                 ui.project()?;
                 ui.config.apply(&mut input, &profile).map_err(|errors| format!("UI configuration: {errors:?}"))?;
                 if layout_changed {
-                    apply_open_view(ui.open_view()?.as_deref(), &mut overlay, &mut queries,
+                    apply_open_view(ui.open_view(), &mut overlay, &mut queries,
                         query_future.as_mut(), &catalog, &input)?;
                     overlay_top = 0;
                 }

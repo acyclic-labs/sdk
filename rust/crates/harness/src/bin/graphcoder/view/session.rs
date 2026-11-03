@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 pub(super) struct Session {
     pub snapshot: ClientFiles,
     pub config: ConfigView,
+    open_view: Option<String>,
 }
 
 fn paths() -> Vec<String> {
@@ -32,13 +33,24 @@ impl Session {
         let mut session = Self {
             snapshot,
             config: ConfigView::default(),
+            open_view: None,
         };
         session.project()?;
         Ok(session)
     }
 
     pub fn project(&mut self) -> Result<(), Failure> {
-        self.open_view()?;
+        self.open_view = self
+            .snapshot
+            .files
+            .get("layout.json")
+            .and_then(Option::as_ref)
+            .map(|file| -> Result<Option<String>, Failure> {
+                let layout: Value = serde_json::from_str(&file.text)?;
+                Ok(layout_view(&layout)?.map(str::to_owned))
+            })
+            .transpose()?
+            .flatten();
         for file in ConfigFile::ALL {
             self.config.set_file(
                 Scope::User,
@@ -53,17 +65,8 @@ impl Session {
         Ok(())
     }
 
-    pub fn open_view(&self) -> Result<Option<String>, Failure> {
-        let Some(file) = self
-            .snapshot
-            .files
-            .get("layout.json")
-            .and_then(Option::as_ref)
-        else {
-            return Ok(None);
-        };
-        let layout: Value = serde_json::from_str(&file.text)?;
-        Ok(layout_view(&layout)?.map(str::to_owned))
+    pub fn open_view(&self) -> Option<&str> {
+        self.open_view.as_deref()
     }
 
     pub async fn select(
@@ -150,7 +153,7 @@ mod tests {
         let connection = harness.connect().await?;
         let conversation = Conversation::open(connection.clone())?;
         let ui = Session::open(&conversation).await?;
-        assert!(ui.open_view()?.is_none());
+        assert!(ui.open_view().is_none());
         // Poll the original live query before publishing through a second call
         // on the same authenticated session. No timing or readiness probe.
         let (changed, published) = futures::join!(
@@ -198,7 +201,7 @@ mod tests {
         let resumed = Conversation::open(harness.connect().await?)?;
         let reopened = Session::open(&resumed).await?;
         assert_eq!(
-            reopened.open_view()?.as_deref(),
+            reopened.open_view(),
             Some("diff"),
             "TUI open-view selection is not persisted in the session volume"
         );
