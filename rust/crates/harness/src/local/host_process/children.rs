@@ -26,6 +26,9 @@ use std::task::{Context, Poll, Waker};
 mod answer;
 use answer::NativeAnswer;
 
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod readiness_validation;
+
 mod tools;
 pub use tools::serve;
 
@@ -730,65 +733,13 @@ mod framing {
     /// fired key wakes the server once; a quiet key is never queued.
     #[test]
     fn only_fired_registrations_reach_the_ready_queue() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        #[derive(Default)]
-        struct Notification(AtomicUsize);
-
-        impl std::task::Wake for Notification {
-            fn wake(self: Arc<Self>) {
-                self.0.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-
-        let ready = Arc::new(Ready::default());
-        let wakes = (0..1000)
-            .map(|index| {
-                Waker::from(Arc::new(ChildWake {
-                    key: format!("child-{index}"),
-                    ready: Arc::clone(&ready),
-                }))
-            })
-            .collect::<Vec<_>>();
-        let previous = Arc::new(Notification::default());
-        let current = Arc::new(Notification::default());
-        let previous_waker = Waker::from(Arc::clone(&previous));
-        let current_waker = Waker::from(Arc::clone(&current));
-        assert!(
-            ready
-                .poll(&Context::from_waker(&previous_waker))
-                .is_pending()
+        // Replacement, duplicate coalescing, consumption, early readiness and
+        // re-registration use the same oracle as arbitrary fuzz schedules.
+        readiness_validation::verify(
+            &[
+                0, 1, 0x47, 0x47, 1, 0x80, 0x80, 0x4c, 1, 0x80, 1, 0xc7, 0x80,
+            ],
+            1000,
         );
-        assert!(
-            ready
-                .poll(&Context::from_waker(&current_waker))
-                .is_pending()
-        );
-        wakes[7].wake_by_ref();
-        wakes[7].wake_by_ref();
-        assert_eq!(previous.0.load(Ordering::Relaxed), 0);
-        assert_eq!(
-            current.0.load(Ordering::Relaxed),
-            1,
-            "fired child registration did not wake the current waiter exactly once"
-        );
-        assert!(ready.poll(&Context::from_waker(&current_waker)).is_ready());
-        assert_eq!(ready.take(), BTreeSet::from(["child-7".to_owned()]));
-        assert!(ready.take().is_empty(), "999 quiet children were queued");
-
-        // A notification before registration is retained as readiness, then a
-        // fresh registration must receive its own later notification.
-        wakes[12].wake_by_ref();
-        assert!(ready.poll(&Context::from_waker(&current_waker)).is_ready());
-        assert_eq!(current.0.load(Ordering::Relaxed), 1);
-        assert_eq!(ready.take(), BTreeSet::from(["child-12".to_owned()]));
-        assert!(
-            ready
-                .poll(&Context::from_waker(&current_waker))
-                .is_pending()
-        );
-        wakes[7].wake_by_ref();
-        assert_eq!(current.0.load(Ordering::Relaxed), 2);
-        assert_eq!(ready.take(), BTreeSet::from(["child-7".to_owned()]));
     }
 }

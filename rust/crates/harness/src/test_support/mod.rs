@@ -3,6 +3,18 @@
 pub use acyclic_harness_core::test_support::*;
 pub use acyclic_harness_search::test_support::{ScriptedSearch, ScriptedSearchProvider};
 
+/// Checks arbitrary sequential schedules against the native child ready queue.
+/// This exercises the production registrations, queue and waiter callbacks;
+/// physical event-hub concurrency remains a separate contract.
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub fn check_native_readiness(input: &[u8]) {
+    crate::local::host_process::children::readiness_validation::verify(input, 16);
+}
+
 /// Checks the native mount-reference parser used before committing a spawn.
 /// Arbitrary bytes cover refusal; generated portable components also require
 /// admission, so rejecting every input cannot satisfy the safety oracle.

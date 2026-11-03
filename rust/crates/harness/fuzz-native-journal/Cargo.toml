@@ -44,3 +44,10 @@ path = "fuzz_targets/native_child_reference.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "native_readiness"
+path = "fuzz_targets/native_readiness.rs"
+test = false
+doc = false
+bench = false

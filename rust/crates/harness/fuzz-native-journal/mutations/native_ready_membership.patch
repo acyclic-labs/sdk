@@ -1,0 +1,6 @@
+diff --git a/rust/crates/harness/src/local/host_process/children.rs b/rust/crates/harness/src/local/host_process/children.rs
+--- a/rust/crates/harness/src/local/host_process/children.rs
++++ b/rust/crates/harness/src/local/host_process/children.rs
+@@ -102 +102 @@
+-            queue.keys.insert(key.to_owned());
++            queue.keys.insert("unregistered-child".to_owned());

@@ -59,8 +59,31 @@ failure control.
 
 The native ready-queue control
 `local::host_process::children::framing::only_fired_registrations_reach_the_ready_queue`
-also checks real server notifications, waiter replacement and re-registration.
+uses the same production-queue oracle as `native_readiness`: arbitrary
+sequential schedules poll either waiter, fire owned or borrowed registrations,
+and consume pending keys. The existing unit schedule retains its 1,000
+registrations; fuzz schedules use 16 participants. The oracle compares exact
+membership and notification counts after each action, including waiter
+replacement, duplicate coalescing, early readiness and re-registration.
 The retained `mutations/native_ready_notification.patch` drops the production
 notification while preserving queued keys. The unchanged control must fail
 at `fired child registration did not wake the current waiter exactly once`.
+`mutations/native_ready_membership.patch` substitutes an unregistered key and
+must fail at `native ready queue lost, invented or repeated a child notification`.
+These are mutations of the actual queue, not of an alternate implementation.
+The corpus consists of authored internal action schedules, not external wire
+captures: `replacement` is the existing unit schedule, `multiple-children`
+queues several recipients before consumption, and `empty-consumption` checks
+that consuming an empty queue does not discard its waiter. In each action byte,
+the top two bits select poll, borrowed wake, consume, or owned wake; low bits
+select the waiter or child. Run with
+`cargo fuzz run native_readiness --fuzz-dir rust/crates/harness/fuzz-native-journal`.
 This is a synchronous component check, not an OS event-hub concurrency proof.
+
+The internal schedule seed digests are:
+
+| Seed | SHA-256 |
+| --- | --- |
+| `replacement` | `6dbc0be31823b21866b3802571ae94b848a87d2a6a082b9245f2af14450d75b5` |
+| `multiple-children` | `a50938f0d40fbb111d5ecb88c5b9a86af5455a517f0823651089bac780422a05` |
+| `empty-consumption` | `2aab45833c58f6165ff8162229607ccfae4e0ebe8af94afc879ea1a33f67558f` |
