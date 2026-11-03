@@ -1,8 +1,8 @@
 use super::*;
 use crate::OwnedBytes as Bytes;
 use crate::verification::block_on;
-use futures::TryFutureExt as _;
-use std::{mem::ManuallyDrop, task::Context};
+use futures::{Stream as _, TryFutureExt as _};
+use std::{mem::ManuallyDrop, pin::Pin, task::Context};
 
 // The writer executes accepted publication under its real publication fence.
 // Its outer mutation fence has no competing writer here; compaction_model
@@ -98,13 +98,12 @@ pub(crate) fn cancellation(retain: bool) {
         .unwrap();
         let (_, wake) = crate::verification::probe();
         assert!(
-            cancelled
-                .as_mut()
+            Pin::new(&mut cancelled)
                 .poll_next(&mut Context::from_waker(&wake))
                 .is_pending()
         );
         assert!(
-            kept.as_mut()
+            Pin::new(&mut kept)
                 .poll_next(&mut Context::from_waker(&wake))
                 .is_pending()
         );
