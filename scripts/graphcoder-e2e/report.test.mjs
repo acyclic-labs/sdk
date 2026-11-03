@@ -152,6 +152,7 @@ test("cancellation during either original report write retains a failed terminal
       const signal = new AbortController(), report = { pass: true, results: [] };
       const snapshots = [], path = join(root, boundary + ".json");
       const reason = boundary === "file" ? Object.create(null) : new Error("caller cancelled at " + boundary);
+      if (boundary === "before") Object.defineProperty(reason, "cause", { get() { assert.fail("cancellation must not inspect an unrelated cause"); } });
       if (boundary === "before") signal.abort(reason);
       const io = {
         publish: async text => {
