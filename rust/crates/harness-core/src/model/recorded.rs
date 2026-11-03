@@ -787,8 +787,6 @@ mod tests {
         }
         Ok(())
     }
-
-
 }
 
 impl ModelProvider for RecordedModel {
