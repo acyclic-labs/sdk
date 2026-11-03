@@ -20,7 +20,7 @@ The eight `current-*.bin` inputs are unchanged outputs of `cargo run --locked -p
 Run from this directory:
 
 ```sh
-cargo +nightly fuzz run --fuzz-dir . proto_descriptors --no-default-features --features proto-descriptors -- -runs=256 -seed=1 -max_len=147669
+cargo +nightly fuzz run --fuzz-dir . proto_descriptors --no-default-features --features proto-descriptors -- -runs=256 -seed=1
 ```
 
 `mutations/proto-descriptors-reject-all.patch` changes the actual production canonicalizer to reject nonempty inputs. The old conditional oracle admits this defect; the repaired oracle must fail with `canonical production writer descriptor refused`. Restore production source before running the healthy corpus. A compiler failure is not defect detection.
@@ -53,3 +53,14 @@ their original provenance and remain arbitrary decoder inputs.
 `mutations/proto-descriptors-unknown-fields.patch` drops unknown file fields numbered 10000 and above in the production canonicalizer. The previous writer-identity/idempotence oracle misses this defect; the input-preservation relation must fail with `canonical descriptor discarded or changed unknown file fields`. Restore production source before running the healthy corpus.
 
 The generated source-location/field-number property remains: its generated domain is not subsumed by retained compiler outputs. Finite execution and feedback counters do not establish complete source branches, nested option preservation, malformed-input refusal, compiler version independence or deployed service behavior. Source branch coverage and additional semantic mutations remain open.
+
+The six `options-*.bin` inputs are original outputs of `cargo run --locked -p sdk-proto-codegen -- descriptors . <output>` at source `f9ea0659db858ff0d66d311af332f5c210eb480e`. They retain the added `machines.read-results` extractor in the shared validation schema. The earlier nineteen inputs are unchanged; these are additional compiler outputs, not service captures. Auth and Harness outputs were byte-identical and are not duplicated.
+
+| Additional input | Bytes | SHA256 |
+| --- | ---: | --- |
+| `options-actors-v1.bin` | 116082 | `de63b54df7f044d122baab9a5396807f861d75a9ac063a3560d318ef4d2802aa` |
+| `options-filesystem-v2.bin` | 147739 | `f155e8295cbdabf98f7ed9c8dc0555725191945ba6f77ced3bbd34448b1ccaa5` |
+| `options-inference-v1.bin` | 129152 | `7ea27454419790da8b77cf24c14a7106f9401bfd357319bc3984d544609ccb35` |
+| `options-machines-v1.bin` | 144915 | `c2a5badc14ae368066d788cbefc09516f757d747a0470da9e2a5bc7921afc3e8` |
+| `options-objects-v1.bin` | 106750 | `dbe716409c548d18214602e8da9f7dad3646e7d2b3622c1f5e75a49bbfaaad7a` |
+| `options-stream-v1.bin` | 143577 | `b563ad45d9f9e9d3258ce0e31421977c08e8138c237746d72829f7701e42704e` |
