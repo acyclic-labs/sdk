@@ -28,11 +28,9 @@
    {
     "messages": [
      {
+      "role": "user",
       "content": {
-       "kind": "file",
-       "file": {
-        "display_name": "prompt"
-       }
+       "kind": "file"
       }
      }
     ]
