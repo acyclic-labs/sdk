@@ -862,7 +862,11 @@ fn capture_resources(manifest: &mut String) -> Result<(), Box<dyn Error>> {
             "harness_codecs",
             &format!("resource-{name}"),
             &bytes,
-            "harness_resources::seeds: cache/summary serde writers and Snapshot::encode; genesis envelope from MemoryStream commit/read; no provider attribution or transport authentication claim",
+            if name.ends_with("-positional") {
+                "harness_resources::seeds: Snapshot::encode payload fields in serde positional spelling, admitted by original Snapshot::decode; original MemoryStream envelope; no provider attribution or transport authentication claim"
+            } else {
+                "harness_resources::seeds: cache/summary serde writers and Snapshot::encode; genesis envelope from MemoryStream commit/read; no provider attribution or transport authentication claim"
+            },
             manifest,
         )?;
     }

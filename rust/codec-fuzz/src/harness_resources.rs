@@ -172,11 +172,16 @@ pub(super) fn check(bytes: &[u8]) {
         )
         .is_err()
     );
-    let through = state
-        .pending()
-        .map_or(state.cursor(), |pending| pending.through);
-    if let Some(head) = through.checked_sub(1) {
-        assert!(e::Snapshot::decode(&record, &source(), head).is_err());
+    if state.pending().is_none()
+        && let Some(head) = state.cursor().checked_sub(1)
+    {
+        assert!(
+            matches!(
+                e::Snapshot::decode(&record, &source(), head),
+                Err(e::SnapshotError::Epoch(e::InvalidEpoch::OutsidePrefix)),
+            ),
+            "settled epoch beyond source head admitted",
+        );
     }
     // Mutated values may exceed the stream writer's protective frame size.
     // Such a writer refusal is not a decoder semantic failure.
@@ -351,5 +356,26 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn Error>> {
         "summary-outcome",
         serde_json::to_vec(&e::SummaryOutcome::Failed)?,
     ));
+    for (original, alternate) in [
+        ("epoch-genesis", "epoch-genesis-positional"),
+        ("epoch-prepared", "epoch-prepared-positional"),
+        ("epoch-failed", "epoch-failed-positional"),
+        ("epoch-ready", "epoch-ready-positional"),
+        ("epoch-swapped", "epoch-swapped-positional"),
+    ] {
+        let bytes = &seeds.iter().find(|(name, _)| *name == original).unwrap().1;
+        let mut value: Value = serde_json::from_slice(bytes)?;
+        let snapshot = value["snapshot"].as_object_mut().unwrap();
+        let fields =
+            ["epoch", "generation", "pending"].map(|field| snapshot.remove(field).unwrap());
+        value["snapshot"] = Value::Array(fields.into());
+        let bytes = serde_json::to_vec(&value)?;
+        let mut record = envelope().clone();
+        record.value = bytes.clone().into();
+        // Require the real decoder to admit the alternate spelling before
+        // handing it to the oracle; this is derived from the same writer bytes.
+        e::Snapshot::decode(&record, &source(), u64::MAX)?;
+        seeds.push((alternate, bytes));
+    }
     Ok(seeds)
 }

@@ -175,7 +175,8 @@ challenge changes only the pending field, reaching `State::restore` through
 The two pending-range challenges recompute the content address with the original
 `SummaryKey::digest` writer, so the later identity fence cannot mask an omitted
 range check. They require the original typed range refusal at the covered cursor
-and beyond the source head. Select both with
+and beyond the source head. The settled-epoch prefix check remains separate;
+pending-state range checks run only through these typed oracles. Select both with
 `--only snapshot-range-start snapshot-range-end`; one original writer replay
 precedes only those two mutations.
 Corpus capture, executed coverage and mutation results must be recorded separately;
