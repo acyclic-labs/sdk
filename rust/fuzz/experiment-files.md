@@ -38,6 +38,8 @@ The same kept control accepts `scorer-version`, `observation-version`,
 then changes exactly one production check, requires a failure from the original
 admission oracle and restores the original source bytes even on failure.
 A compiler error or arbitrary nonzero exit does not count as a detected defect.
+The verdict requires a runtime panic at the unchanged target's source location
+with the selected admission invariant, and rejects compiler diagnostics.
 Run controls on an isolated checkout; the script temporarily edits production
 source. Original runtime output, coverage and negative-control results must be
 recorded separately; target presence and fixed corpus replay are not a campaign.

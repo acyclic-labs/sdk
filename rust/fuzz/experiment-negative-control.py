@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 from pathlib import Path
+import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -23,6 +24,25 @@ CASES = {
         "executor/json/object.rs", "    decoder.end()?;", "", "decision",
     ),
 }
+INVARIANTS = {
+    "decision-version": "version",
+    "scorer-version": "version",
+    "observation-version": "version",
+    "scorer-distinct": "distinguishable scorer",
+    "trailing-input": "trailing input",
+}
+
+
+def oracle_rejected(returncode, output, invariant):
+    return (
+        returncode != 0
+        and re.search(
+            r"panicked at (?:[^\r\n]*[/\\])?rust[/\\]fuzz[/\\]fuzz_targets[/\\]"
+            r"experiment_files\.rs:\d+:\d+:", output,
+        ) is not None
+        and f"independent admission invariant: {invariant}" in output
+        and re.search(r"(?m)^error(?:\[E\d+\])?:|could not compile", output) is None
+    )
 
 
 def fail(step, detail):
@@ -63,7 +83,7 @@ try:
     print(f"production mutant SHA256 {hashlib.sha256(mutated).hexdigest()}", flush=True)
     negative = run([corpus / seed])
     print(negative.stdout, flush=True)
-    if negative.returncode == 0 or "independent admission invariant" not in negative.stdout:
+    if not oracle_rejected(negative.returncode, negative.stdout, INVARIANTS[args.case]):
         fail("production mutant replay", "expected original admission oracle failure was not observed")
     if hashlib.sha256(oracle.read_bytes()).hexdigest() != oracle_hash:
         fail("oracle identity", "fuzz oracle changed during control")
