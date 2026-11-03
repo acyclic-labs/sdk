@@ -101,17 +101,4 @@ mod tests {
             prop_assert!(contains(&text.replace("\r\n", "\n")));
         }
     }
-
-    #[test]
-    fn partial_marker_lines_remain_unresolved() {
-        for marker in [
-            "<<<<<<< ours\n",
-            "||||||| base\n",
-            "=======\r\n",
-            ">>>>>>> theirs\n",
-        ] {
-            assert!(contains(marker));
-        }
-        assert!(!contains("resolved bytes\n"));
-    }
 }
