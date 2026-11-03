@@ -44,6 +44,17 @@ impl Screen {
         &self.term.grid()[Point::new(Line(0), Column(0))]
     }
 }
+
+fn cursor_visible(state: &Mutex<State<Screen>>) -> bool {
+    state
+        .lock()
+        .unwrap()
+        .guard
+        .writer()
+        .term
+        .mode()
+        .contains(TermMode::SHOW_CURSOR)
+}
 impl Write for Screen {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         // A device may split a control sequence at any byte. The interpreter
@@ -116,16 +127,7 @@ fn model(broken: bool, during_render: bool) {
         )
         .unwrap();
         terminal.draw(Size::new(2, 2), |_| {}).unwrap();
-        assert!(
-            !state
-                .lock()
-                .unwrap()
-                .guard
-                .writer()
-                .term
-                .mode()
-                .contains(TermMode::SHOW_CURSOR)
-        );
+        assert!(!cursor_visible(&state));
         if during_render {
             let resuming = Arc::clone(&state);
             terminal
@@ -148,14 +150,7 @@ fn model(broken: bool, during_render: bool) {
             terminal.draw(Size::new(2, 2), |_| {}).unwrap();
         }
         assert!(
-            !state
-                .lock()
-                .unwrap()
-                .guard
-                .writer()
-                .term
-                .mode()
-                .contains(TermMode::SHOW_CURSOR),
+            !cursor_visible(&state),
             "resume before commit must not leave the cursor shown"
         );
         let mut guard = state.lock().unwrap();
@@ -225,11 +220,14 @@ fn attributes_model(broken: bool) {
                 .unwrap();
             })
             .unwrap();
-        let mut state = state.lock().unwrap();
-        let cell = state.guard.writer().first_cell();
-        assert_eq!(cell.c, 'b');
+        let (character, foreground) = {
+            let mut state = state.lock().unwrap();
+            let cell = state.guard.writer().first_cell();
+            (cell.c, cell.fg)
+        };
+        assert_eq!(character, 'b');
         assert_eq!(
-            cell.fg,
+            foreground,
             alacritty_terminal::vte::ansi::Color::Named(
                 alacritty_terminal::vte::ansi::NamedColor::Foreground
             ),
@@ -290,9 +288,9 @@ fn contents_model(broken: bool, during_render: bool) {
         // An outside write after presentation legitimately changes the cell.
         // Once that writer is joined, the next frame must restore its target.
         terminal.draw(size, paint).unwrap();
+        let character = state.lock().unwrap().guard.writer().first_cell().c;
         assert_eq!(
-            state.lock().unwrap().guard.writer().first_cell().c,
-            'Z',
+            character, 'Z',
             "retained contents must follow lifecycle invalidation"
         );
     });
