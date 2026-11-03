@@ -18,6 +18,7 @@
       "id": "spawn_slots",
       "production": "rust/crates/harness-core/src/agent/slots.rs",
       "proofs": [
+        "Kani: client_cannot_take_a_recorded_slot",
         "Kani: every_recorded_child_fits_after_client_admission",
         "Kani: completing_a_child_does_not_release_a_paused_turns_slot",
         "Kani: replay_and_untrusted_reservation_counts_do_not_overflow",
