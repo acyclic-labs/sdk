@@ -17,9 +17,10 @@ fn valid_files(bytes: &[u8]) -> (Scorer, i64) {
         std::array::from_fn(|index| bytes.get(index).copied().unwrap_or_default());
     let word = |start| u64::from_le_bytes(population[start..start + 8].try_into().unwrap());
     let expected = word(0) as i64;
-    let score = f64::from_bits(word(24));
-    let score = score.is_finite().then_some(score);
-    let cost = score.map(f64::abs);
+    let measurement = f64::from_bits(word(24));
+    let measurement = measurement.is_finite().then_some(measurement);
+    let score = measurement.filter(|_| population[0] & 2 != 0);
+    let cost = measurement.filter(|_| population[0] & 4 != 0).map(f64::abs);
     let wire = serde_json::to_vec(&json!({"version":2,"population":population,
         "replicate":word(8),"arm":word(16),"score":score,"cost_usd":cost}))
     .expect("valid observation encodes");

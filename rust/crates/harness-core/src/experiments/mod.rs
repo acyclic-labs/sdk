@@ -210,17 +210,6 @@ mod tests {
         assert_eq!(baseline.cost_difference(&treatment)?, Some(-2.0));
 
         let known = Observation::new([7; 32], 0, 0, Some(0.0), Some(0.0))?;
-        let unscored = Observation::new([7; 32], 0, 1, None, Some(0.0))?;
-        assert_eq!(unscored.difference(&known)?, None);
-        assert_eq!(known.difference(&unscored)?, None);
-        assert_eq!(unscored.cost_difference(&known)?, Some(0.0));
-        let unpriced = Observation::new([7; 32], 0, 1, Some(0.0), None)?;
-        assert_eq!(unpriced.difference(&known)?, Some(0.0));
-        assert_eq!(unpriced.cost_difference(&known)?, None);
-        assert_eq!(known.cost_difference(&unpriced)?, None);
-        let unknown = Observation::new([7; 32], 0, 0, None, None)?;
-        assert_eq!(unpriced.cost_difference(&unknown)?, None);
-
         let maximum = Observation::new([7; 32], 0, 1, None, Some(f64::MAX))?;
         assert_eq!(maximum.cost_difference(&known)?, Some(f64::MAX));
         assert_eq!(known.cost_difference(&maximum)?, Some(-f64::MAX));

@@ -99,6 +99,17 @@ CASES = {
         "experiments/mod.rs", "row.arm == baseline.arm", "false",
         "trials-priced", "independent pairing invariant: foreign identity refusal",
     ),
+    "pair-unscored-cost": (
+        "experiments/mod.rs",
+        "    pub fn cost_difference(&self, baseline: &Self) -> Result<Option<f64>, Error> {\n"
+        "        self.check_pair(baseline)?;\n",
+        "    pub fn cost_difference(&self, baseline: &Self) -> Result<Option<f64>, Error> {\n"
+        "        self.check_pair(baseline)?;\n"
+        "        if self.0.score.is_none() && baseline.0.score.is_none() {\n"
+        "            return Ok(None);\n"
+        "        }\n",
+        "trials-priced", "independent pairing invariant: matched measurements",
+    ),
     "planning-ceiling": (
         "experiments/stats.rs", ".powi(2)).ceil();", ".powi(2)).floor();",
         "decision", "independent planning invariant: rational ceiling",

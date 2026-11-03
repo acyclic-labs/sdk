@@ -152,3 +152,12 @@ properties as standalone files. The former two-assignment report fold is
 subsumed by the generated public trial histories, which cover all four outcomes,
 known and unknown costs, rates and refusal state. No second report fold or
 additional scorer decode is needed for that corpus protocol.
+
+The generated observation's score and cost availability use independent bits
+(`02` and `04`) of the first input byte. All four availability combinations
+reach the original public decoder and the existing bidirectional pair property;
+nonfinite generated measurements remain absent. The original `trials-priced`
+input (`04`) supplies known cost without a score. The kept `pair-unscored-cost`
+mutation wrongly drops known costs when both scores are missing. This subsumes
+the fixed zero-valued availability examples, while nonzero-baseline subtraction
+and maximum-cost controls remain distinct. No additional corpus file is needed.
