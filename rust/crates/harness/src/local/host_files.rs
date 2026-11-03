@@ -963,16 +963,11 @@ impl Served {
             Err(Error::NotFound(_)) => {}
             // Held-root removal unlinks the projection itself, never a
             // symlink target. Clients keep their durable command records.
-            Err(_) => {
-                match remove_projection(&path) {
-                    Ok(()) | Err(Error::NotFound(_)) => {}
-                    Err(error) => {
-                        // No withdrawal event can be produced. End the
-                        // original owner instead of abandoning its waiter.
-                        return Err(Error::Storage(format!(
-                            "step=withdraw rejected native request {operation}: {error}; recovery=graphcoder --host-workspace"
-                        )));
-                    }
+            Err(admission) => {
+                if let Err(cleanup) = remove_projection(&path) {
+                    // No withdrawal event can be produced. End the original
+                    // owner with both causes instead of abandoning its waiter.
+                    return Error::after_cleanup(Err(admission), Err(cleanup));
                 }
             }
         }
