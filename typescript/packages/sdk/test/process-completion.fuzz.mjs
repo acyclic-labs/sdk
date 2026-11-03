@@ -13,6 +13,7 @@ export function fuzz(data, decode = decodeCompletion) {
   const check = bytes => {
     try {
       const result = decode(bytes, identity);
+      assert.deepEqual(result, JSON.parse(bytes), 'retain every admitted producer field');
       assert.equal(result.invocation, identity);
       assert.ok(result.failure !== null || result.process_tree_retired);
       if (result.process_tree_retired) assert.ok(result.root_status);

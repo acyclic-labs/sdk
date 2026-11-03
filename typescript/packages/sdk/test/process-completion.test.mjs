@@ -12,9 +12,7 @@ test('original native receipt corpus rejects corruptions and planted admission l
   const replay = decode => {
     for (const original of originals) {
       const expected = JSON.parse(original);
-      let decoded;
-      assert.doesNotThrow(() => { decoded = decode(original, expected.invocation); });
-      assert.deepEqual(decoded, expected, 'retain every original producer field');
+      assert.doesNotThrow(() => decode(original, expected.invocation));
       fuzz(original, decode);
     }
   };
@@ -43,6 +41,7 @@ test('original native receipt corpus rejects corruptions and planted admission l
     '!integer(value.failure.error.raw_os_error)',
   ];
   for (const [guard, replacement] of [...guards.map(guard => [guard, 'false']),
+    ['return value;', 'return {...value, failure: value.failure && {...value.failure, error: {...value.failure.error, raw_os_error: null}}};'],
     ['return value;', 'throw invalid();']]) {
     const planted = source.replace(guard, replacement);
     assert.notEqual(planted, source, `production guard missing: ${guard}`);
