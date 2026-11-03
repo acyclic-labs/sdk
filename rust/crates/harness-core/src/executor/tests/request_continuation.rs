@@ -257,7 +257,7 @@ async fn prepared_accounting_recovers_with_its_projection_before_model_dispatch(
     let bytes = journal.load(&reference, None)?.await?;
     let mut retained = projection;
     retained.context.messages = prepared.request().messages.clone();
-    retained.accounting = Some(accounting);
+    retained.accounting = accounting;
     assert_eq!(
         &*bytes,
         crate::contract::canonical_json_bytes(&retained)?,
