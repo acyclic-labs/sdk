@@ -2,7 +2,25 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
-import { isWasmArtifactPath, readBoundedGzip, readDeclaredTarGzip, tarEntries, tarPayload } from "./archive-utils.mjs";
+import { isWasmArtifactPath, readBoundedGzip, readDeclaredTarGzip, tarEntries, tarPayload, wasmArtifactFiles, wasmArtifactInventory } from "./archive-utils.mjs";
+
+// The caller records its actual file writes independently of enumeration.
+// Invalid trees must refuse, including aliases whose target is a valid tree.
+export function fuzzArtifactTree(directory, expected, options) {
+  if (expected === null) {
+    assert.throws(() => [...wasmArtifactFiles(directory, options)], /WASM artifact admission failed .*; recovery:/);
+    return;
+  }
+  const files = [...wasmArtifactFiles(directory, options)];
+  const order = (a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
+  assert.deepEqual([...files].sort(order), [...expected].sort(order));
+  const inventory = wasmArtifactInventory(files);
+  assert.deepEqual(inventory, [...expected].sort(order).map(([path, bytes]) => ({
+    path, bytes: bytes.length, sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+  })));
+  assert.deepEqual(wasmArtifactInventory(files.toReversed()), inventory);
+  return inventory;
+}
 
 export function fuzzPayload(data, caseInsensitive) {
   const bytes = Buffer.from(data);

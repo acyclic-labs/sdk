@@ -1,14 +1,122 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createHash } from "node:crypto";
 import { gzipSync, gunzipSync } from "node:zlib";
-import { fuzz, fuzzGzip, fuzzDeclared, fuzzPayload } from "./archive-utils.fuzz.mjs";
-import { tarEntries } from "./archive-utils.mjs";
+import { fuzz, fuzzGzip, fuzzDeclared, fuzzPayload, fuzzArtifactTree } from "./archive-utils.fuzz.mjs";
+import { copyWasmArtifacts, preserveWasmArtifacts, tarEntries, wasmArtifactFiles, wasmArtifactInventory } from "./archive-utils.mjs";
 
 const seed = readFileSync(new URL("./test-support/archive-corpus/native-ustar.tar", import.meta.url));
+
+test("artifact inventory matches real file writes and refuses aliases before replacing output", async () => {
+  const temporary = mkdtempSync(join(tmpdir(), "wasm-artifact-tree-"));
+  const source = join(temporary, "source"), output = join(temporary, "output");
+  const expected = new Map();
+  const bodies = tarEntries(seed).filter(entry => entry.type === "0").map(entry => entry.body);
+  const write = (path, bytes) => {
+    const parts = path.split("/");
+    mkdirSync(join(source, ...parts.slice(0, -1)), { recursive: true });
+    writeFileSync(join(source, path), bytes);
+    expected.set(`generated/wasm/${path}`, bytes);
+  };
+  try {
+    mkdirSync(source);
+    assert.deepEqual(copyWasmArtifacts(source, output), fuzzArtifactTree(source, expected));
+    // The bytes are native TAR payloads, not compiler or receipt fixtures:
+    // tree admission treats them as opaque files and never decodes them.
+    for (const [index, path] of ["module.js", "module_bg.wasm", "module.d.ts",
+      "snippets/inline.js", "snippets/nested/é.js"].entries()) {
+      write(path, bodies[index % bodies.length]);
+      const receipt = fuzzArtifactTree(source, expected);
+      mkdirSync(join(output, "snippets", "stale"), { recursive: true });
+      const stale = join(output, "snippets", "stale", "old.js");
+      writeFileSync(stale, bodies[0]);
+      assert.deepEqual(copyWasmArtifacts(source, output), receipt);
+      assert.deepEqual(fuzzArtifactTree(output, expected), receipt);
+      assert.throws(() => readFileSync(stale), { code: "ENOENT" });
+    }
+    for (const present of [true, false]) {
+      const selected = present ? source : join(temporary, "absent");
+      const original = present ? wasmArtifactInventory(wasmArtifactFiles(selected)) : [];
+      for (const outcome of ["built", "refused", "no-output"]) {
+        const custody = preserveWasmArtifacts(selected, "node scripts/build-wasm.mjs harness");
+        let candidate;
+        try {
+          if (outcome === "no-output") throw new Error("qualification refused");
+          if (present) {
+            mkdirSync(selected, { recursive: true });
+            cpSync(custody.source(join(selected, "module.js")), join(selected, "module.js"));
+            assert.deepEqual(readFileSync(join(selected, "module.js")), expected.get("generated/wasm/module.js"));
+          }
+          mkdirSync(join(selected, "snippets", "candidate"), { recursive: true });
+          // Derived source bytes exercise real directory custody, not a compiler fixture.
+          writeFileSync(join(selected, "module.js"), readFileSync(new URL("./build-wasm.mjs", import.meta.url)));
+          writeFileSync(join(selected, "snippets", "candidate", "inline.js"), readFileSync(import.meta.filename));
+          candidate = wasmArtifactInventory(wasmArtifactFiles(selected));
+          if (outcome === "refused") throw new Error("qualification refused");
+        } catch (error) {
+          if (outcome === "built" || error.message !== "qualification refused") throw error;
+        } finally { custody.restore(); }
+        if (candidate) assert.deepEqual(wasmArtifactInventory(wasmArtifactFiles(custody.archive)), candidate,
+          "temporary build was not retained separately");
+        else assert.equal(existsSync(custody.archive), false, "absent temporary build was fabricated");
+        if (candidate) assert.deepEqual(readFileSync(custody.retained(join(selected, "module.js"))),
+          readFileSync(new URL("./build-wasm.mjs", import.meta.url)), "receipt names replaced output bytes");
+        const outside = join(temporary, "outside", "module.js");
+        assert.equal(custody.source(outside), outside);
+        assert.equal(custody.retained(outside), outside);
+        assert.equal(existsSync(selected), present, "temporary build replaced original output presence");
+        if (present) assert.deepEqual(wasmArtifactInventory(wasmArtifactFiles(selected)), original,
+          "temporary build replaced original output bytes");
+      }
+    }
+    write("producer-receipt.json", bodies[0]);
+    fuzzArtifactTree(source, expected, { receipt: true });
+    const withoutReceipt = new Map(expected);
+    withoutReceipt.delete("generated/wasm/producer-receipt.json");
+    fuzzArtifactTree(source, withoutReceipt);
+    const receiptLeak = await planted('if (receipt || path !== "producer-receipt.json") yield path;', "yield path;");
+    assert.throws(() => receiptLeak.fuzzArtifactTree(source, withoutReceipt), assert.AssertionError);
+    const changedDigest = await planted('bytes: bytes.length, sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`',
+      'bytes: bytes.length, sha256: "sha256:" + "0".repeat(64)');
+    assert.throws(() => changedDigest.fuzzArtifactTree(source, withoutReceipt), assert.AssertionError);
+    const unsorted = await planted(
+      ")).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0)", "))");
+    assert.throws(() => unsorted.fuzzArtifactTree(source, withoutReceipt), assert.AssertionError);
+    renameSync(join(source, "snippets"), join(source, "other"));
+    fuzzArtifactTree(source, null);
+    renameSync(join(source, "other"), join(source, "snippets"));
+
+    const alias = join(temporary, "alias");
+    symlinkSync(source, alias, process.platform === "win32" ? "junction" : "dir");
+    fuzzArtifactTree(alias, null);
+    const rootAlias = await planted("const root = lstatSync(directory);", "const root = statSync(directory);");
+    assert.throws(() => rootAlias.fuzzArtifactTree(alias, null), assert.AssertionError);
+    fuzzArtifactTree(join(source, "module.js"), null);
+
+    const linked = join(source, "snippets", "linked");
+    symlinkSync(output, linked, process.platform === "win32" ? "junction" : "dir");
+    fuzzArtifactTree(source, null);
+    const followed = await planted("entry.isDirectory() && !entry.isSymbolicLink()",
+      "(entry.isDirectory() || entry.isSymbolicLink())");
+    assert.throws(() => followed.fuzzArtifactTree(source, null), assert.AssertionError);
+    const original = bodies[2];
+    writeFileSync(join(output, "module.js"), original);
+    assert.throws(() => fuzzArtifactTree(output, withoutReceipt), assert.AssertionError);
+    const protectedFile = join(output, "previous.js");
+    writeFileSync(protectedFile, original);
+    assert.throws(() => copyWasmArtifacts(source, output), /non-regular artifact; recovery:/);
+    assert.deepEqual(readFileSync(join(output, "module.js")), original);
+    assert.deepEqual(readFileSync(protectedFile), original);
+    rmSync(linked, { recursive: true });
+    symlinkSync(source, join(output, "snippets", "linked"), process.platform === "win32" ? "junction" : "dir");
+    assert.throws(() => copyWasmArtifacts(source, output), /non-regular artifact; recovery:/);
+    assert.deepEqual(readFileSync(join(output, "module.js")), original);
+    assert.deepEqual(readFileSync(protectedFile), original);
+  } finally { rmSync(temporary, { recursive: true, force: true }); }
+});
 
 test("native payload framing preserves caller path and case policies without copying members", async () => {
   const flat = gunzipSync(readFileSync(new URL("./test-support/archive-corpus/native-flat.tar.gz", import.meta.url)));
