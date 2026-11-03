@@ -1,16 +1,14 @@
 diff --git a/rust/crates/harness-core/src/agent/records.rs b/rust/crates/harness-core/src/agent/records.rs
 --- a/rust/crates/harness-core/src/agent/records.rs
 +++ b/rust/crates/harness-core/src/agent/records.rs
-@@ -74,12 +74,6 @@
- pub(crate) fn open<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Unopened> {
-     let header: Header<'_> = serde_json::from_slice(bytes).map_err(|_| Unopened::Malformed)?;
-     let found = header.version.unwrap_or(1);
+@@ -98,10 +98,4 @@
+     let (version, payload) = bytes.split_at_checked(4).ok_or(Unopened::Malformed)?;
+     let found = u32::from_be_bytes(version.try_into().map_err(|_| Unopened::Malformed)?);
 -    if found != RECORD_VERSION {
 -        return Err(Unopened::Version(UnsupportedRecordVersion {
 -            found,
 -            expected: RECORD_VERSION,
 -        }));
 -    }
-     match header.record {
-         Some(record) if !header.unknown => {
-             serde_json::from_str(record.get()).map_err(|_| Unopened::Malformed)
+     decode_payload(payload)
+ }

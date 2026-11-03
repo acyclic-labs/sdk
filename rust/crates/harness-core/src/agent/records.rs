@@ -36,7 +36,8 @@ pub const MAX_VOLUMES: usize = 8;
 /// Version 10 unifies child and deadline waits as one monotone condition.
 /// Version 11 adds admitted boundary steering and next-turn messages.
 /// Version 12 retains template capabilities only in their immutable source.
-pub const RECORD_VERSION: u32 = 12;
+/// Version 13 uses named MessagePack values after a four-byte big-endian version.
+pub const RECORD_VERSION: u32 = 13;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -56,36 +57,56 @@ pub(crate) enum Unopened {
     Malformed,
 }
 
-/// `record` under the shared header, as canonical JSON.
+/// The canonical record after its fixed-width version. Named maps retain
+/// optional fields without positional omissions, and strings never expand as
+/// JSON escapes. Every authority field remains in the original serde shape.
 pub(crate) fn seal<T: Serialize + ?Sized>(record: &T) -> crate::Result<Vec<u8>> {
-    #[derive(Serialize)]
-    struct Sealed<'a, T: ?Sized> {
-        record: &'a T,
-        version: u32,
-    }
-    crate::contract::canonical_json_bytes(&Sealed {
-        record,
-        version: RECORD_VERSION,
-    })
+    let mut bytes = RECORD_VERSION.to_be_bytes().to_vec();
+    write_payload(&mut bytes, record)?;
+    Ok(bytes)
 }
 
-/// The record under the shared header. The version is checked before any of
-/// the record is decoded, so a record of another version is refused whole.
+/// The same payload encoding used by records and the actor checkpoint.
+pub(super) fn encode_payload<T: Serialize + ?Sized>(value: &T) -> crate::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    write_payload(&mut bytes, value)?;
+    Ok(bytes)
+}
+
+fn write_payload<T: Serialize + ?Sized>(bytes: &mut Vec<u8>, value: &T) -> crate::Result<()> {
+    let mut value =
+        serde_json::to_value(value).map_err(|error| crate::Error::Invalid(error.to_string()))?;
+    // Notice bodies may contain JSON objects. Canonical bytes cannot depend on
+    // their insertion order or serde_json's feature-unified map implementation.
+    value.sort_all_objects();
+    value
+        .serialize(&mut rmp_serde::Serializer::new(bytes).with_struct_map())
+        .map_err(|error| crate::Error::Invalid(error.to_string()))
+}
+
+/// Decode exactly one value, including all of its fields. The library's
+/// from_slice helper accepts trailing values; a durable record must not.
+pub(super) fn decode_payload<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Unopened> {
+    let mut decoder =
+        rmp_serde::Deserializer::new(std::io::Cursor::new(bytes)).with_human_readable();
+    let value = T::deserialize(&mut decoder).map_err(|_| Unopened::Malformed)?;
+    if decoder.get_ref().position() != bytes.len() as u64 {
+        return Err(Unopened::Malformed);
+    }
+    Ok(value)
+}
+
+/// Select the format before decoding any payload, even a malformed one.
 pub(crate) fn open<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Unopened> {
-    let header: Header<'_> = serde_json::from_slice(bytes).map_err(|_| Unopened::Malformed)?;
-    let found = header.version.unwrap_or(1);
+    let (version, payload) = bytes.split_at_checked(4).ok_or(Unopened::Malformed)?;
+    let found = u32::from_be_bytes(version.try_into().map_err(|_| Unopened::Malformed)?);
     if found != RECORD_VERSION {
         return Err(Unopened::Version(UnsupportedRecordVersion {
             found,
             expected: RECORD_VERSION,
         }));
     }
-    match header.record {
-        Some(record) if !header.unknown => {
-            serde_json::from_str(record.get()).map_err(|_| Unopened::Malformed)
-        }
-        _ => Err(Unopened::Malformed),
-    }
+    decode_payload(payload)
 }
 
 /// The record of any agent stream as `T`, such as a JSON value for a
@@ -99,52 +120,6 @@ pub fn decode_record<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Er
         Unopened::Version(version) => Error::UnsupportedRecordVersion(version),
         Unopened::Malformed => Error::Record("record is malformed"),
     })
-}
-
-/// One pass over the header's keys. Unknown keys are noted, not refused, so
-/// a record of another version, header or not, still reports its version.
-struct Header<'a> {
-    version: Option<u32>,
-    record: Option<&'a serde_json::value::RawValue>,
-    unknown: bool,
-}
-
-impl<'de> Deserialize<'de> for Header<'de> {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Keys;
-        impl<'de> serde::de::Visitor<'de> for Keys {
-            type Value = Header<'de>;
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("a versioned record")
-            }
-            fn visit_map<M: serde::de::MapAccess<'de>>(
-                self,
-                mut map: M,
-            ) -> Result<Self::Value, M::Error> {
-                let mut header = Header {
-                    version: None,
-                    record: None,
-                    unknown: false,
-                };
-                while let Some(key) = map.next_key::<std::borrow::Cow<'de, str>>()? {
-                    match &*key {
-                        "version" if header.version.is_none() => {
-                            header.version = Some(map.next_value()?);
-                        }
-                        "record" if header.record.is_none() => {
-                            header.record = Some(map.next_value()?);
-                        }
-                        _ => {
-                            header.unknown = true;
-                            map.next_value::<serde::de::IgnoredAny>()?;
-                        }
-                    }
-                }
-                Ok(header)
-            }
-        }
-        deserializer.deserialize_map(Keys)
-    }
 }
 
 /// Stable caller-chosen identity of one intent (a message, cancel, archive, hook or approval).
@@ -582,7 +557,7 @@ pub struct StatusRecord {
 }
 
 impl StatusRecord {
-    /// JSON status plus Streams' opaque LATEST metadata. Attention transitions
+    /// Encoded status plus Streams' opaque LATEST metadata. Attention transitions
     /// survive conflation; every publisher uses this same record constructor.
     pub fn append_record(&self) -> Result<acyclic_stream::AppendRecord, Error> {
         acyclic_stream::AppendRecord::latest(
@@ -614,7 +589,7 @@ pub trait AgentRecord: Serialize + for<'de> Deserialize<'de> {
         Ok(())
     }
 
-    /// Canonical JSON with sorted keys under the shared [`RECORD_VERSION`]
+    /// Canonical named MessagePack under the shared [`RECORD_VERSION`]
     /// header, refused above [`MAX_RECORD_BYTES`].
     fn encode(&self) -> Result<Vec<u8>, Error> {
         self.check()?;

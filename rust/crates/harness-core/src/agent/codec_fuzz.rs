@@ -43,57 +43,35 @@ fn header<T: serde::Serialize + for<'de> serde::Deserialize<'de>>(value: &T) {
         assert!(refused, "agent record header refusal changed");
     }
     let encoded = records::seal(value).expect("admitted record writer");
-    // Only inspect the canonical writer's output here. Parsing arbitrary input
-    // through Value would lose duplicate keys before the real header sees them.
-    let mut written: serde_json::Value = serde_json::from_slice(&encoded).expect("writer JSON");
-    let fields = written.as_object_mut().expect("writer header");
+    assert!(records::decode_record::<T>(&encoded).is_ok());
     for version in (0..=records::RECORD_VERSION + 1).chain(std::iter::once(u32::MAX)) {
-        fields.insert("version".into(), version.into());
-        let encoded = crate::contract::canonical_json_bytes(fields).expect("altered header");
+        let mut changed = encoded.clone();
+        changed[..4].copy_from_slice(&version.to_be_bytes());
         if version != records::RECORD_VERSION {
-            refuses::<T>(&encoded, version);
-        }
-        // Both a valid body and one that cannot decode as any of these record
-        // types must report a foreign version before payload decoding.
-        let body = fields.insert("record".into(), serde_json::Value::Null);
-        let malformed = crate::contract::canonical_json_bytes(fields).expect("altered payload");
-        refuses::<T>(&malformed, version);
-        fields.remove("record");
-        let missing = crate::contract::canonical_json_bytes(fields).expect("missing payload");
-        refuses::<T>(&missing, version);
-        fields.insert("record".into(), body.expect("writer record"));
-        for suffix in [
-            br#", "extra":0}"#.as_slice(),
-            br#", "record":null}"#.as_slice(),
-        ] {
-            let mut changed = encoded[..encoded.len() - 1].to_vec();
-            changed.extend_from_slice(suffix);
             refuses::<T>(&changed, version);
         }
-        // The first selected version wins; a repeated version marks the
-        // current header malformed, never a new format selection.
-        let mut duplicate = encoded[..encoded.len() - 1].to_vec();
-        let second_version = if version == records::RECORD_VERSION {
-            0
-        } else {
-            records::RECORD_VERSION
-        };
-        duplicate.extend_from_slice(format!(r#", "version":{second_version}}}"#).as_bytes());
+        // A foreign version wins even when its payload is absent or cannot
+        // decode as the selected record. The fixed header has no duplicate keys.
+        for body in [b"".as_slice(), &[0xc0][..]] {
+            let mut malformed = version.to_be_bytes().to_vec();
+            malformed.extend_from_slice(body);
+            refuses::<T>(&malformed, version);
+        }
+        // Complete consumption is required: never accept a second value,
+        // a second header, or a truncated current value.
+        changed.push(0);
+        refuses::<T>(&changed, version);
+        let mut duplicate = version.to_be_bytes().to_vec();
+        duplicate.extend_from_slice(&encoded);
         refuses::<T>(&duplicate, version);
     }
-    for version in [
-        serde_json::Value::Null,
-        (-1).into(),
-        u64::MAX.into(),
-        "unknown".into(),
-    ] {
-        fields.insert("version".into(), version);
-        let invalid = crate::contract::canonical_json_bytes(fields).expect("invalid version");
-        refuses::<T>(&invalid, records::RECORD_VERSION);
+    for length in 0..4 {
+        assert!(matches!(
+            records::decode_record::<T>(&encoded[..length]),
+            Err(super::Error::Record("record is malformed"))
+        ));
     }
-    fields.remove("version");
-    let headerless = crate::contract::canonical_json_bytes(fields).expect("headerless record");
-    refuses::<T>(&headerless, 1);
+    refuses::<T>(&encoded[..encoded.len() - 1], records::RECORD_VERSION);
 }
 
 fn envelope(value: &acyclic_actors::guest::Checkpoint) {

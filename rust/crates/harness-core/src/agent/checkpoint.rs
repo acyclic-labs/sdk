@@ -5,7 +5,8 @@
 //! rather than JSON: each open child is its 16-byte id (its path, like the
 //! agent's parent, is derived from the agent's path), the children still to
 //! archive and the children awaited are bitmaps over them, and the turn
-//! driver's checkpoint is raw bytes. The rest of the state is JSON.
+//! driver's checkpoint is raw bytes. The rest uses the shared named MessagePack
+//! payload.
 //!
 //! Every part of every agent record is bounded at admission: paths by
 //! [`super::MAX_DEPTH`], file and volume references by the conversation
@@ -55,7 +56,7 @@ pub(crate) fn checkpoint_state(checkpoint: &Checkpoint) -> Result<AgentState, Er
 #[derive(Clone, PartialEq, prost::Message)]
 struct Encoded {
     // Tag 1 retired: Actors owns the committed inbox cursor.
-    /// The state as JSON, without the fields below.
+    /// The shared record payload, without the fields below.
     #[prost(bytes = "vec", tag = "2")]
     state: Vec<u8>,
     /// Each open child's id, in path order.
@@ -120,7 +121,7 @@ pub(crate) fn encode(state: &AgentState) -> Result<Vec<u8>, Error> {
         return Err(Error::Record("an awaited child is not open"));
     }
     Ok(Encoded {
-        state: serde_json::to_vec(&rest)
+        state: super::records::encode_payload(&rest)
             .map_err(|_| Error::Record("agent checkpoint does not encode"))?,
         open_children: ids,
         archive_pending: bitmap,
@@ -140,7 +141,8 @@ pub(crate) fn encode(state: &AgentState) -> Result<Vec<u8>, Error> {
 pub(crate) fn decode(bytes: &[u8]) -> Result<AgentState, Error> {
     let malformed = || Error::Record("agent checkpoint is malformed");
     let encoded = Encoded::decode(bytes).map_err(|_| malformed())?;
-    let mut state: AgentState = serde_json::from_slice(&encoded.state).map_err(|_| malformed())?;
+    let mut state: AgentState =
+        super::records::decode_payload(&encoded.state).map_err(|_| malformed())?;
     if !state.open_children.is_empty()
         || !state.archive_pending.is_empty()
         || !state.awaiting.is_empty()
@@ -379,14 +381,17 @@ mod tests {
                 from: from.clone(),
                 id: intent(),
                 body: Box::new(file()),
-                attachments: None,
+                attachments: Some(Box::new(file())),
             }));
             records.push(InboxRecord::Spawn(SpawnRequest {
                 profile: crate::agent::CreationConfig {
                     context: crate::agent::SpawnContext::TopLevel,
-                    template: None,
+                    template: Some(file()),
                 },
-                history: None,
+                history: Some(crate::agent::HistorySelection {
+                    conversation: u64::MAX,
+                    checkpoint: Some(u64::MAX),
+                }),
                 by: from.clone(),
                 id: intent(),
                 brief: Box::new(file()),
@@ -397,6 +402,27 @@ mod tests {
                 },
                 crate::agent::ContextAction::Rewind,
                 crate::agent::ContextAction::Clear,
+                crate::agent::ContextAction::Restore {
+                    at: u64::MAX,
+                    mode: crate::agent::RestoreMode::Both,
+                    expected: (0..MAX_VOLUMES)
+                        .map(|index| crate::agent::HistoryVolume {
+                            binding: VolumeBinding {
+                                name: format!("{}{}", widest(MAX_INTENT_BYTES - 1), index),
+                                volume: volume(),
+                            },
+                            generation: acyclic_fs::GenerationId::from_root(acyclic_fs::ObjectId {
+                                kind: acyclic_fs::ObjectKind::GenerationRoot,
+                                digest: acyclic_fs::Digest::from_bytes([255; 32]),
+                                storage: Some(acyclic_fs::ObjectStorage {
+                                    locator: acyclic_fs::Digest::from_bytes([255; 32]),
+                                    root_file_id: acyclic_fs::FileId::from_bytes([255; 16]),
+                                    origin_generation: acyclic_fs::Digest::from_bytes([255; 32]),
+                                }),
+                            }),
+                        })
+                        .collect(),
+                },
             ] {
                 records.push(InboxRecord::Context(crate::agent::ContextRequest {
                     by: from.clone(),
@@ -581,7 +607,7 @@ mod tests {
 
     // Exercise the canonical encoder itself, before its size refusal. A refused
     // oversized record is a failure of this property, not a passing bound.
-    fn assert_record_bound<T: AgentRecord>(record: &T) -> usize {
+    fn assert_record_bound<T: AgentRecord + PartialEq + std::fmt::Debug>(record: &T) -> usize {
         record
             .check()
             .expect("generated record satisfies structural admission");
@@ -596,6 +622,7 @@ mod tests {
             record.encode().expect("bounded encoder accepts record"),
             raw
         );
+        assert_eq!(&T::decode(&raw).expect("writer's record decodes"), record);
         raw.len()
     }
 

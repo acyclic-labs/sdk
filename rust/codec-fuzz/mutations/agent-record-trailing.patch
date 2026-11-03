@@ -1,0 +1,11 @@
+diff --git a/rust/crates/harness-core/src/agent/records.rs b/rust/crates/harness-core/src/agent/records.rs
+--- a/rust/crates/harness-core/src/agent/records.rs
++++ b/rust/crates/harness-core/src/agent/records.rs
+@@ -88,7 +88,4 @@
+         rmp_serde::Deserializer::new(std::io::Cursor::new(bytes)).with_human_readable();
+     let value = T::deserialize(&mut decoder).map_err(|_| Unopened::Malformed)?;
+-    if decoder.get_ref().position() != bytes.len() as u64 {
+-        return Err(Unopened::Malformed);
+-    }
+     Ok(value)
+ }
