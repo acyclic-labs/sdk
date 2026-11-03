@@ -1,3 +1,4 @@
+//! Receipt admission through the public native workspace owner.
 #[path = "support/native_receipt.rs"]
 mod contract;
 
@@ -9,7 +10,6 @@ use acyclic_harness::{
         host_owner::{HostAction, HostWorkspaceOwner, SessionAction},
     },
 };
-use serde_json::Value;
 use std::sync::Arc;
 
 /// Capture real replies from the shipped native owner, including siblings,
@@ -68,37 +68,6 @@ async fn native_receipt_contract_uses_original_owner_replies()
     let replies = vec![first, root, sibling, nested, reopened];
     let original = serde_json::to_vec(&replies)?;
     contract::verify(&original);
-    let mut remounted = replies.clone();
-    remounted
-        .last_mut()
-        .ok_or("original reopened reply absent")?["cwd"] = remounted[3]["cwd"].clone();
-    contract::verify(&serde_json::to_vec(&remounted)?);
-    // These are explicit mutations of actual producer bytes, not invented
-    // external responses. Cover absent/wrong task and view types at both cuts.
-    for field in ["task", "cwd"] {
-        for replacement in [
-            Value::Null,
-            Value::Bool(false),
-            Value::from(0),
-            Value::String(String::new()),
-            serde_json::json!([]),
-            serde_json::json!({}),
-        ] {
-            for index in [0, replies.len() - 1] {
-                let mut mutated = replies.clone();
-                mutated[index][field] = replacement.clone();
-                contract::verify(&serde_json::to_vec(&mutated)?);
-            }
-        }
-        for index in [0, replies.len() - 1] {
-            let mut mutated = replies.clone();
-            mutated[index]
-                .as_object_mut()
-                .ok_or("original reply is not an object")?
-                .remove(field);
-            contract::verify(&serde_json::to_vec(&mutated)?);
-        }
-    }
     println!("NATIVE_RECEIPT_CAPTURE={}", String::from_utf8(original)?);
     Ok(())
 }

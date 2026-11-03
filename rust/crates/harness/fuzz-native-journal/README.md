@@ -13,6 +13,23 @@ fuzzer corpus. Derived field mutations are not captured external responses.
 This checks receipt admission, not native CLI execution, distributed serving,
 process cancellation or the physical execution fence.
 
+The retained `corpus/native_receipt/owner-identities` projects the five replies
+captured by that control at commit `b52cd96d452abb50793f8fb47cf8b433feb24bc6`
+on Linux x86_64. Original serialized capture SHA256:
+`3aed01d936eed113c1eea9fe27195a2d94e0361ef906d30146b8565d5b48a535`.
+Only the original `task` values remain unchanged; private working directories
+and unrelated reply fields are omitted. No replacement wire values are claimed.
+`derived-views` adds explicitly mutated empty/current views, wrong field types
+and an absent task to those original identities. The other two derived seeds
+exercise admission with an absent task and a null task.
+
+| Seed | SHA256 |
+| --- | --- |
+| `owner-identities` | `38eac08b5e0e18f1a4a6f2dbecbb304c1552adcd9716a3d1b5cf045cf09ebbff` |
+| `derived-views` | `12803fad195012bf2b5fac2b60009749de7f5bef7e38a97671bb587213a8460b` |
+| `derived-task-absent` | `44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a` |
+| `derived-task-type` | `f7d147326d8223b27b438cdcae69640fc76859270960341bec3fced6644b0fee` |
+
 Run the producer control with
 `cargo test -p acyclic-harness --no-default-features --features filesystem-local,native-execution --test native_receipt -- --nocapture`.
 Run the retained target with
