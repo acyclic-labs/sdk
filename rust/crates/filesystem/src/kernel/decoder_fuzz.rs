@@ -1,6 +1,6 @@
 //! Shared byte-input oracle for the real canonical decoder accounting boundary.
 use super::allocation::KernelAccounting;
-use super::codec::ReadAllocationStep;
+use super::codec::{CanonicalInvariant, DecodedPageKind, DecodedPageShape, ReadAllocationStep};
 use super::file_read::OriginalReadAccounting;
 use super::*;
 use crate::{CancellationToken, FsError, WorkBudget, WorkCounters};
@@ -31,6 +31,7 @@ fn decode<const PLANTED: bool>(
     kind: u8,
     bytes: &[u8],
     limits: DecodeLimits,
+    prefix: usize,
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), FsError>,
 ) -> Result<Vec<u8>, FsError> {
     let allocation_error = |_| CanonicalDecodeError::AllocationFailed.into();
@@ -69,7 +70,66 @@ fn decode<const PLANTED: bool>(
             )
         }
         4 => {
-            let value = decode_extent_page(bytes, limits, observe)?;
+            // Shape admission is a separate production entry point. Exercise
+            // arbitrary bytes even when full decoding or its admission fails.
+            let shape = super::extent::decode_extent_page_shape(bytes, limits);
+            let decoded = decode_extent_page(bytes, limits, observe);
+            if let Err(FsError::Decode(error)) = &decoded
+                && matches!(
+                    error,
+                    CanonicalDecodeError::WrongDomain
+                        | CanonicalDecodeError::UnsupportedVersion { .. }
+                        | CanonicalDecodeError::ObjectTooLarge { .. }
+                        | CanonicalDecodeError::FieldTooLarge { .. }
+                        | CanonicalDecodeError::UnknownTag { .. }
+                        | CanonicalDecodeError::TrailingBytes
+                        | CanonicalDecodeError::Invariant(CanonicalInvariant::Static(_))
+                )
+            {
+                // Full-only extent semantics and injected Truncated refusals
+                // do not establish a structural shape-decoder error.
+                assert_eq!(
+                    shape,
+                    Err(error.clone()),
+                    "extent shape refusal differs from the full decoder"
+                );
+            }
+            let value = decoded?;
+            let (kind, items) = match &value {
+                ExtentPage::Leaf(items) => (DecodedPageKind::Leaf, items.len()),
+                ExtentPage::Internal(items) => (DecodedPageKind::Internal, items.len()),
+            };
+            assert_eq!(
+                shape,
+                Ok(DecodedPageShape {
+                    kind,
+                    items,
+                    nested_bytes: 0,
+                }),
+                "extent shape differs from the fully validated page"
+            );
+            assert!(
+                super::extent::decode_extent_page_shape(&bytes[..prefix % bytes.len()], limits)
+                    .is_err(),
+                "extent shape admitted a truncated frame"
+            );
+            let mut trailing = bytes.to_vec();
+            trailing.push(0);
+            assert!(
+                super::extent::decode_extent_page_shape(&trailing, limits).is_err(),
+                "extent shape admitted trailing bytes"
+            );
+            let version = [0_u16, 2, u16::MAX][prefix % 3];
+            let mut header = bytes[..10].to_vec();
+            header[8..10].copy_from_slice(&version.to_le_bytes());
+            assert_eq!(
+                super::extent::decode_extent_page_shape(&header, limits),
+                Err(CanonicalDecodeError::UnsupportedVersion {
+                    found: version,
+                    expected: 1,
+                }),
+                "extent shape did not retain version refusal"
+            );
             canonical::<_, PLANTED>(
                 &value,
                 encode_extent_page(&value, items, |_| Ok::<_, FsError>(()), allocation_error),
@@ -161,14 +221,11 @@ fn check_inner<const OMIT_COMPLETION: bool, const PLANTED: bool>(input: &[u8]) -
         maximum_name_bytes: 256,
         ..DecodeLimits::default()
     };
+    let prefix = usize::from(u16::from_le_bytes([controls[3], controls[4]]));
     if kind % KINDS == 2 {
-        super::file_table::check_fuzz::<true>(
-            bytes,
-            limits,
-            usize::from(u16::from_le_bytes([controls[3], controls[4]])),
-        );
+        super::file_table::check_fuzz::<true>(bytes, limits, prefix);
     }
-    let decoded = decode::<PLANTED>(kind % KINDS, bytes, limits, &mut |step| {
+    let decoded = decode::<PLANTED>(kind % KINDS, bytes, limits, prefix, &mut |step| {
         let before = matches!(
             step,
             ReadAllocationStep::BeforeCopy(_)
@@ -413,13 +470,18 @@ mod tests {
     }
 
     #[test]
-    fn file_table_writer_corpus_reaches_the_shared_differential_oracle() {
+    fn canonical_writer_corpus_reaches_the_shared_differential_oracles() {
         for bytes in [
             include_bytes!("../../fuzz/corpus/decoder_work/file-table-empty-leaf").as_slice(),
             include_bytes!("../../fuzz/corpus/decoder_work/file-table-plain-internal").as_slice(),
             include_bytes!("../../fuzz/corpus/decoder_work/file-table-sealed-internal").as_slice(),
             include_bytes!("../../fuzz/corpus/decoder_work/file-table-plain-leaf").as_slice(),
             include_bytes!("../../fuzz/corpus/decoder_work/file-table-sealed-leaf").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/extents-empty").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/extents-populated").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/extents-populated-sealed").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/extents-internal").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/extents-internal-sealed").as_slice(),
         ] {
             assert!(check_inner::<false>(bytes), "original writer seed refused");
         }
@@ -432,6 +494,9 @@ mod tests {
             include_bytes!("../../fuzz/corpus/decoder_work/file-table-trailing").as_slice(),
             include_bytes!("../../fuzz/corpus/decoder_work/file-table-unordered").as_slice(),
             include_bytes!("../../fuzz/corpus/decoder_work/truncated-inline-payload").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/extents-unknown-page-kind").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/extents-unknown-extent-kind").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/extents-wrong-blob-kind").as_slice(),
         ] {
             assert!(!check_inner::<false>(bytes), "malformed seed admitted");
         }
