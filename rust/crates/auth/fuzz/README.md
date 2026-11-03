@@ -142,6 +142,10 @@ obeys the public 128-byte name grammar; it does not bound opaque resource fields
 `python3 negative-control.py addressing-resource-admission` and
 `addressing-actor-admission` make each production reader expect a different
 version from its unchanged writer. Each must trip its forward admission check.
+The shared field reader obtains the eight-byte length prefix as an array through
+`split_first_chunk`, so no second fallible slice-to-array conversion is needed.
+`python3 negative-control.py addressing-field-endian` reverses the actual shared
+length reader's byte order and must trip the same writer admission assertion.
 The oracle preserves both original decode/encode round trips and actor/resource grammar
 disjointness. `python3 negative-control.py addressing-resource` and
 `addressing-actor` swap fields in the actual production decoders; the original
