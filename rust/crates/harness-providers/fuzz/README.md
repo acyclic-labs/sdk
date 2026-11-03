@@ -86,10 +86,13 @@ The retained `http_failure/gemini-signature` seed is status400 followed by the
 unchanged original Gemini tool-continuation refusal. Its source and hashes are
 in `SOURCES.tsv`; the original response headers were not retained. Replaying
 that body does not qualify socket delivery, restart or distributed recovery.
-The oracle compares valid UTF-8 raw diagnostic prefixes independently with the
-returned bounded, sanitized text, so equal chunked outputs cannot hide dropped
-refusal metadata. Invalid UTF-8 retains bounds and chunk-invariance checks;
-its exact lossy text is not independently qualified by this expectation.
+The oracle compares raw diagnostic prefixes independently with the returned
+bounded, sanitized text, so equal chunked outputs cannot hide dropped refusal
+metadata. Its expectation normalizes invalid UTF-8 before rendering and removes
+only the replacement for an incomplete trailing scalar when no earlier invalid
+input exists. The corpus replay also mutates the original captured Gemini body
+at the byte bound with valid, malformed and cut scalars, explicitly changing its
+status to429. Those mutations are not additional captured provider responses.
 
 The kept `mutations/http-refusal-drop-diagnostic.patch` restores the original
 status-only400/413 branch in the production decoder. Apply it from the
@@ -100,3 +103,9 @@ control with `--features fuzzing`. It must fail with
 Equivalent JSON escapes preserve the class, while their raw diagnostic text
 may differ. Source-branch coverage and a sanitizer campaign remain separate
 from this finite corpus and source-mutation control.
+
+`mutations/http-excerpt-replace-cut-scalar.patch` plants a production defect
+that emits a replacement for a scalar cut by the byte bound. Apply it from the
+repository root and run that SAME unchanged recorded-refusal control. It must
+fail with `HTTP refusal lost original diagnostic` on the source-derived byte
+mutations. The planted defect changes production decoding, not its oracle.
