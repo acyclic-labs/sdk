@@ -135,11 +135,7 @@ pub(crate) fn content_error(
         return Error::NativeBoundary { code, reason };
     }
     let _ = io;
-    match code {
-        crate::wire::ErrorCode::Invalid => Error::Invalid(reason.into()),
-        crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
-        _ => Error::Unsupported(reason.into()),
-    }
+    crate::Error::from_code(code, reason)
 }
 
 /// Reject caller ceilings on adapters bound only to their owner's authority.

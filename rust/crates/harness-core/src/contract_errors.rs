@@ -195,6 +195,14 @@ pub enum Error {
         /// Fixed cause; no diagnostic allocation is needed.
         reason: &'static str,
     },
+    /// A fixed boundary diagnostic whose class has no owned error variant.
+    #[error("{reason}")]
+    Boundary {
+        /// The caller's original wire classification.
+        code: crate::wire::ErrorCode,
+        /// The original cause, without diagnostic allocation.
+        reason: &'static str,
+    },
     /// The caller lacks authority.
     #[error("unauthorized: {0}")]
     Unauthorized(String),
@@ -632,6 +640,20 @@ impl Error {
         }
     }
 
+    /// Converts a fixed boundary diagnostic without substituting its wire class.
+    pub(crate) fn from_code(code: crate::wire::ErrorCode, reason: &'static str) -> Self {
+        use crate::wire::ErrorCode;
+        match code {
+            ErrorCode::Invalid => Self::Invalid(reason.into()),
+            ErrorCode::NotFound => Self::NotFound(reason.into()),
+            ErrorCode::Unauthorized => Self::Unauthorized(reason.into()),
+            ErrorCode::Conflict => Self::Conflict(reason.into()),
+            ErrorCode::Unsupported => Self::Unsupported(reason.into()),
+            ErrorCode::Storage => Self::Storage(reason.into()),
+            _ => Self::Boundary { code, reason },
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[doc(hidden)]
     pub fn process_io(error: std::io::Error) -> Self {
@@ -680,7 +702,7 @@ impl Error {
             | Self::UnsupportedRecordVersion(_)
             | Self::MountUnavailable { .. } => ErrorCode::Unsupported,
             Self::Invalid(_) | Self::ModelContextOverflow => ErrorCode::Invalid,
-            Self::ToolRejected { code, .. } => *code,
+            Self::ToolRejected { code, .. } | Self::Boundary { code, .. } => *code,
             Self::Unauthorized(_) | Self::ReadOnlyGitMetadata { .. } => ErrorCode::Unauthorized,
             Self::ModelUnavailable { failure, .. } if failure.retryable() => ErrorCode::Unavailable,
             Self::ModelUnavailable { .. } => ErrorCode::Invalid,
@@ -782,6 +804,10 @@ impl Error {
                 | Self::CommandIndeterminate { .. }
                 | Self::Storage(_)
                 | Self::Cancelled
+                | Self::Boundary {
+                    code: crate::wire::ErrorCode::Indeterminate | crate::wire::ErrorCode::Cancelled,
+                    ..
+                }
         )
     }
 
@@ -918,6 +944,7 @@ impl Error {
             | Self::Unsupported(_)
             | Self::Invalid(_)
             | Self::ToolRejected { .. }
+            | Self::Boundary { .. }
             | Self::Unauthorized(_)
             | Self::ReadOnlyGitMetadata { .. }
             | Self::Cancelled

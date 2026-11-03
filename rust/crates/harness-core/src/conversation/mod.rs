@@ -345,25 +345,7 @@ impl PartialEq for NativeConversationCustody {
 }
 impl Eq for NativeConversationCustody {}
 
-fn conversation_error(
-    work: &Option<&mut dyn crate::store::history::HistoryIo>,
-    code: crate::wire::ErrorCode,
-    reason: &'static str,
-) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work
-        .as_deref()
-        .is_some_and(|io| io.original_native_work().is_some())
-    {
-        return Error::NativeBoundary { code, reason };
-    }
-    let _ = work;
-    match code {
-        crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
-        crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
-        _ => Error::Invalid(reason.into()),
-    }
-}
+use crate::store::guarded_boundary as conversation_error;
 
 impl TryFrom<ConversationStateWire> for ConversationState {
     type Error = Error;
