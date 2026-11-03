@@ -8,8 +8,33 @@ mod commands;
 #[path = "../../../../plugin/src/input.rs"]
 mod input;
 
+// Use the same OS pipe input as the native entry. Dropping the original
+// producer closes the write endpoint and completes read_to_end with EOF.
+fn read_pipe(bytes: &[u8]) -> input::Result<serde_json::Value> {
+    use std::io::Write;
+    std::thread::scope(|scope| {
+        let (reader, mut writer) = std::io::pipe().expect("create native input pipe");
+        let producer = scope.spawn(move || {
+            for chunk in bytes.chunks(4096) {
+                writer.write_all(chunk)?;
+            }
+            Ok::<(), std::io::Error>(())
+        });
+        let decoded = input::read_json(reader);
+        if let Err(error) = producer.join().expect("join native input producer") {
+            // A refused reader may close before the producer finishes. The
+            // original-value oracle still checks whether that refusal is valid.
+            assert!(
+                decoded.is_err() && error.kind() == std::io::ErrorKind::BrokenPipe,
+                "native input producer failed before admission: {error}"
+            );
+        }
+        decoded
+    })
+}
+
 fn check(bytes: &[u8]) {
-    let admitted = input::read_json(bytes);
+    let admitted = read_pipe(bytes);
     if bytes.len() > 65_536 {
         assert!(
             admitted.is_err(),
@@ -53,6 +78,6 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     }))
     .unwrap();
     if encoded.len() <= 65_536 {
-        input::read_json(encoded.as_slice()).expect("an in-bound JSON input must be admitted");
+        read_pipe(&encoded).expect("an in-bound JSON input must be admitted");
     }
 });

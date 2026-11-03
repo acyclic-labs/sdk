@@ -48,6 +48,7 @@ pub(super) fn admission<T: Serialize + DeserializeOwned>(
 
 fn action(action: &HostAction) {
     // This measurement variant is absent from the shipping native binary.
+    #[cfg(feature = "runtime")]
     if matches!(action, HostAction::ResourceProbe { .. }) {
         return;
     }
