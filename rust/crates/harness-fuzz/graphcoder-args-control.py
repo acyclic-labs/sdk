@@ -210,6 +210,20 @@ additional_controls = {
             "model-file",
             b"selected file I/O must not be admitted or reclassified",
         ),
+        (
+            "rust/crates/harness-core/src/native_settings.rs",
+            b"let workspace = std::fs::canonicalize(configured_workspace).map_err(Error::process_io)?;",
+            b"let workspace = std::fs::canonicalize(configured_workspace).unwrap_or_else(|_| configured_workspace.clone());",
+            "project-server",
+            b"selected file I/O must not be admitted or reclassified",
+        ),
+        (
+            "rust/crates/harness-core/src/native_settings.rs",
+            b"Err(error) => return Err(Error::process_io(error)),",
+            b"Err(_) => continue,",
+            "project-server",
+            b"selected file I/O must not be admitted or reclassified",
+        ),
     ],
 }
 
