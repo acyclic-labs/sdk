@@ -17,24 +17,21 @@ fn copy_once<const BROKEN: bool>(
         allocation,
         owned_bytes: 0,
     };
-    if observed
-        .observe(super::super::super::codec::ReadAllocationStep::CheckCopy(8))
-        .and_then(|()| {
-            observed.observe(super::super::super::codec::ReadAllocationStep::BeforeCopy(
-                8,
-            ))
-        })
-        .is_ok()
-    {
-        let mut output = [0; 8];
-        output.copy_from_slice(std::hint::black_box(b"contents"));
-        assert_eq!(&std::hint::black_box(output), b"contents");
-        actual.fetch_add(8, Ordering::Relaxed);
-        let _ = observed.observe(super::super::super::codec::ReadAllocationStep::Copied(8));
+    // Execute the same owned-buffer copy and observer sequence as canonical
+    // names and decoder payloads, including allocation and capacity callbacks.
+    // The witness counts the actual producer's completion before cancellation
+    // or a failed ledger callback can return it to the caller.
+    let result = super::super::super::codec::copy_bytes(b"contents", 1, &mut |step| {
+        if let super::super::super::codec::ReadAllocationStep::Copied(bytes) = &step {
+            actual.fetch_add(*bytes as usize, Ordering::Relaxed);
+        }
+        observed.observe(step)
+    });
+    if let Ok(output) = &result {
+        assert_eq!(output, b"contents");
     }
-    let (allocation, bytes) = observed.into_parts();
-    assert_eq!(bytes, 0);
-    drop(allocation);
+    drop(result);
+    drop(observed.into_allocation());
 }
 
 fn copy_model_impl<const BROKEN: bool, const CHECK_LIMIT: bool>(
