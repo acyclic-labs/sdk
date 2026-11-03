@@ -13,7 +13,7 @@ where
 {
     let cases = scenarios()?;
     assert_eq!(cases.len(), 27, "scenario inventory changed");
-    let results = futures::future::join_all(cases.iter().map(|(path, case)| {
+    let results: Vec<TestResult> = futures::future::join_all(cases.iter().map(|(path, case)| {
         let files = files.clone();
         let stream = stream.clone();
         async move {
