@@ -3,7 +3,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Ident, ImplItem, ItemImpl};
 
-pub(crate) fn expand(name: Ident, implementation: ItemImpl) -> TokenStream {
+pub(crate) fn expand(name: &Ident, implementation: &ItemImpl) -> TokenStream {
     let owner = &implementation.self_ty;
     let (generics, _, condition) = implementation.generics.split_for_impl();
     let methods = implementation.items.iter().filter_map(|item| {

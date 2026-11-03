@@ -58,7 +58,7 @@ pub fn implementation_methods(arguments: TokenStream, input: TokenStream) -> Tok
             .into();
         }
     }
-    implementation_methods::expand(name, implementation).into()
+    implementation_methods::expand(&name, &implementation).into()
 }
 
 /// Generate an `ExplicitNAME` provider contract with every default removed,
