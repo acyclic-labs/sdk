@@ -135,42 +135,48 @@ test("abandoned next and keyed waits release their subscriptions without ending 
 
 test("a file-backed key index releases parsed payloads as the number of unique keys grows", async () => {
   const processes = new Processes();
+  const root = mkdtempSync(join(tmpdir(), "indexed-payloads-"));
   const code = `
     import assert from 'node:assert/strict';
-    import { mkdtempSync } from 'node:fs';
-    import { tmpdir } from 'node:os';
     import { join } from 'node:path';
     import { PassThrough } from 'node:stream';
     import { Spool } from ${JSON.stringify(new URL("./process.mjs", import.meta.url).href)};
     const source = new PassThrough(), references = [];
     const events = new Spool(source, new Promise(() => {}), {
-      transcript: join(mkdtempSync(join(tmpdir(), 'indexed-payloads-')), 'events.jsonl'),
+      transcript: join(process.argv[1], 'events.jsonl'),
       key: event => { references.push(new WeakRef(event)); return [event.id]; }, unique: true,
     });
-    const total = 1024;
+    // Reachability detects retained objects independent of payload size or
+    // population; retain enough original writes to exercise backpressure.
+    const total = 16;
+    let pressured = 0;
     const completed = events.next(event => event.id === total - 1);
     for (let id = 0; id < total; id++) {
       const line = JSON.stringify({id, payload: String(id).padEnd(16 * 1024, 'x')}) + '\\n';
-      if (!source.write(line)) await new Promise(resolve => source.once('drain', resolve));
+      if (!source.write(line)) {
+        pressured++;
+        await new Promise(resolve => source.once('drain', resolve));
+      }
     }
     await completed;
+    assert.ok(pressured > 0, 'the original source must exercise writer backpressure');
     await events.history(() => false);
     // One event-loop turn ends WeakRef's mandatory current-job retention.
     await new Promise(resolve => setImmediate(resolve));
     global.gc();
     const retained = references.filter(reference => reference.deref() !== undefined).length;
     assert.ok(retained <= 1, 'index retained ' + retained + ' full event payloads');
-    const selected = await events.keyed(511);
-    assert.equal(selected.id, 511);
+    const selected = await events.keyed(total >> 1);
+    assert.equal(selected.id, total >> 1);
     assert.equal(selected.payload.length, 16 * 1024);
     source.end();
     console.log(JSON.stringify({keys: total, retained_parsed_payloads: retained}));
   `;
   try {
-    const result = await processes.run(process.execPath, ["--expose-gc", "--input-type=module", "-e", code]);
+    const result = await processes.run(process.execPath, ["--expose-gc", "--input-type=module", "-e", code, root]);
     assert.equal(result.code, 0, result.stderr);
-    assert.equal(JSON.parse(result.stdout).keys, 1024);
-  } finally { await processes.close(); }
+    assert.equal(JSON.parse(result.stdout).keys, 16);
+  } finally { await processes.close(); rmSync(root, { recursive: true }); }
 });
 
 test("native transcript cursors retain one record and close the original range on return", async t => {
