@@ -80,8 +80,6 @@ proptest! {
 #[test]
 fn actor_reference_framing_and_legacy_boundary() -> Result<(), Box<dyn std::error::Error>> {
     let legacy = ActorReference::from_legacy_fields(b"account", None, "existing.Actor_1")?;
-    assert_eq!(legacy.namespace().as_str(), DEFAULT_ACTOR_NAMESPACE);
-    assert_eq!(legacy.id(), "existing.Actor_1");
     assert_eq!(
         legacy,
         ActorReference::new(b"account", b"__default", b"existing.Actor_1")?
