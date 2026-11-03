@@ -1,6 +1,8 @@
 # Descriptor canonicalization validation
 
-`proto_descriptors` calls the public `acyclic_proto_build::canonicalize`. Every invocation selects one retained compiler output, requires its admission and exact identity, then checks arbitrary-byte canonicalization for idempotence. Production `FAMILIES` supplies the roots; file names and family count must match. There is no input-size skip.
+`proto_descriptors` calls the public `acyclic_proto_build::canonicalize`. Every invocation selects one retained compiler output and requires its admission and exact identity. It then extends one original non-Google file with two equal unknown length-delimited fields, using the protobuf wire writer. The input selects the field number in 10000–10255 and supplies its payload. This is a generated mutation of compiler output, not another captured fixture. A shared relation compares unknown file fields, including multiplicity, before and after canonicalization. The same relation checks every admitted arbitrary input, alongside idempotence. Production `FAMILIES` supplies the roots; file names and family count must match. There is no input-size skip.
+
+The relation excludes only Buf metadata field 8042 and Google import bodies, which canonicalization deliberately replaces. Field ordering is ignored. It does not implement the canonicalizer's sorting, comment trimming or import replacement.
 
 The eight `current-*.bin` inputs are unchanged outputs of `cargo run --locked -p acyclic-proto-build --example capture_descriptors`, captured from protocol sources at revision 93e1318a02c55c2cb7bd39d42d5c429279c7cf92 and adopted after semantic review. They are library compiler outputs, not captured service traffic. Existing `auth`, `minimal` and `empty` inputs remain. Eight authored one-byte `family-*` selectors exercise each positive writer branch; these are fuzzer inputs, not external wire fixtures.
 
@@ -31,7 +33,6 @@ removes production vocabulary admission; the unchanged oracle must fail with
 `descriptor_authorization_rejects_undeclared_actions` separately compiles real
 method options through protoc and the public canonicalizer.
 
-The generated source-location/field-number property remains: its generated domain is not subsumed by retained compiler outputs. Finite execution and feedback counters do not establish complete source branches, unknown-option preservation, malformed-input refusal, compiler version independence or deployed service behavior. Source branch coverage and additional semantic mutations remain open.
 
 The production writer descriptors in `compatibility/descriptors` were recaptured
 with the same command at revision `7348becf9747a84c9fdacd8877a2f360fac550da`
@@ -49,3 +50,6 @@ their original provenance and remain arbitrary decoder inputs.
 | `machines-v1.bin` | 144790 | `5e31ccac341587c767d6c63fce55176e22a756e490742e9e4fc86e53960e82c6` |
 | `objects-v1.bin` | 106942 | `fe8af48a27b5d305679afca4bf4272a7c8f1c6f7d468d570194c17108a178f28` |
 | `stream-v1.bin` | 143452 | `915d61853b61ee2a32caf09544fa78ca11577fb0a5c94bd3afc8771e3d759a39` |
+`mutations/proto-descriptors-unknown-fields.patch` drops unknown file fields numbered 10000 and above in the production canonicalizer. The previous writer-identity/idempotence oracle misses this defect; the input-preservation relation must fail with `canonical descriptor discarded or changed unknown file fields`. Restore production source before running the healthy corpus.
+
+The generated source-location/field-number property remains: its generated domain is not subsumed by retained compiler outputs. Finite execution and feedback counters do not establish complete source branches, nested option preservation, malformed-input refusal, compiler version independence or deployed service behavior. Source branch coverage and additional semantic mutations remain open.
