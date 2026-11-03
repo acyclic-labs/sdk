@@ -185,8 +185,10 @@ async fn policy_history(revisions: Vec<Vec<u8>>) -> Result<(), Box<dyn Error>> {
         let position = after
             .generation_position(
                 after.generation_id(),
+                // A later head receipt proves only its own offset, so the
+                // first occurrence takes one indexed authority read (#2065).
                 WorkBudget {
-                    authority_records_read: 0,
+                    authority_records_read: 1,
                     object_bytes_read: 0,
                     ..WorkBudget::UNBOUNDED
                 },

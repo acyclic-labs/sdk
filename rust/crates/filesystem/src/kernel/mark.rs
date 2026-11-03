@@ -2,16 +2,15 @@
 
 use std::collections::HashSet;
 
+use super::allocation::KernelAccounting;
 use super::{
-    AttributePage, BlobNode, DecodeLimits, ExtentKind, ExtentPage, FilePayload, FileRecord,
-    FileTablePage, GenerationRoot, MetadataField, TreePage, decode_attribute_page,
-    decode_blob_page, decode_extent_page, decode_file_metadata, decode_file_table_page,
-    decode_generation_root, decode_tree_page,
+    DecodeLimits, FileRecord, GenerationRoot, decode_generation_root, visit_object_references,
+    visit_record_references,
 };
 use crate::CancellationToken;
 use crate::foundation::GenerationId;
 use crate::performance::WorkBudget;
-use crate::storage::{ObjectId, ObjectStoreError};
+use crate::storage::{ObjectId, ObjectKind, ObjectStoreError};
 
 pub(crate) struct Marker<'a, S> {
     store: &'a S,
@@ -140,142 +139,40 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
     }
 
     pub(crate) async fn working(&mut self, root: &GenerationRoot) -> Result<(), MarkError> {
-        let mut pending = vec![root.file_table];
-        while let Some(page) = pending.pop() {
-            let Some(bytes) = self.visit(page).await? else {
-                continue;
-            };
-            match decode(decode_file_table_page(&bytes, self.limits, &mut |_| {
-                Ok::<_, crate::kernel::CanonicalDecodeError>(())
-            }))? {
-                FileTablePage::Leaf(records) => {
-                    for record in records {
-                        self.record(&record).await?;
-                    }
-                }
-                FileTablePage::Internal(children) => {
-                    pending.extend(children.into_iter().map(|child| child.page));
-                }
-            }
-        }
-        Ok(())
+        self.closure(vec![root.file_table]).await
     }
 
     pub(crate) async fn record(&mut self, record: &FileRecord) -> Result<(), MarkError> {
-        self.metadata(record.metadata).await?;
-        match record.payload {
-            FilePayload::Regular { extents, .. } => self.extents(extents).await,
-            FilePayload::Directory { entries } => self.tree(entries).await,
-            FilePayload::SymbolicLink { target, .. }
-            | FilePayload::ReparsePoint {
-                payload: target, ..
-            } => self.blob(target).await,
-            FilePayload::InlineRegular(_) | FilePayload::Empty | FilePayload::Device { .. } => {
-                Ok(())
-            }
-        }
+        let mut pending = Vec::new();
+        visit_record_references(record, |child| {
+            pending.push(child);
+            Ok::<_, MarkError>(())
+        })?;
+        self.closure(pending).await
     }
 
-    async fn metadata(&mut self, metadata: ObjectId) -> Result<(), MarkError> {
-        let Some(bytes) = self.visit(metadata).await? else {
-            return Ok(());
-        };
-        let metadata = decode(decode_file_metadata(&bytes, self.limits, &mut |_| {
-            Ok::<_, crate::kernel::CanonicalDecodeError>(())
-        }))?;
-        if let MetadataField::Value(attributes) = metadata.named_attributes {
-            self.attributes(attributes).await?;
-        }
-        for blob in [metadata.acl, metadata.security_descriptor] {
-            if let MetadataField::Value(blob) = blob {
-                self.blob(blob).await?;
+    /// Marks everything `pending` reaches through the same immediate
+    /// references the store records at write, so every child a marked object
+    /// pins is itself marked. Chunks carry no references and are not read.
+    async fn closure(&mut self, mut pending: Vec<ObjectId>) -> Result<(), MarkError> {
+        while let Some(object) = pending.pop() {
+            if object.kind == ObjectKind::BlobChunk {
+                self.marked.insert(object);
+                continue;
             }
-        }
-        Ok(())
-    }
-
-    async fn tree(&mut self, root: ObjectId) -> Result<(), MarkError> {
-        let mut pending = vec![root];
-        while let Some(page) = pending.pop() {
-            let Some(bytes) = self.visit(page).await? else {
+            let Some(bytes) = self.visit(object).await? else {
                 continue;
             };
-            if let TreePage::Internal(children) =
-                decode(decode_tree_page(&bytes, self.limits, &mut |_| {
-                    Ok::<_, crate::kernel::CanonicalDecodeError>(())
-                }))?
-            {
-                pending.extend(children.into_iter().map(|child| child.page));
-            }
-        }
-        Ok(())
-    }
-
-    async fn extents(&mut self, root: ObjectId) -> Result<(), MarkError> {
-        let mut pending = vec![root];
-        while let Some(page) = pending.pop() {
-            let Some(bytes) = self.visit(page).await? else {
-                continue;
-            };
-            match decode(decode_extent_page(&bytes, self.limits, &mut |_| {
-                Ok::<_, crate::kernel::CanonicalDecodeError>(())
-            }))? {
-                ExtentPage::Leaf(extents) => {
-                    for extent in extents {
-                        if let ExtentKind::Content { object, .. } = extent.kind {
-                            self.blob(object).await?;
-                        }
-                    }
-                }
-                ExtentPage::Internal(children) => {
-                    pending.extend(children.into_iter().map(|child| child.page));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn blob(&mut self, root: ObjectId) -> Result<(), MarkError> {
-        let mut pending = vec![root];
-        while let Some(page) = pending.pop() {
-            let Some(bytes) = self.visit(page).await? else {
-                continue;
-            };
-            match decode(decode_blob_page(&bytes, self.limits, &mut |_| {
-                Ok::<_, crate::kernel::CanonicalDecodeError>(())
-            }))?
-            .node
-            {
-                BlobNode::Internal(children) => {
-                    pending.extend(children.into_iter().map(|child| child.page));
-                }
-                BlobNode::Leaf(chunks) => {
-                    self.marked
-                        .extend(chunks.into_iter().map(|chunk| chunk.chunk));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn attributes(&mut self, root: ObjectId) -> Result<(), MarkError> {
-        let mut pending = vec![root];
-        while let Some(page) = pending.pop() {
-            let Some(bytes) = self.visit(page).await? else {
-                continue;
-            };
-            match decode(decode_attribute_page(&bytes, self.limits, &mut |_| {
-                Ok::<_, crate::kernel::CanonicalDecodeError>(())
-            }))? {
-                AttributePage::Leaf(entries) => {
-                    for entry in entries {
-                        self.blob(entry.value).await?;
-                    }
-                }
-                AttributePage::Internal(children) => {
-                    pending.extend(children.into_iter().map(|child| child.page));
-                }
-            }
+            let mut work = KernelAccounting::standalone(WorkBudget::UNBOUNDED, self.cancellation);
+            decode(visit_object_references(
+                object,
+                &bytes,
+                &mut work,
+                |child| {
+                    pending.push(child);
+                    Ok(())
+                },
+            ))?;
         }
         Ok(())
     }

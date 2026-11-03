@@ -172,22 +172,31 @@ pub(crate) fn visit_object_references(
                     }
                     FileTablePage::Leaf(items) => {
                         for item in items {
-                            visit(item.metadata)?;
-                            if let Some(bindings) = item.bindings {
-                                visit(bindings)?;
-                            }
-                            match item.payload {
-                                FilePayload::Regular { extents, .. } => visit(extents)?,
-                                FilePayload::Directory { entries } => visit(entries)?,
-                                FilePayload::SymbolicLink { target, .. } => visit(target)?,
-                                FilePayload::ReparsePoint { payload, .. } => visit(payload)?,
-                                _ => {}
-                            }
+                            visit_record_references(item, &mut *visit)?;
                         }
                     }
                 }
                 Ok(())
             }
         ),
+    }
+}
+
+/// Immediate references of one file record: its metadata, bindings and
+/// payload. File-table leaves and records held outside a table share it.
+pub(crate) fn visit_record_references<E>(
+    record: &FileRecord,
+    mut visit: impl FnMut(ObjectId) -> Result<(), E>,
+) -> Result<(), E> {
+    visit(record.metadata)?;
+    if let Some(bindings) = record.bindings {
+        visit(bindings)?;
+    }
+    match record.payload {
+        FilePayload::Regular { extents, .. } => visit(extents),
+        FilePayload::Directory { entries } => visit(entries),
+        FilePayload::SymbolicLink { target, .. } => visit(target),
+        FilePayload::ReparsePoint { payload, .. } => visit(payload),
+        FilePayload::InlineRegular(_) | FilePayload::Empty | FilePayload::Device { .. } => Ok(()),
     }
 }
