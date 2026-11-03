@@ -13,3 +13,5 @@ Inputs: empty.txt (empty), body.txt (UTF-8 bytes for native TAR payload, newline
 The archive is original tool output, without header rewriting. SHA-256: 4305b63f5fe98d88e37ad8111785f437ce52ea407bf26964284a4ec1d4315fd4.
 
 The companion native-ustar.list is verbatim stdout from `tar -tf scripts/test-support/archive-corpus/native-ustar.tar` with the same GNU tar, without normalization. It provides the independent member-name oracle.
+
+The companion native-ustar.tar.gz is original gzip 1.13 output captured on Windows x86_64, 2026-11-03, using `gzip -n -c` with native-ustar.tar on stdin. No gzip bytes were rewritten. Length: 215 bytes; SHA-256: c68b93fc12212b2fdd883ec4fd0530d2d0e2a97a2d85463553365555a6e7e29d.

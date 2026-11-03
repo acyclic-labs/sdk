@@ -1,10 +1,34 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
-import { fuzz } from "./archive-utils.fuzz.mjs";
+import { fuzz, fuzzGzip } from "./archive-utils.fuzz.mjs";
 import { tarEntries } from "./archive-utils.mjs";
 
 const seed = readFileSync(new URL("./test-support/archive-corpus/native-ustar.tar", import.meta.url));
+
+test("native gzip corpus exercises actual file admission and both byte bounds", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "archive-admission-"));
+  const path = join(directory, "input.tar.gz");
+  try {
+    const compressed = readFileSync(new URL("./test-support/archive-corpus/native-ustar.tar.gz", import.meta.url));
+    assert.deepEqual(fuzzGzip(compressed, path, seed.length).expanded, seed);
+    for (let offset = 0; offset < compressed.length; offset++) {
+      fuzzGzip(compressed.subarray(0, offset), path, seed.length);
+      const bytes = Buffer.from(compressed);
+      bytes[offset] ^= 0x80;
+      fuzzGzip(bytes, path, seed.length);
+    }
+    for (const removed of [
+      'if (size <= 0 || size > maxArchiveBytes) throw new Error("archive exceeds its size bound");',
+      'if (expanded.length > maxExpandedBytes) throw new Error("archive expands beyond its size bound");',
+    ]) {
+      const mutant = await planted(removed);
+      assert.throws(() => mutant.fuzzGzip(compressed, path, seed.length), assert.AssertionError);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
 
 test("native TAR corpus and byte mutations exercise the production decoder", () => {
   assert.equal(fuzz(seed), true);
@@ -39,8 +63,6 @@ function seal(bytes) {
 }
 
 test("the unchanged fuzz oracle rejects removed checksum and end-marker checks", async () => {
-  const source = readFileSync(new URL("./archive-utils.mjs", import.meta.url), "utf8");
-  const target = readFileSync(new URL("./archive-utils.fuzz.mjs", import.meta.url), "utf8");
   const mutations = [
     [
       'if (checksum !== Number.parseInt(rawChecksum, 8)) throw new Error("archive member checksum mismatch");',
@@ -52,11 +74,15 @@ test("the unchanged fuzz oracle rejects removed checksum and end-marker checks",
     ],
   ];
   for (const [removed, corrupt] of mutations) {
-    const normalized = source.replaceAll("\r\n", "\n");
-    assert.ok(normalized.includes(removed), "planted defect no longer matches production");
-    const production = `data:text/javascript;base64,${Buffer.from(normalized.replace(removed, "")).toString("base64")}`;
-    const module = target.replace('"./archive-utils.mjs"', JSON.stringify(production));
-    const mutant = await import(`data:text/javascript;base64,${Buffer.from(module).toString("base64")}`);
+    const mutant = await planted(removed);
     assert.throws(() => mutant.fuzz(corrupt(Buffer.from(seed))), assert.AssertionError);
   }
 });
+
+async function planted(removed) {
+  const source = readFileSync(new URL("./archive-utils.mjs", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+  const target = readFileSync(new URL("./archive-utils.fuzz.mjs", import.meta.url), "utf8");
+  assert.ok(source.includes(removed), "planted defect no longer matches production");
+  const production = `data:text/javascript;base64,${Buffer.from(source.replace(removed, "")).toString("base64")}`;
+  return import(`data:text/javascript;base64,${Buffer.from(target.replace('"./archive-utils.mjs"', JSON.stringify(production))).toString("base64")}`);
+}

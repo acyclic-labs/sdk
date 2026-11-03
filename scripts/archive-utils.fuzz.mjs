@@ -1,5 +1,27 @@
 import assert from "node:assert/strict";
-import { tarEntries } from "./archive-utils.mjs";
+import { writeFileSync } from "node:fs";
+import { readBoundedGzip, tarEntries } from "./archive-utils.mjs";
+
+// The caller owns an isolated file, matching the package readers' actual path
+// boundary. Never hide filesystem failures as invalid compressed inputs.
+export function fuzzGzip(data, path, maxExpandedBytes) {
+  writeFileSync(path, data);
+  let result;
+  try { result = readBoundedGzip(path, data.length, maxExpandedBytes); }
+  catch (error) {
+    assert.ok(["Z_DATA_ERROR", "Z_BUF_ERROR", "ERR_BUFFER_TOO_LARGE"].includes(error.code)
+      || /^archive (exceeds its size bound|expands beyond its size bound)$/.test(error.message), error);
+    return false;
+  }
+  assert.deepEqual(result.compressed, Buffer.from(data));
+  assert.ok(result.expanded.length <= maxExpandedBytes);
+  assert.throws(() => readBoundedGzip(path, data.length - 1, maxExpandedBytes), /archive exceeds its size bound/);
+  if (result.expanded.length) {
+    assert.throws(() => readBoundedGzip(path, data.length, result.expanded.length - 1),
+      /archive expands beyond its size bound/);
+  }
+  return result;
+}
 
 // Exercise the production decoder; accepted bodies must retain their original
 // bytes, each header must advance, and the complete archive must authenticate.
