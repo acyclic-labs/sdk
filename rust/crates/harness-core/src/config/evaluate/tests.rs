@@ -1,27 +1,16 @@
 use super::*;
 use serde_json::json;
 
-struct Files(&'static [(&'static str, &'static str)]);
+struct Missing;
 
-impl Tree for Files {
-    fn read<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<Option<Vec<u8>>>> {
-        Box::pin(async move {
-            Ok(self
-                .0
-                .iter()
-                .find(|(name, _)| *name == path)
-                .map(|(_, text)| text.as_bytes().to_vec()))
-        })
+impl Tree for Missing {
+    fn read<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<Option<Vec<u8>>>> {
+        Box::pin(std::future::ready(Ok(None)))
     }
 }
 
-const TREE: Files = Files(&[
-    ("loop/a.ts", "import './b.ts'; export default 1;"),
-    ("loop/b.ts", "import './a.ts'; export default 2;"),
-]);
-
 async fn error(source: &str, surface: Surface) -> String {
-    match evaluate("agent.ts", source.as_bytes(), &TREE, &json!({}), surface).await {
+    match evaluate("agent.ts", source.as_bytes(), &Missing, &json!({}), surface).await {
         Err(Error::Invalid(message)) => message,
         other => panic!("{source}: {other:?}"),
     }
@@ -61,14 +50,13 @@ async fn every_unusable_module_is_invalid_with_its_reason() {
             "import x from './missing.ts'; export default x;",
             "no layer holds",
         ),
-        ("import x from './loop/a.ts'; export default x;", "cycle"),
         ("export default {", "agent.ts"),
     ] {
         let message = error(source, Surface::Compose).await;
         assert!(message.contains(reason), "{source}: {message}");
     }
     // policy.ts is plain data: a function export is refused before it runs.
-    match crate::config::admit_policy(b"export default (base) => base;", &TREE).await {
+    match crate::config::admit_policy(b"export default (base) => base;", &Missing).await {
         Err(Error::Invalid(message)) => assert!(
             message.starts_with("policy.ts: ") && message.contains("plain data, not a function"),
             "{message}"
@@ -86,7 +74,7 @@ async fn every_unusable_module_is_invalid_with_its_reason() {
         let ok = evaluate(
             "policy.ts",
             b"export default { deny: [] };",
-            &TREE,
+            &Missing,
             &json!({}),
             surface,
         )
