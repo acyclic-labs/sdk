@@ -487,42 +487,42 @@ impl InternalPublicationCase<'_> {
 #[tokio::test]
 async fn internal_publication_has_one_metadata_and_recovery_record_for_every_adapter() -> Result<()>
 {
-    for class in [
-        InternalContentClass::Interaction,
-        InternalContentClass::Execution,
-        InternalContentClass::ToolResult,
-    ] {
-        for adapter in 0..3 {
-            let provider =
-                ProviderRef::new("batch".into(), "filesystem".into(), "1".into(), &mut None)?;
-            let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
-            let agent = crate::AgentId::from_bytes([37; 16]);
-            let volume = VolumeRef::new(
-                provider.clone(),
-                "private".into(),
-                VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(agent),
-                &mut None,
-            )?;
-            host.create_volume(&volume).await?;
-            let (write, read) = publication_grants(&volume, agent)?;
-            let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
-            let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let io = match adapter {
-                0 => None,
-                1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
-                _ => Some(PreparationIo::from_native_work(&native)?),
-            };
-            let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
-            let case = InternalPublicationCase {
-                host: &host,
-                volume: &volume,
-                write: &write,
-                read: &read,
-                io: io.as_ref(),
-            };
+    for adapter in 0..3 {
+        let provider =
+            ProviderRef::new("batch".into(), "filesystem".into(), "1".into(), &mut None)?;
+        let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+        let agent = crate::AgentId::from_bytes([37; 16]);
+        let volume = VolumeRef::new(
+            provider.clone(),
+            "private".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+            &mut None,
+        )?;
+        host.create_volume(&volume).await?;
+        let (write, read) = publication_grants(&volume, agent)?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+        let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = match adapter {
+            0 => None,
+            1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
+            _ => Some(PreparationIo::from_native_work(&native)?),
+        };
+        let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
+        let case = InternalPublicationCase {
+            host: &host,
+            volume: &volume,
+            write: &write,
+            read: &read,
+            io: io.as_ref(),
+        };
+        for class in [
+            InternalContentClass::Interaction,
+            InternalContentClass::Execution,
+            InternalContentClass::ToolResult,
+        ] {
             let single_record = case.verify(&workspace, class).await.map_err(|error| {
                 Error::Storage(format!(
                     "adapter {adapter}, family {}: {error:?}",
