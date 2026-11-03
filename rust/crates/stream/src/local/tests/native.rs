@@ -395,36 +395,49 @@ async fn prepared_late_cancel_drains_original_frame_and_recovery_without_fresh_a
 fn prepared_partial_write_stops_at_exact_accepted_boundary()
 -> Result<(), Box<dyn std::error::Error>> {
     struct Partial {
-        bytes: Vec<u8>,
+        file: std::fs::File,
+        prefix: usize,
+        calls: usize,
     }
     impl Write for Partial {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            let length = bytes.len().min(3);
-            self.bytes.extend_from_slice(
+            self.calls += 1;
+            self.file.write(
                 bytes
-                    .get(..length)
+                    .get(..bytes.len().min(self.prefix))
                     .ok_or(std::io::ErrorKind::InvalidInput)?,
-            );
-            Ok(length)
+            )
         }
         fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
+            self.file.flush()
         }
     }
-    let meter = Arc::new(Meter::local());
-    let work = crate::native::Work::new(meter.original())?;
-    let mut plan = PreparedFrame::encode(
-        &WriteRequest::Commit(keyed_commit("partial", 0)?),
-        0,
-        Some(work),
-    )?;
-    let mut writer = Partial { bytes: Vec::new() };
-    let physical = plan.write(&mut writer);
-    assert!(matches!(physical, Err(LocalStreamError::IncompleteFrame)));
-    assert_eq!(writer.bytes.len(), 3);
-    assert_eq!(meter.write_bytes.load(Ordering::SeqCst), 3);
-    drop(plan);
-    meter.assert_refunded();
+    let command = WriteRequest::Commit(keyed_commit("partial", 0)?);
+    let encoded = PreparedFrame::encode(&command, 0, None)?.encoded;
+    for prefix in 0..=encoded.len() {
+        let meter = Arc::new(Meter::local());
+        let work = crate::native::Work::new(meter.original())?;
+        let mut plan = PreparedFrame::encode(&command, 0, Some(work))?;
+        let mut writer = Partial {
+            file: tempfile::tempfile()?,
+            prefix,
+            calls: 0,
+        };
+        let physical = plan.write(&mut writer);
+        if prefix == encoded.len() {
+            physical?;
+        } else {
+            assert!(matches!(physical, Err(LocalStreamError::IncompleteFrame)));
+        }
+        assert_eq!(writer.calls, 1, "a funded frame retried a short write");
+        std::io::Seek::rewind(&mut writer.file)?;
+        let mut observed = Vec::new();
+        std::io::Read::read_to_end(&mut writer.file, &mut observed)?;
+        assert_eq!(observed, encoded[..prefix], "physical frame prefix changed");
+        assert_eq!(meter.write_bytes.load(Ordering::SeqCst), prefix as u64);
+        drop(plan);
+        meter.assert_refunded();
+    }
     Ok(())
 }
 
