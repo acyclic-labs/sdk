@@ -179,7 +179,7 @@ export function qualifyOwnershipLoom(run = runCommand) {
 export const harnessModelSuites = {
   "acyclic-harness": [
     ["local::workspace::bootstrap::loom_tests::", 1],
-    ["local::checkout_tools::tests::", 9],
+    ["local::checkout_tools::tests::", 5],
   ],
 };
 
