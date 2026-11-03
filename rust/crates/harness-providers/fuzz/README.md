@@ -43,6 +43,21 @@ that requires an independent captured-response expectation. The existing
 the durable usage row's typed JSON round trip. Row syntax does not establish
 that a journal committed an authoritative terminal observation.
 
+For accepted Chat streams, the oracle also compares the complete retained usage
+object with the original framed JSON, including unknown fields and explicit
+zero. It uses the shared production SSE framer and stops at the original
+`[DONE]` event. This prevents equally missing metadata at every chunk width from
+passing the output-only consensus check. The three recorded llama.cpp captures
+above supply the real wire inputs; arbitrary input mutations use the same check.
+
+The retained `mutations/chat-drop-wire-usage.patch` removes the production Chat
+adapter's usage admission. From the repository root, apply it and run
+`cargo test --locked -p acyclic-harness-providers --features fuzzing --lib -- checked_in_stream_corpus_obeys_the_properties --nocapture`.
+The unchanged oracle must fail with `Chat completion lost original wire usage`.
+The earlier output-only oracle accepts that same defect. Restore the source
+before running the positive control. This checks parser-to-completion metadata
+conservation; it does not establish a durable journal or authenticated source.
+
 The retained `rust/codec-fuzz/mutations/model-usage-default-zero.patch` plants a
 production decoder defect that substitutes zero for absent counters. Apply it
 from the repository root and run the unchanged
