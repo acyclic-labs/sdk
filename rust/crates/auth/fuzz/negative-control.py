@@ -18,8 +18,10 @@ elif choice.startswith("addressing-"):
         "addressing-fragment": "addressing/routes.rs",
         "addressing-resource": "addressing.rs",
         "addressing-resource-tail": "addressing.rs",
+        "addressing-resource-version": "format.rs",
         "addressing-actor": "addressing/actor.rs",
         "addressing-actor-tail": "addressing/actor.rs",
+        "addressing-actor-version": "format.rs",
     }.get(choice, "addressing/dns.rs")
     oracle = root.parent / "tests/common/addressing.rs"
 elif choice.startswith("secret-"):
@@ -47,6 +49,14 @@ try:
     oracle_hashes = {path: hashlib.sha256(path.read_bytes()).digest() for path in oracles}
     newline = b"\r\n" if b"\r\n" in original else b"\n"
     mutations = {
+        "addressing-resource-version": (
+            b".strip_prefix(version)", b".get(version.len()..)",
+            "identity version must refuse before fields", "resource",
+        ),
+        "addressing-actor-version": (
+            b".strip_prefix(version)", b".get(version.len()..)",
+            "identity version must refuse before fields", "actor",
+        ),
         "addressing-resource-tail": (
             b"if !bytes.is_empty() {", b"if false && !bytes.is_empty() {",
             "identity framing must refuse trailing bytes", "resource",

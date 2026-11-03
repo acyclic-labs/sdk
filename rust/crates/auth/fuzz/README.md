@@ -146,3 +146,11 @@ framing examples delegate those assertions and retain their full-prefix checks.
 `python3 negative-control.py addressing-resource-tail` and
 `addressing-actor-tail` remove each production decoder's trailing-byte guard;
 the same original writer captures must trip the unchanged framing assertion.
+
+The oracle also derives header-only aliases from admitted identity bytes using
+the owning format's header boundary. Old, unknown and missing versions must
+return `UnsupportedVersion` before fields are available. Both existing framing
+examples reach these shared checks; the separate Actor version example is
+redundant. Run `python3 negative-control.py addressing-resource-version` or
+`addressing-actor-version` to bypass the actual shared header's version guard
+and require each original writer capture to trip the unchanged refusal oracle.
