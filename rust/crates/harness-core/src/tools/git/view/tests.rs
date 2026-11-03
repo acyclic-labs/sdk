@@ -399,12 +399,12 @@ async fn delete_modify_conflicts_accept_manual_content_and_deletion() -> TestRes
     let cases = [
         (main, false, false),
         (
-            registered_workspace(&filesystem, &store, "project").await?,
+            registered_workspace(&filesystem, &store, "ours-deleted").await?,
             true,
             false,
         ),
         (
-            registered_workspace(&filesystem, &store, "project").await?,
+            registered_workspace(&filesystem, &store, "delete-resolution").await?,
             false,
             true,
         ),
