@@ -92,3 +92,15 @@ the same test again. Both generations are submitted by production `Owner::submit
 and the original worker publishes its own acknowledgment. Channels constrain only
 the observed action/cancellation boundary; the model does not seed worker state
 or qualify native `CancelSynchronousIo` completion.
+
+## Failed console worker creation
+
+`console-failed-spawn-restored.patch` makes the production spawn-failure branch
+publish restoration even though the restoration action did not run. Apply it and
+run `term::console_owner::tests::failed_teardown_spawn_can_be_retried_by_close_or_drop`
+with the wrapper above and `-- --exact`. It must fail with
+`failed console spawn cannot publish restoration`. Restore the patch and run the
+same test again. The control calls production `Owner::close` twice, retaining the
+original guard after failure and checking both DEC and OS restoration on retry.
+It does not manufacture a restored flag in the model or establish native worker
+creation failure provenance.

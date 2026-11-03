@@ -630,38 +630,27 @@ mod tests {
         assert!(bytes.ends_with(b"OS restored"));
     }
 
-    fn retry_model(broken: bool) {
-        loom::model(move || {
+    #[test]
+    fn failed_teardown_spawn_can_be_retried_by_close_or_drop() {
+        loom::model(|| {
             let owner = retry_owner();
             assert!(Owner::close(&owner, restore_os).is_err());
             {
                 let mut state = owner.state.lock().unwrap_or_else(|e| panic!("{e}"));
-                assert!(!state.restored);
+                assert!(
+                    !state.restored,
+                    "failed console spawn cannot publish restoration"
+                );
                 assert!(!state.closing);
                 assert_eq!(
                     state.guard.as_mut().expect("writer retained").writer(),
                     b"\x1b[?1049h"
                 );
-                if broken {
-                    // Negative control: the old close marked a failed spawn as
-                    // restored even though its action never executed.
-                    state.restored = true;
-                }
             }
             // Tty::drop calls this same close even after explicit restore failed.
             Owner::close(&owner, restore_os).unwrap_or_else(|e| panic!("{e}"));
             assert_restored(&owner);
         });
-    }
-
-    #[test]
-    fn failed_teardown_spawn_can_be_retried_by_close_or_drop() {
-        retry_model(false);
-    }
-
-    #[test]
-    fn negative_control_detects_restore_completion_without_action() {
-        assert!(std::panic::catch_unwind(|| retry_model(true)).is_err());
     }
 
     #[test]
