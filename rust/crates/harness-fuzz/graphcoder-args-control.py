@@ -136,20 +136,27 @@ def binding_oracle_regression():
     print("original binding oracle RED reproduced; corrected oracle restored", flush=True)
 
 
-if __name__ == "__main__":
-    class Parser(argparse.ArgumentParser):
-        def error(self, message):
-            raise RuntimeError(f"admit control selection: {message}")
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        raise RuntimeError(f"admit control selection: {message}")
 
+
+def selection(argv=None):
     parser = Parser(description=__doc__)
-    parser.add_argument("targets", nargs="*", choices=controls)
+    parser.add_argument("targets", nargs="*", metavar="TARGET")
     parser.add_argument("--runs", type=int, default=0, help="finite restored-source campaign units")
+    arguments = parser.parse_args(argv)
+    arguments.targets = arguments.targets or ["graphcoder_args"]
+    require(all(target in controls for target in arguments.targets), "admit known control targets")
+    require(arguments.runs >= 0, "admit finite nonnegative campaign units")
+    return arguments
+
+
+if __name__ == "__main__":
     target = "selection"
     try:
-        arguments = parser.parse_args()
-        require(arguments.runs >= 0, "admit finite nonnegative campaign units")
-        targets = arguments.targets or ["graphcoder_args"]
-        for target in targets:
+        arguments = selection()
+        for target in arguments.targets:
             recovery = f"python3 rust/crates/harness-fuzz/graphcoder-args-control.py {target}"
             if target == "graphcoder_input":
                 binding_oracle_regression()
