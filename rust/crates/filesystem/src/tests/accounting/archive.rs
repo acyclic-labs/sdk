@@ -30,6 +30,43 @@ pub(super) async fn prove(
     .await?)
 }
 
+pub(super) async fn copy_generation(
+    objects: &MemoryObjectBackend,
+    target: &MemoryObjectBackend,
+    volume: crate::VolumeId,
+    config: crate::model::VolumeConfig,
+    root: ObjectId,
+    cancel: &CancellationToken,
+) -> Result<(), Box<dyn Error>> {
+    let manifest = crate::kernel::build_generation_export_manifest_async(
+        objects,
+        volume,
+        config,
+        root,
+        limits(config),
+        BUDGET,
+        cancel,
+    )
+    .await?
+    .value;
+    // Transfer order admits every child before its parent names that reference.
+    // A proof's identity-sorted object list is not a publication order.
+    for object in manifest.objects {
+        let bytes = objects
+            .read(
+                object,
+                16 * 1024 * 1024,
+                &mut AuthorityWork::new(BUDGET, cancel),
+            )
+            .await?
+            .bytes;
+        target
+            .put(object, bytes, &mut AuthorityWork::new(BUDGET, cancel))
+            .await?;
+    }
+    Ok(())
+}
+
 async fn evidence(
     objects: &MemoryObjectBackend,
     id: AuthorityId,

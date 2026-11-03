@@ -13,6 +13,8 @@ enum AuthorityKind {
 }
 
 /// Reads and proves at most `maximum_records` records after `cursor`.
+/// A later proof's credit refusal returns the nonempty proven prefix. If the
+/// first fact cannot be proved, the original failure is returned instead.
 pub async fn accounting_page<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     authority: &A,
     objects: &O,
@@ -245,47 +247,28 @@ pub(crate) async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObje
             break;
         }
         let stamp = verify_record(authority_id, next, &record)?;
-        measured.charge(WorkCounters {
-            items_examined: 1,
-            bytes_hashed: crate::AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES
-                .checked_add(u64::try_from(record.payload.len()).map_err(|_| WorkError::Overflow)?)
-                .ok_or(WorkError::Overflow)?,
-            ..WorkCounters::default()
-        })?;
-        let transition = match &kind {
-            AuthorityKind::Volume { volume_id, config } if record.sequence == Sequence::new(1) => {
-                let created = decode_volume_created(&record.payload, MAX_EVENT_BYTES, &mut |_| {
-                    Ok::<_, crate::kernel::VolumeCreatedError>(())
-                })
-                .map_err(|_| AccountingError::InvalidHistory)?;
-                let bytes = prove_bytes(
-                    objects,
-                    created.initial_generation_root,
-                    (*volume_id, *config),
-                    authority_id,
-                    &record,
-                    &mut measured,
-                    cancellation,
-                )
-                .await?;
-                AccountingTransition::Published {
-                    volume_id: *volume_id,
-                    generation_root: created.initial_generation_root,
-                    logical_regular_file_bytes: bytes,
-                }
-            }
-            AuthorityKind::Volume { volume_id, config } => {
-                if let Ok(published) =
-                    decode_published_generation(&record.payload, MAX_EVENT_BYTES, |_| {
-                        Ok::<_, crate::kernel::CanonicalDecodeError>(())
-                    })
+        let transition = async {
+            measured.charge(WorkCounters {
+                items_examined: 1,
+                bytes_hashed: crate::AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES
+                    .checked_add(
+                        u64::try_from(record.payload.len()).map_err(|_| WorkError::Overflow)?,
+                    )
+                    .ok_or(WorkError::Overflow)?,
+                ..WorkCounters::default()
+            })?;
+            Ok::<_, AccountingError>(match &kind {
+                AuthorityKind::Volume { volume_id, config }
+                    if record.sequence == Sequence::new(1) =>
                 {
-                    if published.volume_id != *volume_id {
-                        return Err(AccountingError::InvalidHistory);
-                    }
+                    let created =
+                        decode_volume_created(&record.payload, MAX_EVENT_BYTES, &mut |_| {
+                            Ok::<_, crate::kernel::VolumeCreatedError>(())
+                        })
+                        .map_err(|_| AccountingError::InvalidHistory)?;
                     let bytes = prove_bytes(
                         objects,
-                        published.generation_root,
+                        created.initial_generation_root,
                         (*volume_id, *config),
                         authority_id,
                         &record,
@@ -295,61 +278,99 @@ pub(crate) async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObje
                     .await?;
                     AccountingTransition::Published {
                         volume_id: *volume_id,
-                        generation_root: published.generation_root,
+                        generation_root: created.initial_generation_root,
                         logical_regular_file_bytes: bytes,
                     }
-                } else {
-                    let deleted = decode_workspace_deleted(&record.payload, MAX_EVENT_BYTES)
-                        .map_err(|_| AccountingError::InvalidHistory)?;
-                    if deleted != *volume_id || record.sequence != head.sequence {
+                }
+                AuthorityKind::Volume { volume_id, config } => {
+                    if let Ok(published) =
+                        decode_published_generation(&record.payload, MAX_EVENT_BYTES, |_| {
+                            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+                        })
+                    {
+                        if published.volume_id != *volume_id {
+                            return Err(AccountingError::InvalidHistory);
+                        }
+                        let bytes = prove_bytes(
+                            objects,
+                            published.generation_root,
+                            (*volume_id, *config),
+                            authority_id,
+                            &record,
+                            &mut measured,
+                            cancellation,
+                        )
+                        .await?;
+                        AccountingTransition::Published {
+                            volume_id: *volume_id,
+                            generation_root: published.generation_root,
+                            logical_regular_file_bytes: bytes,
+                        }
+                    } else {
+                        let deleted = decode_workspace_deleted(&record.payload, MAX_EVENT_BYTES)
+                            .map_err(|_| AccountingError::InvalidHistory)?;
+                        if deleted != *volume_id || record.sequence != head.sequence {
+                            return Err(AccountingError::InvalidHistory);
+                        }
+                        AccountingTransition::WorkspaceDeleted { volume_id: deleted }
+                    }
+                }
+                AuthorityKind::Retention {
+                    volume_id,
+                    kind,
+                    config,
+                } => {
+                    if record.sequence != Sequence::new(1) {
                         return Err(AccountingError::InvalidHistory);
                     }
-                    AccountingTransition::WorkspaceDeleted { volume_id: deleted }
+                    let retained = decode_retention_created(&record.payload, MAX_EVENT_BYTES)
+                        .map_err(|_| AccountingError::InvalidHistory)?;
+                    if retained.volume_id != *volume_id
+                        || retained.kind != *kind
+                        || retention_authority_id(
+                            retained.volume_id,
+                            retained.kind,
+                            &retained.label,
+                        ) != authority_id
+                    {
+                        return Err(AccountingError::InvalidHistory);
+                    }
+                    let bytes = prove_bytes(
+                        objects,
+                        retained.generation_root,
+                        (*volume_id, *config),
+                        authority_id,
+                        &record,
+                        &mut measured,
+                        cancellation,
+                    )
+                    .await?;
+                    let owner_volume_id = match retained.kind {
+                        RetentionKind::ForkBase => hex::decode(&retained.label)
+                            .ok()
+                            .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+                            .map(VolumeId::from_bytes)
+                            .ok_or(AccountingError::InvalidHistory)?,
+                        RetentionKind::Checkpoint | RetentionKind::Pin => *volume_id,
+                    };
+                    AccountingTransition::Retained {
+                        volume_id: *volume_id,
+                        owner_volume_id,
+                        kind: *kind,
+                        generation_root: retained.generation_root,
+                        logical_regular_file_bytes: bytes,
+                    }
                 }
+            })
+        }
+        .await;
+        let transition = match transition {
+            Ok(transition) => transition,
+            Err(AccountingError::Work(WorkError::BudgetExceeded { .. })) if !facts.is_empty() => {
+                measured.work.verify(budget)?;
+                break;
             }
-            AuthorityKind::Retention {
-                volume_id,
-                kind,
-                config,
-            } => {
-                if record.sequence != Sequence::new(1) {
-                    return Err(AccountingError::InvalidHistory);
-                }
-                let retained = decode_retention_created(&record.payload, MAX_EVENT_BYTES)
-                    .map_err(|_| AccountingError::InvalidHistory)?;
-                if retained.volume_id != *volume_id
-                    || retained.kind != *kind
-                    || retention_authority_id(retained.volume_id, retained.kind, &retained.label)
-                        != authority_id
-                {
-                    return Err(AccountingError::InvalidHistory);
-                }
-                let bytes = prove_bytes(
-                    objects,
-                    retained.generation_root,
-                    (*volume_id, *config),
-                    authority_id,
-                    &record,
-                    &mut measured,
-                    cancellation,
-                )
-                .await?;
-                let owner_volume_id = match retained.kind {
-                    RetentionKind::ForkBase => hex::decode(&retained.label)
-                        .ok()
-                        .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
-                        .map(VolumeId::from_bytes)
-                        .ok_or(AccountingError::InvalidHistory)?,
-                    RetentionKind::Checkpoint | RetentionKind::Pin => *volume_id,
-                };
-                AccountingTransition::Retained {
-                    volume_id: *volume_id,
-                    owner_volume_id,
-                    kind: *kind,
-                    generation_root: retained.generation_root,
-                    logical_regular_file_bytes: bytes,
-                }
-            }
+            Err(error) => return Err(error),
         };
         let operation_class = match &transition {
             AccountingTransition::Retained {
@@ -431,8 +452,7 @@ impl AccountingReadWork {
             .peak_allocation_bytes
             .checked_add(self.live_bytes)
             .ok_or(WorkError::Overflow)?;
-        self.work = self.work.checked_add(work)?;
-        self.work.verify(self.budget)?;
+        self.work.charge(&work, &self.budget)?;
         Ok(())
     }
 

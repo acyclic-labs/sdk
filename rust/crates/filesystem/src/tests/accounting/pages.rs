@@ -253,6 +253,31 @@ async fn a_later_publication_changes_the_watermark_without_changing_consumed_fac
     assert!(!second.complete);
     let last = page(&authority, &objects, id, second.next, 1).await?;
     assert!(last.complete);
+    let bounded = page(&authority, &objects, id, AccountingCursor::genesis(), 8).await?;
+    assert!(!bounded.facts.is_empty() && bounded.facts.len() < 4);
+    assert!(!bounded.complete);
+    bounded.work.verify(BUDGET)?;
+    assert_eq!(
+        bounded.next.sequence,
+        bounded.facts.last().unwrap().sequence
+    );
+    let mut insufficient = BUDGET;
+    insufficient.items_examined = last.work.items_examined.checked_sub(1).unwrap();
+    assert!(matches!(
+        accounting_page(
+            &authority,
+            &objects,
+            id,
+            second.next,
+            1,
+            insufficient,
+            &cancel
+        )
+        .await,
+        Err(AccountingError::Work(
+            crate::WorkError::BudgetExceeded { .. }
+        ))
+    ));
     for (fact, (generation_root, logical_regular_file_bytes)) in second
         .facts
         .iter()
