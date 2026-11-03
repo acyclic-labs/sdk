@@ -162,19 +162,6 @@ fn rejects_malformed_storage_and_wire() -> Result<(), Box<dyn std::error::Error>
 }
 
 #[test]
-fn resource_version_refusal_precedes_fields() -> Result<(), Box<dyn std::error::Error>> {
-    let encoded = ResourceIdentity::new(b"a", b"b")?.encode();
-    testing::check(&encoded);
-    let body = encoded
-        .get(RESOURCE_DOMAIN.len() + RESOURCE_VERSION.len()..)
-        .ok_or("payload")?;
-    assert_eq!(
-        ResourceIdentity::decode(body),
-        Err(IdentityError::UnsupportedVersion)
-    );
-    Ok(())
-}
-#[test]
 fn rejects_tls_and_signature_aliases() -> Result<(), DnsError> {
     let host = "worker.account.example.com";
     assert_eq!(CanonicalHost::parse(host)?.as_str(), host);

@@ -6,7 +6,12 @@ use acyclic_auth::addressing::{
 
 const DOMAIN: &str = "run.example.com";
 
-fn version<T>(bytes: &[u8], offset: usize, decode: impl Fn(&[u8]) -> Result<T, IdentityError>) {
+fn header<T>(
+    bytes: &[u8],
+    offset: usize,
+    invalid: IdentityError,
+    decode: impl Fn(&[u8]) -> Result<T, IdentityError>,
+) {
     let mut header = bytes[..=offset].to_vec();
     for other in [0, 2, u8::MAX] {
         header[offset] = other;
@@ -20,6 +25,14 @@ fn version<T>(bytes: &[u8], offset: usize, decode: impl Fn(&[u8]) -> Result<T, I
         decode(&header),
         Err(IdentityError::UnsupportedVersion)
     ));
+    let mut alias = bytes.to_vec();
+    alias[0] ^= 1;
+    for value in [alias.as_slice(), &bytes[offset + 1..]] {
+        assert!(
+            matches!(decode(value), Err(error) if error == invalid),
+            "identity domain must retain typed refusal"
+        );
+    }
 }
 
 /// Require exact framing of admitted bytes through the owning production decoder.
@@ -209,9 +222,10 @@ pub fn check(bytes: &[u8]) {
         );
     }
     if let Ok(value) = ResourceIdentity::decode(bytes) {
-        version(
+        header(
             bytes,
             super::RESOURCE_DOMAIN.len(),
+            IdentityError::UnsupportedVersion,
             ResourceIdentity::decode,
         );
         framing(bytes, ResourceIdentity::decode);
@@ -224,9 +238,10 @@ pub fn check(bytes: &[u8]) {
         assert_eq!(ResourceIdentity::decode(&value.encode()), Ok(value));
     }
     if let Ok(value) = ActorReference::decode(bytes) {
-        version(
+        header(
             bytes,
             super::actor::HEADER.len() - 1,
+            IdentityError::Malformed,
             ActorReference::decode,
         );
         framing(bytes, ActorReference::decode);

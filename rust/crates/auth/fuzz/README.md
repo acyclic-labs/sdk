@@ -179,3 +179,10 @@ examples reach these shared checks; the separate Actor version example is
 redundant. Run `python3 negative-control.py addressing-resource-version` or
 `addressing-actor-version` to bypass the actual shared header's version guard
 and require each original writer capture to trip the unchanged refusal oracle.
+The same header oracle changes a domain byte and removes the complete header;
+resource inputs must retain `UnsupportedVersion`, and actor inputs `Malformed`.
+It subsumes the separate headerless-resource example. Run
+`python3 negative-control.py addressing-resource-domain` or
+`addressing-actor-domain` to bypass the actual shared domain guard. Each original
+writer capture must trip the unchanged typed domain-refusal assertion, while
+the previously qualified version checks remain in the same shared oracle.
