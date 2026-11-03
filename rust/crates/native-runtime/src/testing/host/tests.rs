@@ -341,14 +341,27 @@ fn unscoped_physical_workers_leave_the_driver_available_to_reply() {
     // Every physical worker is waiting for this driver. Its first poll must
     // yield before any reply is sent, even though none belongs to this Host.
     assert!(drive.as_mut().poll(&mut cx).is_pending());
-    for (index, reply) in replies.into_iter().enumerate() {
-        reply.send(index).unwrap();
-    }
-    executor::complete_io(drive).unwrap();
-    assert_eq!(executor::complete_io(completion).unwrap(), 42);
-    for (index, completion) in occupants.into_iter().enumerate() {
-        assert_eq!(executor::complete_io(completion).unwrap(), index);
-    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let deadline = tokio::time::sleep(std::time::Duration::from_secs(30));
+        tokio::pin!(deadline);
+        for (index, reply) in replies.into_iter().enumerate() {
+            reply.send(index).unwrap();
+        }
+        tokio::select! {
+            biased;
+            result = &mut drive => result.unwrap(),
+            () = &mut deadline => panic!("unscoped native work exceeded the simulated deadline"),
+        }
+        assert_eq!(completion.await.unwrap(), 42);
+        for (index, completion) in occupants.into_iter().enumerate() {
+            assert_eq!(completion.await.unwrap(), index);
+        }
+    });
 }
 
 #[test]
