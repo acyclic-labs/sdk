@@ -1,0 +1,18 @@
+--- a/rust/crates/filesystem/src/native_host/held_files.rs
++++ b/rust/crates/filesystem/src/native_host/held_files.rs
+@@ -263,6 +263,7 @@
+         work: &mut W,
+     ) -> Result<[u8; N], DemandError> {
+         loop {
++            let candidate = candidate()?;
+             match read_record(&self.directory, leaf, work) {
+                 Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::NotFound) => {}
+                 Ok(record) => {
+@@ -279,7 +280,6 @@
+                 }
+                 Err(error) => return Err(error),
+             }
+-            let candidate = candidate()?;
+             let temporary =
+                 PathBuf::from(format!(".{}.next", crate::identity::fresh_uuid().simple()));
+             match publish_record(

@@ -1,0 +1,7 @@
+--- a/rust/crates/harness/src/local/host_files.rs
++++ b/rust/crates/harness/src/local/host_files.rs
+@@ -52,3 +52,3 @@
+             let file = format!("{}.json", OperationId::from_bytes(request.into_bytes()));
+-            projection_present(&directory.join("requests").join(file)).unwrap_or(true)
++            directory.join("requests").join(file).exists()
+         }),

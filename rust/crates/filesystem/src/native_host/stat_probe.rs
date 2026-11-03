@@ -56,8 +56,6 @@ thread_local! {
     #[cfg(target_os = "linux")]
     static FAULT: Cell<Option<(&'static str, i32)>> = const { Cell::new(None) };
     #[cfg(target_os = "linux")]
-    static FOLD: Cell<bool> = const { Cell::new(false) };
-    #[cfg(target_os = "linux")]
     static STATX_OPTIONS: Cell<(bool, bool)> = const { Cell::new((false, false)) };
 }
 
@@ -285,22 +283,12 @@ impl Fault {
     pub(crate) fn fired(&self) -> bool {
         FAULT.get().is_none()
     }
-    /// Restores the folding defect: a failed handle query hashes as an
-    /// absent handle instead of failing.
-    pub(crate) fn fold_errors(&self) {
-        FOLD.set(true);
-    }
 }
 #[cfg(target_os = "linux")]
 impl Drop for Fault {
     fn drop(&mut self) {
         FAULT.set(None);
-        FOLD.set(false);
     }
-}
-#[cfg(target_os = "linux")]
-pub(crate) fn fold_errors() -> bool {
-    FOLD.get()
 }
 #[cfg(target_os = "linux")]
 pub(crate) fn fault(query: &'static str) -> Option<std::io::Error> {
