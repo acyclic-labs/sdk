@@ -421,8 +421,16 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
             old_trace.drain(duplicate..duplicate + 2);
         }
         assert_eq!(old_trace, new_trace);
+        // A create publication's first read already reuses its retained
+        // generation, so it costs exactly what every later reuse costs.
+        let reused = if matches!(entry, Entry::Create) {
+            (before.0.1.count_total, before.0.1.bytes_total)
+                == (after.0.1.count_total, after.0.1.bytes_total)
+        } else {
+            allocation_bound(before.0.1, after.0.1)
+        };
         assert!(
-            allocation_bound(before.0.1, after.0.1),
+            reused,
             "{entry:?} {mode:?}: {:?} -> {:?}",
             before.0.1,
             after.0.1
