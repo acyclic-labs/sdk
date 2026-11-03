@@ -745,7 +745,7 @@
     "scope": "Linux x86_64 native query entry points only. Earlier controls and campaigns retain their original source and feature qualification. Hook publication, MCP installation/transport, worker loss, source branch maps and other platforms remain open."
   },
   "partial_query_domain": {
-    "status": "qualification pending",
+    "status": "qualified on Linux x86_64",
     "change": "Category selector is byte 8, independently of the first eight signed-integer bytes; all i64 bit patterns remain reachable. Earlier partial-query qualification describes its original coupled selector only.",
     "new_caller_seed_sha256": {
       "query-integer-min": "b7e16632b656ff8dfe82039d030275d178e4e012a2205b596925814aa7df0874",
@@ -754,6 +754,29 @@
       "query-integer-max": "8d420fa925bf3a0f0064a17195f6eb40ffed576358c737727be0650d1fb05a30"
     },
     "seed_provenance": "Four authored signed-integer boundary/regression inputs, each followed by the independent integer-category byte; no external tool output.",
-    "scope": "Generator domain repair in the existing production-loader oracle; no production change, new target or new campaign."
+    "scope": "Generator domain repair in the existing production-loader oracle; no production change, new target or new campaign.",
+    "qualification": {
+      "source_commit": "5e1e82ad0a2ed7f970e22d99e963c5fef5329725",
+      "source_tree": "39dd8540e2df4184d6ef41aa0e57f8b484d484df",
+      "sources": {
+        "rust/crates/harness-core/src/native_settings.rs": "7f7e5873459a627ec6608ffb32b08aefecfd774298ef38e957ebf86dbb316535",
+        "rust/crates/harness-fuzz/fuzz_targets/native_settings.rs": "7484fc0e0019231de019807d2eb4bec53f03278d36c17bdae118df4dd117c6ca",
+        "rust/crates/harness-fuzz/fuzz_targets/native_settings/selection.rs": "8b3c886c877111781743e887052be48f80edfeb87d9ff187d656f81246251240",
+        "rust/crates/harness-fuzz/Cargo.toml": "b14553433386611084c2f41fb96df1f10f422a207139547135f40776d0a7f2ca",
+        "rust/crates/harness-fuzz/graphcoder-args-control.py": "13bb33af91382eb4d3b1a6e10378f9d33000e43afd0037bc0ba63c0dfcea27a5"
+      },
+      "negative_controls": [
+        "Actual public MCP-only query eagerly selects hooks",
+        "Actual public hook-only query omits hooks"
+      ],
+      "restoration": "Each mutation failed its unchanged semantic assertion; exact production source restored before retained corpus replay",
+      "replayed_files": 516,
+      "replayed_bytes": 19885,
+      "replay_seconds": 20,
+      "instrumented_edges": 6093,
+      "features_feedback": 12673,
+      "new_campaign_runs": 0,
+      "scope": "Independent generator fields and production query entry points on Linux x86_64. This does not transfer earlier source controls or campaigns; downstream publication, transport, worker loss, branch completeness and other platforms remain open."
+    }
   }
 }
