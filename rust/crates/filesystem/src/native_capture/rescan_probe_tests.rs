@@ -243,10 +243,13 @@ fn run(
     let mut receipt = serde_json::to_value(work.receipt()).unwrap();
     let before = serde_json::to_value(before).unwrap();
     for (name, value) in receipt.as_object_mut().unwrap() {
-        // The original ledger includes fixture work. For its monotone peak this
-        // is the increase over the prior peak; physical peak storage is also
-        // compared independently by measure().
-        *value = serde_json::json!(value.as_u64().unwrap() - before[name].as_u64().unwrap());
+        if name == "peakAllocationBytes" {
+            // A high-water mark is not additive. Compare its actual final state
+            // on the same ledger; measure() separately checks each physical peak.
+            assert!(value.as_u64().unwrap() >= before[name].as_u64().unwrap());
+        } else {
+            *value = serde_json::json!(value.as_u64().unwrap() - before[name].as_u64().unwrap());
+        }
     }
     let live_after = work.live_allocation_bytes();
     let unchanged_root = fixture.checkout.root() == &root;
