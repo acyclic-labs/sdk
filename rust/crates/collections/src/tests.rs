@@ -416,6 +416,9 @@ fn keyed_histories_preserve_global_cuts_bounded_work_and_physical_custody()
             let zero = binary_key::<1032, _>(&[0; 1024], &mut work).unwrap();
             let mut index = KeyedIndex::default().insert(zero, 0, 0, &mut work)?;
             let items = work.items;
+            drop(index.insert(zero, 0, 0, &mut work)?);
+            assert!(work.items - items <= 2 * 1032 + 8 + 5);
+            let items = work.items;
             assert_eq!(index.seek(zero, 0, 1, &mut work)?, Some((0, &0)));
             assert!(work.items - items <= 1032 + 1 + 3 * 8 + 1);
             let required = work.items - items;

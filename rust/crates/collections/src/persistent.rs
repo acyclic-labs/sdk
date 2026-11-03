@@ -265,7 +265,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         if self.root.is_none() {
             return Ok(None);
         }
-        work.examine(1 + N as u64)?;
+        work.examine(1 + self.before.map_or(0, |_| N as u64))?;
         Ok(self
             .body()
             .filter(|body| self.before.is_none_or(|before| body.minimum < before)))
