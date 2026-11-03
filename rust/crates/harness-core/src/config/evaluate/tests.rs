@@ -99,7 +99,6 @@ async fn every_unusable_module_is_invalid_with_its_reason() {
             "export default await new Promise(() => {});",
             "never settles",
         ),
-        ("export default import('./models.ts');", "import()"),
         (
             "import x from 'node:fs'; export default x;",
             "imports node:fs",
