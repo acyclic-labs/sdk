@@ -8,6 +8,20 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 FUZZ = ROOT / "rust/fuzz"
 CASES = {
+    "assignment-refusal": (
+        "experiments/plan.rs", "file.version != 1", "true", "assignment",
+        "independent admission invariant: valid assignment",
+    ),
+    "assignment-population": (
+        "experiments/plan.rs", "Ok(Self::new(file.population, file.replicate))",
+        "Ok(Self::new([0; 32], file.replicate))", "assignment",
+        "independent assignment invariant: identity field population",
+    ),
+    "assignment-replicate": (
+        "experiments/plan.rs", "Ok(Self::new(file.population, file.replicate))",
+        "Ok(Self::new(file.population, 0))", "decision",
+        "independent assignment invariant: identity field replicate",
+    ),
     "decision-version": (
         "experiments/probes.rs", "decision.version != 1", "false", "decision-version",
         "independent admission invariant: version",

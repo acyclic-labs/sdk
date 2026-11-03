@@ -30,7 +30,12 @@ fn valid_files(bytes: &[u8]) -> (Scorer, i64) {
     // Compare with the original wire numbers, including JSON decimal rounding.
     let measurements: Value = serde_json::from_slice(&wire).expect("generated JSON parses");
     let encoded = serde_json::to_value(&row).expect("admitted observation projects");
-    identities(&encoded, &measurements);
+    identities(
+        &encoded,
+        &measurements,
+        "observation",
+        &["population", "replicate", "arm"],
+    );
     pairs(
         &row,
         population,
@@ -51,6 +56,8 @@ fn valid_files(bytes: &[u8]) -> (Scorer, i64) {
     identities(
         &serde_json::to_value(&row).expect("integer observation projects"),
         &value,
+        "observation",
+        &["population", "replicate", "arm"],
     );
     pairs(
         &row,
@@ -60,6 +67,16 @@ fn valid_files(bytes: &[u8]) -> (Scorer, i64) {
         score.map(|value| f64::from(value - baseline)),
         cost.map(|value| f64::from(value - baseline)),
         f64::from(baseline),
+    );
+    let value = json!({"version":1,"population":population,"replicate":word(8)});
+    let wire = serde_json::to_vec(&value).expect("valid assignment encodes");
+    let assignment: PairAssignment =
+        serde_json::from_slice(&wire).expect("independent admission invariant: valid assignment");
+    identities(
+        &serde_json::to_value(assignment).expect("admitted assignment projects"),
+        &value,
+        "assignment",
+        &["population", "replicate"],
     );
     let wire =
         serde_json::to_vec(&json!({"version":1,"value":expected})).expect("valid decision encodes");
@@ -77,11 +94,11 @@ fn valid_files(bytes: &[u8]) -> (Scorer, i64) {
     )
 }
 
-fn identities(encoded: &Value, original: &Value) {
-    for field in ["population", "replicate", "arm"] {
+fn identities(encoded: &Value, original: &Value, kind: &str, fields: &[&str]) {
+    for field in fields {
         assert_eq!(
-            encoded[field], original[field],
-            "independent observation invariant: identity field {field}"
+            encoded[*field], original[*field],
+            "independent {kind} invariant: identity field {field}"
         );
     }
 }
@@ -538,7 +555,12 @@ fuzz_target!(|bytes: &[u8]| {
         );
         let canonical = serde_json::to_vec(&row).expect("admitted observation encodes");
         let encoded: Value = serde_json::from_slice(&canonical).expect("observation encodes JSON");
-        identities(&encoded, &value);
+        identities(
+            &encoded,
+            &value,
+            "observation",
+            &["population", "replicate", "arm"],
+        );
         for field in ["score", "cost_usd"] {
             let original = &value[field];
             assert!(
@@ -582,7 +604,7 @@ fuzz_target!(|bytes: &[u8]| {
     scorer(bytes);
     decision(bytes);
     if let Ok(assignment) = serde_json::from_slice::<PairAssignment>(bytes) {
-        object(
+        let value = object(
             bytes,
             |input| serde_json::from_slice::<PairAssignment>(input).is_ok(),
             1,
@@ -590,6 +612,12 @@ fuzz_target!(|bytes: &[u8]| {
             &["version", "population", "replicate"],
         );
         let canonical = serde_json::to_vec(&assignment).expect("admitted assignment encodes");
+        identities(
+            &serde_json::from_slice(&canonical).expect("assignment encodes JSON"),
+            &value,
+            "assignment",
+            &["population", "replicate"],
+        );
         assert_eq!(
             serde_json::from_slice::<PairAssignment>(&canonical)
                 .expect("canonical assignment admits"),

@@ -204,3 +204,14 @@ over-refusing decoder. Scalar type/projection checks precede the field's omissio
 check so the retained coercion controls still fail at their intended assertions.
 Three retained omission mutations reuse the original observation-known seed;
 no additional corpus or parser is needed.
+
+Assignment admission uses the same constructive valid-file property on every
+callback. Original population and replicate values must survive decoding, using
+the same field comparison as observations. Admitted raw assignment files also
+retain their original identities before canonical re-admission. This replaces
+the fixed assignment schema example; the shared object property covers each
+required, unknown, duplicate, version, sequence and trailing-input refusal.
+The retained `assignment-refusal`, `assignment-population` and
+`assignment-replicate` controls reject all valid declarations, erase the cut,
+or erase the replicate in the actual production deserializer. Existing corpus
+inputs select nonzero identities; no new input format or corpus is needed.
