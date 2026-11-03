@@ -1,8 +1,8 @@
 //! Exercise public control admission and the exact request retained by Unknown.
 use acyclic_harness_client::{
-    AgentBinding, AgentCall, AgentCommand, AgentControlFailure, AgentError, AgentPageRequest,
-    AgentPath, AgentReply, Delivered, IntentId, PreparedCommand, ReadTarget, decode_agent_reply,
-    encode_agent_reply,
+    AgentBinding, AgentCall, AgentCommand, AgentControlFailure, AgentError, AgentExchangeError,
+    AgentPageRequest, AgentPath, AgentReply, Delivered, IntentId, PreparedCommand, ReadTarget,
+    decode_agent_reply, encode_agent_reply,
 };
 use acyclic_stream::{
     AppendRecord, CommitCondition, CommitMutation, CommitRequest, IdempotencyKey, StreamPath,
@@ -31,7 +31,11 @@ pub fn check(bytes: &[u8]) {
         return;
     };
     if let Ok(head) = AgentCall::decode(&bytes[..separator]) {
-        assembled(&head, &bytes[separator + 1..]);
+        if matches!(head.command(), AgentCommand::Staged { .. }) {
+            assembled(&head, &bytes[separator + 1..]);
+        } else {
+            actor_response(&head, &bytes[separator + 1..]);
+        }
         return;
     }
     let Ok(command) = PreparedCommand::decode(&bytes[..separator]) else {
@@ -76,6 +80,49 @@ fn with_unknown_field(bytes: &[u8]) -> Vec<u8> {
     let mut changed = bytes.to_vec();
     changed.extend_from_slice(&[0xf8, 0x07, 0x01]); // protobuf field 127
     changed
+}
+
+fn actor_response(call: &AgentCall, bytes: &[u8]) {
+    let mut route = call.invocation().clone();
+    let command = PreparedCommand::from_bytes(std::mem::take(&mut route.body)).unwrap();
+    route.invocation_order = None;
+    let binding = AgentBinding::new(&route.encode_to_vec()).unwrap();
+    let Ok(invocation) = binding.prepare(&command) else {
+        return;
+    };
+    // Only the transport is supplied here; the public send path owns response
+    // admission. This immediate byte source models no network or authority.
+    let exchange = |bytes: &[u8]| {
+        futures::executor::block_on(invocation.send::<AgentExchangeError, _, _>(|_| {
+            futures::future::ready(Ok(bytes::Bytes::copy_from_slice(bytes)))
+        }))
+    };
+    let Ok(result) = exchange(bytes) else {
+        return;
+    };
+    let response = acyclic_actors::wire::InvokeActorResponse::decode(bytes).unwrap();
+    assert_eq!(response.encode_to_vec(), bytes);
+    assert_eq!(response.status, 200);
+    let decoded = decode_agent_reply(&response.body, call.command()).unwrap();
+    match (result, decoded) {
+        (Ok(actual), Ok(expected)) => assert_eq!(json(&actual), json(&expected)),
+        (Err(actual), Err(expected)) => assert_eq!(actual.code(), expected.code()),
+        _ => panic!("actor response changed its original control outcome"),
+    }
+    assert!(
+        exchange(&with_unknown_field(bytes)).is_err(),
+        "noncanonical actor response admitted"
+    );
+    assert!(exchange(&[bytes, bytes].concat()).is_err());
+    let mut denied = response;
+    denied.status = 403;
+    assert!(
+        matches!(
+            exchange(&denied.encode_to_vec()),
+            Err(AgentExchangeError::ActorStatus(403))
+        ),
+        "actor status discarded"
+    );
 }
 
 fn assembled(head: &AgentCall, bytes: &[u8]) {
@@ -328,8 +375,12 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
         let prepared = PreparedCommand::new(&command)?;
         seeds.push((format!("command-{name}"), prepared.command().to_vec()));
         for (index, invocation) in route.prepare(&prepared)?.invocations().iter().enumerate() {
-            AgentCall::decode(invocation)?;
+            let call = AgentCall::decode(invocation)?;
             seeds.push((format!("invocation-{name}-{index}"), invocation.to_vec()));
+            let mut exchange = invocation.to_vec();
+            exchange.push(0);
+            exchange.extend_from_slice(&call.reply(&Ok(reply.clone()))?);
+            seeds.push((format!("actor-response-{name}-{index}"), exchange));
         }
         let wire = encode_agent_reply(&Ok(reply.clone()), &command)?;
         seeds.push((format!("reply-{name}"), pair(&prepared, &wire)));
@@ -374,7 +425,14 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
         ("refused", AgentError::Conflict("original refusal")),
     ] {
         let code = error.code();
-        let wire = encode_agent_reply(&Err(error), &AgentCommand::Root {})?;
+        let result = Err(error);
+        let wire = encode_agent_reply(&result, &AgentCommand::Root {})?;
+        for invocation in route.prepare(&root)?.invocations() {
+            let mut exchange = invocation.to_vec();
+            exchange.push(0);
+            exchange.extend_from_slice(&AgentCall::decode(invocation)?.reply(&result)?);
+            seeds.push((format!("actor-response-{name}"), exchange));
+        }
         let decoded = decode_agent_reply(&wire, &AgentCommand::Root {})?.unwrap_err();
         assert_eq!(decoded.code(), code);
         if let AgentControlFailure::Refused { reason, .. } = decoded {
