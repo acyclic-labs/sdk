@@ -1,6 +1,9 @@
 //! Per-call facts borrowed from the original dispatch and completion observation.
 use super::*;
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod codec_fuzz;
+
 /// Provider-reported token counters. Missing, malformed or contradictory values
 /// remain unknown. Input and output retain the provider's inclusive/exclusive
 /// conventions; cached and reasoning tokens are never added a second time.
@@ -439,12 +442,13 @@ mod tests {
         fn usage_dialects_preserve_units_absence_and_malformed_controls(
             input in any::<u64>(), output in any::<u64>(),
             cached in proptest::option::of(any::<u64>()),
+            cache_write in proptest::option::of(any::<u64>()),
             reasoning in proptest::option::of(any::<u64>()),
         ) {
             // Generated protocol-field mutations, never captured transcripts.
             let dialects = [
                 serde_json::json!({"usage":{"input_tokens":input,"output_tokens":output,
-                    "cache_read_input_tokens":cached}}),
+                    "cache_read_input_tokens":cached,"cache_creation_input_tokens":cache_write}}),
                 serde_json::json!({"usage":{"prompt_tokens":input,"completion_tokens":output,
                     "prompt_tokens_details":{"cached_tokens":cached},
                     "completion_tokens_details":{"reasoning_tokens":reasoning}}}),
@@ -455,16 +459,20 @@ mod tests {
                     "cachedContentTokenCount":cached,"thoughtsTokenCount":reasoning}}),
             ];
             for (index, metadata) in dialects.iter().enumerate() {
+                codec_fuzz::check_metadata(metadata);
                 prop_assert_eq!(ModelTokenUsage::reported(metadata), ModelTokenUsage {
                     input: Some(input), output: Some(output), cached,
-                    cache_write: None, reasoning: if index == 0 { None } else { reasoning },
+                    cache_write: if index == 0 { cache_write } else { None },
+                    reasoning: if index == 0 { None } else { reasoning },
                 });
             }
             let mut contradictory = dialects[2].clone();
             contradictory["usage"]["prompt_tokens"] = serde_json::json!(input ^ 1);
+            codec_fuzz::check_metadata(&contradictory);
             prop_assert_eq!(ModelTokenUsage::reported(&contradictory).input, None);
             for invalid in [serde_json::json!(-1), serde_json::json!(1.5), serde_json::json!("0")] {
                 contradictory["usage"]["input_tokens"] = invalid;
+                codec_fuzz::check_metadata(&contradictory);
                 prop_assert_eq!(ModelTokenUsage::reported(&contradictory).input, None);
             }
             prop_assert_eq!(ModelTokenUsage::reported(&Value::Null), ModelTokenUsage::default());

@@ -71,6 +71,8 @@ pub use model_cost::{
 #[cfg(feature = "metrics-export")]
 pub mod metrics;
 pub(crate) mod model_usage;
+#[cfg(feature = "test-support")]
+pub use model_usage::codec_fuzz as model_usage_codec_fuzz;
 /// Original research read receipts and bounded artifact source.
 #[cfg(feature = "research")]
 pub mod read_set;

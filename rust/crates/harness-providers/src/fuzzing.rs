@@ -278,6 +278,9 @@ pub fn assert_stream_invariants(input: &[u8]) {
                 .all(|call| !ids.contains(call.call_id.as_str()))
         );
         for event in events {
+            if let ModelEvent::Completed { metadata } = &event {
+                acyclic_harness_core::executor::model_usage_codec_fuzz::check_metadata(metadata);
+            }
             let bytes = serde_json::to_vec(&event).unwrap();
             let restored: ModelEvent = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(restored, event);
