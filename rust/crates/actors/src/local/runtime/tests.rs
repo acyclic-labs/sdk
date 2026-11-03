@@ -299,10 +299,14 @@ conformance::suite!(
     durable_backend
 );
 
-/// A host that loses the alarm half of a transition (the old independent
-/// alarm write) is the broken behaviour the suite must reject.
-struct DropsAlarmClears(Package);
-impl Handler for DropsAlarmClears {
+enum LostAlarm {
+    Set,
+    Clear,
+}
+
+/// The same host must reject loss of either alarm half of a transition.
+struct DropsAlarmChanges(Package, LostAlarm);
+impl Handler for DropsAlarmChanges {
     fn manifest(&self) -> &Manifest {
         self.0.manifest()
     }
@@ -314,7 +318,10 @@ impl Handler for DropsAlarmClears {
     ) -> GuestFuture<'a, Transition> {
         async move {
             let mut transition = self.0.on_record(delivery, checkpoint, cancellation).await?;
-            if transition.alarm == AlarmChange::Clear {
+            if matches!(
+                (&self.1, &transition.alarm),
+                (LostAlarm::Set, AlarmChange::Set { .. }) | (LostAlarm::Clear, AlarmChange::Clear)
+            ) {
                 transition.alarm = AlarmChange::Keep;
             }
             Ok(transition)
@@ -325,21 +332,34 @@ impl Handler for DropsAlarmClears {
 
 #[tokio::test]
 async fn negative_control_conformance_rejects_a_host_that_loses_alarm_changes() -> TestResult {
-    let provider = Counted::new(MemoryStream::default());
-    let requests = provider.ledger();
-    let target = LocalTarget::start(
-        &Arc::new(provider),
-        Arc::new(DropsAlarmClears(Package::new()?)),
-        requests,
-    )?;
-    match conformance::verify(&target).await {
-        Err(Failure::Violation {
-            case: "cleared", ..
-        }) => Ok(()),
-        other => {
-            Err(format!("the suite accepted a host that loses alarm clears: {other:?}").into())
+    for lost in [LostAlarm::Set, LostAlarm::Clear] {
+        let setting = matches!(lost, LostAlarm::Set);
+        let provider = Counted::new(MemoryStream::default());
+        let requests = provider.ledger();
+        let target = LocalTarget::start(
+            &Arc::new(provider),
+            Arc::new(DropsAlarmChanges(Package::new()?, lost)),
+            requests,
+        )?;
+        let (result, expected) = if setting {
+            (
+                conformance::restarted(&target, "lost-set").await,
+                "restarted",
+            )
+        } else {
+            (conformance::alarms(&target, "lost-clear").await, "cleared")
+        };
+        match result {
+            Err(Failure::Violation { case, .. }) if case == expected => {}
+            other => {
+                return Err(format!(
+                    "the suite accepted a host that loses {expected} alarms: {other:?}"
+                )
+                .into());
+            }
         }
     }
+    Ok(())
 }
 
 struct Manual(AtomicU64);
