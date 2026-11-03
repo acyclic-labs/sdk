@@ -65,6 +65,19 @@ fn reuse_matches_full_recapture_for_metadata_links_and_empty_representations()
     acyclic_native_runtime::initialize_native_io_services()?;
     let _inline = acyclic_native_runtime::InlineBlocking::enter();
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    let cancellation = CancellationToken::new();
+    let setup = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+    let fs = crate::Fs::memory();
+    // Every edit forks this immutable checkout; only workspace setup is shared.
+    let workspace = runtime
+        .block_on(fs.create_workspace("reuse-property", setup.budget(), &cancellation))?
+        .value;
+    let empty = runtime.block_on(workspace.checkout(
+        crate::model::GenerationSelector::Head,
+        crate::model::CheckoutMode::tracking_transaction(),
+        &setup,
+        &cancellation,
+    ))?;
     let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
         cases: 64,
         source_file: Some(file!()),
@@ -82,16 +95,6 @@ fn reuse_matches_full_recapture_for_metadata_links_and_empty_representations()
         ),
         |(body, attribute, owner_delta, initial_link)| {
             runtime.block_on(async {
-                let cancellation = CancellationToken::new();
-                let setup = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
-                let fs = crate::Fs::memory();
-                let workspace = fs.create_workspace("reuse-property", setup.budget(), &cancellation).await.unwrap().value;
-                let empty = workspace.checkout(
-                    crate::model::GenerationSelector::Head,
-                    crate::model::CheckoutMode::tracking_transaction(),
-                    &setup,
-                    &cancellation,
-                ).await.unwrap();
                 for edit in 0..7 {
                     let source = tempfile::tempdir().unwrap();
                     let file = source.path().join("file");

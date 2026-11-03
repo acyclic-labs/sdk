@@ -291,6 +291,9 @@ mod unchanged_properties {
             .enable_all()
             .build()
             .unwrap();
+        let cancellation = CancellationToken::new();
+        let setup = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+        let initial = runtime.block_on(native_checkout(&setup)).unwrap();
         let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
             source_file: Some(file!()),
             test_name: Some(concat!(
@@ -320,7 +323,12 @@ mod unchanged_properties {
                         let budget = crate::performance::work_budget(1_000_000, 64_000_000);
                         let cancellation = CancellationToken::new();
                         let work = NativeMaterializationWork::new(budget, &cancellation).unwrap();
-                        let mut checkout = native_checkout(&work).await.unwrap();
+                        let mut checkout = initial
+                            .private_candidate(
+                                &mut crate::kernel::KernelAccounting::native(&work, &cancellation),
+                                &cancellation,
+                            )
+                            .unwrap();
                         let root = NamespacePath::new(Vec::new(), checkout.volume_config().limits)
                             .unwrap();
                         let options = options(source.path(), 16).unwrap();
