@@ -3,7 +3,7 @@ use super::{
     BATCH_MAGIC, ENVELOPE_MAGIC, EPOCH_MAGIC, Envelope, INCARNATION_MAGIC, MANIFEST_MAGIC,
     decode_batch, decode_epoch, decode_incarnation, encode_batch, encode_epoch, encode_incarnation,
 };
-use crate::{Digest, Kind, Manifest, Part};
+use crate::{ByteRange, Digest, Kind, Manifest, Part};
 use crate::{Error, wire::ErrorCode};
 
 /// Prepare an obsolete value using the original local compaction chunk size.
@@ -114,6 +114,35 @@ pub fn check(bytes: &[u8]) -> bool {
     }
     let word =
         |start| u64::from_le_bytes(fields[start..start + 8].try_into().expect("generator word"));
+    // Sorted input-derived bounds give valid selections independently of the
+    // resolver. Fixed counterexamples cover empty, reversed and oversized ones.
+    let mut bounds = [word(0), word(8), word(16)];
+    bounds.sort_unstable();
+    let [start, end, length] = bounds;
+    if ![
+        (ByteRange::FULL, 0, Some(0..0)),
+        (ByteRange::FULL, length, Some(0..length)),
+        (
+            ByteRange::new(start, end),
+            length,
+            (start < end).then_some(start..end),
+        ),
+        (ByteRange::new(length, length), length, None),
+        (ByteRange::new(1, 0), length, None),
+        (ByteRange::new(0, u64::MAX), 0, None),
+    ]
+    .into_iter()
+    .all(
+        |(range, length, expected)| match (range.resolve(length), expected) {
+            (Ok(actual), Some(expected)) => actual == expected,
+            (Err(error), None) => {
+                error.code == ErrorCode::RangeNotSatisfiable && error.stopped.is_none()
+            }
+            _ => false,
+        },
+    ) {
+        return false;
+    }
     let references: Vec<_> = bytes
         .chunks_exact(32)
         .map(|chunk| Digest::from_bytes(chunk.try_into().expect("generator digest")))

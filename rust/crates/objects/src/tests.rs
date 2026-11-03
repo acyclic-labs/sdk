@@ -515,13 +515,6 @@ async fn an_unrooted_blob_survives_the_pass_after_the_one_finding_it()
     Ok(())
 }
 
-#[test]
-fn empty_ranges_distinguish_full_content_from_explicit_selection() -> Result<(), crate::Error> {
-    assert_eq!(ByteRange::FULL.resolve(0)?, 0..0);
-    assert!(ByteRange::new(1, 1).resolve(4).is_err());
-    Ok(())
-}
-
 /// One shared medium that several [`Store`]s, standing for processes, open.
 /// It parks one operation matching `pause` until released, to force one
 /// interleaving. With `forgetful` the delete protocol's conditional writes
