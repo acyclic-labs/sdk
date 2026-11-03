@@ -219,21 +219,21 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
     }
 
     /// Reads one exact key without allocation. Checks admission even when empty.
-    pub fn get<W: IndexWork<Allocation = A>>(
+    pub fn get<W: IndexReadWork>(
         &self,
         key: [u8; N],
         accounting: &mut W,
     ) -> Result<Option<&V>, W::Error> {
-        accounting.check()?;
+        accounting.validate()?;
         let mut cursor = self.root.as_ref();
         while let Some(node) = cursor {
-            accounting.charge_items(1)?;
+            accounting.examine(1)?;
             match node.kind.as_ref() {
                 Kind::Leaf {
                     key: observed,
                     value,
                 } => {
-                    accounting.charge_items(N as u64)?;
+                    accounting.examine(N as u64)?;
                     return Ok((*observed == key).then_some(value));
                 }
                 Kind::Branch {
@@ -250,14 +250,14 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
 
     /// Borrows the first unsigned-byte-ordered entry without allocation.
     /// Original admission is checked even when the index is empty.
-    pub fn first<W: IndexWork<Allocation = A>>(
+    pub fn first<W: IndexReadWork>(
         &self,
         accounting: &mut W,
     ) -> Result<Option<(&[u8; N], &V)>, W::Error> {
-        accounting.check()?;
+        accounting.validate()?;
         let mut cursor = self.root.as_ref();
         while let Some(node) = cursor {
-            accounting.charge_items(1)?;
+            accounting.examine(1)?;
             match node.kind.as_ref() {
                 Kind::Leaf { key, value } => return Ok(Some((key, value))),
                 Kind::Branch { low, .. } => cursor = low.as_ref(),
@@ -268,13 +268,13 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
 
     /// Mutably borrows an existing exact value without constructing or funding
     /// a registration. Refusal leaves the value and its original custody intact.
-    pub fn get_mut<W: IndexWork<Allocation = A>>(
+    pub fn get_mut<W: IndexReadWork>(
         &mut self,
         key: [u8; N],
         accounting: &mut W,
     ) -> Result<Option<&mut V>, W::Error> {
-        accounting.check()?;
-        self.existing_mut(key, |items| accounting.charge_items(items))
+        accounting.validate()?;
+        self.existing_mut(key, |items| accounting.examine(items))
     }
 
     /// Mutably borrows an existing value for its exact retained owner.
@@ -334,7 +334,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
     /// The cursor is the complete original key, never an ordinal or cache hint.
     /// At most three bounded-depth paths and N comparison bytes are visited;
     /// work does not depend on the number of keys before or after the cursor.
-    pub fn seek_after<W: IndexWork<Allocation = A>>(
+    pub fn seek_after<W: IndexReadWork>(
         &self,
         after: [u8; N],
         accounting: &mut W,
@@ -346,7 +346,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         let mut cursor = self.root.as_ref();
         let mut successor = None;
         while let Some(node) = cursor {
-            accounting.charge_items(1)?;
+            accounting.examine(1)?;
             match node.kind.as_ref() {
                 Kind::Branch {
                     bit,
@@ -372,7 +372,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
             }
         }
         while let Some(node) = successor {
-            accounting.charge_items(1)?;
+            accounting.examine(1)?;
             match node.kind.as_ref() {
                 Kind::Leaf { key, value } => return Ok(Some((key, value))),
                 Kind::Branch { low, .. } => successor = low.as_ref(),
@@ -463,21 +463,21 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         Ok(Self::selected_value_mut(link, key))
     }
 
-    fn differing_bit<W: IndexWork<Allocation = A>>(
+    fn differing_bit<W: IndexReadWork>(
         &self,
         key: [u8; N],
         accounting: &mut W,
     ) -> Result<(Option<Option<Bit>>, u64), W::Error> {
-        accounting.check()?;
+        accounting.validate()?;
         let mut cursor = self.root.as_ref();
         let mut depth = 0;
         while let Some(node) = cursor {
-            accounting.charge_items(1)?;
+            accounting.examine(1)?;
             depth += 1;
             match node.kind.as_ref() {
                 Kind::Leaf { key: observed, .. } => {
                     let bytes = N as u64;
-                    accounting.charge_items(bytes)?;
+                    accounting.examine(bytes)?;
                     return Ok((Some(difference(&key, observed)), depth));
                 }
                 Kind::Branch {
