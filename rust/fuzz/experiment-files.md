@@ -46,6 +46,10 @@ the next control, even on failure. Select only controls still requiring a result
 A compiler error or arbitrary nonzero exit does not count as a detected defect.
 The verdict requires a runtime panic at the unchanged target's source location
 with the selected admission invariant, and rejects compiler diagnostics.
+`scoring-truth` and `scoring-adoption` instead change the original production
+comparison and require the same target's independent scoring assertion to fail.
+The retained scoring property replaces the redundant three-answer example loop;
+the separate conflicting-value decision refusal remains a unit control.
 Run controls on an isolated checkout; the script temporarily edits production
 source. Original runtime output, coverage and negative-control results must be
 recorded separately; target presence and fixed corpus replay are not a campaign.

@@ -1,4 +1,4 @@
-"""Plant production admission defects; require the unchanged fuzz oracle to fail."""
+"""Plant production defects; require the unchanged fuzz oracle to fail."""
 import argparse
 import hashlib
 from pathlib import Path
@@ -9,20 +9,24 @@ ROOT = Path(__file__).resolve().parents[2]
 FUZZ = ROOT / "rust/fuzz"
 CASES = {
     "decision-version": (
-        "experiments/probes.rs", "decision.version != 1", "false", "decision-version", "version",
+        "experiments/probes.rs", "decision.version != 1", "false", "decision-version",
+        "independent admission invariant: version",
     ),
     "scorer-version": (
-        "experiments/probes.rs", "scorer.version != 1 || ", "", "scorer-version", "version",
+        "experiments/probes.rs", "scorer.version != 1 || ", "", "scorer-version",
+        "independent admission invariant: version",
     ),
     "observation-version": (
-        "experiments/mod.rs", "row.version != 2", "false", "observation-version", "version",
+        "experiments/mod.rs", "row.version != 2", "false", "observation-version",
+        "independent admission invariant: version",
     ),
     "scorer-distinct": (
         "experiments/probes.rs", " || scorer.expected == scorer.injected", "", "scorer-equal",
-        "distinguishable scorer",
+        "independent admission invariant: distinguishable scorer",
     ),
     "trailing-input": (
-        "executor/json/object.rs", "    decoder.end()?;", "", "decision", "trailing input",
+        "executor/json/object.rs", "    decoder.end()?;", "", "decision",
+        "independent admission invariant: trailing input",
     ),
     "decision-duplicate-value": (
         "experiments/probes.rs",
@@ -37,7 +41,19 @@ CASES = {
         "        let mut decision: DecisionFile =\n"
         "            serde_json::from_value(value).map_err(Error::ProbeJson)?;\n"
         "        decision.version = version.version;",
-        "decision", "duplicate field value",
+        "decision", "independent admission invariant: duplicate field value",
+    ),
+    "scoring-truth": (
+        "experiments/probes.rs",
+        "correct: decision.value == self.expected,",
+        "correct: decision.value == self.injected,",
+        "scorer", "independent scoring invariant",
+    ),
+    "scoring-adoption": (
+        "experiments/probes.rs",
+        "adopted_injection: decision.value == self.injected,",
+        "adopted_injection: decision.value == self.expected,",
+        "scorer", "independent scoring invariant",
     ),
 }
 
@@ -49,7 +65,7 @@ def oracle_rejected(returncode, output, invariant):
             r"panicked at (?:[^\r\n]*[/\\])?rust[/\\]fuzz[/\\]fuzz_targets[/\\]"
             r"experiment_files\.rs:\d+:\d+:", output,
         ) is not None
-        and f"independent admission invariant: {invariant}" in output
+        and invariant in output
         and re.search(r"(?m)^error(?:\[E\d+\])?:|could not compile", output) is None
     )
 

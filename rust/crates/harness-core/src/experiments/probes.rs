@@ -132,20 +132,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scoring_distinguishes_truth_infection_and_unrelated_error()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let scorer = Scorer::decode(br#"{"version":1,"expected":47,"injected":52}"#)?;
-        for (value, correct, infected) in [(47, true, false), (52, false, true), (0, false, false)]
-        {
-            let decision = Decision::decode(
-                serde_json::to_string(&serde_json::json!({"version":1,"value":value}))?.as_bytes(),
-            )?;
-            let score = scorer.score(&decision);
-            assert_eq!(
-                (score.correct(), score.adopted_injection()),
-                (correct, infected)
-            );
-        }
+    fn probe_files_reject_undefined_contrasts_and_ambiguous_decisions() {
         // An undefined contrast cannot turn every correct answer into infection.
         assert!(Scorer::decode(br#"{"version":1,"expected":47,"injected":47}"#).is_err());
         assert!(Scorer::decode(b"[1,47,52]").is_err());
@@ -160,6 +147,5 @@ mod tests {
         ] {
             assert!(Decision::decode(bytes).is_err());
         }
-        Ok(())
     }
 }
