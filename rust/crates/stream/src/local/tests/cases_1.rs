@@ -342,12 +342,6 @@ async fn append_one(
     Ok(std::fs::metadata(journal)?.len())
 }
 
-/// The tail of `path` in the journal reopened, if the path exists.
-async fn tail_of(directory: &Path, path: &str) -> Result<Option<u64>, Box<dyn std::error::Error>> {
-    let provider = LocalStream::open(directory, LocalStreamLimits::default()).await?;
-    Ok(provider.tail(StreamPath::new(path)?).await.ok())
-}
-
 /// A damaged frame with an intact one after it was committed, so the
 #[tokio::test]
 async fn a_damaged_frame_before_an_intact_one_fails_closed()
@@ -402,14 +396,15 @@ async fn a_zero_filled_or_garbage_last_frame_is_a_torn_tail()
         file.sync_all()?;
         drop(file);
 
+        let recovered = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         assert_eq!(
-            tail_of(directory.path(), "kept").await?,
-            Some(1),
+            recovered.tail(StreamPath::new("kept")?).await?,
+            1,
             "{fill:#x}"
         );
         assert_eq!(
-            tail_of(directory.path(), "torn").await?.unwrap_or(0),
-            0,
+            recovered.tail(StreamPath::new("torn")?).await,
+            Err(StreamError::NotFound),
             "{fill:#x}"
         );
         assert_eq!(std::fs::metadata(&journal)?.len(), kept, "{fill:#x}");
