@@ -77,15 +77,17 @@ impl Files {
     }
 }
 
-fn native_failure<T>(
-    result: acyclic_harness_core::Result<T>,
-    expected: &acyclic_harness_core::ProcessError,
-) {
+fn native_failure<T>(result: acyclic_harness_core::Result<T>, error: std::io::Error) {
+    let acyclic_harness_core::Error::Process(expected) =
+        acyclic_harness_core::Error::process_io(error)
+    else {
+        panic!("native I/O must retain its process classification");
+    };
     let Err(acyclic_harness_core::Error::Process(actual)) = result else {
         panic!("selected file I/O must not be admitted or reclassified");
     };
     assert_eq!(
-        &actual, expected,
+        actual, expected,
         "native I/O must retain its original kind and cause"
     );
 }
@@ -131,22 +133,43 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
             let path = files.source(role);
             std::fs::create_dir_all(&path).unwrap();
             let error = std::fs::read(&path).expect_err("a directory is not a settings file");
-            let acyclic_harness_core::Error::Process(expected) =
-                acyclic_harness_core::Error::process_io(error)
-            else {
-                panic!("native directory I/O must retain its process classification");
-            };
             if matches!(role, 2 | 3 | 6..=8) {
                 files.load(false).expect("untrusted project I/O must stay unread");
             }
-            native_failure(files.load(true), &expected);
+            native_failure(files.load(true), error);
             if role == 1 {
                 native_failure(
                     SettingsConfig::new(&files.workspace, &files.home)
                         .codex_home(&files.codex)
                         .configured_model(),
-                    &expected,
+                    std::fs::read(&path).unwrap_err(),
                 );
+            }
+        }
+        let files = Files::new();
+        std::fs::remove_dir(&files.workspace).unwrap();
+        native_failure(
+            files.load(false),
+            std::fs::canonicalize(&files.workspace).unwrap_err(),
+        );
+        // A real non-directory parent exercises the OS canonicalization error.
+        // Some platforms report absence here; only NotFound may be skipped.
+        for (role, project) in [(4, false), (5, false), (3, true), (6, true)] {
+            let files = Files::new();
+            let path = files.source(role);
+            let parent = path.parent().unwrap();
+            if role == 5 {
+                std::fs::remove_dir(parent).unwrap();
+            }
+            std::fs::write(parent, b"").unwrap();
+            let error = std::fs::canonicalize(&path).unwrap_err();
+            if project {
+                files.load(false).expect("untrusted project paths must stay unselected");
+            }
+            if error.kind() == std::io::ErrorKind::NotFound {
+                files.load(true).expect("absent selected paths may be skipped");
+            } else {
+                native_failure(files.load(true), error);
             }
         }
         // Caller-authored settings, through the original file loader and policy.
