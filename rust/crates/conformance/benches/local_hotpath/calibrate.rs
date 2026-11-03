@@ -1,4 +1,5 @@
-use super::report::{Quantiles, RawSamples, Result, emit, ns};
+use super::quantiles::Quantiles;
+use super::report::{RawSamples, Result, emit, ns};
 use acyclic_native_runtime::{Durability, read_at, sync_data, sync_parent};
 use divan::black_box;
 use std::{

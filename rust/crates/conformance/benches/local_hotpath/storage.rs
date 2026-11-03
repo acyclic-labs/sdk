@@ -1,7 +1,8 @@
+use super::quantiles::Quantiles;
 use super::{
     actor_delivery::{Entries, EntryError},
     population::{Fixture, id, key, require_root},
-    report::{Measurements, Observation, Quantiles, RawSamples, Result, Terms, emit, ns},
+    report::{Measurements, Observation, RawSamples, Result, Terms, emit, ns},
 };
 use acyclic_actors::{
     addressing::ActorReference,

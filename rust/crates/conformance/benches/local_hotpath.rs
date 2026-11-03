@@ -15,6 +15,7 @@ mod proofs;
 #[cfg(feature = "local-hotpath-proofs")]
 #[path = "local_hotpath/proofs_resources.rs"]
 mod proofs_resources;
+mod quantiles;
 #[path = "local_hotpath/report.rs"]
 mod report;
 #[path = "local_hotpath/storage.rs"]
