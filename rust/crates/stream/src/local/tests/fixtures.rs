@@ -4,6 +4,38 @@ use crate::{
 };
 use acyclic_native_runtime::ReadAllocation;
 
+/// Every independent disk cut uses the public opener, sharing one runtime and
+/// the common physical-cut supervisors. All supervisors join before returning.
+fn journal_cuts<F, Fut>(
+    cuts: std::ops::Range<usize>,
+    verify: F,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    F: Fn(usize) -> Fut + Sync,
+    Fut: Future<Output = Result<(), Box<dyn std::error::Error>>>,
+{
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+    let jobs = cuts
+        .clone()
+        .map(|cut| {
+            let runtime = &runtime;
+            let verify = &verify;
+            move || {
+                runtime.block_on(verify(cut)).expect("journal cut failed");
+                cut
+            }
+        })
+        .collect();
+    assert_eq!(
+        acyclic_test_support::physical_cuts::run(jobs, || ()),
+        cuts.collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
 /// The actual worker start or its caller's terminal, without a receiver task.
 async fn journal_started<T>(
     started: tokio::sync::oneshot::Receiver<()>,

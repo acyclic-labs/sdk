@@ -224,16 +224,23 @@ async fn reopen_streams_more_commands_than_the_pipeline_window()
     let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
     let path = StreamPath::new("bounded-replay")?;
     let count = u64::try_from(REPLAY_PIPELINE_COMMANDS * 4)?;
-    for index in 0..count {
-        provider
-            .append(AppendRequest {
-                path: path.clone(),
-                records: vec![(Bytes::copy_from_slice(&index.to_le_bytes())).into()],
-                if_tail: Some(index),
-                idempotency_key: crate::IdempotencyKey::unique(),
-            })
-            .await?;
-    }
+    // Replay needs the whole prefix durable at reopen, not a device barrier
+    // after each fixture command. Keep every command and the original window.
+    deferring_durability(async {
+        for index in 0..count {
+            provider
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: vec![(Bytes::copy_from_slice(&index.to_le_bytes())).into()],
+                    if_tail: Some(index),
+                    idempotency_key: crate::IdempotencyKey::unique(),
+                })
+                .await?;
+        }
+        Ok::<_, StreamError>(())
+    })
+    .await?;
+    provider.flush()?;
     drop(provider);
 
     let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
