@@ -141,6 +141,12 @@ The runner restores the source and checks oracle custody. Complete source and
 branch coverage, and the other addressing guards, need separate qualification.
 
 Binary actor/resource admission uses this same oracle before text admission.
+The original empty account/id constructor assertions also live here, outside
+decode-success and nonempty-input gates. Both fuzz callers now require their
+exact typed refusals on every input. Run
+`python3 negative-control.py addressing-account-empty` or `addressing-id-empty`
+to admit an empty component through its actual shared production validator;
+the unchanged constructor refusal assertion must catch each defect.
 Arbitrary nonempty input also supplies opaque fields to the real resource writer
 and an account plus generated legal actor name to the real actor writer. Their
 outputs must decode to the original values, so rejecting valid writer output
