@@ -51,13 +51,15 @@ fn producer_fields_replace_stale_values_before_original_terminal()
     use std::{fmt, sync::Arc};
     use tokio::sync::Semaphore;
 
-    struct NeverFormat;
-    impl fmt::Debug for NeverFormat {
+    struct NeverFormat<'a>(&'a std::cell::Cell<bool>);
+    impl fmt::Debug for NeverFormat<'_> {
         fn fmt(&self, _: &mut fmt::Formatter<'_>) -> fmt::Result {
-            panic!("unknown evidence must not invoke user formatting");
+            self.0.set(true);
+            Err(fmt::Error)
         }
     }
-    let debug = tracing::field::debug(NeverFormat);
+    let formatted = std::cell::Cell::new(false);
+    let debug = tracing::field::debug(NeverFormat(&formatted));
     let overflow = u128::from(u64::MAX) + 1;
     let updates: [(&dyn tracing::field::Value, Option<u64>); 8] = [
         (&false, None),
@@ -166,6 +168,7 @@ fn producer_fields_replace_stale_values_before_original_terminal()
         drop(dispatch);
         assert!(ready(records.recv())?.is_none(), "duplicate terminal");
     }
+    assert!(!formatted.get(), "unknown evidence invoked user formatting");
     Ok(())
 }
 
@@ -413,18 +416,19 @@ fn assert_bounded_detail_cost() -> Result<(), Box<dyn std::error::Error>> {
                 "binding reuses the operation's existing registry storage"
             );
             let binding = binding.ok_or("binding admission did not run")??;
-            let one = || {
+            let one = || -> Result<(), Box<dyn std::error::Error>> {
                 let span = tracing::info_span!(parent: &root, "acyclic.test.fixed_detail", outcome = tracing::field::Empty, work.items = tracing::field::Empty);
                 span.record("work.items", 1_u64).record("outcome", "ok");
-                let record = ready(output.recv())
-                    .expect("no asynchronous producer needed")
-                    .expect("admitted terminal");
+                let record = ready(output.recv())?.ok_or("admitted terminal absent")?;
                 assert!(binding.matches(&record.sample()));
                 assert_eq!(record.sample().work.and_then(|work| work.items), Some(1));
+                Ok(())
             };
             let mut one = one;
-            one(); // Warm callsite, queue block, registry storage and allocator.
-            let cost = acyclic_test_support::measure(one);
+            one()?; // Warm callsite, queue block, registry storage and allocator.
+            let mut result = Ok(());
+            let cost = acyclic_test_support::measure(|| result = one());
+            result?;
             eprintln!("population={population} binding={admission:?} terminal={cost:?}");
             if let Some(expected) = baseline {
                 assert_eq!(cost, expected, "detail cost grew with unrelated operations");
@@ -438,7 +442,8 @@ fn assert_bounded_detail_cost() -> Result<(), Box<dyn std::error::Error>> {
             });
             assert!(
                 scan.bytes_total
-                    >= population as u64 * std::mem::size_of::<Option<tracing::Id>>() as u64
+                    >= u64::try_from(population)?
+                        * u64::try_from(std::mem::size_of::<Option<tracing::Id>>())?
             );
             root.record("outcome", "ok");
             drop(ready(output.recv())?.ok_or("original owner terminal absent")?);
@@ -1045,7 +1050,7 @@ fn trace_on_off_cost() -> Result<(), Box<dyn std::error::Error>> {
             allocations.count_total
         );
     });
-    assert_eq!(query.snapshot().ok, COUNT as u64 + 1);
+    assert_eq!(query.snapshot().ok, u64::try_from(COUNT)? + 1);
     let (export, mut output) = Export::channel(Arc::new(Semaphore::new(1)), true);
     let dispatch =
         tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(export.clone())));
