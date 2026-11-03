@@ -115,7 +115,8 @@ pub(super) fn partial(bytes: &[u8]) {
             .and_then(|bytes| bytes.try_into().ok())
             .unwrap_or_default(),
     );
-    let invalid = match bytes.first().copied().unwrap_or(0) % 4 {
+    // Keep the category independent of all eight signed-integer bytes.
+    let invalid = match bytes.get(8).copied().unwrap_or(0) % 4 {
         0 => number.to_string(),
         1 => "false".into(),
         2 => "'invalid'".into(),
