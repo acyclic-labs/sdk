@@ -77,3 +77,18 @@ Apply `mutations/code_mode_output_extra_byte.patch` to let the original interpre
 accept one extra byte. The unchanged oracle must fail at `quoted output must
 refuse one byte beyond its admission`, including on empty input. Restore the
 mutation before collecting original coverage.
+
+The same target also checks the runtime's original producerless-promise refusal
+through the native blocking pool with its original allocation ledger. The real
+dispatcher receiver remains alive but supplies no reply or cancellation. Only
+the runtime's idle event can finish execution, and retirement must release its
+native credit. This subsumes the former unfunded, directly polled example; the
+separate StockExecution producerless control keeps its tool and journal checks.
+The single-poll check runs inside that blocking boundary and rejects a pending
+future immediately, preserving the progress oracle without a timeout.
+
+Apply `mutations/code_mode_producerless_succeeds.patch` to return null from the
+original producerless refusal branch. The unchanged oracle must fail at
+`a producerless promise must retain its refusal`. This wrong-success mutation
+preserves the idle event and introduces no stranded future. Restore it before
+collecting original coverage.

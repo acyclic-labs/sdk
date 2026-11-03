@@ -192,28 +192,6 @@ pub(super) async fn run(
 #[cfg(test)]
 mod tests {
     #[tokio::test]
-    async fn producerless_promise_returns_without_waiting_for_an_external_wake() {
-        use futures::FutureExt;
-
-        let (send, _receive) = tokio::sync::mpsc::channel(1);
-        let result = super::run(
-            "await new Promise(() => {})".into(),
-            acyclic_stream::OwnedBytes::from_static(b"[]"),
-            send,
-            tokio_util::sync::CancellationToken::new(),
-            4096,
-            super::super::allocator::EngineAllocator::new(None),
-            super::INTERRUPT_BUDGET,
-        )
-        .now_or_never()
-        .expect("no producer remains to wake this program");
-        assert_eq!(
-            result.unwrap_err(),
-            "JavaScript promise cannot settle: no pending jobs or tool calls"
-        );
-    }
-
-    #[tokio::test]
     async fn protective_interrupt_stops_cpu_bytecode_without_a_host_event() {
         let (send, _receive) = tokio::sync::mpsc::channel(1);
         let result = acyclic_native_runtime::blocking_future(super::run(

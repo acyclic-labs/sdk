@@ -1,5 +1,6 @@
 //! The production interpreter with real declarations, allocation and drop paths.
 use super::{allocator::EngineAllocator, interpreter};
+use futures::FutureExt;
 
 fn native_work(deny_allocation: bool) -> acyclic_fs::NativeMaterializationWork {
     let mut budget = acyclic_fs::WorkBudget::UNBOUNDED;
@@ -70,6 +71,36 @@ pub async fn check(input: &[u8]) {
             }
         }
     }
+    // The original runtime idle event owns all possible promise producers. A
+    // promise with none must refuse through the same native-funded execution
+    // boundary, without a dispatcher reply or cancellation supplying a wake.
+    let work = native_work(false);
+    let baseline = work.live_allocation_bytes();
+    let allocator = EngineAllocator::new(Some(&work));
+    let (send, receive) = tokio::sync::mpsc::channel(1);
+    let execution = interpreter::run(
+        "await new Promise(() => {})".into(),
+        definitions.clone(),
+        send,
+        tokio_util::sync::CancellationToken::new(),
+        4096,
+        allocator,
+        16,
+    );
+    let result = acyclic_native_runtime::blocking_future(async move {
+        execution
+            .now_or_never()
+            .expect("no producer remains to wake this program")
+    })
+    .await
+    .expect("the original blocking pool must execute");
+    drop(receive);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(
+        result,
+        Err("JavaScript promise cannot settle: no pending jobs or tool calls".into()),
+        "a producerless promise must retain its refusal"
+    );
     // Exercise the original reply producer and decoder together. The dispatcher
     // transports one frame; it does not stand in for tool admission or execution.
     let source = format!(
