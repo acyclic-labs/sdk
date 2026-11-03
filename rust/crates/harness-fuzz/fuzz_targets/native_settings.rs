@@ -2,6 +2,8 @@
 
 use acyclic_harness_core::native_settings::{NativeSettings, SettingsConfig};
 use std::path::{Path, PathBuf};
+#[path = "native_settings/mcp.rs"]
+mod mcp;
 
 struct Files {
     _root: tempfile::TempDir,
@@ -63,6 +65,7 @@ fn write(path: &Path, bytes: &[u8]) {
 }
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
+    mcp::check(bytes);
     let (&role, document) = bytes.split_first().unwrap_or((&0, &[]));
     let files = Files::new();
     let role = role % 9;
