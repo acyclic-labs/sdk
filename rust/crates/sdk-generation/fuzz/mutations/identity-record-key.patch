@@ -1,0 +1,14 @@
+diff --git a/rust/crates/sdk-generation/src/cache_record.rs b/rust/crates/sdk-generation/src/cache_record.rs
+--- a/rust/crates/sdk-generation/src/cache_record.rs
++++ b/rust/crates/sdk-generation/src/cache_record.rs
+@@ -37,8 +37,7 @@ pub fn decode(bytes: &[u8], key: &str) -> Option<String> {
+         return None;
+     }
+     let record: Record = serde_json::from_slice(bytes).ok()?;
+-    (record.key == key
+-        && valid_hash(key)
++    (valid_hash(key)
+         && valid_hash(&record.digest)
+-        && record.checksum == checksum(key, &record.digest))
++        && record.checksum == checksum(&record.key, &record.digest))
+     .then_some(record.digest)
