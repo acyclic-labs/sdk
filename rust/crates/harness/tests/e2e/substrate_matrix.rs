@@ -17,17 +17,25 @@ where
         let files = files.clone();
         let stream = stream.clone();
         async move {
-            let expected = trace(case, Arc::new(MemoryStream::default())).await?;
-            let observed = Value::Array(
-                execution::run_with_filesystem(Scenario::from_value(case.clone())?, files, stream)
+            let result = async {
+                let expected = trace(case, Arc::new(MemoryStream::default())).await?;
+                let observed = Value::Array(
+                    execution::run_with_filesystem(
+                        Scenario::from_value(case.clone())?,
+                        files,
+                        stream,
+                    )
                     .await?
                     .trace()
                     .await?,
-            );
-            if observed != expected {
-                return Err(format!("{name}/{}: scenario traces differ", path.display()).into());
+                );
+                if observed != expected {
+                    return Err("scenario traces differ".into());
+                }
+                TestResult::Ok(())
             }
-            TestResult::Ok(())
+            .await;
+            result.map_err(|error| format!("{name}/{}: {error}", path.display()).into())
         }
     }))
     .await;

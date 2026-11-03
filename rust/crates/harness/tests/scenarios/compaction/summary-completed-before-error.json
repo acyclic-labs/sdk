@@ -7,4 +7,4 @@
   "messages":[{"role":"assistant","content":{"kind":"file"}},{"role":"system","content":"keep instructions"},
   {"role":"assistant","content":"recent answer"},{"role":"user","content":"recent request"},{"role":"user",
   "content":"current request"}]}],"events":[{"kind":"model_started","purpose":"summary"},{"kind":"context_compacted"},
-  {"kind":"model_started","purpose":"response"}]},"resume":[]}
+  {"kind":"model_started","purpose":"response"}]},"resume":["offline"]}

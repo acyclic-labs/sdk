@@ -4,7 +4,7 @@ use crate::conformance::{Backend, Result, observe::Observed, vectors};
 use acyclic_harness_core::{
     Capabilities, OperationId,
     agent::*,
-    conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
+    conversation::VolumeOperation,
     core::{AggregateKind, Authority, AuthorityRoot, Scope},
     executor::Executor,
     filesystem::{
@@ -12,7 +12,6 @@ use acyclic_harness_core::{
         TurnExecutors, TurnLimits, agent_authority,
     },
     model::ModelContent,
-    resources::ProviderRef,
 };
 use acyclic_stream::{BoxProviderFuture, UnixMillisClock};
 use std::sync::{
