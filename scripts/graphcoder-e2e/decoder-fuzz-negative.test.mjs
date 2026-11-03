@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import test from "node:test";
+import { Worker } from "node:worker_threads";
 
 test("decoder fuzz oracles reject planted production defects", async () => {
   const mutations = [
@@ -9,8 +9,8 @@ test("decoder fuzz oracles reject planted production defects", async () => {
       "    if (this.#terminal) return;\n    const request = this.#request;", "report"],
     ["process-report.mjs", "lines.end({ requireNewline: true });", "lines.end();", "partial"],
     ["lines.mjs", "this.#decoder.write(chunk)", "Buffer.from(chunk).toString('utf8')", "utf8"],
-    ["process-report.fuzz.mjs", "Object.assign(report, selection);",
-      'Object.assign(report, selection, JSON.parse(bytes.toString("utf8").split("\\n", 1)[0]));', "foreign"],
+    ["process-report.mjs", "message.generation !== request.generation",
+      "false", "foreign"],
     ["assertions.mjs", "if (Array.isArray(value.settled)) for (const child of value.settled)",
       "if (Array.isArray(value.settled)) for (const child of value.settled.slice(0, 1))", "assertions"],
     ["assertions.mjs", 'assert.equal(value.id, id, "reply names a different prompt");',
@@ -49,6 +49,12 @@ test("decoder fuzz oracles reject planted production defects", async () => {
       'stream.once("error", error => this.#settle(new SpoolEnded("source", error.message, undefined)));', "spool"],
     ["process.mjs", '\n      error => this.#settle(new SpoolEnded("source", error.message, error)));',
       '\n      error => this.#settle(new SpoolEnded("source", error.message, undefined)));', "spool"],
+    ["process.mjs", 'if (size === 0) throw new SpoolEnded("spool",',
+      'if (size === 0) return new SpoolEnded("spool",', "spool"],
+    ["process.mjs", 'catch (error) { throw new SpoolEnded("spool", `transcript ${this.#path} has an invalid indexed event at byte ${at}`, error); }',
+      'catch (error) { return null; }', "spool"],
+    ["process.mjs", 'if (read === 0) throw new SpoolEnded("spool",',
+      'if (read === 0) return new SpoolEnded("spool",', "spool"],
     ["process.mjs", "this.#last.set(needle, base + at);", "this.#last.set(needle, 0);", "watch"],
     ["process.mjs", "const combined = this.#tail + text, base = this.#offset - this.#tail.length;",
       "const combined = text, base = this.#offset;", "watch"],
@@ -71,22 +77,22 @@ test("decoder fuzz oracles reject planted production defects", async () => {
       } });
       try {
         ${oracle === "watch" ? `
-          const { fuzz } = await import('./output-watch.fuzz.mjs');
+          const { fuzz } = await import(${JSON.stringify(new URL("./output-watch.fuzz.mjs", import.meta.url).href)});
           fuzz(Buffer.alloc(0));
         ` : oracle === "spool" ? `
-          const { fuzz } = await import('./spool.fuzz.mjs');
+          const { fuzz } = await import(${JSON.stringify(new URL("./spool.fuzz.mjs", import.meta.url).href)});
           await fuzz(Buffer.from([123, 10]));
         ` : oracle === "assertions" ? `
-          const { fuzz } = await import('./assertions.fuzz.mjs');
+          const { fuzz } = await import(${JSON.stringify(new URL("./assertions.fuzz.mjs", import.meta.url).href)});
           fuzz(Buffer.alloc(0));
         ` : oracle === "utf8" ? `
-          const { fuzz } = await import('./lines.fuzz.mjs');
-          const { captures } = JSON.parse(readFileSync('./fixtures/shipping-output.json'));
+          const { fuzz } = await import(${JSON.stringify(new URL("./lines.fuzz.mjs", import.meta.url).href)});
+          const { captures } = JSON.parse(readFileSync(new URL(${JSON.stringify(new URL("./fixtures/shipping-output.json", import.meta.url).href)})));
           fuzz(Buffer.from(captures['text-responses'].stdout));
         ` : `
-          const { fuzz } = await import('./process-report.fuzz.mjs');
+          const { fuzz } = await import(${JSON.stringify(new URL("./process-report.fuzz.mjs", import.meta.url).href)});
           ${oracle === "report" ? "await fuzz(Buffer.alloc(0));" : `
-            const { ready, acknowledgement } = JSON.parse(readFileSync('./fixtures/native-report-ready.json'));
+            const { ready, acknowledgement } = JSON.parse(readFileSync(new URL(${JSON.stringify(new URL("./fixtures/native-report-ready.json", import.meta.url).href)})));
             const wire = value => Buffer.from(JSON.stringify(value) + '\\n');
             ${oracle === "foreign" ? `
               const result = await fuzz(wire({ ...acknowledgement, generation: '0'.repeat(32) }));
@@ -104,16 +110,23 @@ test("decoder fuzz oracles reject planted production defects", async () => {
       }
       assert.ok(applied, 'production mutation must execute');
     `;
-    const result = await new Promise(resolve => execFile(process.execPath, ["--input-type=module", "--eval", script], {
-      cwd: new URL(".", import.meta.url), encoding: "utf8", windowsHide: true,
-    }, (error, stdout, stderr) => resolve({ error, stdout, stderr })));
+    const result = await new Promise(resolve => {
+      const worker = new Worker(new URL("data:text/javascript," + encodeURIComponent(script)), { stdout: true, stderr: true });
+      let stdout = "", stderr = "", fault;
+      worker.stdout.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
+      worker.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
+      worker.once("error", error => { fault = error.stack; });
+      worker.once("exit", code => resolve({ error: { code, signal: null }, stdout, stderr, fault }));
+    });
     const recovery = `step=detect planted ${file} defect ${JSON.stringify(before)}; recovery=node --test scripts/graphcoder-e2e/decoder-fuzz-negative.test.mjs`;
+    assert.equal(result.fault, undefined, `${recovery}\n${result.fault}`);
     assert.equal(result.error?.signal, null, recovery);
     assert.equal(result.error?.code, 1, `${recovery}\n${result.stdout}\n${result.stderr}`);
     assert.match(result.stdout, /PLANTED_DEFECT_REJECTED/, `${recovery}\n${result.stdout}\n${result.stderr}`);
   };
   const remaining = mutations.values();
-  // Two isolated children share admission credit; each close releases one slot.
+  // Each worker has fresh module state and one production mutation. Two share
+  // admission credit; the original worker exit releases its slot.
   await Promise.all([0, 1].map(async () => {
     for (const mutation of remaining) await check(mutation);
   }));
