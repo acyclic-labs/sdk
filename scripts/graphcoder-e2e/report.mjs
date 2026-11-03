@@ -20,6 +20,9 @@ export function failureReport(error) {
   }
   const cause = error instanceof AggregateError ? error.errors : error instanceof Error ? error.cause : undefined;
   if (cause !== undefined) report.cause = inspect(cause, operandFormat);
+  const detail = error instanceof Error && Object.getOwnPropertyDescriptor(error, "detail");
+  if (detail && "value" in detail && !(detail.value instanceof Error))
+    report.detail = inspect(detail.value, operandFormat);
   return report;
 }
 

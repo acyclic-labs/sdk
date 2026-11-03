@@ -3,6 +3,7 @@ import test from "node:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SpoolEnded } from "./process.mjs";
 import { failureReport, finishCase, publishReport, retainCapture, summarizeCases, verifyReport } from "./report.mjs";
 
 test("case summaries retain every attempted row with one identity visit regardless of population", () => {
@@ -80,6 +81,7 @@ test("failure reports retain arbitrary failures and operands omitted by the orig
   const unknown = Object.create(null);
   Object.defineProperty(unknown, "stack", { enumerable: true, get() { assert.fail("diagnostic invoked an arbitrary getter"); } });
   Object.defineProperty(unknown, Symbol.toPrimitive, { value() { assert.fail("diagnostic coerced an arbitrary failure"); } });
+  Object.defineProperty(unknown, Symbol.for("nodejs.util.inspect.custom"), { value() { assert.fail("diagnostic invoked a custom inspector"); } });
   const inputs = [[undefined, "undefined"], [null, "null"], [false, "false"], [0, "0"],
     ["", "''"], [Symbol("callback refusal"), "Symbol(callback refusal)"], [unknown, "stack: [Getter]"]];
   const captures = [], pending = [];
@@ -88,11 +90,23 @@ test("failure reports retain arbitrary failures and operands omitted by the orig
     assert.equal(typeof report.error, "string");
     assert.ok(report.error.includes(representation), "the original thrown value must survive diagnostic formatting");
     pending.push(retainCapture(Promise.reject(failure), captures));
+    const ended = new SpoolEnded("consumer", "step=dispatch; recovery=repair the callback", failure);
+    const wrapped = failureReport(ended);
+    assert.equal(wrapped.error, ended.stack);
+    assert.ok(wrapped.detail?.includes(representation), "the retained non-Error callback reason must survive reporting");
+    pending.push(retainCapture(Promise.reject(ended), captures));
   }
   const result = await finishCase({ case: "original", status: "pass" }, pending, ["repeat original case"]);
   assert.equal(result.status, "fail", "capture rejection cannot become an accepted case");
-  assert.deepEqual(result.capture_failures, inputs.map(([failure]) => failureReport(failure)));
+  assert.equal(result.capture_failures.length, 2 * inputs.length);
+  for (const [index, [failure, representation]] of inputs.entries()) {
+    assert.deepEqual(result.capture_failures[2 * index], failureReport(failure));
+    assert.ok(result.capture_failures[2 * index + 1].detail.includes(representation));
+  }
   assert.deepEqual(captures, [], "refused captures cannot publish a completed result");
+  const accessor = new Error("original callback failure");
+  Object.defineProperty(accessor, "detail", { get() { assert.fail("diagnostic invoked a detail getter"); } });
+  assert.equal(failureReport(accessor).error, accessor.stack);
 
   const actual = { bytes: "a".repeat(20_000), tail: "original actual tail", unknown: undefined,
     count: 2n, get untouched() { throw new Error("diagnostic invoked a getter"); } };
