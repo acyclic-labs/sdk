@@ -215,9 +215,15 @@ guard mutations must fail when replaying the retained
 | `agent-checkpoint-duplicate-child.patch` | `checkpoint admitted a duplicate child` |
 | `agent-checkpoint-child-id.patch` | `checkpoint admitted an invalid child id width` |
 | `agent-checkpoint-bitmap-width.patch` | `checkpoint admitted an invalid bitmap width` |
+| `agent-checkpoint-short-archive.patch` | index-out-of-bounds panic while decoding the short archive bitmap |
+| `agent-checkpoint-short-awaited.patch` | `checkpoint admitted a short awaited bitmap` |
 | `agent-checkpoint-turn-pair.patch` | `checkpoint admitted an incomplete turn` |
 
 The existing round-trip check lives beside that same private wire type.
+Short bitmap derivatives retain the writer's child count and the awaited
+bitmap's valid empty representation. The archive-width mutation exposes the
+actual indexing hazard; the awaited-width mutation silently drops membership
+bits unless the shared refusal oracle rejects it.
 These finite refusal checks supplement the arbitrary-input target; they do
 not establish complete source-branch coverage or a fuzz campaign.
 

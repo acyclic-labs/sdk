@@ -215,6 +215,18 @@ pub(super) fn check_wire(bytes: &[u8]) {
         *bitmap = vec![0; encoded.open_children.len().div_ceil(8) + 1];
         refuses(changed, "checkpoint admitted an invalid bitmap width");
     }
+    let width = encoded.open_children.len().div_ceil(8);
+    if width > 0 {
+        let mut changed = encoded.clone();
+        changed.archive_pending.truncate(width - 1);
+        refuses(changed, "checkpoint admitted a short archive bitmap");
+    }
+    // Empty awaiting means no children are awaited; it remains valid.
+    if width > 1 {
+        let mut changed = encoded.clone();
+        changed.awaiting = vec![0; width - 1];
+        refuses(changed, "checkpoint admitted a short awaited bitmap");
+    }
     if let Some(child) = encoded.open_children.first() {
         for oversized in [false, true] {
             let mut changed = encoded.clone();
