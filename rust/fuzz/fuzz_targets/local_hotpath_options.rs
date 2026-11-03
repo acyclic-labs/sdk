@@ -1,3 +1,4 @@
+//! Fuzz the benchmark argument parser and its admission invariants.
 #![no_main]
 
 #[path = "../local_hotpath_options.rs"]

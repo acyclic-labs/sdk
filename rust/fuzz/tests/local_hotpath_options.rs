@@ -1,3 +1,4 @@
+//! Replay original argument inputs through the shared parser and fuzz oracle.
 #[path = "../local_hotpath_options.rs"]
 mod local_hotpath_options;
 

@@ -55,6 +55,7 @@ bench = false
 
 [[bin]]
 name = "file_tool_inputs"
+required-features = ["native"]
 path = "fuzz_targets/file_tool_inputs.rs"
 test = false
 doc = false
