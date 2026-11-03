@@ -17,6 +17,7 @@ elif choice.startswith("addressing-"):
     source = root.parent / "src" / {
         "addressing-fragment": "addressing/routes.rs",
         "addressing-resource": "addressing.rs",
+        "addressing-field-endian": "addressing.rs",
         "addressing-resource-tail": "addressing.rs",
         "addressing-resource-version": "format.rs",
         "addressing-resource-admission": "addressing.rs",
@@ -51,6 +52,10 @@ try:
     oracle_hashes = {path: hashlib.sha256(path.read_bytes()).digest() for path in oracles}
     newline = b"\r\n" if b"\r\n" in original else b"\n"
     mutations = {
+        "addressing-field-endian": (
+            b"u64::from_be_bytes(*prefix)", b"u64::from_le_bytes(*prefix)",
+            "resource writer output must admit", "resource",
+        ),
         "addressing-resource-admission": (
             b"            RESOURCE_VERSION,", b"            b\"\\x02\",",
             "resource writer output must admit", "resource",
