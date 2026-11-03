@@ -133,12 +133,9 @@ fn held_metadata_restores_fields_without_retargeting_a_replaced_path()
 fn fifo_metadata_uses_a_nonblocking_held_handle_and_socket_metadata_fails_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut work = ordinary_work();
-    use std::os::unix::ffi::OsStrExt as _;
     let temporary = tempfile::tempdir()?;
     let pipe = temporary.path().join("pipe");
-    let name = std::ffi::CString::new(pipe.as_os_str().as_bytes())?;
-    // SAFETY: `name` is a NUL-terminated path that outlives the call.
-    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    acyclic_native_runtime::testing::create_named_pipe(&pipe)?;
     let socket = temporary.path().join("socket");
     let _listener = std::os::unix::net::UnixListener::bind(&socket)?;
     let root = test_root(temporary.path())?;

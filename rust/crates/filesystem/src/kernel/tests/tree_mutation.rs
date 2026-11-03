@@ -469,9 +469,14 @@ async fn point_noop_uses_logarithmic_leaf_search_without_rebuild()
             &crate::CancellationToken::new(),
         )
         .await?;
-        // Validate the bounded page once, classify one mutation and admit one
-        // visited-page probe. Only the selected lookup adds comparisons.
-        assert_eq!(receipt.work.items_examined, 1_024 + 1 + 1 + comparisons);
+        // The one-object backend visits one index node and compares its full
+        // object key. Then validate the bounded page, classify one mutation and
+        // admit one visited-page probe. Only the leaf search varies by name.
+        let backend_lookup = 1 + ObjectId::ENCODED_LEN as u64;
+        assert_eq!(
+            receipt.work.items_examined,
+            backend_lookup + 1_024 + 1 + 1 + comparisons
+        );
         assert_eq!(receipt.value, root);
         assert_eq!(receipt.work.page_reads, 1);
         assert_eq!(receipt.work.backend_read_operations, 1);

@@ -251,11 +251,7 @@ async fn public_local_factory_joins_native_retirement_and_retains_original_resul
     #[cfg(unix)]
     {
         let fifo = std::env::temp_dir().join(format!("acyclic-machine-fifo-{machine}"));
-        rustix::fs::mkfifoat(
-            rustix::fs::CWD,
-            &fifo,
-            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
-        )?;
+        acyclic_native_runtime::testing::create_named_pipe(&fifo)?;
         let access = FileAccess::new(fifo.to_str().unwrap().into(), 0, deadline)?;
         // A FIFO has no offset-addressed completion producer. Opening it must
         // not wait for a peer, and truncation must never touch a device.
