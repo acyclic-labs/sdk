@@ -357,7 +357,7 @@ pub(crate) fn prepare_ascii_leaf<const N: usize>(
         bytes_encoded: examined * 2,
         ..WorkCounters::UNCHARGED
     })?;
-    work.check()?;
+    NativeMaterializationWork::admit(work, WorkCounters::UNCHARGED)?;
     if !valid {
         return Err(NativeTreeMaterializationError::InvalidLayout);
     }
