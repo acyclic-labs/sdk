@@ -7,6 +7,29 @@ use acyclic_auth::addressing::{
 
 const DOMAIN: &str = "run.example.com";
 
+fn host_url_boundary() {
+    let invalid = "xn--a.account.example.com";
+    assert!(
+        invalid
+            .split('.')
+            .all(|label| validate_dns_label(label.as_bytes()).is_ok())
+    );
+    assert!(url::Url::parse(&format!("https://{invalid}")).is_err());
+    assert_eq!(
+        CanonicalHost::parse(invalid),
+        Err(DnsError::InvalidCharacter),
+        "URL-incompatible A-label must retain typed refusal"
+    );
+    let valid = "xn--caf-dma.account.example.com";
+    assert_eq!(CanonicalHost::parse(valid).unwrap().as_str(), valid);
+    assert_eq!(
+        url::Url::parse(&format!("https://{valid}"))
+            .unwrap()
+            .host_str(),
+        Some(valid)
+    );
+}
+
 fn header<T>(
     bytes: &[u8],
     offset: usize,
@@ -190,6 +213,7 @@ fn route(pattern: &str, url: &str) {
 
 /// Check binary identities, hostnames and route tuples through production APIs.
 pub fn check(bytes: &[u8]) {
+    host_url_boundary();
     assert_eq!(
         AccountId::new(b""),
         Err(IdentityError::EmptyAccount),

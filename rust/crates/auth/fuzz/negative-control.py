@@ -58,6 +58,11 @@ try:
     oracle_hashes = {path: hashlib.sha256(path.read_bytes()).digest() for path in oracles}
     newline = b"\r\n" if b"\r\n" in original else b"\n"
     mutations = {
+        "addressing-host-url": (
+            b"url::Host::parse(host).map_err(|_| DnsError::InvalidCharacter)?",
+            b"url::Host::Domain(host.to_owned())",
+            "URL-incompatible A-label must retain typed refusal", "canonical-alabel-hostname",
+        ),
         "addressing-account-empty": (
             b"return Err(IdentityError::EmptyAccount);", b"return Ok(());",
             "empty account must retain typed refusal", "resource",
