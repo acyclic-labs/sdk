@@ -1,0 +1,8 @@
+--- a/rust/crates/stream/src/journal.rs
++++ b/rust/crates/stream/src/journal.rs
+@@ -104,5 +104,2 @@
+     // Persist only canonical bytes emitted by the current first-party writer.
+-    if command.encode_to_vec() != encoded {
+-        return Err(StreamError::InvalidArgument);
+-    }
+     Ok(command)
