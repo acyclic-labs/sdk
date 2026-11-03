@@ -2162,7 +2162,10 @@ impl Crashing {
             refused: found
                 .iter()
                 .filter(|(key, bytes)| {
-                    (key.contains("/e/") || key.contains("/r/") || key.ends_with("/incarnation"))
+                    (key.contains("/e/")
+                        || key.contains("/r/")
+                        || key.ends_with("/incarnation")
+                        || key.ends_with("/epoch"))
                         && disk.visible.get(*key).is_some_and(|original| {
                             let header = original.iter().position(|byte| *byte == 0).unwrap() + 1;
                             !bytes.starts_with(&original[..header])
@@ -2191,9 +2194,11 @@ impl Crashing {
             return Ok(false);
         }
         let blobs = Store::new(self.clone()).account(b"account")?;
-        let result = blobs.revisions().await;
-        if !matches!(result, Err(error) if error.code == ErrorCode::Unsupported) {
-            return Err("unrecognized metadata was not refused as Unsupported".into());
+        // Collection enters repair, writer authority and epoch admission. A
+        // read-only revision observation does not open the latter two owners.
+        let refusal = blobs.collect().await.err().map(|error| error.code);
+        if refusal != Some(ErrorCode::Unsupported) {
+            return Err(format!("unrecognized metadata returned {refusal:?}").into());
         }
         let disk = self.disk.lock().unwrap();
         for (key, bytes) in &disk.refused {
@@ -2201,7 +2206,12 @@ impl Crashing {
                 return Err(format!("refusal changed {key}").into());
             }
         }
-        if disk.settled {
+        if disk.settled
+            && disk
+                .refused
+                .keys()
+                .any(|key| key.contains("/e/") || key.contains("/r/"))
+        {
             return Err("refused recovery settled".into());
         }
         // An unacknowledged batch is not served until recovery succeeds.
