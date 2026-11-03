@@ -4,7 +4,10 @@ use std::sync::atomic::Ordering;
 #[cfg(target_os = "linux")]
 #[test]
 fn public_child_exit_watch_preserves_original_owner_and_deadline() -> io::Result<()> {
+    use std::future::Future as _;
     use std::io::Write as _;
+    use std::os::fd::AsFd as _;
+    use std::task::{Context, Waker};
     // Exercise the exported API on an actual direct child, not a ProcessTree
     // or an alternate pidfd implementation. Its input EOF is also terminal.
     let spawn = |mode| {
@@ -22,6 +25,14 @@ fn public_child_exit_watch_preserves_original_owner_and_deadline() -> io::Result
     };
     let mut child = spawn("gated")?;
     let watch = crate::ChildExitWatch::open(&mut child)?.expect("live child");
+    let mut other = spawn("eof")?;
+    let waited = crate::wait_child_until(&mut other, Instant::now() + Duration::from_secs(2));
+    // Retire the original child even when testing the former deadlock. Its
+    // distinct exit must not satisfy the first child's retained readiness.
+    drop(other.stdin.take());
+    let status = other.wait()?;
+    assert_eq!(status.code(), Some(37));
+    assert_eq!(waited?, status);
     let early = watch.wait_until(Instant::now());
     let still_running = child.try_wait()?;
     // Releasing readiness while the original input producer still gates exit
@@ -29,12 +40,25 @@ fn public_child_exit_watch_preserves_original_owner_and_deadline() -> io::Result
     drop(watch);
     let after_drop = child.try_wait()?;
     let watch = crate::ChildExitWatch::open(&mut child)?.expect("original child still live");
+    // Borrow the exported descriptor through the existing shared epoll hub,
+    // as a consumer does; no second native poller or PID lookup is introduced.
+    let mut readiness =
+        crate::descriptor_readiness(watch.as_fd(), crate::DescriptorInterest::Readable)?;
+    assert!(
+        std::pin::Pin::new(&mut readiness)
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
     child.stdin.take().unwrap().write_all(&[1])?;
     let ready = watch.wait_until(Instant::now() + Duration::from_secs(2));
     // Reap only through the original owner. The retained pidfd can still
     // report this same exit after reaping, with no numeric PID lookup.
     let status = child.wait()?;
     ready?;
+    tokio::runtime::Builder::new_current_thread()
+        .build()?
+        .block_on(readiness)
+        .into_result()?;
     assert_eq!(early.unwrap_err().kind(), io::ErrorKind::TimedOut);
     assert!(still_running.is_none(), "deadline must not signal or reap");
     assert!(
@@ -47,14 +71,6 @@ fn public_child_exit_watch_preserves_original_owner_and_deadline() -> io::Result
     assert!(crate::ChildExitWatch::open(&mut child)?.is_none());
     assert_eq!(crate::wait_child_until(&mut child, Instant::now())?, status);
 
-    let mut child = spawn("eof")?;
-    let waited = crate::wait_child_until(&mut child, Instant::now() + Duration::from_secs(2));
-    // Retire the original child even when testing the former deadlock: closing
-    // retained stdin is the primitive event this child needs to exit.
-    drop(child.stdin.take());
-    let status = child.wait()?;
-    assert_eq!(status.code(), Some(37));
-    assert_eq!(waited?, status);
     Ok(())
 }
 
