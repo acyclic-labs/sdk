@@ -9,7 +9,8 @@ const red = args.includes("--red");
 const retirement = args.includes("--retirement");
 const bytes = args.includes("--bytes");
 const quoted = args.includes("--quoted");
-const recovery = `node scripts/qualify-js-json.mjs${retirement ? " --retirement" : bytes ? " --bytes" : ""}${red ? " --red" : ""}${quoted ? " --quoted" : ""}`;
+const metadata = args.includes("--metadata");
+const recovery = `node scripts/qualify-js-json.mjs${retirement ? " --retirement" : bytes ? " --bytes" : metadata ? " --metadata" : ""}${red ? " --red" : ""}${quoted ? " --quoted" : ""}`;
 const test = bytes ? "external JSON bytes preserve engine tokens or refuse before rounding"
   : retirement ? "canonical admission releases JavaScript references after intrinsic failures"
   : "canonical admission selects Map entries before evaluating their values";
@@ -23,29 +24,36 @@ const run = (step, command, parameters, options = {}) => {
   if (result.error) fail(step, result.error.message);
   return result;
 };
-if (args.some(arg => !["--red", "--retirement", "--bytes", "--quoted"].includes(arg))
-  || new Set(args).size !== args.length || retirement && bytes || quoted && !(bytes && red)) {
-  fail("arguments", "expected one control (--retirement or --bytes), optional --red, and --quoted only with --bytes --red");
+if (args.some(arg => !["--red", "--retirement", "--bytes", "--quoted", "--metadata"].includes(arg))
+  || new Set(args).size !== args.length || Number(retirement) + Number(bytes) + Number(metadata) > 1 || quoted && !(bytes && red)) {
+  fail("arguments", "expected one control (--retirement, --bytes or --metadata), optional --red, and --quoted only with --bytes --red");
 }
 
 const production = new URL("../rust/crates/harness/src/wasm/json.rs", import.meta.url);
 let original;
 let mutation;
 try {
-  if (bytes && red) {
+  if ((bytes || metadata) && red) {
     try { original = readFileSync(production, "utf8"); }
-    catch (error) { fail("read production integer guard", String(error)); }
-    const entrance = quoted ? "        if quoted {" : "    reject_out_of_range_integer_tokens(bytes)?;";
-    if (original.split(entrance).length !== 2) fail("integer guard mutation", "expected exactly one production guard entrance");
-    const planted = original.replace(entrance, quoted ? "        if false && quoted {" : "");
+    catch (error) { fail("read production admission source", String(error)); }
+    const entrance = metadata ? "        let mut entries = Vec::new();"
+      : quoted ? "        if quoted {" : "    reject_out_of_range_integer_tokens(bytes)?;";
+    if (original.split(entrance).length !== 2) fail("admission mutation", "expected exactly one production entrance");
+    const replacement = metadata ? `        let size = js_sys::Reflect::get(value, &JsValue::from_str("size"))?
+            .as_f64()
+            .filter(|size| (0.0..=f64::from(u32::MAX)).contains(size) && size.fract() == 0.0)
+            .ok_or_else(|| JsValue::from_str("Map size must be an unsigned 32-bit integer"))?;
+        let mut entries = Vec::with_capacity(size as usize);`
+      : quoted ? "        if false && quoted {" : "";
+    const planted = original.replace(entrance, replacement);
     mutation = {
       removed: entrance.trim(),
-      replacement: quoted ? "if false && quoted {" : "",
+      replacement,
       original_sha256: createHash("sha256").update(original).digest("hex"),
       planted_sha256: createHash("sha256").update(planted).digest("hex"),
     };
     try { writeFileSync(production, planted); }
-    catch (error) { fail("plant production integer guard defect", String(error)); }
+    catch (error) { fail("plant production admission defect", String(error)); }
   }
 
   // The full shipping Rust export graph, scoped to its one package. This check
@@ -56,7 +64,11 @@ try {
     env: { ...process.env, ACYCLIC_WASM_GROUPS_PREPARED: "1" }, stdio: "inherit",
   });
   if (built.status !== 0) fail("generated harness", `exit ${built.status}; signal ${built.signal}`);
-  const parameters = ["test", testFile, "--test-name-pattern", `^${test}$`];
+  const retirementFile = "typescript/packages/harness/test/json-retirement.test.ts";
+  const restoredMetadata = metadata && !red;
+  const parameters = ["test", testFile, ...(restoredMetadata ? [retirementFile] : []),
+    "--test-name-pattern", restoredMetadata
+      ? `^(?:${test}|canonical admission releases JavaScript references after intrinsic failures)$` : `^${test}$`];
   const result = run("JSON admission", "bun", parameters);
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
   process.stdout.write(output);
@@ -64,9 +76,10 @@ try {
     ? result.status !== 0 && result.signal === null && output.includes(bytes
       ? quoted ? "external JSON input was refused despite engine token admission"
         : "external JSON input admission disagrees with engine token oracle" : retirement
-        ? "JavaScript refusal retained original input" : "canonical admission revisited an appended Map entry")
+        ? "JavaScript refusal retained original input" : metadata
+          ? "canonical Map admission evaluated unrelated size metadata" : "canonical admission revisited an appended Map entry")
       && /0 pass\b/u.test(output) && /1 fail\b/u.test(output)
-    : result.status === 0 && /1 pass\b/u.test(output) && /0 fail\b/u.test(output);
+    : result.status === 0 && new RegExp(`\\b${restoredMetadata ? 2 : 1} pass\\b`, "u").test(output) && /0 fail\b/u.test(output);
   if (!expected) fail("JSON admission", "the exact unchanged semantic control did not produce the required result");
   const hash = path => {
     try { return createHash("sha256").update(readFileSync(new URL(`../${path}`, import.meta.url))).digest("hex"); }
@@ -80,6 +93,7 @@ try {
   const artifacts = [testFile, "rust/crates/harness/src/wasm/json.rs",
     "typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js",
     "typescript/packages/harness/generated/wasm/acyclic_harness_wasm_bg.wasm"];
+  if (restoredMetadata) artifacts.push(retirementFile);
   if (bytes) artifacts.push("rust/crates/harness-fuzz/corpus/retained_skill_records/materialized.json");
   const snippets = "typescript/packages/harness/generated/wasm/snippets";
   try {
@@ -92,7 +106,8 @@ try {
     result: red ? "expected semantic red" : "pass", mutation,
     artifacts: artifacts.map(path => ({ path, sha256: hash(path) })),
   }, null, 2)}\n`;
-  const receiptName = bytes ? `javascript-json-bytes-${quoted ? "quoted-" : ""}${red ? "red" : "fixed"}.json`
+  const receiptName = metadata ? `javascript-json-metadata-${red ? "red" : "fixed"}.json`
+    : bytes ? `javascript-json-bytes-${quoted ? "quoted-" : ""}${red ? "red" : "fixed"}.json`
     : retirement ? `javascript-json-retirement-${red ? "red" : "fixed"}.json`
     : red ? "javascript-json-qualification.json" : "javascript-json-fixed-qualification.json";
   try { writeFileSync(new URL(`../${receiptName}`, import.meta.url), receipt); }
@@ -103,9 +118,9 @@ try {
   if (original !== undefined) {
     try {
       writeFileSync(production, original);
-      if (readFileSync(production, "utf8") !== original) fail("restore original integer guard source", "restored bytes differ");
-      console.log("PASS: original integer guard source restored byte-exact.");
+      if (readFileSync(production, "utf8") !== original) fail("restore original admission source", "restored bytes differ");
+      console.log("PASS: original admission source restored byte-exact.");
     }
-    catch (error) { fail("restore original integer guard source", String(error)); }
+    catch (error) { fail("restore original admission source", String(error)); }
   }
 }

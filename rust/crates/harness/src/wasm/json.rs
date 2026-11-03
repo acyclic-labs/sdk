@@ -235,11 +235,7 @@ pub(super) fn snapshot_js_json(
         serde_json::Value::Array(snapshot)
     } else if is_map {
         let map = value.unchecked_ref::<js_sys::Map>();
-        let size = js_sys::Reflect::get(value, &JsValue::from_str("size"))?
-            .as_f64()
-            .filter(|size| (0.0..=f64::from(u32::MAX)).contains(size) && size.fract() == 0.0)
-            .ok_or_else(|| JsValue::from_str("Map size must be an unsigned 32-bit integer"))?;
-        let mut entries = Vec::with_capacity(size as usize);
+        let mut entries = Vec::new();
         // Select before evaluating child getters: they can append to the same
         // Map, whose live iteration would otherwise keep admitting new work.
         map.try_for_each(&mut |child, key| {

@@ -12,7 +12,6 @@ test("canonical admission releases JavaScript references after intrinsic failure
   const refuse = () => { throw reason; };
   const array = Object.defineProperty([], Symbol.iterator, { get: refuse });
   const map = Object.defineProperty(new Map(), "forEach", { value: refuse });
-  const sized = Object.defineProperty(new Map(), "size", { get: refuse });
   const revoked = Proxy.revocable([], {});
   revoked.revoke();
   let revokedReason: unknown;
@@ -23,7 +22,6 @@ test("canonical admission releases JavaScript references after intrinsic failure
     ["keys", new Proxy({}, { ownKeys: refuse }), reason],
     ["array iterator", array, reason],
     ["Map callback", map, reason],
-    ["Map size", sized, reason],
     ["revoked array", revoked.proxy, revokedReason],
   ] as const;
   const outcomes = inputs.map(([step, input, expected]) => {

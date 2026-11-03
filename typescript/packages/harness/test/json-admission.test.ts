@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import fc from "fast-check";
 import * as contracts from "../generated/wasm/acyclic_harness_wasm.js";
@@ -49,6 +50,21 @@ test("canonical admission selects Map entries before evaluating their values", (
   expect(contracts.decodeClientJson(contracts.encodeCanonicalJson(selected)))
     .toEqual({ first: { value: "selected" } });
   expect(reads).toBe(1);
+
+  // Map entries define the admitted input; unrelated metadata must neither
+  // invoke caller code nor determine the allocation used to select entries.
+  for (const size of [() => { throw new Error("unused Map size getter"); },
+    () => 2 ** 32 - 1, () => -1, () => Number.NaN, () => Infinity]) {
+    let sizeReads = 0;
+    const input = Object.defineProperty(new Map([["selected", 7n]]), "size", {
+      get() { ++sizeReads; return size(); },
+    });
+    let canonical: Uint8Array;
+    try { canonical = contracts.encodeCanonicalJson(input); }
+    catch { assert.fail("canonical Map admission evaluated unrelated size metadata"); }
+    assert.equal(sizeReads, 0, "canonical Map admission evaluated unrelated size metadata");
+    expect(contracts.decodeClientJson(canonical)).toEqual({ selected: 7n });
+  }
 
   // Reuse the original native writer capture; this corpus is not a fabricated
   // external response. Its only numeric fields are the receipt's key bytes.
