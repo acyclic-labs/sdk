@@ -171,6 +171,12 @@ The shared field reader obtains the eight-byte length prefix as an array through
 `split_first_chunk`, so no second fallible slice-to-array conversion is needed.
 `python3 negative-control.py addressing-field-endian` reverses the actual shared
 length reader's byte order and must trip the same writer admission assertion.
+`python3 negative-control.py addressing-resource-framing` removes length prefixes
+from the actual resource writer. The unchanged writer-admission assertion must
+catch the defect through the original resource capture. This replaces the
+substitute concatenation encoder control. The retained arbitrary-byte pair
+property checks exact recovery of both fields: a left inverse implies injectivity,
+so separate random pair-collision cases are redundant.
 The oracle preserves both original decode/encode round trips and actor/resource grammar
 disjointness. `python3 negative-control.py addressing-resource` and
 `addressing-actor` swap fields in the actual production decoders; the original

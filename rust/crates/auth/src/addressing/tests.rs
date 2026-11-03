@@ -1,8 +1,5 @@
 use super::*;
-use proptest::{
-    prelude::*,
-    test_runner::{Config, TestRunner},
-};
+use proptest::{prelude::*, test_runner::Config};
 use serde::Deserialize;
 
 fn pair() -> impl Strategy<Value = (Vec<u8>, Vec<u8>)> {
@@ -21,16 +18,6 @@ proptest! {
         let (original_account, original_id) = ResourceIdentity::decode(&encoded)?.into_parts();
         prop_assert_eq!(original_account.into_bytes(), account);
         prop_assert_eq!(original_id.into_bytes(), id);
-    }
-    #[test]
-    fn distinct_pairs_have_distinct_encodings(left in pair(), right in pair()) {
-        let mut right = right;
-        if left == right {
-            right.1.push(0);
-        }
-        prop_assert_ne!(&left, &right);
-        prop_assert_ne!(ResourceIdentity::new(&left.0, &left.1)?.encode(),
-                        ResourceIdentity::new(&right.0, &right.1)?.encode());
     }
     #[test]
     fn hostname_retains_direct_components(account in "[a-z][a-z0-9]{0,62}", id in "[a-z][a-z0-9]{0,62}") {
@@ -103,39 +90,6 @@ fn actor_reference_framing_and_legacy_boundary() -> Result<(), Box<dyn std::erro
     );
     assert_ne!(first.encode(), second.encode());
     Ok(())
-}
-fn boundary_shift_injectivity(encode: impl Fn(&ResourceIdentity) -> Vec<u8>) -> bool {
-    let strategy = (
-        prop::collection::vec(any::<u8>(), 1..32),
-        any::<u8>(),
-        prop::collection::vec(any::<u8>(), 1..32),
-    );
-    TestRunner::new(Config {
-        cases: 64,
-        failure_persistence: None,
-        ..Config::default()
-    })
-    .run(&strategy, |(prefix, middle, suffix)| {
-        let mut left_id = vec![middle];
-        left_id.extend_from_slice(&suffix);
-        let mut right_account = prefix.clone();
-        right_account.push(middle);
-        let left = ResourceIdentity::new(&prefix, &left_id)?;
-        let right = ResourceIdentity::new(&right_account, &suffix)?;
-        prop_assert_ne!(&left, &right);
-        prop_assert_ne!(encode(&left), encode(&right));
-        Ok(())
-    })
-    .is_ok()
-}
-#[test]
-fn negative_control_concatenation_fails_injectivity() {
-    assert!(boundary_shift_injectivity(ResourceIdentity::encode));
-    assert!(!boundary_shift_injectivity(|value| [
-        value.account().as_bytes(),
-        value.id().as_bytes()
-    ]
-    .concat()));
 }
 #[test]
 fn rejects_malformed_storage_and_wire() -> Result<(), Box<dyn std::error::Error>> {
