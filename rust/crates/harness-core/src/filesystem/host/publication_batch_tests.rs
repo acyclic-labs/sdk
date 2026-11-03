@@ -18,6 +18,7 @@ fn publication_grants(volume: &VolumeRef, agent: AgentId) -> Result<(ContentGran
         &crate::Capabilities::new([Capability::whole_volume(
             None,
             &[
+                Action::List,
                 Action::Read,
                 Action::ReadHistory,
                 Action::Create,
