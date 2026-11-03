@@ -3,7 +3,7 @@
 //! and replay agrees with following: custody restored from the accepted
 //! records holds the follower's frontier.
 use acyclic_auth::{
-    trust::{Applied, EnvironmentFrontier, Follower, Issuer, KeyringFrontier},
+    trust::{Applied, Follower, Issuer, KeyringFrontier},
     verify::Trust,
 };
 use ed25519_dalek::SigningKey;
@@ -22,8 +22,13 @@ fuzz_target!(|bytes: &[u8]| {
     follower.resume();
     follower.serve("account");
     let mut accepted = genesis.clone();
-    let mut environment = Vec::new();
-    for (index, record) in bytes.split(|byte| *byte == 0xA5).enumerate() {
+    let mut environment_changed = false;
+    let mut served_floor = 1;
+    // A signed wire record may itself contain the sequence separator.
+    for (index, record) in std::iter::once(bytes)
+        .chain(bytes.split(|byte| *byte == 0xA5))
+        .enumerate()
+    {
         // Interleave custody's own records, so replay sees every signer.
         let own = match index % 4 {
             0 => root
@@ -39,27 +44,36 @@ fuzz_target!(|bytes: &[u8]| {
             _ => None,
         };
         for record in own.iter().map(Vec::as_slice).chain([record]) {
-            let before = follower
-                .account("account")
-                .map_or(0, |state| state.minimum_key_epoch);
             let applied = follower.apply(record, 100);
             if applied == Ok(Applied::Changed) {
-                if EnvironmentFrontier::resume("test", anchor.clone(), &[record]).is_ok() {
-                    environment.push(record.to_vec());
-                } else {
+                // Use the original scoped admission, including its duplicate
+                // check, rather than decoding or inferring a record's owner.
+                let environment = follower.apply_environment(record, 100) == Ok(Applied::Duplicate);
+                let account =
+                    follower.apply_account("account", record, 100) == Ok(Applied::Duplicate);
+                assert!(
+                    !(environment && account),
+                    "trust record targets must be disjoint"
+                );
+                environment_changed |= environment;
+                if account {
                     accepted.push(record.to_vec());
                 }
             }
             // No record sequence lowers a served epoch floor.
             if let Ok(after) = follower.account("account") {
-                assert!(after.minimum_key_epoch >= before);
+                assert!(after.minimum_key_epoch >= served_floor);
+                served_floor = after.minimum_key_epoch;
             }
         }
     }
-    if environment.is_empty() {
+    if !environment_changed {
         let records = accepted.iter().map(Vec::as_slice).collect::<Vec<_>>();
         let replayed = KeyringFrontier::resume("account", &anchor, &records)
             .expect("records a follower accepted replay");
-        assert_eq!(replayed.minimum_key_epoch(), root.minimum_key_epoch());
+        assert!(replayed.minimum_key_epoch() >= served_floor);
+        if let Ok(current) = follower.account("account") {
+            assert_eq!(replayed.minimum_key_epoch(), current.minimum_key_epoch);
+        }
     }
 });

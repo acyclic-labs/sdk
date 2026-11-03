@@ -238,8 +238,12 @@ fn every_product_rpc_declares_authorization() -> Result<(), Box<dyn std::error::
                 if extractor.is_empty() {
                     assert!(!actions.is_empty() && resource.contains(":/"));
                 } else {
-                    let (resources_only, possible) =
-                        registry.get(extractor).ok_or("unregistered extractor")?;
+                    let (resources_only, possible) = registry.get(extractor).ok_or_else(|| {
+                        format!(
+                            "{} uses unregistered extractor {extractor}",
+                            method.full_name()
+                        )
+                    })?;
                     assert_eq!(
                         *resources_only,
                         !actions.is_empty(),

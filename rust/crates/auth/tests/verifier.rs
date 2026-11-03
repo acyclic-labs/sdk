@@ -76,6 +76,24 @@ proptest! {
     }
 }
 
+fn grants(allow: bool) -> CaveatKind {
+    CaveatKind::Grants(GrantSet {
+        grants: if allow {
+            vec![Grant {
+                kind: GrantKind::Resource(ResourceGrant {
+                    resource: ResourcePattern {
+                        name: "fs:/public".into(),
+                        prefix: true,
+                    },
+                    actions: vec!["fs/read".into()],
+                }),
+            }]
+        } else {
+            vec![]
+        },
+    })
+}
+
 fn caveat() -> impl Strategy<Value = Caveat> {
     prop_oneof![
         (0..1200u64).prop_map(CaveatKind::ExpiresAtUnixSeconds),
@@ -85,21 +103,7 @@ fn caveat() -> impl Strategy<Value = Caveat> {
             name: format!("workers:/{name}"),
             prefix: false
         })),
-        any::<bool>().prop_map(|allow| CaveatKind::Grants(GrantSet {
-            grants: if allow {
-                vec![Grant {
-                    kind: GrantKind::Resource(ResourceGrant {
-                        resource: ResourcePattern {
-                            name: "fs:/public".into(),
-                            prefix: true,
-                        },
-                        actions: vec!["fs/read".into()],
-                    }),
-                }]
-            } else {
-                vec![]
-            }
-        })),
+        any::<bool>().prop_map(grants),
         "[a-z]{1,5}".prop_map(|account| CaveatKind::Holder(Holder {
             account: Some(account)
         })),
@@ -180,25 +184,40 @@ proptest! {
         name in prop_oneof![Just("public".to_owned()), "[a-z]{1,6}"], used in 0..12u64,
     ) {
         let trust = Snapshot::default();
-        let parent = verify(&root(|_| {}), &trust, NOW).unwrap().attenuate(before, &[5;32]).unwrap();
-        let child = parent.attenuate(after, &[6;32]).unwrap();
-        let attrs = RecordAttributes::try_new(vec![]).unwrap();
-        let usage = limits(Some(used));
-        let resource = format!("fs:/{name}");
-        let request = request(&resource, &attrs, &usage);
-        let parent_allows = parent.authorize(&trust, &request, PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok();
-        let child_allows = child.authorize(&trust, &request, PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok();
-        prop_assert!(!child_allows || parent_allows);
-        prop_assert!(child.authorize(&trust, &request, PolicyDecision::Deny, acyclic_auth::authority::Scope::Exact).is_err());
-        let encoded = child.encode();
-        match verify(&encoded, &trust, NOW) {
-            Ok(decoded) => {
-                let reencoded = decoded.encode();
-                prop_assert_eq!(reencoded.as_slice(), encoded.as_slice());
-                prop_assert_eq!(decoded.authorize(&trust, &request, PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok(), child_allows);
+        // Always retain the observed empty-ceiling regression, independent of seed.
+        for (before, after) in [
+            (vec![Caveat { kind: grants(false) }], vec![Caveat { kind: grants(true) }]),
+            (before, after),
+        ] {
+            // This generator uses one nonempty grant (fs:/public, fs/read).
+            // Only an empty ancestor grant set can make that grant a widening.
+            let widens = before.iter().any(|caveat| matches!(&caveat.kind, CaveatKind::Grants(set) if set.grants.is_empty()))
+                && after.iter().any(|caveat| matches!(&caveat.kind, CaveatKind::Grants(set) if !set.grants.is_empty()));
+            let parent = verify(&root(|_| {}), &trust, NOW).unwrap().attenuate(before, &[5;32]).unwrap();
+            let child = parent.attenuate(after, &[6;32]);
+            if widens {
+                prop_assert!(matches!(child, Err(VerifyError::Malformed)));
+                continue;
             }
-            Err(VerifyError::Time) => prop_assert!(!child_allows),
-            Err(error) => prop_assert!(false, "unexpected error: {error}"),
+            let child = child.unwrap();
+            let attrs = RecordAttributes::try_new(vec![]).unwrap();
+            let usage = limits(Some(used));
+            let resource = format!("fs:/{name}");
+            let request = request(&resource, &attrs, &usage);
+            let parent_allows = parent.authorize(&trust, &request, PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok();
+            let child_allows = child.authorize(&trust, &request, PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok();
+            prop_assert!(!child_allows || parent_allows);
+            prop_assert!(child.authorize(&trust, &request, PolicyDecision::Deny, acyclic_auth::authority::Scope::Exact).is_err());
+            let encoded = child.encode();
+            match verify(&encoded, &trust, NOW) {
+                Ok(decoded) => {
+                    let reencoded = decoded.encode();
+                    prop_assert_eq!(reencoded.as_slice(), encoded.as_slice());
+                    prop_assert_eq!(decoded.authorize(&trust, &request, PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok(), child_allows);
+                }
+                Err(VerifyError::Time) => prop_assert!(!child_allows),
+                Err(error) => prop_assert!(false, "unexpected error: {error}"),
+            }
         }
     }
     #[test]

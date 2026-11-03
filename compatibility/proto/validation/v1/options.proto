@@ -150,6 +150,7 @@ option (extractors) = { name: "machines.read" resources_only: true possible_acti
 option (extractors) = { name: "machines.read-checkpoint" resources_only: true possible_actions: "machines/read-checkpoint" };
 option (extractors) = { name: "machines.read-operation" resources_only: true possible_actions: "machines/read" };
 option (extractors) = { name: "machines.read-output" resources_only: true possible_actions: "machines/read-output" };
+option (extractors) = { name: "machines.read-results" resources_only: true possible_actions: "machines/read" };
 option (extractors) = { name: "machines.read-usage" resources_only: true possible_actions: "machines/read-usage" };
 option (extractors) = { name: "machines.recover" resources_only: true possible_actions: "machines/recover" };
 option (extractors) = { name: "machines.update" resources_only: true possible_actions: "machines/update" };
