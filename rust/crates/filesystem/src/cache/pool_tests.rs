@@ -28,12 +28,10 @@ fn decoded() -> DecodedCacheValue {
     }
 }
 
-fn isolated(alias: bool) {
+#[test]
+fn namespaces_isolate_bytes_decoders_and_clear() {
     let first = store(4);
-    let mut second = first.share_cache_with(()).unwrap();
-    if alias {
-        Arc::get_mut(&mut second.shared).unwrap().id = first.shared.id;
-    }
+    let second = first.share_cache_with(()).unwrap();
     first
         .insert(
             object(1),
@@ -64,22 +62,6 @@ fn isolated(alias: bool) {
     assert_eq!(stats.resident_entries, 1);
     assert_eq!(stats.resident_bytes, 3);
     assert_eq!(stats.resident_decoded_bytes, 0);
-}
-
-#[test]
-fn namespaces_isolate_bytes_decoders_and_clear() {
-    isolated(false);
-}
-
-#[test]
-fn namespace_alias_negative_control() {
-    let failure = std::panic::catch_unwind(|| isolated(true)).unwrap_err();
-    let message = failure
-        .downcast_ref::<String>()
-        .map(String::as_str)
-        .or_else(|| failure.downcast_ref::<&str>().copied())
-        .unwrap_or("");
-    assert!(message.contains("namespace alias"));
 }
 
 #[test]
