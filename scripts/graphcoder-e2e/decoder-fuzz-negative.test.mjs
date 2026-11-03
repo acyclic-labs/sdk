@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Worker } from "node:worker_threads";
 
-test("decoder fuzz oracles reject planted production defects", async () => {
+for (const group of ["serial", "decoder"]) test(`${group} fuzz oracles reject planted production defects`, async () => {
   const mutations = [
     ["serial.mjs", 'assert.deepEqual(first.binding, binding, "partition differs from expected acceptance identity");',
       'void binding;', "serial"],
     ["serial.mjs", 'binding: first.binding', 'binding: undefined', "serial"],
+    ...["expired", "cancelled", "signal"].map(field =>
+      ["serial.mjs", `!execution?.${field}`, "true", "serial"]),
     ["process-report.mjs", "this.#controlFailure ??= cause;", "void cause;", "report"],
     ["process-report.mjs", "    const request = this.#request;",
       "    if (this.#terminal) return;\n    const request = this.#request;", "report"],
@@ -145,7 +147,7 @@ test("decoder fuzz oracles reject planted production defects", async () => {
     assert.equal(result.error?.code, 1, `${recovery}\n${result.stdout}\n${result.stderr}`);
     assert.match(result.stdout, /PLANTED_DEFECT_REJECTED/, `${recovery}\n${result.stdout}\n${result.stderr}`);
   };
-  const remaining = mutations.values();
+  const remaining = mutations.filter(([, , , oracle]) => (oracle === "serial") === (group === "serial")).values();
   // Each worker has fresh module state and one production mutation. Two share
   // admission credit; the original worker exit releases its slot.
   await Promise.all([0, 1].map(async () => {

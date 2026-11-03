@@ -25,6 +25,8 @@ export function collect(cases, receipts, platform, coverage) {
     const test = expectedSuites[index], { code, report, failure: receiptFailure, seconds, execution } = receipts[index];
     const expected = [test.id];
     try {
+      assert.ok(!execution?.expired && !execution?.cancelled && !execution?.signal,
+        "original suite execution expired, was cancelled or ended by signal");
       assert.ok(report, receiptFailure?.error ?? "missing suite receipt");
       assert.equal(report.platform, platform, "suite OS mismatch");
       assert.deepEqual(report.selected, [test.id], "suite must select exactly its case");

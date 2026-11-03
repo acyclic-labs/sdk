@@ -12,7 +12,8 @@ export function fuzz(data) {
     cases: createHash("sha256").update(JSON.stringify(cases)).digest("hex"), source: { "serial.mjs": hash("source") } };
   const bundles = cases.map((item, index) => ({ index, count: 2, platform: "linux", binding,
     inventory: cases.map(item => item.id), selected: [item.id], coverage,
-    receipts: [{ code: 0, report: { platform: "linux", selected: [item.id], qualification: false,
+    receipts: [{ code: 0, execution: { expired: false, cancelled: false, signal: null },
+      report: { platform: "linux", selected: [item.id], qualification: false,
       coverage, seconds: 0.1, limit_seconds: 10,
       results: [{ case: item.id, platform: "linux", status: "pass" }] } }] }));
   const report = collectPartitions(cases, [...bundles].reverse(), "linux", coverage, binding);
@@ -58,4 +59,14 @@ export function fuzz(data) {
   }
   const red = structuredClone(bundles); red[1].receipts[0].code = 1;
   assert.equal(collectPartitions(cases, red, "linux", coverage, binding).pass, false);
+  // An original owner terminal remains authoritative even if a late report
+  // and its outer process exit both claim success.
+  for (const execution of [{ expired: true }, { cancelled: true }, { signal: "SIGTERM" }]) {
+    const ended = structuredClone(bundles);
+    ended[1].receipts[0].execution = execution;
+    const report = collectPartitions(cases, ended, "linux", coverage, binding);
+    assert.equal(report.pass, false, "original owner failure must fence a late passing report");
+    assert.deepEqual(report.suites[1].execution, execution);
+    assert.equal(report.results[1].status, "fail");
+  }
 }
