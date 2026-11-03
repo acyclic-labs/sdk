@@ -136,16 +136,15 @@ pub fn check(bytes: &[u8]) -> bool {
         Some(Ok((_, publications))) => {
             for publication in publications {
                 if !wire_records_admitted(&publication.envelope)
-                    || !persistence::encode_observation(&publication.observation, usize::MAX)
-                        .is_ok_and(|bytes| {
-                            persistence::decode_observation(&bytes, usize::MAX)
-                                == Ok(publication.observation)
-                        })
-                    || !persistence::encode_envelope(&publication.envelope, usize::MAX).is_ok_and(
-                        |bytes| {
-                            persistence::decode_envelope(&bytes, usize::MAX)
-                                == Ok(publication.envelope)
-                        },
+                    || !persisted_fact_admitted(
+                        &publication.observation,
+                        persistence::encode_observation,
+                        persistence::decode_observation,
+                    )
+                    || !persisted_fact_admitted(
+                        &publication.envelope,
+                        persistence::encode_envelope,
+                        persistence::decode_envelope,
                     )
                 {
                     return false;
@@ -211,6 +210,27 @@ pub fn check(bytes: &[u8]) -> bool {
         return false;
     }
     true
+}
+
+fn persisted_fact_admitted<T: PartialEq>(
+    value: &T,
+    encode: fn(&T, usize) -> Result<Vec<u8>, StreamError>,
+    decode: fn(&[u8], usize) -> Result<T, StreamError>,
+) -> bool {
+    let Ok(bytes) = encode(value, usize::MAX) else {
+        return false;
+    };
+    let Some(short) = bytes.len().checked_sub(1) else {
+        return false;
+    };
+    // Include the format header in the real byte cap. Exact-size admission
+    // distinguishes an inclusive limit from an unlimited-only roundtrip.
+    decode(&bytes, bytes.len()).as_ref() == Ok(value)
+        && encode(value, bytes.len()).as_deref() == Ok(bytes.as_slice())
+        && [0, short].into_iter().all(|maximum| {
+            matches!(encode(value, maximum), Err(StreamError::LimitExceeded))
+                && matches!(decode(&bytes, maximum), Err(StreamError::LimitExceeded))
+        })
 }
 
 fn wire_records_admitted(envelope: &crate::CommittedEnvelope) -> bool {
