@@ -331,7 +331,12 @@ fn cancelled_flight_settlement_releases_followers_and_original_backing() {
         let baseline = if native {
             original.live_allocation_bytes()
         } else {
-            accounting.standalone_parts().unwrap().0.live_bytes()
+            // The first retained flight promotes this caller's ledger. That
+            // original control remains funded while the caller owns it.
+            crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<
+                std::sync::Mutex<crate::kernel::allocation::SharedAllocationBytes>,
+            >())
+            .unwrap() as u64
         };
         let mut follower = None;
         // Inject cancellation after the actual shared installer and before the
@@ -366,6 +371,17 @@ fn cancelled_flight_settlement_releases_followers_and_original_backing() {
             ));
         }
         drop(follower);
+        if !native {
+            let ledger = accounting.standalone_parts().unwrap().0;
+            let crate::kernel::allocation::LedgerState::Shared(control) = &ledger.state else {
+                panic!("original flight did not retain its caller's ledger")
+            };
+            assert_eq!(
+                Arc::strong_count(control),
+                1,
+                "flight funding still retained"
+            );
+        }
         assert_eq!(
             if native {
                 original.live_allocation_bytes()
