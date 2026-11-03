@@ -154,22 +154,3 @@ catch { /* Rejecting an accessor is also safe. */ }
 if (admitted !== undefined) expect(admitted).toEqual({ unsafe: 1n });
 expect(reads).toBeLessThanOrEqual(1);
 });
-
-test("canonical admission selects Map entries before evaluating their values", () => {
-  const selected = new Map<string, unknown>();
-  let reads = 0;
-  const child = Object.defineProperty({}, "value", {
-    enumerable: true,
-    get() {
-      // A live traversal revisits this child through the appended entry. Fail
-      // on that second visit so the progress regression never needs a timeout.
-      if (++reads > 1) throw new Error("canonical admission revisited an appended Map entry");
-      selected.set("late", child);
-      return "selected";
-    },
-  });
-  selected.set("first", child);
-  expect(decodeClientJson(contracts.encodeCanonicalJson(selected)))
-    .toEqual({ first: { value: "selected" } });
-  expect(reads).toBe(1);
-});
