@@ -54,6 +54,7 @@ fn enrollment(
     ),
     Box<dyn std::error::Error>,
 > {
+    crate::initialize_native_mount_services()?;
     let config = posix_config();
     let shared = Arc::new(crate::native_mount::SharedCheckout::new(
         memory_checkout(
@@ -374,7 +375,6 @@ fn original_guest_cancellation_refuses_captured_reads_and_writes_before_io()
 #[test]
 fn physical_join_failure_retains_original_transport_and_never_certifies_retirement()
 -> Result<(), Box<dyn std::error::Error>> {
-    crate::initialize_native_mount_services()?;
     for fail in [false, true] {
         let (owner, _, work) = enrollment(true)?;
         let retired = Arc::new(AtomicBool::new(false));
