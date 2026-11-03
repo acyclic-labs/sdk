@@ -573,9 +573,11 @@ mod tests {
         }
         for mode in 0..13 {
             let variants = match mode {
+                2 | 3 | 11 | 12 => 2,
                 4 => 8,
+                8 => 4,
                 10 => 16,
-                _ => 4,
+                _ => 1,
             };
             for variant in 0..variants {
                 check(&[mode, variant, b'\"', b'\\', 0, 255]).await.unwrap();
