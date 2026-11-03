@@ -1,6 +1,7 @@
 //! Real IPC objects come from shmget/shmat in this test, never fabricated
 //! identifiers or captured text. The same compiled child is the negative
 //! control, under the same UID and segment permissions, without confinement.
+//! The same launches check self-identity queries and named-process refusal.
 
 #![allow(unsafe_code, reason = "real System V shared-memory conformance FFI")]
 
@@ -117,6 +118,33 @@ fn probe() {
     };
     let id = id.parse().unwrap();
     let allowed = std::env::var("ACYCLIC_BOUNDARY_IPC_ALLOWED").unwrap() == "yes";
+    // Exercise the original generated filter in the kernel, through the same
+    // granted launch used above. Zero selects the caller; explicitly naming
+    // even our own PID requires the authority denied to named-process queries.
+    // SAFETY: these queries take only integer identifiers and no pointers.
+    let group = unsafe { libc::getpgid(0) };
+    assert!(group > 0, "self group: {}", io::Error::last_os_error());
+    // SAFETY: zero selects this process's session without mutation.
+    assert!(unsafe { libc::getsid(0) } > 0);
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: getpgrp has no arguments and only reads the caller's identity.
+    assert_eq!(unsafe { libc::getpgrp() }, group);
+    let own_pid = libc::c_long::from(std::process::id());
+    for call in [libc::SYS_getpgid, libc::SYS_getsid] {
+        // SAFETY: this names the live current process, with no pointer or
+        // mutation. The unrestricted child is the identical negative control.
+        let queried = unsafe { libc::syscall(call, own_pid) };
+        if allowed {
+            assert!(
+                queried > 0,
+                "unrestricted query: {}",
+                io::Error::last_os_error()
+            );
+        } else {
+            assert_eq!(queried, -1, "named process acquired query authority");
+            assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EPERM));
+        }
+    }
     // SAFETY: this is the real host-supplied segment; no pointer is supplied.
     let address = unsafe { libc::shmat(id, core::ptr::null(), 0) };
     if address.addr() == usize::MAX {
