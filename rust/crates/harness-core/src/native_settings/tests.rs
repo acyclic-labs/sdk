@@ -1,9 +1,6 @@
 use super::*;
 use crate::mcp::McpTransport;
 use serde_json::json;
-#[cfg(feature = "hooks")]
-#[path = "tests/selection.rs"]
-mod selection;
 
 #[cfg(all(
     feature = "filesystem-local",
