@@ -1324,9 +1324,8 @@ fn retained_records_do_not_release_an_account_before_its_revocations() {
 /// Waiters registered in any state, interleaved with every transition: each
 /// resolves on the next transition, `Ok` unless closed. `late` is the negative
 /// control: a waiter that subscribes when first polled, after the transition.
-fn interleave(seed: u64, late: bool) -> Result<(), String> {
-    let world = world();
-    let trust = Arc::new(follower(&world));
+fn interleave(world: &World, seed: u64, late: bool) -> Result<(), String> {
+    let trust = Arc::new(follower(world));
     trust.connect();
     let mut schedule = Schedule(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
     let mut waits: Vec<Changed> = Vec::new();
@@ -1367,12 +1366,13 @@ fn interleave(seed: u64, late: bool) -> Result<(), String> {
 
 #[test]
 fn simulated_waits_in_every_state_wake_on_the_next_transition() {
+    let world = world();
     for seed in 0..256 {
-        interleave(seed, false).unwrap_or_else(|error| panic!("seed {seed}: {error}"));
+        interleave(&world, seed, false).unwrap_or_else(|error| panic!("seed {seed}: {error}"));
     }
     // Negative control: subscribing after the transition loses the wake.
     assert!(
-        (0..256).any(|seed| interleave(seed, true).is_err()),
+        (0..256).any(|seed| interleave(&world, seed, true).is_err()),
         "the checker must catch a waiter that registers after the transition"
     );
 }
