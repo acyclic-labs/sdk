@@ -20,6 +20,14 @@ CASES = {
         "experiments/mod.rs", "row.version != 2", "false", "observation-version",
         "independent admission invariant: version",
     ),
+    "observation-identity": (
+        "experiments/mod.rs",
+        "        Self::admit(crate::executor::json::decode_object(bytes)?)",
+        "        let mut row: ObservationFile = crate::executor::json::decode_object(bytes)?;\n"
+        "        row.arm = 0;\n"
+        "        Self::admit(row)",
+        "observation-known", "independent observation invariant: identity field arm",
+    ),
     "scorer-distinct": (
         "experiments/probes.rs", " || scorer.expected == scorer.injected", "", "scorer-equal",
         "independent admission invariant: distinguishable scorer",

@@ -13,6 +13,9 @@ also produces rejected field mutations. Objective decisions check truth,
 injection adoption and an unrelated answer; absent decisions remain assigned,
 with unknown cost. Round trips alone cannot establish admission correctness.
 Input work scales with bytes; no historical rows survive a fuzz callback.
+Observation identity and numeric fields are compared with the original JSON,
+including omitted optional values. An idempotent decoder corruption can survive
+a round trip; `observation-identity` plants one by clearing the decoded arm.
 
 Run a campaign with an explicit budget using cargo-fuzz's supported toolchain:
 

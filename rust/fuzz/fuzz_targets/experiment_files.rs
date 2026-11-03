@@ -146,6 +146,20 @@ fuzz_target!(|bytes: &[u8]| {
             &["version", "population", "replicate", "arm"],
         );
         let canonical = serde_json::to_vec(&row).expect("admitted observation encodes");
+        let encoded: Value = serde_json::from_slice(&canonical).expect("observation encodes JSON");
+        for field in ["population", "replicate", "arm"] {
+            assert_eq!(
+                encoded[field], value[field],
+                "independent observation invariant: identity field {field}"
+            );
+        }
+        for field in ["score", "cost_usd"] {
+            assert_eq!(
+                encoded[field].as_f64(),
+                value[field].as_f64(),
+                "independent observation invariant: numeric field {field}"
+            );
+        }
         let restored = Observation::decode(&canonical).expect("canonical observation admits");
         assert_eq!(
             serde_json::to_vec(&restored).expect("restored observation encodes"),
