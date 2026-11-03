@@ -40,7 +40,7 @@ fn manifest_file(name: &str) -> Result<FileRef> {
         name.into(),
         "v1".into(),
         FileDescriptor::from_bytes(
-            br"[]",
+            &crate::conversation::encode_attachment_manifest(&[])?,
             "application/vnd.acyclic.harness.attachments+json",
             &mut None,
         )?,
