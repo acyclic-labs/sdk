@@ -50,7 +50,7 @@ import { spawnSync } from 'node:child_process';
 import { qualificationMain } from './scripts/qualify-mcp-loom.mjs';
 qualificationMain([process.argv[1]], (command, args, options) => spawnSync(command,
   command === 'cargo' ? args : [process.argv[2], '--exact', '--nocapture'], options));
-""", selection, ("claim" if mode == "--claim" else "ownership") + "::model::" + test]
+""", "--", selection, ("claim" if mode == "--claim" else "ownership") + "::model::" + test]
         result = subprocess.run(selected, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         log = output / (label + ".log")
         log.write_bytes(result.stdout)
