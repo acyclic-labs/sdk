@@ -1,5 +1,7 @@
 use super::*;
 
+const CONCURRENT_REGISTRY_OWNERS: &str = "shared descriptor admitted concurrent registry owners";
+
 fn cleanup_after_contended_registry(
     destination: &Path,
     base: rustix::fs::Statx,
@@ -187,11 +189,8 @@ fn threads_sharing_the_registry_descriptor_are_admitted_one_at_a_time() {
         )
         .map_err(|(error, _)| error)
         .unwrap();
-        // One descriptor, as every mount in a process shares.
-        let registry = loom::sync::Arc::new({
-            let (directory, file) = registry::open_with_directory(&mut &work).unwrap();
-            registry::Registry::new(directory, file)
-        });
+        // Models open one registry per process; its threads share this descriptor.
+        let registry = registry::shared(&mut &work).unwrap();
         let active = loom::sync::Arc::new(loom::sync::Mutex::new(0));
         let peer = {
             let (registry, active) = (registry.clone(), active.clone());
@@ -200,12 +199,13 @@ fn threads_sharing_the_registry_descriptor_are_admitted_one_at_a_time() {
         };
         shared_admission(&registry, &active, &work);
         peer.join().unwrap();
+        assert_eq!(*active.lock().unwrap(), 0);
     };
     let candidate = scenario.clone();
     loom::model(move || candidate(false));
     rejected(
         move || loom::model(move || scenario(true)),
-        "a shared registry descriptor admitted two threads",
+        CONCURRENT_REGISTRY_OWNERS,
     );
 }
 
@@ -223,46 +223,6 @@ fn rejected(control: impl FnOnce() + std::panic::UnwindSafe, expected: &str) {
     );
 }
 
-#[test]
-fn shared_registry_descriptor_serializes_threads_before_the_kernel_lock() {
-    registry::initialize().unwrap();
-    let fixture = tempfile::tempdir().unwrap();
-    let destination = fixture.path().join("checkout");
-    std::fs::create_dir(&destination).unwrap();
-    let state = fixture.path().join("state");
-    std::fs::create_dir(&state).unwrap();
-    let base = rustix::fs::statx(
-        rustix::fs::CWD,
-        &destination,
-        rustix::fs::AtFlags::SYMLINK_NOFOLLOW | rustix::fs::AtFlags::STATX_DONT_SYNC,
-        rustix::fs::StatxFlags::TYPE | rustix::fs::StatxFlags::MNT_ID,
-    )
-    .unwrap();
-    let helper = rustix::fs::stat(std::env::current_exe().unwrap()).unwrap();
-    loom::model(move || {
-        let kernel =
-            super::super::disconnected::kernel::Kernel::install(base, helper, false, false);
-        kernel.set_registry_directory(state.clone());
-        let work = NativeMaterializationWork::new(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .map_err(|(error, _)| error)
-        .unwrap();
-        let registry = registry::shared(&mut &work).unwrap();
-        let active = loom::sync::Arc::new(loom::sync::Mutex::new(0_u8));
-        let peer = {
-            let registry = registry.clone();
-            let active = active.clone();
-            let work = work.clone();
-            loom::thread::spawn(move || shared_admission(&registry, &active, &work))
-        };
-        shared_admission(&registry, &active, &work);
-        peer.join().unwrap();
-        assert_eq!(*active.lock().unwrap(), 0);
-    });
-}
-
 fn shared_admission(
     registry: &registry::Registry,
     active: &loom::sync::Mutex<u8>,
@@ -272,10 +232,7 @@ fn shared_admission(
     {
         let mut active = active.lock().unwrap();
         *active += 1;
-        assert_eq!(
-            *active, 1,
-            "shared descriptor admitted concurrent registry owners"
-        );
+        assert_eq!(*active, 1, "{CONCURRENT_REGISTRY_OWNERS}");
     }
     loom::thread::yield_now();
     *active.lock().unwrap() -= 1;
