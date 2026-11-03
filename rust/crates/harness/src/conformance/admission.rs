@@ -22,7 +22,7 @@ use std::sync::{
 
 pub(crate) mod fixture;
 
-const EXECUTOR_SENTINEL: &str = "conformance executor sentinel";
+pub(super) const EXECUTOR_SENTINEL: &str = "conformance executor sentinel";
 
 struct Executors(AtomicUsize);
 impl TurnExecutors for Executors {

@@ -260,7 +260,17 @@ async fn check(
             )
             .await?;
             fixture
-                .check(backend, root, admission, true, "OIDC valid token")
+                .check(
+                    backend,
+                    root,
+                    admission,
+                    true,
+                    "OIDC valid token",
+                    &acyclic_harness_core::Error::Invalid(
+                        super::admission::EXECUTOR_SENTINEL.into(),
+                    )
+                    .to_string(),
+                )
                 .await
         }
         Ok(_) => Err("OIDC admitted an invalid token".into()),
