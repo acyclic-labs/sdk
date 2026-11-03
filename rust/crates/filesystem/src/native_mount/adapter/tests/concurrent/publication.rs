@@ -101,17 +101,24 @@ fn rejected_private_composition_notifies_only_after_successful_retry()
         let calls = Arc::clone(&entered);
         let started = Arc::new(tokio::sync::Notify::new());
         let signal = Arc::clone(&started);
+        let release = Arc::new(tokio::sync::Notify::new());
+        let released = Arc::clone(&release);
+        let settled = Arc::new(AtomicBool::new(false));
+        let completed = Arc::clone(&settled);
         let mut guard = move |_: &crate::NativeMaterializationWork| {
             let calls = Arc::clone(&calls);
             let signal = Arc::clone(&signal);
+            let released = Arc::clone(&released);
+            let completed = Arc::clone(&completed);
             async move {
                 // Preparation can compose an independent head privately. A
                 // rejected seal must not expose that unpublished composition.
                 calls.fetch_add(1, Ordering::AcqRel);
                 signal.notify_one();
                 if abandon {
-                    std::future::pending::<()>().await;
+                    released.notified().await;
                 }
+                completed.store(true, Ordering::Release);
                 Err(MountSourceError::Invalid(
                     "publication guard rejected".into(),
                 ))
@@ -137,6 +144,9 @@ fn rejected_private_composition_notifies_only_after_successful_retry()
                 }
                 assert_eq!(entered.load(Ordering::Acquire), 1);
                 drop(publication);
+                // The authority still owns the accepted final check after
+                // reply withdrawal. Its original producer must settle it.
+                release.notify_one();
             } else {
                 assert!(matches!(
                     publication.await,
@@ -150,6 +160,8 @@ fn rejected_private_composition_notifies_only_after_successful_retry()
             "an unpublished private composition became visible"
         );
         source.sync()?;
+        assert!(settled.load(Ordering::Acquire));
+        assert_eq!(entered.load(Ordering::Acquire), 1);
         assert!(observer.completed.load(Ordering::Acquire));
         assert!(source.lookup(&native_test_path("remote"))?.is_some());
         assert!(source.lookup(&native_test_path("local"))?.is_some());
