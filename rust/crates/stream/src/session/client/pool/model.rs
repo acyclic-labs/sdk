@@ -398,13 +398,13 @@ pub fn verify_link_isolation(broken: bool) {
             notified.load(Ordering::Acquire) > 0,
             "link loss must notify its pending response read"
         );
-        let std::task::Poll::Ready(Some((node, epoch, response, frame))) =
+        let std::task::Poll::Ready(Some((node, epoch, response, terminal))) =
             pool.reads.poll_next_unpin(&mut cx)
         else {
             panic!("link loss must complete its pending response read");
         };
         assert_eq!((node.as_str(), epoch), ("bad", 1));
-        assert!(frame.is_none());
+        assert!(terminal.is_none());
         assert_eq!(retired.load(Ordering::Acquire), 0);
         drop(response);
         assert_eq!(retired.load(Ordering::Acquire), 1);
