@@ -1,218 +1,143 @@
-//! Deterministic lifecycle simulation and adversarial observation controls.
+//! Production report-oracle properties and adversarial observation controls.
 use super::*;
-use std::{
-    collections::BTreeMap,
-    hint::black_box,
-    pin::pin,
-    task::{Context, Poll, Waker},
-};
+use proptest::prelude::*;
 
 const RECOVERY: &str = "cargo test -p acyclic-test-support scale::tests";
+const OPERATIONS: [Operation; 1] = [Operation::ObjectHead];
 
-#[derive(Clone, Copy, PartialEq)]
-enum Inject {
-    None,
-    Scan,
-    Thread,
-    Timer,
-    LostProducer,
-}
-
-struct Model {
-    agents: u64,
-    phase: [u64; LIFECYCLE_OPERATIONS.len()],
-    inject: Inject,
-    // Real threads retain a channel receiver, not a timed sleep.
-    threads: Vec<(std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>)>,
-    // Virtual timer registrations retain their actual cancellation producer.
-    timers: BTreeMap<u64, std::sync::mpsc::Sender<()>>,
-}
-
-impl Drop for Model {
-    fn drop(&mut self) {
-        for (stop, thread) in self.threads.drain(..) {
-            drop(stop);
-            thread
-                .join()
-                .expect("injected thread must retire on producer loss");
-        }
-    }
-}
-
-impl Population for Model {
-    async fn operation(&mut self, operation: Operation, agent: u64) -> Result<Work, Failure> {
-        let phase = LIFECYCLE_OPERATIONS
-            .iter()
-            .position(|&op| op == operation)
-            .expect("known operation");
-        if self.phase[phase] != agent || (phase != 0 && self.phase[phase - 1] != self.agents) {
-            return Err(failure(
-                "lifecycle safety",
-                format!("{operation:?} agent={agent}"),
-                RECOVERY,
-            ));
-        }
-        // A dropped original producer is a typed terminal, never a deadline.
-        let (commit, completed) = std::sync::mpsc::channel();
-        if self.inject != Inject::LostProducer {
-            commit.send(()).expect("consumer alive");
-        }
-        drop(commit);
-        completed
-            .recv()
-            .map_err(|error| failure("commit event", error.to_string(), RECOVERY))?;
-        self.phase[phase] += 1;
-        let mut work = Work([Some(1); METRICS.len()]);
-        if operation == Operation::Turn && self.inject == Inject::Scan {
-            let mut visits = 0;
-            for index in 0..self.agents {
-                black_box(index);
-                visits += 1;
-            }
-            work.0[5] = Some(visits);
-        }
-        if operation == Operation::Create {
-            match self.inject {
-                Inject::Thread => {
-                    let (stop, stopped) = std::sync::mpsc::channel();
-                    let (ready, entered) = std::sync::mpsc::channel();
-                    let thread = std::thread::spawn(move || {
-                        ready.send(()).expect("arrival consumer alive");
-                        assert!(stopped.recv().is_err());
-                    });
-                    entered.recv().expect("original thread publishes readiness");
-                    self.threads.push((stop, thread));
+// These observations are inputs to the shipped report checker, not a model of
+// provider operations or a claim about their physical work and progress.
+fn observed(values: &[Vec<u64>; 3], metric: usize, operation: Operation) -> Report {
+    Report {
+        points: POPULATIONS
+            .into_iter()
+            .zip(values)
+            .map(|(agents, values)| {
+                let mut sample = Sample::new(operation);
+                for &value in values {
+                    let mut work = Work([Some(0); METRICS.len()]);
+                    work.0[metric] = Some(value);
+                    sample.record(work, RECOVERY).expect("bounded observations");
                 }
-                Inject::Timer => {
-                    let (alarm, cancelled) = std::sync::mpsc::channel();
-                    self.timers.insert(agent, alarm);
-                    drop(cancelled);
+                Point {
+                    agents,
+                    samples: vec![sample],
+                    idle: Idle {
+                        bytes: Some(agents * 64),
+                        threads: Some(0),
+                        timers: Some(0),
+                    },
                 }
-                _ => {}
-            }
-        }
-        Ok(work)
-    }
-    fn idle(&mut self) -> Result<Idle, Failure> {
-        Ok(Idle {
-            bytes: Some(self.agents * 64),
-            threads: Some(self.threads.len() as u64),
-            timers: Some(self.timers.len() as u64),
-        })
-    }
-    async fn close(self) -> Result<(), Failure> {
-        if self.phase != [self.agents; LIFECYCLE_OPERATIONS.len()] {
-            return Err(failure(
-                "lifecycle terminal",
-                format!("phases={:?}", self.phase),
-                RECOVERY,
-            ));
-        }
-        Ok(())
-    }
-}
-
-fn simulate(inject: Inject) -> Result<Report, Failure> {
-    let future = run(
-        &[1, 4, 16],
-        &LIFECYCLE_OPERATIONS,
-        |agents| async move {
-            Ok(Model {
-                agents,
-                phase: [0; LIFECYCLE_OPERATIONS.len()],
-                inject,
-                threads: Vec::new(),
-                timers: BTreeMap::new(),
             })
-        },
-        RECOVERY,
-    );
-    // All modeled events publish on the operation path before its await.
-    // A pending result here is a broken progress proof, not a reason to retry.
-    match pin!(future)
-        .as_mut()
-        .poll(&mut Context::from_waker(Waker::noop()))
-    {
-        Poll::Ready(result) => result,
-        Poll::Pending => Err(failure(
-            "simulation progress",
-            "original event producer did not complete".into(),
-            RECOVERY,
-        )),
+            .collect(),
     }
 }
 
-#[test]
-fn lifecycle_detects_scan_thread_timer_and_lost_producer() {
-    let flat = simulate(Inject::None).expect("event-driven lifecycle");
-    assert!(flat.findings(&LIFECYCLE_OPERATIONS, RECOVERY).is_empty());
-    assert_eq!(
-        flat.qualification_findings(&LIFECYCLE_OPERATIONS, RECOVERY)[0].step,
-        "population coverage"
-    );
-    for (inject, expected) in [
-        (Inject::Scan, "constant work"),
-        (Inject::Thread, "idle resources"),
-        (Inject::Timer, "idle resources"),
-    ] {
-        let report = simulate(inject).expect("injected lifecycle completes before checking cost");
-        assert!(
-            report
-                .qualification_findings(&LIFECYCLE_OPERATIONS, RECOVERY)
-                .iter()
-                .any(|finding| finding.step == expected),
-            "{report:?}"
-        );
+fn flat() -> Report {
+    let mut report = observed(&[vec![1; 4], vec![1; 4], vec![1; 4]], 0, OPERATIONS[0]);
+    for point in &mut report.points {
+        let sample = &mut point.samples[0];
+        sample.work.fill(sample.work[0]);
     }
-    assert_eq!(
-        simulate(Inject::LostProducer).unwrap_err().step,
-        "commit event"
-    );
+    report
+}
+
+proptest! {
+    #[test]
+    fn recorded_work_matches_exact_mean_and_tail_oracle(
+        values in proptest::array::uniform3(proptest::collection::vec(any::<u64>(), 1..17)),
+        metric in 0..METRICS.len(),
+        operation in 0..CORE_OPERATIONS.len(),
+    ) {
+        let operation = CORE_OPERATIONS[operation];
+        let report = observed(&values, metric, operation);
+        let totals = values.each_ref().map(|values| values.iter().copied().map(u128::from).sum::<u128>());
+        let maxima = values.each_ref().map(|values| *values.iter().max().unwrap());
+        for (index, point) in report.points.iter().enumerate() {
+            let sample = &point.samples[0];
+            prop_assert_eq!(sample.observations, values[index].len() as u64);
+            prop_assert_eq!(sample.work[metric], Counter {
+                total: totals[index], maximum: maxima[index], missing: 0,
+            });
+        }
+        // At most sixteen u64 observations per cohort: both independent cross
+        // products fit u128. Population sizes must not be the denominators.
+        let grows = (1..values.len()).any(|index| {
+            totals[index] * values[index - 1].len() as u128
+                > totals[index - 1] * values[index].len() as u128
+                || maxima[index] > maxima[index - 1]
+        });
+        let findings = report.qualification_findings(&[operation], RECOVERY);
+        prop_assert!(findings.iter().all(|finding| finding.step == "constant work"));
+        prop_assert_eq!(!findings.is_empty(), grows);
+        prop_assert_eq!(report.qualify(&[operation], RECOVERY).is_err(), grows);
+    }
 }
 
 #[test]
 fn rejects_missing_coverage_hidden_tail_work_memory_growth_and_forged_reports() {
-    let original = simulate(Inject::None).expect("lifecycle");
+    let original = flat();
     for (metric, name) in METRICS.iter().enumerate() {
         let mut missing = original.clone();
-        missing.points[1].samples[2].work[metric].missing = 1;
+        missing.points[1].samples[0].work[metric].missing = 1;
         assert!(
             missing
-                .findings(&LIFECYCLE_OPERATIONS, RECOVERY)
+                .findings(&OPERATIONS, RECOVERY)
                 .iter()
                 .any(|failure| failure.step == "counter coverage"),
             "missing {name} escaped qualification",
         );
         let mut tail = original.clone();
-        let counter = &mut tail.points[2].samples[2].work[metric];
+        let counter = &mut tail.points[2].samples[0].work[metric];
         // The mean falls below the smaller point's mean, but one op becomes dearer.
         counter.total = 2;
         counter.maximum = 2;
         assert!(
-            tail.findings(&LIFECYCLE_OPERATIONS, RECOVERY)
+            tail.findings(&OPERATIONS, RECOVERY)
                 .iter()
                 .any(|failure| failure.step == "constant work"),
             "extra {name} escaped qualification",
         );
     }
     let mut memory = original.clone();
-    memory.points[2].idle.bytes = Some(16 * 64 + 1);
+    memory.points[2].idle.bytes = Some(POPULATIONS[2] * 64 + 1);
     assert!(
         memory
-            .findings(&LIFECYCLE_OPERATIONS, RECOVERY)
+            .findings(&OPERATIONS, RECOVERY)
             .iter()
             .any(|failure| failure.step == "constant idle memory")
+    );
+    for idle in [
+        Idle {
+            threads: Some(1),
+            ..original.points[0].idle
+        },
+        Idle {
+            timers: Some(1),
+            ..original.points[0].idle
+        },
+        Idle::default(),
+    ] {
+        let mut incomplete = original.clone();
+        incomplete.points[0].idle = idle;
+        assert!(!incomplete.findings(&OPERATIONS, RECOVERY).is_empty());
+    }
+    let mut partial = original.clone();
+    partial.points.pop();
+    assert_eq!(
+        partial.qualify(&OPERATIONS, RECOVERY).unwrap_err().step,
+        "population coverage"
     );
     let mut forged = original;
     forged.points[1].samples.pop();
     assert!(
         forged
-            .findings(&LIFECYCLE_OPERATIONS, RECOVERY)
+            .findings(&OPERATIONS, RECOVERY)
             .iter()
             .any(|failure| failure.step == "report shape")
     );
     assert_eq!(
-        Report::default().findings(&LIFECYCLE_OPERATIONS, RECOVERY)[0].step,
+        Report::default().findings(&OPERATIONS, RECOVERY)[0].step,
         "report shape"
     );
     // Maximum-width counts must not overflow a ratio comparison or round away
@@ -226,29 +151,20 @@ fn rejects_missing_coverage_hidden_tail_work_memory_growth_and_forged_reports() 
 #[test]
 fn fixed_sample_counts_use_observations_instead_of_population_as_denominator() {
     // Time and work share a fixed sample count at each resident population.
-    // Dividing by population would conceal this injected allocation-free scan.
-    let mut report = Report::default();
-    for agents in POPULATIONS {
-        let mut sample = Sample::new(Operation::ObjectHead);
-        for _ in 0..4 {
-            sample
-                .record(Work([Some(1); METRICS.len()]), RECOVERY)
-                .expect("bounded observations");
-        }
-        report.points.push(Point {
-            agents,
-            samples: vec![sample],
-            idle: Idle {
-                bytes: Some(agents * 64),
-                threads: Some(0),
-                timers: Some(0),
-            },
-        });
-    }
+    // Dividing these counts by population would conceal the larger sample cost.
+    let mut report = flat();
     let operations = [Operation::ObjectHead];
     report
         .qualify(&operations, RECOVERY)
         .expect("constant sampled work");
+    let mean_only = observed(&[vec![0, 2], vec![2, 2], vec![2, 2]], 5, operations[0]);
+    assert!(
+        mean_only
+            .findings(&operations, RECOVERY)
+            .iter()
+            .any(|finding| finding.step == "constant work"),
+        "growing mean with an unchanged maximum escaped qualification",
+    );
     let counter = &mut report.points[2].samples[0].work[5];
     counter.total = 8;
     counter.maximum = 2;
