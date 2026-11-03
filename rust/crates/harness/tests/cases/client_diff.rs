@@ -26,6 +26,7 @@ use std::sync::{
 };
 
 struct Fixture {
+    _issuer: AuthorityRoot,
     host: Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>>,
     root: ContextRoot,
     writer: ContentGrant,
@@ -262,6 +263,7 @@ impl Fixture {
         )?;
         let reader = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 32_768, None)?;
         Ok(Self {
+            _issuer: issuer,
             host,
             root: ContextRoot {
                 volume,

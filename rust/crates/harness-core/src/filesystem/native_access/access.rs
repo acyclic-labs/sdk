@@ -14,6 +14,7 @@ struct PolicyOwner<A: 'static, O: 'static> {
     writable: bool,
     view: Arc<AccessView>,
     _custody: NativeAllocation,
+    _owner: Option<crate::core::AuthorityRoot>,
 }
 
 async fn compile<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
@@ -68,7 +69,7 @@ pub struct NativeAccessAuthority<'a> {
 /// Bind a host owner's exact-volume grant through the shared policy compiler.
 pub async fn owner_mount_options<A, O>(
     workspace: &Workspace<A, O>,
-    issuer: &crate::core::AuthorityRoot,
+    issuer: std::borrow::Cow<'_, crate::core::AuthorityRoot>,
     agent: Option<crate::AgentId>,
     writable: bool,
     work: &NativeMaterializationWork,
@@ -86,8 +87,12 @@ where
         &mut Some(&mut io.history_io()),
     )?;
     let verifier = issuer.verifier(&mut Some(&mut io.history_io()))?;
+    let owner = match issuer {
+        std::borrow::Cow::Owned(issuer) => Some(issuer),
+        std::borrow::Cow::Borrowed(_) => None,
+    };
     let generation = workspace.head(work, work.cancellation()).await?.id();
-    authenticated_mount_options(
+    authenticated_mount_options_owned(
         workspace,
         generation,
         NativeAccessAuthority {
@@ -95,6 +100,7 @@ where
             scope: &scope,
             ceiling: &grants,
         },
+        owner,
         writable,
         work,
     )
@@ -136,6 +142,21 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    authenticated_mount_options_owned(workspace, generation, authority, None, writable, work).await
+}
+
+async fn authenticated_mount_options_owned<A, O>(
+    workspace: &Workspace<A, O>,
+    generation: GenerationId,
+    authority: NativeAccessAuthority<'_>,
+    owner: Option<crate::core::AuthorityRoot>,
+    writable: bool,
+    work: &NativeMaterializationWork,
+) -> Result<acyclic_fs::MountOptions>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
     let io = PreparationIo::from_native_work(work)?;
     authority
         .verifier
@@ -148,24 +169,14 @@ where
     {
         return Err(io.invalid("workspace mount requires an exact signed filesystem capability"));
     }
-    bind_mount_options(
-        workspace,
-        generation,
-        authority.scope,
-        authority.verifier,
-        authority.ceiling,
-        writable,
-        work,
-    )
-    .await
+    bind_mount_options(workspace, generation, authority, owner, writable, work).await
 }
 
 async fn bind_mount_options<A, O>(
     workspace: &Workspace<A, O>,
     generation: GenerationId,
-    admitted_scope: &Scope,
-    verifier: &AuthorityVerifier,
-    admitted_ceiling: &crate::Capabilities,
+    authority: NativeAccessAuthority<'_>,
+    owner: Option<crate::core::AuthorityRoot>,
     writable: bool,
     work: &NativeMaterializationWork,
 ) -> Result<acyclic_fs::MountOptions>
@@ -173,6 +184,11 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    let NativeAccessAuthority {
+        scope: admitted_scope,
+        verifier,
+        ceiling: admitted_ceiling,
+    } = authority;
     let io = PreparationIo::from_native_work(work)?;
     verifier.verify(admitted_scope, &mut Some(&mut io.history_io()))?;
     let (compiled, custody) = compile(
@@ -207,6 +223,7 @@ where
         writable,
         view: Arc::clone(&view),
         _custody: io.into_native_custody(retained)?,
+        _owner: owner,
     });
     Ok((if writable {
         acyclic_fs::MountOptions::read_write()
@@ -305,11 +322,15 @@ where
             bind_mount_options(
                 &self.workspace,
                 generation,
-                &self.scope,
-                &self.verifier,
-                self.ceiling
-                    .as_ref()
-                    .map_or(self.scope.capabilities(), |(grants, _)| grants),
+                NativeAccessAuthority {
+                    scope: &self.scope,
+                    verifier: &self.verifier,
+                    ceiling: self
+                        .ceiling
+                        .as_ref()
+                        .map_or(self.scope.capabilities(), |(grants, _)| grants),
+                },
+                self._owner.clone(),
                 self.writable,
                 work,
             )
@@ -364,9 +385,12 @@ mod workload_tests {
         let options = bind_mount_options(
             &workspace,
             generation,
-            &scope,
-            &verifier,
-            scope.capabilities(),
+            NativeAccessAuthority {
+                scope: &scope,
+                verifier: &verifier,
+                ceiling: scope.capabilities(),
+            },
+            None,
             false,
             &work,
         )
@@ -381,6 +405,7 @@ mod workload_tests {
             writable: false,
             view: options.require_access_view()?.clone(),
             _custody: work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?,
+            _owner: None,
         };
         refresh.check(&work)?.await?;
         issuer.revoke_workload(&scope)?;
