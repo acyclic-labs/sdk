@@ -1228,6 +1228,7 @@ version = "0.0.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-harness",
+ "acyclic-harness-client",
  "acyclic-harness-core",
  "acyclic-proto-build",
  "acyclic-test-support",
@@ -3796,6 +3797,7 @@ name = "graphcoder"
 version = "0.2.0"
 dependencies = [
  "acyclic-harness",
+ "acyclic-harness-client",
  "acyclic-harness-providers",
  "acyclic-native-runtime",
  "acyclic-observability",
