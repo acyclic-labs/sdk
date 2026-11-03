@@ -26,6 +26,7 @@ Snapshots are `Map<string, string>` values using repository-relative POSIX paths
 The analyzer resolves local JavaScript imports only against those maps; it never
 loads a consumer's filesystem. Missing current dependencies and malformed
 current source fail closed. A malformed predecessor authorizes no current site.
+Malformed source and package manifests report the shared `SourceSyntaxError`.
 `projectPollingSites(sources)` inventories candidates;
 `pollingUnit(file, source)` exposes tokens and sites for additional repository
 policy. Supported inputs include JavaScript, TypeScript, Rust, C/C++, C#,
@@ -42,3 +43,9 @@ The existing source controls and byte-oriented fuzz target invoke these same
 exports. Classification reads source once per unit; dependency closure visits
 each graph edge a fixed number of times, independent of runtime history. No
 timer, wait, worker or readiness request is introduced.
+
+Run `node --test scripts/no-polling-fuzz.test.mjs` from the checkout to replay
+the recorded host corpus, byte mutations and dependency properties. The same
+oracles reject planted defects in the production lexer, dependency graph and
+disposition validation. Add `--experimental-test-coverage` before `--test` to
+report visited branches; the report does not establish runtime liveness.

@@ -17,6 +17,15 @@ export function fuzz(data, analyze = pollingSites) {
  assert.deepEqual(analyze('scripts/control.ps1', source).map(site => site.start), [source.lastIndexOf('Sleep')]);
  assert.throws(() => analyze('scripts/control.ps1', comment.slice(0, -2)), /unterminated block comment/);
  const word = 'value' + Buffer.from(data).toString('hex');
+ for (const expression of ["globalThis['wait']", "globalThis['set' + 'Timeout']", "globalThis[('setTimeout')]",
+  'globalThis[`setTimeout`]', 'globalThis[original]']) {
+  assert.ok(analyze('scripts/control.mjs', expression + '(' + JSON.stringify(word) + ');').length);
+ }
+ assert.ok(analyze('scripts/control.mjs', "import {setTimeout as pause} from 'node:timers'; pause(" + JSON.stringify(word) + ');').length);
+ for (const [file, literal] of [
+  ['scripts/control.rs', `r#"${word}"#`], ['scripts/control.rs', "'x'"],
+  ['scripts/control.ps1', `@"\n${word}\n"@`], ['scripts/control.py', `"""${word}"""`],
+ ]) assert.ok(analyze(file, literal + '\nsleep(1)').some(site => site.kind === 'timer-or-readiness'));
  for (const program of [`while ! ${word}; do step; done`, `for item in ${word}; do step; done`]) {
   for (const [file, source] of [
    ['scripts/control.yaml', 'run: |\n  ' + program],
@@ -62,17 +71,23 @@ export function fuzzSource(file, data) {
 // Exercise the shipped graph and exact-disposition boundary, not a graph model.
 // The byte seed varies bindings, occurrence counts and the original source.
 export function fuzzProject(data, {project = projectPollingSites, validate = validateDispositions} = {}) {
- const variant = (data[0] ?? 0) % 4;
+ const variant = (data[0] ?? 0) % 8;
  const word = 'value' + Buffer.from(data).toString('hex');
  const helper = 'lib/helper.ts', barrel = 'lib/barrel.ts', caller = 'svc/consumer.ts';
- const [binding, call] = [
+ const [binding, call, producer = 'export function settle() { return Bun.sleep(1); } export default settle;'] = [
   ["import {settle as invoke} from '../lib/helper.js';", 'invoke()'],
   ["import invoke from '../lib/helper.js';", 'invoke()'],
   ["import * as original from '../lib/helper.js';", 'original.settle()'],
   ["import {forward as invoke} from '../lib/barrel.js';", 'invoke()'],
+  ["import * as original from '../lib/helper.js'; const {settle: invoke} = original;", 'invoke()'],
+  ["import {producer as original} from '../lib/helper.js';", 'original.settle()',
+   'export const producer = {settle() { return Bun.sleep(1); }};'],
+  ["import invoke from '../lib/helper.js';", 'invoke()', 'export default function () { return Bun.sleep(1); }'],
+  ["import {settle as invoke} from '../lib/helper.js';", 'invoke()',
+   'export const settle = function () { return Bun.sleep(1); };'],
  ][variant];
  const before = new Map([
-  [helper, 'export function settle() { return Bun.sleep(1); } export default settle;'],
+  [helper, producer],
   [barrel, "export {settle as forward} from './helper.js';"], [caller, binding],
  ]);
  const after = new Map(before).set(caller, binding + ` export const ${word} = ${call};`);
@@ -84,6 +99,11 @@ export function fuzzProject(data, {project = projectPollingSites, validate = val
   negativeControl: 'change the original source or remove its producer'}));
  validate(accepted);
  assert.deepEqual(newProjectPollingSites(new Map(), after, accepted), []);
+ const localSource = `setTimeout(${word}, 1);`;
+ const localSites = pollingSites(caller, localSource);
+ const localAccepted = localSites.map(site => ({...accepted[0], file: caller, fingerprint: site.fingerprint}));
+ assert.deepEqual(newPollingSites(caller, '', localSource, [...accepted, ...localAccepted]), []);
+ assert.ok(newPollingSites(caller, '', localSource.replace(', 1)', ', 2)'), [...accepted, ...localAccepted]).length);
  const changed = new Map(after).set(helper, before.get(helper).replace('sleep(1)', `sleep(${data.length + 2})`));
  assert.ok(newProjectPollingSites(new Map(), changed, accepted).some(site => site.file === caller), 'stale disposition authorized changed dependency');
  const missing = new Map(after);
@@ -112,4 +132,22 @@ export function fuzzProject(data, {project = projectPollingSites, validate = val
  assert.deepEqual(newPollingSites(caller, source, source), []);
  assert.ok(newPollingSites(caller, source, repeated).length);
  assert.ok(newPollingSites(caller, repeated, repeated + source).length);
+ for (const root of ['typescript/packages/original', 'tools/original']) {
+  const packageFile = root + '/package.json';
+  const name = '@original/' + word;
+  const local = new Map([[packageFile, JSON.stringify({name})],
+   [caller, `import {settle} from '${name}'; settle();`]]);
+  assert.ok(project(local).some(site => site.file === caller && site.kind === 'unresolved-local-helper'),
+   'repository layout concealed a missing local producer');
+  const manifest = new Map([[packageFile, '{"name":']]);
+  assert.throws(() => project(manifest), SourceSyntaxError);
+  assert.deepEqual(newProjectPollingSites(manifest, new Map()), []);
+  project(new Map([[packageFile, 'null']]));
+  const raw = new TextDecoder().decode(new Uint8Array(data));
+  let valid = true;
+  try { JSON.parse(raw); } catch { valid = false; }
+  const untrusted = new Map([[packageFile, raw]]);
+  if (valid) project(untrusted);
+  else assert.throws(() => project(untrusted), SourceSyntaxError);
+ }
 }

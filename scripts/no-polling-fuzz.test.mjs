@@ -24,6 +24,15 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
   "|| typeof item.producer !== 'string' || !item.producer.trim()", '|| false');
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), {validate: policy.validateDispositions}),
   {name: 'AssertionError', message: /Missing expected exception/});
+ const manifest = await mutant('./source-policy/project.mjs',
+  'throw new SourceSyntaxError(`${file}: ${error.message}`);', 'throw new Error(`${file}: ${error.message}`);');
+ assert.throws(() => targets.fuzzProject(Buffer.from([0]), {project: manifest.projectPollingSites}),
+  {name: 'AssertionError', message: /SourceSyntaxError/});
+ const layout = await mutant('./source-policy/project.mjs',
+  'if (/(?:^|\\/)package\\.json$/.test(file)) {',
+  'if (/^typescript\\/packages\\/[^/]+\\/package\\.json$/.test(file)) {');
+ assert.throws(() => targets.fuzzProject(Buffer.from([0]), {project: layout.projectPollingSites}),
+  {name: 'AssertionError', message: /repository layout/});
 });
 
 test('raw source and project fuzz targets replay captured corpus and byte mutations', () => {
@@ -46,4 +55,5 @@ test('raw source and project fuzz targets replay captured corpus and byte mutati
   }
  }
  for (let byte = 0; byte < 8; byte++) targets.fuzzProject(Uint8Array.of(byte, 255 - byte));
+ for (const json of ['null', '[]', '{}', '"ordinary"', '{"name":"@original/package"}']) targets.fuzzProject(Buffer.from(json));
 });

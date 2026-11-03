@@ -92,9 +92,21 @@ export function projectPollingSites(sources, {historical = false} = {}) {
  /** @type {ReturnType<typeof pollingUnit>['sites']} */
  const sites = [];
  const errors = [];
+ const workspaceNames = new Set();
  for (const [file, source] of sources) {
   let unit;
-  try { unit = pollingUnit(file, source); }
+  try {
+   unit = pollingUnit(file, source);
+   if (/(?:^|\/)package\.json$/.test(file)) {
+    let manifest;
+    try { manifest = JSON.parse(source); }
+    catch (error) {
+     if (!(error instanceof SyntaxError)) throw error;
+     throw new SourceSyntaxError(`${file}: ${error.message}`);
+    }
+    if (typeof manifest?.name === 'string') workspaceNames.add(manifest.name);
+   }
+  }
   catch (error) {
    // An unparseable predecessor cannot authorize any current executable site.
    // Current source is always strict, including unchanged malformed files.
@@ -133,12 +145,6 @@ export function projectPollingSites(sources, {historical = false} = {}) {
   moduleResolution: ts.ModuleResolutionKind.Bundler, moduleDetection: ts.ModuleDetectionKind.Force,
  }, host);
  const checker = program.getTypeChecker();
- const workspaceNames = new Set();
- for (const [file, source] of sources) {
-  if (!/^typescript\/packages\/[^/]+\/package\.json$/.test(file)) continue;
-  const name = JSON.parse(source).name;
-  if (typeof name === 'string') workspaceNames.add(name);
- }
  const localModule = name => name.startsWith('.') || workspaceNames.has(name.split('/').slice(0, name.startsWith('@') ? 2 : 1).join('/'));
  /** @type {Map<string, Dependency>} */
  const dependencies = new Map();
