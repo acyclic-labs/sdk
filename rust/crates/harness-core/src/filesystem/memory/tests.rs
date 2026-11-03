@@ -142,10 +142,11 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
                 invocation.operation_id,
                 &invocation.call_id,
             )?;
+            let error = tool.executor.execute(invocation, Some(context)).await.unwrap_err();
             assert!(matches!(
-                tool.executor.execute(invocation, Some(context)).await,
-                Err(Error::Unauthorized(_)) | Err(Error::NotFound(_))
-            ));
+                error,
+                Error::Invalid(ref reason) if reason == "file version belongs to another selected volume"
+            ), "cross-volume version reached the content reader: {error:?}");
             Ok(())
         }
     })

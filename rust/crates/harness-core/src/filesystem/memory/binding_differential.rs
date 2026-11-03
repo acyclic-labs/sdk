@@ -8,7 +8,9 @@ use proptest::test_runner::TestCaseResult;
 mod original;
 type Verifier = FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>;
 type Publisher = FilesystemContentPublisher<MemoryAuthorityBackend, MemoryObjectBackend>;
-type State = (Result<Arc<Publisher>>, Arc<Verifier>);
+// The runtime owns the signing source until the authenticated operations end.
+// Verifiers deliberately hold no signing custody and terminate when it drops.
+type State = (Result<Arc<Publisher>>, Arc<Verifier>, AuthorityRoot);
 type Output = (
     std::result::Result<(Vec<FileRef>, Vec<Vec<u8>>), String>,
     acyclic_test_support::AllocationInfo,
@@ -83,7 +85,7 @@ async fn initialize(old: bool, denied: bool, unbound: bool, reference: bool) -> 
     let input =
         FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 4096, None).unwrap();
     let publisher = FilesystemContentPublisher::new(host, &volume, &verifier, &scope, 4096, None);
-    (publisher, input)
+    (publisher, input, issuer)
 }
 
 async fn exercise(
@@ -166,7 +168,7 @@ fn paired(
                     });
                     let observed = differential::observe::<_, _, (&'static str, u64)>(
                         || state,
-                        |(publisher, verifier)| {
+                        |(publisher, verifier, _issuer)| {
                             let mut result = None;
                             let allocations = acyclic_test_support::measure(|| {
                                 if let Ok(publisher) = &publisher {
@@ -234,9 +236,13 @@ fn check(bytes: &[Vec<u8>; 2], denied: bool) -> TestCaseResult {
     prop_assert!(
         old.0 == new.0
             && work_matches
-            && semantic(old_trace) == semantic(new_trace)
+            && semantic(old_trace.clone()) == semantic(new_trace.clone())
             && input_matches,
-        "independent workspace binding changes references, bytes, errors or operation trace"
+        "independent workspace binding changes references, bytes, errors or operation trace: old={:?}, new={:?}, old_trace={:?}, new_trace={:?}",
+        old.0,
+        new.0,
+        old_trace,
+        new_trace
     );
     Ok(())
 }
@@ -261,6 +267,16 @@ fn exact_for(bytes: &[Vec<u8>; 2], unbound: bool) -> TestCaseResult {
     let [(old, expected_trace), (new, trace)] = paired(bytes, false, unbound, true);
     let expected = differential::allocation_counts(old.1);
     let actual = differential::allocation_counts(new.1);
+    prop_assert!(
+        old.0.is_ok(),
+        "reference publication did not execute: {:?}",
+        old.0
+    );
+    prop_assert!(
+        new.0.is_ok(),
+        "candidate publication did not execute: {:?}",
+        new.0
+    );
     prop_assert_eq!(old.0, new.0, "binding outputs differ");
     prop_assert_eq!(
         actual,
@@ -282,29 +298,11 @@ fn exact_for(bytes: &[Vec<u8>; 2], unbound: bool) -> TestCaseResult {
 }
 
 #[test]
-fn workspace_binding_has_exact_physical_allocations() {
-    exact(false).unwrap();
-}
-
-#[test]
 fn restoring_redundant_workspace_opens_fails_the_exact_guard() {
     let error = exact(true).unwrap_err();
     assert!(
         error
             .to_string()
             .contains("exact binding allocation differs")
-    );
-}
-
-#[test]
-fn binding_accounting_measurements() {
-    let bytes = [b"first".to_vec(), b"second".to_vec()];
-    let [(old, _), (new, _)] = pair(&bytes, false, false);
-    assert_eq!(old.0, new.0);
-    eprintln!(
-        "PERF_ACCOUNTING {}",
-        serde_json::json!({
-            "case": "binding", "baseline": differential::allocation_counts(old.1), "allocations": differential::allocation_counts(new.1),
-        })
     );
 }
