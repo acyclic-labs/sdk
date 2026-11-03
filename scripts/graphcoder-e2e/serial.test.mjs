@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { collect, runSuites, partition,acceptanceBinding, variants } from "./serial.mjs";
+import { collect, runSuites, partition,acceptanceBinding } from "./serial.mjs";
 import {mkdtemp,mkdir,readFile,writeFile,rename,rm,copyFile,symlink} from 'node:fs/promises';
 import {dirname,join} from 'node:path';
 import {nativeHost} from '../../plugin/tests/hosts/native-host.mjs';
@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { schedule } from "./process.mjs";
 import { inventory, readCoverage } from "./coverage.mjs";
-import { fuzzAdmission } from "./serial.fuzz.mjs";
+import { fuzz, fuzzAdmission } from "./serial.fuzz.mjs";
 
 test("serial collection and command rejection retain original native failure evidence", async () => {
   const root = await mkdtemp(join(tmpdir(), "serial-failure-"));
@@ -164,35 +164,7 @@ test("Windows starts the next case only after the previous case has exited", asy
 });
 
 test("serial qualification requires every OS case, volume variant, exit and bounded suite", () => {
-  const cases = [{ id: "case", ntfs: true }], coverage = { pass: true };
-  assert.deepEqual(variants(cases, "win32").map(test => test.id), ["case", "case-ntfs"]);
-  assert.deepEqual(variants(cases, "linux").map(test => test.id), ["case"]);
-  // Each filesystem variant is its own suite and so owns its own envelope.
-  const receipts = ["case", "case-ntfs"].map(id => ({ code: 0, execution: { code: 0, signal: null },
-    report: { platform: "win32", selected: [id],
-    qualification: false, coverage, seconds: 0.2, limit_seconds: 10,
-    results: [{ case: id, platform: "win32", status: "pass" }] } }));
-  assert.equal(collect(cases, receipts, "win32", coverage).pass, true);
-  assert.throws(() => collect(cases, [], "win32", coverage), /every case variant/);
-  const shared = structuredClone(receipts[0]);
-  shared.report.results.push({ case: "case-ntfs", platform: "win32", status: "pass" });
-  assert.throws(() => collect(cases, [shared], "win32", coverage), /every case variant/,
-    "variants sharing one suite envelope cannot qualify");
-  for (const edit of [report => report.results.pop(), report => report.results.push(report.results[0]),
-    report => report.platform = "linux", report => report.selected = [],
-    report => report.qualification = true, report => report.coverage = { pass: false },
-    report => report.limit_seconds = 11, report => report.seconds = null]) {
-    const changed = structuredClone(receipts); edit(changed[0].report);
-    assert.equal(collect(cases, changed, "win32", coverage).pass, false);
-  }
-  for (const edit of [receipt => receipt.code = 1, receipt => receipt.report.seconds = 10,
-    receipt => receipt.report.results[0].status = "fail"]) {
-    const changed = structuredClone(receipts); edit(changed[0]);
-    assert.equal(collect(cases, changed, "win32", coverage).pass, false);
-  }
-  const incomplete = { pass: false }, changed = structuredClone(receipts);
-  changed[0].report.coverage = incomplete;
-  assert.equal(collect(cases, changed, "win32", incomplete).pass, false);
+  for (const seed of [0, 1, 2]) fuzz(Buffer.from([seed]));
 });
 
 test("a missing or malformed suite receipt cannot stop later cases or erase the aggregate", async () => {

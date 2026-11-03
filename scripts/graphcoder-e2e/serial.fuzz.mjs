@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { collectPartitions, acceptanceBinding } from "./serial.mjs";
+import { collect, collectPartitions, acceptanceBinding } from "./serial.mjs";
 import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -87,6 +87,45 @@ export function fuzz(data) {
     assert.equal(report.pass, false, "original owner failure must fence a late passing report");
     assert.deepEqual(report.suites[1].execution, execution);
     assert.equal(report.results[1].status, "fail");
+  }
+  // Generated internal suite metadata is checked by the same original collector.
+  {
+    const platform = ["win32", "linux", "darwin"][(data[0] ?? 0) % 3];
+    const id = "case:" + Buffer.from(data).toString("hex");
+    const cases = [{ id, ntfs: true }], coverage = { pass: true };
+    const ids = platform === "win32" ? [id, id + "-ntfs"] : [id];
+    // Each filesystem variant is its own suite and so owns its own envelope.
+    const receipts = ids.map(id => ({ code: 0, execution: { code: 0, signal: null },
+      report: { platform, selected: [id],
+      qualification: false, coverage, seconds: 0.2, limit_seconds: 10,
+      results: [{ case: id, platform, status: "pass" }] } }));
+    assert.equal(collect(cases, receipts, platform, coverage).pass, true);
+    assert.throws(() => collect(cases, [], platform, coverage), /every case variant/);
+    if (platform === "win32") {
+      const shared = structuredClone(receipts[0]);
+      shared.report.results.push({ case: id + "-ntfs", platform, status: "pass" });
+      assert.throws(() => collect(cases, [shared], platform, coverage), /every case variant/,
+        "variants sharing one suite envelope cannot qualify");
+    }
+    for (const edit of [report => report.results.pop(), report => report.results[0].platform = "foreign", report => report.results.push(report.results[0]),
+      report => report.platform = "foreign", report => report.selected = [],
+      report => report.qualification = true, report => report.coverage = { pass: false },
+      report => report.limit_seconds = 11, report => report.seconds = null]) {
+      const changed = structuredClone(receipts); edit(changed[0].report);
+      assert.equal(collect(cases, changed, platform, coverage).pass, false);
+    }
+    for (const seconds of [undefined, null, 0, -1, "0.2", Infinity, NaN]) {
+      const changed = structuredClone(receipts); changed[0].report.seconds = seconds;
+      assert.equal(collect(cases, changed, platform, coverage).pass, false);
+    }
+    for (const edit of [receipt => receipt.code = 1, receipt => receipt.report.seconds = 10,
+      receipt => receipt.report.results[0].status = "fail"]) {
+      const changed = structuredClone(receipts); edit(changed[0]);
+      assert.equal(collect(cases, changed, platform, coverage).pass, false);
+    }
+    const incomplete = { pass: false }, changed = structuredClone(receipts);
+    changed[0].report.coverage = incomplete;
+    assert.equal(collect(cases, changed, platform, incomplete).pass, false);
   }
 }
 
