@@ -26,10 +26,74 @@ pub async fn check(input: &[u8]) {
     let definitions: OwnedBytes = serde_json::to_vec(&definitions).unwrap().into();
     let text = String::from_utf8_lossy(input);
     let literal = serde_json::to_string(text.as_ref()).unwrap();
+    check_bridge(&text).await;
     check_programs(input, &definitions, &literal, &text).await;
     check_progress(&definitions).await;
     check_replies(input, &definitions, &tool_name, &literal, &text).await;
     check_settlement(&definitions, &tool_name, &literal).await;
+}
+
+async fn check_bridge(text: &str) {
+    let text = if text.is_empty() { "x" } else { text };
+    let work = native_work(false);
+    let original = work.live_allocation_bytes();
+    let allocator = EngineAllocator::new(Some(&work));
+    let runtime = rquickjs::AsyncRuntime::new_with_alloc(allocator.clone()).unwrap();
+    let context = rquickjs::AsyncContext::full(&runtime).await.unwrap();
+    context
+        .with(|ctx| {
+            let source = rquickjs::String::from_str(ctx, text).unwrap();
+            let baseline = work.live_allocation_bytes();
+            // Measure the actual engine view, including its native header. ASCII
+            // may borrow the string; Unicode may require a temporary UTF-8 copy.
+            let view = source.clone().to_cstring().unwrap();
+            let view_bytes = work.live_allocation_bytes() - baseline;
+            drop(view);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+
+            let copy = allocator.copy_text(&source).unwrap();
+            assert_eq!(copy.value, text);
+            assert_eq!(
+                work.live_allocation_bytes(),
+                baseline + text.len() as u64,
+                "bridge bytes must retain the original credit after the engine view retires"
+            );
+            drop(copy);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+
+            // Reserve the remaining original capacity after startup. First fund
+            // only the view, then neither allocation when the view needs bytes.
+            for available in [Some(view_bytes), (view_bytes != 0).then_some(0)]
+                .into_iter()
+                .flatten()
+            {
+                let reserved = work
+                    .claim(
+                        work.budget().peak_allocation_bytes - baseline - available,
+                        1,
+                        acyclic_fs::WorkCounters::UNCHARGED,
+                    )
+                    .unwrap();
+                let result = allocator.copy_text(&source);
+                assert!(result.is_err(), "unfunded bridge bytes must refuse");
+                assert!(matches!(
+                    allocator.failure().lock().unwrap().as_ref(),
+                    Some(acyclic_fs::NativeTreeMaterializationError::Work(
+                        acyclic_fs::WorkError::BudgetExceeded {
+                            counter: "peak_allocation_bytes",
+                            ..
+                        }
+                    ))
+                ));
+                drop(result);
+                drop(reserved);
+                assert_eq!(work.live_allocation_bytes(), baseline);
+            }
+        })
+        .await;
+    drop(context);
+    drop(runtime);
+    assert_eq!(work.live_allocation_bytes(), original);
 }
 
 async fn check_programs(input: &[u8], definitions: &OwnedBytes, literal: &str, text: &str) {

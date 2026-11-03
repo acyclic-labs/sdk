@@ -122,3 +122,20 @@ passes this mutation; the value-complete differential must reject it at
 before collecting original coverage. Arbitrary malformed UTF-8/JSON frames still
 exercise retirement, but complete malformed-JSON semantics and embedded engine
 source coverage remain separate qualification obligations.
+
+The same property checks bridge copies with the production engine allocator and
+its original ledger. The input varies the actual guest string. It measures the
+engine's temporary UTF-8 view, then verifies that only the returned destination
+bytes retain credit after that view retires. A reservation on the same ledger
+exhausts destination credit after successful engine startup; when the view itself
+needs bytes, it also checks refusal with no view credit. Every refusal retains the
+original typed budget cause, and dropping the engine releases its original bytes.
+This subsumes the former standalone bridge example, whose default engine allocator
+could not check temporary-view custody. The startup-allocation-prefix test keeps
+its separate construction and partial-initialization obligation.
+
+Apply `mutations/code_mode_release_bridge_credit.patch` to retire destination
+credit before returning its live buffer. The unchanged property must reject it at
+`bridge bytes must retain the original credit after the engine view retires`.
+This mutation changes the production copy boundary and adds no allocator or
+parallel accounting model. Restore it before collecting original coverage.

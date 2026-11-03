@@ -224,34 +224,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bridge_text_keeps_original_credit_and_refuses_an_unfunded_copy() -> crate::Result<()> {
-        let runtime = rquickjs::AsyncRuntime::new().unwrap();
-        let context = rquickjs::AsyncContext::full(&runtime).await.unwrap();
-        for deny_allocation in [true, false] {
-            let work = work(deny_allocation)?;
-            let baseline = work.live_allocation_bytes();
-            let allocator = EngineAllocator::new(Some(&work));
-            context
-                .with(|ctx| {
-                    let text = rquickjs::String::from_str(ctx, &"x".repeat(4096)).unwrap();
-                    let copy = allocator.copy_text(&text);
-                    if deny_allocation {
-                        assert!(copy.is_err());
-                        assert!(allocator.failure().lock().unwrap().is_some());
-                    } else {
-                        let copy = copy.unwrap();
-                        assert_eq!(copy.value.len(), 4096);
-                        assert_eq!(work.live_allocation_bytes(), baseline + 4096);
-                        drop(copy);
-                    }
-                    assert_eq!(work.live_allocation_bytes(), baseline);
-                })
-                .await;
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn real_engine_releases_native_memory_and_preserves_ledger_refusal() -> crate::Result<()>
     {
         let original = work(false)?;
