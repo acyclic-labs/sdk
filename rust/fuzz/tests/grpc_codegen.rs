@@ -1,3 +1,5 @@
+//! Check the production transformer against retained Tonic ingress.
+
 #[path = "../support/grpc_codegen.rs"]
 mod oracle;
 
