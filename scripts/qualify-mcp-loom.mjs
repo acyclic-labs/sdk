@@ -101,12 +101,30 @@ export function qualifySkillMaterializerMutationsLoom(run = runCommand) {
 
 export function qualifyProjectionMutationsLoom(run = runCommand) {
   const recovery = "node scripts/qualify-mcp-loom.mjs --projection-mutations";
+  return qualifyProjectionSourceMutations([
+    ["if slot.is_none() {", "if true {", "projection initialized twice", "first_native_users_share_one_initialization"],
+    ["== 0;", ">= 0;", "projection retired under a running command", "the_last_execution_scope_alone_retires_the_projection"],
+    ["publish(&mut slot, retire).await", "if retire { publish(&mut slot, retire).await } else { Ok(()) }", "successful command skipped publication", "every_completed_command_publishes_before_its_acknowledgement"],
+  ], recovery, run);
+}
+
+export function qualifyProjectionCompletionMutationsLoom(run = runCommand) {
+  const recovery = "node scripts/qualify-mcp-loom.mjs --projection-completion-mutations";
+  return qualifyProjectionSourceMutations([[
+    `    let mut slot = lock_owned(StateArc::clone(slot)).await;
+    // Keep the completed worker's claim until its publication owns the slot.
+    // Another completing command must not retire this projection first.
+    drop(entered);`,
+    `    drop(entered);
+    let mut slot = lock_owned(StateArc::clone(slot)).await;`,
+    "completion lost its unpublished projection",
+    "every_completing_worker_retains_its_projection_until_publication",
+  ]], recovery, run);
+}
+
+function qualifyProjectionSourceMutations(mutations, recovery, run) {
   const prefix = "local::workspace::projection::tests::";
-  const oracles = {
-    "projection initialized twice": `${prefix}first_native_users_share_one_initialization`,
-    "projection retired under a running command": `${prefix}the_last_execution_scope_alone_retires_the_projection`,
-    "successful command skipped publication": `${prefix}every_completed_command_publishes_before_its_acknowledgement`,
-  };
+  const oracles = Object.fromEntries(mutations.map(([, , message, test]) => [message, `${prefix}${test}`]));
   const qualify = (run, expectedFailure) => qualifyLoom("acyclic-harness", "acyclic_harness",
     ["--all-features"], run, {
       kind: "--lib", env: loomEnvironment(), targetCfg: [], expectedFailure, recovery,
@@ -116,11 +134,7 @@ export function qualifyProjectionMutationsLoom(run = runCommand) {
     name: "Projection", recovery,
     source: "../rust/crates/harness/src/local/workspace/projection.rs",
     model: "../rust/crates/harness/src/local/workspace/projection/tests.rs",
-    mutations: [
-      ["if slot.is_none() {", "if true {", "projection initialized twice"],
-      ["== 0;", ">= 0;", "projection retired under a running command"],
-      ["publish(&mut slot, retire).await", "if retire { publish(&mut slot, retire).await } else { Ok(()) }", "successful command skipped publication"],
-    ],
+    mutations,
     qualify, restored: run => qualify(run),
   }, run);
 }
@@ -361,6 +375,7 @@ const fixedModels = {
   "--provider-refresh-mutations": qualifyProviderRefreshMutationsLoom,
   "--skill-materializer-mutations": qualifySkillMaterializerMutationsLoom,
   "--projection-mutations": qualifyProjectionMutationsLoom,
+  "--projection-completion-mutations": qualifyProjectionCompletionMutationsLoom,
   "--fs-policy": qualifyFsPolicyLoom,
 };
 const selectableModels = {

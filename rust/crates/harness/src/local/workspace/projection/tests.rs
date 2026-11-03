@@ -337,7 +337,7 @@ fn every_completed_command_publishes_before_its_acknowledgement() {
     loom::model(publication);
 }
 
-fn competing_completions(broken: bool) {
+fn competing_completions() {
     let slot = StateArc::new(AsyncMutex::new(None));
     let users = StateArc::new(SyncMutex::new(0));
     let a = complete(enter(&slot, &users, async || Ok(7))).unwrap();
@@ -355,16 +355,7 @@ fn competing_completions(broken: bool) {
             }
             Ok(())
         };
-        if broken {
-            // Restore caller-side release before publication owns the slot.
-            drop(entered);
-            thread::yield_now();
-            let mut slot = complete(lock_owned(slot));
-            let retire = *users.lock().unwrap() == 0;
-            complete(publish(&mut slot, retire)).unwrap();
-        } else {
-            complete(leave(&slot, &users, entered, publish)).unwrap();
-        }
+        complete(leave(&slot, &users, entered, publish)).unwrap();
     };
     let worker = {
         let (slot, users, published) = (slot.clone(), users.clone(), published.clone());
@@ -378,10 +369,7 @@ fn competing_completions(broken: bool) {
 
 #[test]
 fn every_completing_worker_retains_its_projection_until_publication() {
-    checked(
-        competing_completions,
-        "completion lost its unpublished projection",
-    );
+    loom::model(competing_completions);
 }
 
 fn execution_cleanup(broken: bool) {
