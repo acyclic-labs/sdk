@@ -215,7 +215,7 @@ pub fn check(input: &[u8]) {
     word[..length].copy_from_slice(&input[..length]);
     let encoded = fixture(
         kind,
-        &input[..input.len().min(65)],
+        &input[..input.len().min(MAXIMUM_INLINE_FILE_BYTES)],
         u64::from_le_bytes(word),
     );
     let mut writer = vec![kind, 255, 255, 0, 0, 0];
@@ -398,7 +398,7 @@ mod tests {
         #[test]
         fn canonical_round_trips_keep_exact_completed_work_and_denied_effects(
             kind in 0..KINDS,
-            payload in prop::collection::vec(any::<u8>(), 0..65),
+            payload in prop::collection::vec(any::<u8>(), 0..=MAXIMUM_INLINE_FILE_BYTES),
             number in any::<u64>(),
             maximum in 0_u16..192,
             fault in any::<u8>(), index in 0_u8..32,

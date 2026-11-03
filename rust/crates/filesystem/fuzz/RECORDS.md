@@ -12,6 +12,10 @@ nonzero bounds, version refusal and complete framing. Stream records retain both
 locator words, the typed generation identity and free/active gate identity.
 These are format checks, not publication authorization or physical recovery proofs.
 The generated typed inputs are library writer evidence, not captured remote wire.
+The retained `inline-file-table-over-bound.bin` is an authored 65-byte fuzz input:
+the writer must bound its inline fixture to `MAXIMUM_INLINE_FILE_BYTES` while the
+arbitrary decoder still receives the complete input. Repeating the record capture
+replaces the same selected provenance and golden names without changing other rows.
 
 Run the shared controls:
 

@@ -172,8 +172,20 @@ fn save(
     Ok(())
 }
 
-fn capture_filesystem_records(manifest: &mut String) -> Result<(), Box<dyn Error>> {
-    for (name, bytes) in acyclic_fs::kernel::decoder_fuzz::records::seeds()? {
+fn capture_filesystem_records(
+    manifest: &mut String,
+) -> Result<std::collections::HashSet<String>, Box<dyn Error>> {
+    let seeds = acyclic_fs::kernel::decoder_fuzz::records::seeds()?;
+    let names = seeds
+        .iter()
+        .map(|(name, _)| format!("filesystem_codecs/{name}"))
+        .collect::<std::collections::HashSet<_>>();
+    *manifest = manifest
+        .lines()
+        .filter(|line| !names.contains(line.split('\t').next().unwrap_or(line)))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    for (name, bytes) in seeds {
         save(
             "filesystem_codecs",
             &name,
@@ -182,15 +194,15 @@ fn capture_filesystem_records(manifest: &mut String) -> Result<(), Box<dyn Error
             manifest,
         )?;
     }
-    Ok(())
+    Ok(names)
 }
 
 fn capture() -> Result<(), Box<dyn Error>> {
     std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))?;
     if std::env::args().any(|arg| arg == "--only-filesystem-records") {
         let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?;
-        capture_filesystem_records(&mut manifest)?;
-        return finish(&manifest, "");
+        let names = capture_filesystem_records(&mut manifest)?;
+        return finish_selected(&manifest, |name| names.contains(name));
     }
     if std::env::args().any(|arg| arg == "--only-agents") {
         let prefix = agent_prefix();
@@ -791,6 +803,10 @@ fn capture_agents(manifest: &mut String) -> Result<(), Box<dyn Error>> {
 }
 
 fn finish(manifest: &str, replaced_prefix: &str) -> Result<(), Box<dyn Error>> {
+    finish_selected(manifest, |name| name.starts_with(replaced_prefix))
+}
+
+fn finish_selected(manifest: &str, selected: impl Fn(&str) -> bool) -> Result<(), Box<dyn Error>> {
     if std::env::args().any(|arg| matches!(arg.as_str(), "--accept-goldens" | "--extend-goldens")) {
         let path = Path::new("../../compatibility/frames/golden.hex");
         let previous = std::fs::read_to_string(path)?;
@@ -799,13 +815,14 @@ fn finish(manifest: &str, replaced_prefix: &str) -> Result<(), Box<dyn Error>> {
             .filter(|line| {
                 !line
                     .strip_prefix("corpus/")
-                    .is_some_and(|name| name.starts_with(replaced_prefix))
+                    .and_then(|frame| frame.split_whitespace().next())
+                    .is_some_and(&selected)
             })
             .map(|line| format!("{line}\n"))
             .collect::<String>();
         for line in manifest.lines().filter(|line| !line.starts_with('#')) {
             let name = line.split('\t').next().ok_or("missing capture name")?;
-            if !name.starts_with(replaced_prefix) {
+            if !selected(name) {
                 continue;
             }
             let bytes = std::fs::read(Path::new("corpus").join(name))?;
