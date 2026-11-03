@@ -70,7 +70,7 @@ impl<A: 'static, O: 'static> CheckoutDetachedFile<A, O> {
         O: AsyncObjectStore,
     {
         let cancellation = carrier.cancellation();
-        let state = await_lock(
+        let state = await_with_cancellation(
             self.state.lock(),
             carrier,
             &cancellation,
@@ -110,7 +110,7 @@ impl<A: 'static, O: 'static> CheckoutDetachedFile<A, O> {
         let mut carrier = NativeDemandCarrier::Native(work);
         let mut inputs = InputBuffers::new(&mut carrier)?;
         let name = inputs.mutation_attribute_name(name, self.profile, self.limits)?;
-        let mut state = await_lock(
+        let mut state = await_with_cancellation(
             self.state.lock(),
             inputs.carrier,
             cancellation,
@@ -133,7 +133,7 @@ impl<A: 'static, O: 'static> CheckoutDetachedFile<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        let state = await_lock(
+        let state = await_with_cancellation(
             self.state.lock(),
             carrier,
             cancellation,
@@ -171,7 +171,7 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<super::MountWriteResult, MountSourceError> {
         invoke(&self.runtime, work, || async {
-            let mut state = await_lock(
+            let mut state = await_with_cancellation(
                 self.state.lock(),
                 &mut NativeDemandCarrier::Native(work),
                 work.cancellation(),
@@ -263,7 +263,7 @@ where
         invoke(&self.runtime, work, || async {
             let mut carrier = NativeDemandCarrier::Native(work);
             let cancellation = work.cancellation();
-            let state = await_lock(
+            let state = await_with_cancellation(
                 self.state.lock(),
                 &mut carrier,
                 cancellation,
@@ -302,7 +302,7 @@ where
     ) -> Result<Option<u64>, MountSourceError> {
         invoke(&self.runtime, work, || async {
             let mut carrier = NativeDemandCarrier::Native(work);
-            let state = await_lock(
+            let state = await_with_cancellation(
                 self.state.lock(),
                 &mut carrier,
                 work.cancellation(),
@@ -332,7 +332,7 @@ where
         invoke(&self.runtime, work, || async {
             let mut carrier = NativeDemandCarrier::Native(work);
             drop(
-                await_lock(
+                await_with_cancellation(
                     self.state.lock(),
                     &mut carrier,
                     work.cancellation(),
@@ -351,7 +351,7 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<(MountSparseRange, crate::NativeAllocation), MountSourceError> {
         invoke(&self.runtime, work, || async {
-            let state = await_lock(
+            let state = await_with_cancellation(
                 self.state.lock(),
                 &mut NativeDemandCarrier::Native(work),
                 work.cancellation(),
@@ -370,7 +370,7 @@ where
     ) -> Result<(), MountSourceError> {
         sparse::validate_sparse_allocation(&range.1, work)?;
         invoke(&self.runtime, work, || async {
-            let mut state = await_lock(
+            let mut state = await_with_cancellation(
                 self.state.lock(),
                 &mut NativeDemandCarrier::Native(work),
                 work.cancellation(),
@@ -409,7 +409,7 @@ where
         invoke(&self.runtime, work, || async {
             let cancellation = work.cancellation();
             let mut carrier = NativeDemandCarrier::Native(work);
-            let mut state = await_lock(
+            let mut state = await_with_cancellation(
                 self.state.lock(),
                 &mut carrier,
                 cancellation,
@@ -436,7 +436,7 @@ where
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let name = inputs.attribute_name(name, self.profile, self.limits)?;
-            let state = await_lock(
+            let state = await_with_cancellation(
                 self.state.lock(),
                 inputs.carrier,
                 cancellation,
@@ -467,7 +467,7 @@ where
             let cursor = cursor
                 .map(|bytes| inputs.attribute_name(bytes, self.profile, self.limits))
                 .transpose()?;
-            let state = await_lock(
+            let state = await_with_cancellation(
                 self.state.lock(),
                 inputs.carrier,
                 cancellation,

@@ -64,13 +64,13 @@ impl NativeDemandCarrier<'_> {
     }
 }
 
-struct LockWait<'a, 'w> {
+struct CancellationWait<'a, 'w> {
     carrier: &'a mut NativeDemandCarrier<'w>,
     waits: [Option<crate::cancellation::Cancelled<'static>>; 2],
     reserved: u64,
 }
 
-impl LockWait<'_, '_> {
+impl CancellationWait<'_, '_> {
     fn prepare(&mut self, index: usize, token: &CancellationToken) -> Result<(), MountSourceError> {
         let native = self.carrier.original_native_work();
         let wait = match &native {
@@ -131,32 +131,32 @@ impl LockWait<'_, '_> {
     }
 }
 
-impl Drop for LockWait<'_, '_> {
+impl Drop for CancellationWait<'_, '_> {
     fn drop(&mut self) {
         let _ = self.finish();
     }
 }
 
-pub(super) async fn await_lock<F: Future>(
-    lock: F,
+pub(super) async fn await_with_cancellation<F: Future>(
+    operation: F,
     carrier: &mut NativeDemandCarrier<'_>,
     cancellation: &CancellationToken,
     lifetime: Option<&CancellationToken>,
 ) -> Result<F::Output, MountSourceError> {
     carrier.check(cancellation, lifetime)?;
-    let mut waits = LockWait {
+    let mut waits = CancellationWait {
         carrier,
         waits: [None, None],
         reserved: 0,
     };
-    let mut lock = std::pin::pin!(lock);
+    let mut operation = std::pin::pin!(operation);
     let tokens = [
         Some(cancellation),
         lifetime.filter(|token| !token.same_state(cancellation)),
     ];
     let result = std::future::poll_fn(|context| {
-        if let Poll::Ready(guard) = lock.as_mut().poll(context) {
-            return Poll::Ready(Ok(guard));
+        if let Poll::Ready(value) = operation.as_mut().poll(context) {
+            return Poll::Ready(Ok(value));
         }
         for (index, token) in tokens.iter().enumerate() {
             let Some(token) = token else {
@@ -186,8 +186,8 @@ pub(super) async fn await_lock<F: Future>(
     })
     .await;
     let finished = waits.finish();
-    let guard = result?;
+    let value = result?;
     finished?;
     waits.carrier.check(cancellation, lifetime)?;
-    Ok(guard)
+    Ok(value)
 }

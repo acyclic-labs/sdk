@@ -502,6 +502,72 @@ fn completed_native_read_drops_an_unreached_storage_cut() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn pending_policy_read_wakes_on_either_original_cancellation()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::task::{Context, Poll, Wake, Waker};
+
+    #[derive(Default)]
+    struct WakeCount(AtomicUsize);
+    impl Wake for WakeCount {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    for cancel_caller in [false, true] {
+        let (source, objects, _pinned) = fixture(None)?;
+        let caller = CancellationToken::new();
+        let work = capture_meter(BOUNDARY_BUDGET, &caller)?;
+        let original_bytes = work.live_allocation_bytes();
+        let (entered, pending) = mpsc::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        *objects.pause.lock().unwrap() = Some(Pause {
+            cut: ReadCut::Ordinal(1),
+            entered,
+            release: released,
+            after: None,
+        });
+        let wakes = Arc::new(WakeCount::default());
+        let waker = Waker::from(Arc::clone(&wakes));
+        let mut context = Context::from_waker(&waker);
+        {
+            let mut observation = std::pin::pin!(super::super::access::observe_current_policy(
+                &source.checkout,
+                source.cancellation(),
+                &work,
+            ));
+            assert!(observation.as_mut().poll(&mut context).is_pending());
+            pending.try_recv()?;
+            assert_eq!(wakes.0.load(Ordering::Relaxed), 0);
+            if cancel_caller {
+                caller.cancel();
+            } else {
+                source.cancellation().cancel();
+            }
+            assert!(
+                wakes.0.load(Ordering::Relaxed) > 0,
+                "pending policy observation missed cancellation wake"
+            );
+            let terminal = observation.as_mut().poll(&mut context);
+            assert!(
+                if cancel_caller {
+                    matches!(terminal, Poll::Ready(Err(MountSourceError::Cancelled)))
+                } else {
+                    matches!(terminal, Poll::Ready(Err(MountSourceError::Stale)))
+                },
+                "pending policy observation lost its original cancellation: {terminal:?}"
+            );
+        }
+        assert!(
+            release.send(()).is_err(),
+            "cancelled policy read remained live"
+        );
+        assert_eq!(work.live_allocation_bytes(), original_bytes);
+    }
+    Ok(())
+}
+
+#[test]
 fn every_native_result_rechecks_authority_after_its_storage_read()
 -> Result<(), Box<dyn std::error::Error>> {
     for op in [

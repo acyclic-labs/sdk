@@ -154,7 +154,8 @@ impl<A: 'static, O: 'static> SharedCheckout<A, O> {
                 .view_gate
                 .read_for_callback_with_carrier(owner, None, carrier, cancellation, lifetime)
                 .await?;
-            let state = await_lock(self.state.read(), carrier, cancellation, lifetime).await?;
+            let state =
+                await_with_cancellation(self.state.read(), carrier, cancellation, lifetime).await?;
             // Nested reads finish against the projection pinned by their outer lease.
             if nested
                 || self
@@ -167,7 +168,7 @@ impl<A: 'static, O: 'static> SharedCheckout<A, O> {
             }
             drop(state);
             drop(view);
-            drop(await_lock(self.lock(), carrier, cancellation, lifetime).await?);
+            drop(await_with_cancellation(self.lock(), carrier, cancellation, lifetime).await?);
         }
     }
 
@@ -186,14 +187,14 @@ impl<A: 'static, O: 'static> SharedCheckout<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        let publication = await_lock(
+        let publication = await_with_cancellation(
             self.publication_fence.read(),
             carrier,
             cancellation,
             lifetime,
         )
         .await?;
-        let state = await_lock(self.lock(), carrier, cancellation, lifetime).await?;
+        let state = await_with_cancellation(self.lock(), carrier, cancellation, lifetime).await?;
         let epoch = self.view_gate.generation();
         let stamp = self.ledger.stamp();
         match operation {
