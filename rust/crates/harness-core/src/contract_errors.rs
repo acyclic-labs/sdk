@@ -59,6 +59,9 @@ impl std::fmt::Display for ModelTransportFailure {
 /// Errors shared by harness surfaces.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// An operation and its independently completed cleanup both failed.
+    #[error("{0}")]
+    Cleanup(#[source] CleanupFailure),
     /// The inference endpoint refused input exceeding its model context window.
     #[error("model context capacity exceeded")]
     ModelContextOverflow,
@@ -439,6 +442,36 @@ const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::
 }
 
 impl Error {
+    /// Join an operation with cleanup that has already completed. Neither
+    /// concrete cause is discarded. An uncertain cleanup takes precedence over
+    /// a settled operation's wire class, so an adapter cannot report settlement.
+    /// The ordinary path allocates nothing; two failures move into one box.
+    pub fn after_cleanup<T>(outcome: Result<T>, cleanup: Result<()>) -> Result<T> {
+        match (outcome, cleanup) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Err(primary), Err(cleanup)) => {
+                let code = if (!primary.leaves_outcome_uncertain()
+                    && cleanup.leaves_outcome_uncertain())
+                    || (!primary.uncertain() && cleanup.uncertain())
+                {
+                    cleanup.code()
+                } else {
+                    primary.code()
+                };
+                Err(Self::Cleanup(CleanupFailure {
+                    code,
+                    uncertain: primary.uncertain() || cleanup.uncertain(),
+                    effect_uncertain: primary.leaves_effect_uncertain()
+                        || cleanup.leaves_effect_uncertain(),
+                    outcome_uncertain: primary.leaves_outcome_uncertain()
+                        || cleanup.leaves_outcome_uncertain(),
+                    causes: Box::new([primary, cleanup]),
+                }))
+            }
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[doc(hidden)]
     pub fn process_io(error: std::io::Error) -> Self {
@@ -476,6 +509,7 @@ impl Error {
     pub fn code(&self) -> crate::wire::ErrorCode {
         use crate::wire::ErrorCode;
         match self {
+            Self::Cleanup(failure) => failure.code,
             Self::NotFound(_) => ErrorCode::NotFound,
             Self::Conflict(_) | Self::ExactEdit(_) => ErrorCode::Conflict,
             Self::FilesystemAccessConfiguration(_)
@@ -583,6 +617,9 @@ impl Error {
 
     /// An accepted effect that ended this way may have happened: reconcile it, never reject it.
     pub(crate) fn leaves_effect_uncertain(&self) -> bool {
+        if let Self::Cleanup(failure) = self {
+            return failure.effect_uncertain;
+        }
         #[cfg(feature = "machines")]
         if matches!(self, Self::MachineOwnership(_)) {
             return true;
@@ -600,9 +637,11 @@ impl Error {
     /// indeterminate or cancelled. Reading the class, not the variant, keeps the failures that
     /// carry it only as a code (native ledgers, task-volume storage, deferred search
     /// publication) uncertain. A failed task is the one storage-coded failure that is settled.
-    #[cfg(feature = "filesystem")]
     #[doc(hidden)]
     pub fn leaves_outcome_uncertain(&self) -> bool {
+        if let Self::Cleanup(failure) = self {
+            return failure.outcome_uncertain;
+        }
         use crate::wire::ErrorCode;
         !matches!(self, Self::TaskFailed { .. })
             && matches!(
@@ -619,6 +658,9 @@ impl Error {
     /// classifier every wrapper of a harness error asks.
     #[must_use]
     pub fn uncertain(&self) -> bool {
+        if let Self::Cleanup(failure) = self {
+            return failure.uncertain;
+        }
         use crate::wire::ErrorCode;
         !matches!(self, Self::TaskFailed { .. })
             && matches!(
@@ -633,7 +675,7 @@ impl Error {
     /// A tool's definitive refusal is model feedback. Native accounting and
     /// producer faults remain harness failures even when their wire code is Invalid.
     pub(crate) fn is_tool_failure(&self) -> bool {
-        if self.uncertain() {
+        if self.uncertain() || matches!(self, Self::Cleanup(_)) {
             return false;
         }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -686,6 +728,7 @@ impl Error {
     #[doc(hidden)]
     pub fn is_native_failure(&self) -> bool {
         match self {
+            Self::Cleanup(_) => true,
             Self::ModelContextOverflow
             | Self::NotFound(_)
             | Self::Conflict(_)
@@ -756,6 +799,48 @@ impl Error {
             #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
             Self::NativeTimeout { .. } => true,
         }
+    }
+}
+
+/// Both original errors and their classification at the cleanup boundary.
+/// Classification reads cached facts rather than traversing nested cleanups.
+#[derive(Debug)]
+pub struct CleanupFailure {
+    causes: Box<[Error; 2]>,
+    code: crate::wire::ErrorCode,
+    uncertain: bool,
+    effect_uncertain: bool,
+    outcome_uncertain: bool,
+}
+
+impl CleanupFailure {
+    /// The original operation failure, including its operation identity/custody.
+    #[must_use]
+    pub fn primary(&self) -> &Error {
+        &self.causes[0]
+    }
+
+    /// The independently completed cleanup failure, including its custody.
+    #[must_use]
+    pub fn cleanup(&self) -> &Error {
+        &self.causes[1]
+    }
+}
+
+impl std::fmt::Display for CleanupFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{}; cleanup failed: {}",
+            self.primary(),
+            self.cleanup()
+        )
+    }
+}
+
+impl std::error::Error for CleanupFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.primary())
     }
 }
 
@@ -922,3 +1007,83 @@ impl From<acyclic_stream::StreamError> for Error {
 
 /// Harness result type.
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::*;
+
+    fn cause(index: usize) -> Error {
+        match index {
+            0 => Error::Unsupported("original capability".into()),
+            1 => Error::Conflict("original retirement".into()),
+            2 => Error::Cancelled,
+            3 => Error::Storage("original storage".into()),
+            4 => Error::Indeterminate(OperationId::from_bytes([7; 16])),
+            5 => Error::TaskFailed {
+                task: crate::TaskId::from_bytes([9; 16]),
+                message: "settled task".into(),
+            },
+            _ => Error::ModelUnavailable {
+                failure: ModelTransportFailure::Status(503),
+                excerpt: "original provider".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn cleanup_failure_retains_causes_and_uncertainty() {
+        for original in 0..7 {
+            for retirement in 0..7 {
+                let primary = cause(original);
+                let cleanup = cause(retirement);
+                let primary_code = primary.code();
+                let cleanup_code = cleanup.code();
+                let uncertain = primary.uncertain() || cleanup.uncertain();
+                let effect_uncertain =
+                    primary.leaves_effect_uncertain() || cleanup.leaves_effect_uncertain();
+                let outcome_uncertain =
+                    primary.leaves_outcome_uncertain() || cleanup.leaves_outcome_uncertain();
+                let joined = Error::after_cleanup::<()>(Err(primary), Err(cleanup)).unwrap_err();
+                let Error::Cleanup(ref failure) = joined else {
+                    panic!("both concrete causes must survive cleanup");
+                };
+                assert_eq!(failure.primary().code(), primary_code);
+                assert_eq!(failure.cleanup().code(), cleanup_code);
+                if original == 4 {
+                    assert!(matches!(failure.primary(), Error::Indeterminate(id)
+                        if *id == OperationId::from_bytes([7; 16])));
+                }
+                assert_eq!(
+                    joined.uncertain(),
+                    uncertain,
+                    "cleanup cannot settle an uncertain original cause"
+                );
+                assert_eq!(joined.leaves_effect_uncertain(), effect_uncertain);
+                assert_eq!(joined.leaves_outcome_uncertain(), outcome_uncertain);
+                assert!(!joined.is_model_failure());
+                assert!(!joined.is_tool_failure());
+                assert!(joined.is_native_failure());
+                if (!failure.primary().leaves_outcome_uncertain()
+                    && failure.cleanup().leaves_outcome_uncertain())
+                    || (!failure.primary().uncertain() && failure.cleanup().uncertain())
+                {
+                    assert_eq!(joined.code(), cleanup_code);
+                } else {
+                    assert_eq!(joined.code(), primary_code);
+                }
+                // A further settled cleanup cannot erase the original facts.
+                let nested = Error::after_cleanup::<()>(Err(joined), Err(cause(1))).unwrap_err();
+                assert_eq!(nested.uncertain(), uncertain);
+                assert_eq!(nested.leaves_effect_uncertain(), effect_uncertain);
+                assert_eq!(nested.leaves_outcome_uncertain(), outcome_uncertain);
+            }
+            let error = Error::after_cleanup::<()>(Err(cause(original)), Ok(())).unwrap_err();
+            assert_eq!(error.code(), cause(original).code());
+            assert!(!matches!(error, Error::Cleanup(_)));
+            let error = Error::after_cleanup(Ok(7), Err(cause(original))).unwrap_err();
+            assert_eq!(error.code(), cause(original).code());
+            assert!(!matches!(error, Error::Cleanup(_)));
+        }
+        assert_eq!(Error::after_cleanup(Ok(7), Ok(())).unwrap(), 7);
+    }
+}

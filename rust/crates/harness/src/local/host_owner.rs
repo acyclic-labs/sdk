@@ -284,6 +284,10 @@ impl HostWorkspaceOwner {
         agents: impl IntoIterator<Item = AgentPath>,
         result: Result<Value>,
     ) -> Result<Value> {
+        Error::after_cleanup(result, self.retire_idle(agents).await)
+    }
+
+    async fn retire_idle(&self, agents: impl IntoIterator<Item = AgentPath>) -> Result<()> {
         let mut idle = Vec::new();
         for agent in agents {
             if agent.parent().is_none() || !self.views()?.contains_key(&agent) {
@@ -308,7 +312,7 @@ impl HostWorkspaceOwner {
                 .await
                 .map_err(storage)?;
         }
-        result
+        Ok(())
     }
 
     #[cfg(feature = "test-support")]
