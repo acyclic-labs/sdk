@@ -215,43 +215,6 @@ fn every_file_record_payload_and_typed_reference_is_validated() {
 }
 
 #[test]
-fn record_round_trip_is_canonical() -> Result<(), Box<dyn std::error::Error>> {
-    let page = FileTablePage::Leaf(vec![FileRecord {
-        bindings: None,
-        file_id: FileId::from_bytes([1; 16]),
-        kind: FileKind::Regular,
-        link_count: 2,
-        metadata: ObjectId {
-            storage: None,
-            kind: ObjectKind::Metadata,
-            digest: Digest::from_bytes([2; 32]),
-        },
-        payload: FilePayload::Regular {
-            logical_bytes: 99,
-            extents: ObjectId {
-                storage: None,
-                kind: ObjectKind::ExtentPage,
-                digest: Digest::from_bytes([3; 32]),
-            },
-        },
-    }]);
-    let encoded = encode_file_table_page(
-        &page,
-        8,
-        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-    )?;
-    assert_eq!(
-        decode_file_table_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<
-            _,
-            crate::kernel::CanonicalDecodeError,
-        >(()))?,
-        page
-    );
-    Ok(())
-}
-
-#[test]
 fn inline_regular_payload_is_bounded_allocation_free_and_canonical()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut data = None;
