@@ -33,6 +33,20 @@ impl Files {
         }
     }
 
+    fn source(&self, role: u8) -> PathBuf {
+        match role {
+            0 => self.home.join(".claude.json"),
+            1 => self.codex.join("config.toml"),
+            2 => self.workspace.join(".mcp.json"),
+            3 => self.workspace.join(".codex/config.toml"),
+            4 => self.home.join(".claude/settings.json"),
+            5 => self.codex.join("hooks.json"),
+            6 => self.workspace.join(".claude/settings.json"),
+            7 => self.workspace.join(".claude/settings.local.json"),
+            _ => self.workspace.join(".codex/hooks.json"),
+        }
+    }
+
     fn load(&self, trusted: bool) -> acyclic_harness_core::Result<NativeSettings> {
         self.load_bounded(trusted, 512)
     }
@@ -63,6 +77,19 @@ impl Files {
     }
 }
 
+fn native_failure<T>(
+    result: acyclic_harness_core::Result<T>,
+    expected: &acyclic_harness_core::ProcessError,
+) {
+    let Err(acyclic_harness_core::Error::Process(actual)) = result else {
+        panic!("selected file I/O must not be admitted or reclassified");
+    };
+    assert_eq!(
+        &actual, expected,
+        "native I/O must retain its original kind and cause"
+    );
+}
+
 fn write(path: &Path, bytes: &[u8]) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, bytes).unwrap();
@@ -75,17 +102,7 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     let (&role, document) = bytes.split_first().unwrap_or((&0, &[]));
     let files = Files::new();
     let role = role % 9;
-    let path = match role {
-        0 => files.home.join(".claude.json"),
-        1 => files.codex.join("config.toml"),
-        2 => files.workspace.join(".mcp.json"),
-        3 => files.workspace.join(".codex/config.toml"),
-        4 => files.home.join(".claude/settings.json"),
-        5 => files.codex.join("hooks.json"),
-        6 => files.workspace.join(".claude/settings.json"),
-        7 => files.workspace.join(".claude/settings.local.json"),
-        _ => files.workspace.join(".codex/hooks.json"),
-    };
+    let path = files.source(role);
     write(&path, document);
     if matches!(role, 2 | 3 | 6..=8) {
         let untrusted = files
@@ -107,6 +124,31 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     static ADMISSION: std::sync::Once = std::sync::Once::new();
     ADMISSION.call_once(|| {
         selection::check();
+        // A real selected directory makes open or read fail on every platform.
+        // Compare the same OS failure, including its original classification/cause.
+        for role in 0..9 {
+            let files = Files::new();
+            let path = files.source(role);
+            std::fs::create_dir_all(&path).unwrap();
+            let error = std::fs::read(&path).expect_err("a directory is not a settings file");
+            let acyclic_harness_core::Error::Process(expected) =
+                acyclic_harness_core::Error::process_io(error)
+            else {
+                panic!("native directory I/O must retain its process classification");
+            };
+            if matches!(role, 2 | 3 | 6..=8) {
+                files.load(false).expect("untrusted project I/O must stay unread");
+            }
+            native_failure(files.load(true), &expected);
+            if role == 1 {
+                native_failure(
+                    SettingsConfig::new(&files.workspace, &files.home)
+                        .codex_home(&files.codex)
+                        .configured_model(),
+                    &expected,
+                );
+            }
+        }
         // Caller-authored settings, through the original file loader and policy.
         // No hook command is executed by these admission checks.
         for role in 0..7 {
