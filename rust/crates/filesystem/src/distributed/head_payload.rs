@@ -10,8 +10,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let mut scope = work.scope()?;
         let work = &mut *scope;
         async {
+            self.authority_require_live(authority, work).await?;
             let (snapshot, latest) = self
-                .fork_snapshot_payload::<true>(authority, work)
+                .snapshot_payload::<true>(authority, work)
                 .await
                 .and_then(|value| work.finish(value))?;
             let Some((storage, allocation, offset)) = latest else {
