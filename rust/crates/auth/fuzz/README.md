@@ -114,3 +114,14 @@ inferred. The runner checks the shared oracle and target bytes and restores the
 original production source. These controls cover ceiling restoration and
 uncertified labels; source coverage and other admission branches need their own
 qualification.
+
+Both addressing fuzz entrances and the existing identity properties use Auth's
+`addressing::testing` oracle for hostname identity and route decisions. The shared
+corpus's seven `route-*` inputs are retained unchanged in `corpus/addressing`;
+`corpus/addressing-sources.tsv` joins their original producer, size and SHA-256.
+They contain actual SDK route-pattern writer output with caller URL context in
+a NUL-separated fuzz tuple. That tuple is not a product format. Run
+`python3 negative-control.py addressing-fragment` to remove the production URL
+fragment guard and require the unchanged routing-refusal assertion to fail.
+The runner restores the source and checks oracle custody. DNS-label branch
+coverage and the other addressing guards need separate qualification.
