@@ -186,8 +186,21 @@ async fn current_objects_and_offline_authority_cannot_substitute_for_original_pr
         Err(AccountingError::Proof(_))
     ));
     let latest = root(workspace.head(B, &cancel).await?.value.id());
-    let proof = super::archive::prove(&objects, latest, workspace.volume_config()).await?;
-    for object in proof.objects {
+    let config = workspace.volume_config();
+    let manifest = crate::kernel::build_generation_export_manifest_async(
+        &objects,
+        workspace.id().volume_id(),
+        config,
+        latest,
+        super::archive::limits(config),
+        BUDGET,
+        &cancel,
+    )
+    .await?
+    .value;
+    // Transfer order admits every child before its parent names that reference.
+    // A proof's identity-sorted object list is not a publication order.
+    for object in manifest.objects {
         let bytes = objects
             .read(
                 object,

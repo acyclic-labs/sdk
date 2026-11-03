@@ -660,20 +660,12 @@ impl<'a> ProofSet<'a> {
 
     pub(super) fn into_parts(self) -> Result<(Vec<ObjectId>, ProofGuard), crate::FsError> {
         let mut objects = ProofVec::new(&self.meter);
-        let mut after = None;
-        loop {
-            let next = self.meter.with_accounting(|accounting| {
-                let entry = match after {
-                    None => self.index.first(accounting)?,
-                    Some(key) => self.index.seek_after(key, accounting)?,
-                };
-                Ok(entry.map(|(key, object)| (*key, *object)))
-            })?;
-            let Some((key, object)) = next else {
-                break;
-            };
-            objects.push(object)?;
-            after = Some(key);
+        let mut entries = self.index.into_entries();
+        while let Some(entry) = self
+            .meter
+            .with_accounting(|accounting| entries.try_next(accounting))?
+        {
+            objects.push(*entry.value())?;
         }
         objects.into_parts()
     }
