@@ -20,9 +20,8 @@ fn catalog(bytes: &[u8]) {
         let specs: Vec<_> = catalog.commands().cloned().collect();
         let encoded = serde_json::to_vec(&specs).unwrap();
         let replay = CommandCatalog::from_bytes(&encoded, encoded.len() as u64).unwrap();
-        assert_eq!(
-            replay.commands().collect::<Vec<_>>(),
-            specs.iter().collect::<Vec<_>>(),
+        assert!(
+            replay.commands().eq(&specs),
             "admitted catalog must preserve its normalized descriptors"
         );
         for spec in &specs {

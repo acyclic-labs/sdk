@@ -16,7 +16,16 @@ deleted; real binary, OS pipe and lifecycle controls are separate.
 python3 rust/crates/harness-fuzz/graphcoder-args-control.py native_input
 ```
 
-No runtime, workspace, settings or host command is opened by the target. Read
-errors, interrupted/fragmented OS pipes, installed host stdout and native settings
-remain distinct validation obligations. Corpus replay is not complete source
-branch coverage or a fuzz campaign.
+The same target calls the production command catalog decoder with the installed
+`commands.json` and derived caller inputs. It checks bounded admission, normalized
+names and aliases, descriptor preservation, argument shapes, confirmation policy,
+duplicate names, invalid descriptions and unknown fields. Control 7 removes the
+actual argument-shape guard; its unchanged refusal assertion must detect the
+mutation before the restored catalog corpus can pass.
+
+The stdin oracle uses a real OS pipe, EOF from its producer, fragmented writes and
+a write-only file's original OS read error. It does not execute a workspace or
+host action. Full binary dispatch, owner effects, installed host stdout and native
+settings remain separate obligations. Corpus replay is not complete source branch
+coverage or a new fuzz campaign. Each manifest records only its qualified source;
+the catalog extension requires its own mutation and restored-corpus result.
