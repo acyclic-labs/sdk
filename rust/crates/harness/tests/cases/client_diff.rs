@@ -400,13 +400,13 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
     assert_eq!(whole.last().and_then(|file| file.next.as_ref()), None);
 
     // One row per page reassembles exactly the same projection.
-    let (mut cursor, mut pages, mut patches) = (None, 0, std::collections::BTreeMap::new());
+    let (mut cursor, mut page_count, mut patches) = (None, 0, std::collections::BTreeMap::new());
     loop {
         let fragments = pages
             .page(&fixture.files, volume, (&base, &current), &page(1, cursor))
             .await?;
         assert_eq!(fragments.len(), 1);
-        pages += 1;
+        page_count += 1;
         let fragment = &fragments[0];
         patches
             .entry(fragment.path.clone())
@@ -422,7 +422,7 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
             break;
         }
     }
-    assert!(pages > whole.len());
+    assert!(page_count > whole.len());
     assert_eq!(
         patches,
         whole

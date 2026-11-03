@@ -609,11 +609,11 @@ where
     /// Whether this authority may still list each of `paths` of a
     /// [`Self::diff_publication`] it was given (see
     /// [`FilesystemHost::diff_disclosure`]).
-    pub async fn diff_disclosure(
+    pub async fn diff_disclosure<'path>(
         &self,
         volume: &VolumeRef,
         (base, current): (&GenerationRef, &GenerationRef),
-        paths: impl IntoIterator<Item = (&str, crate::context::DiffKind)>,
+        paths: impl IntoIterator<Item = (&'path str, crate::context::DiffKind)>,
     ) -> Result<bool> {
         self.verify_exact_file(None, None)?;
         let grant = ContentGrant::verify_directory_read(

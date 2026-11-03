@@ -106,12 +106,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// publishing and rendering it required: a retained projection discloses
     /// a path or its patch again only after this holds for it. Work is the two
     /// endpoint selections plus two decisions per endpoint of each path.
-    pub async fn diff_disclosure(
+    pub async fn diff_disclosure<'path>(
         &self,
         volume: &VolumeRef,
         grant: &ContentGrant,
         (base, current): (&GenerationRef, &GenerationRef),
-        paths: impl IntoIterator<Item = (&str, DiffKind)>,
+        paths: impl IntoIterator<Item = (&'path str, DiffKind)>,
     ) -> Result<bool> {
         let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
         let (before, after) = self
