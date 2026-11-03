@@ -55,8 +55,8 @@ export function subset(actual, expected) {
 // A completed call may still be a refusal; only explicit case expectations
 // admit one, regardless of the enclosing process's successful exit.
 // Every recorded tool failure as the executor renders it to the model
-// (`ToolFailureKind::message`, then ": " or " (<class>): ").
-const TOOL_FAILURE = /^tool (execution failed|output violated its pinned schema|result projection was rejected|result artifact could not be published|is not available|arguments violated the input schema|was interrupted before its outcome was recorded)[:( ]/;
+// (`ToolFailureKind::message`, optionally followed by a classified cause).
+const TOOL_FAILURE = /^tool (execution failed|output violated its pinned schema|result projection was rejected|result artifact could not be published|is not available|arguments violated the input schema|was interrupted before its outcome was recorded)(?:$|[:;( ])/;
 
 export function toolOutcome(value, expectedErrors, recovery, caseId) {
   const error = value && typeof value === "object" ? value.error
@@ -64,7 +64,7 @@ export function toolOutcome(value, expectedErrors, recovery, caseId) {
       ? `tool reported success=${value.success}, exit_code=${value.exit_code}` : undefined)
     : typeof value === "string" && TOOL_FAILURE.test(value) ? value : undefined;
   if (error !== undefined && error !== null) assert.ok(
-    expectedErrors?.some(text => JSON.stringify(error).includes(text)),
+    expectedErrors?.some(text => typeof text === "string" && text.length !== 0 && JSON.stringify(error).includes(text)),
     `unexpected tool error ${JSON.stringify(error)}; recovery=${recovery}${caseId === undefined ? "" : ` ${caseId}`}`);
 }
 

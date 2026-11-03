@@ -17,15 +17,6 @@ use acyclic_stream::StreamError;
 /// listed with its length rather than read or rendered.
 pub const DIFF_FILE_BYTES: u64 = 64 * 1024;
 
-/// Only the per-file read is bounded; the view retains every changed file.
-const LIMITS: DiffLimits = DiffLimits {
-    files: usize::MAX,
-    changes: usize::MAX,
-    file_bytes: DIFF_FILE_BYTES,
-    render_bytes: usize::MAX,
-    work: usize::MAX,
-};
-
 /// One page of `volume`'s changes from the fork `base` to `current`, as far
 /// as `reader`'s authority may list and read them, after `page`'s cursor.
 ///
@@ -34,6 +25,9 @@ const LIMITS: DiffLimits = DiffLimits {
 /// boundary. The returned cursor is exact: it binds the volume, base and
 /// projection of `current`, so a later generation refuses it rather than
 /// mixing positions of two projections.
+/// The byte credit also funds input and comparison steps. Expensive comparisons
+/// retain the file's authenticated length as an explicit content omission.
+/// Changing that credit changes the projection, so its old cursor refuses.
 ///
 /// # Errors
 /// Missing authority, an invalid or stale cursor, or a byte credit too small
@@ -53,11 +47,22 @@ where
         .map(serde_json::from_str::<DiffCursor>)
         .transpose()
         .map_err(|_| crate::Error::Invalid("invalid diff page position".into()))?;
-    let publication = reader.diff_publication(volume, base, current).await?;
-    let mut view = DiffView::new(volume.clone(), base.clone())?;
-    view.apply(&publication, reader, LIMITS).await?;
     let mut credit =
         PageCredit::new(page, |_| AgentReply::Diff { items: Vec::new() }).map_err(credit_error)?;
+    let publication = reader.diff_publication(volume, base, current).await?;
+    let mut view = DiffView::new(volume.clone(), base.clone())?;
+    view.apply(
+        &publication,
+        reader,
+        DiffLimits {
+            files: usize::MAX,
+            changes: usize::MAX,
+            file_bytes: DIFF_FILE_BYTES,
+            render_bytes: usize::MAX,
+            work: page.bytes() as usize,
+        },
+    )
+    .await?;
     let mut rows = page.items() as usize;
     let mut patch_bytes = page.bytes() as usize;
     let mut items = Vec::new();
@@ -65,22 +70,17 @@ where
         let Some(fragment) = view.page(cursor.as_ref(), rows, patch_bytes)? else {
             break;
         };
-        if credit
-            .admits(&fragment, None)
-            .map_err(credit_error)?
-            .is_none()
-        {
-            // Retry the same position with a shorter patch fragment.
-            patch_bytes = fragment.patch.len() / 2;
-            if patch_bytes != 0 {
+        match credit.accept(&fragment, None) {
+            Ok(true) => {}
+            // Keep the accepted prefix and its continuation. Shrinking another
+            // fragment must never discard rows already funded by this page.
+            Ok(false) => break,
+            Err(Error::Stream(StreamError::Capacity)) if fragment.patch.len() > 1 => {
+                patch_bytes = fragment.patch.len() / 2;
                 continue;
             }
-            if items.is_empty() {
-                return Err(StreamError::Capacity.into());
-            }
-            break;
+            Err(error) => return Err(credit_error(error)),
         }
-        credit.accept(&fragment, None).map_err(credit_error)?;
         let spent = usize::from(!fragment.continued) + fragment.patch.split_inclusive('\n').count();
         rows = rows.saturating_sub(spent);
         cursor = fragment.next.clone();
