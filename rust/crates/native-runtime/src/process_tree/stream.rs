@@ -80,10 +80,10 @@ impl<H: CaptureHandler> Capture<H> {
         CaptureOutcome::new(self.handler, result)
     }
 
-    async fn reserve<'a>(
+    async fn reserve(
         mut self,
-        sender: &'a mpsc::Sender<ProcessChunk>,
-    ) -> io::Result<(io::Result<mpsc::Permit<'a, ProcessChunk>>, Self)> {
+        sender: &mpsc::Sender<ProcessChunk>,
+    ) -> io::Result<(io::Result<mpsc::Permit<'_, ProcessChunk>>, Self)> {
         let reserved = loop {
             match sender.try_reserve() {
                 Ok(permit) => break Ok(permit),
