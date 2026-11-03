@@ -938,8 +938,17 @@ impl Served {
         };
         if self.known.contains_key(&operation) {
             // A known request changes only by its withdrawal.
-            if std::fs::symlink_metadata(&path).is_err() {
-                self.withdraw(requests, operation)?;
+            match std::fs::symlink_metadata(&path) {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    self.withdraw(requests, operation)?;
+                }
+                Err(error) => {
+                    return Err(Error::Storage(owner_failure(
+                        "observe native request presence",
+                        &error,
+                    )));
+                }
             }
             return Ok(());
         }
