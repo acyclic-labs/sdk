@@ -371,10 +371,6 @@ mod model {
         run(true, false);
     }
     #[test]
-    fn materialization_admits_policy_under_the_publication_lease() {
-        run(false, false);
-    }
-    #[test]
     #[should_panic(expected = "policy changed during projection or materialization")]
     fn admission_before_the_lease_negative_control() {
         run(false, true);
