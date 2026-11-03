@@ -20,6 +20,10 @@ CASES = {
         "experiments/mod.rs", "row.version != 2", "false", "observation-version",
         "independent admission invariant: version",
     ),
+    "observation-refusal": (
+        "experiments/mod.rs", "row.version != 2", "true", "observation-known",
+        "independent admission invariant: valid observation",
+    ),
     "observation-identity": (
         "experiments/mod.rs",
         "        Self::admit(crate::executor::json::decode_object(bytes)?)",

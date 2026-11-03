@@ -16,6 +16,11 @@ Input work scales with bytes; no historical rows survive a fuzz callback.
 Observation identity and numeric fields are compared with the original JSON,
 including omitted optional values. An idempotent decoder corruption can survive
 a round trip; `observation-identity` plants one by clearing the decoded arm.
+Each fuzz input also constructs one valid file for each public decoder, with
+varying fixed-width identities, integer labels and finite or absent scores/costs.
+These files must be admitted even when the original bytes are malformed.
+`observation-refusal` makes the actual shared observation admission reject every
+row; success-only decoder properties would silently skip that defect.
 
 Run a campaign with an explicit budget using cargo-fuzz's supported toolchain:
 

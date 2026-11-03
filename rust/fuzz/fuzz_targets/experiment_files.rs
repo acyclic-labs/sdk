@@ -11,6 +11,39 @@ use serde_json::{Value, json};
 
 type Admits = fn(&[u8]) -> bool;
 
+fn valid_files(bytes: &[u8]) {
+    let population: [u8; 32] =
+        std::array::from_fn(|index| bytes.get(index).copied().unwrap_or_default());
+    let word = |start| u64::from_le_bytes(population[start..start + 8].try_into().unwrap());
+    let expected = word(0) as i64;
+    let score = f64::from_bits(word(24));
+    let score = score.is_finite().then_some(score);
+    let files: [(Value, Admits, &str); 3] = [
+        (
+            json!({"version":2,"population":population,"replicate":word(8),
+                "arm":word(16),"score":score,"cost_usd":score.map(f64::abs)}),
+            |wire| Observation::decode(wire).is_ok(),
+            "observation",
+        ),
+        (
+            json!({"version":1,"expected":expected,"injected":expected.wrapping_add(1)}),
+            |wire| Scorer::decode(wire).is_ok(),
+            "scorer",
+        ),
+        (
+            json!({"version":1,"value":expected}),
+            |wire| Decision::decode(wire).is_ok(),
+            "decision",
+        ),
+    ];
+    for (value, admits, name) in files {
+        assert!(
+            admits(&serde_json::to_vec(&value).expect("valid file encodes")),
+            "independent admission invariant: valid {name}"
+        );
+    }
+}
+
 fn rejects(admits: Admits, value: &Value) {
     assert!(
         !admits(&serde_json::to_vec(value).expect("JSON value encodes")),
@@ -130,6 +163,7 @@ fn scorer(bytes: &[u8]) {
 }
 
 fuzz_target!(|bytes: &[u8]| {
+    valid_files(bytes);
     if let Ok(row) = Observation::decode(bytes) {
         let value = object(
             bytes,
