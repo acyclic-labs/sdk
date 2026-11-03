@@ -1,0 +1,43 @@
+{
+  "producer": "git version 2.46.0.windows.1",
+  "command": "git -c core.autocrlf=false merge-file -p --diff3 -L ours -L base -L theirs ours base theirs",
+  "inputs": {
+    "ours": "ours\n",
+    "base": "base\n",
+    "theirs": "theirs\n"
+  },
+  "exit_code": 1,
+  "derivation": "git-diff3 is exact stdout; git-*-eof selects the named original line and removes LF; git-clean is exact stdout with base used for all three inputs.",
+  "captures": [
+    {
+      "path": "git-diff3",
+      "bytes": 66,
+      "sha256": "990a9a4ce0bd7677c6b25247d52e6afe0f61063bce7aa482f64dbaffbc4149d3"
+    },
+    {
+      "path": "git-opening-eof",
+      "bytes": 12,
+      "sha256": "1c3fd64d6f471a76d0b67d1afa732fe37188727d4e2261ab3320117248596e18"
+    },
+    {
+      "path": "git-base-eof",
+      "bytes": 12,
+      "sha256": "a78cda4a4a4630e49ef5ed15c8eff1b48192f7c144ab33c0c3442be9319584e3"
+    },
+    {
+      "path": "git-separator-eof",
+      "bytes": 7,
+      "sha256": "b2f5041b3a4f710c8fda3bb0aecb049bd66567f573f60bc8323c9ef95b20476a"
+    },
+    {
+      "path": "git-closing-eof",
+      "bytes": 14,
+      "sha256": "757f009a2e891a576132130daad93f98c4a4927029fbfeffcd3353f98039074d"
+    },
+    {
+      "path": "git-clean",
+      "bytes": 5,
+      "sha256": "f34848ca92665c342abd5816c9e3eda0e82180671195362bcd0080544a3bc2ac"
+    }
+  ]
+}

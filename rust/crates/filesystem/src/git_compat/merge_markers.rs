@@ -51,13 +51,10 @@ impl Scanner {
 
 #[cfg(test)]
 #[cfg(not(loom))]
-pub(super) fn contains(text: &str) -> bool {
-    let mut scanner = Scanner::new();
-    scanner.push(text.as_bytes()) || scanner.finish()
-}
+#[path = "../../fuzz/git_markers_oracle.rs"]
+mod oracle;
 
-#[cfg(test)]
-#[cfg(not(loom))]
+#[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
     use proptest::prelude::*;
@@ -71,11 +68,13 @@ mod tests {
         ], chunk in 1usize..32) {
             let mut scanner = Scanner::new();
             for part in bytes.chunks(chunk) { scanner.push(part); }
-            let text = String::from_utf8_lossy(&bytes);
-            let expected = text.lines().any(|line| line.trim_end_matches('\r') == "======="
-                || ["<<<<<<< ", "<<<<<<<\t", "||||||| ", "|||||||\t", ">>>>>>> ", ">>>>>>>\t"].iter().any(|marker| line.starts_with(marker)));
-            prop_assert_eq!(scanner.finish(), expected);
+            prop_assert_eq!(scanner.finish(), oracle::contains(&bytes));
         }
+    }
+
+    fn contains(text: &str) -> bool {
+        let mut scanner = Scanner::new();
+        scanner.push(text.as_bytes()) || scanner.finish()
     }
 
     proptest! {
