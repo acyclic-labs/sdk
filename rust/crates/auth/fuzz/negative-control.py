@@ -47,7 +47,9 @@ try:
             command, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )
         print(result.stdout, end="")
-        if result.returncode == 0 or message not in result.stdout:
+        panic = result.stdout.partition("panicked at ")[2]
+        if (result.returncode == 0 or message not in panic
+                or "ERROR: libFuzzer: deadly signal" not in panic):
             raise RuntimeError("the unchanged semantic oracle did not detect the production defect")
     finally:
         source.write_bytes(original)
