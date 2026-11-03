@@ -97,6 +97,7 @@ pub(super) fn compare<const ORDER: bool>(bytes: &[u8], limits: DecodeLimits) -> 
 /// Compare success, failure and one input-selected refusal with the independent parser.
 /// Fuzzing selects one prefix rather than performing quadratic work per input.
 pub(crate) fn check<const ORDER: bool>(bytes: &[u8], limits: DecodeLimits, prefix: usize) {
+    let _ = check_record(bytes);
     let (complete, tape) = observed::<false, true>(bytes, limits, usize::MAX);
     compare_observed::<ORDER>(bytes, limits, usize::MAX, &complete, &tape).unwrap();
     let denied = prefix % (tape.len() + 1);
@@ -118,17 +119,21 @@ pub(crate) fn check<const ORDER: bool>(bytes: &[u8], limits: DecodeLimits, prefi
                 )
                 .unwrap();
                 assert_eq!(
-                    decode_file_record(&encoded),
+                    check_record(&encoded),
                     Ok(*record),
                     "standalone record differs from the fully validated page"
                 );
+                let index = prefix % encoded.len();
+                encoded[index] ^= 1;
+                let _ = check_record(&encoded);
+                encoded[index] ^= 1;
                 assert!(
-                    decode_file_record(&encoded[..prefix % encoded.len()]).is_err(),
+                    check_record(&encoded[..index]).is_err(),
                     "standalone record admitted a truncated frame"
                 );
                 encoded.push(0);
                 assert!(
-                    decode_file_record(&encoded).is_err(),
+                    check_record(&encoded).is_err(),
                     "standalone record admitted trailing bytes"
                 );
             }
@@ -155,4 +160,14 @@ pub(crate) fn check<const ORDER: bool>(bytes: &[u8], limits: DecodeLimits, prefi
         file_table_page_decode_shape(&trailing, limits).is_err(),
         "shape admitted trailing bytes"
     );
+}
+
+fn check_record(bytes: &[u8]) -> Result<FileRecord, CanonicalDecodeError> {
+    let result = decode_file_record(bytes);
+    assert_eq!(
+        result,
+        reference::standalone_record(bytes),
+        "standalone record result differs from the independent parser"
+    );
+    result
 }

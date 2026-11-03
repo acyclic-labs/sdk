@@ -2,6 +2,20 @@
 // parsing, semantic validation and observer order separate from the candidate.
 use super::*;
 
+pub(super) fn standalone_record(bytes: &[u8]) -> Result<FileRecord, CanonicalDecodeError> {
+    let mut observe = |_| Ok::<_, CanonicalDecodeError>(());
+    let mut decoder = Decoder::new(
+        bytes,
+        RECORD_DOMAIN,
+        RECORD_VERSION,
+        usize_to_u64(bytes.len()),
+        &mut observe,
+    )?;
+    let record = decode_record(&mut decoder, &mut observe)?;
+    decoder.finish()?;
+    Ok(record)
+}
+
 pub(super) fn decode<E>(
     bytes: &[u8],
     limits: DecodeLimits,
