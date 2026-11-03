@@ -98,7 +98,6 @@ fn resolution_with_accounting() -> Result<()> {
 
 fn resolution_needs_no_temporary_key(mode: u8) -> Result<()> {
     let prototype = prototype()?;
-    let mut totals = Vec::new();
     let dispatch = if mode == 1 {
         tracing::Dispatch::new(tracing_subscriber::registry())
     } else {
@@ -126,8 +125,9 @@ fn resolution_needs_no_temporary_key(mode: u8) -> Result<()> {
                 _ => (name.as_str(), None),
             };
             let mut counts = None;
-            let mut samples = Vec::with_capacity(32);
-            for _ in 0..32 {
+            // Observe both the first lookup and its warmed repeat. Allocation
+            // counts are exact; repeating a timing benchmark adds no coverage.
+            for _ in 0..2 {
                 #[cfg(feature = "filesystem")]
                 let cancellation = acyclic_fs::CancellationToken::new();
                 #[cfg(feature = "filesystem")]
@@ -143,21 +143,16 @@ fn resolution_needs_no_temporary_key(mode: u8) -> Result<()> {
                 #[cfg(not(feature = "filesystem"))]
                 let io = None;
                 let mut error = None;
-                let started = std::time::Instant::now();
                 let allocation = acyclic_test_support::measure(|| {
-                    for _ in 0..128 {
-                        match registry.get(std::hint::black_box(name), revision, io.as_ref()) {
-                            Ok(Some(tool)) => {
-                                std::hint::black_box(tool);
-                            }
-                            result => {
-                                error = Some(result.map(|_| ()));
-                                break;
-                            }
+                    match registry.get(std::hint::black_box(name), revision, io.as_ref()) {
+                        Ok(Some(tool)) => {
+                            std::hint::black_box(tool);
+                        }
+                        result => {
+                            error = Some(result.map(|_| ()));
                         }
                     }
                 });
-                samples.push(started.elapsed() / 128);
                 assert!(error.is_none(), "lookup failed: {error:?}");
                 let actual = (
                     allocation.count_total,
@@ -165,20 +160,15 @@ fn resolution_needs_no_temporary_key(mode: u8) -> Result<()> {
                     allocation.bytes_max,
                 );
                 assert_eq!(*counts.get_or_insert(actual), actual);
-            }
-            samples.sort_unstable();
-            eprintln!(
-                "resolve mode={mode} tools={count} form={form}: allocation_per_128={counts:?}; median={:?}",
-                samples.get(samples.len() / 2)
-            );
-            if mode != 2 {
-                totals.push(counts);
+                if mode != 2 {
+                    assert_eq!(
+                        actual,
+                        (0, 0, 0),
+                        "temporary lookup key: mode={mode} tools={count} form={form}"
+                    );
+                }
             }
         }
     }
-    assert!(
-        totals.iter().all(|counts| *counts == Some((0, 0, 0))),
-        "temporary lookup keys: {totals:?}"
-    );
     Ok(())
 }

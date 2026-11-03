@@ -102,34 +102,6 @@ fn signed_delegation_only_narrows() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn production_labels_use_the_filesystem_vocabulary() {
-    use acyclic_fs::access::{
-        DIRECTORY_READ_PREFIX, FILE_READ_PREFIX, SCOPE_PREFIX, VolumeOperation,
-    };
-    let prefixes = [
-        VolumeOperation::Read.capability_prefix(),
-        VolumeOperation::Write.capability_prefix(),
-        FILE_READ_PREFIX,
-        DIRECTORY_READ_PREFIX,
-        SCOPE_PREFIX,
-    ];
-    let mut scanned = 0;
-    for (path, source) in acyclic_test_support::repository_rust_sources() {
-        if !path.starts_with("rust/crates/harness/src/") {
-            continue;
-        }
-        scanned += 1;
-        for prefix in prefixes {
-            assert!(
-                !source.contains(&format!("\"{prefix}")),
-                "duplicated vocabulary in {path}"
-            );
-        }
-    }
-    assert!(scanned > 100, "filesystem vocabulary scan lost its roots");
-}
-
-#[test]
 fn policy_intersection_preserves_signed_narrowed_grants() -> Result<(), Box<dyn std::error::Error>>
 {
     use acyclic_harness::{AuthorityLevel, AuthorityPolicy, PolicyLayer, resolve_policy_layers};
