@@ -19,6 +19,7 @@ use crate::storage::{FenceOutcome, ObjectKind, object_digest};
 use sha2::{Digest as _, Sha256};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+const ROOT_FILE_ID: FileId = FileId::from_bytes([3; 16]);
 fn accept<T>(_: T) -> Result<(), CanonicalDecodeError> {
     Ok(())
 }
@@ -118,7 +119,7 @@ async fn fixture(objects: &MemoryObjectStore, volume_id: VolumeId) -> TestResult
     Ok(generation(
         objects,
         volume_id,
-        FileId::from_bytes([3; 16]),
+        ROOT_FILE_ID,
         metadata,
         Vec::new(),
         Vec::new(),
