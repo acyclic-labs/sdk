@@ -80,7 +80,7 @@ pub(super) fn incoming(
         future::ready(match accepted {
             Ok((socket, _)) => {
                 let (acceptor, sender) = (acceptor.clone(), sender.clone());
-                tokio::spawn(async move {
+                acyclic_native_runtime::spawn(async move {
                     if let Ok(Ok(tls)) =
                         tokio::time::timeout(HANDSHAKE, acceptor.accept(socket)).await
                     {

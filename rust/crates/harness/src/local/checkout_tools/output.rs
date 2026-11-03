@@ -23,7 +23,7 @@ pub(super) struct Output {
     writer: Arc<Mutex<writer::Writer>>,
     ready: Arc<Notify>,
     stop: Option<oneshot::Sender<()>>,
-    timer: Option<tokio::task::JoinHandle<()>>,
+    timer: Option<acyclic_native_runtime::TaskHandle<()>>,
     runtime: tokio::runtime::Handle,
     finished: bool,
     pub(super) health: Health,
@@ -90,7 +90,7 @@ impl Output {
         let ready = Arc::new(Notify::new());
         let health = Health::default();
         let (stop, stopped) = oneshot::channel();
-        let timer = tokio::spawn(flush_ready(
+        let timer = acyclic_native_runtime::spawn(flush_ready(
             writer.clone(),
             ready.clone(),
             health.clone(),

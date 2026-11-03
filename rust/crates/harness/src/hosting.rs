@@ -11,7 +11,7 @@
 //! else { /* uncertain: retain it and `resubmit` */ };
 //! let service = acyclic_stream::session::Service::new(stream, authority, node, limits)
 //!     .with_products(None, server.clone());
-//! tokio::spawn(async move { server.run(|actor, error| report(actor, error)).await });
+//! acyclic_native_runtime::spawn(async move { server.run(|actor, error| report(actor, error)).await });
 //! ```
 //!
 //! Every command arrives as a canonical Actors invocation on the session's

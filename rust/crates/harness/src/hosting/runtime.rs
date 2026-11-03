@@ -8,7 +8,7 @@ use tokio::sync::watch;
 /// One running native application. Dropping it aborts its deliveries and closes
 /// its Session lifetime. Delivery or runtime failure closes the same lifetime.
 pub struct Runtime {
-    task: tokio::task::JoinHandle<()>,
+    task: acyclic_native_runtime::TaskHandle<()>,
     lifetime: watch::Receiver<()>,
     failure: watch::Receiver<Option<String>>,
 }
@@ -24,7 +24,7 @@ impl Runtime {
         let (alive, lifetime) = watch::channel(());
         let (failure, mut failed) = watch::channel(None);
         let completion = failed.clone();
-        let task = tokio::spawn(async move {
+        let task = acyclic_native_runtime::spawn(async move {
             tokio::select! {
                 error = server.run(|actor, error| {
                     tracing::error!(?actor, %error, "actor delivery failed");
