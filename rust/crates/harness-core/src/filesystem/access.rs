@@ -61,6 +61,9 @@ pub(crate) fn capability_payload<'a>(
             VolumeOperation::Write => {
                 whole_volume_payload(acyclic_fs::access::ActionSet::DestinationWrite)
             }
+            VolumeOperation::Delete => {
+                whole_volume_payload(acyclic_fs::access::ActionSet::DestinationDelete)
+            }
         },
     }
 }
@@ -74,6 +77,8 @@ pub(in crate::filesystem) fn whole_volume_payload(
     use std::sync::OnceLock;
     static READ: OnceLock<std::result::Result<Vec<u8>, serde_json::Error>> = OnceLock::new();
     static WRITE: OnceLock<std::result::Result<Vec<u8>, serde_json::Error>> = OnceLock::new();
+    static EDIT: OnceLock<std::result::Result<Vec<u8>, serde_json::Error>> = OnceLock::new();
+    static DELETE: OnceLock<std::result::Result<Vec<u8>, serde_json::Error>> = OnceLock::new();
     static MOUNT_READ: OnceLock<std::result::Result<Vec<u8>, serde_json::Error>> = OnceLock::new();
     static MOUNT_WRITE: OnceLock<std::result::Result<Vec<u8>, serde_json::Error>> = OnceLock::new();
     static OWNER: OnceLock<std::result::Result<Vec<u8>, serde_json::Error>> = OnceLock::new();
@@ -81,6 +86,8 @@ pub(in crate::filesystem) fn whole_volume_payload(
     let cell = match actions {
         ActionSet::SourceRead => &READ,
         ActionSet::DestinationWrite => &WRITE,
+        ActionSet::DestinationEdit => &EDIT,
+        ActionSet::DestinationDelete => &DELETE,
         ActionSet::MountRead => &MOUNT_READ,
         ActionSet::MountWrite => &MOUNT_WRITE,
         ActionSet::Owner => &OWNER,

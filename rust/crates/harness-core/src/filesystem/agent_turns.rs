@@ -316,11 +316,11 @@ pub(super) fn require_structured_write(
     }
 }
 
-/// A local root agent's grants: routing, its agent tools, read and write of
+/// A local root agent's grants: routing, its agent tools, read, write and delete of
 /// every bound volume, read of its provider's seed layer (see
 /// [`crate::seed`]), and each `external` file by its exact version.
 fn root_grants(volumes: &[VolumeBinding], external: &[FileRef]) -> Result<Vec<String>> {
-    let mut grants = Vec::with_capacity(2 * volumes.len() + 2);
+    let mut grants = Vec::with_capacity(3 * volumes.len() + 2);
     if let Some(binding) = volumes.first() {
         grants.push(
             crate::seed::volume(binding.volume.provider())?
@@ -331,16 +331,13 @@ fn root_grants(volumes: &[VolumeBinding], external: &[FileRef]) -> Result<Vec<St
     // Every agent may spawn, message and archive within its own subtree.
     grants.extend(crate::tools::AGENT_TOOLS.map(crate::contract::capability::tool_call));
     for binding in volumes {
-        grants.push(
-            binding
-                .volume
-                .capability(VolumeOperation::Read, &mut None)?,
-        );
-        grants.push(
-            binding
-                .volume
-                .capability(VolumeOperation::Write, &mut None)?,
-        );
+        for operation in [
+            VolumeOperation::Read,
+            VolumeOperation::Write,
+            VolumeOperation::Delete,
+        ] {
+            grants.push(binding.volume.capability(operation, &mut None)?);
+        }
     }
     for file in external {
         if !volumes
@@ -704,6 +701,7 @@ where
         let actions = match operation {
             VolumeOperation::Read => &[Action::List, Action::Read][..],
             VolumeOperation::Write => ActionSet::DestinationWrite.actions(),
+            VolumeOperation::Delete => ActionSet::DestinationDelete.actions(),
         };
         let mut heads = Vec::new();
         for binding in &agent.volumes {
