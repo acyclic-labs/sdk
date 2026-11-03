@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 
 export function sha256(payload) {
   return createHash("sha256").update(payload).digest("hex");
@@ -145,8 +145,15 @@ export function preserveWasmArtifacts(output, recovery) {
     if (existsSync(output)) renameSync(output, before);
   }
   catch (error) { throw new Error(`WASM artifact preservation failed: ${error.message}; recovery: ${recovery}`, { cause: error }); }
+  const relocated = (path, destination) => {
+    const offset = relative(output, path);
+    return isAbsolute(offset) || offset === ".." || offset.startsWith(`..${sep}`)
+      ? path : join(destination, offset);
+  };
   return {
     directory, archive,
+    source: path => relocated(path, before),
+    retained: path => relocated(path, archive),
     restore() {
       try {
         try { if (existsSync(output)) renameSync(output, archive); }

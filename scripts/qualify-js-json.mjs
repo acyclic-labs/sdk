@@ -109,7 +109,7 @@ try {
       for (const path of hashes.keys()) {
         if (!path.startsWith(`${generated}/`)) continue;
         mkdirSync(dirname(join(root, path)), { recursive: true });
-        cpSync(join(directory, path), join(root, path));
+        cpSync(artifactsCustody.source(join(directory, path)), join(root, path));
       }
     } catch (error) { fail("reuse retained module", String(error)); }
   } else {
@@ -158,10 +158,10 @@ try {
     }
   } catch (error) { fail("generated module dependencies", String(error)); }
   const retainedPath = path => {
-    if (!artifactsCustody || reused) return path;
-    const retained = path === "rust/crates/harness/src/wasm/json.rs"
+    if (!artifactsCustody) return path;
+    const retained = path === "rust/crates/harness/src/wasm/json.rs" && !reused
       ? join(artifactsCustody.directory, "json.rs")
-      : path.startsWith(`${generated}/`) ? join(artifactsCustody.archive, path.slice(generated.length + 1)) : undefined;
+      : path.startsWith(`${generated}/`) ? artifactsCustody.retained(join(root, path)) : undefined;
     return retained === undefined ? path : relative(root, retained).replaceAll("\\", "/");
   };
   const receipt = `${JSON.stringify({

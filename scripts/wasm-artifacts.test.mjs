@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -30,6 +30,11 @@ test("artifact trees retain nested snippets and refuse changed bytes or symlinks
         let candidate;
         try {
           if (outcome === "no-output") throw new Error("qualification refused");
+          if (present) {
+            mkdirSync(selected, { recursive: true });
+            cpSync(custody.source(join(selected, "module.js")), join(selected, "module.js"));
+            assert.equal(readFileSync(join(selected, "module.js"), "utf8"), "module bytes");
+          }
           mkdirSync(join(selected, "snippets", "candidate"), { recursive: true });
           // Derived source bytes exercise real directory custody, not a compiler fixture.
           writeFileSync(join(selected, "module.js"), readFileSync(new URL("./build-wasm.mjs", import.meta.url)));
@@ -42,6 +47,11 @@ test("artifact trees retain nested snippets and refuse changed bytes or symlinks
         if (candidate) assert.deepEqual(wasmArtifactInventory(wasmArtifactFiles(custody.archive)), candidate,
           "temporary build was not retained separately");
         else assert.equal(existsSync(custody.archive), false, "absent temporary build was fabricated");
+        if (candidate) assert.deepEqual(readFileSync(custody.retained(join(selected, "module.js"))),
+          readFileSync(new URL("./build-wasm.mjs", import.meta.url)), "receipt names replaced output bytes");
+        const outside = join(temporary, "outside", "module.js");
+        assert.equal(custody.source(outside), outside);
+        assert.equal(custody.retained(outside), outside);
         assert.equal(existsSync(selected), present, "temporary build replaced original output presence");
         if (present) assert.deepEqual(wasmArtifactInventory(wasmArtifactFiles(selected)), original,
           "temporary build replaced original output bytes");
