@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import {fork, spawn} from 'node:child_process';
 import {once} from 'node:events';
+import {subscribe, unsubscribe} from 'node:diagnostics_channel';
 import {mkdtemp, readFile, rm} from 'node:fs/promises';
 import {createConnection, createServer} from 'node:net';
 import {tmpdir} from 'node:os';
@@ -65,6 +66,51 @@ async function terminalControls(run, host) {
     assert.equal(result.failures.find(({phase}) => phase === 'terminal')?.error, terminalFailure);
     assert.equal(result.failures.find(({phase}) => phase === 'status')?.error,
       closeThrows ? statusFailure : undefined);
+  }
+}
+
+async function treeControl(run, host, interruption) {
+  const stop = new AbortController(), input = new PassThrough();
+  const reason = new Error('original caller cancellation');
+  let peer, peerClosed, pending = '', originalHost, spawns = 0;
+  // Observe Node's original ChildProcess; no replacement spawn or host is used.
+  const spawned = ({process}) => { originalHost = process; spawns++; };
+  subscribe('child_process', spawned);
+  let result;
+  try {
+    result = await run(process.execPath, [script, 'tree'], {
+      host, signal: stop.signal, input,
+      async onOutput(stream, bytes) {
+        if (stream !== 'stdout' || peer) return;
+        pending += bytes.toString('utf8');
+        if (!pending.endsWith('\n')) return;
+        peer = createConnection({host: '127.0.0.1', port: Number(pending.trim())});
+        peerClosed = once(peer, 'close');
+        const accepted = peer.iterator({destroyOnReturn: false});
+        const first = await accepted.next();
+        await accepted.return();
+        if (first.done) throw new Error('step=descendant-accept; recovery=inspect the original descendant exit before retrying');
+        peer.resume(); // Observe the descendant's EOF; never close it here.
+        assert.equal(spawns, 1);
+        assert.equal(originalHost.spawnfile, host);
+        if (interruption === 'caller') stop.abort(reason);
+        else assert.ok(originalHost.kill('SIGKILL'), 'the original host must still own this live tree');
+      },
+    });
+  } finally { unsubscribe('child_process', spawned); }
+  await peerClosed; // Native custody, including owner loss, produces this EOF.
+  assert.ok(peer, 'the descendant must actually have accepted a connection');
+  assert.ok(input.destroyed);
+  if (interruption === 'caller') {
+    assert.ok(result.completion.cancelled);
+    assert.ok(result.completion.process_tree_retired);
+    assert.ok(result.failures.some(failure => failure.phase === 'abort' && failure.error === reason));
+  } else {
+    assert.equal(result.code, null, 'host loss cannot certify the selected root status');
+    assert.ok(result.hostStatus.signal || result.hostStatus.code !== 0);
+    assert.ok(result.failures.some(({phase, error}) => phase === 'retirement'
+      && ['PROCESS_COMPLETION_INVALID', 'ENOENT', 'PROCESS_HOST_STATUS_MISMATCH'].includes(error.code)),
+    'loss of the original terminal producer must retain its typed failure');
   }
 }
 
@@ -237,31 +283,14 @@ if (mode === 'signal-owner') {
   assert.equal(missing.completion.failure.error.kind, 'NotFound');
   assert.ok(missing.failures.some(failure => failure.phase === 'retirement'));
 
-  const stop = new AbortController(), openInput = new PassThrough();
-  const reason = new Error('original caller cancellation');
-  let peer, peerClosed, pending = '';
-  const cancelled = await commandProcess(process.execPath, [script, 'tree'], {
-    ...options, signal: stop.signal, input: openInput,
-    async onOutput(stream, bytes) {
-      if (stream !== 'stdout' || peer) return;
-      pending += bytes.toString('utf8');
-      if (!pending.endsWith('\n')) return;
-      peer = createConnection({host: '127.0.0.1', port: Number(pending.trim())});
-      peerClosed = once(peer, 'close');
-      const accepted = peer.iterator({destroyOnReturn: false});
-      const first = await accepted.next();
-      await accepted.return();
-      if (first.done) throw new Error('step=descendant-accept; recovery=inspect the original descendant exit before retrying');
-      peer.resume(); // Observe EOF from the original descendant, never destroy it here.
-      stop.abort(reason);
-    },
+  await treeControl(commandProcess, host, 'caller');
+  await treeControl(commandProcess, host, 'host-loss');
+  const lostFailure = production.replace("retain('retirement', error);", '');
+  assert.notEqual(lostFailure, production, 'production retirement failure retention must exist');
+  const {commandProcess: lostProducer} = await import(`data:text/javascript;base64,${Buffer.from(lostFailure).toString('base64')}`);
+  await assert.rejects(() => treeControl(lostProducer, host, 'host-loss'), {
+    code: 'ERR_ASSERTION', message: /must retain its typed failure/,
   });
-  await peerClosed; // The original descendant's OS socket closes on retirement.
-  assert.ok(peer, 'the descendant must actually have accepted a connection');
-  assert.ok(cancelled.completion.cancelled);
-  assert.ok(cancelled.completion.process_tree_retired);
-  assert.ok(cancelled.failures.some(failure => failure.phase === 'abort' && failure.error === reason));
-  assert.ok(openInput.destroyed);
 
   // Sink failure cancels the same physical owner, yet both accepted callbacks
   // finish before the caller receives its original cause.
