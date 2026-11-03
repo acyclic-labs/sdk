@@ -15,8 +15,9 @@ local-hotpath-quantiles = ["dep:serde"]
 report-port = ["dep:acyclic-native-runtime", "dep:serde_json", "dep:tokio"]
 default = ["native"]
 agent = ["dep:acyclic-harness-core"]
+client-files = ["agent", "dep:acyclic-harness-client", "dep:serde_json"]
 experiments = ["agent", "dep:serde_json"]
-native = ["dep:acyclic-harness-client", "dep:acyclic-fs", "dep:acyclic-harness", "dep:prost", "dep:serde_json", "owner-record"]
+native = ["dep:acyclic-fs", "dep:acyclic-harness", "dep:prost", "dep:serde_json", "owner-record"]
 owner-record = ["dep:acyclic-native-runtime"]
 
 [dependencies]
@@ -156,7 +157,7 @@ bench = false
 
 [[bin]]
 name = "client_files"
-required-features = ["native"]
+required-features = ["client-files"]
 path = "fuzz_targets/client_files.rs"
 
 test = false

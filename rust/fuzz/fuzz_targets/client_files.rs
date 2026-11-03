@@ -1,6 +1,6 @@
 #![no_main]
-use acyclic_harness::{command_request::layout_view, conversation::validate_content_path};
 use acyclic_harness_client::{AgentCommand, AgentReply, PreparedCommand, decode_agent_reply};
+use acyclic_harness_core::{command_request::layout_view, conversation::validate_content_path};
 use libfuzzer_sys::fuzz_target;
 use std::collections::BTreeSet;
 
@@ -11,7 +11,8 @@ fuzz_target!(|data: &[u8]| {
         if let Ok(view) = layout_view(&layout) {
             assert_eq!(
                 layout.get("version").and_then(serde_json::Value::as_u64),
-                Some(1)
+                Some(1),
+                "layout version admitted outside v1"
             );
             assert!(layout.is_object());
             assert_eq!(
@@ -85,9 +86,13 @@ fuzz_target!(|data: &[u8]| {
             for path in paths {
                 let file = snapshot.files.get(&path).expect("requested path retained");
                 if let Some(file) = file {
-                    assert_eq!(file.file.path(), path);
                     assert_eq!(
-                        &acyclic_harness::client_files::volume(
+                        file.file.path(),
+                        path,
+                        "reply file path did not match request"
+                    );
+                    assert_eq!(
+                        &acyclic_harness_core::client_files::volume(
                             file.file.volume().provider().clone(),
                             &agent,
                             session
