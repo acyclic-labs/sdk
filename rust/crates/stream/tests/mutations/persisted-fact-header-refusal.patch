@@ -1,0 +1,33 @@
+--- a/rust/crates/stream/src/persistence.rs
++++ b/rust/crates/stream/src/persistence.rs
+@@ -22,12 +22,28 @@
+     domain: &[u8],
+     version: &[u8],
+ ) -> Result<&'a [u8], StreamError> {
++    let fault = std::env::var("ACYCLIC_CODEC_FACT_FAULT").ok();
++    if fault.as_deref() == Some("version") {
++        return encoded
++            .strip_prefix(domain)
++            .ok_or(StreamError::InvalidArgument)?
++            .get(version.len()..)
++            .ok_or(StreamError::Unsupported);
++    }
+     acyclic_auth::format::header(
+         encoded,
+         domain,
+         version,
+-        || StreamError::InvalidArgument,
+-        || StreamError::Unsupported,
++        || if fault.as_deref() == Some("domain-error") {
++            StreamError::Unsupported
++        } else {
++            StreamError::InvalidArgument
++        },
++        || if fault.as_deref() == Some("version-error") {
++            StreamError::InvalidArgument
++        } else {
++            StreamError::Unsupported
++        },
+     )
+ }
+ 
