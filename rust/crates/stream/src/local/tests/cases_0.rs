@@ -779,42 +779,48 @@ async fn recovery_rejects_receipt_overcapacity_without_rewriting_the_prefix()
             idempotency_results: Some(1),
             ..MemoryLimits::default()
         },
+        compaction_operations: 1,
         ..LocalStreamLimits::default()
     };
     let provider = LocalStream::open(directory.path(), limits).await?;
-    let first = AppendRequest {
-        path: StreamPath::new("capacity/replay")?,
-        records: vec![(Bytes::from_static(b"first")).into()],
-        if_tail: Some(0),
-        idempotency_key: IdempotencyKey::new(Bytes::from_static(b"first"))?,
-    };
+    let first = keyed_append("capacity/replay", 0)?;
     let outcome = provider.append(first.clone()).await?;
-    let state = provider.inner.provider.encode_state().await;
-    provider
-        .inner
-        .journal
-        .lock()
-        .map_err(|_| "poisoned")?
-        .compact(&state, None)?;
     drop(provider);
-    let second = AppendRequest {
-        idempotency_key: IdempotencyKey::new(Bytes::from_static(b"second"))?,
-        if_tail: Some(1),
-        ..first.clone()
-    };
     let path = directory.path().join(JOURNAL_FILE);
     let before = std::fs::read(&path)?;
-    let frame = PreparedFrame::encode(&WriteRequest::Append(second), 1, None)?;
+    let snapshot_path = directory.path().join(SNAPSHOT_FILE);
+    let snapshot = std::fs::read(&snapshot_path)?;
+
+    // A second public writer can emit the commands the full provider must
+    // refuse. Splice its actual next frame and torn final frame after the
+    // original snapshot's journal header; keep each provider's limits pinned.
+    let donor = tempfile::tempdir()?;
+    let writer = LocalStream::open(donor.path(), LocalStreamLimits::default()).await?;
+    writer.append(first.clone()).await?;
+    let donor_path = donor.path().join(JOURNAL_FILE);
+    let boundary = usize::try_from(std::fs::metadata(&donor_path)?.len())?;
+    for tail in 1..3 {
+        writer
+            .append(keyed_append("capacity/replay", tail)?)
+            .await?;
+    }
+    let mut emitted = std::fs::read(&donor_path)?;
+    emitted.pop().ok_or("emitted journal is empty")?;
+    drop(writer);
     let mut damaged = before.clone();
-    damaged.extend_from_slice(&frame.encoded);
-    damaged.extend_from_slice(&[9, 8, 7]);
+    damaged.extend_from_slice(&emitted[boundary..]);
     std::fs::write(&path, &damaged)?;
     for _ in 0..2 {
         assert!(matches!(
             LocalStream::open(directory.path(), limits).await,
             Err(LocalStreamError::Replay(StreamError::Capacity))
         ));
-        assert_eq!(std::fs::read(&path)?, damaged);
+        assert_eq!(
+            std::fs::read(&path)?,
+            damaged,
+            "capacity refusal repaired emitted journal"
+        );
+        assert_eq!(std::fs::read(&snapshot_path)?, snapshot);
     }
     std::fs::write(&path, before)?;
     let reopened = LocalStream::open(directory.path(), limits).await?;
