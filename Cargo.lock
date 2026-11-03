@@ -1244,12 +1244,12 @@ dependencies = [
  "acyclic-test-support",
  "arrayvec",
  "libfuzzer-sys",
- "prettyplease",
+ "prettyplease 0.3.0",
  "proptest",
  "prost",
  "serde",
  "serde_json",
- "syn",
+ "syn 3.0.9",
  "tokio",
 ]
 
