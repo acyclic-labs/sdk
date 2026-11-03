@@ -11,8 +11,8 @@
 //! `cargo build -p graphcoder --features acyclic-native-runtime/test-support`.
 //! `GRAPHCODER` names it elsewhere than the shared target directory.
 use acyclic_native_runtime::{
-    CaptureHandler, CaptureSchedule, ProcessCaptureStream, ProcessInput, ProcessOutput,
-    ProcessTree, TaskSpawner,
+    CaptureHandler, CaptureSchedule, ProcessCaptureStream, ProcessCommand, ProcessInput,
+    ProcessOutput, ProcessStdio, ProcessTree, TaskSpawner,
 };
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
@@ -20,7 +20,7 @@ use std::{
     collections::BTreeSet,
     io::{self, Write as _},
     path::{Path, PathBuf},
-    process::{ChildStdin, Command, ExitStatus, Stdio},
+    process::{ChildStdin, ExitStatus},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -259,7 +259,7 @@ impl Home {
     }
 
     /// The binary with this home's harness arguments, then `args`.
-    fn command(&self, model: &Model, policy: Option<&Path>, args: &[&str]) -> Command {
+    fn command(&self, model: &Model, policy: Option<&Path>, args: &[&str]) -> ProcessCommand {
         self.command_of(&executable(), model, policy, args)
     }
 
@@ -271,9 +271,9 @@ impl Home {
         model: &Model,
         policy: Option<&Path>,
         args: &[&str],
-    ) -> Command {
+    ) -> ProcessCommand {
         let settings = self.root.join("settings");
-        let mut command = Command::new(binary);
+        let mut command = ProcessCommand::new(binary);
         self.custody.configure(|key, value| {
             command.env(key, value);
         });
@@ -301,9 +301,9 @@ impl Home {
         }
         command
             .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdin(ProcessStdio::piped())
+            .stdout(ProcessStdio::piped())
+            .stderr(ProcessStdio::piped());
         command
     }
 }
@@ -333,7 +333,7 @@ struct Running {
 }
 
 impl Running {
-    fn start(mut command: Command) -> Self {
+    fn start(mut command: ProcessCommand) -> Self {
         let mut child = ProcessTree::spawn(&mut command).unwrap();
         let stdin = child.take_stdin();
         let output = child.stream_capture(
@@ -481,13 +481,13 @@ fn interactive_output_child() -> io::Result<()> {
 
 #[tokio::test]
 async fn interactive_capture_preserves_bytes_and_reports_original_eof() -> io::Result<()> {
-    let mut command = Command::new(std::env::current_exe()?);
+    let mut command = ProcessCommand::new(std::env::current_exe()?);
     command
         .args(["--exact", "interactive_output_child", "--nocapture"])
         .env("ACYCLIC_CONFORMANCE_OUTPUT_CHILD", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdin(ProcessStdio::piped())
+        .stdout(ProcessStdio::piped())
+        .stderr(ProcessStdio::piped());
     let mut child = Running::start(command);
     // Consume the test executable's own banner, then the original child's
     // readiness line. Closing that child before the line is a typed EOF.

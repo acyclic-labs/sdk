@@ -5,7 +5,8 @@ use acyclic_fs::{
     kernel::{FileMetadata, LogicalName, NameEncoding, NamespacePath},
     model::{AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode},
 };
-use std::{path::Path, process::Command, time::Duration};
+use acyclic_native_runtime::ProcessCommand;
+use std::{path::Path, time::Duration};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -16,7 +17,7 @@ fn restore(
     destination: &Path,
 ) -> Result<std::process::Output> {
     Ok(acyclic_native_runtime::process_output(
-        Command::new(env!("CARGO_BIN_EXE_qualify"))
+        ProcessCommand::new(env!("CARGO_BIN_EXE_qualify"))
             .arg("restore-gen")
             .arg(store)
             .arg(volume)
