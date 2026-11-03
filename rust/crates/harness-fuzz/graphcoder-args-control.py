@@ -12,6 +12,13 @@ import sys
 root = Path(__file__).resolve().parents[3]
 recovery = "python3 rust/crates/harness-fuzz/graphcoder-args-control.py"
 controls = {
+    "native_workspace": (
+        "rust/crates/harness-core/src/native_settings/workspace.rs",
+        b"if (left_unc, left_rooted, left.is_empty()) != (right_unc, right_rooted, right.is_empty()) {",
+        b"if false {",
+        "drive-root",
+        b"workspace roots must remain distinct",
+    ),
     "native_settings": (
         "rust/crates/harness-core/src/native_settings.rs",
         b"if bytes.len() as u64 > config.maximum_file_bytes {",
@@ -82,6 +89,7 @@ def require(condition, step):
 
 def run(target, seed, witness, *, capture=False, runs=0):
     options = {
+        "native_workspace": ["--no-default-features"],
         "native_settings": ["--no-default-features", "--features", "native-settings"],
         "event_projection": ["--no-default-features", "--features", "client"],
         "native_model_selection": ["--no-default-features"],
