@@ -442,6 +442,38 @@ mod properties {
             &include_bytes!("../fuzz/corpus/provider_stream/catalog.json")[1..]
         ));
         for input in [
+            include_bytes!("../fuzz/corpus/provider_stream/llamacpp-text-request").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/llamacpp-tool-request").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/llamacpp-result-request").as_slice(),
+        ] {
+            assert_eq!(&input[..2], b"V\x02");
+            let body = crate::json(&input[2..]).unwrap();
+            assert!(crate::validate_input(Adapter::Chat, &body).is_empty());
+            assert_stream_invariants(input);
+            for marker in [
+                "$serde_json::private::RawValue",
+                "$serde_json::private::Number",
+            ] {
+                // Explicit ignored-field mutations of each original request.
+                let extra = json!({(marker): "null", "nested": []});
+                let mutated = std::str::from_utf8(&input[2..]).unwrap().replacen(
+                    '{',
+                    &format!("{{\"extra\":{extra},"),
+                    1,
+                );
+                assert!(
+                    input_round_trip(Adapter::Chat, mutated.as_bytes()),
+                    "accepted captured request skipped input validation"
+                );
+                let value = crate::json(mutated.as_bytes()).unwrap();
+                assert_eq!(
+                    crate::validate_input(Adapter::Chat, &value),
+                    crate::validate_input(Adapter::Chat, &body),
+                    "ignored literal-map keys changed original input diagnostics"
+                );
+            }
+        }
+        for input in [
             include_bytes!("../fuzz/corpus/provider_stream/llamacpp-text").as_slice(),
             include_bytes!("../fuzz/corpus/provider_stream/llamacpp-tool").as_slice(),
             include_bytes!("../fuzz/corpus/provider_stream/llamacpp-result").as_slice(),

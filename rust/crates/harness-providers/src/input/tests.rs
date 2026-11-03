@@ -80,9 +80,8 @@ proptest! {
     #[test]
     fn diagnostics_are_stable_across_json_round_trip(body in arbitrary_json()) {
         let encoded=serde_json::to_vec(&body).unwrap();
-        let replay=serde_json::from_slice(&encoded).unwrap();
         for adapter in [Adapter::Anthropic,Adapter::Responses,Adapter::Chat,Adapter::Gemini] {
-            prop_assert_eq!(validate_input(adapter,&body),validate_input(adapter,&replay));
+            prop_assert!(crate::fuzzing::input_round_trip(adapter,&encoded));
         }
     }
 }
