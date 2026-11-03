@@ -17,13 +17,14 @@ fn check(input: Vec<OsString>) -> bool {
     };
     // Encode an admitted command through its literal boundary. This must
     // preserve every option and OS-string byte, including option-like args.
-    let mut canonical = Vec::new();
-    for (option, value) in [
+    let endpoints = [
         ("--control", &parsed.control),
         ("--custody", &parsed.custody),
         ("--lease", &parsed.lease),
         ("--completion", &parsed.completion),
-    ] {
+    ];
+    let mut canonical = Vec::new();
+    for (option, value) in endpoints {
         if let Some(value) = value {
             assert!(value.is_absolute());
             canonical.extend([OsString::from(option), value.clone().into_os_string()]);
@@ -46,6 +47,27 @@ fn check(input: Vec<OsString>) -> bool {
     canonical.extend(["--".into(), parsed.executable.clone()]);
     canonical.extend(parsed.arguments.iter().cloned());
     assert_eq!(Invocation::parse(canonical.clone()).unwrap(), parsed);
+    // Round trips alone cannot detect a discarded duplicate. Apply the
+    // refusal relation to every singleton in any admitted arbitrary input,
+    // including records whose metadata is not a trusted executable oracle.
+    for (option, value) in endpoints {
+        if let Some(value) = value {
+            let mut duplicate = canonical.clone();
+            duplicate.splice(0..0, [option.into(), value.clone().into_os_string()]);
+            assert!(
+                Invocation::parse(duplicate).is_err(),
+                "duplicate endpoint admitted"
+            );
+        }
+    }
+    if let Some(binding) = &parsed.invocation {
+        let mut duplicate = canonical.clone();
+        duplicate.splice(0..0, ["--invocation".into(), binding.into()]);
+        assert!(
+            Invocation::parse(duplicate).is_err(),
+            "duplicate invocation admitted"
+        );
+    }
     // A duplicate flag before the literal boundary must be refused, even
     // when the remaining bytes form an otherwise admitted invocation.
     canonical.splice(0..0, ["--inherit-input".into(), "--inherit-input".into()]);
