@@ -14,9 +14,11 @@ if choice.startswith("filesystem-"):
     oracle = source.with_name("verification.rs")
 elif choice.startswith("addressing-"):
     target = "addressing"
-    source = root.parent / "src/addressing" / (
-        "routes.rs" if choice == "addressing-fragment" else "dns.rs"
-    )
+    source = root.parent / "src" / {
+        "addressing-fragment": "addressing/routes.rs",
+        "addressing-resource": "addressing.rs",
+        "addressing-actor": "addressing/actor.rs",
+    }.get(choice, "addressing/dns.rs")
     oracle = root.parent / "tests/common/addressing.rs"
 elif choice.startswith("secret-"):
     target = "secret_ref"
@@ -43,6 +45,14 @@ try:
     oracle_hashes = {path: hashlib.sha256(path.read_bytes()).digest() for path in oracles}
     newline = b"\r\n" if b"\r\n" in original else b"\n"
     mutations = {
+        "addressing-resource": (
+            b"Self::new(account, id)", b"Self::new(id, account)",
+            "resource bytes must roundtrip exactly", "resource",
+        ),
+        "addressing-actor": (
+            b"Self::new(account, namespace, id)", b"Self::new(account, id, namespace)",
+            "actor bytes must roundtrip exactly", "actor",
+        ),
         "addressing-case": (
             b"b.is_ascii_lowercase()", b"b.is_ascii_alphabetic()",
             "DNS label aliases must refuse", "resource-hostname",
