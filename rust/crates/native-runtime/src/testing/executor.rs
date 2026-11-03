@@ -379,8 +379,24 @@ impl Executor {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
+        self.spawn_owned(None, future)
+    }
+
+    /// Spawns a task whose accounting owner retires only after its output is
+    /// delivered or dropped.
+    pub(super) fn spawn_owned<F>(
+        self: &Arc<Self>,
+        owner: Option<Active>,
+        future: F,
+    ) -> TaskHandle<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
         let (sender, receiver) = oneshot::channel();
         let task = async move {
+            // Declared first, so a cancelled future also drops before it.
+            let owner = owner;
             let mut future = std::pin::pin!(tokio::task::unconstrained(future));
             let result = std::future::poll_fn(|cx| {
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -400,7 +416,10 @@ impl Executor {
                 }
             })
             .await;
-            let _ = sender.send(result);
+            let _ = sender.send(result.map(|value| Finished {
+                value,
+                _owner: owner,
+            }));
         };
         let wake = self.register(Some(Box::pin(task)));
         TaskHandle(Handle::Simulated { receiver, wake })
@@ -431,6 +450,14 @@ impl Wake for TaskWake {
 /// Owned task handle. Dropping detaches; aborting cancels the original future.
 pub struct TaskHandle<T>(Handle<T>);
 
+/// A finished task's output and the accounting owner of the task. Fields drop
+/// in declaration order, so an undelivered output is released before its task
+/// stops counting as active; a delivered one has moved to the joiner first.
+struct Finished<T> {
+    value: T,
+    _owner: Option<Active>,
+}
+
 /// Cancellation authority retained independently of the owned task's result.
 #[derive(Clone)]
 pub struct AbortHandle(Abort);
@@ -452,16 +479,28 @@ impl AbortHandle {
 }
 
 enum Handle<T> {
-    Tokio(tokio::task::JoinHandle<T>),
+    Tokio(tokio::task::JoinHandle<Finished<T>>),
     Simulated {
-        receiver: oneshot::Receiver<io::Result<T>>,
+        receiver: oneshot::Receiver<io::Result<Finished<T>>>,
         wake: Arc<TaskWake>,
     },
 }
 
 impl<T> TaskHandle<T> {
-    pub(super) fn native(task: tokio::task::JoinHandle<T>) -> Self {
-        Self(Handle::Tokio(task))
+    pub(super) fn native<F>(owner: Option<Active>, future: F) -> Self
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        Self(Handle::Tokio(tokio::spawn(async move {
+            // Declared first, so a cancelled future also drops before it.
+            let owner = owner;
+            let value = future.await;
+            Finished {
+                value,
+                _owner: owner,
+            }
+        })))
     }
 
     /// Cancels the task even if its caller no longer awaits it.
@@ -485,16 +524,20 @@ impl<T> Future for TaskHandle<T> {
     type Output = io::Result<T>;
     fn poll(self: Pin<&mut Self>, cx: &mut PollContext<'_>) -> Poll<Self::Output> {
         match &mut self.get_mut().0 {
-            Handle::Tokio(task) => Pin::new(task)
-                .poll(cx)
-                .map(|result| result.map_err(crate::task::join_error)),
+            Handle::Tokio(task) => Pin::new(task).poll(cx).map(|result| {
+                result
+                    .map(|output| output.value)
+                    .map_err(crate::task::join_error)
+            }),
             Handle::Simulated { receiver, .. } => Pin::new(receiver).poll(cx).map(|result| {
-                result.unwrap_or_else(|_| {
-                    Err(io::Error::new(
-                        io::ErrorKind::Interrupted,
-                        "owned task cancelled",
-                    ))
-                })
+                result
+                    .unwrap_or_else(|_| {
+                        Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "owned task cancelled",
+                        ))
+                    })
+                    .map(|output| output.value)
             }),
         }
     }

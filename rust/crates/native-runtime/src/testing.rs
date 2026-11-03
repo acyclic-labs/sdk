@@ -343,14 +343,14 @@ where
     F::Output: Send + 'static,
 {
     let Some(context) = Context::current() else {
-        return TaskHandle::native(tokio::spawn(future));
+        return TaskHandle::native(None, future);
     };
     let active = context.accept("task");
     let owned = active.0.clone();
     spawn_owned(
         &context,
+        active,
         CURRENT.scope(Some(owned.clone()), async move {
-            let _active = active;
             owned.pause("task:submitted").await;
             let result = future.await;
             owned.pause("task:completed").await;
@@ -409,8 +409,8 @@ where
     let owned = active.0.clone();
     spawn_owned(
         context,
+        active,
         CURRENT.scope(Some(owned.clone()), async move {
-            let _active = active;
             owned.pause("blocking:submitted").await;
             let host = if owned.schedule.0.executor.is_some() {
                 Some(host::Host::for_workers(crate::workers(
@@ -482,8 +482,8 @@ pub(crate) fn submit(
     let (done, waiting) = oneshot::channel();
     drop(spawn_owned(
         context,
+        active,
         CURRENT.scope(Some(owned.clone()), async move {
-            let _active = active;
             owned.pause("native:submitted").await;
             let result = match crate::workers(pool, job.meter().is_some()) {
                 Ok(workers) => {
@@ -514,14 +514,16 @@ pub(crate) fn submit(
     waiting
 }
 
-fn spawn_owned<F>(context: &Context, future: F) -> TaskHandle<F::Output>
+// The task stays active until its output is delivered or dropped: an output can
+// own accounted resources, and a detached task's output outlives its future.
+fn spawn_owned<F>(context: &Context, active: Active, future: F) -> TaskHandle<F::Output>
 where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
     match &context.schedule.0.executor {
-        Some(executor) => executor.spawn(future),
-        None => TaskHandle::native(tokio::spawn(future)),
+        Some(executor) => executor.spawn_owned(Some(active), future),
+        None => TaskHandle::native(Some(active), future),
     }
 }
 
