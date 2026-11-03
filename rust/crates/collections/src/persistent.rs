@@ -318,6 +318,54 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         }
     }
 
+    pub(crate) fn exact_position<W: IndexReadWork>(
+        &self,
+        key: [u8; N],
+        work: &mut W,
+    ) -> Result<Option<Position<'_, V, N, C>>, W::Error> {
+        work.validate()?;
+        let mut cursor = self;
+        let mut before = None;
+        let mut value_before = None;
+        loop {
+            if let Some(cut) = cursor.before {
+                work.examine(N as u64)?;
+                if key >= cut {
+                    return Ok(None);
+                }
+                if before.is_some() {
+                    work.examine(N as u64)?;
+                }
+                before = Some(before.map_or(cut, |prior: [u8; N]| prior.min(cut)));
+            }
+            if let Some(cut) = cursor.value_before {
+                value_before = Some(value_before.map_or(cut, |prior: C| prior.min(cut)));
+            }
+            let Some(body) = cursor.body() else {
+                return Ok(None);
+            };
+            work.examine(1)?;
+            match &body.kind {
+                Kind::Leaf(value) => {
+                    work.examine(N as u64)?;
+                    return Ok((body.minimum == key).then_some(Position {
+                        key: &body.minimum,
+                        value,
+                        before,
+                        value_before,
+                    }));
+                }
+                Kind::Branch {
+                    bit,
+                    low,
+                    high: upper,
+                } => {
+                    cursor = if high(&key, *bit) { upper } else { low };
+                }
+            }
+        }
+    }
+
     pub(crate) fn predecessor_position<W: IndexReadWork>(
         &self,
         key: [u8; N],

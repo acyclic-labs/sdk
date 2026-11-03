@@ -85,18 +85,16 @@ impl<V, A, const N: usize> KeyedIndex<V, A, N> {
             .checked_mul(8)?
             .min((self.keys.depth() as u64).checked_add(insertions)?)
             .checked_add(1)?
-            // Each predecessor branch observes two visible bodies (N + 1
-            // each), compares the current minimum (2N), and selects a child
-            // (3N). The final leaf costs less than this same per-level bound.
-            .checked_mul(width.checked_mul(7)?.checked_add(2)?)?
+            // Exact selection visits one branch per bit and compares only
+            // the selected leaf's complete key. Outer keys have no prefix cut.
+            .checked_add(width)?
             .checked_mul(insertions)?;
         Some(IndexInsertionBound {
             allocation_bytes: outer.allocation_bytes.checked_add(inner.allocation_bytes)?,
             examined_items: outer
                 .examined_items
                 .checked_add(inner.examined_items)?
-                .checked_add(lookup)?
-                .checked_add(width.checked_mul(insertions)?)?,
+                .checked_add(lookup)?,
         })
     }
 
@@ -121,13 +119,9 @@ impl<V, A, const N: usize> KeyedIndex<V, A, N> {
             work.validate()?;
             return Ok(None);
         }
-        let Some(entry) = self.keys.predecessor_position(key, work)? else {
+        let Some(entry) = self.keys.exact_position(key, work)? else {
             return Ok(None);
         };
-        work.examine(N as u64)?;
-        if entry.key != &key {
-            return Ok(None);
-        }
         let before = entry.value_before.map_or(before, |cut| cut.min(before));
         if from >= before {
             return Ok(None);
@@ -150,18 +144,11 @@ impl<V, A, const N: usize> KeyedIndex<V, A, N> {
         value: V,
         work: &mut W,
     ) -> Result<Self, W::Error> {
-        let entries = match self.keys.predecessor_position(key, work)? {
-            Some(entry)
-                if {
-                    work.charge_items(N as u64)?;
-                    entry.key == &key
-                } =>
-            {
-                entry.value_before.map_or_else(
-                    || entry.value.clone(),
-                    |before| entry.value.prefix(before.to_be_bytes()),
-                )
-            }
+        let entries = match self.keys.exact_position(key, work)? {
+            Some(entry) => entry.value_before.map_or_else(
+                || entry.value.clone(),
+                |before| entry.value.prefix(before.to_be_bytes()),
+            ),
             _ => PersistentIndex::default(),
         };
         let entries = entries.insert(sequence.to_be_bytes(), value, work)?;

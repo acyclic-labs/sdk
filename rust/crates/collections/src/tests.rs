@@ -65,6 +65,11 @@ fn persistent_histories_preserve_prefixes_bounded_paths_and_original_custody()
                                 expected.range(..=query).next_back().map(|(k, v)| (*k, *v))
                             );
                             prop_assert!(work.items - items <= 65 * 58);
+                            let actual = history
+                                .exact_position(query.to_be_bytes(), &mut work)
+                                .map_err(TestCaseError::fail)?
+                                .map(|position| *position.value);
+                            prop_assert_eq!(actual, expected.get(&query).copied());
                         }
                         prop_assert_eq!(work.claims, claims);
                     }
@@ -410,6 +415,16 @@ fn keyed_histories_preserve_global_cuts_bounded_work_and_physical_custody()
         result = (|| {
             let zero = binary_key::<1032, _>(&[0; 1024], &mut work).unwrap();
             let mut index = KeyedIndex::default().insert(zero, 0, 0, &mut work)?;
+            let items = work.items;
+            assert_eq!(index.seek(zero, 0, 1, &mut work)?, Some((0, &0)));
+            assert!(work.items - items <= 1032 + 1 + 3 * 8 + 1);
+            let required = work.items - items;
+            work.maximum_items = Some(work.items + required - 1);
+            assert_eq!(
+                index.seek(zero, 0, 1, &mut work).err(),
+                Some("items refused")
+            );
+            work.maximum_items = None;
             for bit in (0..8192).rev() {
                 let mut bytes = [0; 1024];
                 bytes[bit / 8] = 0x80 >> (bit % 8);
@@ -435,7 +450,7 @@ fn keyed_histories_preserve_global_cuts_bounded_work_and_physical_custody()
             index = index.cap(1).insert(zero, 1, 9999, &mut work)?;
             let items = work.items;
             assert_eq!(index.seek(zero, 1, 2, &mut work)?, Some((1, &9999)));
-            assert!(work.items - items <= (8 * 1032 + 1) * (7 * 1032 + 2) + 3 * 65 * 60);
+            assert!(work.items - items <= 9 * 1032 + 1 + 3 * 65 * 60);
             let mut first = [0; 1024];
             first[0] = 128;
             let first = binary_key::<1032, _>(&first, &mut work).unwrap();
