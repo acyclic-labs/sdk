@@ -12,6 +12,18 @@ mod source_selection;
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     let _ = git_layout::check_input(bytes);
+    // Construct known aliases and an unrelated source from arbitrary bytes.
+    // These are typed path mutations, not captured provider output.
+    let (leaf, other) = bytes.split_at(bytes.len() / 2);
+    let name = |bytes: &[u8]| {
+        bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    for windows in [false, true] {
+        source_identities::check_selection(&name(leaf), &name(other), windows);
+    }
     if let Ok(text) = std::str::from_utf8(bytes) {
         let fields = text
             .lines()

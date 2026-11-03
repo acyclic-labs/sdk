@@ -1,0 +1,11 @@
+--- a/rust/crates/sdk-generation/src/source_selection.rs
++++ b/rust/crates/sdk-generation/src/source_selection.rs
+@@ -52,7 +52,7 @@
+     filenames: &BTreeSet<String>,
+     windows: bool,
+ ) -> Vec<GeneratedSource> {
+-    select(sources, filenames, windows, BTreeSet::contains)
++    sources.to_vec()
+ }
+ 
+ fn select(

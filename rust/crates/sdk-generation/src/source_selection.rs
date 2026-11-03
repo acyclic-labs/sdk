@@ -135,25 +135,7 @@ mod tests {
         fn reference_selection_keeps_every_basename_alias_and_windows_uncertainty(
             leaf in "[a-z]{1,12}", other in "[a-z]{1,12}", windows in any::<bool>(),
         ) {
-            let sources = vec![source(format!("first/{leaf}.rs"), 0, 0), source(format!("second/{leaf}.rs"), 1, 1), source(format!("third/{other}.json"), 2, 2)];
-            let filenames = BTreeSet::from([format!("src/{leaf}.rs")]);
-            let encoded = serde_json::to_vec(&filenames).unwrap();
-            let decoded: BTreeSet<String> = serde_json::from_slice(&encoded).unwrap();
-            prop_assert_eq!(referenced(&sources, &filenames, windows), referenced(&sources, &decoded, windows));
-            let posix = vec![source(format!(r"/checkout/{leaf}\{other}.rs"), 0, 0), source(format!("/checkout/{leaf}/{other}.rs"), 1, 1)];
-            prop_assert_eq!(referenced(&posix, &BTreeSet::from([format!(r"src/{leaf}\{other}.rs")]), false), posix[..1].to_vec());
-            prop_assert_eq!(referenced(&sources, &filenames, windows), sources[..2].to_vec());
-            if windows {
-                for spelling in [format!(r"C:\SRC\{}.RS", leaf.to_ascii_uppercase()), format!(r"\\?\C:\src\{leaf}.rs")] {
-                    prop_assert_eq!(referenced(&sources, &BTreeSet::from([spelling]), true), sources[..2].to_vec());
-                }
-                for spelling in ["C:/src/SHORT~1.RS", "C:/src/é.rs", "C:/src/file.rs.", "C:/src/file.rs ", "C:/src/file.rs:stream"] {
-                    prop_assert_eq!(referenced(&sources, &BTreeSet::from([spelling.to_owned()]), true), sources.clone());
-                }
-            }
-            prop_assert!(referenced(&sources, &BTreeSet::new(), windows).is_empty());
-            // A first-match-only selector would retain one alias and fail this oracle.
-            prop_assert_ne!(referenced(&sources, &filenames, windows), sources[..1].to_vec());
+            crate::source_identities_oracle::check_selection(&leaf, &other, windows);
         }
 
         #[test]

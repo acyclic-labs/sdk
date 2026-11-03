@@ -37,3 +37,14 @@ UNC roots. Arbitrary path admission checks remain separate. The retained
 `path-rebase-refusal.patch` and `path-posix-separators.patch` mutate the shared
 production implementation, rather than an oracle-only simulation. These paths
 are typed domain mutations, not external process captures.
+
+The source-selection property and fuzzer also share one alias/uncertainty oracle.
+It constructs two sources with one basename and an unrelated source, checks
+literal POSIX backslashes, Windows case/verbatim spellings, uncertain references
+and uncertain sources, and empty reference sets. Arbitrary exact references
+remain an independent ingress check. The retained `source-selection-*.patch`
+controls mutate the actual selector: returning everything, dropping aliases,
+losing uncertainty at either boundary, and treating POSIX backslashes as path
+separators. Names constructed from fuzz bytes are typed domain inputs, not
+external process captures. Fixed-input replay does not establish source branch
+coverage or an instrumented campaign.
