@@ -239,14 +239,19 @@ async fn preallocation_budget_rejections_report_only_completed_work()
     .await
     .err()
     .ok_or("scan-limited preallocation unexpectedly succeeded")?;
-    assert!(matches!(
+    assert!(
+        matches!(
+            failure.error,
+            RegularMutationError::Work(WorkError::BudgetExceeded {
+                counter: "items_examined",
+                observed: 6,
+                maximum: 5,
+            })
+        ),
+        "original failure: {:?}; completed work: {:?}",
         failure.error,
-        RegularMutationError::Work(WorkError::BudgetExceeded {
-            counter: "items_examined",
-            observed: 6,
-            maximum: 5,
-        })
-    ));
+        failure.work
+    );
     assert_eq!(failure.work.items_examined, 5);
     assert_eq!(failure.work.backend_write_operations, 0);
     Ok(())
