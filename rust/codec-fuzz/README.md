@@ -172,6 +172,12 @@ Use `--only snapshot-generation` (or another listed guard) to qualify a changed
 oracle without repeating unrelated mutation controls. The pending-generation
 challenge changes only the pending field, reaching `State::restore` through
 `Snapshot::decode` while leaving the earlier epoch parity fence satisfied.
+The two pending-range challenges recompute the content address with the original
+`SummaryKey::digest` writer, so the later identity fence cannot mask an omitted
+range check. They require the original typed range refusal at the covered cursor
+and beyond the source head. Select both with
+`--only snapshot-range-start snapshot-range-end`; one original writer replay
+precedes only those two mutations.
 Corpus capture, executed coverage and mutation results must be recorded separately;
 the presence of a target does not establish complete format or state coverage.
 

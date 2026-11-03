@@ -31,13 +31,7 @@ def run(step, diagnostic=None):
 
 
 def main():
-    selection = sys.argv[1:]
-    if selection and (len(selection) != 2 or selection[0] != '--only'
-                      or selection[1] not in ['cache-version', 'summary-version',
-                                             'snapshot-identity', 'snapshot-generation']):
-        raise RuntimeError('select mutation: expected --only GUARD; recovery: python3 mutations/resource-codecs.py --only snapshot-generation')
-    run('original')
-    for step, relative, before, after, diagnostic in [
+    mutations = [
         ('cache-version', 'executor/model_cache.rs',
          '(observation.version == Self::VERSION).then_some(observation)', 'Some(observation)',
          'unsupported cache observation version admitted'),
@@ -49,8 +43,22 @@ def main():
         ('snapshot-generation', 'conversation/epochs/protocol.rs',
          'if prepared.generation != generation {', 'if false {',
          'foreign pending epoch generation admitted'),
-    ]:
-        if selection and selection[1] != step:
+        ('snapshot-range-start', 'conversation/epochs/protocol.rs',
+         'prepared.through <= cursor || prepared.through > head',
+         'prepared.through > head', 'already covered pending epoch range admitted'),
+        ('snapshot-range-end', 'conversation/epochs/protocol.rs',
+         'prepared.through <= cursor || prepared.through > head',
+         'prepared.through <= cursor', 'pending epoch range beyond source head admitted'),
+    ]
+    arguments = sys.argv[1:]
+    selection = arguments[1:]
+    if arguments and (arguments[0] != '--only' or not selection
+                      or len(set(selection)) != len(selection)
+                      or not set(selection) <= {row[0] for row in mutations}):
+        raise RuntimeError('select mutation: expected --only GUARD ...; recovery: python3 mutations/resource-codecs.py --only snapshot-range-start snapshot-range-end')
+    run('original')
+    for step, relative, before, after, diagnostic in mutations:
+        if selection and step not in selection:
             continue
         production = root / 'rust/crates/harness-core/src' / relative
         original = production.read_bytes()

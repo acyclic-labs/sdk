@@ -215,6 +215,35 @@ pub(super) fn check(bytes: &[u8]) {
             ),
             "foreign pending epoch generation admitted",
         );
+        for (through, head, diagnostic) in [
+            (
+                Some(state.cursor()),
+                u64::MAX,
+                "already covered pending epoch range admitted",
+            ),
+            (
+                pending.through.checked_add(1),
+                pending.through,
+                "pending epoch range beyond source head admitted",
+            ),
+        ] {
+            let Some(through) = through else { continue };
+            // Preserve the content address so the later identity fence cannot
+            // conceal a missing range check in the original restore reducer.
+            let mut key = snapshot.epoch().key.clone();
+            key.through = through;
+            let mut changed = original.clone();
+            changed["snapshot"]["pending"]["through"] = through.into();
+            changed["snapshot"]["pending"]["summary"] = serde_json::to_value(key.digest()).unwrap();
+            record.value = serde_json::to_vec(&changed).unwrap().into();
+            assert!(
+                matches!(
+                    e::Snapshot::decode(&record, &source(), head),
+                    Err(e::SnapshotError::Transition(e::protocol::Refusal::Range)),
+                ),
+                "{diagnostic}",
+            );
+        }
         let mut changed = original;
         changed["snapshot"]["pending"]["summary"][0] = (pending.summary[0] ^ 1).into();
         record.value = serde_json::to_vec(&changed).unwrap().into();
