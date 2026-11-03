@@ -203,6 +203,7 @@ fn codex_output(args: &[&str]) -> Result<std::process::Output> {
     );
     let resolved = host_command("codex")?;
     let mut command = ProcessCommand::new(resolved.get_program());
+    command.args(resolved.get_args());
     command
         .args(args)
         .stdin(Stdio::null())
@@ -283,6 +284,7 @@ fn codex_plugin_exchange(package: Option<&Path>) -> Result<Value> {
     };
     let resolved = host_command("codex")?;
     let mut command = ProcessCommand::new(resolved.get_program());
+    command.args(resolved.get_args());
     command
         .arg("app-server")
         .stdin(Stdio::piped())
