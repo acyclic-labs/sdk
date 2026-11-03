@@ -22,14 +22,18 @@ const WRITERS: &[(&str, &[u8])] = &descriptors![
 fuzz_target!(|bytes: &[u8]| {
     assert_eq!(WRITERS.len(), acyclic_proto_build::FAMILIES.len());
     let index = usize::from(bytes.first().copied().unwrap_or_default()) % WRITERS.len();
-    let (file, writer) = WRITERS[index];
-    let (_, expected_file, roots) = acyclic_proto_build::FAMILIES[index];
+    let ((file, writer), (_, expected_file, roots)) = WRITERS
+        .iter()
+        .zip(acyclic_proto_build::FAMILIES)
+        .nth(index)
+        .unwrap_or_else(|| unreachable!("descriptor family missing"));
     assert_eq!(file, expected_file);
     assert_eq!(
         acyclic_proto_build::canonicalize(writer, roots)
-            .expect("canonical production writer descriptor refused"),
-        writer,
-        "canonical production writer identity changed"
+            .ok()
+            .as_deref(),
+        Some(*writer),
+        "canonical production writer descriptor refused or changed"
     );
     if let Ok(canonical) = acyclic_proto_build::canonicalize(bytes, roots) {
         assert_eq!(
