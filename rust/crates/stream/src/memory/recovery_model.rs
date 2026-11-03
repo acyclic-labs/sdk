@@ -374,9 +374,7 @@ pub fn session_registration_and_recovery_never_splice(omit_anchor: bool) {
                     .map_ok(crate::records_only)
                     .await
             } else {
-                wire_codec::session::follow_records(&provider, &follow, &cursor)
-                    .map_ok(|records| records.boxed())
-                    .await
+                wire_codec::session::follow_records(&provider, &follow, &cursor).await
             };
             let error = match registered {
                 Err(error) => error,
