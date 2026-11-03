@@ -167,6 +167,7 @@ async fn current_objects_and_offline_authority_cannot_substitute_for_original_pr
         .create_workspace("original-proof", B, &cancel)
         .await?
         .value;
+    let first_root = root(workspace.head(B, &cancel).await?.value.id());
     workspace.write_text("/file", "original").await?;
     workspace
         .write_text("/file", "different current head")
@@ -187,32 +188,15 @@ async fn current_objects_and_offline_authority_cannot_substitute_for_original_pr
     ));
     let latest = root(workspace.head(B, &cancel).await?.value.id());
     let config = workspace.volume_config();
-    let manifest = crate::kernel::build_generation_export_manifest_async(
+    super::archive::copy_generation(
         &objects,
+        &current_only,
         workspace.id().volume_id(),
         config,
         latest,
-        super::archive::limits(config),
-        BUDGET,
         &cancel,
     )
-    .await?
-    .value;
-    // Transfer order admits every child before its parent names that reference.
-    // A proof's identity-sorted object list is not a publication order.
-    for object in manifest.objects {
-        let bytes = objects
-            .read(
-                object,
-                16 * 1024 * 1024,
-                &mut AuthorityWork::new(BUDGET, &cancel),
-            )
-            .await?
-            .bytes;
-        current_only
-            .put(object, bytes, &mut AuthorityWork::new(BUDGET, &cancel))
-            .await?;
-    }
+    .await?;
     let durable = records(&authority, id).await?;
     let present = page(&authority, &current_only, id, cursor(&durable[1])?, 1).await?;
     assert!(present.complete);
@@ -226,6 +210,41 @@ async fn current_objects_and_offline_authority_cannot_substitute_for_original_pr
     );
     assert!(matches!(
         page(&authority, &current_only, id, cursor(&durable[0])?, 1).await,
+        Err(AccountingError::Proof(_))
+    ));
+    let initial_only =
+        crate::LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory()));
+    super::archive::copy_generation(
+        &objects,
+        &initial_only,
+        workspace.id().volume_id(),
+        config,
+        first_root,
+        &cancel,
+    )
+    .await?;
+    assert_eq!(
+        page(
+            &authority,
+            &initial_only,
+            id,
+            AccountingCursor::genesis(),
+            1
+        )
+        .await?
+        .facts
+        .len(),
+        1
+    );
+    assert!(matches!(
+        page(
+            &authority,
+            &initial_only,
+            id,
+            AccountingCursor::genesis(),
+            2
+        )
+        .await,
         Err(AccountingError::Proof(_))
     ));
     let initial = &durable[0];

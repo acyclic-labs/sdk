@@ -62,8 +62,17 @@ pub(super) async fn prove_bytes<O: AsyncObjectStore>(
             )
             .await;
         work.receipt(result)
-    }
-    .map_err(|failure| AccountingError::Proof(failure.error.to_string()))?;
+    };
+    let archived = match archived {
+        Ok(archived) => archived,
+        Err(failure) => {
+            measured.backend(*failure.work)?;
+            return Err(match failure.error {
+                crate::ObjectStoreError::Work(error) => error.into(),
+                error => AccountingError::Proof(error.to_string()),
+            });
+        }
+    };
     measured.backend(archived.work)?;
     if let Some(evidence) = archived.value {
         let original = crate::kernel::decode_historical_generation_evidence(
@@ -96,9 +105,18 @@ pub(super) async fn prove_bytes<O: AsyncObjectStore>(
     // historical record. Missing collected bodies fail closed; a current head
     // is never a substitute for the original generation.
     let proof =
-        prove_generation_closure(objects, root, limits, measured.remaining()?, cancellation)
+        match prove_generation_closure(objects, root, limits, measured.remaining()?, cancellation)
             .await
-            .map_err(|failure| AccountingError::Proof(failure.error.to_string()))?;
+        {
+            Ok(proof) => proof,
+            Err(failure) => {
+                measured.backend(*failure.work)?;
+                return Err(match failure.error {
+                    crate::kernel::ClosureError::Work(error) => error.into(),
+                    error => AccountingError::Proof(error.to_string()),
+                });
+            }
+        };
     measured.backend(proof.work)?;
     if proof.root.volume_id != volume_id {
         return Err(AccountingError::InvalidHistory);
