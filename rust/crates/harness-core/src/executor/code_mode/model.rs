@@ -34,7 +34,6 @@ pub async fn check(input: &[u8]) {
 }
 
 async fn check_bridge(text: &str) {
-    let text = if text.is_empty() { "x" } else { text };
     let work = native_work(false);
     let original = work.live_allocation_bytes();
     let allocator = EngineAllocator::new(Some(&work));
@@ -63,9 +62,12 @@ async fn check_bridge(text: &str) {
 
             // Reserve the remaining original capacity after startup. First fund
             // only the view, then neither allocation when the view needs bytes.
-            for available in [Some(view_bytes), (view_bytes != 0).then_some(0)]
-                .into_iter()
-                .flatten()
+            for available in [
+                (!text.is_empty()).then_some(view_bytes),
+                (view_bytes != 0).then_some(0),
+            ]
+            .into_iter()
+            .flatten()
             {
                 let reserved = work
                     .claim(
