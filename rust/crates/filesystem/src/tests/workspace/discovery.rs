@@ -38,7 +38,7 @@ fn check_discovery(before: &Listing, after: &Listing) -> Result<(), String> {
 }
 
 #[tokio::test]
-async fn pinned_directory_discovery_does_not_scan_ten_thousand_retained_workspaces()
+async fn pinned_directory_discovery_has_constant_work_as_retained_workspaces_grow()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let workspace = unbounded!(fs, create_workspace("discovered-agent"))?;
@@ -55,8 +55,10 @@ async fn pinned_directory_discovery_does_not_scan_ten_thousand_retained_workspac
     // warm cache state, so their work must be equal, not merely no larger.
     let cold = list().await?;
     let before = list().await?;
-    let mut retained = Vec::with_capacity(10_000);
-    for index in 0..10_000 {
+    // Exact receipts detect even one extra read or copy; a large fixture adds no guarantee.
+    const RETAINED: usize = 64;
+    let mut retained = Vec::with_capacity(RETAINED);
+    for index in 0..RETAINED {
         let other = unbounded!(fs, create_workspace(&format!("retained-agent-{index}")))?;
         retained.push(unbounded!(other, head())?);
     }
@@ -64,7 +66,7 @@ async fn pinned_directory_discovery_does_not_scan_ten_thousand_retained_workspac
         .write_text("/late.txt", "not in pinned view")
         .await?;
     let after = list().await?;
-    assert_eq!(retained.len(), 10_000);
+    assert_eq!(retained.len(), RETAINED);
     check_discovery(&before, &after)?;
     // The cold listing reads the same page; the cache only ever removes work from it.
     assert_eq!(cold.0.entries, after.0.entries);
