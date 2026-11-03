@@ -1,0 +1,24 @@
+diff --git a/rust/crates/harness-core/src/agent/machine.rs b/rust/crates/harness-core/src/agent/machine.rs
+--- a/rust/crates/harness-core/src/agent/machine.rs
++++ b/rust/crates/harness-core/src/agent/machine.rs
+@@ -1149,6 +1149,6 @@
+-fn shed(state: &mut AgentState, outs: &mut Vec<Out>, failure: &str) {
++fn shed(state: &mut AgentState, _outs: &mut Vec<Out>, failure: &str) {
+     state.drop_queue();
+     state.turn = None;
+     if state.closed || matches!(state.phase, Phase::Done { .. }) {
+         return;
+     }
+@@ -1156,11 +1156,8 @@
+     let outcome = AgentOutcome::Failed {
+         message: failure.into(),
+     };
+-    let (next, send) = kernel::report(control(state));
++    let (next, _send) = kernel::report(control(state));
+     state.reported = next.reported;
+-    if send {
+-        report(state, outcome.clone(), outs);
+-    }
+     state.phase = Phase::Done { outcome };
+ }
+ 

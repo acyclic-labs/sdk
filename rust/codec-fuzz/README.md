@@ -191,6 +191,20 @@ tests the arbitrary-input writer comparison without running the seed producer.
 The producer checks the same complete state separately; no simulated decoder
 or alternate field-loss implementation is used.
 
+`agent-checkpoint-parent-report.patch` instead removes the actual terminal
+report from `machine::shed`. Its component control uses the production
+`AgentHost`, native stream storage and a three-child fork tree, then reopens
+both the host and storage to compare the committed agent and actor tuples:
+
+```sh
+cargo test --locked --manifest-path rust/Cargo.toml --all-features -p acyclic-harness-core --test main agent_model::runtime::committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed -- --exact
+```
+
+With the mutation applied, the unchanged control must fail at
+`shed checkpoint lost its parent report`. The scripted turn driver supplies
+component outputs; this is neither a provider-driven restart nor a fuzz campaign
+or full shell-state refinement proof.
+
 After a reviewed protobuf schema change, refresh only the named protobuf
 producers and their table selectors:
 

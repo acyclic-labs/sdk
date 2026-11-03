@@ -93,7 +93,7 @@ async fn same_phase_settlement_advances_the_actor_without_appending_status() -> 
         assert!(changes.try_next().await?.is_some());
         assert!(host.input_progress(&root, inbox).await?.0);
         assert_eq!(settled(&provider, &within, &root).await?, Some(Phase::Idle));
-        let statuses = values(&provider, root.status()?).await?;
+        let statuses = values(provider.as_ref(), root.status()?).await?;
         assert_eq!(statuses.len(), 1);
         let stale = StatusRecord::decode(&statuses[0])?;
         assert!(
@@ -200,7 +200,7 @@ async fn notice_delivery_wakes_once_and_quiet_delivery_preserves_the_paused_turn
         assert_eq!(reopened.pending_notices, Some(1..4));
         assert_eq!(reopened.phase, before.phase);
         assert_eq!(reopened.turn, before.turn);
-        let records = values(&provider, root.inbox()?).await?;
+        let records = values(provider.as_ref(), root.inbox()?).await?;
         let notices = records
             .iter()
             .map(|record| InboxRecord::decode(record))
@@ -322,34 +322,60 @@ async fn committed_controls_interrupt_a_held_turn_without_interrupting_ordinary_
 
 #[tokio::test]
 async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed() -> Result {
+    use acyclic_stream::LocalStream;
+
     for oversized in [false, true] {
-        let provider = Arc::new(MemoryStream::default());
-        let driver = super::script(vec![TurnStep {
+        let directory = tempfile::tempdir()?;
+        let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
+        let idle = || TurnStep {
             reserved_children: 0,
-            checkpoint: Some(vec![7; if oversized { MAX_CHECKPOINT_BYTES } else { 8 }]),
-            outs: vec![
-                Out::Conversation(b"first".to_vec()),
-                Out::Conversation(b"second".to_vec()),
-            ],
-            wait: Wait::Approval {
-                id: intent("decision"),
-                binding: Some(acyclic_harness_core::interaction::ApprovalBinding {
-                    operation_id: acyclic_harness_core::OperationId::from_bytes([8; 16]),
-                    action_digest: [9; 32],
-                }),
-            },
+            checkpoint: None,
+            outs: Vec::new(),
+            wait: Wait::Input,
             drops: None,
-        }]);
+        };
+        let driver = super::script(vec![
+            TurnStep {
+                outs: ["a", "b", "c"]
+                    .into_iter()
+                    .map(|name| Out::Spawn {
+                        profile: None,
+                        history: None,
+                        intent: intent(name),
+                        brief: None,
+                        volumes: Vec::new(),
+                    })
+                    .collect(),
+                ..idle()
+            },
+            TurnStep {
+                reserved_children: 0,
+                checkpoint: Some(vec![7; if oversized { MAX_CHECKPOINT_BYTES } else { 8 }]),
+                outs: vec![
+                    Out::Conversation(b"first".to_vec()),
+                    Out::Conversation(b"second".to_vec()),
+                ],
+                wait: Wait::Approval {
+                    id: intent("decision"),
+                    binding: Some(acyclic_harness_core::interaction::ApprovalBinding {
+                        operation_id: acyclic_harness_core::OperationId::from_bytes([8; 16]),
+                        action_digest: [9; 32],
+                    }),
+                },
+                drops: None,
+            },
+            idle(),
+        ]);
+        let within = ActorReference::new(b"account", b"agents", b"owner")?;
         let host = AgentHost::new(
             provider.clone(),
             driver,
-            ActorReference::new(b"account", b"agents", b"owner")?,
+            within.clone(),
             ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             Arc::new(SystemClock),
         )?;
         let root = host.create(&intent("create"), adopted(id(1))).await?;
-        assert!(host.runtime().drain().await.is_empty());
-        let before = host.state(&root).await?;
+        host.drain(&root).await?;
         let input = InboxRecord::ApprovalRequested(ApprovalRequested {
             child: root.child(&id(2))?,
             id: intent("approval"),
@@ -358,18 +384,65 @@ async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed
             host.send(&root, &user(), &input).await?,
             Delivered::Committed { .. }
         ));
-        let failures = host.runtime().drain().await;
-        assert!(failures.is_empty(), "{failures:?}");
+        host.drain(&root).await?;
+        let parent_before = host.state(&root).await?;
+        assert_eq!(parent_before.open_children.len(), 3);
+        for child in &parent_before.open_children {
+            host.drain(child).await?;
+        }
+        let child = parent_before
+            .open_children
+            .first()
+            .expect("spawned child")
+            .clone();
+        let before = host.state(&child).await?;
+        assert_eq!(before.parent.as_ref(), Some(&root));
+        let Delivered::Committed { inbox } = host.send(&child, &user(), &input).await? else {
+            return Err("child input was refused".into());
+        };
+        host.drain(&child).await?;
+        let reports = values(provider.as_ref(), root.inbox()?)
+            .await?
+            .iter()
+            .map(|bytes| InboxRecord::decode(bytes))
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter_map(|record| match record {
+                InboxRecord::ChildDone(done) => Some(done),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let expected_reports = if oversized {
+            vec![ChildDone {
+                child: child.clone(),
+                outcome: AgentOutcome::Failed {
+                    message: OVERSIZED_STATE.into(),
+                },
+            }]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(
+            reports, expected_reports,
+            "shed checkpoint lost its parent report"
+        );
+        host.drain(&root).await?;
+        let mut expected_children = parent_before.open_children;
+        if oversized {
+            expected_children.remove(&child);
+        }
+        let parent_committed = host.state(&root).await?;
+        assert_eq!(parent_committed.open_children, expected_children);
         // Reopening decodes the actual checkpoint published by the handler.
-        let committed = host.state(&root).await?;
+        let committed = host.state(&child).await?;
         assert_eq!(committed.conversation_tail, before.conversation_tail + 2);
         assert_eq!(committed.status_tail, before.status_tail + 1);
         assert_eq!(
-            values(&provider, root.conversation()?).await?,
+            values(provider.as_ref(), child.conversation()?).await?,
             vec![b"first".to_vec(), b"second".to_vec()]
         );
         assert_eq!(
-            values(&provider, root.status()?).await?.len() as u64,
+            values(provider.as_ref(), child.status()?).await?.len() as u64,
             committed.status_tail
         );
         if oversized {
@@ -391,7 +464,7 @@ async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed
                 }),
             };
             assert_eq!(committed.phase, expected);
-            let statuses = values(&provider, root.status()?).await?;
+            let statuses = values(provider.as_ref(), child.status()?).await?;
             let status = StatusRecord::decode(&statuses[(committed.status_tail - 1) as usize])?;
             assert_eq!(
                 status.phase, expected,
@@ -410,8 +483,36 @@ async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed
                 invalid.encode().is_err(),
                 "an unbound action became valid status"
             );
-            assert_eq!(committed.turn.map(|turn| turn.checkpoint), Some(vec![7; 8]));
+            assert_eq!(
+                committed
+                    .turn
+                    .as_ref()
+                    .map(|turn| turn.checkpoint.as_slice()),
+                Some([7; 8].as_slice())
+            );
         }
+        let snapshot = host.runtime().store().load(&host.actor(&child)?).await?;
+        let actor_state = snapshot.state().expect("committed child actor").clone();
+        assert!(actor_state.alarm().pending().is_none());
+        assert_eq!(actor_state.cursor(INBOX), Some(inbox + 1));
+        drop(host);
+        drop(provider);
+        let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
+        let host = AgentHost::new(
+            provider,
+            super::script(Vec::new()),
+            within,
+            ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+            Arc::new(SystemClock),
+        )?;
+        assert_eq!(host.state(&child).await?, committed);
+        assert_eq!(host.state(&root).await?, parent_committed);
+        let reopened = host.runtime().store().load(&host.actor(&child)?).await?;
+        assert_eq!(
+            reopened.state(),
+            Some(&actor_state),
+            "reopen lost the committed checkpoint/cursor/alarm tuple"
+        );
     }
     Ok(())
 }
@@ -661,7 +762,7 @@ async fn an_inbox_append_wakes_the_agent_and_its_spawn_creates_the_child_actor()
     assert!(failures.is_empty(), "{failures:?}");
     let state = actors.load(&host.actor(&child)?).await?;
     assert_eq!(cursor(&state), Some(2));
-    assert_eq!(values(&provider, child.inbox()?).await?.len(), 3);
+    assert_eq!(values(provider.as_ref(), child.inbox()?).await?.len(), 3);
     // The child inherits the root's inbox prefix. Its unconsumed adoption is
     // at its actor subscription cursor, rather than record zero.
     let inherited = host.state(&child).await?;
@@ -739,7 +840,7 @@ async fn host_replays_exact_intents_and_rejects_changed_bytes_after_progress() -
         host.send(&root, &user(), &changed).await,
         Err(Error::Stream(StreamError::IdempotencyMismatch))
     ));
-    assert_eq!(values(&provider, root.inbox()?).await?.len(), 3);
+    assert_eq!(values(provider.as_ref(), root.inbox()?).await?.len(), 3);
 
     // Recover an unobserved creation receipt after the actor has advanced.
     assert!(host.runtime().drain().await.is_empty());

@@ -1,4 +1,4 @@
-//! Agent model commit shapes and step protocol against the in-memory Streams provider.
+//! Agent commit shapes and step protocol through the shared Streams providers.
 
 use acyclic_harness_core::agent::*;
 use acyclic_stream::{
@@ -69,7 +69,10 @@ fn cancel(id: &str) -> InboxRecord {
     })
 }
 
-async fn values(provider: &MemoryStream, path: StreamPath) -> Result<Vec<Vec<u8>>> {
+async fn values<P: StreamProvider + ?Sized>(
+    provider: &P,
+    path: StreamPath,
+) -> Result<Vec<Vec<u8>>> {
     let tail = match provider.tail(path.clone()).await {
         Ok(tail) => tail,
         Err(StreamError::NotFound) => return Ok(Vec::new()),
