@@ -19,5 +19,22 @@ failure, timeout or unrelated crash does not qualify the negative control. Keep
 the mutation out of product changes and collect coverage from the unmodified
 source only.
 
-Dispatcher retirement does not cover successful host settlement, reply decoding
-or authorization. Finite fuzz runs do not establish full source branch coverage.
+The same target now also sends production-encoded success and refusal replies
+through the original channel and UTF-8/JSON decoder. Each captured input seeds
+the reply's string value; the production encoder produces its framing and
+escaping at runtime. The independent oracle checks the returned value or caught
+refusal message exactly, including empty strings, Unicode and escaped text.
+Arbitrary input bytes also enter the same decoder as malformed frames. Both
+encoder and engine use the original native ledger, which must return to its
+baseline after retirement. The channel's sole sender belongs to the interpreter;
+early engine retirement closes the receiver instead of stranding a dispatcher.
+
+Apply `mutations/code_mode_accept_refusal.patch` to remove the production
+interpreter's refusal branch, then run the same command above. The unchanged
+oracle must fail with `the original host reply must preserve its value and
+refusal`, including on the empty input. This is a decoder mutation, independent
+of the allocation-owner mutation. Restore each patch before collecting coverage.
+
+This validates the original reply codec and custody transfer, not host tool
+admission, journal settlement or authorization. Finite fuzz runs do not establish
+full source branch coverage or C parser coverage.

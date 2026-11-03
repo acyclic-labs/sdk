@@ -44,6 +44,30 @@ struct CallLog<'a> {
 type CallResult<'a> =
     std::result::Result<(Value, Option<crate::conversation::ContentHold<'a>>), String>;
 
+fn encode_reply(
+    ok: bool,
+    value: &Value,
+    io: Option<&PreparationIo>,
+) -> Result<acyclic_stream::OwnedBytes> {
+    #[derive(Serialize)]
+    struct Reply<'a> {
+        ok: bool,
+        value: &'a Value,
+    }
+    let reply = Reply { ok, value };
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        return io.encode(&reply, u64::MAX, false);
+    }
+    serde_json::to_vec(&reply).map(Into::into).map_err(|_| {
+        stock_boundary(
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "JavaScript response encoding failed",
+        )
+    })
+}
+
 impl StockExecution<'_> {
     pub(super) fn code_tools_notice(
         &self,
@@ -417,19 +441,7 @@ impl StockExecution<'_> {
                             }
                             result = stage_json(journal, identity.0, &key, &entry, self.io) => { result?; }
                         }
-                        #[derive(Serialize)]
-                        struct Reply<'a> { ok: bool, value: &'a Value }
-                        let reply = Reply { ok, value: &value };
-                        #[cfg(feature = "filesystem")]
-                        let funded = self.io.map(|io| io.encode(&reply, u64::MAX, false)).transpose()?;
-                        #[cfg(not(feature = "filesystem"))]
-                        let funded: Option<acyclic_stream::OwnedBytes> = None;
-                        let reply = match funded {
-                            Some(bytes) => bytes,
-                            None => serde_json::to_vec(&reply)
-                                .map(Into::into)
-                                .map_err(|_| stock_boundary(self.io, crate::wire::ErrorCode::Invalid, "JavaScript response encoding failed"))?,
-                        };
+                        let reply = encode_reply(ok, &value, self.io)?;
                         let _ = call.reply.send(Some(reply));
                     }
                 }
