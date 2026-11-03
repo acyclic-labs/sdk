@@ -18,16 +18,20 @@ test("canonical admission releases JavaScript references after intrinsic failure
   try { Array.isArray(revoked.proxy); }
   catch (caught) { revokedReason = caught; }
   const child = Object.defineProperty({}, "value", { enumerable: true, get: refuse });
-  const inputs = [
-    ["prototype", [new Proxy({}, { getPrototypeOf: refuse })], reason],
-    ["keys", [new Proxy({}, { ownKeys: refuse })], reason],
-    ["array iterator", [array], reason],
-    ["Map callback", [map], reason],
-    ["revoked array", [revoked.proxy], revokedReason],
-    ["nested object", [{ child }, child], reason],
-    ["nested array", [[child], child], reason],
-    ["nested Map", [new Map([["child", child]]), child], reason],
+  const sources = [
+    ["prototype", new Proxy({}, { getPrototypeOf: refuse }), reason],
+    ["keys", new Proxy({}, { ownKeys: refuse }), reason],
+    ["array iterator", array, reason],
+    ["Map callback", map, reason],
+    ["revoked array", revoked.proxy, revokedReason],
+    ["child getter", child, reason],
   ] as const;
+  const inputs = sources.flatMap(([step, child, expected]) => [
+    [step, [child], expected],
+    [`object ${step}`, [{ child }, child], expected],
+    [`array ${step}`, [[child], child], expected],
+    [`Map ${step}`, [new Map([["child", child]]), child], expected],
+  ] as const);
   const outcomes = inputs.map(([step, owned, expected]) => {
     let error: unknown;
     try { contracts.encodeCanonicalJson(owned[0]); }
