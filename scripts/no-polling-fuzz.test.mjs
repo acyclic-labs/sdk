@@ -38,8 +38,8 @@ async function compilerEntries(operation) {
  }
 }
 
-test('non-script snapshots validate captured source without entering the compiler', async () => {
- const {projectPollingSites} = await import('./source-policy/project.mjs');
+test('non-script and retired snapshots validate source without irrelevant compiler work', async () => {
+ const {projectPollingSites, newProjectPollingSites} = await import('./source-policy/project.mjs');
  const {pollingSites, SourceSyntaxError} = await import('./source-policy/index.mjs');
  const replay = project => {
   assert.deepEqual(project(new Map()), []);
@@ -65,6 +65,21 @@ test('non-script snapshots validate captured source without entering the compile
   ' if (errors.length === 1) throw errors[0];',
   ' if (!units.size) return sites;\n if (errors.length === 1) throw errors[0];');
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), unchecked), {name: 'AssertionError'});
+ const retire = analyze => {
+  for (const capture of targets.projectSnapshots)
+   assert.deepEqual(analyze(new Map(capture.sources), new Map()), []);
+ };
+ assert.equal(await compilerEntries(() => retire(newProjectPollingSites)), 0);
+ const redundant = await mutant('./source-policy/project.mjs', ' if (!candidates.length) return candidates;\n', '');
+ assert.ok(await compilerEntries(() => retire(redundant.graph.newProjectPollingSites)) > 0,
+  'removing candidate elision must analyze the retired original modules');
+ const unreviewed = await mutant('./source-policy/project.mjs',
+  ' validateDispositions(dispositions, policy);\n const candidates = projectPollingSites(after);',
+  ' const candidates = projectPollingSites(after);\n if (!candidates.length) return candidates;\n validateDispositions(dispositions, policy);');
+ assert.throws(() => targets.fuzzProject(Buffer.from([0]), unreviewed), {name: 'AssertionError'});
+ const discarded = await mutant('./source-policy/project.mjs',
+  ' const candidates = projectPollingSites(after);', ' const candidates = [];');
+ assert.throws(() => targets.fuzzProject(Buffer.from([0]), discarded), {name: 'AssertionError'});
 });
 
 test('source fuzz oracles reject planted decoder, graph and disposition defects', async () => {
@@ -149,7 +164,7 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
    'if (error instanceof SourceSyntaxError) continue;', '}',
    {name: 'AssertionError', message: /Missing expected exception \(SourceSyntaxError\)/}],
   ['projectPollingSites(before, {historical: true})', 'projectPollingSites(before)', [0],
-   {name: 'AggregateError', message: /unterminated block comment/}],
+   {name: 'SourceSyntaxError', message: /lib\/helper\.ts/}],
  ]) {
   const refusal = await mutant('./source-policy/project.mjs', original, replacement);
   assert.throws(() => targets.fuzzProject(Buffer.from(seed), refusal), expected);

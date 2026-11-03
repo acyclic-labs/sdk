@@ -283,6 +283,8 @@ export function fuzzProject(data, {source: api = sourcePolicy, graph = projectPo
   assert.throws(() => newPollingSites(caller, '', localSource, [invalid]), /invalid exact/,
    'invalid source disposition field: ' + field);
  }
+ assert.throws(() => newProjectPollingSites(after, new Map(), [{...accepted[0], producer: 0}]),
+  /invalid exact/, 'retired project bypassed disposition validation');
  for (const admit of [
   (values, policy) => validate(values, policy),
   (values, policy) => newProjectPollingSites(new Map(), after, values, policy),

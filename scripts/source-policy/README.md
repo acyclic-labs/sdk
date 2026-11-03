@@ -47,6 +47,9 @@ The existing source controls and byte-oriented fuzz target invoke these same
 exports. Classification reads source once per unit; dependency closure visits
 each graph edge a fixed number of times, independent of runtime history. No
 timer, wait, worker or readiness request is introduced.
+Delta analysis validates current source and dispositions first. When no current
+candidates remain, it returns without analyzing the predecessor; retired source
+cannot authorize a current candidate that does not exist.
 
 Run `node --test scripts/no-polling-fuzz.test.mjs` from the checkout to replay
 the recorded host corpus, byte mutations and dependency properties. The same
