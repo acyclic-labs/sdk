@@ -159,8 +159,9 @@ pub(crate) use blocking::{
     wait_measured_completion,
 };
 pub use task::{
-    AbortHandle, PersistenceKey, TaskHandle, TaskSpawner, coordination_runtime,
-    persistence_syscall, spawn, spawn_blocking, spawn_persistence,
+    AbortHandle, OwnedTask, PersistenceKey, TaskCompletion, TaskHandle, TaskSpawner,
+    coordination_runtime, persistence_syscall, spawn, spawn_blocking, spawn_owned,
+    spawn_persistence,
 };
 mod completion;
 pub use completion::NativeCompletion;

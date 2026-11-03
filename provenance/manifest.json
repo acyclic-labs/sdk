@@ -2,6 +2,15 @@
   "$schema": "../compatibility/schemas/provenance.schema.json",
   "imports": [
     {
+      "sourceRepository": "https://github.com/acyclic-labs/cloud",
+      "sourceCommit": "63747d834c6af687ac1f4a555c1b0bd2b8fbc914",
+      "sourcePath": "lib/authority/src/task.rs",
+      "destinationPath": "rust/crates/native-runtime/src/task/custody.rs",
+      "license": "Apache-2.0",
+      "auditResult": "approved",
+      "reviewer": "Acyclic Labs owner-directed transfer into the Apache-2.0 SDK"
+    },
+    {
       "sourceRepository": "https://github.com/DelSkayn/rquickjs",
       "sourceCommit": "d7ef5eeae702fea24c03643064de454f1c1dd4b0",
       "sourcePath": "core (rquickjs-core 0.14.0 registry snapshot) and LICENSE",
