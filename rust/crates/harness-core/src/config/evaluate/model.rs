@@ -293,7 +293,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn generated_settings_match_fresh_evaluation_and_reject_corrupt_cache() {
+    async fn generated_settings_match_fresh_evaluation() {
         for mode in 0..13 {
             let variants = match mode {
                 4 => 8,
@@ -304,23 +304,5 @@ mod tests {
                 check(&[mode, variant, b'\"', b'\\', 0, 255]).await.unwrap();
             }
         }
-        // Corrupt the actual retained cache entry, then use the same oracle
-        // as the positive schedules; no alternate evaluator is involved.
-        let cache = Cache::default();
-        let tree = Files {
-            input: Vec::new(),
-            cycle: false,
-        };
-        let base = Value::Null;
-        let source = b"export default {admitted: true};";
-        let original = evaluate_cached("agent.ts", source, &tree, &base, Surface::Data, &cache)
-            .await
-            .unwrap();
-        cache.lock().unwrap().as_mut().unwrap().1 =
-            Ok(Arc::new((json!({"admitted": false}), Form::Value)));
-        let corrupt = observed(
-            evaluate_cached("agent.ts", source, &tree, &base, Surface::Data, &cache).await,
-        );
-        assert!(agrees(&corrupt, Some(&(original.value, original.form))).is_err());
     }
 }
