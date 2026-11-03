@@ -65,6 +65,9 @@ scorer-newline-decision protocol. `scorer` and `decision` extract its two origin
 objects. Four seeds change only version or scorer distinguishability at that same
 format boundary. `observation-sparse` omits the original observation's two optional
 fields, exercising duplicate-null mutations even when they were absent on input.
+`scorer-wrapped-adjacent` supplies the two adjacent signed-integer endpoints.
+It exercises both wrapping and the collision adjustment when choosing an
+unrelated answer, so that answer remains distinct from truth and injection.
 No provider payload is fabricated or relabeled.
 
 The target excludes the separate assignment/streaming analysis formats and
