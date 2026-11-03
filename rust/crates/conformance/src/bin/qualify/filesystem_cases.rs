@@ -181,16 +181,18 @@ pub(super) async fn filesystem_demand(root: std::path::PathBuf) -> Result<(), St
     Ok(())
 }
 
-fn open_sqlite_fixture(path: &Path) -> rusqlite::Result<rusqlite::Connection> {
-    let connection = rusqlite::Connection::open(path)?;
-    connection.busy_timeout(Duration::ZERO)?;
+fn sqlite_connection(path: &Path) -> Result<rusqlite::Connection, String> {
+    let connection = rusqlite::Connection::open(path).map_err(|error| error.to_string())?;
+    // These sequential consumers have no release event to wait on. Contention
+    // must surface at its original statement instead of retrying internally.
+    connection
+        .busy_timeout(Duration::ZERO)
+        .map_err(|error| error.to_string())?;
     Ok(connection)
 }
 
 pub(super) fn sqlite_wal_child(path: &Path) -> Result<(), String> {
-    use rusqlite::Connection;
-
-    let writer = open_sqlite_fixture(path).map_err(|error| error.to_string())?;
+    let writer = sqlite_connection(path)?;
     let mode: String = writer
         .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
         .map_err(|error| error.to_string())?;
@@ -203,7 +205,29 @@ pub(super) fn sqlite_wal_child(path: &Path) -> Result<(), String> {
              BEGIN IMMEDIATE; INSERT INTO entries VALUES (1, 'first'); COMMIT;",
         )
         .map_err(|error| error.to_string())?;
-    let reader = open_sqlite_fixture(path).map_err(|error| error.to_string())?;
+    let reader = sqlite_connection(path)?;
+    // Both original connections must refuse a held writer, then admit the
+    // same statement after that owner releases it. No retry loop participates.
+    for (owner, contender) in [(&writer, &reader), (&reader, &writer)] {
+        owner
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|error| error.to_string())?;
+        match contender.execute_batch("BEGIN IMMEDIATE") {
+            Err(rusqlite::Error::SqliteFailure(error, _))
+                if error.code == rusqlite::ErrorCode::DatabaseBusy => {}
+            outcome => {
+                return Err(format!(
+                    "step=sqlite-held-writer expected typed Busy, got {outcome:?}; recovery command: cargo run --locked -p acyclic-conformance --features local-runner --bin qualify -- --sqlite-verify-child {path:?}"
+                ));
+            }
+        }
+        owner
+            .execute_batch("ROLLBACK")
+            .map_err(|error| error.to_string())?;
+        contender
+            .execute_batch("BEGIN IMMEDIATE; ROLLBACK")
+            .map_err(|error| error.to_string())?;
+    }
     reader
         .execute_batch("BEGIN")
         .map_err(|error| error.to_string())?;
@@ -242,7 +266,7 @@ pub(super) fn sqlite_wal_child(path: &Path) -> Result<(), String> {
 }
 
 pub(super) fn sqlite_verify_child(path: &Path) -> Result<(), String> {
-    let connection = open_sqlite_fixture(path).map_err(|error| error.to_string())?;
+    let connection = sqlite_connection(path)?;
     let count: i64 = connection
         .query_row("SELECT count(*) FROM entries", [], |row| row.get(0))
         .map_err(|error| error.to_string())?;
@@ -368,44 +392,4 @@ pub(super) async fn filesystem_sqlite_wal(root: std::path::PathBuf) -> Result<()
     child?;
     detached?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::open_sqlite_fixture;
-
-    #[test]
-    fn sqlite_fixture_rejects_contention_without_retry() -> rusqlite::Result<()> {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("fixture.db");
-        let writer = open_sqlite_fixture(&path)?;
-        let contender = open_sqlite_fixture(&path)?;
-
-        // Check the retry policy before holding a lock: a restored library
-        // default must fail the control instead of sleeping in SQLite.
-        let busy_timeout = |connection: &rusqlite::Connection| {
-            connection.query_row("PRAGMA busy_timeout", [], |row| row.get::<_, i64>(0))
-        };
-        let inherited = rusqlite::Connection::open(&path)?;
-        assert_ne!(busy_timeout(&inherited)?, 0);
-        assert_eq!(busy_timeout(&writer)?, 0);
-        assert_eq!(busy_timeout(&contender)?, 0);
-
-        writer.execute_batch(
-            "PRAGMA journal_mode=WAL; CREATE TABLE entries (id INTEGER PRIMARY KEY); \
-             BEGIN IMMEDIATE; INSERT INTO entries VALUES (1);",
-        )?;
-        let insert = || contender.execute("INSERT INTO entries VALUES (2)", []);
-        let error = insert().unwrap_err();
-        assert_eq!(
-            error.sqlite_error().unwrap().code,
-            rusqlite::ErrorCode::DatabaseBusy,
-        );
-        writer.execute_batch("COMMIT")?;
-        assert_eq!(insert()?, 1);
-        let count: i64 =
-            contender.query_row("SELECT count(*) FROM entries", [], |row| row.get(0))?;
-        assert_eq!(count, 2);
-        Ok(())
-    }
 }
