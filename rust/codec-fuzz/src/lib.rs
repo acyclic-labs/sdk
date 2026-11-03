@@ -10,6 +10,7 @@ pub mod filesystem_pages;
 mod harness_manifest;
 pub mod harness_resources;
 pub mod inference_http;
+pub mod live_update;
 pub mod log_frame;
 mod mcp;
 #[cfg(feature = "storage-schedules")]
@@ -1202,6 +1203,7 @@ pub fn actor_codecs(bytes: &[u8]) {
     }
     actor_socket_verdict(bytes);
     acyclic_actors::local::socket_ledger_codec::check(bytes);
+    live_update::check(bytes);
     use acyclic_actors::{guest::wire, local::State};
     assert!(acyclic_actors::reservation::codec_fuzz::check(bytes));
     if let Ok(checkpoint) = serde_json::from_slice::<acyclic_actors::guest::Checkpoint>(bytes) {

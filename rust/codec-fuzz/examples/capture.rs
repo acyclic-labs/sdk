@@ -186,6 +186,13 @@ fn capture() -> Result<(), Box<dyn Error>> {
         capture_agent_controls(&mut manifest)?;
         return finish(&manifest, prefix);
     }
+    if std::env::args().any(|arg| arg == "--only-live-update") {
+        let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?;
+        for (name, bytes, producer) in acyclic_codec_fuzz::live_update::seeds()? {
+            save("actor_codecs", name, &bytes, producer, &mut manifest)?;
+        }
+        return finish_latest(&manifest, "actor_codecs/live-update-");
+    }
     if std::env::args().any(|arg| arg == "--only-actors") {
         let prefix = "actor_codecs/";
         let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?;
@@ -1053,7 +1060,10 @@ fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
 }
 
 fn capture_actors(manifest: &mut String) -> Result<(), Box<dyn Error>> {
-    for (name, bytes, producer) in acyclic_codec_fuzz::actor_seeds()? {
+    for (name, bytes, producer) in acyclic_codec_fuzz::actor_seeds()?
+        .into_iter()
+        .chain(acyclic_codec_fuzz::live_update::seeds()?)
+    {
         save("actor_codecs", name, &bytes, producer, manifest)?;
     }
     Ok(())

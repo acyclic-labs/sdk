@@ -684,6 +684,25 @@ the unchanged producer oracle must catch that same defect. Captures are emitted
 by the original production writers. This finite MemoryStream path does not
 establish physical restart, distributed ownership or instrumented coverage.
 
+The same `actor_codecs` target exercises all 23 public `live_update` document
+types. It compares decoder admission with a separately parsed typed value passed
+through the production canonical writer, including refusal of malformed JSON,
+unsupported versions and noncanonical bytes. Envelope admission also uses the
+public structural validation entry point. Writer captures cover optional and
+enum variants and decimal boundaries; they do not establish physical deployment,
+handoff or rollback behavior.
+
+```sh
+cargo run --locked --example capture -- --only-live-update --extend-goldens
+python3 actor-negative-control.py --live-update
+```
+
+The retained control removes canonical-byte rejection from the production decoder.
+The previous Actors oracle must miss this defect; the unchanged extended oracle
+must detect it before restored production passes the same retained corpus.
+Source branch coverage and an arbitrary-input campaign require separate results;
+corpus admission and a killed mutation alone do not establish them.
+
 The same Actors target admits the actual `SocketOpen::encode`,
 `SocketFrame::encode` and `socket_reply` writers before decoding arbitrary input.
 It checks all frame variants and close initiators, reply fields, and offered

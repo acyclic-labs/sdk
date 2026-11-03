@@ -69,8 +69,10 @@ def main():
         return socket_metadata()
     if sys.argv[1:] == ["--socket-ledger"]:
         return socket_ledger()
+    if sys.argv[1:] == ["--live-update"]:
+        return live_update()
     if sys.argv[1:]:
-        raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms|--guest-wire|--persisted-alarms|--reservation-book|--call-records|--call-schedules|--replay-diagnostics|--sockets|--socket-inputs|--socket-metadata|--socket-ledger|--capture]")
+        raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms|--guest-wire|--persisted-alarms|--reservation-book|--call-records|--call-schedules|--replay-diagnostics|--sockets|--socket-inputs|--socket-metadata|--socket-ledger|--live-update|--capture]")
     original = {path: path.read_bytes() for path in (PRODUCTION, ORACLE)}
     needle = b"Ok(Self::decode_bound(record)?.map(|(_, invocation)| invocation))"
     source = original[PRODUCTION]
@@ -466,6 +468,32 @@ def socket_ledger():
             run("same persisted oracle rejects actual production defect", "rejected", diagnostic)
         production.write_bytes(source)
         run("restored persisted writers and retained corpus", "accepted")
+    finally:
+        for path, value in original.items():
+            path.write_bytes(value)
+
+
+def live_update():
+    production = ROOT.parent / "crates/actors/src/live_update.rs"
+    original = {path: path.read_bytes() for path in (production, ORACLE)}
+    source, oracle = original[production], original[ORACLE]
+    anchor = b"document.v != 1 || encode(&document.value)? != bytes"
+    dispatch = b"    live_update::check(bytes);"
+    if source.count(anchor) != 1 or oracle.count(dispatch) != 1:
+        raise RuntimeError("live-update mutation anchor changed; recovery: inspect "
+                           "live_update::decode and actor_codecs before running "
+                           "python3 actor-negative-control.py --live-update")
+    try:
+        for label, value in (("live-update production", source), ("live-update oracle", oracle)):
+            print(f"{label} sha256={hashlib.sha256(value).hexdigest()}", flush=True)
+        production.write_bytes(source.replace(anchor, b"document.v != 1"))
+        ORACLE.write_bytes(oracle.replace(dispatch, b""))
+        run("previous Actors oracle misses noncanonical deployment admission", "accepted")
+        ORACLE.write_bytes(oracle)
+        run("unchanged deployment oracle detects noncanonical admission", "rejected",
+            "live-update document admission differs from canonical writer")
+        production.write_bytes(source)
+        run("restored deployment codec and retained Actors corpus", "accepted")
     finally:
         for path, value in original.items():
             path.write_bytes(value)
