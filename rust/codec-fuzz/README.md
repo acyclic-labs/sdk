@@ -44,7 +44,10 @@ The target preserves canonical invocation framing, command/reply correlation,
 Unknown request bytes and readable content. Reply corpus entries prefix their
 actual JSON command and a NUL separator; this selector is not a product format.
 Malformed base64 is derived from admitted content while retaining its original
-encoded length and range. These are SDK writer captures, not hosted traffic or
+encoded length and range. Writer inputs include content encoding to JSON field
+names, so wire mutation must preserve those fields. Quiet Usage and Events
+snapshots must refuse a live wait without source progress or settlement.
+These are SDK writer captures, not hosted traffic or
 evidence of authentication, dispatch, restart or distributed progress.
 
 Agent capture names include the shared record version. Previous captures and
