@@ -9,16 +9,16 @@ use futures::FutureExt;
 #[tokio::test]
 async fn lost_admission_reply_keeps_original_incarnation_closed()
 -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let streams = Arc::new(
+        acyclic_stream::LocalStream::open(
+            directory.path(),
+            acyclic_stream::LocalStreamLimits::default(),
+        )
+        .await?,
+    );
     for destroy in [false, true] {
         let machine = MachineId::new();
-        let directory = tempfile::tempdir()?;
-        let streams = Arc::new(
-            acyclic_stream::LocalStream::open(
-                directory.path(),
-                acyclic_stream::LocalStreamLimits::default(),
-            )
-            .await?,
-        );
         let root = StreamPath::new(format!("machine-tests/{machine}"))?;
         let path = StreamPath::new(format!("{root}/machines/{machine}"))?;
         let backend = LocalBackend {
@@ -219,6 +219,14 @@ async fn queued_spawn_observation_obeys_original_deadline_and_shutdown()
 #[tokio::test]
 async fn recovered_terminal_publication_reopens_only_its_original_admission()
 -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let streams = Arc::new(
+        acyclic_stream::LocalStream::open(
+            directory.path(),
+            acyclic_stream::LocalStreamLimits::default(),
+        )
+        .await?,
+    );
     for (settled, replay) in [
         (MachineState::Suspended, false),
         (MachineState::Running, false),
@@ -228,14 +236,6 @@ async fn recovered_terminal_publication_reopens_only_its_original_admission()
         (MachineState::Destroyed, true),
     ] {
         let machine = MachineId::new();
-        let directory = tempfile::tempdir()?;
-        let streams = Arc::new(
-            acyclic_stream::LocalStream::open(
-                directory.path(),
-                acyclic_stream::LocalStreamLimits::default(),
-            )
-            .await?,
-        );
         let root = StreamPath::new(format!("machine-tests/{machine}"))?;
         let path = StreamPath::new(format!("{root}/machines/{machine}"))?;
         let backend = LocalBackend {
