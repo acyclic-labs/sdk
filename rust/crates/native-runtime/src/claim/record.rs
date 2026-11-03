@@ -4,7 +4,7 @@
 //! path or identity round-trips exactly, and a record cut short by a crash is
 //! recognized as such.
 
-const MAGIC: &[u8] = b"acyclic-claim-v2\0";
+pub(super) const MAGIC: &[u8] = b"acyclic-claim-v2\0";
 const CHECKSUM_BYTES: usize = 8;
 /// A record is a few short fields; anything longer is not one.
 pub(crate) const RECORD_LIMIT: usize = 4096;
@@ -45,7 +45,7 @@ pub(super) enum Contents {
 
 /// FNV-1a: stable across builds, which a record must be, and enough to tell a
 /// torn record from a whole one.
-fn checksum(bytes: &[u8]) -> [u8; CHECKSUM_BYTES] {
+pub(super) fn checksum(bytes: &[u8]) -> [u8; CHECKSUM_BYTES] {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in bytes {
         hash ^= u64::from(*byte);
