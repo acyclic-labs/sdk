@@ -1,0 +1,22 @@
+--- a/rust/crates/stream/src/local/frames.rs
++++ b/rust/crates/stream/src/local/frames.rs
+@@ -72,2 +72,8 @@
+     }
++    if epoch.len() != 8
++        && std::env::var_os("ACYCLIC_CODEC_SHORT_RECORD").as_deref()
++            == Some(std::ffi::OsStr::new("journal"))
++    {
++        return Ok(0);
++    }
+     Ok(u64::from_le_bytes(
+--- a/rust/crates/stream/src/local/snapshot.rs
++++ b/rust/crates/stream/src/local/snapshot.rs
+@@ -83,2 +83,8 @@
+     )?;
++    if value.len() != 16
++        && std::env::var_os("ACYCLIC_CODEC_SHORT_RECORD").as_deref()
++            == Some(std::ffi::OsStr::new("incarnation"))
++    {
++        return Ok(0);
++    }
+     let value = <[u8; 16]>::try_from(value).map_err(|_| LocalStreamError::Corrupt)?;
