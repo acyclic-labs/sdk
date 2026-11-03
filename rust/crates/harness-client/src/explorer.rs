@@ -196,13 +196,19 @@ mod tests {
             }
             // Keep the displayed pass-through pages in the logical plan while
             // seeking beyond them; unrelated wants cannot prolong residency.
-            let wants: Vec<_> = (0..=128)
-                .chain(std::iter::once(1_000_000))
+            let wants: Vec<_> = std::iter::once(1_000_000)
+                .chain(0..=128)
                 .map(|index| (explorer.page(parent.clone(), index), Priority::Visible))
                 .collect();
             explorer.reader.plan(wants);
-            let [resume]: [Op; 1] = explorer.reader.poll(1).try_into().unwrap();
+            let requests = explorer.reader.poll(1);
+            assert_eq!(requests.len(), explorer.reader.policy().requests);
+            let resume = &requests[0];
             assert!(matches!(resume, Op::Children { index: 129, .. }));
+            // Raw cached pages lack this projection's original admission, so
+            // their own refreshes also use the ordinary request credit.
+            assert!(requests[1..].iter().all(|op| matches!(op,
+                Op::Children { index, .. } if *index < 129)));
             assert!(
                 explorer.reader.cache().take_listing_visits() <= 2,
                 "page predecessor visited unrelated retained pages"

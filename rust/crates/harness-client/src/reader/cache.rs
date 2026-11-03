@@ -1147,6 +1147,8 @@ impl RecordCache {
     /// Persist recent entries, most recently used last, as length-prefixed
     /// bytes. The entry section obeys the restore bound independently of
     /// allocation sharing; an older entry is omitted when it cannot fit.
+    /// Protected facts can exceed the recency target in a live frame. Persist
+    /// only the newest facts within that target, together with their entries.
     #[must_use]
     pub fn snapshot(&self) -> Vec<u8> {
         let Ok(binding) = self.access.binding() else {
@@ -1157,8 +1159,21 @@ impl RecordCache {
         if put_binding(&mut out, binding.as_ref(), self.max_bytes).is_err() {
             return Vec::new();
         }
-        put_u64(&mut out, self.meta.len() as u64);
-        for (path, meta) in &self.meta {
+        let mut direct = self.meta_lru[0].keys().rev().peekable();
+        let mut inherited = self.meta_lru[1].keys().rev().peekable();
+        let oldest = std::iter::from_fn(|| match (direct.peek(), inherited.peek()) {
+            (Some(a), Some(b)) if a >= b => direct.next(),
+            (Some(_), Some(_)) | (None, Some(_)) => inherited.next(),
+            (Some(_), None) => direct.next(),
+            (None, None) => None,
+        })
+        .take(self.max_streams)
+        .last()
+        .copied()
+        .unwrap_or(u64::MAX);
+        let retained = |meta: &Meta| meta.used >= oldest;
+        put_u64(&mut out, self.meta.len().min(self.max_streams) as u64);
+        for (path, meta) in self.meta.iter().filter(|(_, meta)| retained(meta)) {
             put_str(&mut out, path.as_str());
             put_u64(&mut out, meta.tail.map_or(0, |tail| tail + 1));
             out.push(u8::from(meta.origin_known));
@@ -1191,6 +1206,13 @@ impl RecordCache {
         let mut remaining = self.max_bytes.saturating_mul(2);
         let mut selected = Vec::new();
         for key in self.lru.values().rev() {
+            // A record must not outlive the fact that anchors its identity.
+            let path = match key {
+                Key::Record(path, _) | Key::Listing(path, _) => path,
+            };
+            if self.meta.get(path).is_some_and(|meta| !retained(meta)) {
+                continue;
+            }
             if let Some(entry) = self.entries.get(key) {
                 let encoded = entry.value.encoded_len(key);
                 if encoded <= remaining {
@@ -1544,6 +1566,86 @@ impl<'a> Input<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshots_keep_recent_protected_facts_within_restore_credit() {
+        use acyclic_stream::{
+            AppendRequest, ForkRequest, IdempotencyKey, MemoryStream, StreamProviderExt as _,
+        };
+
+        futures::executor::block_on(async {
+            let provider = MemoryStream::default();
+            let source = StreamPath::new("snapshot/source").unwrap();
+            provider
+                .append(AppendRequest {
+                    path: source.clone(),
+                    records: vec![b"first".as_slice().into(), b"second".as_slice().into()],
+                    if_tail: Some(0),
+                    idempotency_key: IdempotencyKey::new(b"snapshot source".to_vec()).unwrap(),
+                })
+                .await
+                .unwrap();
+            let mut paths = vec![source];
+            for index in 0..4 {
+                let destination = StreamPath::new(format!("snapshot/fork{index}")).unwrap();
+                provider
+                    .fork(ForkRequest {
+                        source: paths.last().unwrap().clone(),
+                        destination: destination.clone(),
+                        at_tail: Some(2),
+                        exclude: Vec::new(),
+                        idempotency_key: IdempotencyKey::new(destination.to_string()).unwrap(),
+                    })
+                    .await
+                    .unwrap();
+                paths.push(destination);
+            }
+            let mut heads = Vec::new();
+            for path in &paths {
+                heads.push(provider.head(path.clone()).await.unwrap());
+            }
+            for credit in 0..=paths.len() {
+                // Exercise both recency partitions and both possible newest
+                // kinds; path order deliberately differs from recency order.
+                for newest in 0..paths.len() {
+                    let mut cache = RecordCache::new(64 * 1024, credit);
+                    let mark = cache.begin_frame();
+                    for (path, head) in paths.iter().zip(&heads) {
+                        cache.observe_origin(path, head.origin.clone());
+                        cache.observe_tail(path, head.tail);
+                        let last = head.last.as_ref().unwrap();
+                        cache.note_commit(path, last.sequence, last.commit_id);
+                        cache.insert_record(path, last.sequence, last.value.clone(), Some(mark));
+                    }
+                    cache.touch_stream(&paths[newest]);
+                    assert_eq!(cache.streams(), paths.len());
+                    let expected: BTreeSet<_> = std::iter::once(newest)
+                        .chain((0..paths.len()).rev().filter(|index| *index != newest))
+                        .take(credit)
+                        .collect();
+                    let mut restored = RecordCache::new(64 * 1024, credit);
+                    restored.restore(&cache.snapshot()).unwrap();
+                    assert_eq!(restored.streams(), credit);
+                    for (index, (path, head)) in paths.iter().zip(&heads).enumerate() {
+                        assert_eq!(restored.tail(path), expected.contains(&index).then_some(2));
+                        assert_eq!(restored.origin_known(path), expected.contains(&index));
+                        if expected.contains(&index) {
+                            assert_eq!(restored.fork(path), head.origin.as_ref());
+                            let last = head.last.as_ref().unwrap();
+                            assert_eq!(restored.anchor(path, last.sequence), Some(last.commit_id));
+                        } else {
+                            assert!(!restored.entries.contains_key(&Key::Record(path.clone(), 1)));
+                        }
+                    }
+                    assert_eq!(
+                        cache.streams(),
+                        paths.len(),
+                        "persistence evicted live facts"
+                    );
+                }
+            }
+        });
+    }
 
     #[test]
     fn shared_payload_stays_charged_until_the_last_view_retires() {
