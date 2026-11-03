@@ -65,12 +65,14 @@ async fn compare<P: acyclic_harness::store::JournalProvider, O: Blobs + 'static>
                 Scenario::from_value(value.clone())?,
                 Arc::new(MemoryStream::default()),
             )
-            .await?
+            .await
+            .map_err(|error| format!("{}: memory executor: {error}", path.display()))?
             .trace()
             .await?;
             let remote =
                 execution::run_with_filesystem(Scenario::from_value(value)?, filesystem, stream)
-                    .await?
+                    .await
+                    .map_err(|error| format!("{}: service executor: {error}", path.display()))?
                     .trace()
                     .await?;
             if local != remote {

@@ -234,9 +234,13 @@ fn check(bytes: &[Vec<u8>; 2], denied: bool) -> TestCaseResult {
     prop_assert!(
         old.0 == new.0
             && work_matches
-            && semantic(old_trace) == semantic(new_trace)
+            && semantic(old_trace.clone()) == semantic(new_trace.clone())
             && input_matches,
-        "independent workspace binding changes references, bytes, errors or operation trace"
+        "independent workspace binding changes references, bytes, errors or operation trace: old={:?}, new={:?}, old_trace={:?}, new_trace={:?}",
+        old.0,
+        new.0,
+        old_trace,
+        new_trace
     );
     Ok(())
 }
@@ -261,6 +265,16 @@ fn exact_for(bytes: &[Vec<u8>; 2], unbound: bool) -> TestCaseResult {
     let [(old, expected_trace), (new, trace)] = paired(bytes, false, unbound, true);
     let expected = differential::allocation_counts(old.1);
     let actual = differential::allocation_counts(new.1);
+    prop_assert!(
+        old.0.is_ok(),
+        "reference publication did not execute: {:?}",
+        old.0
+    );
+    prop_assert!(
+        new.0.is_ok(),
+        "candidate publication did not execute: {:?}",
+        new.0
+    );
     prop_assert_eq!(old.0, new.0, "binding outputs differ");
     prop_assert_eq!(
         actual,
