@@ -34,12 +34,15 @@ pub(super) fn encode_checkpoint(value: CheckpointId) -> wire::CheckpointId {
         value: value.as_bytes().to_vec(),
     }
 }
+pub(super) fn encode_operation(value: OperationId) -> wire::OperationId {
+    wire::OperationId {
+        value: value.as_bytes().to_vec(),
+    }
+}
 pub(super) fn operation_request(value: OperationId) -> wire::OperationRequest {
     wire::OperationRequest {
         protocol: Some(protocol()),
-        operation: Some(wire::OperationId {
-            value: value.as_bytes().to_vec(),
-        }),
+        operation: Some(encode_operation(value)),
     }
 }
 pub(super) fn decode_uuid(value: &[u8]) -> Result<Uuid, ProviderError> {

@@ -69,9 +69,26 @@ operation_service! {
     (checkpoint, CheckpointMachineRequest, CheckpointAdmission),
     (fork, ForkCheckpointRequest, MachineAdmissions),
     (fork_machine, ForkMachineRequest, MachineAdmissions),
-    (inspect_checkpoint, InspectCheckpointRequest, CheckpointState),
     (events, EventsRequest, EventPage),
     (usage, UsageRequest, UsageReceipt);
+    async fn inspect_checkpoint(&self, request: Request<wire::InspectCheckpointRequest>)
+        -> Result<Response<wire::CheckpointState>, Status> {
+        let WatchReply::Script(script) = &self.watch else {
+            return Err(Status::unimplemented("inspect_checkpoint"));
+        };
+        let original = {
+            let mut script = script.lock().expect("observation script");
+            let original = script.results.clone().ok_or_else(|| Status::unimplemented("inspect_checkpoint"))?;
+            script.calls.push("inspect_checkpoint");
+            original
+        };
+        let checkpoint = decode_checkpoint(request.into_inner().checkpoint.as_ref())
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let observation = original.inspect_checkpoint(checkpoint).await
+            .map_err(|error| Status::failed_precondition(error.to_string()))?;
+        Ok(Response::new(observation.try_into()
+            .map_err(|error: ProviderError| Status::failed_precondition(error.to_string()))?))
+    }
     async fn list_machines(&self, request: Request<wire::ListMachinesRequest>)
         -> Result<Response<wire::MachinePage>, Status> {
         let WatchReply::Script(script) = &self.watch else {
@@ -297,14 +314,22 @@ operation_service! {
         request: Request<wire::OperationRequest>,
     ) -> Result<Response<wire::OperationState>, Status> {
         self.require_operation(&request.into_inner())?;
-        if let WatchReply::Script(script) = &self.watch {
+        let original = if let WatchReply::Script(script) = &self.watch {
             let mut script = script.lock().expect("observation script");
-            return script
-                .inspections
-                .pop_front()
-                .ok_or_else(|| Status::internal("unexpected inspection"))?
-                .map(Response::new)
-                .map_err(|code| Status::new(code, "inspection interrupted"));
+            if let Some(reply) = script.inspections.pop_front() {
+                return reply.map(Response::new)
+                    .map_err(|code| Status::new(code, "inspection interrupted"));
+            }
+            let original = script.results.clone().ok_or_else(|| Status::internal("unexpected inspection"))?;
+            script.calls.push("inspect_operation");
+            Some(original)
+        } else {
+            None
+        };
+        if let Some(original) = original {
+            let observation = original.inspect_operation(self.expected_operation).await
+                .map_err(|error| Status::failed_precondition(error.to_string()))?;
+            return Ok(Response::new(observation.into()));
         }
         Ok(Response::new(self.inspected.clone()))
     }

@@ -91,6 +91,23 @@ async fn machines_call_remote_pages_keep_original_cut_credit_and_observations()
         codec_fuzz::capture_machine(observation)?;
     }
     let child = page.machines.first().ok_or("original child missing")?.id;
+    let MutationOutcome::Checkpointed(checkpoint) = original
+        .checkpoint(child, IdempotencyKey::from_digest([46; 32]))
+        .await?
+    else {
+        unreachable!("original checkpoint")
+    };
+    let operation = original.inspect_operation(results.operation).await?;
+    #[cfg(feature = "test-support")]
+    {
+        codec_fuzz::capture_checkpoint(&checkpoint)?;
+        codec_fuzz::capture_operation(operation);
+    }
+    assert_eq!(remote.inspect_checkpoint(checkpoint.id).await?, checkpoint);
+    assert_eq!(
+        remote.inspect_operation(results.operation).await?,
+        operation
+    );
     for step in 0..5 {
         match step {
             0 => original.set_online(child, false).await?,
@@ -162,6 +179,7 @@ async fn machines_call_remote_pages_keep_original_cut_credit_and_observations()
     assert_eq!(
         script.lock().expect("original script").calls,
         [
+            vec!["inspect_checkpoint", "inspect_operation"],
             vec!["inspect_machine"; 5],
             vec!["read_results"; 2],
             vec!["watch"; replies.len()],

@@ -897,3 +897,14 @@ compares the client event with its original producer observation, including time
 and cursor, and retains terminal and dropped-producer progress checks. Production
 identity, sequence and timestamp defects are retained under
 `negative-controls/machines-event-{identity,sequence,time}.patch`.
+
+Checkpoint and operation observations use the shared contract and identity serving
+conversions. The existing
+`machines_call_remote_pages_keep_original_cut_credit_and_observations` property
+obtains both from the original simulator and compares the authenticated client
+responses with those observations. The same original packets reach the semantic
+oracle and each truncated prefix. Production checkpoint identity/time and
+operation identity/phase defects are retained under
+`negative-controls/machines-{checkpoint-identity,checkpoint-time,operation-identity,operation-phase}.patch`.
+This covers the original successful operation; other phases, retained corpus
+binding, instrumented coverage and physical provider qualification are separate.
