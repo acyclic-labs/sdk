@@ -26,7 +26,10 @@ fn summary(value: &e::SummaryRef) {
     for version in [0, 2, u32::MAX] {
         let mut changed = original.clone();
         changed["version"] = version.into();
-        assert!(serde_json::from_value::<e::SummaryRef>(changed).is_err());
+        assert!(
+            serde_json::from_value::<e::SummaryRef>(changed).is_err(),
+            "unsupported summary version admitted",
+        );
     }
     let mut changed = original.clone();
     changed["portable"]["descriptor"]["media_type"] = "application/json".into();
@@ -143,7 +146,10 @@ pub(super) fn check(bytes: &[u8]) {
         );
         for version in [0, 2, u32::MAX] {
             metadata["cache"]["version"] = version.into();
-            assert!(ModelCacheObservation::reported(&metadata).is_none());
+            assert!(
+                ModelCacheObservation::reported(&metadata).is_none(),
+                "unsupported cache observation version admitted",
+            );
         }
     }
     if let Some(value) = roundtrip::<e::SummaryRef>(bytes) {
@@ -200,10 +206,13 @@ pub(super) fn check(bytes: &[u8]) {
         let mut changed = original;
         changed["snapshot"]["pending"]["summary"][0] = (pending.summary[0] ^ 1).into();
         record.value = serde_json::to_vec(&changed).unwrap().into();
-        assert!(matches!(
-            e::Snapshot::decode(&record, &source(), u64::MAX),
-            Err(e::SnapshotError::Identity),
-        ));
+        assert!(
+            matches!(
+                e::Snapshot::decode(&record, &source(), u64::MAX),
+                Err(e::SnapshotError::Identity),
+            ),
+            "foreign snapshot preparation identity admitted",
+        );
     }
 }
 

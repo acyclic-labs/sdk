@@ -165,9 +165,20 @@ cache attribution or physical producer retirement.
 Run the retained production mutations with
 `python3 mutations/resource-codecs.py`. It first captures and checks the writer
 inputs, then removes each production admission guard while keeping the fuzz
-oracle unchanged. A compiler or tool failure does not count as mutant rejection.
+oracle unchanged. Rejection requires that guard's semantic diagnostic at the
+resource oracle's source location; an unrelated assertion, compiler or tool
+failure does not count.
 Corpus capture, executed coverage and mutation results must be recorded separately;
 the presence of a target does not establish complete format or state coverage.
+
+The residency harness in `harness-core/src/executor/model_cache.rs` calls the
+production reducer under `cfg(kani)`. It checks every initial access followed by
+every retained access, with independent explicit/managed lifetimes, full-width
+deadline arithmetic, field preservation, source-order and foreign-key/clock
+refusals. This is a two-transition scope from an empty entry, not induction over
+arbitrary histories or arbitrary restored entries. Neither this proof nor the
+codec oracle establishes original provider attribution, funding, physical release
+or whole-system constant cost. Running the codec target does not run Kani.
 
 Agent capture names include the shared record version. Previous captures and
 their provenance stay unchanged; waiting-status and checkpoint seeds retain

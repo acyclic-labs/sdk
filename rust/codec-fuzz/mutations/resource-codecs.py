@@ -12,29 +12,35 @@ command = ['cargo', 'run', '--locked', '--example', 'capture', '--',
            '--only-resources', '--extend-goldens']
 
 
-def run(step, negative=False):
+def run(step, diagnostic=None):
     if hashlib.sha256(oracle.read_bytes()).digest() != oracle_digest:
         raise RuntimeError(f'{step}: fuzz oracle changed; recovery: git diff -- src/harness_resources.rs')
     result = subprocess.run(command, cwd=package, capture_output=True, text=True)
     print(result.stdout, end='', flush=True)
     print(result.stderr, end='', flush=True)
-    failed_assertion = 'panicked at' in result.stderr and 'assertion' in result.stderr
-    if (negative and (result.returncode == 0 or not failed_assertion)) or (
-        not negative and result.returncode != 0
+    failed_oracle = (
+        'panicked at' in result.stderr
+        and 'src/harness_resources.rs:' in result.stderr.replace('\\', '/')
+        and diagnostic is not None and diagnostic in result.stderr
+    )
+    if (diagnostic is not None and (result.returncode == 0 or not failed_oracle)) or (
+        diagnostic is None and result.returncode != 0
     ):
-        raise RuntimeError(f'{step}: expected {"semantic assertion failure" if negative else "successful writer replay"}, exit={result.returncode}; recovery: cargo run --locked --example capture -- --only-resources --extend-goldens')
-    print(f'{step}: {"REJECTED" if negative else "PASS"}', flush=True)
+        raise RuntimeError(f'{step}: expected {diagnostic or "successful writer replay"}, exit={result.returncode}; recovery: cargo run --locked --example capture -- --only-resources --extend-goldens')
+    print(f'{step}: {"REJECTED" if diagnostic is not None else "PASS"}', flush=True)
 
 
 def main():
     run('original')
-    for step, relative, before, after in [
+    for step, relative, before, after, diagnostic in [
         ('cache-version', 'executor/model_cache.rs',
-         '(observation.version == Self::VERSION).then_some(observation)', 'Some(observation)'),
+         '(observation.version == Self::VERSION).then_some(observation)', 'Some(observation)',
+         'unsupported cache observation version admitted'),
         ('summary-version', 'conversation/epochs/summary.rs',
-         'if wire.version != 1 {', 'if false {'),
+         'if wire.version != 1 {', 'if false {', 'unsupported summary version admitted'),
         ('snapshot-identity', 'conversation/epochs/snapshot.rs',
-         'if wire.epoch.key.digest_through(pending.through) != pending.summary {', 'if false {'),
+         'if wire.epoch.key.digest_through(pending.through) != pending.summary {', 'if false {',
+         'foreign snapshot preparation identity admitted'),
     ]:
         production = root / 'rust/crates/harness-core/src' / relative
         original = production.read_bytes()
@@ -43,7 +49,7 @@ def main():
             raise RuntimeError(f'{step}: expected one production guard; recovery: git diff -- {production}')
         try:
             production.write_bytes(source.replace(before, after).encode())
-            run(step, negative=True)
+            run(step, diagnostic)
         finally:
             production.write_bytes(original)
 
