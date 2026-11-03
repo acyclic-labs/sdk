@@ -716,9 +716,22 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                     delete_access,
                     None,
                 )?
-                .await?;
+                .await
+                .expect("a delete-only ceiling must publish deletions");
             assert_eq!(removed.members.len(), 1);
             assert_eq!(removed.files().count(), 0);
+            let replay = host
+                .put_changes(
+                    &volume,
+                    &write,
+                    &[ContentChange::DeleteExpected { source: first }],
+                    &delete_key,
+                    64,
+                    delete_access,
+                    None,
+                )?
+                .await?;
+            assert_eq!(replay, removed);
             let observed = host
                 .observe_changes(&volume, &write, &delete_key, 64_000, delete_access)?
                 .await?
