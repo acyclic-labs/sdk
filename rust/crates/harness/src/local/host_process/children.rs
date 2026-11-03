@@ -708,34 +708,6 @@ mod framing {
     use super::*;
 
     #[test]
-    fn a_receipt_follows_its_child_to_a_remounted_view() {
-        let parent = AgentPath::root(&crate::agent::AgentId::from_bytes([1; 16]));
-        let Ok(child) = parent.child(&crate::agent::AgentId::from_bytes([2; 16])) else {
-            panic!("a child path nests under its root");
-        };
-        let reply = |task: &AgentPath, cwd: &str| serde_json::json!({"task": task, "cwd": cwd});
-        let Ok(receipt) = Receipt::accepted(&reply(&child, "/w/.views/a")) else {
-            panic!("the first reply names the child");
-        };
-        // An idle child's view was released; the next exchange mounted it
-        // elsewhere, and its turn runs there.
-        assert_eq!(
-            receipt.confirm(&reply(&child, "/w/.views/b")).ok(),
-            Some(PathBuf::from("/w/.views/b"))
-        );
-        // Negative control: a reply naming another task is still refused.
-        assert!(matches!(
-            receipt.confirm(&reply(&parent, "/w/.views/b")),
-            Err(Error::Conflict(_))
-        ));
-        assert!(
-            receipt
-                .confirm(&serde_json::json!({"task": child}))
-                .is_err()
-        );
-    }
-
-    #[test]
     fn oversized_native_events_are_omitted_once_without_wedging_the_stream() {
         let mut events = acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT);
         let mut omitted = 0;
