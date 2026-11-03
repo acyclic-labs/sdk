@@ -37,32 +37,45 @@ pub(super) async fn waiting<F: Future>(on: &'static str, future: F) -> F::Output
     future.await
 }
 
-pub(super) async fn run<F>(
+pub(super) fn run<F>(
     io: acyclic_native_runtime::testing::Schedule,
     registry: Arc<Registry>,
     path: PathBuf,
     scenario: F,
-) -> F::Output
+) -> impl Future<Output = F::Output>
 where
     F: Future,
 {
-    // Poll async drivers directly. Their Rc state stays on this event loop;
-    // only physical native operations acquire native completion owners.
+    // Pin the caller before constructing nested attribution futures. Moving its
+    // inline state through each wrapper otherwise multiplies the poll stack.
+    scoped(io, registry, path, Box::pin(scenario))
+}
+
+async fn scoped<F: Future>(
+    io: acyclic_native_runtime::testing::Schedule,
+    registry: Arc<Registry>,
+    path: PathBuf,
+    scenario: std::pin::Pin<Box<F>>,
+) -> F::Output {
+    // Rc state stays on this event loop; only physical native operations
+    // acquire native completion owners.
     io.scope(admitted(registry, &path, scenario)).await
 }
 
-pub(super) async fn guarded<F: Future>(path: &Path, future: F) -> Result<F::Output, String> {
-    if CURRENT.try_with(|_| ()).is_ok() {
-        return Ok(future.await);
+pub(super) fn guarded<F: Future>(
+    path: &Path,
+    future: F,
+) -> impl Future<Output = Result<F::Output, String>> {
+    let future = Box::pin(future);
+    let path = path.to_owned();
+    async move {
+        if CURRENT.try_with(|_| ()).is_ok() {
+            return Ok(future.await);
+        }
+        let mut guard = super::progress_guard::Guard::new();
+        let work = scoped(guard.io.clone(), guard.registry.clone(), path, future);
+        guard.run(work).await
     }
-    let mut guard = super::progress_guard::Guard::new();
-    let work = run(
-        guard.io.clone(),
-        guard.registry.clone(),
-        path.into(),
-        future,
-    );
-    guard.run(work).await
 }
 
 #[tokio::test(start_paused = true)]

@@ -31,18 +31,20 @@ impl Guard {
         future: F,
         retire: impl FnOnce() -> Result<(), String>,
     ) -> Result<F::Output, String> {
-        let mut future = Box::pin(future);
-        let result = self.drive(future.as_mut()).await;
-        let result = match retire() {
-            Ok(()) => result,
-            Err(error) => Err(error),
+        let result = {
+            let mut future = std::pin::pin!(future);
+            let result = self.drive(future.as_mut()).await;
+            let result = match retire() {
+                Ok(()) => result,
+                Err(error) => Err(error),
+            };
+            if result.is_err() {
+                self.io.cancel();
+            }
+            // Drop the pinned caller before draining its accepted owners. The
+            // runner's abort guards also cancel tracked scenario tasks.
+            result
         };
-        if result.is_err() {
-            self.io.cancel();
-        }
-        // Cancel the caller before draining its accepted owners. The runner's
-        // abort guards also cancel each actual, tracked scenario task.
-        drop(future);
         let io = self.io.clone();
         let cleanup = self.drive(io.drained()).await;
         match result {
