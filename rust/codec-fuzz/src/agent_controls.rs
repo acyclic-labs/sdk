@@ -78,17 +78,6 @@ fn success(reply: &AgentReply, command: &AgentCommand) {
     if let AgentReply::Content { data, .. } = reply {
         reply.content().expect("admitted content must decode");
         if !data.is_empty() {
-            let mut wire = encode_agent_reply(&Ok(reply.clone()), command).unwrap();
-            let quoted = serde_json::to_vec(data).unwrap();
-            let start = wire
-                .windows(quoted.len())
-                .position(|part| part == quoted)
-                .unwrap();
-            wire[start + 1] = b'!';
-            assert!(
-                decode_agent_reply(&wire, command).is_err(),
-                "invalid base64 wire admitted"
-            );
             let mut changed = json(reply);
             // Preserve the original encoded length, file range and padding.
             // Invalid alphabet alone must fail at admission, not at display.
@@ -96,6 +85,21 @@ fn success(reply: &AgentReply, command: &AgentCommand) {
             invalid[0] = b'!';
             changed["data"] = String::from_utf8(invalid).unwrap().into();
             let changed: AgentReply = serde_json::from_value(changed).unwrap();
+            // Replace the complete typed body, so content equal to a JSON key
+            // cannot accidentally mutate the key instead of its value.
+            let body = serde_json::to_vec(reply).unwrap();
+            let invalid = serde_json::to_vec(&changed).unwrap();
+            assert_eq!(body.len(), invalid.len());
+            let mut wire = encode_agent_reply(&Ok(reply.clone()), command).unwrap();
+            let start = wire
+                .windows(body.len())
+                .position(|part| part == body)
+                .unwrap();
+            wire[start..start + body.len()].copy_from_slice(&invalid);
+            assert!(
+                decode_agent_reply(&wire, command).is_err(),
+                "invalid base64 wire admitted"
+            );
             assert!(
                 encode_agent_reply(&Ok(changed), command).is_err(),
                 "invalid base64 admitted"
@@ -169,6 +173,24 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
                 items: Vec::new(),
                 next: None,
             },
+        ),
+        (
+            "read-data",
+            AgentCommand::Read {
+                agent: agent.clone(),
+                target: ReadTarget::Approval { status: 0 },
+                offset: 0,
+            },
+            AgentReply::read(b"\x75\xab\x5a", 3),
+        ),
+        (
+            "read-kind",
+            AgentCommand::Read {
+                agent: agent.clone(),
+                target: ReadTarget::Approval { status: 0 },
+                offset: 0,
+            },
+            AgentReply::read(b"\x92\x29\xdd", 3),
         ),
         (
             "read",
