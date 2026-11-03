@@ -10,6 +10,8 @@ fn child() -> io::Result<()> {
     if std::env::var_os(MODE).is_none() {
         return Ok(());
     }
+    #[cfg(unix)]
+    assert_eq!(std::env::args_os().next().unwrap(), "native-launch-child");
     if let Some(marker) = std::env::var_os(MARKER) {
         std::fs::write(marker, b"ran")?;
     }
@@ -54,6 +56,10 @@ fn command(root: &std::path::Path) -> CaptureRequest {
 
 fn command_at(root: &std::path::Path, program: impl AsRef<std::ffi::OsStr>) -> CaptureRequest {
     let mut command = ProcessCommand::new(program);
+    // Libtest parses UTF-8 argv even when the OS launched a native-byte path.
+    // Preserve that path and give this test child an explicit, valid argv[0].
+    #[cfg(unix)]
+    command.arg0("native-launch-child");
     command
         .args([
             "--exact",
