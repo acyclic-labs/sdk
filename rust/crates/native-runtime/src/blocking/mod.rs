@@ -104,16 +104,8 @@ pub(crate) fn task_completion<T: Send + 'static>(
         .transpose()?;
     let state = Arc::new(CompletionMutex::new(CompletionState {
         task_pending: true,
-        result: None,
-        panic: None,
-        waker: None,
         _allocation: allocation,
-        #[cfg(all(test, loom))]
-        broken_wake: false,
-        #[cfg(all(test, loom))]
-        broken_accounting: false,
-        #[cfg(all(test, loom))]
-        broken_charge: false,
+        ..CompletionState::default()
     }));
     let completion = Arc::clone(&state);
     let span = if std::ptr::eq(pool, &BLOCKING_WORKERS) {
