@@ -27,6 +27,24 @@ text, tool invocation and the result continuation; they do not qualify other
 provider endpoints. Other existing corpus entries are not claimed as real
 provider captures by this table.
 
+The three `provider_stream/llamacpp-*-request` seeds retain the matching original
+request JSON files from that same capture and source commit, prefixed only by
+selector `V` and Chat adapter byte `02`. `SOURCES.tsv` records the original
+request and seed hashes. The existing corpus control requires the unmodified
+requests to pass production input validation and sends both reserved-key
+ignored-field mutations through the same input round-trip oracle. These mutations
+are not additional recordings. The generated diagnostics property reuses that
+oracle rather than keeping a separate decoder and comparison. Captured request
+acceptance does not establish remote acceptance for arbitrary input or other
+providers.
+
+Apply only the input-helper hunk of the retained admission mutation with
+`git apply --include=rust/crates/harness-providers/src/fuzzing.rs rust/crates/harness-providers/fuzz/mutations/literal-input-default-decoder.patch`.
+The unchanged `checked_in_stream_corpus_obeys_the_properties` control must fail
+at `accepted captured request skipped input validation`; restore the source
+before the positive control. This is separate from the production Chat usage-loss
+negative control below.
+
 The existing `checked_in_stream_corpus_obeys_the_properties` control replays
 all three recorded SSE bodies through the real Chat adapter and chunk-invariance
 oracle. Each must also decode successfully, so equal refusals cannot qualify a
