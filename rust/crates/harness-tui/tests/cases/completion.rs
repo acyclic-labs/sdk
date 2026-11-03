@@ -17,12 +17,6 @@ mod deltas;
 mod sequences;
 
 #[test]
-fn unicode_theme_completion_preserves_the_configured_name() {
-    sequences::catalog_round_trip("shell", "sh", "Éclair Light").unwrap();
-    sequences::catalog_round_trip("shell", "sh", "ΟΣ").unwrap();
-}
-
-#[test]
 fn completion_fuzz_empty_input_is_valid() {
     sequences::exercise(&[]).unwrap();
 }
@@ -42,6 +36,9 @@ proptest! {
 
 #[test]
 fn completion_regression_corpus() {
+    for theme in ["Éclair Light", "ΟΣ"] {
+        sequences::catalog_round_trip("shell", "sh", theme).unwrap();
+    }
     for seed in [
         include_bytes!("../../fuzz/corpus/completion_events/undo-refresh").as_slice(),
         include_bytes!("../../fuzz/corpus/completion_events/slash").as_slice(),
