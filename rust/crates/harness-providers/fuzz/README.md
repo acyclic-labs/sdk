@@ -49,6 +49,10 @@ zero. It uses the shared production SSE framer and stops at the original
 `[DONE]` event. This prevents equally missing metadata at every chunk width from
 passing the output-only consensus check. The three recorded llama.cpp captures
 above supply the real wire inputs; arbitrary input mutations use the same check.
+The oracle uses the adapter's literal-map JSON decoder, so reserved serde keys
+in ignored fields cannot produce false crashes. The existing corpus control
+inserts both reserved key forms into the original Chat frames and requires
+unchanged production events and the same conservation checks.
 
 The retained `mutations/chat-drop-wire-usage.patch` removes the production Chat
 adapter's usage admission. From the repository root, apply it and run
