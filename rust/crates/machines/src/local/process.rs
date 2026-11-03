@@ -114,6 +114,10 @@ impl LocalMachine {
                 ProviderError::Rejected(format!("local command refused before spawn: {}; recovery: restore original workspace authority before a new command", failure.error)),
                 Some(handler.into_inner()),
             ),
+            LaunchFailure::Control { error, handler } => (
+                ProviderError::Rejected(format!("local command owner refused before spawn: {error}; recovery: restore original workspace authority before a new command")),
+                Some(handler.into_inner()),
+            ),
             LaunchFailure::Indeterminate { handler, .. } => (
                 ProviderError::CommandIndeterminate(machine), handler.map(ControlledCapture::into_inner),
             ),

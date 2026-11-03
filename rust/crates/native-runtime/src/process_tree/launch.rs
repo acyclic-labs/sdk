@@ -25,8 +25,8 @@ pub struct CaptureRequest {
     pub maximum_output_bytes: usize,
 }
 
-/// Why a launch produced no capture. The two cases are distinct types of
-/// outcome, so a definite refusal can never be reported as unknown.
+/// Why a launch produced no capture. Admission and owner-control refusals
+/// remain distinct from an indeterminate spawn or lost worker.
 pub enum LaunchFailure<H> {
     /// Refused before spawning, by the command itself, the owner check or
     /// the deadline: nothing ran. `failure` carries no output and
@@ -36,6 +36,14 @@ pub enum LaunchFailure<H> {
         /// The definite stop.
         failure: ProcessCaptureFailure,
         /// The original handler, already retired with cleanup completed.
+        handler: H,
+    },
+    /// The original owner rejected the launch before spawn. Preserve its
+    /// typed error, including cancellation and a dropped control producer.
+    Control {
+        /// The owner's original error.
+        error: io::Error,
+        /// The original handler, retired with nothing left to clean up.
         handler: H,
     },
     /// Spawning or its worker failed: the command may have run. Never resubmit.
@@ -216,7 +224,8 @@ impl CaptureRequest {
             return refused(io::ErrorKind::InvalidInput.into(), handler);
         }
         if let Err(error) = handler.check() {
-            return refused(error, handler);
+            handler.retired(true);
+            return Err(LaunchFailure::Control { error, handler });
         }
         match self.schedule {
             CaptureSchedule::Deadline(deadline) if capture_now() >= deadline => {

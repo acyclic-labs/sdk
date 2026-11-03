@@ -49,7 +49,11 @@ impl CaptureHandler for Recorder {
 }
 
 fn command(root: &std::path::Path) -> CaptureRequest {
-    let mut command = ProcessCommand::new(std::env::current_exe().unwrap());
+    command_at(root, std::env::current_exe().unwrap())
+}
+
+fn command_at(root: &std::path::Path, program: impl AsRef<std::ffi::OsStr>) -> CaptureRequest {
+    let mut command = ProcessCommand::new(program);
     command
         .args([
             "--exact",
@@ -81,7 +85,20 @@ async fn collected_and_streamed_launches_run_a_command_identically() -> io::Resu
     };
     let collected = collected.await??;
     let collected = collected.result.map_err(io::Error::other)?;
-    let Ok(mut streamed) = command(root.path()).stream(Recorder::default()).await else {
+    let executable = std::env::current_exe()?;
+    #[cfg(unix)]
+    let executable = {
+        use std::os::unix::ffi::OsStrExt;
+        let native = root.path().join(std::ffi::OsStr::from_bytes(b"child-\xff"));
+        std::os::unix::fs::symlink(executable, &native)?;
+        native
+    };
+    // The collected command is the ordinary-path control. Streaming must also
+    // preserve a native executable path that cannot be represented as UTF-8.
+    let Ok(mut streamed) = command_at(root.path(), executable)
+        .stream(Recorder::default())
+        .await
+    else {
         panic!("streamed launch failed");
     };
     let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
@@ -140,12 +157,19 @@ async fn refusals_precede_spawn_and_return_the_original_handler() -> io::Result<
     for (refuse, kind) in refusals {
         let (mut command, mut handler) = (command(root.path()), Recorder::default());
         refuse(&mut command, &mut handler);
-        let Err(LaunchFailure::Refused { failure, handler }) = command.capture(handler).await
-        else {
-            panic!("{kind:?} was not refused before spawn");
+        let handler = match command.capture(handler).await {
+            Err(LaunchFailure::Refused { failure, handler }) => {
+                assert_eq!(failure.error.kind(), kind);
+                assert!(failure.cleanup_completed && failure.status.is_none());
+                handler
+            }
+            Err(LaunchFailure::Control { error, handler }) => {
+                assert_eq!(kind, io::ErrorKind::PermissionDenied);
+                assert_eq!(error.kind(), kind);
+                handler
+            }
+            _ => panic!("{kind:?} was not refused before spawn"),
         };
-        assert_eq!(failure.error.kind(), kind);
-        assert!(failure.cleanup_completed && failure.status.is_none());
         assert_eq!(handler.retired, Some(true));
         assert!(!marker.exists(), "{kind:?} reached the process");
     }

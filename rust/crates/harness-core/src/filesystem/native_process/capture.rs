@@ -191,6 +191,9 @@ pub async fn start_capture<H: acyclic_native_runtime::CaptureHandler>(
         Err(acyclic_native_runtime::LaunchFailure::Refused { failure, handler }) => {
             Started::Finished(Ok(Err(failure)), handler)
         }
+        Err(acyclic_native_runtime::LaunchFailure::Control { error, handler }) => {
+            Started::Finished(Err(error), handler)
+        }
         Err(acyclic_native_runtime::LaunchFailure::Indeterminate {
             error,
             handler: Some(handler),
