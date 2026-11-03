@@ -153,3 +153,42 @@ pub fn validate_location_hint(value: &str) -> Result<(), IdentityError> {
         Err(IdentityError::InvalidLocationHint)
     }
 }
+
+#[cfg(kani)]
+mod proofs {
+    #[kani::proof]
+    #[kani::unwind(64)]
+    fn bounded_actor_triples_round_trip_and_refuse_resource_encodings() {
+        use crate::addressing::{ActorReference, IdentityError, ResourceIdentity, testing};
+        let account: [u8; 4] = kani::any();
+        let namespace: [u8; 4] = kani::any();
+        let id: [u8; 4] = kani::any();
+        let lengths: [usize; 3] = kani::any();
+        for length in lengths {
+            kani::assume((1..=4).contains(&length));
+        }
+        let account = &account[..lengths[0]];
+        let namespace = &namespace[..lengths[1]];
+        let id = &id[..lengths[2]];
+        let Ok(value) = ActorReference::new(account, namespace, id) else {
+            return;
+        };
+        let encoded = value.encode();
+        assert_eq!(ActorReference::decode(&encoded), Ok(value));
+        testing::framing(&encoded, ActorReference::decode);
+        let resource = ResourceIdentity::new(account, id).unwrap().encode();
+        testing::framing(&resource, ResourceIdentity::decode);
+        assert!(ActorReference::decode(&resource).is_err());
+        assert!(ResourceIdentity::decode(&encoded).is_err());
+        let version = encoded.len() - (3 * 8 + account.len() + namespace.len() + id.len()) - 1;
+        let other: u8 = kani::any();
+        kani::assume(other != 1);
+        let mut refused = encoded;
+        refused[version] = other;
+        refused.truncate(version + 1);
+        assert_eq!(
+            ActorReference::decode(&refused),
+            Err(IdentityError::UnsupportedVersion)
+        );
+    }
+}
