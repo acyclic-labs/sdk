@@ -39,6 +39,10 @@ test("decoder fuzz oracles reject planted production defects", async () => {
       "indexed = { at: 0, length: bytes.length, written: this.#written };", "spool"],
     ["process.mjs", "const bytes = Buffer.alloc(this.#completed), fd = openSync(this.#path, \"r\");",
       "const bytes = Buffer.alloc(0), fd = openSync(this.#path, \"r\");", "spool"],
+    ["process.mjs", 'const abort = () => wait.reject(new SpoolEnded("cancelled", "wait cancelled", signal.reason));',
+      'const abort = () => wait.reject(new SpoolEnded("cancelled", "wait cancelled", undefined));', "spool"],
+    ["process.mjs", 'keyed(key, { signal } = {}) {\n    if (signal?.aborted) return Promise.reject(new SpoolEnded("cancelled", "wait cancelled", signal.reason));',
+      'keyed(key, { signal } = {}) {', "spool"],
     ["process.mjs", "this.#last.set(needle, base + at);", "this.#last.set(needle, 0);", "watch"],
     ["process.mjs", "const combined = this.#tail + text, base = this.#offset - this.#tail.length;",
       "const combined = text, base = this.#offset;", "watch"],
@@ -97,7 +101,7 @@ test("decoder fuzz oracles reject planted production defects", async () => {
     const result = await new Promise(resolve => execFile(process.execPath, ["--input-type=module", "--eval", script], {
       cwd: new URL(".", import.meta.url), encoding: "utf8", windowsHide: true,
     }, (error, stdout, stderr) => resolve({ error, stdout, stderr })));
-    const recovery = `step=detect planted ${file} defect; recovery=node --test scripts/graphcoder-e2e/decoder-fuzz-negative.test.mjs`;
+    const recovery = `step=detect planted ${file} defect ${JSON.stringify(before)}; recovery=node --test scripts/graphcoder-e2e/decoder-fuzz-negative.test.mjs`;
     assert.equal(result.error?.signal, null, recovery);
     assert.equal(result.error?.code, 1, `${recovery}\n${result.stdout}\n${result.stderr}`);
     assert.match(result.stdout, /PLANTED_DEFECT_REJECTED/, `${recovery}\n${result.stdout}\n${result.stderr}`);

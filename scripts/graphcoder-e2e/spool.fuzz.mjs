@@ -54,6 +54,11 @@ async function replay(bytes, unique, partition, closedFirst, path) {
   const events = [];
   spool.subscribe(event => events.push(event));
   const observed = promise => promise.then(value => ({ value }), error => ({ error }));
+  const cancellation = new AbortController(), reason = Symbol("cancel original waiter");
+  const cancelled = [observed(spool.next(() => false, { signal: cancellation.signal })),
+    observed(spool.keyed(Symbol("cancelled key"), { signal: cancellation.signal }))];
+  cancellation.abort(reason);
+  cancelled.push(observed(spool.keyed(Symbol("already cancelled key"), { signal: cancellation.signal })));
   const first = observed(spool.next(() => true));
   const firstKey = reference.index.keys().next();
   const keyed = firstKey.done ? undefined : observed(spool.keyed(firstKey.value));
@@ -65,6 +70,11 @@ async function replay(bytes, unique, partition, closedFirst, path) {
   const cause = await terminal;
   await drained;
   await persisted;
+  for (const pending of cancelled) {
+    const result = await pending;
+    assert.equal(result.error?.kind, "cancelled", "original waiter cancellation must precede later source EOF");
+    assert.equal(result.error.detail, reason, "cancellation retains its original reason");
+  }
   assert.equal(cause.kind, reference.kind, "original terminal must survive byte partitions and physical-exit order");
   assert.equal(await missing, cause, "all original waiters must receive the same terminal");
   assert.equal(spool.ended, cause);
@@ -78,6 +88,9 @@ async function replay(bytes, unique, partition, closedFirst, path) {
     let actual;
     await assert.doesNotReject(async () => { actual = await spool.keyed(id); }, "the original indexed event must remain readable");
     assert.deepEqual(actual, event, "late lookup must preserve the first committed event");
+    const cancelled = await observed(spool.keyed(id, { signal: cancellation.signal }));
+    assert.equal(cancelled.error?.kind, "cancelled", "retained indexed data cannot bypass caller cancellation");
+    assert.equal(cancelled.error.detail, reason);
   }
   if (path) assert.deepEqual(await spool.history(), reference.written, "history contains only original completed transcript lines");
   await assert.rejects(spool.next(() => true), error => error === cause);
