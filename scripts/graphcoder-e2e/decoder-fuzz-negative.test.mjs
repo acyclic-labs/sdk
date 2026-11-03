@@ -15,6 +15,14 @@ test("decoder fuzz oracles reject planted production defects", () => {
       "if (Array.isArray(value.settled)) for (const child of value.settled.slice(0, 1))", "assertions"],
     ["assertions.mjs", 'assert.equal(value.id, id, "reply names a different prompt");',
       "void id;", "assertions"],
+    ["assertions.mjs", 'assert.ok(Number.isSafeInteger(value.inbox) && value.inbox >= 0, "missing committed inbox identity");',
+      "void value.inbox;", "assertions"],
+    ["assertions.mjs", 'assert.equal(typeof value.text, "string", "missing committed answer text");',
+      "void value.text;", "assertions"],
+    ["assertions.mjs", 'assert.ok(variants[0] === "authored" ? file.generation !== undefined : typeof file.version === "string",',
+      "assert.ok(true,", "assertions"],
+    ["assertions.mjs", 'value.success === false || (typeof value.exit_code === "number" && value.exit_code !== 0)',
+      "value.success === false", "assertions"],
   ];
   for (const [file, before, after, oracle] of mutations) {
     // Mutate the actual imported implementation, never a parallel model. A
