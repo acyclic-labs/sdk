@@ -27,13 +27,14 @@ pub trait ObjectSealer: acyclic_stream::ProviderPlatform {
     fn stored_limit(&self, id: ObjectId, plaintext_limit: u64) -> Result<u64, ObjectStoreError>;
 
     /// Authenticates the seal against every association field and returns plaintext.
-    /// Returned allocations retain the caller's original work custody.
+    /// Views preserve the input retention evidence; new allocations retain
+    /// the caller's original work custody and report their exact capacity.
     fn open(
         &self,
         id: ObjectId,
-        stored: OwnedBytes,
+        stored: ObjectRead,
         context: &mut AuthorityWork<'_>,
-    ) -> Result<OwnedBytes, ObjectStoreError>;
+    ) -> Result<ObjectRead, ObjectStoreError>;
 }
 
 /// Direct plaintext CAS storage.
@@ -60,9 +61,9 @@ impl ObjectSealer for PlainObjects {
     fn open(
         &self,
         id: ObjectId,
-        stored: OwnedBytes,
+        stored: ObjectRead,
         _: &mut AuthorityWork<'_>,
-    ) -> Result<OwnedBytes, ObjectStoreError> {
+    ) -> Result<ObjectRead, ObjectStoreError> {
         self.stored_limit(id, stored.len() as u64)?;
         Ok(stored)
     }
@@ -72,21 +73,21 @@ impl<P: ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
     pub(super) fn open_stored(
         &self,
         id: ObjectId,
-        bytes: OwnedBytes,
+        bytes: ObjectRead,
         maximum: u64,
         work: &mut KernelAccounting<'_>,
-    ) -> Result<OwnedBytes, crate::FsError> {
+    ) -> Result<ObjectRead, crate::FsError> {
         self.open_prehashed(id, bytes, maximum, None, work)
     }
 
     pub(super) fn open_prehashed(
         &self,
         id: ObjectId,
-        bytes: OwnedBytes,
+        bytes: ObjectRead,
         maximum: u64,
         authenticated: Option<&acyclic_stream::SealedBytes>,
         work: &mut KernelAccounting<'_>,
-    ) -> Result<OwnedBytes, crate::FsError> {
+    ) -> Result<ObjectRead, crate::FsError> {
         if let Some(sealed) = authenticated {
             if acyclic_objects::Digest::from_bytes(*sealed.digest()) != blob(id) {
                 return Err(ObjectStoreError::Corrupt.into());
@@ -97,7 +98,7 @@ impl<P: ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                 digest: storage.locator,
                 storage: None,
             };
-            read::hash(physical, &bytes, bytes.len() as u64, work)?;
+            read::hash(physical, &bytes.bytes, bytes.len() as u64, work)?;
         }
         let bytes = {
             #[cfg(not(target_arch = "wasm32"))]
@@ -124,7 +125,7 @@ impl<P: ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             std::ptr::eq(sealed.bytes().as_ref(), bytes.as_ref())
                 && crate::Digest::from_bytes(*sealed.digest()) == id.digest
         }) {
-            read::hash(id, &bytes, bytes.len() as u64, work)?;
+            read::hash(id, &bytes.bytes, bytes.len() as u64, work)?;
         }
         Ok(bytes)
     }
@@ -132,9 +133,9 @@ impl<P: ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
     fn open_standalone(
         &self,
         id: ObjectId,
-        bytes: OwnedBytes,
+        bytes: ObjectRead,
         work: &mut KernelAccounting<'_>,
-    ) -> Result<OwnedBytes, crate::FsError> {
+    ) -> Result<ObjectRead, crate::FsError> {
         let mut context = crate::async_storage::AuthorityFrame::borrow(work)?;
         let result = self.sealer.open(id, bytes, &mut context);
         context.spent().verify(context.budget)?;

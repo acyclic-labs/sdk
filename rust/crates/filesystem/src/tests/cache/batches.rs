@@ -1,6 +1,190 @@
 use super::*;
 
 #[tokio::test]
+async fn cached_read_withdrawal_retains_original_admission_before_provider_completion()
+-> Result<(), Box<dyn std::error::Error>> {
+    let inner = Arc::new(MemoryObjectStore::default());
+    let setup = CancellationToken::new();
+    let budget = crate::performance::BOUNDARY_BUDGET;
+    let (id, bytes) = object(b"held cached read");
+    inner
+        .put(id, bytes.clone(), &mut AuthorityWork::new(budget, &setup))
+        .await?;
+    for batch in [false, true] {
+        for finish in 0..4 {
+            let (producer, receiver) = futures::channel::oneshot::channel();
+            let reads = Arc::new(AtomicUsize::new(0));
+            let cached = CachedObjectStore::new(
+                GatedStore {
+                    inner: Arc::clone(&inner),
+                    gate: futures::FutureExt::shared(receiver),
+                    reads: Arc::clone(&reads),
+                    reads_before_gate: 0,
+                    complete_before_gate: false,
+                },
+                options(4, 1024),
+            )?;
+            let cancellation = CancellationToken::new();
+            let mut work = AuthorityWork::new(budget, &cancellation);
+            work.accounting().charge_items(7)?;
+            let mut earlier = work.vec_owned::<u8>(31)?;
+            earlier.value.resize(31, 7);
+            let mut output = crate::kernel::allocation::retained::Retained::allocate(
+                17,
+                &mut work.accounting(),
+            )?;
+            output.value.resize(17, 9_u8);
+            let before = work.spent();
+            let live = work.allocations.live_bytes();
+            if finish == 3 {
+                work.budget.items_examined = before.items_examined;
+            }
+            let requests = [ObjectReadRequest {
+                object_id: id,
+                maximum_bytes: bytes.len() as u64,
+            }];
+            let mut read = Box::pin(async {
+                if batch {
+                    cached
+                        .read_many(&requests, &mut work)
+                        .await
+                        .map(|(values, allocation)| {
+                            let retained = (values.capacity() * size_of::<ObjectRead>()) as u64;
+                            drop(values);
+                            drop(allocation);
+                            retained
+                        })
+                } else {
+                    cached
+                        .read(id, bytes.len() as u64, &mut work)
+                        .await
+                        .map(|_| 0)
+                }
+            });
+            if finish == 3 {
+                assert!(matches!(
+                    futures::poll!(read.as_mut()),
+                    Poll::Ready(Err(ObjectStoreError::Work(
+                        crate::WorkError::BudgetExceeded {
+                            counter: "items_examined",
+                            ..
+                        }
+                    )))
+                ));
+                drop(read);
+                drop(producer);
+                assert_eq!(reads.load(Ordering::Acquire), 0);
+                assert_eq!(work.spent(), before);
+                assert_eq!(work.allocations.live_bytes(), live);
+                continue;
+            }
+            assert!(futures::poll!(read.as_mut()).is_pending());
+            assert_eq!(reads.load(Ordering::Acquire), 1);
+            let mut independent = AuthorityWork::new(budget, &setup);
+            assert!(inner.contains(id, &mut independent).await?);
+            if finish == 1 {
+                drop(producer);
+                assert!(matches!(
+                    read.await,
+                    Err(ObjectStoreError::Io(error))
+                        if error.kind() == std::io::ErrorKind::BrokenPipe
+                ));
+            } else if finish == 0 {
+                cancellation.cancel();
+                drop(read);
+                drop(producer);
+            } else {
+                producer.send(()).map_err(|_| "read producer was dropped")?;
+                let retained = read.await?;
+                assert_eq!(work.allocations.live_bytes(), live + retained);
+                work.allocations.release_owned(retained)?;
+            }
+            assert!(work.spent().items_examined > before.items_examined);
+            assert!(work.spent().allocation_operations > before.allocation_operations);
+            assert_eq!(cached.stats()?.in_flight, 0);
+            assert_eq!(work.allocations.live_bytes(), live);
+            assert_eq!(earlier.value, [7; 31]);
+            assert_eq!(output.value, [9; 17]);
+            drop(output);
+            assert_eq!(work.allocations.live_bytes(), live - 17);
+            earlier.retire(&mut work.accounting())?;
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn cached_reads_keep_only_returned_owned_storage_on_the_original_ledger()
+-> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_test_native_io();
+    let cancellation = CancellationToken::new();
+    let budget = crate::performance::BOUNDARY_BUDGET;
+    let (id, bytes) = object(b"owned cache read");
+    for maximum_bytes in [1, 1024] {
+        for batch in [false, true] {
+            let inner =
+                crate::LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory()));
+            inner
+                .put(
+                    id,
+                    bytes.clone(),
+                    &mut AuthorityWork::new(budget, &cancellation),
+                )
+                .await?;
+            let cached = CachedObjectStore::new(inner, options(4, maximum_bytes))?;
+            let mut work = AuthorityWork::new(budget, &cancellation);
+            let earlier = work.vec_owned::<u8>(31)?;
+            let mut output = crate::kernel::allocation::retained::Retained::allocate(
+                17,
+                &mut work.accounting(),
+            )?;
+            output.value.resize(17, 9_u8);
+            let baseline = work.allocations.live_bytes();
+            let retained = if batch {
+                let requests = [ObjectReadRequest {
+                    object_id: id,
+                    maximum_bytes: bytes.len() as u64,
+                }; 2];
+                let (values, allocation) = cached.read_many(&requests, &mut work).await?;
+                assert_eq!(values.len(), 2);
+                assert_eq!(values[0].bytes, bytes);
+                assert_eq!(values[1].bytes, bytes);
+                let retained = (values.capacity() * size_of::<ObjectRead>()) as u64;
+                assert_eq!(work.allocations.live_bytes(), baseline + retained);
+                drop(values);
+                drop(allocation);
+                retained
+            } else {
+                let read = cached.read(id, bytes.len() as u64, &mut work).await?;
+                assert_eq!(read.bytes, bytes);
+                let retained = if maximum_bytes == 1 {
+                    assert_eq!(
+                        read.retention,
+                        ObjectReadRetention::Owned {
+                            logical_bytes: bytes.len() as u64
+                        }
+                    );
+                    bytes.len() as u64
+                } else {
+                    assert_eq!(read.retention, ObjectReadRetention::Shared);
+                    0
+                };
+                assert_eq!(work.allocations.live_bytes(), baseline + retained);
+                drop(read);
+                retained
+            };
+            work.allocations.release_owned(retained)?;
+            assert_eq!(work.allocations.live_bytes(), baseline);
+            assert_eq!(cached.stats()?.in_flight, 0);
+            drop(output);
+            earlier.retire(&mut work.accounting())?;
+            work.spent().verify(budget)?;
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn sequential_batch_retains_original_prefix_on_withdrawal_and_producer_loss()
 -> Result<(), Box<dyn std::error::Error>> {
     let inner = Arc::new(MemoryObjectStore::default());
@@ -13,14 +197,21 @@ async fn sequential_batch_retains_original_prefix_on_withdrawal_and_producer_los
         object_id,
         maximum_bytes: bytes.len() as u64,
     });
-    let mut first = AuthorityWork::new(B, &setup);
-    drop(
-        inner
-            .read(requests[0].object_id, requests[0].maximum_bytes, &mut first)
-            .await?,
-    );
-    let first = first.spent();
-    for exit in 0..6 {
+    let mut prefixes = [WorkCounters::UNCHARGED; 2];
+    for (request, prefix) in requests.iter().zip(&mut prefixes) {
+        let mut work = AuthorityWork::new(B, &setup);
+        drop(
+            inner
+                .read(request.object_id, request.maximum_bytes, &mut work)
+                .await?,
+        );
+        *prefix = work.spent();
+    }
+    for (complete_before_gate, exit, stored) in [false, true]
+        .into_iter()
+        .flat_map(|timing| (0..6).map(move |exit| (timing, exit)))
+        .flat_map(|(timing, exit)| [false, true].map(|stored| (timing, exit, stored)))
+    {
         let completed_reads = u64::from(exit >= 4);
         let cancellation = CancellationToken::new();
         let mut work = AuthorityWork::new(
@@ -43,13 +234,19 @@ async fn sequential_batch_retains_original_prefix_on_withdrawal_and_producer_los
         let reads = Arc::new(AtomicUsize::new(0));
         let store = GatedStore {
             reads_before_gate: completed_reads as usize,
+            complete_before_gate,
             inner: Arc::clone(&inner),
             gate: futures::FutureExt::shared(receiver),
             reads: Arc::clone(&reads),
         };
-        let mut batch = Box::pin(crate::async_storage::read_many_sequential(
-            &store, &requests, &mut work,
-        ));
+        let mut batch = Box::pin(async {
+            if stored {
+                crate::async_storage::read_many_stored_sequential(&store, &requests, &mut work)
+                    .await
+            } else {
+                crate::async_storage::read_many_sequential(&store, &requests, &mut work).await
+            }
+        });
         assert!(futures::poll!(batch.as_mut()).is_pending());
         assert_eq!(reads.load(Ordering::Acquire), 1 + completed_reads as usize);
         let mut sibling = AuthorityWork::new(B, &setup);
@@ -94,16 +291,28 @@ async fn sequential_batch_retains_original_prefix_on_withdrawal_and_producer_los
             assert_eq!(completed.items_returned, 2);
         } else {
             assert_eq!(reads.load(Ordering::Acquire), 1 + completed_reads as usize);
+            // The current read has performed real provider work before its
+            // delivery gate. Withdrawal must preserve that work too.
+            let performed = (completed_reads + u64::from(complete_before_gate)) as usize;
+            let prefix = &prefixes[..performed];
             assert_eq!(
                 completed.items_examined,
-                before.items_examined + 2 + completed_reads * first.items_examined
+                before.items_examined
+                    + 2
+                    + prefix.iter().map(|work| work.items_examined).sum::<u64>()
             );
-            assert_eq!(completed.backend_read_operations, completed_reads);
+            assert_eq!(completed.backend_read_operations, performed as u64);
             assert_eq!(
                 completed.object_bytes_read,
-                completed_reads * first.object_bytes_read
+                prefix
+                    .iter()
+                    .map(|work| work.object_bytes_read)
+                    .sum::<u64>()
             );
-            assert_eq!(completed.bytes_hashed, completed_reads * first.bytes_hashed);
+            assert_eq!(
+                completed.bytes_hashed,
+                prefix.iter().map(|work| work.bytes_hashed).sum::<u64>()
+            );
             assert_eq!(completed.items_returned, 0);
         }
         assert_eq!(earlier.value, [7; 31]);

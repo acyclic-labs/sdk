@@ -352,6 +352,16 @@ pub(crate) struct Retained<T> {
     pub(crate) allocation: RetainedAllocation,
 }
 
+impl<T> Retained<Vec<T>> {
+    pub(crate) fn allocate(
+        capacity: usize,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Self, crate::FsError> {
+        let owned = crate::kernel::Owned::<Vec<T>>::allocate(capacity, accounting)?;
+        Self::from_owned(owned, accounting)
+    }
+}
+
 impl<T> Retained<T> {
     pub(crate) fn from_owned(
         mut owned: crate::kernel::Owned<T>,

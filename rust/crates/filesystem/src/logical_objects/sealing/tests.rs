@@ -23,9 +23,9 @@ impl ObjectSealer for RetainingOpening {
     fn open(
         &self,
         id: ObjectId,
-        stored: OwnedBytes,
+        stored: ObjectRead,
         context: &mut AuthorityWork<'_>,
-    ) -> Result<OwnedBytes, ObjectStoreError> {
+    ) -> Result<ObjectRead, ObjectStoreError> {
         // A detached remaining-budget frame loses this completed prefix.
         assert_eq!(context.spent().items_examined, 1);
         let mut work = context.accounting();
@@ -59,7 +59,9 @@ async fn ordinary_opening_retains_original_work_and_live_backing_on_every_exit()
         crate::ObjectKind::BlobChunk,
         OwnedBytes::from_static(b"opening-body"),
     );
-    for (reject, items) in [(false, 2), (true, 2), (false, 1)] {
+    for (public, reject, items) in [false, true].into_iter().flat_map(|public| {
+        [(false, 2), (true, 2), (false, 1)].map(|(reject, items)| (public, reject, items))
+    }) {
         let store = LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory()))
             .with_sealer(RetainingOpening {
                 held: Mutex::new(None),
@@ -75,18 +77,34 @@ async fn ordinary_opening_retains_original_work_and_live_backing_on_every_exit()
             items_examined: items,
             ..crate::performance::BOUNDARY_BUDGET
         };
-        let mut work = KernelAccounting::standalone(budget, &cancellation);
-        work.charge_items(1)?;
-        let marker = RetainedAllocation::claim(16, 1, &mut work)?;
-        let result = store
-            .fetch::<false>(object.object_id(), object.length(), &mut work)
-            .await;
+        let mut work = AuthorityWork::new(budget, &cancellation);
+        work.accounting().charge_items(1)?;
+        let mut earlier = work.vec_owned::<u8>(31)?;
+        earlier.value.resize(31, 7);
+        let marker = RetainedAllocation::claim(16, 1, &mut work.accounting())?;
+        let baseline = work
+            .accounting()
+            .standalone_parts()
+            .ok_or("not ordinary work")?
+            .0
+            .live_bytes();
+        let result = if public {
+            store
+                .read(object.object_id(), object.length(), &mut work)
+                .await
+                .map(|read| (read, KernelOwnedAllocation::Standalone))
+                .map_err(crate::FsError::Object)
+        } else {
+            store
+                .fetch::<false>(object.object_id(), object.length(), &mut work.accounting())
+                .await
+        };
         match (reject, items, result) {
             (false, 2, Ok((read, mut custody))) => {
                 assert_eq!(read.bytes, *object.bytes());
                 let bytes = read.bytes.len() as u64;
                 drop(read);
-                work.release_owned(&mut custody, bytes)?;
+                work.accounting().release_owned(&mut custody, bytes)?;
             }
             (true, 2, Err(crate::FsError::Object(ObjectStoreError::Rejected(cause)))) => {
                 assert_eq!(cause, "opening refused");
@@ -114,20 +132,27 @@ async fn ordinary_opening_retains_original_work_and_live_backing_on_every_exit()
         assert_eq!(held.value.as_slice(), object.bytes().as_ref());
         let capacity = held.value.capacity() as u64;
         let live = work
+            .accounting()
             .standalone_parts()
             .ok_or("not ordinary work")?
             .0
             .live_bytes();
         drop(held);
         assert_eq!(
-            work.standalone_parts()
+            work.accounting()
+                .standalone_parts()
                 .ok_or("not ordinary work")?
                 .0
                 .live_bytes(),
             live - capacity,
             "sealer backing must retire on the original caller ledger"
         );
+        if public {
+            assert_eq!(live - capacity, baseline, "opening scratch did not retire");
+        }
         drop(marker);
+        assert_eq!(earlier.value, [7; 31]);
+        earlier.retire(&mut work.accounting())?;
     }
     Ok(())
 }

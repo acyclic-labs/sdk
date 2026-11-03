@@ -42,8 +42,7 @@ impl<S> StagedObjects<S> {
             if index.resident_bytes <= MAXIMUM_RESIDENT_BYTES {
                 return Ok(());
             }
-            let victims = work.vec_owned(index.order.len())?;
-            let mut victims = Retained::from_owned(victims, &mut work.accounting())
+            let mut victims = Retained::allocate(index.order.len(), &mut work.accounting())
                 .map_err(crate::async_storage::object_error)?;
             index.spill_victims(&mut victims.value);
             (victims, index.spill_end)
@@ -182,8 +181,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                     count += 1;
                 }
             }
-            let targets = work.vec_owned(count)?;
-            let mut targets = Retained::from_owned(targets, &mut work.accounting())
+            let mut targets = Retained::allocate(count, &mut work.accounting())
                 .map_err(crate::async_storage::object_error)?;
             for (&id, staged) in &index.objects {
                 if targets.value.len() == count {

@@ -55,9 +55,9 @@ impl ObjectSealer for Envelope {
     fn open(
         &self,
         id: ObjectId,
-        stored: OwnedBytes,
+        mut stored: acyclic_fs::ObjectRead,
         _: &mut AuthorityWork<'_>,
-    ) -> Result<OwnedBytes, ObjectStoreError> {
+    ) -> Result<acyclic_fs::ObjectRead, ObjectStoreError> {
         let association = id.storage.ok_or(ObjectStoreError::Corrupt)?;
         let plain_id = ObjectId {
             storage: None,
@@ -69,7 +69,8 @@ impl ObjectSealer for Envelope {
         {
             return Err(ObjectStoreError::Corrupt);
         }
-        Ok(stored.slice(81..))
+        stored.bytes = stored.bytes.slice(81..);
+        Ok(stored)
     }
 }
 
@@ -176,13 +177,57 @@ async fn sealing_preserves_the_epoch_roots_retention() -> Result<(), Box<dyn std
     for _ in 0..3 {
         provider.collect().await?;
     }
-    assert_eq!(
-        second
-            .read(id, payload.len() as u64, &mut work)
-            .await?
-            .bytes,
-        payload
-    );
+    for native in [false, true] {
+        let stored_retention = {
+            let mut read_work = if native {
+                AuthorityWork::native(&original, &cancellation)
+            } else {
+                AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            };
+            let stored = second
+                .read_stored(id, payload.len() as u64, &mut read_work)
+                .await?;
+            assert_eq!(stored.len(), payload.len() + 81);
+            if !native {
+                assert_eq!(
+                    stored.retention,
+                    acyclic_fs::ObjectReadRetention::Owned {
+                        logical_bytes: payload.len() as u64 + 81,
+                    }
+                );
+            }
+            stored.retention
+        };
+        for batched in [false, true] {
+            let mut read_work = if native {
+                AuthorityWork::native(&original, &cancellation)
+            } else {
+                AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            };
+            let read = if batched {
+                let (mut reads, _allocation) = second
+                    .read_many(
+                        &[acyclic_fs::ObjectReadRequest {
+                            object_id: id,
+                            maximum_bytes: payload.len() as u64,
+                        }],
+                        &mut read_work,
+                    )
+                    .await?;
+                assert_eq!(reads.len(), 1);
+                reads.pop().ok_or("missing sealed batch result")?
+            } else {
+                second
+                    .read(id, payload.len() as u64, &mut read_work)
+                    .await?
+            };
+            assert_eq!(read.bytes, payload);
+            assert_eq!(
+                read.retention, stored_retention,
+                "a plaintext slice retains the complete original seal: native={native}, batched={batched}"
+            );
+        }
+    }
     // The epoch root is the only retention of the physical locator.
     provider.release(&epoch).await?;
     for _ in 0..3 {

@@ -39,9 +39,7 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
             .check()
             .map_err(crate::async_storage::object_error)?;
         if requests.is_empty() {
-            return Err(ObjectStoreError::Rejected(
-                "object read batch is empty".to_owned(),
-            ));
+            return Err(ObjectStoreError::EmptyReadBatch);
         }
         let count = requests.len() as u64;
         work.accounting()

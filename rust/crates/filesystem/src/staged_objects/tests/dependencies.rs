@@ -31,6 +31,119 @@ async fn parent_first_scope_drains_spilled_children_before_resident_parents()
     let tree_id = tree.object_id();
     store.put_hashed(metadata, &mut work).await?;
     store.put_hashed(tree, &mut work).await?;
+    // Ordering is shared scratch on the original frame, including ordinary
+    // callers. Its returned vector stays funded until the drain releases it.
+    // Chunks skip decoding, so the copy counter measures only vector growth.
+    let mut resident_targets = [metadata_id; 2];
+    for (target, marker) in resident_targets.iter_mut().zip([3, 4]) {
+        let chunk = HashedObject::new(ObjectKind::BlobChunk, vec![marker].into());
+        *target = chunk.object_id();
+        store.put_hashed(chunk, &mut work).await?;
+    }
+    let no_spill = None;
+    for native in [false, true] {
+        let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(cause, _)| cause)?;
+        let mut ordering = if native {
+            AuthorityWork::native(&original, &cancellation)
+        } else {
+            AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        };
+        let mut earlier = ordering.vec_owned::<u8>(31)?;
+        earlier.value.resize(31, 7);
+        let independent = ordering.vec_owned::<u8>(17)?;
+        let mut independent = crate::kernel::allocation::retained::Retained::from_owned(
+            independent,
+            &mut ordering.accounting(),
+        )?;
+        independent.value.resize(17, 9);
+        let baseline = if native {
+            original.live_allocation_bytes()
+        } else {
+            ordering
+                .accounting()
+                .standalone_parts()
+                .unwrap()
+                .0
+                .live_bytes()
+        };
+        let ordered = {
+            use std::future::Future;
+            use std::task::{Context, Poll, Waker};
+            let mut future =
+                std::pin::pin!(store.child_first(&no_spill, &resident_targets, &mut ordering));
+            let Poll::Ready(result) = future
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+            else {
+                panic!("resident dependency ordering waited for an unrelated producer");
+            };
+            result?
+        };
+        assert_eq!(ordered.value, resident_targets);
+        assert_eq!(ordering.spent().bytes_copied, size_of::<ObjectId>() as u64);
+        assert_eq!(ordering.spent().backend_read_operations, 0);
+        let retained = if native {
+            original.live_allocation_bytes()
+        } else {
+            ordering
+                .accounting()
+                .standalone_parts()
+                .unwrap()
+                .0
+                .live_bytes()
+        };
+        assert!(
+            retained > baseline,
+            "returned ordering lost its original backing"
+        );
+        drop(ordered);
+        let retired = if native {
+            original.live_allocation_bytes()
+        } else {
+            ordering
+                .accounting()
+                .standalone_parts()
+                .unwrap()
+                .0
+                .live_bytes()
+        };
+        assert_eq!(
+            retired, baseline,
+            "ordering leaked scratch or caller credit"
+        );
+        assert_eq!(earlier.value, [7; 31]);
+        assert_eq!(independent.value, [9; 17]);
+        drop(independent);
+        earlier.retire(&mut ordering.accounting())?;
+    }
+    for budget in [
+        WorkBudget {
+            allocation_operations: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        WorkBudget {
+            bytes_copied: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+    ] {
+        let mut denied = AuthorityWork::new(budget, &cancellation);
+        let result = store
+            .child_first(&no_spill, &resident_targets, &mut denied)
+            .await;
+        assert!(matches!(result, Err(ObjectStoreError::Work(
+            crate::WorkError::BudgetExceeded { counter, .. }
+        )) if counter == if budget.allocation_operations == 0 {
+            "allocation_operations"
+        } else {
+            "bytes_copied"
+        }));
+        assert_eq!(denied.spent().backend_read_operations, 0);
+        assert_eq!(denied.spent().backend_write_operations, 0);
+        for target in resident_targets {
+            assert!(matches!(store.lookup(target), Lookup::Resident(_)));
+        }
+    }
     // Real spill pressure leaves the old children on disk and their new parent resident.
     for marker in [1, 2] {
         store

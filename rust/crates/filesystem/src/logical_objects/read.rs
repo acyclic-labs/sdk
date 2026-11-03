@@ -35,10 +35,10 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
     fn read_representation<const STORED: bool>(
         &self,
         id: ObjectId,
-        bytes: OwnedBytes,
+        read: ObjectRead,
         maximum: u64,
         work: &mut KernelAccounting<'_>,
-    ) -> Result<OwnedBytes, crate::FsError> {
+    ) -> Result<ObjectRead, crate::FsError> {
         if STORED {
             // The destination opens the seal once. Here the reference's CAS
             // digest authenticates the exact transfer representation.
@@ -47,10 +47,10 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                 storage: None,
                 ..id
             };
-            hash(physical, &bytes, bytes.len() as u64, work)?;
-            Ok(bytes)
+            hash(physical, &read.bytes, read.bytes.len() as u64, work)?;
+            Ok(read)
         } else {
-            self.open_stored(id, bytes, maximum, work)
+            self.open_stored(id, read, maximum, work)
         }
     }
     pub(super) async fn fetch<const STORED: bool>(
@@ -127,13 +127,13 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             work.release_owned(&mut body_custody, maximum - observed)?;
         }
         completed?;
-        let body =
-            self.read_representation::<STORED>(id, value.into_body(), plaintext_maximum, work)?;
+        let bytes = value.into_body();
+        let read = ObjectRead {
+            retention: retained(&bytes, work),
+            bytes,
+        };
         Ok((
-            ObjectRead {
-                retention: retained(&body, work),
-                bytes: body,
-            },
+            self.read_representation::<STORED>(id, read, plaintext_maximum, work)?,
             body_custody,
         ))
     }
@@ -327,16 +327,21 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             )?;
         }
         for (value, request) in values.iter_mut().zip(requests) {
-            let bytes = self.read_representation::<STORED>(
+            let read = std::mem::replace(
+                value,
+                ObjectRead {
+                    bytes: OwnedBytes::from_static(b""),
+                    retention: ObjectReadRetention::Shared,
+                },
+            );
+            *value = self.read_representation::<STORED>(
                 request.object_id,
-                value.bytes.clone(),
+                read,
                 request
                     .maximum_bytes
                     .min(self.maximum_object_bytes.unwrap_or(request.maximum_bytes)),
                 work,
             )?;
-            value.retention = retained(&bytes, work);
-            value.bytes = bytes;
         }
         Ok(values)
     }

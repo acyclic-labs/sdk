@@ -4,115 +4,92 @@ use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
 use crate::storage::{AuthorityStoreError, ObjectKind, ObjectStoreError, object_digest};
 use acyclic_stream::OwnedBytes;
 
-enum ScriptedRead {
-    CancelAfterSuccess(CancellationToken),
-    FailWithOverflowingWork,
-}
-
-impl AsyncObjectStore for ScriptedRead {
-    async fn put(
-        &self,
-        _: ObjectId,
-        _: OwnedBytes,
-        _: &mut AuthorityWork<'_>,
-    ) -> Result<(), ObjectStoreError> {
-        Err(ObjectStoreError::Rejected(
-            "unsupported scripted operation".into(),
-        ))
-    }
-    async fn read(
-        &self,
-        _: ObjectId,
-        _: u64,
-        work: &mut AuthorityWork<'_>,
-    ) -> Result<ObjectRead, ObjectStoreError> {
-        match self {
-            Self::CancelAfterSuccess(cancel) => {
-                cancel.cancel();
-                work.work = work.work.checked_add(WorkCounters {
-                    backend_read_operations: 1,
-                    output_bytes: 5,
-                    peak_allocation_bytes: 5,
-                    ..WorkCounters::default()
-                })?;
-                Ok(ObjectRead {
-                    bytes: OwnedBytes::from_static(b"owned"),
-                    retention: crate::storage::ObjectReadRetention::Owned { logical_bytes: 5 },
-                })
-            }
-            Self::FailWithOverflowingWork => {
-                work.work = work.work.checked_add(WorkCounters {
-                    items_examined: u64::MAX,
-                    ..WorkCounters::default()
-                })?;
-                Err(ObjectStoreError::Missing)
-            }
-        }
-    }
-    async fn read_many(
-        &self,
-        _: &[ObjectReadRequest],
-        _: &mut AuthorityWork<'_>,
-    ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
-        Err(ObjectStoreError::Rejected(
-            "unsupported scripted operation".into(),
-        ))
-    }
-    async fn contains(
-        &self,
-        _: ObjectId,
-        _: &mut AuthorityWork<'_>,
-    ) -> Result<bool, ObjectStoreError> {
-        Err(ObjectStoreError::Rejected(
-            "unsupported scripted operation".into(),
-        ))
-    }
-}
-
 #[tokio::test]
-async fn sequential_batch_preserves_cancellation_and_nested_overflow_work()
+async fn owned_read_conformance_keeps_each_live_batch_buffer_funded()
 -> Result<(), Box<dyn std::error::Error>> {
+    let store = crate::test_support::OwnedReadObjectStore::default();
+    let cancellation = CancellationToken::new();
+    let bytes = b"independent read backing";
     let object_id = ObjectId {
         storage: None,
         kind: ObjectKind::BlobChunk,
-        digest: object_digest(b"owned"),
+        digest: object_digest(bytes),
     };
+    let budget = crate::performance::BOUNDARY_BUDGET;
+    store
+        .put(
+            object_id,
+            OwnedBytes::copy_from_slice(bytes),
+            &mut AuthorityWork::new(budget, &cancellation),
+        )
+        .await?;
     let requests = [ObjectReadRequest {
         object_id,
-        maximum_bytes: 5,
+        maximum_bytes: bytes.len() as u64,
     }; 2];
-    let stopped = CancellationToken::new();
-    stopped.cancel();
-    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &stopped);
+    let output_bytes = (2 * size_of::<crate::ObjectRead>() + 2 * bytes.len()) as u64;
+    for shortfall in [0, 1] {
+        let mut work = AuthorityWork::new(
+            WorkBudget {
+                peak_allocation_bytes: 31 + output_bytes - shortfall,
+                ..budget
+            },
+            &cancellation,
+        );
+        let mut earlier = work.vec_owned::<u8>(31)?;
+        earlier.value.extend([7; 31]);
+        let result = store.read_many(&requests, &mut work).await;
+        if shortfall == 0 {
+            let (values, allocation) = result?;
+            assert_eq!(values.len(), 2);
+            for read in &values {
+                assert_eq!(read.bytes.as_ref(), bytes);
+                assert_eq!(
+                    read.retention,
+                    crate::ObjectReadRetention::Owned {
+                        logical_bytes: bytes.len() as u64
+                    }
+                );
+            }
+            assert_eq!(work.spent().peak_allocation_bytes, 31 + output_bytes);
+            assert_eq!(work.spent().bytes_copied, 2 * bytes.len() as u64);
+            drop(values);
+            drop(allocation);
+        } else {
+            assert!(matches!(
+                result,
+                Err(ObjectStoreError::Work(crate::WorkError::BudgetExceeded {
+                    counter: "peak_allocation_bytes",
+                    ..
+                }))
+            ));
+            assert_eq!(work.spent().bytes_copied, bytes.len() as u64);
+        }
+        assert_eq!(earlier.value, [7; 31]);
+        assert_eq!(work.allocations.live_bytes(), 31);
+        earlier.retire(&mut work.accounting())?;
+        assert_eq!(work.allocations.live_bytes(), 0);
+    }
+    let mut work = AuthorityWork::new(budget, &cancellation);
+    let earlier = work.vec_owned::<u8>(31)?;
+    let read = store.read(object_id, bytes.len() as u64, &mut work).await?;
+    assert_eq!(read.bytes.as_ref(), bytes);
+    assert_eq!(work.allocations.live_bytes(), 31 + bytes.len() as u64);
+    drop(read);
+    work.allocations.release_owned(bytes.len() as u64)?;
+    let before = work.spent();
+    work.budget.bytes_copied = before.bytes_copied;
     assert!(matches!(
-        read_many_sequential(&ScriptedRead::FailWithOverflowingWork, &requests, &mut work).await,
-        Err(ObjectStoreError::Cancelled)
+        store.read(object_id, bytes.len() as u64, &mut work).await,
+        Err(ObjectStoreError::Work(crate::WorkError::BudgetExceeded {
+            counter: "bytes_copied",
+            ..
+        }))
     ));
-    assert_eq!(work.spent(), WorkCounters::default());
-    let cancel = CancellationToken::new();
-    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
-    assert!(matches!(
-        read_many_sequential(
-            &ScriptedRead::CancelAfterSuccess(cancel.clone()),
-            &requests,
-            &mut work
-        )
-        .await,
-        Err(ObjectStoreError::Cancelled)
-    ));
-    assert_eq!(work.spent().backend_read_operations, 1);
-    assert!(work.spent().peak_allocation_bytes >= 5);
-    let live = CancellationToken::new();
-    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &live);
-    assert!(matches!(
-        read_many_sequential(
-            &ScriptedRead::FailWithOverflowingWork,
-            &requests[..1],
-            &mut work
-        )
-        .await,
-        Err(ObjectStoreError::Work(_))
-    ));
+    assert_eq!(work.spent().bytes_copied, before.bytes_copied);
+    assert_eq!(work.allocations.live_bytes(), 31);
+    earlier.retire(&mut work.accounting())?;
+    assert_eq!(work.allocations.live_bytes(), 0);
     Ok(())
 }
 

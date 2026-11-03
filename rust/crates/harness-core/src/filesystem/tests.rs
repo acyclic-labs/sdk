@@ -135,9 +135,9 @@ impl acyclic_fs::ObjectSealer for AssociatedObjects {
     fn open(
         &self,
         id: acyclic_fs::ObjectId,
-        bytes: acyclic_stream::OwnedBytes,
+        bytes: acyclic_fs::ObjectRead,
         _: &mut acyclic_fs::AuthorityWork<'_>,
-    ) -> std::result::Result<acyclic_stream::OwnedBytes, acyclic_fs::ObjectStoreError> {
+    ) -> std::result::Result<acyclic_fs::ObjectRead, acyclic_fs::ObjectStoreError> {
         self.stored_limit(id, bytes.len() as u64)?;
         if id.storage.is_some_and(|storage| {
             !Self::root(id.kind, &bytes).is_ok_and(|root| root == storage.root_file_id)

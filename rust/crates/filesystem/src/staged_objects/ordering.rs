@@ -1,30 +1,31 @@
 use super::*;
 use crate::kernel::allocation::fixed_index::FixedIndex;
+use crate::kernel::allocation::retained::Retained;
 
 fn push<T>(
-    values: &mut Vec<T>,
-    allocation: &mut Option<NativeAllocation>,
+    values: &mut Retained<Vec<T>>,
     value: T,
-    native: Option<&NativeMaterializationWork>,
+    work: &mut AuthorityWork<'_>,
 ) -> Result<(), ObjectStoreError> {
-    if values.len() == values.capacity() {
+    if values.value.len() == values.value.capacity() {
         let capacity = values
+            .value
             .len()
             .checked_mul(2)
             .and_then(|n| n.checked_add(1))
             .ok_or(crate::WorkError::Overflow)?;
-        let (funding, mut replacement) = staged_vector(capacity, native)?;
-        if let Some(native) = native {
-            native.charge(WorkCounters {
-                bytes_copied: (values.len() * size_of::<T>()) as u64,
+        let mut replacement = Retained::allocate(capacity, &mut work.accounting())
+            .map_err(crate::async_storage::object_error)?;
+        work.accounting()
+            .charge(WorkCounters {
+                bytes_copied: std::mem::size_of_val(values.value.as_slice()) as u64,
                 ..WorkCounters::UNCHARGED
-            })?;
-        }
-        replacement.append(values);
+            })
+            .map_err(crate::async_storage::object_error)?;
+        replacement.value.append(&mut values.value);
         *values = replacement;
-        *allocation = funding;
     }
-    values.push(value);
+    values.value.push(value);
     Ok(())
 }
 
@@ -36,24 +37,21 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         spill: &Option<NativeFile>,
         targets: &[ObjectId],
         work: &mut AuthorityWork<'_>,
-    ) -> Result<(Option<NativeAllocation>, Vec<ObjectId>), ObjectStoreError> {
-        let (mut output_allocation, mut output) = staged_vector(0, work.original)?;
-        let (mut pending_allocation, mut pending) = staged_vector(0, work.original)?;
+    ) -> Result<Retained<Vec<ObjectId>>, ObjectStoreError> {
+        let mut output = Retained::allocate(0, &mut work.accounting())
+            .map_err(crate::async_storage::object_error)?;
+        let mut pending = Retained::allocate(0, &mut work.accounting())
+            .map_err(crate::async_storage::object_error)?;
         let mut visited = FixedIndex::<bool, { ObjectId::ENCODED_LEN }>::default();
         for &target in targets {
-            push(
-                &mut pending,
-                &mut pending_allocation,
-                (target, false),
-                work.original,
-            )?;
-            while let Some((id, exiting)) = pending.pop() {
+            push(&mut pending, (target, false), work)?;
+            while let Some((id, exiting)) = pending.value.pop() {
                 let key = id.index_key();
                 if exiting {
                     *visited
                         .get_or_try_insert_with(key, &mut work.accounting(), |_| Ok(true))
                         .map_err(crate::async_storage::object_error)? = true;
-                    push(&mut output, &mut output_allocation, id, work.original)?;
+                    push(&mut output, id, work)?;
                     continue;
                 }
                 match visited
@@ -70,7 +68,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                         visited
                             .get_or_try_insert_with(key, &mut work.accounting(), |_| Ok(true))
                             .map_err(crate::async_storage::object_error)?;
-                        push(&mut output, &mut output_allocation, id, work.original)?;
+                        push(&mut output, id, work)?;
                     }
                     continue;
                 }
@@ -119,38 +117,28 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 visited
                     .get_or_try_insert_with(key, &mut work.accounting(), |_| Ok(false))
                     .map_err(crate::async_storage::object_error)?;
-                push(
-                    &mut pending,
-                    &mut pending_allocation,
-                    (id, true),
-                    work.original,
-                )?;
-                let (_children_allocation, mut children) =
-                    staged_vector(bytes.len() / 33, work.original)?;
+                push(&mut pending, (id, true), work)?;
+                let mut children = Retained::allocate(bytes.len() / 33, &mut work.accounting())
+                    .map_err(crate::async_storage::object_error)?;
                 crate::kernel::visit_object_references(
                     id,
                     &bytes,
                     crate::kernel::DecodeLimits::for_object_bytes(bytes.len()),
                     &mut work.accounting(),
                     |child| {
-                        if children.len() == children.capacity() {
+                        if children.value.len() == children.value.capacity() {
                             return Err(ObjectStoreError::Corrupt.into());
                         }
-                        children.push(child);
+                        children.value.push(child);
                         Ok(())
                     },
                 )
                 .map_err(crate::async_storage::object_error)?;
-                for child in children {
-                    push(
-                        &mut pending,
-                        &mut pending_allocation,
-                        (child, false),
-                        work.original,
-                    )?;
+                for &child in &children.value {
+                    push(&mut pending, (child, false), work)?;
                 }
             }
         }
-        Ok((output_allocation, output))
+        Ok(output)
     }
 }
