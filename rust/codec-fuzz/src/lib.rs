@@ -470,7 +470,7 @@ pub fn actor_seeds()
     let input = StreamPath::new("codec/actors/inbox")?;
     let ticket = futures::executor::block_on(async {
         use acyclic_actors::local::{PreparedPublish, Subscription};
-        use acyclic_stream::{IdempotencyKey, MemoryLimits, StreamProvider as _};
+        use acyclic_stream::{IdempotencyKey, MemoryLimits, StreamProviderExt as _};
 
         let provider = Arc::new(MemoryStream::new_with_clock(
             MemoryLimits::default(),
