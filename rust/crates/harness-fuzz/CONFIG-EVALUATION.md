@@ -24,12 +24,15 @@ cargo test --locked -p acyclic-harness-core --lib config::evaluate::model::tests
 cargo fuzz run --fuzz-dir rust/crates/harness-fuzz config_evaluation --no-default-features --features core -- -runs=1000 -seed=1
 ```
 
-Nine retained patches alter the actual production source admission, walk or cache. Apply each separately
+Twelve retained patches alter the actual production source admission, walk, fold or cache. Apply each separately
 against an unchanged oracle, run that same named property, then restore the
 source:
 
 | Patch under `mutations/` | Required failure |
 | --- | --- |
+| `config-fold-default.patch` | Nested callbacks lose the original lower value. |
+| `config-fold-own-property.patch` | An inherited prototype property becomes a lower default. |
+| `config-fold-container.patch` | Object keys are incorrectly matched to array positions. |
 | `config-dependency-stack-scan.patch` | Membership work grows with active depth. This restores the original stack scan, with the same test-only observer counting each comparison. |
 | `config-dependency-finished-active.patch` | A valid shared dependency is falsely rejected by the plain-data oracle. |
 | `config-dependency-ignore-cycle.patch` | A cyclic closure enters the VM before admission. |
@@ -93,3 +96,15 @@ by the production strip boundary before any tree read or VM entry. This
 subsumes the resolver-only example test. The two import patches mutate actual
 root-underflow admission and importer-directory retention, never an alternate
 resolver or a test-only fault switch.
+
+The existing nested-function family carries changed lower values through both
+object properties and array positions in the actual evaluator. It distinguishes
+an absent lower value from explicit null, refuses inherited prototype values
+as defaults, and does not match object keys to array positions. Its two-level
+object function and array-entry function, inside both root values and root
+functions, subsume the former nested-fold example;
+encoded input is retained in the complete expected result. Both configuration
+surfaces and cold, warm and fresh evaluations use the same property. The three
+fold patches mutate the actual lower-value selection, own-property admission
+and container-kind check in the production finish function. No alternate fold
+or test-only fault field is used.
