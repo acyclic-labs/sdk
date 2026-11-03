@@ -81,6 +81,7 @@ required-features = ["inference"]
 
 [[bin]]
 name = "qualify"
+test = false
 path = "src/bin/qualify.rs"
 required-features = ["local-runner"]
 
