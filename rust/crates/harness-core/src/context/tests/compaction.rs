@@ -50,11 +50,6 @@ fn every_cut_of_the_only_protected_exchange_retains_all_input() -> Result<()> {
             "cut {covered} dropped protected input"
         );
     }
-    // Negative control: pinning only positions, without exchange closure,
-    // appears to free space but leaves the result without its call.
-    let unlinked = [source.messages[0].clone(), source.messages[2].clone()];
-    assert!(unlinked.len() < source.messages.len());
-    assert!(!unlinked.contains(&source.messages[1]));
     for maximum in 1..=source.messages.len() {
         assert!(compact(&source, maximum, source.messages.len()).is_err());
     }
