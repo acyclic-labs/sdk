@@ -601,3 +601,22 @@ pub async fn observe_read<F: Future>(read: F) -> F::Output {
 pub async fn untracked<F: Future>(future: F) -> F::Output {
     CURRENT.scope(None, future).await
 }
+
+/// Creates an owner-only FIFO using the host's native filesystem operation.
+#[cfg(unix)]
+pub fn create_named_pipe(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let name = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    // SAFETY: `name` is a NUL-terminated path that outlives the call.
+    #[allow(
+        unsafe_code,
+        reason = "FFI: POSIX mkfifo is not wrapped on every Unix host"
+    )]
+    let result = unsafe { libc::mkfifo(name.as_ptr(), 0o600) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}

@@ -62,13 +62,16 @@ async fn original_mutation_write_denial_preserves_paid_orphan_prefix()
     let first = entry("a", 1, FileKind::Fifo)?;
     let first_leaf = TreePage::Leaf(vec![first.clone(), entry("m", 2, FileKind::Regular)?]);
     let first_page = tree_page_id(&first_leaf, 8)?;
+    let second = entry("x", 4, FileKind::Fifo)?;
+    let second_leaf = TreePage::Leaf(vec![entry("n", 3, FileKind::Regular)?, second.clone()]);
+    let second_page = tree_page_id(&second_leaf, 8)?;
     let mutations = [
         TreeMutation::Replace {
             entry: first,
             expected_file_id: FileId::from_bytes([1; 16]),
         },
         TreeMutation::Replace {
-            entry: entry("x", 4, FileKind::Fifo)?,
+            entry: second,
             expected_file_id: FileId::from_bytes([4; 16]),
         },
     ];
@@ -93,10 +96,18 @@ async fn original_mutation_write_denial_preserves_paid_orphan_prefix()
     )
     .await
     .expect_err("second changed leaf must refuse on original page-write limit");
+    let error = match error {
+        crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(error))
+        | crate::FsError::Work(error) => error,
+        error => return Err(error.into()),
+    };
     assert!(matches!(
         error,
-        crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))
-            | crate::FsError::Work(_)
+        WorkError::BudgetExceeded {
+            counter: "page_writes",
+            observed: 2,
+            maximum: 1,
+        }
     ));
     assert_eq!(work.receipt().page_writes, 1);
     assert_eq!(work.receipt().backend_write_operations, 1);
@@ -119,7 +130,35 @@ async fn original_mutation_write_denial_preserves_paid_orphan_prefix()
         |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
         |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
     )?;
-    assert_eq!(work.receipt().bytes_encoded, first_page_bytes.len() as u64);
+    let second_page_bytes = encode_tree_page(
+        &second_leaf,
+        8,
+        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+    )?;
+    // Both identities must be encoded before resynchronization can distinguish
+    // an existing page from a write needing the caller's remaining credit.
+    assert_eq!(
+        work.receipt().bytes_encoded,
+        (first_page_bytes.len() + second_page_bytes.len()) as u64
+    );
+    assert_eq!(
+        work.receipt().object_bytes_written,
+        first_page_bytes.len() as u64
+    );
+    assert!(matches!(
+        store
+            .read(
+                second_page,
+                u64::MAX,
+                &mut crate::AuthorityWork::new(
+                    WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                ),
+            )
+            .await,
+        Err(crate::storage::ObjectStoreError::Missing)
+    ));
     drop(store);
     assert_eq!(
         work.live_allocation_bytes(),
@@ -194,54 +233,6 @@ async fn two_leaf_tree(
     Ok((root, [left.page, right.page]))
 }
 
-async fn three_leaf_tree(
-    store: &MemoryObjectStore,
-) -> Result<(ObjectId, [ObjectId; 3]), Box<dyn std::error::Error>> {
-    let leaves = [
-        put(
-            store,
-            &TreePage::Leaf(vec![entry("a", 1, FileKind::Regular)?]),
-            8,
-        )
-        .await?,
-        put(
-            store,
-            &TreePage::Leaf(vec![
-                entry("m", 2, FileKind::Regular)?,
-                entry("n", 3, FileKind::Regular)?,
-            ]),
-            8,
-        )
-        .await?,
-        put(
-            store,
-            &TreePage::Leaf(vec![entry("x", 4, FileKind::Regular)?]),
-            8,
-        )
-        .await?,
-    ];
-    let root = put(
-        store,
-        &TreePage::Internal(vec![
-            Child {
-                first: name("a")?,
-                page: leaves[0],
-            },
-            Child {
-                first: name("m")?,
-                page: leaves[1],
-            },
-            Child {
-                first: name("x")?,
-                page: leaves[2],
-            },
-        ]),
-        8,
-    )
-    .await?;
-    Ok((root, leaves))
-}
-
 #[tokio::test]
 async fn touched_leaf_and_shared_root_are_rewritten_once() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -291,7 +282,7 @@ async fn touched_leaf_and_shared_root_are_rewritten_once() -> Result<(), Box<dyn
 async fn semantic_noop_preserves_root_and_writes_nothing() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
-    let (root, _) = three_leaf_tree(&store).await?;
+    let (root, _) = two_leaf_tree(&store).await?;
     let receipt = apply_tree_mutations(
         &store,
         root,
@@ -300,7 +291,7 @@ async fn semantic_noop_preserves_root_and_writes_nothing() -> Result<(), Box<dyn
             expected_file_id: FileId::from_bytes([2; 16]),
         }],
         8,
-        DecodeLimits::default(),
+        pair_limits(),
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     )
@@ -359,16 +350,16 @@ async fn overflowing_leaf_splits_and_builds_one_new_root() -> Result<(), Box<dyn
 async fn failed_identity_precondition_writes_no_objects() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
-    let (root, _) = three_leaf_tree(&store).await?;
+    let (root, _) = two_leaf_tree(&store).await?;
     let failure = apply_tree_mutations(
         &store,
         root,
         vec![TreeMutation::Remove {
-            name: name("m")?,
+            name: name("n")?,
             expected_file_id: Some(FileId::from_bytes([9; 16])),
         }],
         8,
-        DecodeLimits::default(),
+        pair_limits(),
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     )
@@ -379,8 +370,12 @@ async fn failed_identity_precondition_writes_no_objects() -> Result<(), Box<dyn 
         failure.error,
         TreeMutationError::FileIdentityConflict
     ));
-    assert_eq!(failure.work.page_reads, 2);
+    // Removing the following leaf's first name retains its predecessor tail
+    // before checking the selected identity: root, predecessor, selected leaf.
+    assert_eq!(failure.work.page_reads, 3);
     assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.page_writes, 0);
+    assert_eq!(failure.work.bytes_encoded, 0);
     Ok(())
 }
 
@@ -456,26 +451,39 @@ async fn point_noop_uses_logarithmic_leaf_search_without_rebuild()
         .map(|value| wide_entry(value, FileKind::Regular))
         .collect::<Result<Vec<_>, _>>()?;
     let root = put(&store, &TreePage::Leaf(entries), 1_024).await?;
-    let replacement = wide_entry(777, FileKind::Regular)?;
-    let receipt = apply_tree_mutations(
-        &store,
-        root,
-        vec![TreeMutation::Replace {
-            expected_file_id: replacement.file_id,
-            entry: replacement,
-        }],
-        1,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )
-    .await?;
-    // The allocation-free canonical shape pass validates all 1,024 bounded
-    // records before allocation; the point lookup itself adds at most 11
-    // binary-search comparisons.
-    assert!(receipt.work.items_examined <= 1_024 + 11);
-    assert_eq!(receipt.value, root);
-    assert_eq!(receipt.work.page_writes, 0);
+    for (selected, comparisons) in [(777, 10), (0, 11)] {
+        let replacement = wide_entry(selected, FileKind::Regular)?;
+        let receipt = apply_tree_mutations(
+            &store,
+            root,
+            vec![TreeMutation::Replace {
+                expected_file_id: replacement.file_id,
+                entry: replacement,
+            }],
+            1,
+            DecodeLimits::default(),
+            WorkBudget {
+                page_writes: 0,
+                ..WorkBudget::UNBOUNDED
+            },
+            &crate::CancellationToken::new(),
+        )
+        .await?;
+        // The one-object backend visits one index node and compares its full
+        // object key. Then validate the bounded page, classify one mutation and
+        // admit one visited-page probe. Only the leaf search varies by name.
+        let backend_lookup = 1 + ObjectId::ENCODED_LEN as u64;
+        assert_eq!(
+            receipt.work.items_examined,
+            backend_lookup + 1_024 + 1 + 1 + comparisons
+        );
+        assert_eq!(receipt.value, root);
+        assert_eq!(receipt.work.page_reads, 1);
+        assert_eq!(receipt.work.backend_read_operations, 1);
+        assert_eq!(receipt.work.page_writes, 0);
+        assert_eq!(receipt.work.backend_write_operations, 0);
+        assert_eq!(receipt.work.bytes_encoded, 0);
+    }
     Ok(())
 }
 
