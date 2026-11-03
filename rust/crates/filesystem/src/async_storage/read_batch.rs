@@ -101,25 +101,28 @@ impl From<crate::AuthorityStoreError> for crate::ObjectStoreError {
             crate::AuthorityStoreError::NativeOriginal(error) => {
                 crate::ObjectStoreError::Native(error)
             }
-            _ => crate::ObjectStoreError::SdkAllocationFailed,
+            error => {
+                crate::ObjectStoreError::Filesystem(Box::new(crate::FsError::Authority(error)))
+            }
         }
     }
 }
 
+/// Converts a filesystem failure at an object-store boundary. Object-store
+/// categories map to their own variants; every other failure is kept whole,
+/// so no cause is collapsed into another category.
 pub(crate) fn object_error(error: crate::FsError) -> crate::storage::ObjectStoreError {
+    use crate::storage::ObjectStoreError as O;
     match error {
         crate::FsError::Object(error) => error,
         crate::FsError::Authority(error) => error.into(),
-        crate::FsError::Work(error) => crate::storage::ObjectStoreError::Work(error),
-        crate::FsError::Cancelled(_) => crate::storage::ObjectStoreError::Cancelled,
-        crate::FsError::AccountingHandoffActive => {
-            crate::storage::ObjectStoreError::AccountingHandoffActive
-        }
+        crate::FsError::Work(error) => O::Work(error),
+        crate::FsError::Cancelled(_) => O::Cancelled,
+        crate::FsError::AccountingHandoffActive => O::AccountingHandoffActive,
         #[cfg(not(target_arch = "wasm32"))]
-        crate::FsError::NativeKernel(error) => crate::storage::ObjectStoreError::Native(error),
-        crate::FsError::HandleAllocationFailed => {
-            crate::storage::ObjectStoreError::SdkAllocationFailed
-        }
-        _ => crate::storage::ObjectStoreError::Corrupt,
+        crate::FsError::NativeKernel(error) => O::Native(error),
+        crate::FsError::HandleAllocationFailed => O::SdkAllocationFailed,
+        crate::FsError::Decode(error) => O::Decode(error),
+        error => O::Filesystem(Box::new(error)),
     }
 }

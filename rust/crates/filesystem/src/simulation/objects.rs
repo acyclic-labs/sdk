@@ -47,7 +47,9 @@ fn altered_read(
                     acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
                         crate::async_storage::object_error(original.runtime_error(error).into())
                     }
-                    _ => ObjectStoreError::Corrupt,
+                    acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
+                        ObjectStoreError::SdkAllocationFailed
+                    }
                 })?
         }
     };

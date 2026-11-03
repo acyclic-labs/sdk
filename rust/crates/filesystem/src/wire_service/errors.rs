@@ -217,6 +217,8 @@ fn object_code(error: &ObjectStoreError) -> Code {
         E::NativeObjects(error) => native_objects_code(error),
         #[cfg(any(test, feature = "distributed"))]
         E::LogicalObjects(error) => objects_service_code(error),
+        E::Decode(error) => kernel_code(error),
+        E::Filesystem(error) => filesystem_code(error),
     }
 }
 

@@ -15,6 +15,32 @@ fn store(maximum: u64) -> Result<Store, ObjectStoreError> {
 }
 
 #[tokio::test]
+async fn non_canonical_structured_bytes_report_their_decode_cause()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancel = CancellationToken::new();
+    let store = store(64)?;
+    let bytes = OwnedBytes::from(vec![3; 64]);
+    let id = crate::ObjectId {
+        storage: None,
+        kind: ObjectKind::Blob,
+        digest: crate::storage::object_digest(&bytes),
+    };
+    let refused = store
+        .put(id, bytes, &mut AuthorityWork::new(BUDGET, &cancel))
+        .await;
+    assert!(
+        matches!(
+            refused,
+            Err(ObjectStoreError::Decode(
+                crate::kernel::CanonicalDecodeError::WrongDomain
+            ))
+        ),
+        "{refused:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn authenticated_batch_preserves_raw_validation_and_duplicates()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancel = CancellationToken::new();
