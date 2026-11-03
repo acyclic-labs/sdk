@@ -108,6 +108,7 @@ fn bound_volume_cwd_keeps_its_authority() {
         std::fs::create_dir(directory).unwrap();
     }
     std::os::unix::fs::symlink(&outside, native.join(".escape")).unwrap();
+    std::os::unix::fs::symlink(temp.path(), root.join("escape")).unwrap();
     let native = native.canonicalize().unwrap();
     let mut mounts = table(root.canonicalize().unwrap()).unwrap();
     for (relative, mount) in mounts.mounts_mut() {
@@ -115,6 +116,21 @@ fn bound_volume_cwd_keeps_its_authority() {
             mount.native_root = Some(native.clone());
         }
     }
+    // The task root has no native binding; it must refuse the same escape at
+    // production preparation, before a command can create anything outside it.
+    let result = prepare(
+        ShellInput {
+            command: "printf escaped > should-not-exist".into(),
+            cwd: Some("escape".into()),
+            timeout_ms: None,
+            target: None,
+        },
+        &mounts,
+        invocation(&mounts.root),
+        1,
+    );
+    assert!(matches!(result, Err(Error::Invalid(_))));
+    assert!(!temp.path().join("should-not-exist").exists());
     // All cases use the same original authority. Only the requested component
     // and escape decision vary; no case publishes or changes this mount table.
     let mut config = ProptestConfig::with_cases(32);
@@ -387,37 +403,6 @@ async fn command_uses_the_composed_cwd_and_streams_before_returning_its_exit_cod
             .map_err(|error| Error::Storage(error.to_string()))?,
         b"from data"
     );
-    Ok(())
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn symlink_cwd_cannot_escape_the_task_view() -> Result<()> {
-    let temp = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let root = temp.path().join("view");
-    std::fs::create_dir(&root).map_err(|error| Error::Storage(error.to_string()))?;
-    std::os::unix::fs::symlink(temp.path(), root.join("escape"))
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    let mounts = table(
-        root.canonicalize()
-            .map_err(|error| Error::Storage(error.to_string()))?,
-    )?;
-    let result = run(
-        ShellInput {
-            command: "printf escaped > should-not-exist".into(),
-            cwd: Some("escape".into()),
-            timeout_ms: None,
-            target: None,
-        },
-        &mounts,
-        invocation(&mounts.root),
-        1,
-        None,
-        || Ok(()),
-    )
-    .await;
-    assert!(matches!(result, Err(Error::Invalid(_))));
-    assert!(!temp.path().join("should-not-exist").exists());
     Ok(())
 }
 
