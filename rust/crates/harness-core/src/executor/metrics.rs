@@ -848,7 +848,6 @@ pub fn write<W: Write + Send>(batch: &Batch, writer: W, format: Format) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::{Array, StringArray, UInt64Array};
 
     #[test]
     fn shards_roundtrip_known_and_unknown_values_and_refuse_foreign_schemas() -> Result<()> {
@@ -879,60 +878,39 @@ mod tests {
                 write(&original, &mut bytes, format)?;
                 let decoded = match format {
                     Format::Arrow => {
-                        arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
-                            .map_err(export_error)?
+                        let reader = arrow_ipc::reader::StreamReader::try_new(
+                            std::io::Cursor::new(bytes),
+                            None,
+                        )
+                        .map_err(export_error)?;
+                        assert_eq!(reader.schema(), original.data.schema());
+                        reader
                             .collect::<std::result::Result<Vec<_>, _>>()
                             .map_err(export_error)?
                     }
                     Format::Parquet => {
-                        parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
-                            bytes::Bytes::from(bytes),
-                        )
-                        .map_err(export_error)?
-                        .build()
-                        .map_err(export_error)?
-                        .collect::<std::result::Result<Vec<_>, _>>()
-                        .map_err(export_error)?
+                        let builder =
+                            parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+                                bytes::Bytes::from(bytes),
+                            )
+                            .map_err(export_error)?;
+                        // Parquet retains file metadata on the builder schema;
+                        // decoded batches carry only the projected fields.
+                        assert_eq!(builder.schema(), &original.data.schema());
+                        builder
+                            .build()
+                            .map_err(export_error)?
+                            .collect::<std::result::Result<Vec<_>, _>>()
+                            .map_err(export_error)?
                     }
                 };
                 assert_eq!(decoded.len(), 1);
-                assert_eq!(decoded[0], original.data);
-                if table == Table::ModelCalls {
-                    let column = |name| decoded[0].column_by_name(name).expect("projected column");
-                    assert_eq!(
-                        column("input_tokens")
-                            .as_any()
-                            .downcast_ref::<UInt64Array>()
-                            .unwrap()
-                            .value(0),
-                        0
-                    );
-                    assert_eq!(
-                        column("output_tokens")
-                            .as_any()
-                            .downcast_ref::<UInt64Array>()
-                            .unwrap()
-                            .value(0),
-                        u64::MAX
-                    );
-                    assert!(column("ttft_ns").is_null(0));
-                    assert_eq!(
-                        column("cache_savings_nano_units")
-                            .as_any()
-                            .downcast_ref::<arrow_array::Decimal128Array>()
-                            .unwrap()
-                            .value(0),
-                        row.cache_savings_nano_units.unwrap()
-                    );
-                    assert_eq!(
-                        column("provider_request_id")
-                            .as_any()
-                            .downcast_ref::<StringArray>()
-                            .unwrap()
-                            .value(0),
-                        "generated-column-identity"
-                    );
-                }
+                assert_eq!(
+                    decoded[0].schema().fields(),
+                    original.data.schema().fields()
+                );
+                assert_eq!(decoded[0].columns(), original.data.columns());
+                assert_eq!(decoded[0].num_rows(), original.data.num_rows());
                 // A saved earlier layout cannot acquire the new ownership
                 // contract by copying its columns or erasing its version.
                 for saved_version in [None, Some("1"), Some("2")] {
