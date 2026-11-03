@@ -131,7 +131,7 @@ proptest! {
                 prop_assert_eq!(custody.len(),if native { 2*count } else { 0 });
                 for transfer in custody.chunks_exact(2) {
                     prop_assert_eq!(transfer[0].0,"custody-take");
-                    prop_assert_eq!(transfer[1],("custody-absorb",transfer[0].1));
+                    prop_assert_eq!(transfer[1],("custody-absorb",result_body(&baseline[2]).len() as u64));
                 }
                 prop_assert_eq!(serde_json::to_vec(&output).unwrap(),serde_json::to_vec(&baseline).unwrap());
                 let (_, broken): (_,Vec<(&'static str,u64)>) = observe(||fixture(count), |mut messages| super::instruction_index::traced(|| {
