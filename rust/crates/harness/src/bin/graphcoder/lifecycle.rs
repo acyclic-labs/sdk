@@ -13,6 +13,14 @@ use acyclic_harness::completion::{
 #[cfg(test)]
 type Failure = Box<dyn std::error::Error>;
 
+pub(super) async fn text_failure(
+    output: InheritedOutput,
+    cause: &(dyn std::error::Error + 'static),
+    _shutdown: Shutdown,
+) {
+    let _ = output.write_owned(format!("graphcoder: {cause}\n")).await;
+}
+
 /// Refusal to admit explicitly configured diagnostic text before dispatch.
 /// Its display names the configuration recovery without writing to a sink.
 #[derive(Debug)]
