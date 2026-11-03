@@ -165,6 +165,7 @@ async fn committed_skill_body_recovers_its_receipt_without_the_host_source() -> 
 #[tokio::test]
 async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Result<()> {
     let Fixture {
+        _issuer,
         home: _home,
         retained,
         filesystem: _filesystem,
