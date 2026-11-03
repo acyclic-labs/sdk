@@ -110,8 +110,28 @@ pub fn check(bytes: &[u8]) -> bool {
             target_arch = "wasm32"
         )
     ))]
-    if !command(bytes) {
-        return false;
+    {
+        if !command(bytes) {
+            return false;
+        }
+        // Canonicality after successful decoding cannot detect rejection of
+        // valid writer output. Use the same request factory as the corpus,
+        // varying its record values and fork position with this input.
+        let Ok(commands) = commands(Some(crate::OwnedBytes::copy_from_slice(bytes))) else {
+            return false;
+        };
+        for (_, command) in commands {
+            let command = match command.validated() {
+                Ok(command) => command,
+                Err(StreamError::LimitExceeded) => continue,
+                Err(_) => return false,
+            };
+            if !crate::journal::decode_command(&command.encode_to_vec())
+                .is_ok_and(|decoded| decoded == command)
+            {
+                return false;
+            }
+        }
     }
     let observation = persistence::decode_observation(bytes, usize::MAX);
     if !truncated_header_is_invalid(bytes, persistence::OBSERVATION_DOMAIN, &observation) {
@@ -179,7 +199,9 @@ pub fn check(bytes: &[u8]) -> bool {
     true
 }
 
-fn commands() -> Result<[(&'static str, crate::WriteRequest); 3], StreamError> {
+fn commands(
+    value: Option<crate::OwnedBytes>,
+) -> Result<[(&'static str, crate::WriteRequest); 3], StreamError> {
     use crate::{
         AppendRequest, CommitMutation, CommitRequest, ForkRequest, IdempotencyKey, OwnedBytes,
         StreamPath, WriteRequest,
@@ -189,7 +211,12 @@ fn commands() -> Result<[(&'static str, crate::WriteRequest); 3], StreamError> {
             "append",
             WriteRequest::Append(AppendRequest {
                 path: StreamPath::new("codec/events")?,
-                records: vec![OwnedBytes::from_static(b"persisted codec corpus").into()],
+                records: vec![
+                    value
+                        .clone()
+                        .unwrap_or_else(|| OwnedBytes::from_static(b"persisted codec corpus"))
+                        .into(),
+                ],
                 if_tail: Some(0),
                 idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"append"))?,
             }),
@@ -199,7 +226,13 @@ fn commands() -> Result<[(&'static str, crate::WriteRequest); 3], StreamError> {
             WriteRequest::Fork(ForkRequest {
                 source: StreamPath::new("codec/events")?,
                 destination: StreamPath::new("codec/fork")?,
-                at_tail: Some(1),
+                at_tail: Some(value.as_ref().map_or(1, |value| {
+                    value
+                        .as_slice()
+                        .iter()
+                        .take(8)
+                        .fold(0u64, |position, byte| (position << 8) | u64::from(*byte))
+                })),
                 exclude: Vec::new(),
                 idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"fork"))?,
             }),
@@ -211,7 +244,11 @@ fn commands() -> Result<[(&'static str, crate::WriteRequest); 3], StreamError> {
                 conditions: Vec::new(),
                 mutations: vec![CommitMutation::Append {
                     path: StreamPath::new("codec/events")?,
-                    records: vec![OwnedBytes::from_static(b"committed codec corpus").into()],
+                    records: vec![
+                        value
+                            .unwrap_or_else(|| OwnedBytes::from_static(b"committed codec corpus"))
+                            .into(),
+                    ],
                 }],
                 idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"commit"))?,
             }),
@@ -235,7 +272,7 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
     );
     #[cfg(feature = "local")]
     let memory = memory.with_authority(crate::RevisionScope::new(b"codec-corpus".to_vec()), 7);
-    for (name, command) in commands()? {
+    for (name, command) in commands(None)? {
         let key = match &command {
             WriteRequest::Append(request) => request.idempotency_key.clone(),
             WriteRequest::Fork(request) => request.idempotency_key.clone(),
@@ -344,7 +381,7 @@ async fn emitted_persistence_seeds_satisfy_shared_oracle() -> Result<(), StreamE
             );
         }
     }
-    for (name, command) in commands()? {
+    for (name, command) in commands(None)? {
         let frame = crate::local::codec_fuzz::repeated_command_frame(&command)?;
         assert!(
             check(&frame),
