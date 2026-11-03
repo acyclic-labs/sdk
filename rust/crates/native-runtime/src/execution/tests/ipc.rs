@@ -1,6 +1,7 @@
 //! Real IPC objects come from shmget/shmat in this test, never fabricated
 //! identifiers or captured text. The same compiled child is the negative
 //! control, under the same UID and segment permissions, without confinement.
+//! The same launches check self-identity queries and named-process refusal.
 
 #![allow(unsafe_code, reason = "real System V shared-memory conformance FFI")]
 
@@ -73,6 +74,8 @@ fn workspace_and_network_grants_cannot_attach_host_shared_memory() {
         command
     };
     let custody = crate::ProcessCustody::open(&root.path().join("custody")).unwrap();
+    let mut admitted = 0;
+    let mut refused = 0;
     for custody in [None, Some(&custody)] {
         let tree = match ProcessTree::spawn_granted(command("no"), &grant, custody) {
             Ok(tree) => tree,
@@ -80,11 +83,14 @@ fn workspace_and_network_grants_cannot_attach_host_shared_memory() {
                 assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
                 // SAFETY: the original attachment is still owned here.
                 assert_eq!(unsafe { segment.address.cast::<u8>().read_volatile() }, 0);
+                eprintln!("confined child refused: {error}");
+                refused += 1;
                 continue;
             }
             Err(error) => panic!("confined IPC probe admission: {error}"),
         };
         complete(tree);
+        admitted += 1;
         // SAFETY: the original attachment is live; the child has exited.
         assert_eq!(unsafe { segment.address.cast::<u8>().read_volatile() }, 0);
     }
@@ -92,6 +98,7 @@ fn workspace_and_network_grants_cannot_attach_host_shared_memory() {
     complete(ProcessTree::spawn(&mut command("yes")).unwrap());
     // SAFETY: the original attachment is live; the child has exited.
     assert_eq!(unsafe { segment.address.cast::<u8>().read_volatile() }, 1);
+    eprintln!("original child coverage: confined={admitted}, refused={refused}, unrestricted=1");
 }
 
 fn complete(mut tree: ProcessTree) {
@@ -117,6 +124,33 @@ fn probe() {
     };
     let id = id.parse().unwrap();
     let allowed = std::env::var("ACYCLIC_BOUNDARY_IPC_ALLOWED").unwrap() == "yes";
+    // Exercise the original generated filter in the kernel, through the same
+    // granted launch used above. Zero selects the caller; explicitly naming
+    // even our own PID requires the authority denied to named-process queries.
+    // SAFETY: these queries take only integer identifiers and no pointers.
+    let group = unsafe { libc::getpgid(0) };
+    assert!(group > 0, "self group: {}", io::Error::last_os_error());
+    // SAFETY: zero selects this process's session without mutation.
+    assert!(unsafe { libc::getsid(0) } > 0);
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: getpgrp has no arguments and only reads the caller's identity.
+    assert_eq!(unsafe { libc::getpgrp() }, group);
+    let own_pid = libc::c_long::from(std::process::id());
+    for call in [libc::SYS_getpgid, libc::SYS_getsid] {
+        // SAFETY: this names the live current process, with no pointer or
+        // mutation. The unrestricted child is the identical negative control.
+        let queried = unsafe { libc::syscall(call, own_pid) };
+        if allowed {
+            assert!(
+                queried > 0,
+                "unrestricted query: {}",
+                io::Error::last_os_error()
+            );
+        } else {
+            assert_eq!(queried, -1, "named process acquired query authority");
+            assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EPERM));
+        }
+    }
     // SAFETY: this is the real host-supplied segment; no pointer is supplied.
     let address = unsafe { libc::shmat(id, core::ptr::null(), 0) };
     if address.addr() == usize::MAX {

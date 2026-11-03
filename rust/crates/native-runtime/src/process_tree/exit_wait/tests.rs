@@ -1,6 +1,79 @@
 use super::*;
 use std::sync::atomic::Ordering;
 
+#[cfg(target_os = "linux")]
+#[test]
+fn public_child_exit_watch_preserves_original_owner_and_deadline() -> io::Result<()> {
+    use std::future::Future as _;
+    use std::io::Write as _;
+    use std::os::fd::AsFd as _;
+    use std::task::{Context, Waker};
+    // Exercise the exported API on an actual direct child, not a ProcessTree
+    // or an alternate pidfd implementation. Its input EOF is also terminal.
+    let spawn = |mode| {
+        std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "process_tree::exit_wait::tests::exit_wait_fixture",
+            ])
+            .env("ACYCLIC_TEST_EXIT_WAIT", "1")
+            .env("ACYCLIC_TEST_EXIT_STATUS", mode)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+    };
+    let mut child = spawn("gated")?;
+    let watch = crate::ChildExitWatch::open(&mut child)?.expect("live child");
+    let mut other = spawn("eof")?;
+    let waited = crate::wait_child_until(&mut other, Instant::now() + Duration::from_secs(2));
+    // Retire the original child even when testing the former deadlock. Its
+    // distinct exit must not satisfy the first child's retained readiness.
+    drop(other.stdin.take());
+    let status = other.wait()?;
+    assert_eq!(status.code(), Some(37));
+    assert_eq!(waited?, status);
+    let early = watch.wait_until(Instant::now());
+    let still_running = child.try_wait()?;
+    // Releasing readiness while the original input producer still gates exit
+    // must leave launch, signal and reap authority with that same Child.
+    drop(watch);
+    let after_drop = child.try_wait()?;
+    let watch = crate::ChildExitWatch::open(&mut child)?.expect("original child still live");
+    // Borrow the exported descriptor through the existing shared epoll hub,
+    // as a consumer does; no second native poller or PID lookup is introduced.
+    let mut readiness =
+        crate::descriptor_readiness(watch.as_fd(), crate::DescriptorInterest::Readable)?;
+    assert!(
+        std::pin::Pin::new(&mut readiness)
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    child.stdin.take().unwrap().write_all(&[1])?;
+    let ready = watch.wait_until(Instant::now() + Duration::from_secs(2));
+    // Reap only through the original owner. The retained pidfd can still
+    // report this same exit after reaping, with no numeric PID lookup.
+    let status = child.wait()?;
+    ready?;
+    tokio::runtime::Builder::new_current_thread()
+        .build()?
+        .block_on(readiness)
+        .into_result()?;
+    assert_eq!(early.unwrap_err().kind(), io::ErrorKind::TimedOut);
+    assert!(still_running.is_none(), "deadline must not signal or reap");
+    assert!(
+        after_drop.is_none(),
+        "dropping readiness must not signal or reap"
+    );
+    assert_eq!(status.code(), Some(37));
+    watch.wait_until(Instant::now())?;
+    drop(watch);
+    assert!(crate::ChildExitWatch::open(&mut child)?.is_none());
+    assert_eq!(crate::wait_child_until(&mut child, Instant::now())?, status);
+
+    Ok(())
+}
+
 #[test]
 fn a_missing_exit_registration_settles_the_owned_child_before_returning() -> io::Result<()> {
     let mut tree = child("gated")?;
@@ -88,8 +161,12 @@ fn exit_wait_fixture() {
                 .expect("exit release");
             assert_eq!(release, [1]);
         }
+        if std::env::var("ACYCLIC_TEST_EXIT_STATUS").as_deref() == Ok("eof") {
+            use std::io::Read as _;
+            assert_eq!(std::io::stdin().read(&mut [0]).unwrap(), 0);
+        }
         match std::env::var("ACYCLIC_TEST_EXIT_STATUS").as_deref() {
-            Ok("37" | "gated") => std::process::exit(37),
+            Ok("37" | "gated" | "eof") => std::process::exit(37),
             Ok("signal") => {
                 // SAFETY: the isolated fixture deliberately terminates itself.
                 unsafe { libc::raise(libc::SIGTERM) };

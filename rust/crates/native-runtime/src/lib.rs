@@ -62,6 +62,8 @@ pub use process_tree::{
     ProcessDrain, ProcessInput, ProcessOutput, ProcessReadiness, ProcessStdio, ProcessTree,
     ProcessTreeIo, ProcessTreeStorage, ProcessWaitOutcome, ProcessWake,
 };
+#[cfg(target_os = "linux")]
+pub use process_tree::{ChildExitWatch, wait_child_until};
 #[cfg(unix)]
 pub use process_tree::{DescriptorInterest, DescriptorReadiness, descriptor_readiness};
 #[cfg(not(target_arch = "wasm32"))]

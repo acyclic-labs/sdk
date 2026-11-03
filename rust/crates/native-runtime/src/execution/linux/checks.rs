@@ -210,18 +210,26 @@ proptest! {
         let code = filter(&ExecutionNetwork::On).unwrap();
         if !allowed_syscalls().iter().any(|call| *call as u32 == syscall)
             && ![libc::SYS_read, libc::SYS_write, libc::SYS_fcntl,
-                libc::SYS_prlimit64, libc::SYS_clone3].contains(&(i64::from(syscall))) {
+                libc::SYS_prlimit64, libc::SYS_getpgid, libc::SYS_getsid,
+                libc::SYS_clone3].contains(&(i64::from(syscall))) {
             prop_assert_eq!(evaluate(code, ARCH, syscall, arguments), DENY);
         }
         for call in [libc::SYS_shmget, libc::SYS_shmat, libc::SYS_shmctl,
             libc::SYS_msgget, libc::SYS_msgsnd, libc::SYS_msgrcv, libc::SYS_msgctl,
             libc::SYS_semget, libc::SYS_semop, libc::SYS_semctl,
             libc::SYS_mq_open, libc::SYS_mq_unlink, libc::SYS_process_vm_writev,
-            libc::SYS_process_madvise, libc::SYS_process_mrelease] {
+            libc::SYS_process_madvise, libc::SYS_process_mrelease,
+            libc::SYS_setpgid, libc::SYS_setsid] {
             prop_assert_eq!(evaluate(code, ARCH, call as u32, arguments), DENY);
         }
-        prop_assert_eq!(evaluate(code, ARCH, libc::SYS_prlimit64 as u32, arguments),
-            if arguments[0] as u32 == 0 { ALLOW } else { DENY });
+        for call in [libc::SYS_prlimit64, libc::SYS_getpgid, libc::SYS_getsid] {
+            for pid in [arguments[0], 0, 1, u64::MAX] {
+                let mut selected = arguments;
+                selected[0] = pid;
+                prop_assert_eq!(evaluate(code, ARCH, call as u32, selected),
+                    if pid as u32 == 0 { ALLOW } else { DENY });
+            }
+        }
         for command in [libc::F_SETOWN, libc::F_GETOWN, libc::F_SETLEASE] {
             let mut control = arguments;
             control[1] = command as u64;

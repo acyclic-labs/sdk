@@ -11,6 +11,51 @@ Each example is a complete ES module. Save one as `example.mts`, compile with `n
 
 In this checkout, `bun run check:docs` compiles these exact snippets against source and verifies the copies in [llms.txt](../../../llms.txt). Build the generated WASM declarations with the normal package build first when absent. [Rust examples](../../../rust/README.md) are checked separately by doctests.
 
+## Native commands in Node.js
+
+The Node-only `@acyclic-labs/sdk/process` export provides `commandProcess`,
+`commandCapture` and `withProcessSignals`. Install the matching
+`acyclic-process-host` executable from `acyclic-native-runtime` and supply its
+absolute path as `host`. For example,
+`await commandCapture(process.execPath, ['--version'], {host, signal})` returns
+UTF-8 `stdout` and `stderr`. Omit `maxBuffer` for unbounded capture or pass an
+explicit per-stream byte budget. Use `commandProcess` to stream output without
+retaining it. Capture retains bytes already written when cancellation occurs;
+only exceeding the explicit capture budget stops accumulation.
+Pass `stdio` to forward any standard stream directly to a caller-owned file
+descriptor or inherited stream. Only piped outputs reach `onOutput` or capture;
+the caller keeps its forwarded descriptors open. Extra descriptors and IPC
+channels are unsupported.
+
+The native owner admits the selected command, waits on OS exit events and
+retires its descendants on completion or cancellation. The cancellation channel
+is separate from command stdin, including when `input` is a `Readable`.
+The caller owns `signal` and any deadline. Cancellation requests native tree
+retirement immediately; it has no implicit grace timer or configurable signal.
+The command's executable and arguments pass directly to the native launcher,
+with no shell expansion. Unsupported physical custody is an explicit failure.
+
+`onOutput(stream, bytes, active)` may return a promise for an accepted write;
+both streams and those writes settle before return. A failed sink requests
+cancellation and retains its original cause. `onTerminal` is called once,
+immediately on a local failure or after the original terminal is available.
+Nonzero exits are reported before joining accepted output, so an output sink
+can release its pending write from that terminal. The terminal callback's own
+accepted work is also joined before return.
+`onClose` sees the selected root's exit code or signal. `commandProcess` returns
+the original bound completion plus the first original failure per phase and
+stream, with bounded failure storage; `commandCapture`
+throws the original cause or an `AggregateError` with all retained causes.
+An input source that outlives the command is destroyed when that command exits.
+
+Validate the published entry and real native executable together with
+`cargo test --locked -p acyclic-native-runtime --test node_process` from `rust/`.
+Node.js must be installed. The control uses real input/output, a root with a
+descendant, caller cancellation, accepted output writes and native receipts.
+Run `node --test test/process-admission.test.mjs` from this package to check
+host-admission failures through the public entry without an installed host.
+It uses a real failed OS spawn, open command input and accepted terminal work.
+
 ## Objects
 
 Account-scoped, content-addressed blobs: equal bytes name one blob, manifests join parts, and retained roots keep blobs alive across collection. This example publishes bytes and reads a range back over HTTP.

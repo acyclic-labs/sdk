@@ -43,6 +43,8 @@ mod control;
 pub use control::{ControlledCapture, ProcessControl};
 #[cfg(unix)]
 mod exit_wait;
+#[cfg(target_os = "linux")]
+pub use exit_wait::{ChildExitWatch, wait_child_until};
 #[cfg(any(windows, test))]
 mod job_members;
 mod pump;

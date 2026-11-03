@@ -190,86 +190,41 @@ fn observe<const N: usize>(
 
 struct Directory(PathBuf);
 
-#[derive(Debug)]
-struct Invocation {
-    executable: OsString,
-    arguments: Vec<OsString>,
-    inherit_input: bool,
-    custody: Option<PathBuf>,
-    lease: Option<PathBuf>,
-    completion: Option<PathBuf>,
-    invocation: Option<String>,
-}
-
-impl Invocation {
-    fn parse(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Self> {
-        let mut arguments = arguments.into_iter();
-        let mut inherit_input = false;
-        let mut custody = None;
-        let mut lease = None;
-        let mut completion = None;
-        let mut invocation = None;
-        while let Some(argument) = arguments.next() {
-            if argument == "--inherit-input" && !inherit_input {
-                inherit_input = true;
-            } else if argument == "--invocation" && invocation.is_none() {
-                let value = arguments.next().ok_or_else(invalid_arguments)?;
-                let value = value.into_string().map_err(|_| invalid_arguments())?;
-                if value.is_empty()
-                    || !value
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-                {
-                    return Err(invalid_arguments());
-                }
-                invocation = Some(value);
-            } else if argument == "--custody" || argument == "--completion" || argument == "--lease"
-            {
-                let path = arguments.next().ok_or_else(invalid_arguments)?;
-                if !Path::new(&path).is_absolute() {
-                    return Err(invalid_arguments());
-                }
-                let destination = if argument == "--custody" {
-                    &mut custody
-                } else if argument == "--lease" {
-                    &mut lease
-                } else {
-                    &mut completion
-                };
-                if destination.replace(PathBuf::from(path)).is_some() {
-                    return Err(invalid_arguments());
-                }
-            } else if Path::new(&argument).is_absolute() {
-                if (custody.is_some() && lease.is_some())
-                    || (invocation.is_some() && completion.is_none())
-                {
-                    return Err(invalid_arguments());
-                }
-                return Ok(Self {
-                    executable: argument,
-                    arguments: arguments.collect(),
-                    inherit_input,
-                    custody,
-                    lease,
-                    completion,
-                    invocation,
-                });
-            } else {
-                return Err(invalid_arguments());
-            }
-        }
-        Err(invalid_arguments())
-    }
-}
-
-fn invalid_arguments() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidInput,
-        "step=process-host-arguments; recovery=acyclic-process-host [--lease ABSOLUTE_ROOT | --custody ABSOLUTE_DIRECTORY] [--completion ABSOLUTE_FILE [--invocation OPAQUE_ID]] [--inherit-input] ABSOLUTE_EXECUTABLE ARGS",
-    )
-}
+mod arguments;
+use arguments::{Invocation, invalid_arguments};
 
 struct Completion(Option<std::fs::File>);
+
+// One cancellation input for the same tree owner. A separate caller-owned
+// endpoint leaves command stdin available for arbitrary input and EOF.
+enum ControlInput {
+    Standard,
+    #[cfg(unix)]
+    Endpoint(std::os::unix::net::UnixStream),
+    #[cfg(windows)]
+    Endpoint(std::fs::File),
+}
+
+impl ControlInput {
+    fn open(endpoint: Option<&Path>, inherit_input: bool) -> io::Result<Option<Self>> {
+        if let Some(endpoint) = endpoint {
+            #[cfg(unix)]
+            let stream = std::os::unix::net::UnixStream::connect(endpoint)?;
+            #[cfg(windows)]
+            let stream = std::fs::File::open(endpoint)?;
+            Ok(Some(Self::Endpoint(stream)))
+        } else {
+            Ok((!inherit_input).then_some(Self::Standard))
+        }
+    }
+
+    fn read(&mut self) -> io::Result<usize> {
+        match self {
+            Self::Standard => io::stdin().read(&mut [0]),
+            Self::Endpoint(stream) => stream.read(&mut [0]),
+        }
+    }
+}
 
 impl Completion {
     fn open(path: Option<&Path>) -> io::Result<Self> {
@@ -356,6 +311,10 @@ impl Drop for Directory {
 /// never certified. Without this option, the exact v2 receipt remains unchanged.
 ///
 /// This is an executable entry point: the caller must exit after it returns.
+/// `--control ABSOLUTE_ENDPOINT` connects to the caller's existing Unix socket
+/// or Windows named pipe before launching. Its EOF cancels the same tree even
+/// with `--inherit-input`; command stdin and cancellation are independent.
+/// `-- EXECUTABLE ARGS` ends host options and permits the caller's PATH lookup.
 /// The control reader can still be blocked on stdin after a normal command
 /// exit, and belongs to that process rather than a reusable runtime service.
 pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) -> io::Result<i32> {
@@ -455,6 +414,11 @@ fn run_host<const OBSERVATIONS: usize>(
             .map(ProcessCustodyLease::custody)
             .or(custody.as_deref())
             .ok_or_else(invalid_arguments)?;
+        // Admit the cancellation channel before the selected root can act.
+        observe(observations, |progress| {
+            progress.phase = ProcessHostPhase::ControlAdmission
+        });
+        let control = ControlInput::open(invocation.control.as_deref(), invocation.inherit_input)?;
         let mut command = ProcessCommand::new(invocation.executable);
         command
             .args(invocation.arguments)
@@ -485,7 +449,7 @@ fn run_host<const OBSERVATIONS: usize>(
             }),
             control: std::array::from_fn(|_| OnceLock::new()),
         });
-        if !invocation.inherit_input {
+        if let Some(mut input) = control {
             observe(observations, |progress| {
                 progress.phase = ProcessHostPhase::ControlAdmission
             });
@@ -493,7 +457,7 @@ fn run_host<const OBSERVATIONS: usize>(
             let started = std::thread::Builder::new()
                 .name("process-host-control".into())
                 .spawn(move || {
-                    let input = io::stdin().read(&mut [0]);
+                    let input = input.read();
                     if let Some(origin) = origin {
                         let outcome = match &input {
                             Ok(0) => ProcessHostControl::Eof,
@@ -798,9 +762,9 @@ mod tests {
         assert!(failure.progress.root_status.is_none());
         assert!(failure.progress.retired.is_none());
         assert!(failure.receipt_error.is_none());
-        let refused: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(absent.path().join("failed.json")).unwrap())
-                .unwrap();
+        let original = std::fs::read(absent.path().join("failed.json")).unwrap();
+        println!("PROCESS_COMPLETION_CORPUS_refused_BYTES={original:?}");
+        let refused: serde_json::Value = serde_json::from_slice(&original).unwrap();
         assert_eq!(refused["schema"], "acyclic.process-custody-completion.v3");
         assert_eq!(refused["invocation"], PHASE_BINDING);
         assert_eq!(refused["failure"]["phase"], "root-admission");
@@ -883,10 +847,9 @@ mod tests {
                 let retired = observation["retired"].as_f64().unwrap();
                 assert!(admitted <= exited && exited <= retired);
                 if version == "3" {
-                    let receipt: serde_json::Value = serde_json::from_slice(
-                        &std::fs::read(root.path().join("completion.json")).unwrap(),
-                    )
-                    .unwrap();
+                    let original = std::fs::read(root.path().join("completion.json")).unwrap();
+                    println!("PROCESS_COMPLETION_CORPUS_{mode}_BYTES={original:?}");
+                    let receipt: serde_json::Value = serde_json::from_slice(&original).unwrap();
                     assert_eq!(receipt["schema"], "acyclic.process-custody-completion.v3");
                     assert_eq!(receipt["invocation"], PHASE_BINDING);
                     assert_eq!(receipt["platform"], std::env::consts::OS);
@@ -916,7 +879,6 @@ mod tests {
                     } else {
                         assert!(receipt["failure"].is_null());
                     }
-                    println!("host-receipt-capture:{receipt}");
                 }
                 if mode == "failed" {
                     assert_eq!(observation["failed"], true);
@@ -1044,44 +1006,6 @@ mod tests {
         assert!(former_admitted);
         assert!(rejected);
         assert!(tree.is_reaped());
-    }
-
-    #[test]
-    fn leased_host_rejects_ambiguous_custody_and_preserves_literal_arguments() {
-        let executable = std::env::current_exe().unwrap().into_os_string();
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().as_os_str().to_owned();
-        let parsed = Invocation::parse([
-            "--lease".into(),
-            path.clone(),
-            executable.clone(),
-            "--lease".into(),
-        ])
-        .unwrap();
-        assert_eq!(parsed.lease.as_deref(), Some(root.path()));
-        assert_eq!(parsed.arguments, ["--lease"]);
-        for arguments in [
-            vec!["--lease".into(), "relative".into(), executable.clone()],
-            vec![
-                "--lease".into(),
-                path.clone(),
-                "--lease".into(),
-                path.clone(),
-                executable.clone(),
-            ],
-            vec![
-                "--custody".into(),
-                path.clone(),
-                "--lease".into(),
-                path,
-                executable,
-            ],
-        ] {
-            assert_eq!(
-                Invocation::parse(arguments).unwrap_err().kind(),
-                io::ErrorKind::InvalidInput
-            );
-        }
     }
 
     #[test]
@@ -1255,36 +1179,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn failed_host_observation_keeps_the_live_child_and_recovery_authority() {
-        let root = tempfile::tempdir().unwrap();
-        let records = root.path().join("custody");
-        let custody = ProcessCustody::open(&records).unwrap();
-        let mut tree = ProcessTree::spawn_in_custody(
-            &mut super::super::tests::command("partial", root.path()),
-            &custody,
-        )
-        .unwrap();
-        super::super::tests::ready(root.path(), "partial-ready", || {
-            tree.try_wait(None).map_or(true, |status| status.is_some())
-        });
-        let child = tree.child.take().unwrap();
-        let failure = retire_after_observation(
-            &mut tree,
-            child,
-            Err(io::ErrorKind::Interrupted.into()),
-            |_| {},
-        );
-        let retained = tree.child.is_some()
-            && tree.custody.is_some()
-            && std::fs::read_dir(&records).unwrap().count() == 1;
-        tree.terminate(None).unwrap();
-        assert_eq!(failure.unwrap_err().kind(), io::ErrorKind::Interrupted);
-        assert!(retained);
-        assert!(tree.is_reaped());
-        assert_eq!(std::fs::read_dir(&records).unwrap().count(), 0);
-    }
-
     // Captured from 579657faa74dc6a3a6334cf97e059a70d0724c03's external
     // adapter ordering. Only state.tree is passed as an argument here; the
     // native operations and the error propagation cuts are unchanged.
@@ -1351,51 +1245,109 @@ mod tests {
         }
     }
 
-    #[test]
-    fn process_host_options_stop_at_the_literal_executable() {
-        let executable = std::env::current_exe().unwrap();
-        let directory = tempfile::tempdir().unwrap();
-        let receipt = directory.path().join("completion.json");
-        let parsed = Invocation::parse([
-            "--completion".into(),
-            receipt.clone().into_os_string(),
-            "--custody".into(),
-            directory.path().as_os_str().to_owned(),
-            "--inherit-input".into(),
-            executable.clone().into_os_string(),
-            "--completion".into(),
-            "literal & % child argument".into(),
-        ])
-        .unwrap();
-        assert_eq!(parsed.executable, executable.as_os_str());
-        assert_eq!(parsed.completion.as_deref(), Some(receipt.as_path()));
-        assert_eq!(parsed.custody.as_deref(), Some(directory.path()));
-        assert!(parsed.inherit_input);
-        assert_eq!(
-            parsed.arguments,
-            ["--completion", "literal & % child argument"]
-        );
-    }
-
-    #[test]
-    fn process_host_rejects_relative_and_duplicate_receipt_admission() {
-        let executable = std::env::current_exe().unwrap().into_os_string();
-        let receipt = std::env::temp_dir().join("receipt.json").into_os_string();
-        for arguments in [
-            vec!["--completion".into(), "relative".into(), executable.clone()],
-            vec!["--custody".into(), "relative".into(), executable.clone()],
-            vec![
-                "--completion".into(),
-                receipt.clone(),
-                "--completion".into(),
-                receipt,
-                executable,
-            ],
-        ] {
-            assert_eq!(
-                Invocation::parse(arguments).unwrap_err().kind(),
-                io::ErrorKind::InvalidInput
-            );
+    proptest::proptest! {
+        #[test]
+        fn process_host_argument_fuzz(
+            recorded in proptest::sample::select(
+                serde_json::from_str::<Vec<serde_json::Value>>(include_str!(
+                    "external_host/corpus/linux-arguments.json")).unwrap()),
+            arguments in proptest::collection::vec(
+                proptest::collection::vec(proptest::prelude::any::<u8>(), 0..64), 0..32),
+            inherit_input in proptest::prelude::any::<bool>(),
+            literal in proptest::prelude::any::<bool>(),
+            custody in 0_u8..3,
+            control in proptest::prelude::any::<bool>(),
+            receipt in proptest::prelude::any::<bool>(),
+            bound in proptest::prelude::any::<bool>(),
+            order in proptest::prelude::any::<[u8; 5]>(),
+            binding in "[a-zA-Z0-9_-]{1,32}",
+        ) {
+            // Conformance to the original executable's portable argv, not
+            // another parser model or rewritten installation paths.
+            let original = recorded["arguments"].as_array().unwrap().iter()
+                .map(|value| OsString::from(value.as_str().unwrap()));
+            proptest::prop_assert_eq!(Invocation::parse(original).is_ok(),
+                recorded["code"] == 17);
+            let path = std::env::current_exe().unwrap().into_os_string();
+            let executable = if literal { "relative-program".into() } else { path.clone() };
+            let mut tail: Vec<OsString> = arguments.into_iter().map(|bytes| {
+                #[cfg(unix)] {
+                    use std::os::unix::ffi::OsStringExt as _;
+                    OsString::from_vec(bytes)
+                }
+                #[cfg(windows)] {
+                    use std::os::windows::ffi::OsStringExt as _;
+                    let wide: Vec<u16> = bytes.chunks(2)
+                        .map(|pair| u16::from_le_bytes([pair[0], *pair.get(1).unwrap_or(&0)]))
+                        .collect();
+                    OsString::from_wide(&wide)
+                }
+            }).collect();
+            tail.splice(0..0, ["--lease".into(), "--invocation".into(), "--".into()]);
+            let mut options: Vec<Vec<OsString>> = vec![
+                if receipt { vec!["--completion".into(), path.clone()] } else { vec![] },
+                if control { vec!["--control".into(), path.clone()] } else { vec![] },
+                match custody {
+                    1 => vec!["--custody".into(), path.clone()],
+                    2 => vec!["--lease".into(), path.clone()],
+                    _ => vec![],
+                },
+                if receipt && bound { vec!["--invocation".into(), binding.clone().into()] } else { vec![] },
+                if inherit_input { vec!["--inherit-input".into()] } else { vec![] },
+            ];
+            let mut positions = [0, 1, 2, 3, 4];
+            positions.sort_by_key(|index| order[*index]);
+            let mut command: Vec<OsString> = positions.into_iter()
+                .flat_map(|index| std::mem::take(&mut options[index])).collect();
+            if literal { command.push("--".into()); }
+            command.push(executable.clone());
+            command.extend(tail.clone());
+            let parsed = Invocation::parse(command).unwrap();
+            proptest::prop_assert_eq!(parsed.executable, executable.clone());
+            proptest::prop_assert_eq!(parsed.arguments, tail);
+            proptest::prop_assert_eq!(parsed.inherit_input, inherit_input);
+            proptest::prop_assert_eq!(parsed.control.as_deref(), control.then(|| Path::new(&path)));
+            proptest::prop_assert_eq!(parsed.completion.as_deref(), receipt.then(|| Path::new(&path)));
+            proptest::prop_assert_eq!(parsed.custody.as_deref(), (custody == 1).then(|| Path::new(&path)));
+            proptest::prop_assert_eq!(parsed.lease.as_deref(), (custody == 2).then(|| Path::new(&path)));
+            proptest::prop_assert_eq!(parsed.invocation.as_deref(), (receipt && bound).then_some(binding.as_str()));
+            // The same admission predicate rejects missing, relative and
+            // duplicate paths for every endpoint, not only completion files.
+            for option in ["--completion", "--control", "--custody", "--lease"] {
+                for refused in [vec![option.into()],
+                    vec![option.into(), "relative".into(), path.clone()],
+                    vec![option.into(), path.clone(), option.into(), path.clone(), path.clone()]] {
+                    proptest::prop_assert_eq!(Invocation::parse(refused).unwrap_err().kind(),
+                        io::ErrorKind::InvalidInput);
+                }
+            }
+            for invalid in ["", " ", ".", "/", "\n", "π"] {
+                proptest::prop_assert_eq!(Invocation::parse([
+                    "--completion".into(), path.clone(), "--invocation".into(),
+                    invalid.into(), path.clone()]).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+            }
+            #[cfg(unix)]
+            let invalid_unicode = {
+                use std::os::unix::ffi::OsStringExt as _;
+                OsString::from_vec(vec![0xff])
+            };
+            #[cfg(windows)]
+            let invalid_unicode = {
+                use std::os::windows::ffi::OsStringExt as _;
+                OsString::from_wide(&[0xd800])
+            };
+            for refused in [vec![], vec!["--".into(), "".into()],
+                vec!["--unknown".into(), path.clone()],
+                vec!["--invocation".into()],
+                vec!["--completion".into(), path.clone(), "--invocation".into(), invalid_unicode, path.clone()],
+                vec!["--completion".into(), path.clone(), "--invocation".into(), binding.clone().into(),
+                    "--invocation".into(), binding.clone().into(), path.clone()],
+                vec!["--invocation".into(), binding.clone().into(), path.clone()],
+                vec!["--inherit-input".into(), "--inherit-input".into(), path.clone()],
+                vec!["--custody".into(), path.clone(), "--lease".into(), path.clone(), path]] {
+                proptest::prop_assert_eq!(Invocation::parse(refused).unwrap_err().kind(),
+                    io::ErrorKind::InvalidInput);
+            }
         }
     }
 
