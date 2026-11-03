@@ -368,13 +368,19 @@ mod tests {
     fn file_table_writer_corpus_reaches_the_shared_differential_oracle() {
         for bytes in [
             include_bytes!("../../fuzz/corpus/decoder_work/file-table-empty-leaf").as_slice(),
-            include_bytes!("../../fuzz/corpus/decoder_work/file-table-internal").as_slice(),
-            include_bytes!("../../fuzz/corpus/decoder_work/file-table-single-fifo").as_slice(),
-            include_bytes!("../../fuzz/corpus/decoder_work/inline-file-table").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/file-table-plain-internal").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/file-table-sealed-internal").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/file-table-plain-leaf").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/file-table-sealed-leaf").as_slice(),
         ] {
             assert!(check_inner::<false>(bytes), "original writer seed refused");
         }
+        // Preserve old producer bytes as rejected inputs after format changes.
+        // Positive seeds above reuse the registered canonical writer captures.
         for bytes in [
+            include_bytes!("../../fuzz/corpus/decoder_work/file-table-internal").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/file-table-single-fifo").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/inline-file-table").as_slice(),
             include_bytes!("../../fuzz/corpus/decoder_work/file-table-trailing").as_slice(),
             include_bytes!("../../fuzz/corpus/decoder_work/file-table-unordered").as_slice(),
             include_bytes!("../../fuzz/corpus/decoder_work/truncated-inline-payload").as_slice(),
