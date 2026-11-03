@@ -662,23 +662,70 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             .is_err()
         );
         assert_eq!(host.resolve(&workspace, None).await?, before);
-        let delete = actions(&[Action::Delete])?;
-        let removed = host
-            .put_changes(
-                &volume,
-                &write,
-                &[ContentChange::DeleteExpected { source: first }],
-                &IdempotencyKey::new("conditional-delete")?,
-                64,
-                ContentAccess {
-                    ceiling: Some(&delete),
-                    io: io.as_ref(),
+        let structured_delete = actions(&[Action::Delete])?;
+        let volume_delete =
+            crate::Capabilities::new([volume.capability(VolumeOperation::Delete, &mut None)?]);
+        for (index, delete) in [structured_delete, volume_delete].iter().enumerate() {
+            let first = original.files().nth(index).unwrap();
+            let before = host.resolve(&workspace, None).await?;
+            let delete_access = ContentAccess {
+                ceiling: Some(delete),
+                io: io.as_ref(),
+            };
+            for change in [
+                add("delete-cannot-create"),
+                ContentChange::UpdateExpected {
+                    source: first,
+                    bytes: b"delete-cannot-write",
                 },
-                None,
-            )?
-            .await?;
-        assert_eq!(removed.members.len(), 1);
-        assert_eq!(removed.files().count(), 0);
+            ] {
+                let denied = async {
+                    host.put_changes(
+                        &volume,
+                        &write,
+                        &[change],
+                        &IdempotencyKey::new("conditional-delete-denied")?,
+                        64,
+                        delete_access,
+                        None,
+                    )?
+                    .await
+                }
+                .await
+                .expect_err("a delete ceiling cannot authorize creation or replacement");
+                assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+                assert_eq!(host.resolve(&workspace, None).await?, before);
+            }
+            let denied = host
+                .observe_changes(&volume, &write, &key, 64_000, delete_access)?
+                .await
+                .expect_err("a delete ceiling cannot recover a creation receipt");
+            assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+            let delete_key = IdempotencyKey::new(if index == 0 {
+                "conditional-structured-delete"
+            } else {
+                "conditional-volume-delete"
+            })?;
+            let removed = host
+                .put_changes(
+                    &volume,
+                    &write,
+                    &[ContentChange::DeleteExpected { source: first }],
+                    &delete_key,
+                    64,
+                    delete_access,
+                    None,
+                )?
+                .await?;
+            assert_eq!(removed.members.len(), 1);
+            assert_eq!(removed.files().count(), 0);
+            let observed = host
+                .observe_changes(&volume, &write, &delete_key, 64_000, delete_access)?
+                .await?
+                .expect("the delete ceiling can recover its deletion receipt");
+            assert_eq!(observed.generation, removed.generation);
+            assert_eq!(observed.members, removed.members);
+        }
         // The original immutable source remains readable after deletion.
         assert_eq!(
             host.read_content(first, &read, 64, None).await?.as_ref(),
