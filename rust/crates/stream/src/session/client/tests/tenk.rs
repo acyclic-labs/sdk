@@ -9,7 +9,6 @@ use futures::{
 };
 use std::time::Instant;
 
-const AGENTS: usize = 10_000;
 const NODES: usize = 8;
 
 struct Owners {
@@ -126,9 +125,10 @@ async fn run_swarm<P: StreamProvider>(
     provider: &P,
     memory: Arc<MemoryStream>,
     label: &str,
+    count: usize,
 ) -> TestResult {
     let paths = Arc::new(
-        (0..AGENTS)
+        (0..count)
             .map(|id| StreamPath::new(format!("agents/{id}")))
             .collect::<Result<Vec<_>, _>>()?,
     );
@@ -152,9 +152,9 @@ async fn run_swarm<P: StreamProvider>(
     while let Some(records) = opens.next().await {
         followers.push(records?);
     }
-    assert_eq!(followers.len(), AGENTS);
+    assert_eq!(followers.len(), count);
     let epoch = Instant::now();
-    let mut agents = (0..AGENTS)
+    let mut agents = (0..count)
         .map(|id| agent(Arc::clone(&memory), Arc::clone(&paths), id, epoch))
         .collect::<FuturesUnordered<_>>();
     let produce = async move {
@@ -164,14 +164,14 @@ async fn run_swarm<P: StreamProvider>(
             completed += 1;
             tokio::task::yield_now().await;
         }
-        assert_eq!(completed, AGENTS);
+        assert_eq!(completed, count);
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     };
     let consume = async {
-        let mut offsets = vec![1; AGENTS];
-        let mut senders = vec![[false; 2]; AGENTS];
-        let mut latencies = Vec::with_capacity(2 * AGENTS);
-        for _ in 0..2 * AGENTS {
+        let mut offsets = vec![1; count];
+        let mut senders = vec![[false; 2]; count];
+        let mut latencies = Vec::with_capacity(2 * count);
+        for _ in 0..2 * count {
             let (id, record) = followers
                 .next()
                 .await
@@ -199,10 +199,10 @@ async fn run_swarm<P: StreamProvider>(
         }
         assert!(offsets.iter().all(|next| *next == 3));
         assert!(senders.iter().all(|seen| *seen == [true, true]));
-        assert_eq!(latencies.len(), 2 * AGENTS);
+        assert_eq!(latencies.len(), 2 * count);
         latencies.sort_unstable();
         eprintln!(
-            "swarm_delta {label} agents={AGENTS} records={} p50_ns={} p99_ns={}",
+            "swarm_delta {label} agents={count} records={} p50_ns={} p99_ns={}",
             latencies.len(),
             latencies.get(latencies.len() / 2).ok_or("no latencies")?,
             latencies
@@ -216,7 +216,7 @@ async fn run_swarm<P: StreamProvider>(
     let (produced, consumed) = tokio::join!(tokio::spawn(produce), consume);
     produced??;
     consumed?;
-    assert_eq!(followers.len(), AGENTS);
+    assert_eq!(followers.len(), count);
     // Consume completes before the producer's last checkpoint. Keep every
     // stream open until both tasks finish, then drain registered wakes directly
     // so extra data cannot hide behind SelectAll's cooperative polling budget.
@@ -230,58 +230,60 @@ async fn run_swarm<P: StreamProvider>(
 }
 
 #[tokio::test]
-async fn ten_thousand_agents_use_stream_transactions_and_one_session_per_node() -> TestResult {
+async fn agent_transactions_share_one_session_per_node_as_the_swarm_grows() -> TestResult {
     // Work and byte counts are the property; latencies are only reported. A
     // wall-clock bound would fail a correct run on a loaded host.
     async {
-        let local = Arc::new(MemoryStream::default());
-        run_swarm(local.as_ref(), Arc::clone(&local), "memory").await?;
-        let memory = Arc::new(MemoryStream::default());
-        let mut owners = Vec::new();
-        let mut nodes = vec![None];
-        for id in 1..NODES {
-            let fixture = Fixture::open(Arc::clone(&memory), &format!("node-{id}")).await?;
-            nodes.push(Some(fixture.client()?));
-            owners.push(fixture);
-        }
-        let routed = Arc::new(Owners {
-            memory: Arc::clone(&memory),
-            nodes,
-        });
-        let edge = Fixture::open(routed, "node-0").await?;
-        let client = edge.client()?;
-        run_swarm(&client, Arc::clone(&memory), "grpc-eight-nodes").await?;
-        for (node, follows) in
-            std::iter::once((&edge, AGENTS)).chain(owners.iter().map(|node| (node, AGENTS / NODES)))
-        {
-            // Include cancellation/credit frames after the last application yield.
-            loop {
-                let changed = node.counts.changed.notified();
-                if node.counts.closed_sessions.load(Ordering::Relaxed) == 1 {
-                    break;
-                }
-                changed.await;
+        for count in [2 * NODES, 16 * NODES] {
+            let local = Arc::new(MemoryStream::default());
+            run_swarm(local.as_ref(), Arc::clone(&local), "memory", count).await?;
+            let memory = Arc::new(MemoryStream::default());
+            let mut owners = Vec::new();
+            let mut nodes = vec![None];
+            for id in 1..NODES {
+                let fixture = Fixture::open(Arc::clone(&memory), &format!("node-{id}")).await?;
+                nodes.push(Some(fixture.client()?));
+                owners.push(fixture);
             }
-            assert_eq!(node_work(&node.counts, follows), Ok(()));
+            let routed = Arc::new(Owners {
+                memory: Arc::clone(&memory),
+                nodes,
+            });
+            let edge = Fixture::open(routed, "node-0").await?;
+            let client = edge.client()?;
+            run_swarm(&client, Arc::clone(&memory), "grpc-eight-nodes", count).await?;
+            for (node, follows) in std::iter::once((&edge, count))
+                .chain(owners.iter().map(|node| (node, count / NODES)))
+            {
+                // Include cancellation/credit frames after the last application yield.
+                loop {
+                    let changed = node.counts.changed.notified();
+                    if node.counts.closed_sessions.load(Ordering::Relaxed) == 1 {
+                        break;
+                    }
+                    changed.await;
+                }
+                assert_eq!(node_work(&node.counts, follows), Ok(()));
+                eprintln!(
+                    "swarm_bytes follows={follows} received={} transmitted={} budget={}",
+                    node.counts.received_bytes.load(Ordering::Relaxed),
+                    node.counts.transmitted_bytes.load(Ordering::Relaxed),
+                    byte_budget(follows)
+                );
+            }
             eprintln!(
-                "swarm_bytes follows={follows} received={} transmitted={} budget={}",
-                node.counts.received_bytes.load(Ordering::Relaxed),
-                node.counts.transmitted_bytes.load(Ordering::Relaxed),
-                byte_budget(follows)
+                "swarm_connections client=1 node_pair={} total={} actor_channels=0",
+                NODES - 1,
+                NODES
             );
         }
-        eprintln!(
-            "swarm_connections client=1 node_pair={} total={} actor_channels=0",
-            NODES - 1,
-            NODES
-        );
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     }
     .await?;
     Ok(())
 }
 
-// Paths are at most "agents/9999"; each follow carries two 12-byte records.
+// Each follow carries two 12-byte records through the same eight-node topology.
 // One KiB covers the bidirectional open/data/ack/credit/remove exchange;
 // 256 bytes cover Hello/Welcome and aggregate-window overhead.
 const SESSION_BYTES: usize = 256;

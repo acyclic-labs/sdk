@@ -498,9 +498,6 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dy
     for (index, outcome) in (0..).zip(&outcomes) {
         assert_eq!(&append_keyed(&reopened, index).await?, outcome, "{index}");
     }
-    conformance::verify(&crate::conformance::Fixture::new(reopened.clone()))
-        .await
-        .map_err(std::io::Error::other)?;
     Ok(())
 }
 

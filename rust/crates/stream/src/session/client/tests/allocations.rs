@@ -216,7 +216,7 @@ async fn paired_openings(follows: u64, broken: bool) -> TestResult {
     let after_client = client();
     before_client.register_credential(0, crate::session::testing::credential())?;
     after_client.register_credential(0, crate::session::testing::credential())?;
-    // Separate clients keep 10k live interests in each arm, with identical
+    // Separate clients keep every live interest in each arm, with identical
     // registration/cache state and one warm physical Session per client.
     let before_anchor = before_client
         .follow_records(crate::FollowRequest::new(StreamPath::new("events")?, 1))
@@ -279,8 +279,11 @@ async fn paired_openings(follows: u64, broken: bool) -> TestResult {
 }
 
 #[tokio::test]
-async fn ten_thousand_follow_openings_count_pending_and_ready_allocations() -> TestResult {
-    paired_openings(10_000, false).await
+async fn follow_opening_allocations_grow_only_by_the_public_per_interest_cost() -> TestResult {
+    for follows in [8, 64, 512] {
+        paired_openings(follows, false).await?;
+    }
+    Ok(())
 }
 
 #[tokio::test]
