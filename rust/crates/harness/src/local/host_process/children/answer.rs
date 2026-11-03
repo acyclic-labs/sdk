@@ -98,7 +98,7 @@ impl NativeAnswer {
     }
 }
 
-fn bounded<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
+pub(super) fn bounded<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
     parts
         .into_iter()
         .flat_map(str::chars)
@@ -107,85 +107,4 @@ fn bounded<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
             (*bytes <= ANSWER_LIMIT).then_some(ch)
         })
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn native_replies_require_their_original_successful_terminal() {
-        for captured in [
-            include_str!("../fixtures/codex-completed.jsonl"),
-            include_str!("../fixtures/claude-code-completed.jsonl"),
-        ] {
-            let mut events = captured.lines().peekable();
-            let mut answer = NativeAnswer::default();
-            while let Some(line) = events.next() {
-                let event: Value = serde_json::from_str(line).expect("captured native JSON");
-                // Removing the original terminal leaves no completed reply,
-                // even when a native agent-message preview was received.
-                assert!(answer.outcome.is_none());
-                if event.get("type").and_then(Value::as_str) != Some("turn.started")
-                    && answer.pending.is_none()
-                {
-                    // Derived framing loss before the captured reply must not
-                    // become a sticky native refusal.
-                    answer.omit();
-                }
-                answer.record(&event);
-                if events.peek().is_none() {
-                    assert_eq!(
-                        answer.outcome,
-                        Some(Outcome::Succeeded("PAIRED_NATIVE_DONE".into()))
-                    );
-                    if event.get("type").and_then(Value::as_str) == Some("result") {
-                        // Derived negative: the captured success text cannot
-                        // override the native terminal's failure flag.
-                        let mut refused = event;
-                        refused["is_error"] = Value::Bool(true);
-                        answer.record(&refused);
-                        assert!(matches!(answer.outcome, Some(Outcome::Failed { .. })));
-                    } else {
-                        // Derived negative: a late completion cannot erase a
-                        // failed turn. Only the captured next turn-start can
-                        // release it for another attempt.
-                        let mut refused = event.clone();
-                        refused["type"] = Value::String("turn.failed".into());
-                        answer.record(&refused);
-                        answer.omit();
-                        answer.record(&event);
-                        assert!(matches!(answer.outcome, Some(Outcome::Failed { .. })));
-                        for line in captured.lines() {
-                            answer
-                                .record(&serde_json::from_str(line).expect("captured native JSON"));
-                        }
-                        assert_eq!(
-                            answer.outcome,
-                            Some(Outcome::Succeeded("PAIRED_NATIVE_DONE".into()))
-                        );
-                    }
-                }
-            }
-        }
-        let mut refused = NativeAnswer::default();
-        for line in include_str!("../fixtures/pi-assistant-error.jsonl").lines() {
-            refused.record(&serde_json::from_str(line).expect("captured Pi JSON"));
-        }
-        assert!(
-            matches!(refused.outcome, Some(Outcome::Failed { ref message }) if message == "No API key for provider: fixture")
-        );
-        // Bound across fragments without collecting the whole native message.
-        // The non-ASCII boundary must not split a codepoint or inspect the tail.
-        let prefix = "a".repeat(ANSWER_LIMIT - 1);
-        let mut visits = 0;
-        let text = bounded(
-            [prefix.as_str(), "😀"]
-                .into_iter()
-                .chain(std::iter::repeat_n("unread", 100_000))
-                .inspect(|_| visits += 1),
-        );
-        assert_eq!(text, prefix);
-        assert_eq!(visits, 2);
-    }
 }
