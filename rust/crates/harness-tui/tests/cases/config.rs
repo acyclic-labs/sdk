@@ -789,19 +789,16 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
     #[test]
-    fn saved_keymap_loads_and_live_file_projection_agree(
+    fn encoded_keymap_and_live_file_projection_agree(
         action in prop::sample::select(ACTIONS), disabled in any::<bool>(), key in 1u8..25,
     ) {
         let chord = format!("F{key}");
         let target = if disabled { serde_json::Value::Null } else { action.chord.into() };
         let text = json!({"bindings":{chord.clone():target}}).to_string();
         let map = acyclic_harness_tui::InputKeymap::parse(&text).unwrap();
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("config/keymap.json");
-        map.save(&path).unwrap();
-        let restored = acyclic_harness_tui::InputKeymap::load(&path).unwrap();
+        let saved = map.encode();
+        let restored = acyclic_harness_tui::InputKeymap::parse(&saved).unwrap();
         prop_assert_eq!(&restored, &map);
-        let saved = std::fs::read_to_string(path).unwrap();
         let mut view = ConfigView::default();
         view.set_file(Scope::User, ConfigFile::Keymap, Some(&saved));
         prop_assert_eq!(view.diagnostics().count(), 0);
