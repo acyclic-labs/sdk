@@ -532,7 +532,8 @@ mod tests {
         }
     }
 
-    fn handoff_model() {
+    #[test]
+    fn cancellation_wakeup_cannot_target_replacement_generation() {
         loom::model(|| {
             let (started, cancelled) = loom::sync::mpsc::channel();
             CANCELLATIONS.lock().unwrap_or_else(|e| panic!("{e}")).1 = Some(started);
@@ -562,24 +563,19 @@ mod tests {
             });
             // The original worker's acknowledgement races replacement with the
             // cancellation waiter's lock reacquisition.
-            let (finish, finishing) = loom::sync::mpsc::channel();
             {
                 let mut state = owner.state.lock().unwrap_or_else(|e| panic!("{e}"));
                 while !state.acknowledged {
                     state = owner.wake.wait(state).unwrap_or_else(|e| panic!("{e}"));
                 }
-                // Completion of the replacement is independent of which worker
-                // cancellation targets. Hold its action until that race settles.
-                Owner::submit(&owner, &mut state, false, move |_| {
-                    finishing.recv().unwrap();
-                    Ok(())
-                })
-                .unwrap_or_else(|e| panic!("{e}"));
+                // The replacement completes on its own, even if a defective
+                // canceller waits for its acknowledgement.
+                Owner::submit(&owner, &mut state, false, |_| Ok(()))
+                    .unwrap_or_else(|e| panic!("{e}"));
             }
             canceller
                 .join()
                 .unwrap_or_else(|e| std::panic::resume_unwind(e));
-            finish.send(()).unwrap();
             let mut state = owner.state.lock().unwrap_or_else(|e| panic!("{e}"));
             while !state.acknowledged {
                 state = owner.wake.wait(state).unwrap_or_else(|e| panic!("{e}"));
@@ -595,11 +591,6 @@ mod tests {
                 "cancel reached replacement worker"
             );
         });
-    }
-
-    #[test]
-    fn cancellation_wakeup_cannot_target_replacement_generation() {
-        handoff_model();
     }
 
     fn retry_owner() -> Arc<Owner<Vec<u8>>> {
