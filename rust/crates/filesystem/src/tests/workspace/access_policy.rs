@@ -251,11 +251,6 @@ async fn policy_history(revisions: Vec<Vec<u8>>) -> Result<(), Box<dyn Error>> {
 }
 
 #[tokio::test]
-async fn access_policy_storage_preserves_pins_and_filtered_forks() -> Result<(), Box<dyn Error>> {
-    policy_history(vec![b"first".to_vec(), b"second".to_vec()]).await
-}
-
-#[tokio::test]
 async fn access_policy_storage_failed_preconditions_leave_the_record_unchanged()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();

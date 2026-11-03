@@ -186,17 +186,16 @@ fn pair(
             });
             let result = match result {
                 Ok(()) => runtime.block_on(async {
-                    commit(&mut transaction).await?;
+                    let published = commit(&mut transaction).await?;
+                    let head = workspace
+                        .head(WorkBudget::UNBOUNDED, &cancellation)
+                        .await
+                        .map_err(|failure| format!("{:?}", failure.error))?;
+                    assert_eq!(head.value.id(), published);
                     namespace(&workspace).await
                 }),
                 Err(error) => Err(format!("{error:?}")),
             };
-            if let Ok(id) = &result {
-                let head = runtime
-                    .block_on(workspace.head(WorkBudget::UNBOUNDED, &cancellation))
-                    .unwrap();
-                assert_eq!(head.value.id(), *id);
-            }
             let mut bytes = BTreeMap::new();
             for path in observed {
                 let read = runtime
@@ -229,6 +228,7 @@ fn equivalent(
     let expected_error = invalid.then(|| format!("{:?}", WorkspaceError::NotRegularFile));
     prop_assert_eq!(old.0.as_ref().err(), expected_error.as_ref());
     prop_assert_eq!(new.0.as_ref().err(), expected_error.as_ref());
+    prop_assert_eq!(&old.0, &new.0);
     prop_assert_eq!(&old.1, &new.1);
     prop_assert_eq!(old_trace, new_trace);
     Ok(())

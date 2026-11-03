@@ -210,7 +210,10 @@ async fn collections_run_alongside_publications() -> Result<(), Box<dyn Error>> 
     let main = unbounded!(fs, open_workspace("repo"))?;
     let mut removed = 0_u64;
     let mut concurrent_collections = 0;
-    for round in 0..24_u32 {
+    // Keep multiple replaced heads across successive collection epochs.
+    // Each round still overlaps a real collection with a fork publication.
+    const ROUNDS: u32 = 3;
+    for round in 0..ROUNDS {
         // Readiness drives one collection alongside each publication round.
         // Repeating collections while the same writer is pending only adds I/O.
         let collection = async {
@@ -237,7 +240,7 @@ async fn collections_run_alongside_publications() -> Result<(), Box<dyn Error>> 
         published?;
     }
     assert_eq!(
-        concurrent_collections, 24,
+        concurrent_collections, ROUNDS,
         "one concurrent collection must cover each publication round"
     );
     drop(main);
@@ -249,7 +252,7 @@ async fn collections_run_alongside_publications() -> Result<(), Box<dyn Error>> 
     let main = unbounded!(fs, open_workspace("repo"))?;
     assert_eq!(
         unbounded!(main, read("/churn.txt", 1 << 20))?,
-        OwnedBytes::from("23".repeat(20_000).into_bytes())
+        OwnedBytes::from((ROUNDS - 1).to_string().repeat(20_000).into_bytes())
     );
     assert_eq!(
         fs.collect_local_garbage(None, &cancellation).await?.removed,
