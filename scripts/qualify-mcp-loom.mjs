@@ -99,26 +99,11 @@ export function qualifySkillMaterializerMutationsLoom(run = runCommand) {
   }, run);
 }
 
-export function qualifyProjectionInitializationMutationsLoom(run = runCommand) {
-  const recovery = "node scripts/qualify-mcp-loom.mjs --projection-initialization-mutations";
-  const qualify = (run, expectedFailure) => qualifyLoom("acyclic-harness", "acyclic_harness",
-    ["--all-features"], run, {
-      kind: "--lib", env: loomEnvironment(), targetCfg: [], expectedFailure, recovery,
-      filter: "local::workspace::projection::tests::first_native_users_share_one_initialization",
-    });
-  return qualifySourceMutationsLoom({
-    name: "Projection initialization", recovery,
-    source: "../rust/crates/harness/src/local/workspace/projection.rs",
-    model: "../rust/crates/harness/src/local/workspace/projection/tests.rs",
-    mutations: [["if slot.is_none() {", "if true {", "projection initialized twice"]],
-    qualify, restored: run => qualify(run),
-  }, run);
-}
-
-export function qualifyProjectionLifetimeMutationsLoom(run = runCommand) {
-  const recovery = "node scripts/qualify-mcp-loom.mjs --projection-lifetime-mutations";
+export function qualifyProjectionMutationsLoom(run = runCommand) {
+  const recovery = "node scripts/qualify-mcp-loom.mjs --projection-mutations";
   const prefix = "local::workspace::projection::tests::";
   const oracles = {
+    "projection initialized twice": `${prefix}first_native_users_share_one_initialization`,
     "projection retired under a running command": `${prefix}the_last_execution_scope_alone_retires_the_projection`,
     "successful command skipped publication": `${prefix}every_completed_command_publishes_before_its_acknowledgement`,
   };
@@ -128,10 +113,11 @@ export function qualifyProjectionLifetimeMutationsLoom(run = runCommand) {
       filters: expectedFailure ? [oracles[expectedFailure]] : Object.values(oracles),
     });
   return qualifySourceMutationsLoom({
-    name: "Projection lifetime", recovery,
+    name: "Projection", recovery,
     source: "../rust/crates/harness/src/local/workspace/projection.rs",
     model: "../rust/crates/harness/src/local/workspace/projection/tests.rs",
     mutations: [
+      ["if slot.is_none() {", "if true {", "projection initialized twice"],
       ["== 0;", ">= 0;", "projection retired under a running command"],
       ["publish(&mut slot, retire).await", "if retire { publish(&mut slot, retire).await } else { Ok(()) }", "successful command skipped publication"],
     ],
@@ -374,8 +360,7 @@ const fixedModels = {
   "--provider-refresh": qualifyProviderRefreshLoom,
   "--provider-refresh-mutations": qualifyProviderRefreshMutationsLoom,
   "--skill-materializer-mutations": qualifySkillMaterializerMutationsLoom,
-  "--projection-initialization-mutations": qualifyProjectionInitializationMutationsLoom,
-  "--projection-lifetime-mutations": qualifyProjectionLifetimeMutationsLoom,
+  "--projection-mutations": qualifyProjectionMutationsLoom,
   "--fs-policy": qualifyFsPolicyLoom,
 };
 const selectableModels = {

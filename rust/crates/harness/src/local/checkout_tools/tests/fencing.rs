@@ -14,7 +14,6 @@ impl acyclic_stream::UnixMillisClock for Clock {
 }
 
 fn publication_after_revocation(broken: bool, fork: bool) {
-    eprintln!("FENCING_PHASE entered broken={broken} fork={fork}");
     let provider = Arc::new(MemoryStream::new_with_clock(
         Default::default(),
         Arc::new(Clock),
@@ -27,7 +26,6 @@ fn publication_after_revocation(broken: bool, fork: bool) {
     let authority_id = acyclic_fs::kernel::volume_authority_id(workspace.volume_id());
     let cancellation = CancellationToken::new();
     let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-    eprintln!("FENCING_PHASE create authority");
     let head = match loom::future::block_on(Box::pin(authority.create_authority::<()>(
         authority_id,
         acyclic_fs::Epoch::GENESIS,
@@ -39,7 +37,6 @@ fn publication_after_revocation(broken: bool, fork: bool) {
         acyclic_fs::CreateAuthorityOutcome::Created(head) => head,
         _ => panic!("model authority already existed"),
     };
-    eprintln!("FENCING_PHASE begin lease");
     let lease = loom::future::block_on(Box::pin(windows.begin_with_lease_id(
         workspace,
         acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes([1; 32])),
@@ -54,7 +51,6 @@ fn publication_after_revocation(broken: bool, fork: bool) {
     let closing = lease.clone();
     let closer = loom::thread::spawn(move || {
         preparing.recv().unwrap();
-        eprintln!("FENCING_PHASE close lease");
         loom::future::block_on(Box::pin(windows.finish(&closing, 2))).unwrap();
         closed.send(()).unwrap();
     });
@@ -90,7 +86,6 @@ fn publication_after_revocation(broken: bool, fork: bool) {
                 lease.publication_permit()
             },
         };
-        eprintln!("FENCING_PHASE writer fork={fork}");
         if fork {
             let proposed = request.commit;
             let fork = acyclic_fs::WorkspaceForkCommit {
@@ -140,7 +135,6 @@ fn publication_after_revocation(broken: bool, fork: bool) {
 #[test]
 fn task_git_permit_is_checked_atomically_after_preparation() {
     for fork in [false, true] {
-        eprintln!("FENCING_PHASE model fork={fork}");
         loom::model(move || publication_after_revocation(false, fork));
         let failure = std::panic::catch_unwind(|| {
             loom::model(move || publication_after_revocation(true, fork))
