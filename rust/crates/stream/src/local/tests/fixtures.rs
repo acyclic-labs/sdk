@@ -4,34 +4,41 @@ use crate::{
 };
 use acyclic_native_runtime::ReadAllocation;
 
-/// Every independent disk cut uses the public opener, sharing one runtime and
-/// the common physical-cut supervisors. All supervisors join before returning.
-fn journal_cuts<F, Fut>(
+/// Every disk cut uses the public opener. Each common supervisor reuses its
+/// isolated directory; all supervisors and their cuts join before returning.
+fn journal_cuts<F>(
     cuts: std::ops::Range<usize>,
     verify: F,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
-    F: Fn(usize) -> Fut + Sync,
-    Fut: Future<Output = Result<(), Box<dyn std::error::Error>>>,
+    F: AsyncFn(usize, &std::path::Path) -> Result<(), Box<dyn std::error::Error>> + Sync,
 {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()?;
-    let jobs = cuts
-        .clone()
-        .map(|cut| {
+    let groups = cuts
+        .len()
+        .min(acyclic_test_support::physical_cuts::workers());
+    let jobs = (0..groups)
+        .map(|group| {
             let runtime = &runtime;
             let verify = &verify;
+            let cuts = cuts.clone();
             move || {
-                runtime.block_on(verify(cut)).expect("journal cut failed");
-                cut
+                let directory = tempfile::tempdir().expect("journal cut directory");
+                for cut in cuts.skip(group).step_by(groups) {
+                    runtime
+                        .block_on(verify(cut, directory.path()))
+                        .expect("journal cut failed");
+                }
+                group
             }
         })
         .collect();
     assert_eq!(
         acyclic_test_support::physical_cuts::run(jobs, || ()),
-        cuts.collect::<Vec<_>>()
+        (0..groups).collect::<Vec<_>>()
     );
     Ok(())
 }
