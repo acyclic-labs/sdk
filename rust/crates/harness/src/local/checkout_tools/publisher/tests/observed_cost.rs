@@ -68,17 +68,7 @@ async fn observed_publication_does_not_reread_the_published_payload() -> Result<
         captured.version(),
         "fixture must finish its own physical capture"
     );
-    eprintln!(
-        "WRITE_REBIND_IDENTITIES equal={}",
-        same_payloads(&publisher, &staged, &captured).await?
-    );
-    let started = std::time::Instant::now();
     let original = publisher.observed(view, operation, staged.clone()).await?;
-    eprintln!(
-        "WRITE_REBIND bytes={} elapsed_us={}",
-        bytes.len(),
-        started.elapsed().as_micros()
-    );
     assert_eq!(original, captured);
     let budget = acyclic_fs::WorkBudget {
         output_bytes: 64 * 1024,
@@ -108,66 +98,9 @@ async fn observed_publication_does_not_reread_the_published_payload() -> Result<
         fallback, captured,
         "different payload layouts keep the original content fallback"
     );
-    eprintln!("WRITE_REBIND_NEGATIVE old_read_refused={failure}");
 
     harness.disconnect().await?;
     Ok(())
-}
-
-async fn same_payloads(
-    publisher: &CheckoutPublisher,
-    staged: &FileRef,
-    captured: &FileRef,
-) -> Result<bool> {
-    let view = publisher.tools.workspace.view();
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let mut payloads = Vec::new();
-    let config = view.workspace().volume_config();
-    let mut allocations = acyclic_fs::kernel::allocation::AllocationLedger::default();
-    let mut counters = acyclic_fs::WorkCounters::UNCHARGED;
-    let mut accounting = acyclic_fs::kernel::KernelAccounting::borrowed_standalone(
-        &mut allocations,
-        &mut counters,
-        acyclic_fs::WorkBudget::UNBOUNDED,
-        &cancellation,
-    );
-    let (path, _allocation) = acyclic_fs::kernel::NamespacePath::parse_in_profile(
-        "/large.txt",
-        config.profile,
-        config.limits,
-        &mut accounting,
-        &cancellation,
-    )
-    .map_err(storage)?;
-    for file in [staged, captured] {
-        let generation = view
-            .workspace()
-            .generation(
-                publisher.staged_generation(file)?,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map_err(storage)?
-            .value;
-        let (records, _allocation) = generation
-            .lookup_paths(
-                std::slice::from_ref(&path),
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map_err(storage)?
-            .value;
-        payloads.push(
-            records
-                .entries
-                .first()
-                .and_then(|entry| entry.record.as_ref())
-                .map(|record| record.payload),
-        );
-    }
-    Ok(payloads.first() == payloads.get(1))
 }
 
 struct FullRead;
