@@ -98,6 +98,7 @@ async fn admission_preserves_authority_and_original_failure() -> TestResult {
 
 #[tokio::test]
 async fn generated_get_put_delete_share_floors_and_scoped_views() -> TestResult {
+    refused_writes_preserve_storage().await?;
     let provider = Arc::new(MemoryObjects::memory());
     let original = provider.clone();
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -184,6 +185,110 @@ async fn generated_get_put_delete_share_floors_and_scoped_views() -> TestResult 
         .await
         .unwrap_err();
     assert_eq!(error_from_status(&failure).code, wire::ErrorCode::NotFound);
+    Ok(())
+}
+
+async fn stored(
+    medium: &crate::MemoryMedium,
+) -> Result<Vec<(String, Vec<u8>)>, crate::MediumError> {
+    use crate::Medium as _;
+    let mut stored = Vec::new();
+    for (key, _) in medium.list("", None, usize::MAX).await? {
+        let value = medium.read(&key, None).await?.expect("original stored key");
+        stored.push((key, value.as_ref().to_vec()));
+    }
+    Ok(stored)
+}
+
+async fn refused_writes_preserve_storage() -> TestResult {
+    for foreign in [false, true] {
+        let medium = crate::MemoryMedium::default();
+        let provider = Arc::new(crate::Store::new(medium.clone()).account(b"write-minimum")?);
+        let body = b"original retained bytes";
+        let digest = Digest::of(body);
+        provider.put(body.as_slice().into(), Vec::new()).await?;
+        let root = RootId::new(b"original-root".to_vec())?;
+        provider.retain(&root, vec![digest]).await?;
+        let deletable = provider
+            .put(b"unretained".as_slice().into(), Vec::new())
+            .await?;
+        provider.flush(None).await?;
+        let current = provider
+            .revisions()
+            .await?
+            .expect("original authority")
+            .current();
+        let minimum = if foreign {
+            AppliedRevisions::in_process().at(1)
+        } else {
+            Revision {
+                incarnation: current.incarnation.wrapping_add(1),
+                ..current
+            }
+        };
+        let floor = RevisionCut::of(minimum);
+        let before = stored(&medium).await?;
+        let mut client = wire::blobs_service_client::BlobsServiceClient::new(RevisionChannel::new(
+            channel_over(serving(provider.clone())),
+        ));
+        macro_rules! refused {
+            ($method:ident, $message:expr) => {{
+                let mut request = Request::new($message);
+                minimum(&mut request, Some(&floor));
+                let result = client.$method(request).await;
+                assert_eq!(
+                    stored(&medium).await?,
+                    before,
+                    "refused write changed physical storage"
+                );
+                let failure =
+                    result.expect_err("foreign write minimum must refuse before dispatch");
+                assert_eq!(
+                    error_from_status(&failure).code,
+                    wire::ErrorCode::RevisionForeign
+                );
+            }};
+        }
+        refused!(
+            delete_blob,
+            wire::DeleteBlobRequest {
+                digest: Some(deletable.verified().ok_or("original put")?.digest.into()),
+            }
+        );
+        refused!(put_blob, put(b"refused singleton"));
+        refused!(
+            put_blobs,
+            wire::PutBlobsRequest {
+                puts: vec![put(b"refused batch")]
+            }
+        );
+        refused!(
+            put_manifest,
+            wire::PutManifestRequest {
+                manifest: Some(wire::Manifest {
+                    parts: vec![wire::Part {
+                        digest: Some(digest.into()),
+                        length: body.len() as u64
+                    }],
+                    edges: Vec::new(),
+                }),
+            }
+        );
+        refused!(
+            retain,
+            wire::RetainRequest {
+                root: b"refused-root".as_slice().into(),
+                references: vec![digest.into()],
+            }
+        );
+        refused!(
+            release,
+            wire::ReleaseRequest {
+                root: b"original-root".as_slice().into()
+            }
+        );
+        refused!(collect, wire::CollectRequest {});
+    }
     Ok(())
 }
 
