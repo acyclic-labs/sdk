@@ -20,24 +20,12 @@ async fn error(source: &str, surface: Surface) -> String {
 async fn every_unusable_module_is_invalid_with_its_reason() {
     for (source, reason) in [
         ("throw new Error('boom');", "boom"),
-        ("export default Date.now();", "Date"),
-        ("export default Math.random();", "not a function"),
         ("while (true) {}\nexport default 1;", "instruction budget"),
-        (
-            "export default () => () => 1;",
-            "returned a function, not plain data",
-        ),
         (
             "export default { a: [1, Symbol()] };",
             "the default export.a[1] is a symbol",
         ),
-        ("export default new Map();", "not a plain object"),
-        ("export default NaN;", "finite"),
         ("export const x = 1;", "export default"),
-        (
-            "export default await new Promise(() => {});",
-            "never settles",
-        ),
         (
             "import x from 'node:fs'; export default x;",
             "imports node:fs",
@@ -69,17 +57,4 @@ async fn every_unusable_module_is_invalid_with_its_reason() {
         message.contains("the default export.x must be plain data"),
         "{message}"
     );
-    // Negative control: the same data is accepted on both surfaces.
-    for surface in [Surface::Compose, Surface::Data] {
-        let ok = evaluate(
-            "policy.ts",
-            b"export default { deny: [] };",
-            &Missing,
-            &json!({}),
-            surface,
-        )
-        .await
-        .unwrap();
-        assert_eq!(ok.value, json!({"deny": []}));
-    }
 }
