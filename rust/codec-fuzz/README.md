@@ -205,6 +205,15 @@ With the mutation applied, the unchanged control must fail at
 component outputs; this is neither a provider-driven restart nor a fuzz campaign
 or full shell-state refinement proof.
 
+The same control archives the completed child through `AgentHost::archive`
+after reopening storage. Its original terminal outcome and parent inbox must
+remain unchanged while the archive advances the child's actor cursor and
+retains a cleared alarm. `agent-terminal-archive-report.patch` changes the
+actual archive lowering to report an already reported child again; the
+unchanged assertion must reject it at
+`archive reported a completed child again`. Both checks inspect finite
+committed inputs rather than waiting for a missing report.
+
 After a reviewed protobuf schema change, refresh only the named protobuf
 producers and their table selectors:
 

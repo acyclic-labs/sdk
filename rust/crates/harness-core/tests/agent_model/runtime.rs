@@ -401,8 +401,8 @@ async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed
             return Err("child input was refused".into());
         };
         host.drain(&child).await?;
-        let reports = values(provider.as_ref(), root.inbox()?)
-            .await?
+        let parent_records = values(provider.as_ref(), root.inbox()?).await?;
+        let reports = parent_records
             .iter()
             .map(|bytes| InboxRecord::decode(bytes))
             .collect::<std::result::Result<Vec<_>, _>>()?
@@ -499,7 +499,7 @@ async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed
         drop(provider);
         let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
         let host = AgentHost::new(
-            provider,
+            provider.clone(),
             super::script(Vec::new()),
             within,
             ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
@@ -513,6 +513,29 @@ async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed
             Some(&actor_state),
             "reopen lost the committed checkpoint/cursor/alarm tuple"
         );
+        if oversized {
+            // Archive after restart must retain the completed owner's outcome.
+            // The empty driver also refuses any accidental turn redispatch.
+            let Delivered::Committed { inbox } = host
+                .archive(&child, &user(), &intent("archive-after-reopen"))
+                .await?
+            else {
+                return Err("terminal child archive was refused".into());
+            };
+            host.drain(&child).await?;
+            assert_eq!(
+                values(provider.as_ref(), root.inbox()?).await?,
+                parent_records,
+                "archive reported a completed child again"
+            );
+            let mut expected = committed;
+            expected.closed = true;
+            assert_eq!(host.state(&child).await?, expected);
+            let archived = host.runtime().store().load(&host.actor(&child)?).await?;
+            let archived = archived.state().expect("archived child actor");
+            assert_eq!(archived.cursor(INBOX), Some(inbox + 1));
+            assert!(archived.alarm().pending().is_none());
+        }
     }
     Ok(())
 }

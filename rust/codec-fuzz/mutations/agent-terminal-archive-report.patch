@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/agent/machine.rs b/rust/crates/harness-core/src/agent/machine.rs
+--- a/rust/crates/harness-core/src/agent/machine.rs
++++ b/rust/crates/harness-core/src/agent/machine.rs
+@@ -1177,7 +1177,7 @@
+         });
+     }
+     state.reported = step.control.reported;
+-    if step.report {
++    if step.report || state.reported {
+         state.phase = Phase::Done {
+             outcome: AgentOutcome::Archived,
+         };
