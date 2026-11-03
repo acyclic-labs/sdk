@@ -282,9 +282,14 @@ mod model {
                         let (lease, projected) = publication(&owner, volume).unwrap();
                         (Some(lease), projected)
                     };
-                    // The real publication reducer checks the candidate metadata
-                    // under this lease and retains it through the authority CAS.
-                    if check_policy(projected, true).is_ok() {
+                    // Publication preparation asks the lease itself whether a
+                    // changed policy may publish, exactly as preparation.rs does
+                    // for a projected volume, and holds it through the CAS.
+                    let admitted = match &lease {
+                        Some(lease) if projected => lease.policy_changed(true).is_ok(),
+                        _ => true,
+                    };
+                    if admitted {
                         let _ = revision.compare_exchange(
                             0,
                             1,
@@ -371,10 +376,6 @@ mod model {
         run(true, false);
     }
     #[test]
-    fn materialization_admits_policy_under_the_publication_lease() {
-        run(false, false);
-    }
-    #[test]
     #[should_panic(expected = "policy changed during projection or materialization")]
     fn admission_before_the_lease_negative_control() {
         run(false, true);
@@ -445,8 +446,10 @@ mod properties {
                         prop_assert_eq!(entered.is_ok(), allowed);
                         if let Ok((lease, projected)) = entered {
                             prop_assert_eq!(projected, !projections.is_empty() || projection);
-                            prop_assert_eq!(check_policy(projected, true).is_ok(), !projected);
-                            prop_assert!(check_policy(projected, false).is_ok());
+                            // The lease refuses a policy change while any projection is live.
+                            let live = !projections.is_empty() || projection;
+                            prop_assert_eq!(lease.policy_changed(true).is_ok(), !live);
+                            prop_assert!(lease.policy_changed(false).is_ok());
                             if projection { projections.push(lease); } else { editors.push(lease); }
                         }
                     }

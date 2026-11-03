@@ -3,7 +3,7 @@ use crate::kernel::allocation::effects::{OMIT_REFUND, OMIT_RESERVATION};
 use crate::sync::atomic::{AtomicU64, Ordering};
 use std::cell::RefCell;
 
-const HASHED: u64 = (b"acyclic-fs-workspace-id-v1\0".len() + 16 + 8 + 1) as u64;
+const HASHED: u64 = (WORKSPACE_ID_DOMAIN.len() + 16 + 8 + 1) as u64;
 loom::thread_local! {
     static ACTUAL: RefCell<Option<Arc<[AtomicU64; 2]>>> = RefCell::new(None);
 }

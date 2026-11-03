@@ -414,7 +414,7 @@ fn page_items<'a>(
     )
 }
 
-fn encode_binding_page<E: From<CanonicalDecodeError>>(
+pub(super) fn encode_binding_page<E: From<CanonicalDecodeError>>(
     page: &PageRef<'_, BindingFormat>,
     maximum_items: u32,
     mut observe: impl FnMut(EncodeWorkStep) -> Result<(), E>,

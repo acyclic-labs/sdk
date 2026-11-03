@@ -42,7 +42,6 @@ mod actions;
 mod adapter;
 #[cfg(windows)]
 mod cached_binding;
-mod observation;
 pub use adapter::{
     CheckoutMountSource, NativeSourceIoLease, SharedCheckout, SharedCheckoutGuard,
     SharedCheckoutState, initialize_native_mount_services,
