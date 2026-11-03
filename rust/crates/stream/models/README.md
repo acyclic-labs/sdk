@@ -69,3 +69,22 @@ The mutated source must fail at `initial retry must yield before another physica
 RPC`; restore it before running the same command as the positive control. This
 checks scheduling at the executor entrance, not physical RPC timing, wire refusal
 metadata, membership changes or transport retirement.
+
+The ordinary `sources::tests::every_local_and_global_credit_combination_matches_the_admission_contract`
+matrix also checks follow and finite-reply bindings admitted by the production
+authority methods, plus a held progress watermark. It traverses the actual source
+queues for every boolean credit/terminal/progress state and pending queue lengths
+around the lookahead boundary. The existing signed test credential is SDK-generated;
+the typed source events are internal scheduler inputs, not recorded external wire.
+This component check does not qualify credential rotation or transport lifecycle.
+
+`mutations/source_progress_fence.patch` removes the production progress fence.
+The unchanged matrix command must then fail at `source admission differs`:
+
+```sh
+cargo test --locked -p acyclic-stream --no-default-features --features session --lib session::sources::tests::every_local_and_global_credit_combination_matches_the_admission_contract -- --exact --nocapture
+```
+
+Restore the patch before using that command as the positive control. The former
+matrix always supplied no binding and no progress; it could not detect this fence
+omission or a mistaken credit-free lookahead for finite replies.
