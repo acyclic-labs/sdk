@@ -17,7 +17,13 @@ fn publication_grants(volume: &VolumeRef, agent: AgentId) -> Result<(ContentGran
         "batch-owner",
         &crate::Capabilities::new([Capability::whole_volume(
             None,
-            &[Action::Read, Action::Create, Action::Write, Action::Delete],
+            &[
+                Action::Read,
+                Action::ReadHistory,
+                Action::Create,
+                Action::Write,
+                Action::Delete,
+            ],
         )
         .to_scope_label()
         .map_err(|error| Error::Invalid(error.to_string()))?]),
