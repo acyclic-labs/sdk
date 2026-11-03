@@ -35,6 +35,15 @@ preview and terminal must recover after framing loss without a reset. This
 replaces the old malformed seed, whose intervening turn-start erased the loss
 state before recovery was checked.
 
+`oversize-derived.jsonl` pads the original Codex preview with leading JSON
+whitespace to one byte beyond the production event bound, then sends the unchanged captured
+preview and terminal without a turn-start. It exercises oversized-frame discard
+and subsequent recovery through the same framer and reducer. Padding is a derived
+input, not captured host output. The shared line-framer tests retain their own
+bound-refusal control; this corpus entry adds composition coverage without a
+second bound oracle. The fuzz input limit must exceed this seed's size to reach
+the discard branch; it does not change either production bound.
+
 Replay the same oracle without libFuzzer instrumentation:
 
 ```sh
@@ -45,7 +54,7 @@ cargo test --locked -p acyclic-harness-fuzz --no-default-features --features nat
 From `rust/crates/harness-fuzz`, use the retained target and corpus:
 
 ```sh
-cargo +nightly fuzz run --fuzz-dir . native_answer --no-default-features --features native-answer -- -runs=10000
+cargo +nightly fuzz run --fuzz-dir . native_answer --no-default-features --features native-answer -- -runs=10000 -max_len=131072
 cargo +nightly fuzz coverage --fuzz-dir . native_answer --no-default-features --features native-answer
 ```
 
