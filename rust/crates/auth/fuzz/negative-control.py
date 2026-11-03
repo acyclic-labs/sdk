@@ -1,4 +1,4 @@
-"""Require the shared credential fuzz oracle to catch a production defect."""
+"""Require an unchanged Auth fuzz oracle to catch a production defect."""
 import hashlib
 import os
 from pathlib import Path
@@ -6,10 +6,12 @@ import subprocess
 import sys
 
 root = Path(__file__).resolve().parent
-source = root.parent / "src" / "credential.rs"
-oracle = root.parent / "tests" / "common" / "credential.rs"
 choice = sys.argv[1] if len(sys.argv) == 2 else "delimiter"
-step = "read original credential source and oracle"
+target = "trust_record" if choice == "trust-target" else "credential"
+source = root.parent / "src" / ("trust/follower.rs" if choice == "trust-target" else "credential.rs")
+oracle = (root / "fuzz_targets/trust_record.rs" if choice == "trust-target"
+          else root.parent / "tests/common/credential.rs")
+step = "read original Auth source and oracle"
 try:
     original = source.read_bytes()
     oracle_hash = hashlib.sha256(oracle.read_bytes()).digest()
@@ -29,10 +31,14 @@ try:
             b"Ok(Vec::new())",
             "capability JSON must retain original bytes", "v2-signed-capability",
         ),
+        "trust-target": (
+            b"if !matches {", b"if false && !matches {",
+            "trust record targets must be disjoint", "foreign-keyring",
+        ),
     }
-    step = "select production credential mutation"
+    step = "select production Auth mutation"
     if len(sys.argv) > 2 or choice not in mutations:
-        raise RuntimeError("select delimiter, text-decoder or json-field")
+        raise RuntimeError("select delimiter, text-decoder, json-field or trust-target")
     check, replacement, message, seed = mutations[choice]
     try:
         if original.count(check) != 1:
@@ -41,8 +47,8 @@ try:
         command = ["cargo", "+nightly", "fuzz", "run", "--dev"]
         if target := os.environ.get("CARGO_TARGET_DIR"):
             command += ["--target-dir", target]
-        command += ["credential", "corpus/credential/" + seed, "--", "-runs=1"]
-        step = "detect " + choice + " through the credential fuzzer"
+        command += [target, "corpus/" + target + "/" + seed, "--", "-runs=1"]
+        step = "detect " + choice + " through the " + target + " fuzzer"
         result = subprocess.run(
             command, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )
@@ -53,9 +59,9 @@ try:
             raise RuntimeError("the unchanged semantic oracle did not detect the production defect")
     finally:
         source.write_bytes(original)
-    step = "verify unchanged credential oracle"
+    step = "verify unchanged Auth oracle"
     if hashlib.sha256(oracle.read_bytes()).digest() != oracle_hash:
-        raise RuntimeError("credential oracle changed during the negative control")
+        raise RuntimeError("Auth oracle changed during the negative control")
 except (OSError, RuntimeError) as error:
     print(
         f"STEP {step} failed: {error}; inspect the original output and correct the source or command; "
@@ -63,4 +69,4 @@ except (OSError, RuntimeError) as error:
         file=sys.stderr,
     )
     sys.exit(1)
-print("credential negative control: unchanged " + choice + " oracle detected the production defect")
+print("Auth negative control: unchanged " + choice + " oracle detected the production defect")
