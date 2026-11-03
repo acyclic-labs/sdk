@@ -6,6 +6,22 @@ use acyclic_auth::addressing::{
 
 const DOMAIN: &str = "run.example.com";
 
+fn version<T>(bytes: &[u8], offset: usize, decode: impl Fn(&[u8]) -> Result<T, IdentityError>) {
+    let mut header = bytes[..=offset].to_vec();
+    for other in [0, 2, u8::MAX] {
+        header[offset] = other;
+        assert!(
+            matches!(decode(&header), Err(IdentityError::UnsupportedVersion)),
+            "identity version must refuse before fields"
+        );
+    }
+    header.pop();
+    assert!(matches!(
+        decode(&header),
+        Err(IdentityError::UnsupportedVersion)
+    ));
+}
+
 fn framing<T>(bytes: &[u8], decode: impl Fn(&[u8]) -> Result<T, IdentityError>) {
     let mut alias = bytes.to_vec();
     alias.push(0);
@@ -135,6 +151,11 @@ fn route(pattern: &str, url: &str) {
 /// Check binary identities, hostnames and route tuples through production APIs.
 pub fn check(bytes: &[u8]) {
     if let Ok(value) = ResourceIdentity::decode(bytes) {
+        version(
+            bytes,
+            super::RESOURCE_DOMAIN.len(),
+            ResourceIdentity::decode,
+        );
         framing(bytes, ResourceIdentity::decode);
         identity(&value);
         assert_eq!(
@@ -145,6 +166,11 @@ pub fn check(bytes: &[u8]) {
         assert_eq!(ResourceIdentity::decode(&value.encode()), Ok(value));
     }
     if let Ok(value) = ActorReference::decode(bytes) {
+        version(
+            bytes,
+            super::actor::HEADER.len() - 1,
+            ActorReference::decode,
+        );
         framing(bytes, ActorReference::decode);
         assert_eq!(value.encode(), bytes, "actor bytes must roundtrip exactly");
         assert_eq!(ActorReference::decode(&value.encode()), Ok(value));
