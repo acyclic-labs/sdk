@@ -77,6 +77,12 @@ the production Unknown success return to refusal; the same target must fail at
 `captured writer recovery request refused`, then pass after reversal. The
 existing exact-request unit control remains distinct: it compares the decoded
 domain request with the original domain value before encoding.
+The existing `actor-response-refused` capture also enters the same public send
+oracle unconditionally. Its typed host refusal must remain an admitted exchange.
+The kept `agent-refusal-reject-all.patch` removes the production Refused success
+return and must fail at `captured writer response refused`; restoration must pass
+the original corpus. Together with the success and Unknown captures, this covers
+positive admission for all three result envelope variants.
 Malformed base64 is derived from admitted content while retaining its original
 encoded length and range. Writer inputs include content encoding to JSON field
 names, so wire mutation must preserve those fields. Quiet Usage and Events

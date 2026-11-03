@@ -1,0 +1,16 @@
+diff --git a/rust/crates/harness-client/src/reply.rs b/rust/crates/harness-client/src/reply.rs
+index c70e358f1c..c99bfc9538 100644
+--- a/rust/crates/harness-client/src/reply.rs
++++ b/rust/crates/harness-client/src/reply.rs
+@@ -354,10 +354,7 @@ pub fn decode_agent_reply(
+             {
+                 return Err(CommandError::Invalid);
+             }
+-            Ok(Err(AgentControlFailure::Refused {
+-                code,
+-                reason: reason.unwrap_or_default(),
+-            }))
++            Err(CommandError::Invalid)
+         }
+         envelope::Value::Reply(bytes) => {
+             if bytes.len() > MAX_AGENT_COMMAND_BYTES {
