@@ -498,6 +498,64 @@ fn snapshot_transitions(snapshot: &e::Snapshot, wire: &Value) {
         return;
     };
     snapshot_completions(wire, body);
+    let Some(mut settled) = snapshot_swaps(snapshot) else {
+        return;
+    };
+    let Some(through) = pending.through.checked_add(1) else {
+        return;
+    };
+    let summary = settled.prepare(through, u64::MAX).unwrap();
+    settled
+        .complete(summary, e::SummaryOutcome::Ready(body.clone()))
+        .unwrap();
+    let Ok(bytes) = encoded(&settled) else {
+        return;
+    };
+    // Use the actual next writer record, then mutate only its matching fences.
+    // This is full-width admission coverage, not a claim of MAX prior swaps.
+    let mut boundary: Value = serde_json::from_slice(&bytes).unwrap();
+    boundary["snapshot"]["generation"] = u64::MAX.into();
+    boundary["snapshot"]["pending"]["generation"] = u64::MAX.into();
+    let mut record = envelope().clone();
+    record.value = serde_json::to_vec(&boundary).unwrap().into();
+    let boundary = e::Snapshot::decode(&record, &source(), u64::MAX).unwrap();
+    assert!(snapshot_swaps(&boundary).is_none());
+}
+
+fn snapshot_swaps(snapshot: &e::Snapshot) -> Option<e::Snapshot> {
+    use e::protocol::Refusal;
+    let pending = snapshot.state().pending()?;
+    let e::SummaryOutcome::Ready(body) = snapshot.outcome()? else {
+        return None;
+    };
+    let mut foreign = pending.summary;
+    foreign[0] ^= 1;
+    for (summary, head, refusal, diagnostic) in [
+        (
+            foreign,
+            u64::MAX,
+            Refusal::Stale,
+            "producer swap identity admission changed",
+        ),
+        (
+            pending.summary,
+            pending.through - 1,
+            Refusal::Range,
+            "producer swap range admission changed",
+        ),
+    ] {
+        let mut state = snapshot.state();
+        assert_eq!(
+            state.swap(summary, state.generation(), head),
+            Err(refusal),
+            "{diagnostic}",
+        );
+        assert_eq!(
+            state,
+            snapshot.state(),
+            "refused swap changed producer custody"
+        );
+    }
     let mut replay = snapshot.clone();
 
     // Change only the immutable revision in the admitted producer's canonical
@@ -525,11 +583,31 @@ fn snapshot_transitions(snapshot: &e::Snapshot, wire: &Value) {
         "refused completion changed snapshot custody"
     );
 
-    let Some(generation) = snapshot.state().generation().checked_add(1) else {
-        return;
-    };
     let mut next = snapshot.epoch().clone();
     next.key.through = pending.through;
+    next.summary = Some(body.clone());
+    let Some(generation) = snapshot.state().generation().checked_add(1) else {
+        let mut state = snapshot.state();
+        assert_eq!(
+            state.swap(pending.summary, state.generation(), u64::MAX),
+            Err(Refusal::Exhausted),
+            "producer swap exhaustion admission changed",
+        );
+        assert_eq!(
+            state,
+            snapshot.state(),
+            "refused swap changed producer custody"
+        );
+        assert!(
+            matches!(
+                replay.swap(snapshot.state().generation(), next, u64::MAX),
+                Err(e::SnapshotError::Transition(Refusal::Exhausted))
+            ),
+            "snapshot swap exhaustion admission changed",
+        );
+        assert_eq!(replay, *snapshot, "refused swap changed snapshot custody");
+        return None;
+    };
     next.summary = Some(other);
     assert!(
         matches!(
@@ -567,6 +645,7 @@ fn snapshot_transitions(snapshot: &e::Snapshot, wire: &Value) {
         replay.state(),
         "refused swap changed producer custody"
     );
+    Some(replay)
 }
 
 // Receipt fields are fuzz mutations of the real envelope, not publication

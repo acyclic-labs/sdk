@@ -1,7 +1,9 @@
 use super::*;
 #[cfg(feature = "filesystem")]
 use acyclic_stream::StreamProviderExt as _;
-use protocol::{Completion, Demand, Refusal, State};
+#[cfg(feature = "filesystem")]
+use protocol::Demand;
+use protocol::{Completion, Refusal, State};
 
 /// Deliberately enumerates every source item. Unlike the implementation this
 /// oracle neither chooses a cut nor reconstructs coverage by invoking compact.
