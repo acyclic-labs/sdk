@@ -5,9 +5,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&root)?;
     let mut provenance = String::from("file\tsha256\tproducer\n");
     for (name, bytes) in acyclic_stream::codec_fuzz::status::seeds()? {
+        let digest: String = Sha256::digest(&bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
         provenance.push_str(&format!(
-            "{name}\t{:x}\twire_codec::error_status -> tonic::Status::add_header -> grpc-message\n",
-            Sha256::digest(&bytes)
+            "{name}\t{digest}\twire_codec::error_status -> tonic::Status::add_header -> grpc-message\n"
         ));
         std::fs::write(root.join(name), &bytes)?;
     }
