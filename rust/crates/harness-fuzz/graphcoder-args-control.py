@@ -13,9 +13,9 @@ root = Path(__file__).resolve().parents[3]
 recovery = "python3 rust/crates/harness-fuzz/graphcoder-args-control.py"
 controls = {
     "command_result": (
-        "rust/crates/harness/src/client/command_result.rs",
-        b"wire::ErrorCode::InteractionCancelled | wire::ErrorCode::Cancelled => Self::Cancelled,",
-        b"wire::ErrorCode::InteractionCancelled | wire::ErrorCode::Cancelled => Self::Failed,",
+        "rust/crates/harness-core/src/contract_errors.rs",
+        b"crate::wire::ErrorCode::InteractionCancelled | crate::wire::ErrorCode::Cancelled => {\n                Self::Cancelled\n            }",
+        b"crate::wire::ErrorCode::InteractionCancelled | crate::wire::ErrorCode::Cancelled => {\n                Self::Failed\n            }",
         "cancelled",
         b"settled result must retain completion and payload",
     ),
@@ -190,7 +190,7 @@ additional_controls = {
             b"encoded command result must remain within the admitted byte bound",
         ),
         (
-            "rust/crates/harness/src/client/command_result.rs",
+            "rust/crates/harness-core/src/contract_errors.rs",
             b"if matches!(error, Error::GoalBlocked(_)) {",
             b"if false {",
             "goal-blocked",
