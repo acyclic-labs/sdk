@@ -260,6 +260,31 @@ pub(super) fn check_wire(bytes: &[u8]) {
         refuses(changed, "checkpoint admitted a short awaited bitmap");
     }
     if let Some(child) = encoded.open_children.first() {
+        // The payload path can be valid while reconstructing its children
+        // exceeds the same public path boundary. Keep that typed path error,
+        // distinct from malformed checkpoint ownership or bitmap fields.
+        let root = super::AgentPath::root(&state.path.id());
+        let nested = root.child(&state.path.id()).expect("one child path");
+        let segment = nested
+            .as_str()
+            .strip_prefix(root.as_str())
+            .expect("child path suffix");
+        let mut changed = rest.clone();
+        changed.path = super::AgentPath::try_from(format!(
+            "{}{}",
+            root.as_str(),
+            segment.repeat(super::MAX_DEPTH)
+        ))
+        .expect("path at the public depth boundary");
+        let mut wire = encoded.clone();
+        wire.state = super::records::encode_payload(&changed).expect("checkpoint state writer");
+        assert!(
+            matches!(
+                decode(&wire.encode_to_vec()),
+                Err(Error::Path("agent nesting exceeds MAX_DEPTH"))
+            ),
+            "checkpoint reconstructed a child beyond its path boundary"
+        );
         for oversized in [false, true] {
             let mut changed = encoded.clone();
             let id = &mut changed.open_children[0];

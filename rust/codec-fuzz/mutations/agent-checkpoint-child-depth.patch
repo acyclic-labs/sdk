@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness-core/src/agent/layout.rs b/rust/crates/harness-core/src/agent/layout.rs
+--- a/rust/crates/harness-core/src/agent/layout.rs
++++ b/rust/crates/harness-core/src/agent/layout.rs
+@@ -180,9 +180,6 @@ impl AgentPath {
+ 
+     /// The child `id` nested under this agent.
+     pub fn child(&self, id: &AgentId) -> Result<Self, Error> {
+-        if self.depth + 1 > MAX_DEPTH {
+-            return Err(Error::Path("agent nesting exceeds MAX_DEPTH"));
+-        }
+         Ok(Self {
+             text: format!("{}/{CHILDREN}/{id}", self.text),
+             depth: self.depth + 1,

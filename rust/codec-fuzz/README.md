@@ -223,6 +223,13 @@ guard mutations must fail when replaying the retained
 | `agent-checkpoint-embedded-archive-children.patch` | `checkpoint admitted embedded archive children` |
 | `agent-checkpoint-embedded-awaited-children.patch` | `checkpoint admitted embedded awaited children` |
 | `agent-checkpoint-embedded-turn.patch` | `checkpoint admitted an embedded turn` |
+| `agent-checkpoint-child-depth.patch` | `checkpoint reconstructed a child beyond its path boundary` |
+
+The child-depth relation places the original writer's payload at the public
+agent path boundary through the production path constructor and parser. The
+original child IDs then require the production checkpoint decoder to retain
+the typed path refusal. Its mutation removes the actual child-construction
+guard; no parallel path parser, capture producer or additional target is used.
 
 The embedded-field controls put one nonempty ownership field at a time back
 into the shared payload through the production writer. Each removes only
