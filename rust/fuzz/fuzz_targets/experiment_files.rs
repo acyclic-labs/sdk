@@ -52,14 +52,17 @@ fn object(bytes: &[u8], admits: Admits, version: u64, fields: &[&str], required:
         !admits(&surplus),
         "independent admission invariant: trailing input"
     );
-    let duplicate = format!(
-        "{{\"version\":{version},{}",
-        std::str::from_utf8(&canonical[1..]).expect("JSON is UTF-8")
-    );
-    assert!(
-        !admits(duplicate.as_bytes()),
-        "independent admission invariant: duplicate field"
-    );
+    for field in fields {
+        // Include absent optional fields as null before repeating them, too.
+        let mut complete = value.clone();
+        complete[*field] = value[*field].clone();
+        let encoded = serde_json::to_string(&complete).expect("JSON object encodes");
+        let duplicate = format!("{{\"{field}\":{},{}", value[*field], &encoded[1..]);
+        assert!(
+            !admits(duplicate.as_bytes()),
+            "independent admission invariant: duplicate field {field}"
+        );
+    }
     rejects(
         admits,
         &Value::Array(fields.iter().map(|field| value[*field].clone()).collect()),

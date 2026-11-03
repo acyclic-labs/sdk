@@ -24,6 +24,21 @@ CASES = {
     "trailing-input": (
         "executor/json/object.rs", "    decoder.end()?;", "", "decision", "trailing input",
     ),
+    "decision-duplicate-value": (
+        "experiments/probes.rs",
+        "        let decision: DecisionFile =\n"
+        "            crate::executor::json::decode_object(bytes).map_err(Error::ProbeJson)?;",
+        "        #[derive(Deserialize)]\n"
+        "        struct Version { version: u32 }\n"
+        "        let version: Version =\n"
+        "            crate::executor::json::decode_object(bytes).map_err(Error::ProbeJson)?;\n"
+        "        let value: serde_json::Value =\n"
+        "            serde_json::from_slice(bytes).map_err(Error::ProbeJson)?;\n"
+        "        let mut decision: DecisionFile =\n"
+        "            serde_json::from_value(value).map_err(Error::ProbeJson)?;\n"
+        "        decision.version = version.version;",
+        "decision", "duplicate field value",
+    ),
 }
 
 
@@ -67,6 +82,7 @@ try:
     print(positive.stdout, flush=True)
     if positive.returncode != 0:
         fail("original corpus replay", f"cargo returned {positive.returncode}; no mutation applied")
+    print("PASS original corpus replay", flush=True)
     for case in dict.fromkeys(args.cases):
         path, needle, replacement, seed, invariant = CASES[case]
         source = ROOT / "rust/crates/harness-core/src" / path
@@ -81,7 +97,7 @@ try:
             negative = run([corpus / seed])
             print(negative.stdout, flush=True)
             if not oracle_rejected(negative.returncode, negative.stdout, invariant):
-                fail("production mutant replay", "expected original admission oracle failure was not observed", case)
+                fail("production mutant replay", f"cargo returned {negative.returncode}; expected original admission oracle failure was not observed", case)
             if hashlib.sha256(oracle.read_bytes()).hexdigest() != oracle_hash:
                 fail("oracle identity", "fuzz oracle changed during control", case)
             print(f"PASS {case}: unchanged oracle {oracle_hash} rejected production mutant", flush=True)

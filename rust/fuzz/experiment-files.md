@@ -6,7 +6,9 @@ production scorer/report fold. It covers the offline file formats already
 exposed by the library, without an experiment runner or provider calls.
 
 The oracle independently requires supported versions, required/known fields,
-object shape, no duplicate fields and no trailing input. Each admitted object
+object shape, no duplicate fields and no trailing input. Every declared field
+is repeated independently, including absent optional fields supplied as null.
+Each admitted object
 also produces rejected field mutations. Objective decisions check truth,
 injection adoption and an unrelated answer; absent decisions remain assigned,
 with unknown cost. Round trips alone cannot establish admission correctness.
@@ -34,7 +36,10 @@ python3 rust/fuzz/experiment-negative-control.py decision-version
 ```
 
 The same kept control accepts `scorer-version`, `observation-version`,
-`scorer-distinct` or `trailing-input`. Multiple names share one original corpus
+`scorer-distinct`, `trailing-input` or `decision-duplicate-value`.
+The last mutation normalizes decision values through a JSON tree while keeping
+the original typed version admission; repeated versions still fail, so a
+version-only duplicate oracle cannot detect it. Multiple names share one original corpus
 replay, then each changes exactly one production check, requires a failure from
 the original admission oracle and restores the original source bytes before
 the next control, even on failure. Select only controls still requiring a result.
@@ -53,8 +58,10 @@ not recordings of external providers. Five seeds (`observation-known`,
 `decision-malformed`) are byte-identical to the existing experiment corpus at
 commit `52590337f0`; they exercise the same public decoders and preserve its
 scorer-newline-decision protocol. `scorer` and `decision` extract its two original
-objects. The four other seeds change only version or scorer distinguishability
-at that same format boundary. No provider payload is fabricated or relabeled.
+objects. Four seeds change only version or scorer distinguishability at that same
+format boundary. `observation-sparse` omits the original observation's two optional
+fields, exercising duplicate-null mutations even when they were absent on input.
+No provider payload is fabricated or relabeled.
 
 The target excludes the separate assignment/streaming analysis formats and
 implements no decoder. The library remains the single parser and scorer.
