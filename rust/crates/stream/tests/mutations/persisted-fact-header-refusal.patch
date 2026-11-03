@@ -1,10 +1,13 @@
 --- a/rust/crates/stream/src/persistence.rs
 +++ b/rust/crates/stream/src/persistence.rs
-@@ -22,12 +22,28 @@
-     domain: &[u8],
+@@ -23,10 +23,30 @@
      version: &[u8],
  ) -> Result<&'a [u8], StreamError> {
-+    let fault = std::env::var("ACYCLIC_CODEC_FACT_FAULT").ok();
++    let fact = domain == b"ACYCLIC-STREAM-OBSERVATION-V"
++        || domain == b"ACYCLIC-STREAM-ENVELOPE-V";
++    let fault = fact
++        .then(|| std::env::var("ACYCLIC_CODEC_FACT_FAULT").ok())
++        .flatten();
 +    if fault.as_deref() == Some("version") {
 +        return encoded
 +            .strip_prefix(domain)
@@ -30,4 +33,3 @@
 +        },
      )
  }
- 
