@@ -70,6 +70,8 @@ notification while preserving queued keys. The unchanged control must fail
 at `fired child registration did not wake the current waiter exactly once`.
 `mutations/native_ready_membership.patch` substitutes an unregistered key and
 must fail at `native ready queue lost, invented or repeated a child notification`.
+`mutations/native_ready_poll.patch` inverts the production empty-queue decision
+and must fail at `native ready queue parked with unconsumed notifications`.
 These are mutations of the actual queue, not of an alternate implementation.
 The corpus consists of authored internal action schedules, not external wire
 captures: `replacement` is the existing unit schedule, `multiple-children`

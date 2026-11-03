@@ -1,0 +1,6 @@
+diff --git a/rust/crates/harness/src/local/host_process/children.rs b/rust/crates/harness/src/local/host_process/children.rs
+--- a/rust/crates/harness/src/local/host_process/children.rs
++++ b/rust/crates/harness/src/local/host_process/children.rs
+@@ -116 +116 @@
+-        if queue.keys.is_empty() {
++        if !queue.keys.is_empty() {
