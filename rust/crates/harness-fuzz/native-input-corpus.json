@@ -324,5 +324,38 @@
       "features": 10915,
       "platform": "Linux x86_64"
     }
+  },
+  "union_admission_qualification": {
+    "result": "pass",
+    "source_commit": "7ad02d1e8cdf19cc5398dc16c27f309950df8231",
+    "source_tree": "39781d1c158cecb300258a17549a7239f1bfaa4d",
+    "source_content_sha256": "11385c5860fded333a056e7d746780f6346c1dfd89b757b39dea82c525bc1532",
+    "source_sha256": {
+      "rust/crates/harness/src/local/host_owner.rs": "41aff924f346b41d5d6d2292e81e69e79cb6d8a06553b2fc1a5300786798f9f6",
+      "rust/crates/harness/src/local/host_owner/sessions.rs": "47cecd36da44a0fb75c16cd8bf72d8be223b0ee17ee60b421cc2450a789b3590",
+      "rust/crates/harness/src/client/commands.rs": "27d138346a969627d17ba872f94a741dbd0c791ad40707df75ae05232296d14e",
+      "rust/crates/harness-core/src/command_request.rs": "912829455a9b8f75e1516f6159cdadab38c565bd9339628e584fab9d93f3a6a2",
+      "rust/crates/harness-fuzz/fuzz_targets/native_input.rs": "7b6aa0dce19a64b0f90774cd7844a5b41fd3a62a0e20fe33da08352455f93cf0",
+      "rust/crates/harness-fuzz/fuzz_targets/native_input/actions.rs": "12f9c20d99597568a8729c7c6bed7205b8c3ce732dd9a51b2be0b2eaac5d50de",
+      "rust/crates/harness-fuzz/fuzz_targets/native_input/commands.rs": "c24fef3e9f12d455af9ad00495eaf28ef8eb08072b3d38700e342130bf241012",
+      "rust/crates/harness-fuzz/graphcoder-args-control.py": "4ddd41c82fdbe08df8af697501c0e7a61a7ecfca4ee008142fdf883ee80d70cf",
+      "plugin/src/input.rs": "16457cff25395cd5ce57a0d63152b5834706f2068c0bae7ace0ff986710c3182",
+      "rust/crates/harness-fuzz/Cargo.toml": "d4c2952b1d94318a0038d737c0fb0f786d7a53c64d36fa358f0730852671774f"
+    },
+    "negative_controls": [
+      "native action unknown fields must be refused",
+      "native session action unknown fields must be refused",
+      "command action unknown fields must be refused",
+      "command request unknown fields must be refused"
+    ],
+    "restoration": "All four actual production mutations failed their unchanged strict-admission assertions; exact production source restored before final retained corpus replay.",
+    "retained_files": 234,
+    "retained_bytes": 22742,
+    "new_campaign_runs": 0,
+    "replay_seconds": 2,
+    "instrumented_edges": 6540,
+    "features": 10979,
+    "platform": "Linux x86_64",
+    "scope": "Production HostAction, SessionAction, CommandAction and CommandRequest serde admission through the native-input feature selection. This record closes the original interrupted union-control restoration gap. Full binary dispatch, owner effects, lifecycle, receiver custody and other platforms remain separate obligations."
   }
 }
