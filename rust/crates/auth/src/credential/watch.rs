@@ -133,10 +133,31 @@ impl Changes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        Arc, Weak,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    struct ReentrantWake {
+        changes: Weak<Changes>,
+        delivered: AtomicUsize,
+    }
+
+    impl futures::task::ArcWake for ReentrantWake {
+        fn wake_by_ref(this: &Arc<Self>) {
+            if let Some(changes) = this.changes.upgrade() {
+                assert!(
+                    changes.0.try_lock().is_ok(),
+                    "credential notification holds source lock"
+                );
+            }
+            this.delivered.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 
     #[test]
     fn observation_can_publish_change_without_locking_or_losing_the_event() {
-        let changes = Changes::default();
+        let changes = Arc::new(Changes::default());
         let observe = || CredentialValidity {
             now_unix_seconds: 1,
             revision: None,
@@ -154,8 +175,21 @@ mod tests {
             .unwrap();
         assert!(matches!(watch.now_or_never(), Some(Ok(()))));
         let mut next = Box::pin(changes.watch(observe).unwrap());
-        assert!(next.as_mut().now_or_never().is_none());
+        let wake = Arc::new(ReentrantWake {
+            changes: Arc::downgrade(&changes),
+            delivered: AtomicUsize::new(0),
+        });
+        let waker = futures::task::waker(Arc::clone(&wake));
+        let mut context = Context::from_waker(&waker);
+        assert!(next.as_mut().poll(&mut context).is_pending());
+        changes.notify().unwrap();
+        assert!(wake.delivered.load(Ordering::Relaxed) > 0);
+        assert!(matches!(next.now_or_never(), Some(Ok(()))));
+        let mut next = Box::pin(changes.watch(observe).unwrap());
+        assert!(next.as_mut().poll(&mut context).is_pending());
+        let delivered = wake.delivered.load(Ordering::Relaxed);
         drop(changes);
+        assert!(wake.delivered.load(Ordering::Relaxed) > delivered);
         assert!(matches!(
             next.now_or_never(),
             Some(Err(CredentialCacheError::Unavailable))
