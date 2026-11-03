@@ -184,6 +184,17 @@ export function fuzzProject(data, {source: api = sourcePolicy, graph = projectPo
  assert.ok(project(missingExecutable).some(site => site.file === caller && site.kind === 'unresolved-local-helper'),
   'declaration substituted for missing executable producer');
  const raw = new TextDecoder().decode(new Uint8Array(data));
+ // A snapshot without executable scripts retains the real local parser's
+ // candidates and typed refusal, without needing a dependency graph.
+ const nativeFile = sourceCorpus[(data[0] ?? 0) % sourceCorpus.length].file;
+ const nativeSources = new Map([[nativeFile, raw]]);
+ let nativeSites;
+ try { nativeSites = pollingSites(nativeFile, raw); }
+ catch (error) { assert.ok(error instanceof SourceSyntaxError, String(error)); }
+ if (nativeSites) {
+  assert.deepEqual(project(nativeSources), nativeSites);
+  assert.deepEqual(newProjectPollingSites(new Map(), nativeSources), nativeSites);
+ } else assert.throws(() => project(nativeSources), SourceSyntaxError);
  // Parser acceptance is determined by the same production unit boundary.
  // Accepted bytes must also survive graph construction, independent of order.
  let parsed = false;

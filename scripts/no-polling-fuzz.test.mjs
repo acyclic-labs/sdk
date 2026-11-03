@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import {Session} from 'node:inspector';
 import test from 'node:test';
 import * as targets from './no-polling.fuzz.mjs';
 
@@ -17,6 +18,54 @@ async function mutant(file, original, replacement) {
  return {source: await import(sourceUrl), graph: await import(moduleUrl(graphSource
   .replace("from './index.mjs'", 'from ' + JSON.stringify(sourceUrl))))};
 }
+
+// Count entries into the real compiler, without replacing its implementation.
+async function compilerEntries(operation) {
+ const session = new Session();
+ session.connect();
+ const post = (method, params = {}) => new Promise((resolve, reject) =>
+  session.post(method, params, (error, result) => error ? reject(error) : resolve(result)));
+ try {
+  await post('Profiler.enable');
+  await post('Profiler.startPreciseCoverage', {callCount: true});
+  operation();
+  const {result} = await post('Profiler.takePreciseCoverage');
+  return result.filter(script => script.url.endsWith('/typescript.js'))
+   .flatMap(script => script.functions).filter(fn => fn.functionName === 'createProgram')
+   .reduce((count, fn) => count + fn.ranges[0].count, 0);
+ } finally {
+  session.disconnect();
+ }
+}
+
+test('non-script snapshots validate captured source without entering the compiler', async () => {
+ const {projectPollingSites} = await import('./source-policy/project.mjs');
+ const {pollingSites, SourceSyntaxError} = await import('./source-policy/index.mjs');
+ const replay = project => {
+  assert.deepEqual(project(new Map()), []);
+  for (const {file, source} of targets.sourceCorpus) {
+   let expected;
+   try { expected = pollingSites(file, source); }
+   catch (error) {
+    assert.ok(error instanceof SourceSyntaxError);
+    assert.throws(() => project(new Map([[file, source]])), SourceSyntaxError);
+    continue;
+   }
+   assert.deepEqual(project(new Map([[file, source]])), expected);
+  }
+ };
+ assert.equal(await compilerEntries(() => replay(projectPollingSites)), 0);
+ const removed = await mutant('./source-policy/project.mjs', ' if (!units.size) return sites;\n', '');
+ assert.ok(await compilerEntries(() => replay(removed.graph.projectPollingSites)) > 0,
+  'removing the fast path must enter the original compiler');
+ const lost = await mutant('./source-policy/project.mjs',
+  'if (!units.size) return sites;', 'if (!units.size) return [];');
+ assert.throws(() => replay(lost.graph.projectPollingSites), {name: 'AssertionError'});
+ const unchecked = await mutant('./source-policy/project.mjs',
+  ' if (errors.length === 1) throw errors[0];',
+  ' if (!units.size) return sites;\n if (errors.length === 1) throw errors[0];');
+ assert.throws(() => targets.fuzzProject(Buffer.from([0]), unchecked), {name: 'AssertionError'});
+});
 
 test('source fuzz oracles reject planted decoder, graph and disposition defects', async () => {
  for (const [original, replacement, file, source] of [

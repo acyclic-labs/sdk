@@ -29,6 +29,8 @@ type declaration files are syntax checked but cannot replace executable dependen
 it never loads a consumer's filesystem. Missing current dependencies and malformed
 current source fail closed. A malformed predecessor authorizes no current site.
 Malformed source and package manifests report the shared `SourceSyntaxError`.
+Snapshots without executable scripts return their validated local candidates
+without constructing a TypeScript program.
 `projectPollingSites(sources)` inventories candidates;
 `pollingUnit(file, source)` exposes tokens and sites for additional repository
 policy. Supported inputs include JavaScript, TypeScript, Rust, C/C++, C#,

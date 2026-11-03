@@ -133,6 +133,7 @@ export function projectPollingSites(sources, {historical = false} = {}) {
  }
  if (errors.length === 1) throw errors[0];
  if (errors.length) throw new AggregateError(errors, errors.map(error => error.message).join('\n'));
+ if (!units.size) return sites;
  const scripts = [...units.keys()].map(file => '/' + file);
  const options = {
   allowJs: true, noLib: true, noResolve: false, noEmit: true,
