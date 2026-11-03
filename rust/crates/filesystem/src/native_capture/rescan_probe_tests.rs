@@ -8,7 +8,16 @@ struct Fixture {
     setup: NativeMaterializationWork,
     options: CaptureOptions,
     paths: Vec<NamespacePath>,
-    _health: acyclic_native_runtime::NativeFile,
+    _health: Option<acyclic_native_runtime::NativeFile>,
+}
+
+fn hold_health(root: &Path) -> acyclic_native_runtime::NativeFile {
+    acyclic_native_runtime::NativeFile::from_file(
+        std::fs::File::open(root.join("d/body")).unwrap(),
+        None,
+    )
+    .map_err(|(error, _)| error)
+    .unwrap()
 }
 
 fn fixture(runtime: &tokio::runtime::Runtime) -> Fixture {
@@ -45,12 +54,7 @@ fn fixture_in(runtime: &tokio::runtime::Runtime, parent: Option<&Path>) -> Fixtu
         maximum_paths: 8,
         maximum_extent_spans: 8,
     };
-    let health = acyclic_native_runtime::NativeFile::from_file(
-        std::fs::File::open(source.path().join("d/body")).unwrap(),
-        None,
-    )
-    .map_err(|(error, _)| error)
-    .unwrap();
+    let health = hold_health(source.path());
     for _ in 0..2 {
         runtime
             .block_on(capture_subtrees_with_native_work(
@@ -70,7 +74,7 @@ fn fixture_in(runtime: &tokio::runtime::Runtime, parent: Option<&Path>) -> Fixtu
         setup,
         options,
         paths,
-        _health: health,
+        _health: Some(health),
     }
 }
 
@@ -440,10 +444,14 @@ fn exact_rescan_work_tracks_native_root_names() {
     let source_name = fixture._source.path().file_name().unwrap().to_owned();
     let mut observations = Vec::new();
     for ancestor in [&short, &long] {
+        // Windows requires descendant handles to close before an ancestor moves.
+        // Reopen the same health registration before either measured capture.
+        drop(fixture._health.take());
         if ancestor == &long {
             std::fs::rename(&short, &long).unwrap();
             fixture.options.source_root = long.join(&source_name);
         }
+        fixture._health = Some(hold_health(&fixture.options.source_root));
         let (output, heap) = run(&runtime, &mut fixture, false, 0, u64::MAX, false);
         assert!(output.result.is_ok());
         assert!(output.unchanged_root);
@@ -451,6 +459,7 @@ fn exact_rescan_work_tracks_native_root_names() {
         let items = output.work["itemsExamined"].as_u64().unwrap() - output.health_items;
         observations.push((output.root_path_units, items, heap.count_total));
     }
+    drop(fixture._health.take());
     std::fs::rename(&long, &short).unwrap();
     assert_eq!(observations[0].2, observations[1].2);
     assert_eq!(
