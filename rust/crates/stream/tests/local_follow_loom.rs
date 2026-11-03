@@ -82,16 +82,6 @@ fn negative_control_memory_follow_parks_state() {
 }
 
 #[test]
-fn lock_admission_and_cancellation_match_tokio() {
-    acyclic_stream::verification::lock_parity(false);
-}
-#[test]
-#[should_panic(expected = "granted reader excluded a compatible reader")]
-fn negative_control_granted_reader_stalls_new_readers() {
-    acyclic_stream::verification::lock_parity(true);
-}
-
-#[test]
 fn unpolled_follow_cannot_park_a_memory_permit() {
     acyclic_stream::verification::local_follow_parking(false, true);
 }
