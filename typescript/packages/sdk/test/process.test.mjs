@@ -7,7 +7,7 @@ import {subscribe, unsubscribe} from 'node:diagnostics_channel';
 import {mkdtemp, open, readFile, rm, writeFile} from 'node:fs/promises';
 import {createConnection, createServer} from 'node:net';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join, parse} from 'node:path';
 import {PassThrough} from 'node:stream';
 import {fileURLToPath} from 'node:url';
 import {commandCapture, commandProcess, withProcessSignals} from '@acyclic-labs/sdk/process';
@@ -51,24 +51,21 @@ async function argumentControls(host) {
   // below retain the actual platform's paths separately, without rewriting.
   await capture([[[], 125], [['--'], 125], [['--inherit-input', ...command], 17]],
     'PROCESS_HOST_PORTABLE_CORPUS_BASE64');
-  const directory = await mkdtemp(join(tmpdir(), 'acyclic-argument-control-'));
-  try {
-    const path = join(directory, 'completion');
-    const refused = [];
-    for (const option of ['--completion', '--control', '--custody', '--lease']) {
-      refused.push([option], [option, 'relative', ...command], [option, path],
-        [option, path, option, path, ...command]);
-    }
-    for (const binding of ['', ' ', 'π']) refused.push(['--invocation', binding, ...command]);
-    refused.push(['--invocation'], ['--invocation', 'valid_ID-17', ...command],
-      ['--invocation', 'valid_ID-17'],
-      ['--invocation', 'valid_ID-17', '--invocation', 'valid_ID-17', ...command],
-      ['--inherit-input', '--inherit-input', ...command],
-      ['--custody', path, '--lease', path, ...command], ['--unknown', ...command], ['--', '']);
-    await capture([...refused.map(args => [args, 125]),
-      [['--completion', path, '--invocation', 'valid_ID-17', '--inherit-input', ...command], 17]],
-    'PROCESS_HOST_ENDPOINT_CORPUS_BASE64');
-  } finally { await rm(directory, {recursive: true, force: true}); }
+  // Every case refuses before any endpoint can be opened. Its spelling needs
+  // only the platform's volume root, not an allocated file or private path.
+  const path = join(parse(tmpdir()).root, 'acyclic-process-argument');
+  const refused = [];
+  for (const option of ['--completion', '--control', '--custody', '--lease']) {
+    refused.push([option], [option, 'relative', ...command], [option, path],
+      [option, path, option, path, ...command]);
+  }
+  for (const binding of ['', ' ', 'π']) refused.push(['--invocation', binding, ...command]);
+  refused.push(['--invocation'], ['--invocation', 'valid_ID-17', ...command],
+    ['--invocation', 'valid_ID-17'],
+    ['--invocation', 'valid_ID-17', '--invocation', 'valid_ID-17', ...command],
+    ['--inherit-input', '--inherit-input', ...command],
+    ['--custody', path, '--lease', path, ...command], ['--unknown', ...command], ['--', '']);
+  await capture(refused.map(args => [args, 125]), 'PROCESS_HOST_ENDPOINT_CORPUS_BASE64');
 }
 
 async function captureCancellationControl(run, host) {
