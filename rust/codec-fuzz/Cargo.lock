@@ -93,6 +93,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-fs",
  "acyclic-fs-wire",
+ "acyclic-harness-client",
  "acyclic-harness-core",
  "acyclic-inference",
  "acyclic-machines",
@@ -110,6 +111,7 @@ dependencies = [
  "prost",
  "prost-reflect",
  "prost-types",
+ "serde",
  "serde_json",
  "sha2 0.11.1",
  "tempfile",
@@ -221,6 +223,25 @@ dependencies = [
  "syn 3.0.9",
  "tonic",
  "tracing",
+]
+
+[[package]]
+name = "acyclic-harness-client"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-auth",
+ "acyclic-harness-core",
+ "acyclic-stream",
+ "base64 0.22.1",
+ "blake3",
+ "bytes",
+ "futures",
+ "prost",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "url",
 ]
 
 [[package]]
