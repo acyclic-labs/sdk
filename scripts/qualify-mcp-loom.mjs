@@ -136,36 +136,48 @@ export function qualifyProjectionCustodyMutationsLoom(run = runCommand) {
 }
 
 export function qualifyNativeScopeMutations(run = runCommand) {
-  return qualifyNativeScopeSourceMutation("--native-scope-mutations",
-    "failed_scope_entry_retires_the_projections_it_entered", [
-      "let _ = leave_all(std::mem::take(&mut claims.entries)).await;",
-      "claims.entries.clear();",
-      "failed later entry stranded the earlier projection",
-    ], run);
+  return qualifyNativeSourceMutation({
+    name: "NativeScope", selector: "--native-scope-mutations",
+    source: "workspace/volumes", model: "workspace/volumes/publication_tests",
+    test: "local::workspace::volumes::publication_tests::failed_scope_entry_retires_the_projections_it_entered",
+    mutation: ["let _ = leave_all(std::mem::take(&mut claims.entries)).await;", "claims.entries.clear();",
+      "failed later entry stranded the earlier projection"],
+  }, run);
 }
 
 export function qualifyNativeCancellationMutations(run = runCommand) {
-  return qualifyNativeScopeSourceMutation("--native-cancellation-mutations",
-    "cancelled_command_retires_before_next_entrant_and_preserves_acknowledged_head", [
-      "claim.source.abandon(claim.entered).await",
-      "{ drop(claim.entered); Ok::<(), Error>(()) }",
-      "cancelled command exposed unverified physical bytes",
-    ], run);
+  return qualifyNativeSourceMutation({
+    name: "NativeScope", selector: "--native-cancellation-mutations",
+    source: "workspace/volumes", model: "workspace/volumes/publication_tests",
+    test: "local::workspace::volumes::publication_tests::cancelled_command_retires_before_next_entrant_and_preserves_acknowledged_head",
+    mutation: ["claim.source.abandon(claim.entered).await", "{ drop(claim.entered); Ok::<(), Error>(()) }",
+      "cancelled command exposed unverified physical bytes"],
+  }, run);
 }
 
-function qualifyNativeScopeSourceMutation(selector, test, mutation, run) {
+export function qualifyNativePublicationMutations(run = runCommand) {
+  return qualifyNativeSourceMutation({
+    name: "NativePublication", selector: "--native-publication-mutations",
+    source: "checkout_tools/publisher", model: "checkout_tools/publisher/mount_tests",
+    test: "local::checkout_tools::publisher::mount_tests::file_publication_materializes_its_exact_committed_bytes",
+    mutation: [
+      "if let Some(native) = native {\n                native.advance_to_head().await?;\n            } else if mount.view.source.is_none() {",
+      "if let Some(native) = native {\n                let _ = native;\n            } else if mount.view.source.is_none() {",
+      "logical replacement did not refresh the active projection",
+    ],
+  }, run);
+}
+
+function qualifyNativeSourceMutation({ name, selector, source, model, test, mutation }, run) {
   const recovery = `node scripts/qualify-mcp-loom.mjs ${selector}`;
   const qualify = (run, expectedFailure) => qualifyLoom("acyclic-harness", "acyclic_harness",
     ["--features", "filesystem-local,native-execution,test-support"], run, {
-      kind: "--lib", modelFeatures: [], targetCfg: [], expectedFailure, recovery,
-      filter: `local::workspace::volumes::publication_tests::${test}`,
+      kind: "--lib", modelFeatures: [], targetCfg: [], expectedFailure, recovery, filter: test,
     });
+  const root = "../rust/crates/harness/src/local/";
   return qualifySourceMutationsLoom({
-    name: "NativeScope", recovery,
-    source: "../rust/crates/harness/src/local/workspace/volumes.rs",
-    model: "../rust/crates/harness/src/local/workspace/volumes/publication_tests.rs",
-    mutations: [mutation],
-    qualify, restored: run => qualify(run),
+    name, recovery, source: `${root}${source}.rs`, model: `${root}${model}.rs`,
+    mutations: [mutation], qualify, restored: run => qualify(run),
   }, run);
 }
 
@@ -226,7 +238,6 @@ export function qualifyHookLifecycleLoom(features = ["--features", "filesystem-l
     kind: "--lib", filters: [
       "local::checkout_tools::tests::cancelled_bash_retains_projection_until_physical_cleanup",
       "local::workspace::projection::tests::first_native_users_share_one_initialization",
-      "local::workspace::projection::tests::first_projection_and_logical_publication_share_custody",
       "local::workspace::projection::tests::failed_or_cancelled_initialization_wakes_waiters_without_partial_state",
       "local::workspace::projection::tests::checkout_then_projection_order_cannot_deadlock",
       "local::workspace::projection::tests::the_last_execution_scope_alone_retires_the_projection",
@@ -423,6 +434,7 @@ const fixedModels = {
   "--projection-custody-mutations": qualifyProjectionCustodyMutationsLoom,
   "--native-scope-mutations": qualifyNativeScopeMutations,
   "--native-cancellation-mutations": qualifyNativeCancellationMutations,
+  "--native-publication-mutations": qualifyNativePublicationMutations,
   "--fs-policy": qualifyFsPolicyLoom,
 };
 const selectableModels = {

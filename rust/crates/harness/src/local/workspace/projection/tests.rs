@@ -61,53 +61,6 @@ fn first_native_users_share_one_initialization() {
     loom::model(concurrent_initializers);
 }
 
-fn logical_write(broken: bool) {
-    let slot = StateArc::new(AsyncMutex::new(None));
-    let head = StateArc::new(Mutex::new(0));
-    let (writer_slot, writer_head) = (slot.clone(), head.clone());
-    let writer = thread::spawn(move || {
-        let mut native = complete(lock_owned(writer_slot.clone()));
-        if broken {
-            // The faulty publisher decides whether a projection exists before
-            // releasing custody, then commits without refreshing a new mount.
-            let mounted = native.is_some();
-            drop(native);
-            thread::yield_now();
-            *writer_head.lock().unwrap() = 1;
-            if mounted {
-                *complete(lock_owned(writer_slot)) = Some(1);
-            }
-        } else {
-            *writer_head.lock().unwrap() = 1;
-            thread::yield_now();
-            if let Some(native) = native.as_mut() {
-                *native = 1;
-            }
-        }
-    });
-    let (mount_slot, mount_head) = (slot.clone(), head.clone());
-    let mounting = thread::spawn(move || {
-        complete(initialize(&mount_slot, async || {
-            let head = *mount_head.lock().unwrap();
-            thread::yield_now();
-            Ok(head)
-        }))
-        .unwrap();
-    });
-    joined(writer);
-    joined(mounting);
-    assert_eq!(
-        *complete(lock_owned(slot)),
-        Some(*head.lock().unwrap()),
-        "projection missed a write"
-    );
-}
-
-#[test]
-fn first_projection_and_logical_publication_share_custody() {
-    checked(logical_write, "projection missed a write");
-}
-
 #[test]
 fn failed_or_cancelled_initialization_wakes_waiters_without_partial_state() {
     use std::sync::{
