@@ -1805,3 +1805,6 @@ actor_codecs/transition-set-zero	625	944372a5a2c352b8554f1077c51d0c7fb3a12f9a8b2
 actor_codecs/transition-set	625	5f2841822f6bfe5b2ae0a4c522a3ab81391b98a9c2178de446f1c8b135960b77	guest::wire::encode_transition
 actor_codecs/transition-set-max	634	90637bcf54dde452cd6a37b19ec4bd5a8c797f5554645cb2b63b8d56857fbbbc	guest::wire::encode_transition
 actor_codecs/transition-clear	625	9110fbbd345411a3aebcd3dc729a41acc121299af89639026e7774e57b2e6eee	guest::wire::encode_transition
+actor_codecs/state-alarm-set-v2	129	68f2437c0b0d7c7b0e6c9e4905116f0cd6b5601bd6ec0396b5bf12eaf30e5418	local::Store::publish and local::State::encode
+actor_codecs/state-alarm-delivered-v2	131	6c6c37526ca3f8ec00c247ced679366543ecec4fe4ed818d5bf4373341d173c2	local::Store::publish and local::State::encode
+actor_codecs/state-alarm-clear-v2	127	87330ec1b4c83f70ee54145d5c6e5c24a81805c9eba0183bc970cc43ae97f80f	local::Store::publish and local::State::encode
