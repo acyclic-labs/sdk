@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -59,8 +61,53 @@ export function qualifySkillMaterializerLoom(run = runCommand) {
 export function qualifyProviderRefreshLoom(run = runCommand) {
   return qualifyLoom("acyclic-harness-providers", "main", [], run, {
     modelFeatures: [],
-    suites: [["verification_models::refresh::", 7]],
+    suites: [["verification_models::refresh::", 3]],
   });
+}
+
+export function qualifyProviderRefreshMutationsLoom(run = runCommand) {
+  const recovery = "node scripts/qualify-mcp-loom.mjs --provider-refresh-mutations";
+  const path = new URL("../rust/crates/harness-providers/src/refresh.rs", import.meta.url);
+  const fail = (step, detail) => {
+    throw new Error(`Refresh ${step}: ${detail}\nRecovery after correcting the cause: ${recovery}`);
+  };
+  const mutations = [
+    ["cached failure", "return Err(failure);", "let _ = failure;", "failed refresh was repeated by a waiter"],
+    ["shared lock", "lock_owned(self.result.clone()).await", "lock_owned(Arc::new(Mutex::new(None))).await", "refresh ownership overlapped"],
+  ];
+  if (run === planOnly) return mutations.map(([, , , expectedFailure]) => qualifyLoom(
+    "acyclic-harness-providers", "main", [], run, {
+      modelFeatures: [], expectedFailure,
+      filter: "verification_models::refresh::refresh_attempt_failure_retains_exclusive_ownership",
+    }));
+  let original;
+  try { original = readFileSync(path, "utf8"); }
+  catch (error) { fail("read production source", String(error)); }
+  const hash = source => createHash("sha256").update(source).digest("hex");
+  const model = new URL("../rust/crates/harness-providers/tests/models/refresh.rs", import.meta.url);
+  try {
+    console.log(`Refresh unchanged model=${hash(readFileSync(model))}`);
+    for (const [name, before, after, expectedFailure] of mutations) {
+      if (original.split(before).length !== 2) fail(name, "expected exactly one original source entrance");
+      const planted = original.replace(before, after);
+      writeFileSync(path, planted);
+      console.log(`Refresh ${name}: original=${hash(original)} planted=${hash(planted)}`);
+      qualifyLoom("acyclic-harness-providers", "main", [], run, {
+        modelFeatures: [], expectedFailure, recovery,
+        filter: "verification_models::refresh::refresh_attempt_failure_retains_exclusive_ownership",
+      });
+    }
+  } catch (error) {
+    fail("source mutation qualification", String(error));
+  } finally {
+    try {
+      writeFileSync(path, original);
+      if (readFileSync(path, "utf8") !== original) fail("restore production source", "original bytes differ");
+      console.log(`PASS: original Refresh source restored ${hash(original)}`);
+    } catch (error) { fail("restore production source", String(error)); }
+  }
+  try { qualifyProviderRefreshLoom(run); }
+  catch (error) { fail("restored production qualification", String(error)); }
 }
 
 // Checkout and projection models retain physical cleanup custody.
@@ -210,6 +257,7 @@ function qualifyLoom(crate, target, features, run, options = {}) {
   }));
   const env = options.env ?? process.env;
   const plan = { args, target, tests, rustflags: env.RUSTFLAGS ?? "", wrapper: env.RUSTC_WORKSPACE_WRAPPER ?? null };
+  if (options.expectedFailure) plan.expectedFailure = options.expectedFailure;
   if (run === planOnly) return plan;
   const build = run("cargo", args, { encoding: "utf8", maxBuffer: 4 * 1024 * 1024, ...(options.env ? { env: options.env } : {}) });
   if (build.error) throw build.error;
@@ -234,6 +282,15 @@ function qualifyLoom(crate, target, features, run, options = {}) {
     process.stdout.write(result.stdout ?? "");
     process.stderr.write(result.stderr ?? "");
     if (result.error) throw result.error;
+    if (options.expectedFailure) {
+      const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+      if (result.status !== 101 || !output.includes(options.expectedFailure)
+        || !/^test result: FAILED\. 0 passed; 1 failed; 0 ignored; 0 measured; [0-9]+ filtered out;/m.test(output)) {
+        throw new Error(`Refresh source mutation: unchanged semantic oracle did not fail as required\nRecovery after correcting the cause: ${options.recovery}`);
+      }
+      console.log(`PASS: production mutation reached unchanged oracle: ${options.expectedFailure}`);
+      continue;
+    }
     if (result.status !== 0) throw new Error(`MCP Loom tests failed: ${result.status}`);
     const complete = test.passed === null
       ? /^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;/m
@@ -252,6 +309,7 @@ const fixedModels = {
   "--native-registry": qualifyNativeRegistryLoom,
   "--skill-materializer": qualifySkillMaterializerLoom,
   "--provider-refresh": qualifyProviderRefreshLoom,
+  "--provider-refresh-mutations": qualifyProviderRefreshMutationsLoom,
   "--fs-policy": qualifyFsPolicyLoom,
 };
 const selectableModels = {
