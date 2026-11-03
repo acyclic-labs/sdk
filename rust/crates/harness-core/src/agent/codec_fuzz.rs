@@ -188,13 +188,7 @@ pub fn check(bytes: &[u8]) {
         assert_eq!(restored, effect);
         header(&effect);
     }
-    if let Ok(state) = checkpoint::decode(bytes) {
-        let encoded = checkpoint::encode(&state).expect("admitted checkpoint encodes");
-        assert_eq!(
-            checkpoint::decode(&encoded).expect("checkpoint decodes"),
-            state
-        );
-    }
+    checkpoint::check_wire(bytes);
     if let Ok(value) = serde_json::from_slice::<acyclic_actors::guest::Checkpoint>(bytes) {
         envelope(&value);
     }

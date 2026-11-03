@@ -189,6 +189,50 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<AgentState, Error> {
     Ok(state)
 }
 
+/// Shared fuzz checks use the actual wire type to derive malformed inputs.
+#[cfg(any(test, feature = "test-support"))]
+pub(super) fn check_wire(bytes: &[u8]) {
+    let Ok(state) = decode(bytes) else { return };
+    let canonical = encode(&state).expect("admitted checkpoint encodes");
+    assert_eq!(decode(&canonical).expect("checkpoint decodes"), state);
+    let encoded = Encoded::decode(canonical.as_slice()).expect("checkpoint wire writer");
+    let refuses = |changed: Encoded, reason| {
+        assert!(
+            matches!(
+                decode(&changed.encode_to_vec()),
+                Err(Error::Record("agent checkpoint is malformed"))
+            ),
+            "{reason}"
+        );
+    };
+    for archive in [false, true] {
+        let mut changed = encoded.clone();
+        let bitmap = if archive {
+            &mut changed.archive_pending
+        } else {
+            &mut changed.awaiting
+        };
+        *bitmap = vec![0; encoded.open_children.len().div_ceil(8) + 1];
+        refuses(changed, "checkpoint admitted an invalid bitmap width");
+    }
+    if let Some(child) = encoded.open_children.first() {
+        let mut changed = encoded.clone();
+        changed.open_children.push(child.clone());
+        let bitmap = changed.open_children.len().div_ceil(8);
+        changed.archive_pending.resize(bitmap, 0);
+        if !changed.awaiting.is_empty() {
+            changed.awaiting.resize(bitmap, 0);
+        }
+        refuses(changed, "checkpoint admitted a duplicate child");
+    }
+    for retained_body in [false, true] {
+        let mut changed = encoded.clone();
+        changed.turn = retained_body.then(Vec::new);
+        changed.turn_inbox = (!retained_body).then_some(0);
+        refuses(changed, "checkpoint admitted an incomplete turn");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

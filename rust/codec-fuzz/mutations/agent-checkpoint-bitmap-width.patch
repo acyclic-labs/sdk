@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/agent/checkpoint.rs b/rust/crates/harness-core/src/agent/checkpoint.rs
+--- a/rust/crates/harness-core/src/agent/checkpoint.rs
++++ b/rust/crates/harness-core/src/agent/checkpoint.rs
+@@ -154,8 +154,2 @@
+     state.parent = state.path.parent();
+-    let bitmap = encoded.open_children.len().div_ceil(8);
+-    if encoded.archive_pending.len() != bitmap
+-        || !(encoded.awaiting.is_empty() || encoded.awaiting.len() == bitmap)
+-    {
+-        return Err(malformed());
+-    }
+     let mut open_children = BTreeSet::new();

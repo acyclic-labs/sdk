@@ -201,6 +201,24 @@ tests the arbitrary-input writer comparison without running the seed producer.
 The producer checks the same complete state separately; no simulated decoder
 or alternate field-loss implementation is used.
 
+The checkpoint's shared wire oracle uses its original prost type and writer
+to derive malformed variants of each admitted input. Duplicate children,
+incorrect archive/awaited bitmap widths and unmatched turn body/inbox fields
+must receive the original typed malformed-checkpoint refusal. No alternate
+protobuf parser or capture producer is needed. The following production
+guard mutations must fail when replaying the retained
+`harness_codecs/agent-v13-checkpoint-wait` input through `harness_codecs`:
+
+| PATCH | Required runtime assertion |
+| --- | --- |
+| `agent-checkpoint-duplicate-child.patch` | `checkpoint admitted a duplicate child` |
+| `agent-checkpoint-bitmap-width.patch` | `checkpoint admitted an invalid bitmap width` |
+| `agent-checkpoint-turn-pair.patch` | `checkpoint admitted an incomplete turn` |
+
+The existing round-trip check lives beside that same private wire type.
+These finite refusal checks supplement the arbitrary-input target; they do
+not establish complete source-branch coverage or a fuzz campaign.
+
 `agent-checkpoint-parent-report.patch` instead removes the actual terminal
 report from `machine::shed`. Its component control uses the production
 `AgentHost`, native stream storage and a three-child fork tree, then reopens
