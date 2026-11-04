@@ -32,21 +32,19 @@ fn rejected(
     reference: &WorkspaceRef,
     bytes: acyclic_stream::OwnedBytes,
     io: Option<&PreparationIo>,
-) -> Result<(acyclic_test_support::AllocationInfo, std::time::Duration)> {
+) -> Result<acyclic_test_support::AllocationInfo> {
     let mutations = [WorkspaceMutation::PutFile {
         path: "/../invalid".into(),
         bytes,
     }];
     let key = IdempotencyKey::new("rejected-write")?;
     let mut result = None;
-    let started = std::time::Instant::now();
     let allocations = acyclic_test_support::measure(|| {
         result = Some(runtime.block_on(async {
             host.apply_generation(reference, None, &mutations, key, io)?
                 .await
         }));
     });
-    let elapsed = started.elapsed();
     let error = match result {
         Some(Err(error)) => error,
         _ => return Err(Error::Invalid("invalid path was not rejected".into())),
@@ -57,14 +55,14 @@ fn rejected(
         error => error,
     };
     assert!(matches!(error, Error::Invalid(_)), "{error:?}");
-    Ok((allocations, elapsed))
+    Ok(allocations)
 }
 
 #[test]
 fn rejected_writes_do_not_allocate_or_copy_payload_storage() -> Result<()> {
     let runtime = runtime()?;
     let (host, reference) = runtime.block_on(fixture())?;
-    let (empty, _) = rejected(
+    let empty = rejected(
         &runtime,
         &host,
         &reference,
@@ -74,14 +72,14 @@ fn rejected_writes_do_not_allocate_or_copy_payload_storage() -> Result<()> {
     for length in [1 << 20, 4 << 20] {
         let bytes: acyclic_stream::OwnedBytes = vec![123; length + 32].into();
         let slice = bytes.slice(16..length + 16);
-        let (large, _) = rejected(&runtime, &host, &reference, slice, None)?;
+        let large = rejected(&runtime, &host, &reference, slice, None)?;
         assert_eq!(large.count_total, empty.count_total, "{length} bytes");
         assert_eq!(large.bytes_total, empty.bytes_total, "{length} bytes");
         assert_eq!(large.bytes_max, empty.bytes_max, "{length} bytes");
     }
-    let (unique, _) = rejected(&runtime, &host, &reference, vec![123; 32].into(), None)?;
+    let unique = rejected(&runtime, &host, &reference, vec![123; 32].into(), None)?;
     for length in [1 << 20, 4 << 20] {
-        let (large, _) = rejected(&runtime, &host, &reference, vec![123; length].into(), None)?;
+        let large = rejected(&runtime, &host, &reference, vec![123; length].into(), None)?;
         assert_eq!(
             large.count_total, unique.count_total,
             "unique {length} bytes"
@@ -92,66 +90,28 @@ fn rejected_writes_do_not_allocate_or_copy_payload_storage() -> Result<()> {
         );
         assert_eq!(large.bytes_max, unique.bytes_max, "unique {length} bytes");
     }
-    Ok(())
-}
-
-#[test]
-fn rejected_without_subscriber() -> Result<()> {
-    profile(false, false)
-}
-#[test]
-fn rejected_with_tracing() -> Result<()> {
-    profile(true, false)
-}
-#[test]
-fn rejected_with_accounting() -> Result<()> {
-    profile(false, true)
-}
-
-fn profile(tracing: bool, accounting: bool) -> Result<()> {
-    let dispatch = if tracing {
-        tracing::Dispatch::new(tracing_subscriber::registry())
-    } else {
-        tracing::Dispatch::none()
-    };
-    let _dispatch = tracing::dispatcher::set_default(&dispatch);
-    let runtime = runtime()?;
-    let (host, reference) = runtime.block_on(fixture())?;
     let bytes: acyclic_stream::OwnedBytes = vec![123; 4 << 20].into();
-    // Promote ordinary Bytes storage before measuring shared-owner clones.
     let shared = bytes.clone();
-    let mut times = Vec::with_capacity(32);
-    let mut allocations = Vec::with_capacity(32);
-    for _ in 0..32 {
+    for (tracing, accounting) in [(false, false), (true, false), (false, true)] {
+        let dispatch = if tracing {
+            tracing::Dispatch::new(tracing_subscriber::registry())
+        } else {
+            tracing::Dispatch::none()
+        };
+        let _dispatch = tracing::dispatcher::set_default(&dispatch);
         let cancellation = acyclic_fs::CancellationToken::new();
         let io = PreparationIo::from_budget(
             acyclic_fs::performance::work_budget(100_000, 16_000_000),
             &cancellation,
         )?;
-        let (allocation, elapsed) = rejected(
+        rejected(
             &runtime,
             &host,
             &reference,
             shared.clone(),
             accounting.then_some(&io),
         )?;
-        allocations.push((
-            allocation.count_total,
-            allocation.bytes_total,
-            allocation.bytes_max,
-        ));
-        times.push(elapsed);
-        if accounting {
-            eprintln!("receipt={:?}", io.receipt());
-        }
     }
-    times.sort_unstable();
-    eprintln!(
-        "tracing={tracing} accounting={accounting} median={:?}; allocations={:?}..{:?}",
-        times.get(16),
-        allocations.iter().min(),
-        allocations.iter().max()
-    );
     Ok(())
 }
 
