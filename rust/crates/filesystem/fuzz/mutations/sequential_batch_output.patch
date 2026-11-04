@@ -1,0 +1,11 @@
+diff --git a/rust/crates/filesystem/src/async_storage/read_batch.rs b/rust/crates/filesystem/src/async_storage/read_batch.rs
+--- a/rust/crates/filesystem/src/async_storage/read_batch.rs
++++ b/rust/crates/filesystem/src/async_storage/read_batch.rs
+@@ -96,6 +96,4 @@
+         })
+         .map_err(crate::ObjectStoreError::from)?;
+-    Ok(authority_parts(
+-        scope.finish_owned(values).map_err(object_error)?,
+-    ))
++    Ok(authority_parts(values))
+ }

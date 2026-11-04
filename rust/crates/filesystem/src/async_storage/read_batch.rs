@@ -77,7 +77,16 @@ async fn read_many_representation<R: ReadRepresentation, S: AsyncObjectStore + ?
         .vec_owned(requests.len())
         .map_err(crate::ObjectStoreError::from)?;
     for request in requests {
-        values.value.push(R::read(store, request, batch).await?);
+        let read = R::read(store, request, batch).await?;
+        let bytes = match read.retention {
+            crate::storage::ObjectReadRetention::Shared => 0,
+            crate::storage::ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
+        };
+        values.bytes = values
+            .bytes
+            .checked_add(bytes)
+            .ok_or(crate::WorkError::Overflow)?;
+        values.value.push(read);
     }
     batch.check().map_err(crate::ObjectStoreError::from)?;
     batch
@@ -86,7 +95,9 @@ async fn read_many_representation<R: ReadRepresentation, S: AsyncObjectStore + ?
             ..WorkCounters::UNCHARGED
         })
         .map_err(crate::ObjectStoreError::from)?;
-    Ok(authority_parts(values))
+    Ok(authority_parts(
+        scope.finish_owned(values).map_err(object_error)?,
+    ))
 }
 
 impl From<crate::AuthorityStoreError> for crate::ObjectStoreError {

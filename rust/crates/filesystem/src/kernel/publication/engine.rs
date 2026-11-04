@@ -94,7 +94,6 @@ where
             let crate::kernel::allocation::retained::Retained { value, allocation } =
                 publication.authentication;
             drop(allocation);
-            retain(accounting, value.guard.retained_bytes()).map_err(E::from)?;
             (
                 appended,
                 value,
@@ -127,7 +126,7 @@ where
         .map_err(E::from)?;
         let root = decoded.publication.generation_root;
         if root != output.0.generation_id.object_id() {
-            authenticate::retire(output, accounting).map_err(E::from)?;
+            drop(output);
             let authenticated = authenticate::prove(
                 objects,
                 root,

@@ -91,7 +91,6 @@ impl Ticket {
     pub(in crate::kernel::publication) fn take_authentication(
         &self,
         root: ObjectId,
-        accounting: &mut KernelAccounting<'_>,
     ) -> Result<Option<super::super::authenticate::Authenticated>, crate::FsError> {
         let authenticated = self
             .proposal
@@ -108,7 +107,6 @@ impl Ticket {
         }
         let Retained { value, allocation } = authenticated;
         drop(allocation);
-        super::super::retain(accounting, value.guard.retained_bytes())?;
         Ok(Some(value))
     }
 }

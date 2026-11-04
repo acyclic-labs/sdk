@@ -82,7 +82,7 @@ impl<P: PublicationOwner> Preparation<'_, P> {
         let prepared = candidate
             .ticket
             .as_ref()
-            .map(|ticket| ticket.take_authentication(candidate.root, accounting))
+            .map(|ticket| ticket.take_authentication(candidate.root))
             .transpose()?
             .flatten();
         let authenticated = if let Some(prepared) = prepared {
