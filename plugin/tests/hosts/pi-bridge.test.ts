@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { mock, test } from "bun:test";
+import { createEventBus } from "@earendil-works/pi-coding-agent";
 import {hostFixtureDirectory} from '../../../scripts/graphcoder-e2e/fixture-directory.mjs';
 import {stagePiExtension} from './package.mjs';
 
@@ -21,6 +22,7 @@ test("installed Pi failed spawn closes custody and shutdown without adjacent ass
   let spawns = 0;
   const hooks = new Map<string, (...args: any[]) => Promise<void>>();
   const tools = new Map<string, { execute: (...args: any[]) => Promise<unknown> }>();
+  const events = createEventBus();
   try {
     const recovery = "ACYCLIC_TEST_BINARY=/absolute/acyclic bun test --test-name-pattern 'installed Pi failed spawn' plugin/tests/hosts/pi-bridge.test.ts";
     const binary = process.env.ACYCLIC_TEST_BINARY;
@@ -64,7 +66,7 @@ test("installed Pi failed spawn closes custody and shutdown without adjacent ass
       },
     }));
       const { default: acyclic } = await import(pathToFileURL(path).href);
-    acyclic({ events: {emit() {}}, on: (name: string, handler: (...args: any[]) => Promise<void>) => hooks.set(name, handler),
+    acyclic({ events, on: (name: string, handler: (...args: any[]) => Promise<void>) => hooks.set(name, handler),
       registerTool: (tool: any) => tools.set(tool.name, tool) });
     const ctx = { cwd: directory, sessionManager: { getSessionId: () => "fixture", getSessionFile: () => undefined } };
     await hooks.get("session_start")!({}, ctx);
@@ -97,6 +99,7 @@ test("installed Pi failed spawn closes custody and shutdown without adjacent ass
     assert(finished, "shutdown must settle after close even when exit never occurred");
     await shutdown;
   } finally {
+    events.clear();
     mock.restore();
     rmSync(directory, { recursive: true, force: true });
     rmSync(packageDirectory, { recursive: true, force: true });

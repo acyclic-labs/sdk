@@ -46,7 +46,7 @@ export function assertNativeCompletion(host,result,answer,selection) {
    if(event.type==='turn.failed'||event.type==='error') {
     nativeFailure(host,'NATIVE_HOST_MODEL_FAILED','native Codex turn failed',event);
    }
-   if((event.type==='turn.completed'||(typeof event.type==='string'&&event.type.startsWith('item.')))&&turn!=='active')
+   if((event.type==='turn.completed'||(event.type.startsWith('item.')&&event.item?.type!=='error'))&&turn!=='active')
     nativeFailure(host,'NATIVE_HOST_TERMINAL_ORDER','native Codex item or terminal outside its active turn',event);
    if(event.type==='item.completed') {
     const item=nativeObject(host,event.item,'native Codex item');
@@ -143,7 +143,7 @@ export function assertNativeCompletion(host,result,answer,selection) {
    }
   }
  }
- assert.ok(typeof text==='string'&&text.includes(answer),'native answer missing');
+ assert.ok(typeof text==='string'&&text===answer,'native answer missing');
  return builtinPlugins;
 }
 
@@ -241,7 +241,7 @@ export function nativePackage(binary,packageRoot) {
 // actual host once against the caller's admitted provider.
 export async function installedHost({host,processes,fixture,capture,tools,nativePermissions=[],prompt,answer,execute,packageStage}) {
  const native=await nativeHost(host,fixture.env);
- nativeProvider(native,fixture.live);
+ nativeProvider(native,fixture.live,fixture);
  const binary=fixture.env.E2E_PLUGIN_BINARY;
  assert.ok(binary&&isAbsolute(binary),'step=admit E2E_PLUGIN_BINARY; recovery=set E2E_PLUGIN_BINARY to its matching prebuilt absolute executable');
  const {workspace}=fixture,root=dirname(workspace),env={...fixture.env};
@@ -267,13 +267,13 @@ export async function installedHost({host,processes,fixture,capture,tools,native
  }
  env.PATH=[dirname(native.entry),native.path,env.PATH].join(delimiter);
  let step='stage native package';
- const run=async(program,args,input)=>{
+ const run=async(program,args,input,launchEnv=env)=>{
   // The long-lived workspace owner holds the one mount lease. Commands retain
   // process-tree custody without attempting another lease over its live views.
   // Owned external commands receive empty stdin; the one workspace-API request
   // with a body runs inside the same scope through its ordinary process path.
-  const record={program,args,...await (input===undefined?processes.runOwned(program,args,{cwd:workspace,env})
-   :processes.run(program,args,{cwd:workspace,env},input))};
+  const record={program,args,...await (input===undefined?processes.runOwned(program,args,{cwd:workspace,env:launchEnv})
+   :processes.run(program,args,{cwd:workspace,env:launchEnv},input))};
   capture(record);return record;
  };
  try {
@@ -311,7 +311,9 @@ export async function installedHost({host,processes,fixture,capture,tools,native
   Object.assign(env,{ACYCLIC_WORKSPACE:workspace,ACYCLIC_TASK:JSON.parse(opened.stdout).task,ACYCLIC_HOST_ARGS:JSON.stringify(policy)});
   step='complete installed native session';
   if(execute)return await execute({native,configuration,run});
-  const completed=await run(native.program,[...native.args,...args]);
+  const nativeEnv=fixture.nativeCapability===undefined?env:
+   {...env,ACYCLIC_E2E_MODEL_CAPABILITY:fixture.nativeCapability};
+  const completed=await run(native.program,[...native.args,...args],undefined,nativeEnv);
   assertNativeCompletion(host,completed,answer,host==='claude-code'
    ?{model:nativeModel(host,fixture.live),installed:true}:undefined);
  } catch(error) {

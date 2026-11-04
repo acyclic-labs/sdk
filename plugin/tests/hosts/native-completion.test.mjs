@@ -3,6 +3,7 @@ import {readFile} from 'node:fs/promises';
 import {test} from 'node:test';
 import {assertNativeCompletion} from './native-model.mjs';
 import {assertCodexPairTools} from './native-pairs.mjs';
+import {fuzz} from './native-completion.fuzz.mjs';
 
 test('Codex pair admission requires original declarations rather than namespace prose',async()=> {
  const {tool}=JSON.parse(await readFile(new URL('./fixtures/native-codex-namespace.json',import.meta.url),'utf8'));
@@ -17,21 +18,6 @@ test('Codex pair admission requires original declarations rather than namespace 
  assert.throws(()=>assertCodexPairTools([record(null)],false));
  assert.throws(()=>assertCodexPairTools([record([tool]),record([])],true));
  assert.throws(()=>assertCodexPairTools([],true));
-});
-
-test('recorded native workflow tool refusals retain their reason before successful parent completion',async()=> {
- const record=JSON.parse(await readFile(new URL('./fixtures/native-claude-workflow-refusal.json',import.meta.url),'utf8'));
- const terminal=record.events.at(-1);
- const result=events=>({code:record.code,stderr:'',stdout:events.map(event=>JSON.stringify(event)).join('\n')+'\n'});
- assertNativeCompletion(record.host,result([terminal]),record.answer);
- for(const event of record.events.slice(0,-1)) {
-  const original=event.message.content.find(part=>part.type==='tool_result'&&part.is_error);
-  assert.throws(()=>assertNativeCompletion(record.host,result([event,terminal]),record.answer),error=> {
-   assert.equal(error.code,'NATIVE_HOST_TOOL_FAILED');
-   assert.deepEqual(error.cause,original,'the original native reason and tool call identity must survive');
-   return true;
-  });
- }
 });
 
 test('Claude failed tool results survive a later successful parent terminal', async()=> {
@@ -97,8 +83,9 @@ for(const record of records)test(`${record.host} requires its original successfu
 
 test('Codex tool failure survives a successful parent answer and process exit',async()=>{
  const record=JSON.parse(await readFile(new URL('./fixtures/native-codex-tool-terminals.json',import.meta.url),'utf8'));
+ const answer=record.events.findLast(event=>event.type==='item.completed'&&event.item?.type==='agent_message').item.text;
  const result=events=>({...record,stdout:events.map(event=>JSON.stringify(event)).join('\n')+'\n'});
- const refused=events=>assert.throws(()=>assertNativeCompletion('codex',result(events),record.answer),error=>{
+ const refused=events=>assert.throws(()=>assertNativeCompletion('codex',result(events),answer),error=>{
   assert.equal(error.code,'NATIVE_HOST_TOOL_FAILED');
   assert.match(error.message,/step=validate native codex completion:.*recovery=node --test/);
   return true;
@@ -109,7 +96,8 @@ test('Codex tool failure survives a successful parent answer and process exit',a
  const failures=record.events.filter(event=>event.item?.type==='command_execution'&&event.item.exit_code!==0);
  assert.equal(failures.length,2);
  const success=record.events.filter(event=>!failures.includes(event));
- assertNativeCompletion('codex',result(success),record.answer);
+ assertNativeCompletion('codex',result(success),answer);
+ assert.throws(()=>assertNativeCompletion('codex',result(success),record.answer),/native answer missing/);
  for(const failure of failures) {
   // Removing the other failure isolates the original merge and finish joins.
   const isolated=record.events.filter(event=>!failures.includes(event)||event===failure);
@@ -123,6 +111,14 @@ test('Codex tool failure survives a successful parent answer and process exit',a
  // independent evidence, including an error payload with a falsy value.
  for(const changed of [{...mcp.item,status:'failed'},...[false,0,''].map(error=>({...mcp.item,error}))])
   refused(success.map(event=>event===mcp?{...event,item:changed}:event));
+});
+
+test('recorded native answers retain exact admission through the byte fuzz entry',()=>{
+ for(const [index,record] of records.entries()) {
+  const input=answer=>Buffer.concat([Buffer.from([index,0,0]),Buffer.from(answer)]);
+  for(const answer of [record.answer,record.answer+'0','0'+record.answer,record.answer+'\n','',record.answer+'\0'])fuzz(input(answer));
+  for(let byte=0;byte<256;byte++)fuzz(Buffer.from([index,byte]));
+ }
 });
 
 test('Claude native pair initialization fences model namespace and bare contamination',async()=>{

@@ -8,6 +8,38 @@ publish = false
 cargo-fuzz = true
 
 [[bin]]
+name = "native_host_admission"
+path = "fuzz_targets/native_host_admission.rs"
+required-features = ["core"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "native_session_log"
+path = "fuzz_targets/native_session_log.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "native_workspace_endpoint"
+path = "fuzz_targets/native_workspace_endpoint.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "native_workspace_request"
+path = "fuzz_targets/native_workspace_request.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "command_result"
 path = "fuzz_targets/command_result.rs"
 required-features = ["core"]

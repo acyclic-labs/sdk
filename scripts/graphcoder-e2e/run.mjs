@@ -9,6 +9,7 @@
 // E2E_OUTPUT selects the matrix/capture directory; roots are retained on failure.
 // Unix requires python3 and a controlling PTY; no alternate GraphCoder runtime.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -55,13 +56,18 @@ mkdirSync(join(output, "transcripts"), { recursive: true });
 const contexts = new Map();
 const evidence = new Map();
 let server, events, port;
+// Private to the original runner/server/native host chain. It is never part
+// of a case file, report, request body or retained provider configuration.
+const nativeCases = new Set(cases.filter(test => test.inputs.some(input => input.format === "installed-host" && input.host === "pi"))
+  .map(test => test.id));
+const nativeCapability = nativeCases.size ? randomBytes(32).toString("hex") : undefined;
 const started = 0; // Process start: suite time includes module load, as the envelope does.
 const json = (path, value) => writeFile(path, JSON.stringify(value, null, 2) + "\n");
 function expand(value, fixture) {
   return expandFixture(value, { support: directory.replaceAll("\\", "/"),
     repository: resolve(directory, "../..").replaceAll("\\", "/"),
     workspace: fixture.workspace.replaceAll("\\", "/"),
-    ...(port ? { url: `http://127.0.0.1:${port}/${fixture.id}/v1` } : {}) });
+    ...(port ? { url: `http://127.0.0.1:${port}/${nativeCases.has(fixture.id) ? 'native-' : ''}${fixture.id}/v1` } : {}) });
 }
 // GraphCoder's headless outcome: `-p` prints the answer text and exits 0;
 // JSONL prints one `{"id", "inbox", "text"}` (or `"error"`) line per prompt.
@@ -89,6 +95,10 @@ async function prepare(test, gitOrigin) {
   fixture.binary = binary;
   fixture.output = artifact;
   fixture.env = environment(fixture.settings);
+  if (nativeCases.has(test.id)) {
+    fixture.url = `http://127.0.0.1:${port}/native-${test.id}/v1`;
+    fixture.nativeCapability = nativeCapability;
+  }
   await mkdir(dirname(fixture.workspace), { recursive: true });
   if (test.workspace?.kind === "git") {
     const cloned = await processes.run("git", ["clone", "--quiet", "--shared", gitOrigin, fixture.workspace], { env: fixture.env });
@@ -208,10 +218,11 @@ try { execution = await withOwnedCase({ processes, signal: cancellation.signal, 
   phases[event.phase] = event;
   process.stderr.write(`case-lifecycle: ${JSON.stringify(event)}\n`);
 }, prepare: async () => {
-  const scripts = Object.fromEntries(cases.map(test => [test.id, expand(test.model,
+  const scripts = Object.fromEntries(cases.map(test => [nativeCases.has(test.id) ? 'native-'+test.id : test.id, expand(test.model,
     { id: test.id, workspace: join(test.root, test.id, "workspace") })]));
   await json(join(output, "script.json"), { cases: scripts });
   const env = environment(join(scratch, "support-profile"));
+  if (nativeCapability) env.ACYCLIC_E2E_MODEL_CAPABILITY = nativeCapability;
   server = processes.start(mock, ["--script", join(output, "script.json"), "--record", join(output, "requests.jsonl")], { env });
   events = new Spool(server.child.stdout, server.closed, { transcript: join(output, "events.jsonl"),
     key: event => event.event === "ready" ? ["ready"]

@@ -1,0 +1,47 @@
+{
+  "provenance": "Original installed Codex deterministic journey. Native metadata warning, error and turn.failed frames projected unchanged from the complete captured stdout; full stdout retained under its digest. Replay varies outer exit independently to test terminal metadata custody.",
+  "host": "codex",
+  "host_version": "0.164.0",
+  "source": "0f17d3b35c791afffb3477e75307f74c656e0026",
+  "stdout_sha256": "b347c6af7da65a1ac9ee48be9b5cb5c611e100ad0b86d641d828e2c59b2d6edf",
+  "events": [
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_0",
+        "type": "error",
+        "message": "Model metadata for `tiny` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+      }
+    },
+    {
+      "type": "error",
+      "message": "Reconnecting... 1/5 (unexpected status 409 Conflict: {\"case\":\"installed-codex\",\"error\":\"no unused script step matches\",\"path\":\"responses\"}, url: http://127.0.0.1:41291/installed-codex/v1/responses)"
+    },
+    {
+      "type": "error",
+      "message": "Reconnecting... 2/5 (unexpected status 409 Conflict: {\"case\":\"installed-codex\",\"error\":\"no unused script step matches\",\"path\":\"responses\"}, url: http://127.0.0.1:41291/installed-codex/v1/responses)"
+    },
+    {
+      "type": "error",
+      "message": "Reconnecting... 3/5 (unexpected status 409 Conflict: {\"case\":\"installed-codex\",\"error\":\"no unused script step matches\",\"path\":\"responses\"}, url: http://127.0.0.1:41291/installed-codex/v1/responses)"
+    },
+    {
+      "type": "error",
+      "message": "Reconnecting... 4/5 (unexpected status 409 Conflict: {\"case\":\"installed-codex\",\"error\":\"no unused script step matches\",\"path\":\"responses\"}, url: http://127.0.0.1:41291/installed-codex/v1/responses)"
+    },
+    {
+      "type": "error",
+      "message": "Reconnecting... 5/5 (unexpected status 409 Conflict: {\"case\":\"installed-codex\",\"error\":\"no unused script step matches\",\"path\":\"responses\"}, url: http://127.0.0.1:41291/installed-codex/v1/responses)"
+    },
+    {
+      "type": "error",
+      "message": "unexpected status 409 Conflict: {\"case\":\"installed-codex\",\"error\":\"no unused script step matches\",\"path\":\"responses\"}, url: http://127.0.0.1:41291/installed-codex/v1/responses"
+    },
+    {
+      "type": "turn.failed",
+      "error": {
+        "message": "unexpected status 409 Conflict: {\"case\":\"installed-codex\",\"error\":\"no unused script step matches\",\"path\":\"responses\"}, url: http://127.0.0.1:41291/installed-codex/v1/responses"
+      }
+    }
+  ]
+}

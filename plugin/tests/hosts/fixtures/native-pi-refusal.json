@@ -1,0 +1,12 @@
+{
+  "provenance": "Original pinned Pi CLI zero-exit keyless refusal. Complete assistant message_end failure frame projected unchanged from the actual CLI control; full original stdout retained under its digest. No authored provider reply.",
+  "host": "pi",
+  "host_version": "1.1.0",
+  "source": "7ebe51206d",
+  "capture_sha256": "05af39818c996c774c762d1639f09edfca3a1dd25fedc14b5d7fc00aa43ad598",
+  "stdout_sha256": "37bdf0abc984066a269a5661d6f9d91602e69a3891ceb94828ef2ed9dd2fcf1e",
+  "code": 0,
+  "signal": null,
+  "stderr": "",
+  "stdout": "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[],\"api\":\"openai-responses\",\"provider\":\"fixture\",\"model\":\"tiny\",\"usage\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"totalTokens\":0,\"cost\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"total\":0}},\"stopReason\":\"error\",\"errorMessage\":\"step=admit Pi keyless Responses provider: No API key for provider: fixture; recovery=select a native Pi release with a supported keyless Responses provider before running installed-pi-recursive\",\"timestamp\":1793659611668,\"durationMs\":1,\"thinkingLevel\":\"off\"}}\n"
+}
