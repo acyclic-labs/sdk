@@ -144,27 +144,22 @@ async fn seed_volume(
     let paths: Vec<_> = (0..if same_file { 1 } else { 256 })
         .map(|index| vec![format!("directory-{index}"), "file".to_owned()])
         .collect();
+    // The fixture is one transaction, just like its single publication.
+    // Compile its ordered creates once; only the measured writers need
+    // independent checkouts and dependency preparation.
+    let mut authored = Vec::with_capacity(paths.len() * 2);
     for parts in &paths {
-        seed.create(
-            AuthoredMutation::CreateDirectory {
-                path: path(parts.get(..1).ok_or("missing directory")?)?,
-                metadata: FileMetadata::default(),
-            },
-            B,
-            cancel,
-        )
-        .await?;
-        seed.create(
-            AuthoredMutation::CreateFile {
-                path: path(parts)?,
-                bytes: OwnedBytes::from_static(&[0; 2]),
-                metadata: FileMetadata::default(),
-            },
-            B,
-            cancel,
-        )
-        .await?;
+        authored.push(AuthoredMutation::CreateDirectory {
+            path: path(parts.get(..1).ok_or("missing directory")?)?,
+            metadata: FileMetadata::default(),
+        });
+        authored.push(AuthoredMutation::CreateFile {
+            path: path(parts)?,
+            bytes: OwnedBytes::from_static(&[0; 2]),
+            metadata: FileMetadata::default(),
+        });
     }
+    seed.apply_authored_transaction(authored, B, cancel).await?;
     let base = match seed
         .commit(
             OperationId::new(),
