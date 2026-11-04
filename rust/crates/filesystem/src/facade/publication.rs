@@ -75,13 +75,7 @@ pub(crate) struct VerifiedPublication<A: 'static, O: 'static> {
     pub(super) limits: crate::kernel::ClosureLimits,
     pub(super) objects: Vec<ObjectId>,
     pub(super) proven_at: u64,
-    pub(super) _allocation: KernelOwnedAllocation,
-}
-
-impl<A, O> VerifiedPublication<A, O> {
-    pub(crate) fn retained_bytes(&self) -> u64 {
-        usize_to_u64(self.objects.capacity() * size_of::<ObjectId>())
-    }
+    pub(super) _allocation: crate::kernel::allocation::retained::RetainedAllocation,
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
@@ -190,7 +184,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 crate::kernel::RetainedPublication {
                     receipt: publication.receipt,
                     published: publication.published,
-                    allocation: KernelOwnedAllocation::Standalone,
+                    allocation: publication.allocation.into_allocation(),
                 },
                 proven_at,
                 publication_slot,
@@ -387,7 +381,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             let retained = crate::kernel::RetainedPublication {
                 receipt: publication.receipt,
                 published: publication.published,
-                allocation: KernelOwnedAllocation::NativeOriginal(publication.allocation),
+                allocation: crate::kernel::closure::ProofGuard::Native(publication.allocation)
+                    .into_allocation(),
             };
             self.apply_publication(
                 operation_id,
@@ -490,7 +485,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     pub(super) fn apply_publication(
         &mut self,
         operation_id: OperationId,
-        mut retained: crate::kernel::RetainedPublication<KernelOwnedAllocation>,
+        mut retained: crate::kernel::RetainedPublication<
+            crate::kernel::allocation::retained::RetainedAllocation,
+        >,
         proven_at: u64,
         publication_slot: PublicationClosure<A, O>,
         mut prepared_roots: Option<PreparedCheckoutRoots>,
@@ -512,10 +509,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     limits: closure_limits(self.volume.config),
                     objects: std::mem::take(&mut retained.receipt.proof.objects),
                     proven_at,
-                    _allocation: std::mem::replace(
-                        &mut retained.allocation,
-                        KernelOwnedAllocation::Standalone,
-                    ),
+                    _allocation: retained.allocation,
                 }),
             };
             Some(publication_slot)

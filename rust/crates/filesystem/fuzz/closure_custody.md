@@ -110,6 +110,23 @@ retires an independent owned buffer on the first delegated store read. Cleanup
 must leave the other independent buffer fully funded, then retire exactly to
 zero after that buffer is destroyed. Apply
 `mutations/content_comparison_scratch.patch` to restore the old total-live-byte
-cleanup in the production comparison. The property must reject it at
+cleanup in the production comparison with `ACYCLIC_FS_SCRATCH_OMISSION=1`.
+The property must reject it at
 `comparison custody` or `comparison cleanup retired independent allocation`;
 restore the patch before requiring the same property to pass.
+
+Creation, fork and retention proofs borrow the caller's original authority
+frame through the same `ProofMeter::from_accounting` constructor. The proof
+guard moves with the authenticated object vector, including cached publication
+pins; no receipt merge, replacement claim or second proof ledger is needed.
+The root-parent buffer retires when its decoded root is destroyed. This
+handoff adds no object read, copy, hash, wait or durability barrier.
+
+The existing minimal-generation relation also creates a volume through the
+public `Fs::new` composition over the shipped logical store. Its observer
+requires the original completed codec work at each delegated proof read.
+`mutations/publication_proof_frame.patch`, with
+`ACYCLIC_FS_PROOF_FRAME_OMISSION=1`, replaces the actual proof producer's meter;
+the relation must fail `closure read replaced its original frame`. Both patches
+select their omissions independently in one compiled producer. Restore both
+before running the positive relations against the unmodified source.

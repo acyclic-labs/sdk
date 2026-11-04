@@ -41,16 +41,36 @@ async fn minimal_generation_has_a_complete_authenticated_closure()
         let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         original_closure_custody(&traced, generation, &mut work, true).await?;
     }
+    let providers = crate::Fs::memory();
+    let fs = crate::Fs::new(
+        providers.authority().clone(),
+        OriginalReadTrace {
+            inner: std::sync::Arc::new(crate::LogicalObjectStore::new(std::sync::Arc::new(
+                acyclic_objects::MemoryObjects::memory(),
+            ))),
+        },
+        crate::EmbeddedCapabilities::MEMORY,
+    );
+    fs.create_volume(
+        crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
     Ok(())
 }
 
 // The observer delegates the physical read to the shipped store. Admission and
 // completion use the received frame, including seven additional codec units.
-struct OriginalReadTrace<'a, S> {
-    inner: &'a S,
+struct OriginalReadTrace<S> {
+    inner: S,
 }
 
-impl<S: crate::AsyncObjectStore> crate::AsyncObjectStore for OriginalReadTrace<'_, S> {
+impl<S> crate::AsyncObjectStore for OriginalReadTrace<S>
+where
+    S: std::ops::Deref + acyclic_stream::ProviderPlatform,
+    S::Target: crate::AsyncObjectStore,
+{
     async fn read_many(
         &self,
         requests: &[crate::storage::ObjectReadRequest],
@@ -134,7 +154,7 @@ async fn original_single_read_custody<S: crate::AsyncObjectStore>(
 }
 
 async fn original_closure_custody<S: crate::AsyncObjectStore>(
-    store: &OriginalReadTrace<'_, S>,
+    store: &OriginalReadTrace<&S>,
     generation: ObjectId,
     work: &mut crate::AuthorityWork<'_>,
     require_owned: bool,

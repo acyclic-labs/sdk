@@ -203,14 +203,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .await?;
         let operation_id = creation.map(|creation| creation.operation_id);
         let proof = self
-            .publication_proof(
-                generation_root,
-                proven_at,
-                volume_id,
-                config,
-                accounting,
-                cancellation,
-            )
+            .publication_proof(generation_root, proven_at, volume_id, config, accounting)
             .await?;
         let result = self
             .publish_creation(
@@ -220,14 +213,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     initial_generation_root: generation_root,
                 },
                 operation_id,
-                &proof.value.objects,
+                &proof.objects,
                 proven_at,
                 accounting,
                 cancellation,
                 guard,
             )
             .await;
-        proof.retire(accounting)?;
+        drop(proof);
         result.map(|volume| (volume, generation_root))
     }
     pub(super) async fn publish_creation<E, G>(

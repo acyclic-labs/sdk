@@ -63,8 +63,7 @@ use crate::kernel::{
     apply_regular_mutation_async, authenticate_generation_export_manifest_async, build_blob,
     build_generation_export_manifest_async, contextual_publication_fingerprint,
     decode_workspace_deleted, export_generation_batch_async, import_generation_batch_async,
-    merge_generation_async, prove_generation_closure, publish_generation, retention_authority_id,
-    volume_authority_id,
+    merge_generation_async, publish_generation, retention_authority_id, volume_authority_id,
 };
 
 pub use crate::kernel::{LiveMutationOutcome, LivePublicationObservation, MergeConflict};
