@@ -757,6 +757,7 @@ mod tests {
         // Generated canonical SDK inputs, not a captured provider response.
         let request = PreparedModelRequest::prepare(
             ModelRequest {
+                summary: false,
                 compose_tools: false,
                 model: Model::new("recorded-control".into(), "admission".into(), "1".into())?,
                 messages: vec![ModelMessage {
@@ -777,7 +778,7 @@ mod tests {
         };
         let key = replay_key(request.bytes())?;
         let events = [0, 1].map(|occurrence| ModelEvent::Completed {
-            metadata: json!({"occurrence": occurrence}),
+            metadata: serde_json::json!({"occurrence": occurrence}),
         });
         let mut source = Recording::default();
         for (ordinal, event) in events.iter().enumerate() {
