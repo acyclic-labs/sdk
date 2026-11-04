@@ -2,7 +2,7 @@ diff --git b/rust/crates/filesystem/src/kernel/content_eq.rs a/rust/crates/files
 index 15f83c7b49..1b717f76af 100644
 --- b/rust/crates/filesystem/src/kernel/content_eq.rs
 +++ a/rust/crates/filesystem/src/kernel/content_eq.rs
-@@ -131,8 +131,28 @@ pub(crate) async fn records_match_content<S: AsyncObjectStore>(
+@@ -131,6 +131,26 @@ pub(crate) async fn records_match_content<S: AsyncObjectStore>(
      accounting: &mut KernelAccounting<'_>,
      cancellation: &CancellationToken,
  ) -> Result<bool, FsError> {
@@ -31,5 +31,3 @@ index 15f83c7b49..1b717f76af 100644
 +    }
 +    result
  }
- 
- async fn compare<S: AsyncObjectStore>(

@@ -158,6 +158,8 @@ async fn comparison_preserves_independent_custody<S: crate::AsyncObjectStore>(
     let cancellation = CancellationToken::new();
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let independent = Retained::<Vec<u8>>::allocate(73, &mut accounting)?;
+    let independent_bytes = independent.value.capacity() as u64;
+    let baseline = accounting.standalone_parts().unwrap().0.live_bytes();
     let retired = Retained::<Vec<u8>>::allocate(127, &mut accounting)?;
     let store = RetiringRead {
         inner: store,
@@ -181,11 +183,13 @@ async fn comparison_preserves_independent_custody<S: crate::AsyncObjectStore>(
     );
     assert_eq!(
         accounting.standalone_parts().unwrap().0.live_bytes(),
-        73,
+        baseline,
         "comparison cleanup retired independent allocation"
     );
     drop(independent);
-    assert_eq!(accounting.standalone_parts().unwrap().0.live_bytes(), 0);
+    let allocations = accounting.standalone_parts().unwrap().0;
+    assert_eq!(allocations.live_bytes(), baseline - independent_bytes);
+    assert_eq!(allocations.scratch_bytes(), 0);
     Ok(())
 }
 

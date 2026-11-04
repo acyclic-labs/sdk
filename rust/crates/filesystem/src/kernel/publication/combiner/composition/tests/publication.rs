@@ -68,10 +68,7 @@ async fn retained_publication(delivery: Delivery) -> TestResult {
         .ok_or("missing publication ticket")?;
     let group = ticket.group.clone();
     let publication = SubmittedPublication {
-        authentication: crate::kernel::publication::authenticate::retain_authentication(
-            authentication,
-            &mut accounting,
-        )?,
+        authentication,
         custody: PublicationCustody {
             published: None,
             projection_fence,

@@ -11,7 +11,7 @@ pub(super) type PrefixResult = Result<Option<Prefix>, crate::FsError>;
 
 struct Generation {
     root: ObjectId,
-    authentication: Retained<super::super::authenticate::Authenticated>,
+    authentication: super::super::authenticate::Authenticated,
     pin: Option<crate::collection::Hold>,
 }
 
@@ -199,9 +199,7 @@ impl<P: PublicationOwner> Job<P> {
             )
         };
         let previous_authentication = match previous_authentication {
-            Some(authentication)
-                if authentication.value.proof.generation_id.object_id() == root =>
-            {
+            Some(authentication) if authentication.proof.generation_id.object_id() == root => {
                 return Ok(Generation {
                     root,
                     authentication,
