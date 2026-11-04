@@ -16,12 +16,11 @@ pub fn check_codex_version(output: &str) -> crate::Result<()> {
             "cannot identify Codex; requires Codex >= {MINIMUM_CODEX_VERSION}"
         ))
     })?;
-    let numbers = version
-        .split('.')
-        .map(str::parse::<u64>)
-        .collect::<std::result::Result<Vec<_>, _>>();
-    if !numbers
-        .is_ok_and(|numbers| numbers.len() == 3 && numbers.as_slice() >= [0, 164, 0].as_slice())
+    let mut parts = version.split('.');
+    let numbers: [Option<u64>; 3] = std::array::from_fn(|_| parts.next()?.parse().ok());
+    if !matches!(numbers, [Some(major), Some(minor), Some(patch)]
+        if [major, minor, patch] >= [0, 164, 0])
+        || parts.next().is_some()
     {
         return Err(crate::Error::Unsupported(format!(
             "Codex {version} is unsupported; requires Codex >= {MINIMUM_CODEX_VERSION}; upgrade Codex before installing or using Acyclic"
@@ -31,12 +30,12 @@ pub fn check_codex_version(output: &str) -> crate::Result<()> {
 }
 
 /// Claude lifecycle boundaries used for workspace coordination, and the
-/// permission prompt the harness approval chain answers for its own tools.
+/// spawn permission prompt the harness approval chain answers.
 pub const CLAUDE_EVENTS: [&str; 4] = ["SessionStart", "Stop", "SessionEnd", "PermissionRequest"];
 
-/// The only tools whose Claude permission prompts reach the harness: those
-/// of the plugin's coordination server. Every other prompt stays Claude's.
-pub const CLAUDE_PERMISSION_MATCHER: &str = "mcp__plugin_acyclic_acyclic-sessions__.*";
+/// Only the plugin's registered spawn prompt reaches the harness.
+/// Native tools and other coordination prompts retain Claude's permissions.
+const CLAUDE_PERMISSION_MATCHER: &str = "^mcp__plugin_acyclic_acyclic-sessions__spawn$";
 
 /// Command hooks for an installed executable, quoted as one shell argument.
 ///
@@ -44,51 +43,45 @@ pub const CLAUDE_PERMISSION_MATCHER: &str = "mcp__plugin_acyclic_acyclic-session
 /// hooks observe native execution boundaries; they do not replace host tools.
 #[must_use]
 pub fn claude_hooks(executable: &str) -> BTreeMap<&'static str, Vec<Value>> {
-    #[cfg(windows)]
-    let executable = executable.replace('\\', "/");
-    command_hooks(&format!("'{}'", executable.replace('\'', "'\"'\"'")))
-}
-
-fn command_hooks(executable: &str) -> BTreeMap<&'static str, Vec<Value>> {
+    let executable = quoted_executable(executable);
     CLAUDE_EVENTS
         .into_iter()
-        .map(|event| {
-            let mut group = Map::new();
-            if event == "PermissionRequest" {
-                group.insert("matcher".into(), json!(CLAUDE_PERMISSION_MATCHER));
-            }
-            group.insert(
-                "hooks".into(),
-                json!([{
-                    "type": "command",
-                    "command": format!("{executable} __hook claude-code {event}"),
-                    "timeout": if event == "SessionEnd" { 3 } else { 120 },
-                    "statusMessage": "Acyclic is routing the workspace"
-                }]),
-            );
-            (event, vec![Value::Object(group)])
-        })
+        .map(|event| (event, vec![command_group(&executable, event)]))
         .collect()
 }
 
-/// Claude plugin manifest sharing the installed hook vocabulary.
-#[must_use]
-pub fn claude_manifest(version: &str) -> Value {
-    json!({
-        "name": "acyclic",
-        "version": version,
-        "description": "Coordinate separate native sessions with the shared harness.",
-        "author": {"name": "Acyclic Labs"},
-        "license": "Apache-2.0",
-        "hooks": command_hooks("\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\""),
-        "mcpServers": {"acyclic-sessions": {"command":"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic", "args":["__mcp","claude-code"]}}
-    })
+fn quoted_executable(executable: &str) -> String {
+    #[cfg(windows)]
+    let executable = executable.replace('\\', "/");
+    format!("'{}'", executable.replace('\'', "'\"'\"'"))
 }
 
-/// Executable of an exactly matching installed hook, for ownership and diagnostics.
+fn command_group(executable: &str, event: &str) -> Value {
+    let mut group = Map::new();
+    if event == "PermissionRequest" {
+        group.insert("matcher".into(), json!(CLAUDE_PERMISSION_MATCHER));
+    }
+    group.insert(
+        "hooks".into(),
+        json!([{
+            "type": "command",
+            "command": format!("{executable} __hook claude-code {event}"),
+            "timeout": if event == "SessionEnd" { 3 } else { 120 },
+            "statusMessage": "Acyclic is routing the workspace"
+        }]),
+    );
+    Value::Object(group)
+}
+
+/// Executable of an owned installed hook, for ownership and diagnostics.
+/// Ownership follows the reserved command and metadata, independently of its
+/// permission selector, so editing a selector cannot leave an owned hook behind.
 /// Foreign groups, additional commands and split argument fields are rejected.
 #[must_use]
 pub fn claude_hook_executable(event: &str, group: &Value) -> Option<String> {
+    if !CLAUDE_EVENTS.contains(&event) {
+        return None;
+    }
     let command = group
         .get("hooks")?
         .as_array()?
@@ -104,6 +97,16 @@ pub fn claude_hook_executable(event: &str, group: &Value) -> Option<String> {
     if !name.eq_ignore_ascii_case("acyclic") && !name.eq_ignore_ascii_case("acyclic.exe") {
         return None;
     }
-    let hooks = claude_hooks(&executable);
-    (hooks.get(event)?.first()? == group).then_some(executable)
+    let expected = command_group(&quoted_executable(&executable), event);
+    let expected = expected.as_object()?;
+    let actual = group.as_object()?;
+    (actual.len() == expected.len()
+        && expected.iter().all(|(key, value)| {
+            if event == "PermissionRequest" && key == "matcher" {
+                actual.get(key).is_some_and(Value::is_string)
+            } else {
+                actual.get(key) == Some(value)
+            }
+        }))
+    .then_some(executable)
 }

@@ -109,6 +109,7 @@ pub(super) struct Binding {
     pub(super) slot: u32,
     /// No resource means a revision-only credential-context observation.
     resource: Option<String>,
+    scope: Scope,
     requested: wire::SessionFilter,
     filter_digest: [u8; 32],
     resource_authorization: Option<ResourceAuthorization>,
@@ -119,13 +120,7 @@ impl Binding {
     /// Finite one-shot replies (Actors calls and children pages) carry no
     /// record filter and get no credit-free lookahead.
     pub(super) fn is_reply(&self) -> bool {
-        self.resource.is_none()
-            || self.resource_authorization.as_ref().is_some_and(|value| {
-                matches!(
-                    value.action,
-                    "actors/invoke" | "streams/list" | "streams/read"
-                )
-            })
+        matches!(self.scope, Scope::Exact | Scope::Children)
     }
 }
 
@@ -239,7 +234,6 @@ impl Authority {
             .resource_authorization
             .as_ref()
             .map_or("streams/follow", |authorization| authorization.action);
-        let scoped = binding.resource_authorization.is_some();
         let target = binding
             .resource
             .as_deref()
@@ -247,12 +241,12 @@ impl Authority {
                 action,
                 resource,
             });
-        self.check(&**capability, target, scoped, channels)?;
+        self.check(&**capability, target, binding.scope, channels)?;
         for (action, resource) in &binding.additional {
             self.check(
                 &**capability,
                 Target::Resource { action, resource },
-                false,
+                Scope::Exact,
                 channels,
             )?;
         }
@@ -264,22 +258,23 @@ impl Authority {
         capability: &VerifiedCapability,
         action: &'static str,
         resource: &str,
+        scope: Scope,
         channels: usize,
     ) -> Result<(), Rejection> {
         self.check(
             capability,
             Target::Resource { action, resource },
-            false,
+            scope,
             channels,
         )
     }
     /// The one admission check for session context and resource actions.
-    /// `scoped` follows a product resource through its owner's authorization.
+    /// The original admission names which facts its product defers to delivery.
     fn check(
         &self,
         capability: &VerifiedCapability,
         target: Target<'_>,
-        scoped: bool,
+        scope: Scope,
         channels: usize,
     ) -> Result<(), Rejection> {
         let snapshot = self.snapshot()?;
@@ -305,25 +300,6 @@ impl Authority {
             usage: &usage,
             cpu_millis: 0,
             memory_bytes: 0,
-        };
-        let scope = match (target, scoped) {
-            (
-                Target::Context
-                | Target::Resource {
-                    action: "actors/invoke" | "streams/read",
-                    ..
-                },
-                _,
-            ) => Scope::Exact,
-            (
-                Target::Resource {
-                    action: "streams/list",
-                    ..
-                },
-                _,
-            ) => Scope::Children,
-            (_, true) => Scope::ResourceFollow,
-            (_, false) => Scope::Follow,
         };
         capability
             .authorize(
@@ -363,6 +339,7 @@ impl Authority {
             credential_revision: slots.entries.get(&slot).ok_or(Rejection::Forbidden)?.0,
             slot,
             resource: Some(stream_resource(Some(path))),
+            scope: Scope::Follow,
             requested,
             filter_digest: [0; 32],
             resource_authorization: None,
@@ -391,6 +368,7 @@ impl Authority {
             credential_revision: *revision,
             slot,
             resource: Some(resource),
+            scope: Scope::ResourceFollow,
             requested,
             filter_digest: [0; 32],
             resource_authorization: Some(authorization.clone()),
@@ -438,21 +416,20 @@ impl Authority {
         self: &Arc<Self>,
         slots: &Slots,
         slot: u32,
-        resource: String,
+        target: CallTarget,
         channels: usize,
     ) -> Result<(Binding, CallAuthorization), Rejection> {
-        if !acyclic_auth::valid_resource(&resource) || !resource.starts_with("actors:/") {
-            return Err(Rejection::Forbidden);
-        }
+        let CallTarget { resource, action } = target;
         let (revision, _, credential) = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
         let capability = credential.as_ref().map_err(|error| *error)?;
         let mut authorization =
             ResourceAuthorization::new(Arc::clone(self), resource.clone(), Arc::clone(capability));
-        authorization.action = "actors/invoke";
+        authorization.action = action;
         let mut binding = Binding {
             credential_revision: *revision,
             slot,
             resource: Some(resource),
+            scope: Scope::Exact,
             requested: wire::SessionFilter::default(),
             filter_digest: [0; 32],
             resource_authorization: Some(authorization.clone()),
@@ -482,6 +459,7 @@ impl Authority {
             credential_revision: *revision,
             slot,
             resource: Some(resource),
+            scope: Scope::Children,
             requested: wire::SessionFilter::default(),
             filter_digest: [0; 32],
             resource_authorization: Some(authorization.clone()),
@@ -534,6 +512,7 @@ impl Authority {
                 credential_revision: *revision,
                 slot,
                 resource: primary.map(|_| resource),
+                scope: Scope::Exact,
                 requested: wire::SessionFilter::default(),
                 filter_digest: [0; 32],
                 resource_authorization: Some(authorization.clone()),

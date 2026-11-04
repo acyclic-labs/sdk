@@ -68,15 +68,25 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
     ) -> W::Output<Transaction<A, O>, WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
         let result = self
-            .checkout_accounted(
-                GenerationSelector::Head,
-                CheckoutMode::tracking_transaction(),
-                &mut accounting,
-                cancellation,
-            )
-            .await
-            .map(|checkout| Transaction::from_checkout(self, checkout, key, false));
+            .begin_transaction_with_accounting(key, &mut accounting, cancellation)
+            .await;
         work.finish(result, &accounting)
+    }
+
+    pub(super) async fn begin_transaction_with_accounting(
+        &self,
+        key: IdempotencyKey,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Transaction<A, O>, WorkspaceError> {
+        self.checkout_accounted(
+            GenerationSelector::Head,
+            CheckoutMode::tracking_transaction(),
+            accounting,
+            cancellation,
+        )
+        .await
+        .map(|checkout| Transaction::from_checkout(self, checkout, key, false))
     }
 
     /// Opens an exact transaction and observes whether its head has advanced.

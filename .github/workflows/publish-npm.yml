@@ -29,7 +29,7 @@ concurrency:
 jobs:
   prepare:
     name: Prepare qualified npm packages
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: kaizen-linux
     timeout-minutes: 20
     permissions:
       actions: read

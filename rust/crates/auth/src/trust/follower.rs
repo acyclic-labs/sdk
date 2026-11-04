@@ -26,7 +26,9 @@
 //! [`Follower::serve`]). A global withdrawal advances one generation without
 //! locking or visiting accounts; each account's caught-up acknowledgement is
 //! valid only in that generation. Reads check the generation before and after
-//! accessing account state. Fenced reads refuse as [`VerifyError::Unavailable`].
+//! accessing account state. Fenced reads refuse as [`VerifyError::Unavailable`];
+//! a refused account's reads refuse as [`VerifyError::Refused`] until a record
+//! for it applies.
 //! No task per account; one hash lookup per trust read. Publication wakes still
 //! reach only the selected account and explicitly unscoped subscribers; global
 //! changes reach every dependency. Record verification holds only its account lock;
@@ -786,6 +788,7 @@ impl Follower {
             Some(account) => {
                 let account = account.state.read().map_err(|_| VerifyError::Unavailable)?;
                 match &*account {
+                    Account { poisoned: true, .. } => Err(VerifyError::Refused),
                     Account {
                         keyring: Some(keyring),
                         revocations: Some(revocations),

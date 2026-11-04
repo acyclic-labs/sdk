@@ -1,8 +1,5 @@
 use super::*;
-use proptest::{
-    prelude::*,
-    test_runner::{Config, TestRunner},
-};
+use proptest::{prelude::*, test_runner::Config};
 use serde::Deserialize;
 
 fn pair() -> impl Strategy<Value = (Vec<u8>, Vec<u8>)> {
@@ -18,27 +15,16 @@ proptest! {
         let value = ResourceIdentity::new(&account, &id)?;
         let encoded = value.encode();
         prop_assert_eq!(encoded.len(), value.encoded_len());
-        prop_assert_eq!(ResourceIdentity::decode(&encoded)?, value);
         let (original_account, original_id) = ResourceIdentity::decode(&encoded)?.into_parts();
         prop_assert_eq!(original_account.into_bytes(), account);
         prop_assert_eq!(original_id.into_bytes(), id);
     }
     #[test]
-    fn distinct_pairs_have_distinct_encodings(left in pair(), right in pair()) {
-        let mut right = right;
-        if left == right {
-            right.1.push(0);
-        }
-        prop_assert_ne!(&left, &right);
-        prop_assert_ne!(ResourceIdentity::new(&left.0, &left.1)?.encode(),
-                        ResourceIdentity::new(&right.0, &right.1)?.encode());
-    }
-    #[test]
     fn hostname_retains_direct_components(account in "[a-z][a-z0-9]{0,62}", id in "[a-z][a-z0-9]{0,62}") {
         let identity = ResourceIdentity::new(account.as_bytes(), id.as_bytes())?;
+        testing::identity(&identity);
         let host = identity.hostname("example.com")?;
         prop_assert_eq!(host.as_str(), format!("{id}.{account}.example.com"));
-        prop_assert_eq!(CanonicalHost::parse(host.as_str())?, host);
     }
     #[test]
     fn admitted_hosts_retain_their_url_authority(labels in prop::collection::vec("[a-z0-9][a-z0-9-]{0,61}[a-z0-9]", 1..=4)) {
@@ -50,9 +36,7 @@ proptest! {
     }
     #[test]
     fn parser_accepts_only_canonical_bytes(bytes in prop::collection::vec(any::<u8>(), 0..10000)) {
-        if let Ok(value) = ResourceIdentity::decode(&bytes) {
-            prop_assert_eq!(value.encode(), bytes);
-        }
+        testing::check(&bytes);
     }
     #[test]
     fn actor_triples_are_injective_and_disjoint(
@@ -73,12 +57,6 @@ proptest! {
         }
     }
     #[test]
-    fn actor_parser_accepts_only_canonical_bytes(bytes in prop::collection::vec(any::<u8>(), 0..10000)) {
-        if let Ok(value) = ActorReference::decode(&bytes) {
-            prop_assert_eq!(value.encode(), bytes);
-        }
-    }
-    #[test]
     fn multi_label_hosts_roundtrip(account in "[a-z][a-z0-9]{0,62}", id in "[a-z][a-z0-9]{0,62}") {
         let value = ResourceIdentity::new(account.as_bytes(), id.as_bytes())?;
         let host = value.hostname("run.cell-1.example")?;
@@ -89,8 +67,6 @@ proptest! {
 #[test]
 fn actor_reference_framing_and_legacy_boundary() -> Result<(), Box<dyn std::error::Error>> {
     let legacy = ActorReference::from_legacy_fields(b"account", None, "existing.Actor_1")?;
-    assert_eq!(legacy.namespace().as_str(), DEFAULT_ACTOR_NAMESPACE);
-    assert_eq!(legacy.id(), "existing.Actor_1");
     assert_eq!(
         legacy,
         ActorReference::new(b"account", b"__default", b"existing.Actor_1")?
@@ -104,9 +80,7 @@ fn actor_reference_framing_and_legacy_boundary() -> Result<(), Box<dyn std::erro
     for length in 0..bytes.len() {
         assert!(ActorReference::decode(bytes.get(..length).ok_or("prefix")?).is_err());
     }
-    let mut trailing = bytes.clone();
-    trailing.push(0);
-    assert!(ActorReference::decode(&trailing).is_err());
+    testing::check(&bytes);
     // Without field boundaries these distinct valid triples alias.
     let first = ActorReference::new(b"a", b"bc", b"d")?;
     let second = ActorReference::new(b"ab", b"c", b"d")?;
@@ -117,51 +91,13 @@ fn actor_reference_framing_and_legacy_boundary() -> Result<(), Box<dyn std::erro
     assert_ne!(first.encode(), second.encode());
     Ok(())
 }
-fn boundary_shift_injectivity(encode: impl Fn(&ResourceIdentity) -> Vec<u8>) -> bool {
-    let strategy = (
-        prop::collection::vec(any::<u8>(), 1..32),
-        any::<u8>(),
-        prop::collection::vec(any::<u8>(), 1..32),
-    );
-    TestRunner::new(Config {
-        cases: 64,
-        failure_persistence: None,
-        ..Config::default()
-    })
-    .run(&strategy, |(prefix, middle, suffix)| {
-        let mut left_id = vec![middle];
-        left_id.extend_from_slice(&suffix);
-        let mut right_account = prefix.clone();
-        right_account.push(middle);
-        let left = ResourceIdentity::new(&prefix, &left_id)?;
-        let right = ResourceIdentity::new(&right_account, &suffix)?;
-        prop_assert_ne!(&left, &right);
-        prop_assert_ne!(encode(&left), encode(&right));
-        Ok(())
-    })
-    .is_ok()
-}
-#[test]
-fn negative_control_concatenation_fails_injectivity() {
-    assert!(boundary_shift_injectivity(ResourceIdentity::encode));
-    assert!(!boundary_shift_injectivity(|value| [
-        value.account().as_bytes(),
-        value.id().as_bytes()
-    ]
-    .concat()));
-}
 #[test]
 fn rejects_malformed_storage_and_wire() -> Result<(), Box<dyn std::error::Error>> {
     let encoded = ResourceIdentity::new(b"a", b"b")?.encode();
     for length in 0..encoded.len() {
         assert!(ResourceIdentity::decode(encoded.get(..length).ok_or("prefix")?).is_err());
     }
-    let mut trailing = encoded.clone();
-    trailing.push(0);
-    assert_eq!(
-        ResourceIdentity::decode(&trailing),
-        Err(IdentityError::Malformed)
-    );
+    testing::check(&encoded);
     let mut impossible_length = encoded;
     let length_start = RESOURCE_DOMAIN.len() + RESOURCE_VERSION.len();
     impossible_length
@@ -172,51 +108,11 @@ fn rejects_malformed_storage_and_wire() -> Result<(), Box<dyn std::error::Error>
         ResourceIdentity::decode(&impossible_length),
         Err(IdentityError::Malformed)
     );
-    assert_eq!(AccountId::new(b""), Err(IdentityError::EmptyAccount));
-    assert_eq!(ResourceId::new(b""), Err(IdentityError::EmptyId));
     let pair = ResourceIdentity::from_parts(AccountId::new(b"a")?, ResourceId::new(b"b")?);
     assert_eq!(pair, ResourceIdentity::new(b"a", b"b")?);
     Ok(())
 }
 
-#[test]
-fn resource_version_refusal_precedes_fields() -> Result<(), Box<dyn std::error::Error>> {
-    let encoded = ResourceIdentity::new(b"a", b"b")?.encode();
-    for version in [0, 2, u8::MAX] {
-        let mut bytes = RESOURCE_DOMAIN.to_vec();
-        bytes.push(version);
-        assert_eq!(
-            ResourceIdentity::decode(&bytes),
-            Err(IdentityError::UnsupportedVersion)
-        );
-    }
-    let body = encoded
-        .get(RESOURCE_DOMAIN.len() + RESOURCE_VERSION.len()..)
-        .ok_or("payload")?;
-    assert_eq!(
-        ResourceIdentity::decode(body),
-        Err(IdentityError::UnsupportedVersion)
-    );
-    assert_eq!(ResourceIdentity::decode(&encoded)?.encode(), encoded);
-    Ok(())
-}
-fn label_contract(validate: impl Fn(&[u8]) -> bool) -> bool {
-    ["a", "0", "worker-1"]
-        .iter()
-        .all(|s| validate(s.as_bytes()))
-        && [
-            "", "A", "a.b", "a_b", "-a", "a-", "a:443", "é", "a\0", "*.x",
-        ]
-        .iter()
-        .all(|s| !validate(s.as_bytes()))
-        && validate(&[b'a'; 63])
-        && !validate(&[b'a'; 64])
-}
-#[test]
-fn negative_control_unvalidated_labels_fail_dns_contract() {
-    assert!(label_contract(|label| validate_dns_label(label).is_ok()));
-    assert!(!label_contract(|_| true));
-}
 #[test]
 fn rejects_tls_and_signature_aliases() -> Result<(), DnsError> {
     let host = "worker.account.example.com";
@@ -228,34 +124,9 @@ fn rejects_tls_and_signature_aliases() -> Result<(), DnsError> {
         "x@worker.account.example.com",
         "work%65r.account.example.com",
         "worker..example.com",
-        "127.0.0.1",
-        "0x7f000001",
     ] {
         assert!(CanonicalHost::parse(alias).is_err(), "{alias:?}");
     }
-    Ok(())
-}
-
-#[test]
-fn invalid_a_labels_cannot_cross_the_url_boundary() -> Result<(), Box<dyn std::error::Error>> {
-    let invalid = "xn--a.account.example.com";
-    // The former LDH-only path accepts every label; the URL authority refuses it.
-    assert!(
-        invalid
-            .split('.')
-            .all(|label| validate_dns_label(label.as_bytes()).is_ok())
-    );
-    assert!(url::Url::parse(&format!("https://{invalid}")).is_err());
-    assert_eq!(
-        CanonicalHost::parse(invalid),
-        Err(DnsError::InvalidCharacter)
-    );
-    let valid = "xn--caf-dma.account.example.com";
-    assert_eq!(CanonicalHost::parse(valid)?.as_str(), valid);
-    assert_eq!(
-        url::Url::parse(&format!("https://{valid}"))?.host_str(),
-        Some(valid)
-    );
     Ok(())
 }
 

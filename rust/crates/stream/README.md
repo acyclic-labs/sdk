@@ -34,6 +34,12 @@ loss returns a typed failure. The product implements `CallProvider::call_input` 
 same `CallInput`. Retaining a returned chunk retains its receive credit. An
 unsupported product refuses streaming input rather than collecting it.
 
+`CallProvider::target` derives the canonical resource and declared product action
+from that product's request header before dispatch. The same credential admits
+that exact pair; the peer cannot substitute an action or socket identity. Native
+body adapters use `CallInput::poll_chunk`, which shares the original transition
+with `next_chunk` and retains the same credit, terminal and trailers.
+
 Reply completion retires only the reply half: an unfinished upload can continue
 on the same admitted call. Dropping an incomplete reply or upload withdraws that
 call, and source or credential loss returns a typed failure. Input is never

@@ -31,15 +31,6 @@ pub(crate) fn escaped_character(character: char, buffer: &mut arrayvec::ArrayStr
 }
 
 #[cfg(test)]
-#[doc(hidden)]
-fn push_value(text: &mut String, value: &str) {
-    let mut buffer = arrayvec::ArrayString::new();
-    for character in value.chars() {
-        text.push_str(escaped_character(character, &mut buffer));
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
@@ -49,23 +40,23 @@ mod tests {
         '\n', '\u{B}', '\u{C}', '\r', '\u{85}', '\u{2028}', '\u{2029}',
     ];
 
-    #[test]
-    fn values_cannot_start_a_line() {
-        for separator in LINE_BREAKS {
-            let mut encoded = String::new();
-            push_value(&mut encoded, &format!("a{separator}- forged: x"));
-            assert!(!encoded.contains(LINE_BREAKS), "{encoded:?}");
-        }
-    }
-
     proptest! {
         // Property: all Unicode scalar values survive framing exactly, while
         // no value can author a tag or physical control character.
         #[test]
         fn escaped_values_round_trip(characters in prop::collection::vec(any::<char>(), 0..100)) {
-            let value: String = characters.into_iter().collect();
+            let mut value: String = characters.into_iter().collect();
+            value.push_str("<>&");
+            for separator in LINE_BREAKS {
+                value.push('a');
+                value.push(separator);
+                value.push_str("- forged: x");
+            }
             let mut encoded = String::new();
-            push_value(&mut encoded, &value);
+            let mut buffer = arrayvec::ArrayString::new();
+            for character in value.chars() {
+                encoded.push_str(escaped_character(character, &mut buffer));
+            }
             prop_assert!(!encoded.contains(['<', '>']));
             prop_assert!(!encoded.chars().any(char::is_control));
             prop_assert!(!encoded.contains(LINE_BREAKS));

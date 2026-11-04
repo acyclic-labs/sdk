@@ -3,13 +3,32 @@ use super::*;
 
 #[tokio::test]
 async fn allocation_cuts_cannot_commit_an_unreported_tool_claim() -> Result<()> {
+    let (template, _issuer) = crate::filesystem::execution_journal::test_support::journal().await?;
+    let operation = OperationId::from_bytes([83; 16]);
+    let invocation = template
+        .stage_with_io(operation, "invocation", b"{}", "application/json", None)
+        .await?;
+    // Authority and the immutable payload are shared; every cut still owns an
+    // empty stream, summary cache and ledger, including the successful probe.
+    let fresh = || {
+        FilesystemExecutionJournal::new(
+            Arc::new(acyclic_stream::MemoryStream::default()),
+            template.host.clone(),
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &template.volume,
+                verifier: &template.verifier,
+                scope: &template.scope,
+                io: None,
+            },
+        )
+    };
     for native in [false, true] {
-        let (success, allocations) = run_cut(native, 1_000_000).await?;
+        let (success, allocations) = run_cut(&fresh()?, &invocation, native, 1_000_000).await?;
         assert!(success);
         let mut refused = 0;
         let mut admitted = 0;
         for cutoff in 0..=allocations {
-            if run_cut(native, cutoff).await?.0 {
+            if run_cut(&fresh()?, &invocation, native, cutoff).await?.0 {
                 admitted += 1;
             } else {
                 refused += 1;
@@ -24,8 +43,13 @@ async fn allocation_cuts_cannot_commit_an_unreported_tool_claim() -> Result<()> 
     Ok(())
 }
 
-async fn run_cut(native: bool, cutoff: u64) -> Result<(bool, u64)> {
-    let (journal, _issuer) = crate::filesystem::execution_journal::test_support::journal().await?;
+async fn run_cut(
+    journal: &impl ExecutionJournal,
+    invocation: &FileRef,
+    native: bool,
+    cutoff: u64,
+) -> Result<(bool, u64)> {
+    let invocation = invocation.clone();
     let operation = OperationId::from_bytes([83; 16]);
     journal
         .append(
@@ -36,9 +60,6 @@ async fn run_cut(native: bool, cutoff: u64) -> Result<(bool, u64)> {
             },
             None,
         )?
-        .await?;
-    let invocation = journal
-        .stage_with_io(operation, "invocation", b"{}", "application/json", None)
         .await?;
     let mut budget = acyclic_fs::performance::work_budget(1_000_000, 4 * 1024 * 1024);
     budget.allocation_operations = cutoff;

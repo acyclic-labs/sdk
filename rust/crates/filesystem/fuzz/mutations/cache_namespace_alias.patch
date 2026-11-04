@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/cache.rs
++++ b/rust/crates/filesystem/src/cache.rs
+@@ -257,7 +257,7 @@
+     pub fn share_cache_with<T>(&self, inner: T) -> Result<CachedObjectStore<T>, ObjectStoreError> {
+         let id = {
+             let mut state = self.lock_state()?;
+-            let id = state.next_namespace;
++            let id = self.shared.id;
+             state.next_namespace = increment(id)?;
+             id
+         };

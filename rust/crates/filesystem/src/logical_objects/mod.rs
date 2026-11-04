@@ -78,26 +78,13 @@ impl<P: ?Sized, S> LogicalObjectStore<P, S> {
     }
 }
 
-fn accounting<'a>(
-    context: &'a mut AuthorityWork<'_>,
-) -> Result<KernelAccounting<'a>, ObjectStoreError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(original) = context.original {
-        return Ok(KernelAccounting::native(original, context.cancellation));
-    }
-    Ok(KernelAccounting::standalone(
-        context.read_budget()?,
-        context.cancellation,
-    ))
-}
 macro_rules! operate {
     ($context:ident, $work:ident, $body:expr) => {{
-        let (result, spent) = {
-            let mut $work = accounting($context)?;
-            let result = $body;
-            (result, $work.spent())
-        };
-        $context.record_completed(spent)?;
+        let mut accounting = $context.read_accounting()?;
+        let mut $work = accounting
+            .allocation_scope()
+            .map_err(crate::async_storage::object_error)?;
+        let result = $body;
         result.map_err(crate::async_storage::object_error)
     }};
 }
@@ -108,13 +95,20 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
         maximum: u64,
         context: &mut AuthorityWork<'_>,
     ) -> Result<ObjectRead, ObjectStoreError> {
-        let read = operate!(
-            context,
-            work,
-            self.fetch::<STORED>(id, maximum, &mut work)
+        let read = {
+            let mut accounting = context.read_accounting()?;
+            let mut scope = accounting
+                .allocation_scope()
+                .map_err(crate::async_storage::object_error)?;
+            let (read, _allocation) = self
+                .fetch::<STORED>(id, maximum, &mut scope)
                 .await
-                .map(|(read, _)| read)
-        )?;
+                .map_err(crate::async_storage::object_error)?;
+            scope
+                .keep_bytes(read.retention.owned_bytes())
+                .map_err(crate::async_storage::object_error)?;
+            read
+        };
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = context.original
             && matches!(read.retention, ObjectReadRetention::Owned { .. })
@@ -128,11 +122,17 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
         requests: &[ObjectReadRequest],
         context: &mut AuthorityWork<'_>,
     ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
-        let (reads, allocation) = operate!(
-            context,
-            work,
-            self.fetch_batch::<STORED>(requests, &mut work).await
-        )?;
+        let mut accounting = context.read_accounting()?;
+        let mut scope = accounting
+            .allocation_scope()
+            .map_err(crate::async_storage::object_error)?;
+        let (reads, allocation, retained) = self
+            .fetch_batch::<STORED>(requests, &mut scope)
+            .await
+            .map_err(crate::async_storage::object_error)?;
+        scope
+            .keep_bytes(retained)
+            .map_err(crate::async_storage::object_error)?;
         match allocation {
             KernelOwnedAllocation::Standalone => Ok((reads, None)),
             #[cfg(not(target_arch = "wasm32"))]
@@ -211,12 +211,15 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> AsyncObjectStore for LogicalObjectStore
                 let sealed = write::seal(bytes.clone(), &mut work)?;
                 let plaintext = self.open_prehashed(
                     id,
-                    bytes.clone(),
+                    ObjectRead {
+                        bytes: bytes.clone(),
+                        retention: ObjectReadRetention::Shared,
+                    },
                     self.maximum_object_bytes.unwrap_or(u64::MAX),
                     Some(&sealed),
                     &mut work,
                 )?;
-                self.publish(id, bytes, &plaintext, Some(&sealed), &mut work)
+                self.publish(id, bytes, &plaintext.bytes, Some(&sealed), &mut work)
                     .await
             }
             .await
@@ -255,9 +258,6 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> AsyncObjectStore for LogicalObjectStore
         scope: crate::PublicationScope<'_>,
         context: &mut AuthorityWork<'_>,
     ) -> Result<crate::PublicationHold, ObjectStoreError> {
-        accounting(context)?
-            .check()
-            .map_err(crate::async_storage::object_error)?;
         // The stream entry is the commit: its volume retains the closure,
         // which also makes it durable, first.
         operate!(context, work, self.retain_scope(scope, &mut work).await)?;

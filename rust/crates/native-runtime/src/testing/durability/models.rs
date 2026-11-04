@@ -3,7 +3,7 @@ use super::*;
 fn crash_latch(forget_crash: bool) {
     loom::model(move || {
         let (schedule, _) = Schedule::new();
-        schedule.cut_at(0, DurableFault::Before);
+        assert_eq!(schedule.cut_next(DurableFault::Before), 0);
         schedule.0.state().writes.forget_crash = forget_crash;
         let other = schedule.clone();
         let writer =

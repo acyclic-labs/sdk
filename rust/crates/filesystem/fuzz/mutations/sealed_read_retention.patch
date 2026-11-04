@@ -1,0 +1,13 @@
+--- a/rust/crates/filesystem/src/logical_objects/read.rs
++++ b/rust/crates/filesystem/src/logical_objects/read.rs
+@@ -50,7 +50,9 @@
+             hash(physical, &read.bytes, read.bytes.len() as u64, work)?;
+             Ok(read)
+         } else {
+-            self.open_stored(id, read, maximum, work)
++            let mut read = self.open_stored(id, read, maximum, work)?;
++            read.retention = retained(&read.bytes, work);
++            Ok(read)
+         }
+     }
+     pub(super) async fn fetch<const STORED: bool>(

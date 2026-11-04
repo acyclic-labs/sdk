@@ -597,7 +597,7 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
         };
         let cancellation = &self.cancellation;
         let mut carrier = NativeDemandCarrier::Native(&work);
-        let publication = await_lock(
+        let publication = await_with_cancellation(
             self.checkout.publication_fence.read(),
             &mut carrier,
             cancellation,
@@ -605,7 +605,7 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
         )
         .await?;
         let (base, mut candidate, epoch) = {
-            let checkout = await_lock(
+            let checkout = await_with_cancellation(
                 self.checkout.lock(),
                 &mut carrier,
                 cancellation,
@@ -650,7 +650,7 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
         } else {
             None
         };
-        let mut checkout = await_lock(
+        let mut checkout = await_with_cancellation(
             self.checkout.lock(),
             &mut carrier,
             cancellation,

@@ -38,7 +38,7 @@ struct Tree<'a> {
 impl Tree<'_> {
     // Only the selected settings entry may fall back to the seed on an
     // invalid file. Enabled plugin files and imports retain their read errors.
-    async fn entry(&self, path: &str) -> Result<Option<(String, Vec<u8>)>> {
+    async fn entry(&self, path: &str) -> Result<Option<(String, acyclic_stream::OwnedBytes)>> {
         match self.home(path).await {
             Err(Error::ToolRejected {
                 code: crate::wire::ErrorCode::Invalid,
@@ -48,7 +48,7 @@ impl Tree<'_> {
         }
     }
 
-    async fn home(&self, path: &str) -> Result<Option<(String, Vec<u8>)>> {
+    async fn home(&self, path: &str) -> Result<Option<(String, acyclic_stream::OwnedBytes)>> {
         match self
             .volumes
             .files
@@ -62,12 +62,8 @@ impl Tree<'_> {
             )
             .await
         {
-            Ok((file, bytes, _)) => Ok(Some((file.version().to_owned(), bytes.to_vec()))),
-            Err(Error::NotFound(_))
-            | Err(Error::ToolRejected {
-                code: crate::wire::ErrorCode::NotFound,
-                ..
-            }) => Ok(None),
+            Ok((file, bytes, _)) => Ok(Some((file.version().to_owned(), bytes))),
+            Err(error) if error.code() == crate::wire::ErrorCode::NotFound => Ok(None),
             Err(error) => Err(error),
         }
     }
@@ -77,9 +73,9 @@ impl config::Tree for Tree<'_> {
     fn read<'a>(
         &'a self,
         path: &'a str,
-    ) -> futures::future::BoxFuture<'a, Result<Option<Vec<u8>>>> {
+    ) -> futures::future::BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
         Box::pin(async move {
-            let seed = || crate::seed::file(path).map(<[u8]>::to_vec);
+            let seed = || crate::seed::file(path).map(acyclic_stream::OwnedBytes::from_static);
             if !crate::layers::layered(path) {
                 return Ok(seed());
             }

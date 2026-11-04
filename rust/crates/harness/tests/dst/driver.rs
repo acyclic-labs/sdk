@@ -171,7 +171,7 @@ fn every_file_cut_drops_the_turn_before_independent_reopen() -> Result<()> {
                     panic!("cut {cut} {fault:?} did not kill the original turn");
                 };
                 assert_eq!((cause.ordinal, cause.fault), (cut, fault));
-                assert_eq!(driver.schedule.durable_writes().len(), cut + 1);
+                assert_eq!(driver.schedule.durable_write_count(), cut + 1);
                 drop(driver);
                 let mut restored = Vec::new();
                 std::fs::File::open(&path)

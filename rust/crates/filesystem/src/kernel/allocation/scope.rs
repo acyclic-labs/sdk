@@ -23,6 +23,23 @@ impl<'a> KernelAccounting<'a> {
 }
 
 impl AllocationScope<'_, '_> {
+    /// Keeps only the already funded output; discarded temporaries retire here.
+    pub(crate) fn keep_bytes(&mut self, bytes: u64) -> Result<(), crate::FsError> {
+        if let Some(floor) = self.floor {
+            let floor = floor.checked_add(bytes).ok_or(crate::WorkError::Overflow)?;
+            let (allocations, ..) = self
+                .accounting
+                .standalone_parts()
+                .unwrap_or_else(|| unreachable!("ordinary output keeps its original ledger"));
+            if floor > allocations.scratch_bytes() {
+                return Err(super::AllocationError::ReleaseInvariant
+                    .into_work_or(crate::FsError::PendingMutationAllocationFailed));
+            }
+            self.floor = Some(floor);
+        }
+        Ok(())
+    }
+
     /// Successful output keeps its existing caller-owned allocation charges.
     pub(crate) fn keep(mut self) {
         self.floor = None;

@@ -53,6 +53,14 @@ so the plugin does not guess it. Native configuration directories remain owned
 by the native host. The plugin never reads credentials or native transcripts.
 Pi's native CLI receives its saved native session file when resuming.
 
+Pi provider extensions that remove authentication bootstrap from the shell
+environment can supply it to managed children through the native event bus.
+The shim emits `acyclic:coordination-environment` with its private environment
+view immediately before starting the coordination bridge. A provider's
+synchronous handler may add its retained bootstrap to that view without
+restoring it to `process.env`. This event stays within trusted host extensions;
+it is not a model-visible tool or a guest command environment.
+
 The coordination tools are `spawn`, `send`, `wait`, `cancel`, `archive` and
 `resume`. Each takes a parent-local `reference`; spawn/send/resume also take a
 `prompt`. They use the same child request, inbox, control, status, delivered

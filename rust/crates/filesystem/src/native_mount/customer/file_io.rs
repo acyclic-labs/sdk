@@ -27,14 +27,14 @@ pub fn native_file_io<T>(
     let leaf = Path::new(path.file_name().ok_or(Error::InvalidLayout)?);
     #[cfg(unix)]
     let directory = crate::native_host::directory_path(
-        &root.directory,
+        &root.directory(),
         parent_path,
         write && parents,
         &mut &*work,
     )?;
     #[cfg(windows)]
     let directory = crate::native_host::with_wide_path(parent_path, &mut &*work, |path, work| {
-        crate::native_host::directory_path(&root.directory, path, write && parents, work)
+        crate::native_host::directory_path(&root.directory(), path, write && parents, work)
     })?;
     let options = if !write {
         NativeOpenOptions::Read

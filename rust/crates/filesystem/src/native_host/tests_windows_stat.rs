@@ -150,7 +150,7 @@ fn unsupported_stat_queries_charge_attempts_and_reject_the_refund_control()
                     },
                     |work| {
                         let held = open_windows_named(
-                            &root.directory,
+                            &root.directory(),
                             &name,
                             fs::FILE_READ_ATTRIBUTES | fs::SYNCHRONIZE,
                             nt::FILE_OPEN,
@@ -249,7 +249,7 @@ fn source_stat_preserves_a_denied_synchronize_open() -> Result<(), Box<dyn std::
     let actual = root.stat_source(&name, &mut ordinary_work());
     let volume = u32::try_from(root.identity().device)?;
     let unchecked = stat_windows_name(
-        &root.directory,
+        &root.directory(),
         &windows_open_name(&name, &mut ordinary_work())?,
         volume,
         true,

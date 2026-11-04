@@ -3,8 +3,9 @@
 //! order ([`Fields`]), and per-call controls follow the conversation.
 //!
 //! Admission owns JSON validation and copying. Rendering borrows the admitted
-//! bytes, has no I/O except the caller's writer, and never looks at another item
-//! to choose a segment. Persist [`WireItem`] in the conversation stream; do not
+//! bytes and has no I/O except the caller's writer. Ordinary rendering selects
+//! each segment independently; Gemini summaries retain one visible item to
+//! extend a final user turn. Persist [`WireItem`] in the conversation stream; do not
 //! reconstruct it from display events. Epoch selection and paging belong to
 //! the stream reader, so this crate never owns or scans conversation history.
 #![deny(
@@ -28,12 +29,13 @@ pub use item::{Family, ItemKind, Provenance, WireItem};
 pub use notice::{Notice, PendingNotices, notice_block};
 pub use profile::{Cache, Effort, Reasoning};
 pub use render::{
-    Header, RenderError, Segment, Tail, json_error, render, render_summary, seg, summary_artifact,
+    Header, RenderError, Segment, Tail, gemini_summary, json_error, render, render_summary, seg,
+    summary_artifact,
 };
 pub use tools::{ToolDeclaration, ToolDeclarations};
 
 /// Changing rendered bytes requires a new renderer version and corpus review.
-pub const RENDERER_VERSION: u32 = 3;
+pub const RENDERER_VERSION: u32 = 4;
 
 #[cfg(test)]
 mod notice_tests;

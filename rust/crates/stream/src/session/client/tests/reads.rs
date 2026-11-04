@@ -513,10 +513,14 @@ async fn bounded_follow_at_or_past_its_end_closes_without_data() -> TestResult {
         wire_codec::session::follow_bound(&latest),
         Err(StreamError::InvalidArgument)
     ));
+    // `until` is optional: zero is an explicit empty bound, not "unbounded".
     assert_eq!(
         wire_codec::session::follow_bound(&bounded("events", 0))?,
-        None
+        Some(0)
     );
+    let mut unbounded = bounded("events", 0);
+    unbounded.until = None;
+    assert_eq!(wire_codec::session::follow_bound(&unbounded)?, None);
     assert_eq!(client.pool.active.load(super::super::Ordering::Acquire), 0);
     Ok(())
 }

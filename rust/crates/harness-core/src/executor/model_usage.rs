@@ -184,10 +184,6 @@ impl ModelUsageRecord {
     }
 }
 
-#[cfg(any(
-    feature = "filesystem",
-    all(feature = "metrics-export", feature = "research")
-))]
 pub(crate) fn validate(
     record: &ModelUsageRecord,
     operation: OperationId,
@@ -200,7 +196,7 @@ pub(crate) fn validate(
         return Err(stock_boundary(
             io,
             crate::wire::ErrorCode::Storage,
-            "usage record has no original terminal model event",
+            "usage admission failed: no original terminal model event; recovery: select the original committed Completed observation",
         ));
     };
     if record.version != ModelUsageRecord::VERSION
@@ -228,7 +224,7 @@ pub(crate) fn validate(
         return Err(stock_boundary(
             io,
             crate::wire::ErrorCode::Storage,
-            "usage record differs from its original model observation",
+            "usage admission failed: record differs from its original model observation; recovery: select the original completion and its immutable usage artifact",
         ));
     }
     Ok(())
@@ -252,7 +248,9 @@ pub struct ModelUsagePage {
 
 /// Projects one fixed-size journal page, without scanning prior calls or
 /// uncommitted staged artifacts. A caller exports a settled turn by consuming
-/// its pages once, retaining only the one currently admitted call.
+/// its pages once, retaining only the one currently admitted call. Completed
+/// accounting is checked against its original terminal observation; a saved
+/// `completed` flag alone cannot certify counters, metadata or finality.
 pub async fn usage_page(
     journal: &dyn ExecutionJournal,
     operation: OperationId,
@@ -284,6 +282,9 @@ pub(super) async fn project_record(
             request_digest,
             request,
         } => {
+            if record.operation_id != operation || record.sequence == 0 {
+                return Err(Error::Storage("usage source admission failed: foreign operation or zero journal sequence; recovery: select the original operation's committed journal record".into()));
+            }
             let request = super::transcript::usage_request(journal, request).await?;
             let model = request.model;
             Ok(Some(ModelUsageRecord {
@@ -308,33 +309,71 @@ pub(super) async fn project_record(
                 cache: None,
             }))
         }
+        ExecutionEvent::Model { usage: Some(_), .. }
+        | ExecutionEvent::ModelInline { usage: Some(_), .. } => {
+            project_completion(journal, operation, agent_path, record)
+                .await
+                .map(|(_, usage)| usage)
+        }
+        _ => Ok(None),
+    }
+}
+
+/// One original terminal load and one optional immutable usage load. All
+/// exporters use this admission before treating accounting as completed.
+/// Missing accounting stays unknown; a nonterminal source cannot certify it.
+pub(super) async fn project_completion(
+    journal: &dyn ExecutionJournal,
+    operation: OperationId,
+    agent_path: &str,
+    record: &ExecutionRecord,
+) -> Result<(Value, Option<ModelUsageRecord>)> {
+    let refuse = |reason: &str| {
+        Error::Storage(format!(
+            "usage completion admission failed: {reason}; recovery: select the original committed model completion and its immutable usage artifact"
+        ))
+    };
+    let (step, purpose, reference) = match &record.event {
         ExecutionEvent::Model {
-            usage: Some(file),
             step,
             purpose,
+            usage,
             ..
         }
         | ExecutionEvent::ModelInline {
-            usage: Some(file),
             step,
             purpose,
+            usage,
             ..
-        } => {
-            let usage: ModelUsageRecord = serde_json::from_slice(&journal.load(file, None)?.await?)
-                .map_err(|_| Error::Storage("committed usage record is malformed".into()))?;
-            if usage.version != ModelUsageRecord::VERSION
-                || !usage.completed
-                || usage.dispatch.step != *step
-                || usage.purpose != *purpose
-                || usage.dispatch.operation_id != purpose.attempt_operation(operation, None)?
-            {
-                return Err(Error::Storage(
-                    "committed usage record has an unsupported format or call identity".into(),
-                ));
-            }
-            Ok(Some(usage))
+        } if record.operation_id == operation && record.sequence != 0 => (*step, *purpose, usage),
+        _ => return Err(refuse("foreign or absent source identity")),
+    };
+    let event = super::model_observation::load(journal, &record.event, None)
+        .await?
+        .ok_or_else(|| refuse("missing original model observation"))?;
+    if !matches!(event, ModelEvent::Completed { .. }) {
+        return Err(refuse("source is not terminal"));
+    }
+    let usage = if let Some(reference) = reference {
+        // The original journal load already verifies the immutable descriptor.
+        let bytes = journal.load(reference, None)?.await?;
+        let usage: ModelUsageRecord = crate::contract::json_from_slice(&bytes)
+            .map_err(|_| refuse("malformed usage artifact"))?;
+        validate(&usage, operation, step, purpose, &event, None)?;
+        if usage
+            .agent_path
+            .as_deref()
+            .is_some_and(|agent| agent != agent_path)
+        {
+            return Err(refuse("foreign agent binding"));
         }
-        _ => Ok(None),
+        Some(usage)
+    } else {
+        None
+    };
+    match event {
+        ModelEvent::Completed { metadata } => Ok((metadata, usage)),
+        _ => Err(refuse("source is not terminal")),
     }
 }
 

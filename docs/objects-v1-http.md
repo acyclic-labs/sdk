@@ -71,6 +71,9 @@ accepted as canonical semantic failures. Without a detail, clients classify the
 status: 400 INVALID_ARGUMENT, 401/403 ACCESS_DENIED, 404 NOT_FOUND, 409
 CONFLICT, 413/429 QUOTA_EXCEEDED, 416 RANGE_NOT_SATISFIABLE, 501 UNSUPPORTED,
 anything else UNAVAILABLE. Bounded response rejection maps to QUOTA_EXCEEDED.
-Request IDs are customer diagnostics and contain no topology.
+Request IDs are customer diagnostics and contain no topology. `component` and
+`reason` are closed snake_case tokens naming the failing server component and
+why it failed; clients keep all three as `acyclic_auth::refusal::Cause`, the
+`source` of the semantic error, on both HTTP and gRPC.
 
 This inventory does not establish Cloud gateway deployment or live acceptance.

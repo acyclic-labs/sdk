@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-core/src/contract_errors.rs
++++ b/rust/crates/harness-core/src/contract_errors.rs
+@@ -1065,7 +1065,7 @@
+         }
+         Ok(Error::Command(Box::new(CommandFailure {
+             operation,
+-            classification: self,
++            classification: Self { code: crate::wire::ErrorCode::Conflict, ..self },
+             cause: CommandCause::Projection(diagnostic),
+         })))
+     }

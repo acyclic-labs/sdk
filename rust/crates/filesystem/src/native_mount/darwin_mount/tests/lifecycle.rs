@@ -497,7 +497,7 @@ fn provider_unwind_publishes_shutdown_before_joining_its_original_panic() -> Tes
     let resources = sdk(temporary.path(), &original)?;
     let provider = Arc::clone(&resources);
     let (entered, started) = std::sync::mpsc::channel();
-    let (release, blocked) = std::sync::mpsc::channel();
+    let (release, blocked) = std::sync::mpsc::channel::<()>();
     let mut session = DarwinMountSession {
         handler_failure: Arc::clone(&resources.context()?.handler_failure),
         unmount: resources,

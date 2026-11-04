@@ -91,6 +91,26 @@ resume can deliver unconsumed input using the original committed cursor.
 
 ## Guest streaming fetch
 
+`domain::InvokeActorHeader` and `InvokeWorkerHeader` carry the existing
+canonical invocation metadata with an absent body field. Their checked
+conversions reject a buffered body; `InvokeActorRequest::into_parts` and the
+Worker equivalent move an existing body out without a payload copy or
+allocation. The original address, ordering, binding and deployment provenance
+stay in the header and use the existing wire encoding.
+
+Use that header with the original admitted Session input owner. It grants no
+authority or byte capacity. The serving host still supplies its original
+invocation admission and guest context before attaching the credited body to
+`GuestActivation::fetch`; header construction performs no dispatch or input
+polling.
+
+After that admission, `header.into_streaming(original_body)` projects the
+canonical HTTP method, URL and ordered headers through the same conversion as
+`GuestRequest::into_streaming`. It moves the supplied `GuestBody` unchanged,
+including its source, trailers and cancellation. The host retains the original
+invocation authority and context through delivery; this conversion supplies
+neither.
+
 `GuestStreamingResponse` carries `GuestBody`, an HTTP body that preserves data
 frames, terminal trailers and cancellation when dropped. Existing buffered
 bytes use `GuestBody::Buffered`; lazy data and trailers share `GuestBody::Frames`.
@@ -309,3 +329,18 @@ logic, signing key or second StreamLedger belongs in Actors. Objects grants keep
 their original immutable Objects authority. Platform authority admission and
 trailer-preserving fetch are separate public contracts, not implicit effects of
 this state binding.
+
+Run `python3 scripts/qualify-actors-publication.py` from the repository root
+to check the existing native publication models against actual refusal
+classification and retained-custody defects. The command restores production
+source, then runs both original models. It covers the in-memory Store and
+composition path; physical recovery and distributed ownership are separate
+obligations.
+
+`python3 scripts/qualify-actors-ready.py` runs the six Loom models of the
+production ready queue and checks that unchanged model assertions reject
+production mutations that lose a running wake, omit dispatcher registration,
+retain a cancelled registration, drop a due wake, omit alarm rearming
+or admit an obsolete alarm generation. Pass control names printed by the
+command to select individual defects. The wake/park model covers the queue
+handoff itself; it does not model Stream publication or runtime activation.

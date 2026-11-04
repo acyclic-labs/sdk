@@ -10,9 +10,9 @@ pub(in crate::native_mount::materialize) fn rename_entry(
     #[cfg(unix)]
     {
         crate::native_host::rename_held(
-            &from.directory,
+            &from.directory(),
             name,
-            &to.directory,
+            &to.directory(),
             target,
             acyclic_native_runtime::RenameMode::Replace,
             None,
@@ -24,9 +24,9 @@ pub(in crate::native_mount::materialize) fn rename_entry(
         crate::native_host::with_wide_path(name, work, |name, work| {
             crate::native_host::with_wide_path(target, work, |target, work| {
                 crate::native_host::rename_held(
-                    &from.directory,
+                    &from.directory(),
                     name,
-                    &to.directory,
+                    &to.directory(),
                     target,
                     acyclic_native_runtime::RenameMode::Replace,
                     None,

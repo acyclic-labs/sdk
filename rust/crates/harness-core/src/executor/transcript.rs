@@ -131,6 +131,8 @@ impl RequestManifest {
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct RequestHeader {
+    version: u32,
+    summary: bool,
     compose_tools: bool,
     model: Model,
     tools: Vec<crate::tool::ToolDefinition>,
@@ -144,6 +146,8 @@ struct RequestHeader {
 
 #[derive(Serialize)]
 struct HeaderView<'a> {
+    version: u32,
+    summary: bool,
     compose_tools: bool,
     model: &'a Model,
     tools: &'a [crate::tool::ToolDefinition],
@@ -388,6 +392,8 @@ async fn stage_request_inner(
         return stage_json(journal, operation, key, request, io).await;
     }
     let header = HeaderView {
+        version: 1,
+        summary: request.summary,
         compose_tools: request.compose_tools,
         model: &request.model,
         tools: &request.tools,
@@ -488,7 +494,7 @@ async fn load_request_inner(
     }
     let header =
         retain_preparation(load_json::<RequestHeader>(journal, &manifest.header, io).await?)?;
-    if preparation_digest(&header, io)? != manifest.header_digest {
+    if header.version != 1 || preparation_digest(&header, io)? != manifest.header_digest {
         return Err(invalid(io));
     }
     let expected_count = manifest.messages.count as usize;
@@ -522,6 +528,7 @@ async fn load_request_inner(
     }
     let prepared = crate::model::PreparedModelRequest::prepare(
         ModelRequest {
+            summary: header.summary,
             compose_tools: header.compose_tools,
             model: header.model,
             tools: header.tools,
@@ -651,16 +658,10 @@ pub(super) async fn stage_projection(
     accounting: Option<&ContextAccounting>,
     io: Option<&PreparationIo>,
 ) -> Result<FileRef> {
-    // This is the sole persisted projection schema, including inline context
-    // and request-bound accounting. Validate it before either its event or request
-    // can be published; per-message admission is insufficient.
+    // Admit projection metadata against the exact immutable request whose
+    // message and instruction bounds were already established at preparation.
+    crate::context::validate_projected_request(&projection.context, prepared, io)?;
     let messages = &prepared.request().messages;
-    crate::context::validate_projected_messages(
-        &projection.context,
-        messages,
-        prepared.admitted_limits(),
-        io,
-    )?;
     stage_json(
         journal,
         operation,

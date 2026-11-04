@@ -126,7 +126,7 @@ impl HostRoot {
         relative: &Path,
         work: &mut W,
     ) -> Result<Self, W::Error> {
-        let directory = search_path(&self.directory, relative, work)?;
+        let directory = search_path(&self.directory(), relative, work)?;
         let identity = directory_identity(&directory, work)?;
         Ok(Self::from_parts(directory, identity))
     }
@@ -141,7 +141,7 @@ impl HostRoot {
         let (parent, leaf) = match relative.file_name() {
             Some(leaf) => (
                 search_path(
-                    &self.directory,
+                    &self.directory(),
                     relative.parent().unwrap_or(Path::new("")),
                     work,
                 )?,
@@ -149,7 +149,7 @@ impl HostRoot {
             ),
             // An empty path names this directory, reopened through its handle.
             None if relative.as_os_str().is_empty() => {
-                (clone_directory(&self.directory, work)?, OsStr::new("."))
+                (clone_directory(&self.directory(), work)?, OsStr::new("."))
             }
             None => return Err(W::invalid_request()),
         };
@@ -185,7 +185,7 @@ impl HostRoot {
                 // SAFETY: held descriptor, terminated name and complete output remain live.
                 if unsafe {
                     libc::fstatat(
-                        self.directory.as_raw_fd(),
+                        self.directory().as_raw_fd(),
                         name.as_ptr(),
                         stat.as_mut_ptr(),
                         0,
@@ -206,7 +206,7 @@ impl HostRoot {
         with_wide_path(path, work, |leaf, work| {
             let name = windows_open_name(leaf, work)?;
             let file = open_windows_named_with_options(
-                &self.directory,
+                &self.directory(),
                 &name,
                 fs::FILE_READ_ATTRIBUTES | fs::SYNCHRONIZE,
                 nt::FILE_OPEN,

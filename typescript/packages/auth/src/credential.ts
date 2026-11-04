@@ -1,3 +1,5 @@
+import { validCredential } from "./wasm.js";
+
 /** Source-owned freshness, partitioned by account, audience and auth context.
  * Observe performs no IO. A source watcher publishes a new revision before
  * changed credentials may be reused; unavailable sources return no revision. */
@@ -44,8 +46,7 @@ export class CredentialSnapshot {
 
 /** Validate at the transport boundary without exposing credential material. */
 export function validateCredential(token: unknown): asserts token is string {
-  if (typeof token !== "string" || token.length > 12 * 1024 ||
-      new TextEncoder().encode(token).byteLength > 12 * 1024 || !token.trim() || /[\r\n\0]/.test(token)) {
+  if (!validCredential(token)) {
     throw new TypeError("credential must be non-empty, at most 12 KiB, and free of CR, LF, or NUL");
   }
 }

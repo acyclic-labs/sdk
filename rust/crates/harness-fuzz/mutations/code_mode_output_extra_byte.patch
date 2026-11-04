@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/executor/code_mode/interpreter.rs b/rust/crates/harness-core/src/executor/code_mode/interpreter.rs
+--- a/rust/crates/harness-core/src/executor/code_mode/interpreter.rs
++++ b/rust/crates/harness-core/src/executor/code_mode/interpreter.rs
+@@ -148,7 +148,7 @@
+             };
+             let Some(json) = json else { return Ok(Ok(Value::Null)); };
+             let json = json.to_cstring()?;
+-            if json.len() > maximum {
++            if json.len() > maximum.saturating_add(1) {
+                 return Ok(Err("JavaScript result exceeds admitted output".into()));
+             }
+             serde_json::from_slice(json.as_str().as_bytes()).map(Ok).map_err(|_| rquickjs::Error::Unknown)

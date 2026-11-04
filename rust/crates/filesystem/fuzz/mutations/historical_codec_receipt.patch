@@ -1,0 +1,12 @@
+--- a/rust/crates/filesystem/src/distributed/io.rs
++++ b/rust/crates/filesystem/src/distributed/io.rs
+@@ -23,6 +23,9 @@
+     encoded: &'a [u8],
+     meter: &mut AuthorityWork<'_>,
+ ) -> Result<crate::streams_record::BorrowedStreamsDurableRecord<'a>, AuthorityStoreError> {
++    let injected = codec_work(7, 0, 0);
++    meter.admit(injected)?;
++    meter.charge(injected)?;
+     let borrowed = meter.decode_durable(encoded)?;
+     let digest = meter.durable_digest(authority, &borrowed)?;
+     if digest != borrowed.digest {

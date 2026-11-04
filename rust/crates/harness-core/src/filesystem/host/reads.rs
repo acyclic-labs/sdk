@@ -693,17 +693,22 @@ pub(in crate::filesystem) async fn read_generation<A: AsyncAuthorityStore, O: As
     };
     io.remaining()?;
     let bytes = io.sdk(generation.read(path, maximum, io, io.cancellation()).await)?;
-    if io.original_native_work().is_none() {
-        let capacity = bytes.retained_capacity().ok_or_else(|| {
-            stock_boundary(
-                Some(io),
-                crate::wire::ErrorCode::Unsupported,
-                "content producer does not expose its owned capacity",
-            )
-        })?;
-        io.retain_owned(capacity as u64)?;
-    }
-    Ok(bytes)
+    io.retain_read_bytes(bytes)
+}
+
+pub(in crate::filesystem) async fn read_generation_if_present<
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+>(
+    generation: &acyclic_fs::Generation<A, O>,
+    path: &str,
+    maximum: u64,
+    io: &PreparationIo,
+) -> Result<Option<acyclic_stream::OwnedBytes>> {
+    io.remaining()?;
+    io.sdk_if_present(generation.read(path, maximum, io, io.cancellation()).await)?
+        .map(|bytes| io.retain_read_bytes(bytes))
+        .transpose()
 }
 
 use crate::executor::stock_boundary;
@@ -796,23 +801,22 @@ async fn read_content_metadata<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let metadata_path = content_metadata_path_io(path, true, Some(io))?;
     let metadata_path_hold = io.guard_owned(metadata_path.capacity() as u64)?;
     let metadata_path = (metadata_path, metadata_path_hold);
-    let metadata = read_generation(
+    let metadata = read_generation_if_present(
         generation,
         &metadata_path.0,
         io.remaining()?
             .source_bytes_read
             .min(super::publication::UPLOAD_RECORD_BYTES),
-        Some(io),
+        io,
     )
-    .await;
+    .await?;
     let staged = match metadata {
-        Ok(metadata) => {
+        Some(metadata) => {
             let metadata_hold = io.guard_bytes(&metadata)?;
             let metadata = (metadata, metadata_hold);
             Some(decode_content_metadata(&metadata.0, io)?)
         }
-        Err(error) if error.code() == crate::wire::ErrorCode::NotFound => None,
-        Err(error) => return Err(error),
+        None => None,
     };
     Ok(staged)
 }

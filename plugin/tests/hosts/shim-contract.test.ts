@@ -40,29 +40,6 @@ test("Pi registration delegates execution and exposes only native coordination",
   } finally {rmSync(directory, {recursive: true, force: true});}
 });
 
-test("host manifests and shims fit the native hook budget without tool ledgers", () => {
-  const source = (relative: string) => readFileSync(new URL(relative, import.meta.url), "utf8");
-  const lines = (text: string) => text.trimEnd().split(/\r?\n/).length;
-  const codex = source("../../hooks/hooks.json");
-  const bridge = source("../../src/codex.rs");
-  const manifests = ["../../plugin.json", "../../.codex-plugin/plugin.json",
-    "../../.mcp.json", "../../.agents/plugins/marketplace.json"].map(source);
-  assert(lines(codex) + lines(bridge) + manifests.reduce((sum, manifest) => sum + lines(manifest), 0) <= 300);
-  assert(lines(source("../../pi/index.ts")) <= 300);
-  assert(lines(source("../../claude/.claude-plugin/plugin.json")) <= 300);
-  const claude = JSON.parse(source("../../claude/.claude-plugin/plugin.json"));
-  assert.deepEqual(Object.keys(claude.hooks), ["SessionStart", "Stop", "SessionEnd", "PermissionRequest"]);
-  assert.equal(claude.hooks.PermissionRequest[0].matcher, "^mcp__plugin_acyclic_acyclic-sessions__spawn$");
-  assert(claude.mcpServers["acyclic-sessions"]);
-  const hooks = JSON.parse(codex).hooks;
-  assert.deepEqual(Object.keys(hooks), ["SessionStart", "Stop", "SessionEnd", "PermissionRequest"]);
-  assert.equal(hooks.PermissionRequest[0].matcher, "^mcp__acyclic[-_]sessions__spawn$");
-  assert(Object.values(hooks).every((groups: any) => groups.every((group: any) => group.hooks.every((hook: any) => hook.type === "command"))));
-  const mcp = JSON.parse(source("../../.mcp.json"));
-  assert.deepEqual(mcp.mcpServers["acyclic-sessions"].env_vars, ["CODEX_HOME", "ACYCLIC_HOST_ARGS", "ACYCLIC_WORKSPACE", "ACYCLIC_TASK"]);
-  assert(!source("../../.mcp.json").includes("XDG_STATE_HOME"));
-});
-
 test("qualification calls shared native lifecycle instead of the deleted Pi operator", () => {
   const commands = ["bun run --cwd plugin/tests/hosts test:shim",
     "cargo test --locked -p acyclic-plugin --all-features --bin acyclic -- --test-threads=4",

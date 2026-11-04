@@ -86,7 +86,7 @@ impl LocalHarness {
                 .await;
             match read {
                 Ok((_, bytes, _)) => found.push((index, bytes.as_ref().to_vec())),
-                Err(Error::NotFound(_)) => {}
+                Err(error) if error.code() == crate::wire::ErrorCode::NotFound => {}
                 Err(error) => return Err(error),
             }
         }

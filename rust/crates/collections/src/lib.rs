@@ -1,15 +1,18 @@
 //! Caller-funded indexes and immutable page mechanics shared by primitives.
 //!
-//! Branch bits strictly increase along every path. Lookup therefore examines
-//! at most eight branches per key byte and one leaf, independent of entry count.
-//! Key widths share insertion, accounting, lookup and constant-space retirement.
+//! Radix lookup is bounded by the supplied key bytes, independently of entry
+//! count. Mutable fixed-width indexes share insertion and constant-space
+//! retirement; compiled variable-width prefixes retain one flat node table.
+//! Both carry the original caller's allocation and read admission.
 
 #[cfg(test)]
 acyclic_test_support::counting_allocator!();
 
 mod arc;
+mod compiled_prefix;
 pub mod page;
 pub use arc::arc_allocation_bytes;
+pub use compiled_prefix::{CompiledPrefixError, CompiledPrefixIndex, PrefixMatches};
 
 mod recent;
 pub use recent::RecentIndex;
@@ -24,13 +27,13 @@ mod keyed;
 pub use keyed::{BinaryKeyError, KeyedIndex, binary_key};
 
 /// Original admission for an allocation-free index read. The same issuing
-/// owner checks cancellation and accounts for every examined fixed-width key.
+/// owner checks cancellation and accounts for node and key examinations.
 pub trait IndexReadWork {
     /// The issuing owner's typed refusal or cancellation.
     type Error;
     /// Checks the original admission even for an empty index.
     fn validate(&mut self) -> Result<(), Self::Error>;
-    /// Accounts examined nodes and fixed-width key comparisons before use.
+    /// Accounts examined nodes and key comparisons before use.
     fn examine(&mut self, items: u64) -> Result<(), Self::Error>;
 }
 
@@ -194,8 +197,12 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
     ///
     /// This allocation-free bound is independent of the current root, so it
     /// remains valid when other serialized mutations precede the insertions.
-    /// Each insertion claims at most one leaf and one branch. Three paths
-    /// examine at most 8N branches each, plus complete key comparisons.
+    /// Each insertion claims at most one leaf and one branch. Two paths
+    /// examine at most 8N branches each, plus one complete key comparison.
+    /// Publication returns through its selected link, examining at most two
+    /// newly constructed nodes without another key comparison. An absent key
+    /// leaves at least one branch bit unused on each original path, so this
+    /// local return fits the same bound as returning an existing key.
     /// The value constructor's own work and backing are excluded. Actual node
     /// claims and examinations still use the original `IndexWork`; this bound
     /// neither issues admission nor replaces its cancellation check.
@@ -205,28 +212,28 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         Some(IndexInsertionBound {
             allocation_bytes: node_bytes.checked_mul(2)?.checked_mul(insertions)?,
             examined_items: width
-                .checked_mul(26)?
-                .checked_add(3)?
+                .checked_mul(17)?
+                .checked_add(2)?
                 .checked_mul(insertions)?,
         })
     }
 
     /// Reads one exact key without allocation. Checks admission even when empty.
-    pub fn get<W: IndexWork<Allocation = A>>(
+    pub fn get<W: IndexReadWork>(
         &self,
         key: [u8; N],
         accounting: &mut W,
     ) -> Result<Option<&V>, W::Error> {
-        accounting.check()?;
+        accounting.validate()?;
         let mut cursor = self.root.as_ref();
         while let Some(node) = cursor {
-            accounting.charge_items(1)?;
+            accounting.examine(1)?;
             match node.kind.as_ref() {
                 Kind::Leaf {
                     key: observed,
                     value,
                 } => {
-                    accounting.charge_items(N as u64)?;
+                    accounting.examine(N as u64)?;
                     return Ok((*observed == key).then_some(value));
                 }
                 Kind::Branch {
@@ -243,14 +250,14 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
 
     /// Borrows the first unsigned-byte-ordered entry without allocation.
     /// Original admission is checked even when the index is empty.
-    pub fn first<W: IndexWork<Allocation = A>>(
+    pub fn first<W: IndexReadWork>(
         &self,
         accounting: &mut W,
     ) -> Result<Option<(&[u8; N], &V)>, W::Error> {
-        accounting.check()?;
+        accounting.validate()?;
         let mut cursor = self.root.as_ref();
         while let Some(node) = cursor {
-            accounting.charge_items(1)?;
+            accounting.examine(1)?;
             match node.kind.as_ref() {
                 Kind::Leaf { key, value } => return Ok(Some((key, value))),
                 Kind::Branch { low, .. } => cursor = low.as_ref(),
@@ -261,13 +268,13 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
 
     /// Mutably borrows an existing exact value without constructing or funding
     /// a registration. Refusal leaves the value and its original custody intact.
-    pub fn get_mut<W: IndexWork<Allocation = A>>(
+    pub fn get_mut<W: IndexReadWork>(
         &mut self,
         key: [u8; N],
         accounting: &mut W,
     ) -> Result<Option<&mut V>, W::Error> {
-        accounting.check()?;
-        self.existing_mut(key, |items| accounting.charge_items(items))
+        accounting.validate()?;
+        self.existing_mut(key, |items| accounting.examine(items))
     }
 
     /// Mutably borrows an existing value for its exact retained owner.
@@ -327,7 +334,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
     /// The cursor is the complete original key, never an ordinal or cache hint.
     /// At most three bounded-depth paths and N comparison bytes are visited;
     /// work does not depend on the number of keys before or after the cursor.
-    pub fn seek_after<W: IndexWork<Allocation = A>>(
+    pub fn seek_after<W: IndexReadWork>(
         &self,
         after: [u8; N],
         accounting: &mut W,
@@ -339,7 +346,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         let mut cursor = self.root.as_ref();
         let mut successor = None;
         while let Some(node) = cursor {
-            accounting.charge_items(1)?;
+            accounting.examine(1)?;
             match node.kind.as_ref() {
                 Kind::Branch {
                     bit,
@@ -365,7 +372,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
             }
         }
         while let Some(node) = successor {
-            accounting.charge_items(1)?;
+            accounting.examine(1)?;
             match node.kind.as_ref() {
                 Kind::Leaf { key, value } => return Ok(Some((key, value))),
                 Kind::Branch { low, .. } => successor = low.as_ref(),
@@ -383,21 +390,31 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         accounting: &mut W,
         create: impl FnOnce(&mut W) -> Result<V, W::Error>,
     ) -> Result<&mut V, W::Error> {
-        let (differing, depth) = self.differing_bit(key, accounting)?;
+        let selected = self.differing_bit(key, accounting)?;
+        self.selected_or_try_insert_with(key, selected, accounting, create)
+    }
+
+    // Reuses the original selection while this exclusively owned root remains
+    // unchanged. Compositions can inspect another index without searching this
+    // one again; all publication and funding still use this one implementation.
+    fn selected_or_try_insert_with<W: IndexWork<Allocation = A>>(
+        &mut self,
+        key: [u8; N],
+        (differing, depth): (Option<Option<Bit>>, u64),
+        accounting: &mut W,
+        create: impl FnOnce(&mut W) -> Result<V, W::Error>,
+    ) -> Result<&mut V, W::Error> {
         if differing == Some(None) {
             accounting.charge_items(depth)?;
-            return Ok(self.value_mut(key));
+            return Ok(Self::selected_value_mut(&mut self.root, key));
         }
-        let (link, return_depth) = match differing.flatten() {
-            Some(bit) => {
-                let (link, depth) = self.insertion_link(key, bit, accounting)?;
-                (link, depth + 1)
-            }
-            None => (&mut self.root, 1),
+        let link = match differing.flatten() {
+            Some(bit) => self.insertion_link(key, bit, accounting)?,
+            None => &mut self.root,
         };
-        // Pay the final lookup before publishing the new link, so no budget
-        // failure can turn a successful insertion into a rejected operation.
-        accounting.charge_items(return_depth + N as u64)?;
+        // Pay the local return before publication. The selected link contains
+        // only the new leaf, or its new branch and leaf; no root search remains.
+        accounting.charge_items(if differing.flatten().is_some() { 2 } else { 1 })?;
         let funding = Funding::admit::<V, W, N>(differing.flatten().is_some(), accounting)?;
         let value = match create(accounting) {
             Ok(value) => value,
@@ -443,25 +460,25 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
             _ => unreachable!("nonempty table funds exactly one branch"),
         };
         *link = Some(replacement);
-        Ok(self.value_mut(key))
+        Ok(Self::selected_value_mut(link, key))
     }
 
-    fn differing_bit<W: IndexWork<Allocation = A>>(
+    fn differing_bit<W: IndexReadWork>(
         &self,
         key: [u8; N],
         accounting: &mut W,
     ) -> Result<(Option<Option<Bit>>, u64), W::Error> {
-        accounting.check()?;
+        accounting.validate()?;
         let mut cursor = self.root.as_ref();
         let mut depth = 0;
         while let Some(node) = cursor {
-            accounting.charge_items(1)?;
+            accounting.examine(1)?;
             depth += 1;
             match node.kind.as_ref() {
                 Kind::Leaf { key: observed, .. } => {
                     let bytes = N as u64;
-                    accounting.charge_items(bytes)?;
-                    return Ok((Some(difference(&key, observed)), depth + bytes));
+                    accounting.examine(bytes)?;
+                    return Ok((Some(difference(&key, observed)), depth));
                 }
                 Kind::Branch {
                     bit,
@@ -480,16 +497,14 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         key: [u8; N],
         before: Bit,
         accounting: &mut W,
-    ) -> Result<(&mut Link<V, A, N>, u64), W::Error> {
+    ) -> Result<&mut Link<V, A, N>, W::Error> {
         let mut cursor = &mut self.root;
-        let mut depth = 0;
         loop {
             accounting.charge_items(1)?;
-            depth += 1;
             let descend = matches!(cursor.as_ref().map(|node| node.kind.as_ref()),
                 Some(Kind::Branch { bit, .. }) if *bit < before);
             if !descend {
-                return Ok((cursor, depth));
+                return Ok(cursor);
             }
             match cursor.as_mut().map(|node| node.kind.as_mut()) {
                 Some(Kind::Branch {
@@ -504,14 +519,13 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         }
     }
 
-    fn value_mut(&mut self, key: [u8; N]) -> &mut V {
-        let mut cursor = self.root.as_mut();
+    // The original search already matched the full key, or this link was just
+    // constructed for it. No mutation intervenes before this private borrow.
+    fn selected_value_mut(root: &mut Link<V, A, N>, key: [u8; N]) -> &mut V {
+        let mut cursor = root.as_mut();
         while let Some(node) = cursor {
             match node.kind.as_mut() {
-                Kind::Leaf {
-                    key: observed,
-                    value,
-                } if *observed == key => return value,
+                Kind::Leaf { value, .. } => return value,
                 Kind::Branch {
                     bit,
                     low,
@@ -519,7 +533,6 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
                 } => {
                     cursor = if high(&key, *bit) { upper } else { low }.as_mut();
                 }
-                Kind::Leaf { .. } => break,
             }
         }
         unreachable!("lookup follows a leaf already found or inserted")

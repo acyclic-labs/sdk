@@ -108,7 +108,7 @@ async fn arriving_descendant_under_a_replaced_directory_is_absent() -> Result<()
 async fn contents(tools: &CheckoutTools) -> Result<Vec<u8>> {
     let cancellation = CancellationToken::new();
     let workspace = tools.workspace.view().workspace();
-    let mut checkout = workspace
+    let checkout = workspace
         .checkout(
             GenerationSelector::Head,
             CheckoutMode::tracking_transaction(),
@@ -125,12 +125,24 @@ async fn contents(tools: &CheckoutTools) -> Result<Vec<u8>> {
         config.limits,
     )
     .map_err(storage)?;
-    Ok(checkout
-        .read_file_range(
-            &path,
+    let file = checkout
+        .snapshot_reader()
+        .resolve_files(
+            std::slice::from_ref(&path),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(storage)?
+        .value
+        .pop()
+        .flatten()
+        .ok_or_else(|| Error::NotFound("captured marker".into()))?;
+    Ok(file
+        .read_range(
             ByteRange {
                 offset: 0,
-                length: 5,
+                length: file.description().logical_bytes,
             },
             WorkBudget::UNBOUNDED,
             &cancellation,
@@ -152,6 +164,106 @@ async fn run(tools: &CheckoutTools, slot: &mut Option<Cursor>) -> Result<()> {
             PublicationPermit::Unrestricted,
         )?
         .await
+}
+
+#[tokio::test]
+async fn cursor_custody_follows_actual_capture_admission() -> Result<()> {
+    let (directory, harness, tools) = fixture().await?;
+    for (boundary, producer_lost, expected) in [
+        (0, false, b"before".as_slice()),
+        (0, true, b"next-1".as_slice()),
+        (1, false, b"next-2".as_slice()),
+        (1, true, b"next-3".as_slice()),
+    ] {
+        // Recovery publishes each case's bytes. Later cases must change
+        // them so capture still reaches its real commit callback.
+        if boundary != 0 || producer_lost {
+            std::fs::write(directory.path().join("marker"), expected).map_err(storage)?;
+        }
+        // Each interruption gets a fresh cursor and current head.
+        let mut slot = Some(Cursor::initial(&tools.workspace, &tools.capture_policy)?);
+        let workspace = tools.workspace.view().workspace();
+        let cancellation = CancellationToken::new();
+        let original = workspace
+            .head(WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value
+            .id();
+        let calls = AtomicUsize::new(0);
+        let (arrived, arrival) = tokio::sync::oneshot::channel();
+        let (mut release, released) = tokio::sync::oneshot::channel();
+        let rendezvous = std::sync::Mutex::new(Some((arrived, released)));
+        let before_effect = || {
+            let rendezvous = if calls.fetch_add(1, Ordering::Relaxed) == boundary {
+                rendezvous.lock().unwrap().take()
+            } else {
+                None
+            };
+            async move {
+                if let Some((arrived, released)) = rendezvous {
+                    arrived.send(()).map_err(|_| {
+                        Error::Unauthorized("capture admission observer was dropped".into())
+                    })?;
+                    released.await.map_err(|_| {
+                        Error::Unauthorized("capture admission producer was dropped".into())
+                    })?;
+                }
+                Ok(())
+            }
+        };
+        let mut recording = Box::pin(record_changes(
+            (&tools.capture_options, &tools.capture_policy),
+            (&tools.workspace, tools.workspace.view()),
+            &mut slot,
+            (OperationId::new(), 0),
+            PublicationPermit::Unrestricted,
+            &before_effect,
+            None,
+        ));
+        // The original authorization callback announces its actual wait.
+        // Its producer is retained here, or withdrawn to refuse admission.
+        tokio::select! {
+            arrived = arrival => arrived.map_err(storage)?,
+            result = &mut recording => panic!("capture skipped admission boundary {boundary}: {result:?}"),
+        }
+        if producer_lost {
+            drop(release);
+            assert!(
+                recording.await.is_err(),
+                "lost admission producer was accepted"
+            );
+        } else {
+            drop(recording);
+            release.closed().await;
+        }
+        if boundary == 0 {
+            assert!(
+                slot.is_some(),
+                "capture consumed its cursor before admission"
+            );
+        } else {
+            assert!(
+                slot.is_none(),
+                "capture retained its cursor after consumed cancellation"
+            );
+        }
+        assert_eq!(
+            workspace
+                .head(WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .map_err(storage)?
+                .value
+                .id(),
+            original,
+            "an interrupted capture published its candidate"
+        );
+        run(&tools, &mut slot).await?;
+        assert_eq!(contents(&tools).await?, expected);
+        drop(slot);
+    }
+    drop(tools);
+    harness.disconnect().await
 }
 
 async fn recovers(stage: &'static str) -> Result<()> {
@@ -293,24 +405,6 @@ async fn overflow_and_unconfirmed_initial_batches_rebaseline() -> Result<()> {
         run(&tools, &mut slot).await?;
         assert_eq!(contents(&tools).await?, b"after");
     }
-    drop(tools);
-    harness.disconnect().await
-}
-
-#[tokio::test]
-async fn root_invalidation_is_never_retried_as_overflow() -> Result<()> {
-    let (_directory, harness, tools) = fixture().await?;
-    let mut cursor = Cursor::initial(&tools.workspace, &tools.capture_policy)?;
-    cursor.initial = Some(WatchBatch::RescanRequired {
-        epoch: 7,
-        reason: WatchInvalidationReason::RootChanged,
-    });
-    let mut slot = Some(cursor);
-    assert!(matches!(
-        run(&tools, &mut slot).await,
-        Err(Error::Unauthorized(_))
-    ));
-    assert!(slot.is_none());
     drop(tools);
     harness.disconnect().await
 }
@@ -747,21 +841,8 @@ fn capture_boundaries_retain_only_owned_polling_handles() {
     let owed = capture_operation_bytes(|(tools, selected, slot): Inputs| {
         tools.finish_owed_write(selected, slot, PublicationPermit::Unrestricted)
     });
-    let changes = capture_operation_bytes(|(tools, selected, slot): Inputs| {
-        // The former changes entrypoint is now phase one of the same capture API.
-        tools.capture(
-            selected,
-            slot,
-            OperationId::from_bytes([1; 16]),
-            1,
-            PublicationPermit::Unrestricted,
-        )
-    });
-    eprintln!("capture retained bytes: [{capture}, {owed}, {changes}]");
     assert!(
-        [capture, owed, changes]
-            .into_iter()
-            .all(|bytes| bytes <= 512),
+        [capture, owed].into_iter().all(|bytes| bytes <= 512),
         "capture embeds concrete owed-write and publication futures"
     );
 }

@@ -57,7 +57,9 @@ impl Composition for ParticipantCounts {
         Box::pin(async move {
             if matches!(
                 outcome,
-                Err(StreamError::Unavailable | StreamError::InvalidResponse)
+                Err(StreamError::Unavailable
+                    | StreamError::Refused(_)
+                    | StreamError::InvalidResponse)
             ) {
                 return Err(GuestError::Handler("settled an unknown outcome".into()));
             }

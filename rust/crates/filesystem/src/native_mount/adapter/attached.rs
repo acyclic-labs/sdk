@@ -255,7 +255,7 @@ where
 
     fn settle(&self, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         invoke(&self.runtime, work, || async {
-            let checkout = await_lock(
+            let checkout = await_with_cancellation(
                 self.checkout.lock(),
                 &mut NativeDemandCarrier::Native(work),
                 work.cancellation(),

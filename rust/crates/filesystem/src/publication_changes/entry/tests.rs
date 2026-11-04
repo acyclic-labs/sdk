@@ -115,6 +115,51 @@ fn paths() -> Vec<(VolumeConfig, NamespacePath, bool)> {
 }
 
 #[test]
+fn publication_key_stops_at_its_selected_prefix() {
+    for config in configs() {
+        let encoding = NameEncoding::native_for_profile(config.profile);
+        let name = |text: &str| {
+            let bytes = match encoding {
+                NameEncoding::WindowsUtf16Le => utf16(text),
+                _ => text.as_bytes().to_vec(),
+            };
+            (encoding, bytes)
+        };
+        // Four admitted names fill 1023 indexed bytes. The next separator
+        // fills the index, so no following name can contribute a byte.
+        let prefix = vec![name(&"x".repeat(255)); 4];
+        let expected = vec!["x".repeat(255); 4].join("/") + "/";
+        let mut observations = Vec::new();
+        for tail in [1, 1_000] {
+            let mut names = prefix.clone();
+            names.extend((0..tail).map(|_| name("tail")));
+            let path = named(config, &names);
+            let selected = key(&path, config);
+            assert_eq!(selected.slice(), expected.as_bytes());
+
+            // Restore the old traversal over the same admitted path and
+            // original component encoder, rather than a second key codec.
+            let mut historical = PathKey {
+                bytes: [0; acyclic_stream::MAX_RECORD_KEY_BYTES],
+                len: 0,
+                components: 0,
+            };
+            for (index, name) in path.components().iter().enumerate() {
+                if index != 0 {
+                    historical.push(b"/");
+                }
+                component_key(name, config, &mut historical);
+            }
+            assert_eq!(historical.slice(), selected.slice());
+            assert_eq!(historical.components, 4 + tail);
+            observations.push((selected.components, historical.components));
+        }
+        eprintln!("publication index component visits selected/old={observations:?}");
+        assert_eq!(observations, [(4, 5), (4, 1_004)]);
+    }
+}
+
+#[test]
 fn every_entry_decodes_to_its_exact_path_and_only_untruncated_unicode_keys_carry_names() {
     let mut elided = 0;
     for (config, path, carries) in paths() {

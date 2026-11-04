@@ -68,6 +68,58 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+test("WASM credential ingress shares opaque admission and retains original request refusal", async () => {
+  let calls = 0;
+  const server = await serve((_request, response) => {
+    calls++;
+    response.writeHead(500).end();
+  });
+  const planted = "ORIGINAL_CREDENTIAL_REFUSAL_DO_NOT_DISCLOSE";
+  const cases: readonly (readonly [unknown, boolean])[] = [
+    ["synthetic", true], ["\uFEFF", true], ["\u0085", false],
+    ["é".repeat(6144), true], ["é".repeat(6145), false],
+    ["\uD800".repeat(4096), true], ["\uD800".repeat(4097), false],
+    ["synthetic\r", false], ["synthetic\n", false], ["synthetic\0", false],
+    [undefined, false], [1, false], [new String("synthetic"), false],
+  ];
+  try {
+    for (const [token, accepted] of cases) {
+      for (const custody of [false, true]) {
+        // An accepted raw bearer belongs to the HTTP transport, whose header
+        // alphabet is narrower. This control stops at the original request
+        // refusal and needs no fabricated service response.
+        if (accepted && !custody) continue;
+        let resolved = 0;
+        let checked = 0;
+        const credential = Object.assign(async () => {
+          resolved++;
+          return token as string;
+        }, custody ? { resolveRequest: async () => {
+          resolved++;
+          return {
+            token: () => token,
+            check: () => { checked++; throw new Error(planted); },
+            reject: () => { throw new Error("rejection without dispatch"); },
+          };
+        } } : {});
+        const stopped = new AbortController();
+        const client = new SecretsClient(server.origin, credential, {
+          deadlineUnixMillis: 0xffff_ffff_ffff_ffffn,
+          stopped: stopped.signal,
+        });
+        try {
+          const outcome = await client.list({ scope: "fixture" }).then(() => undefined, error => error);
+          assert.equal(outcome?.code, "credential_unavailable");
+          assert(!String(outcome).includes(planted));
+          assert.equal(resolved, 1);
+          assert.equal(checked, accepted ? 1 : 0);
+          assert.equal(calls, 0);
+        } finally { client.free(); }
+      }
+    }
+  } finally { await server.close(); }
+});
+
 test("original WASM/TS invocation owns successful HTTP, stopped inputs and open response waits", async () => {
   const planted = "PLANTED_SECRET_DO_NOT_LOG_6547";
   const deadlineUnixMillis = 0xffff_ffff_ffff_ffffn;

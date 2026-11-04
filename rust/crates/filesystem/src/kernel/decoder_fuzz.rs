@@ -160,12 +160,10 @@ fn decode<const PLANTED: bool>(
 
 /// Fuzz bytes, limits, cancellation and injected before-effect decoder failures.
 pub fn check(input: &[u8]) {
-    let _ = check_inner::<false, false>(input);
+    let _ = check_inner::<false>(input);
 }
 
-fn check_inner<const OMIT_COMPLETION: bool, const PLANTED: bool>(
-    input: &[u8],
-) -> Result<(), FsError> {
+fn check_inner<const PLANTED: bool>(input: &[u8]) -> Result<(), FsError> {
     let Some((&kind, input)) = input.split_first() else {
         return Err(CanonicalDecodeError::Truncated.into());
     };
@@ -215,7 +213,6 @@ fn check_inner<const OMIT_COMPLETION: bool, const PLANTED: bool>(
     let mut actual = WorkCounters::UNCHARGED;
     let mut pending = (0, 0, 0);
     let mut admissions = 0_u8;
-    let mut omitted = false;
     let limits = DecodeLimits {
         maximum_object_bytes: 4096,
         maximum_page_bytes: 4096,
@@ -249,10 +246,6 @@ fn check_inner<const OMIT_COMPLETION: bool, const PLANTED: bool>(
                 assert!(*n <= pending.0, "copy without a successful admission");
                 pending.0 -= *n;
                 actual.bytes_copied += *n;
-                if OMIT_COMPLETION {
-                    omitted = true;
-                    return Ok(());
-                }
             }
             ReadAllocationStep::Hashed(n) => {
                 assert!(*n <= pending.1, "hash without a successful admission");
@@ -310,9 +303,6 @@ fn check_inner<const OMIT_COMPLETION: bool, const PLANTED: bool>(
         actual.bytes_copied <= maximum,
         "denied copy effect executed"
     );
-    if OMIT_COMPLETION {
-        assert!(omitted, "negative control did not reach a completion")
-    }
     result
 }
 
@@ -458,7 +448,7 @@ mod tests {
             ] {
                 let mut input = vec![kind, 255, 255, mode, 0, 0];
                 input.extend_from_slice(&bytes);
-                let result = check_inner::<false, false>(&input);
+                let result = check_inner::<false>(&input);
                 prop_assert!(result.is_ok(), "{result:?}");
                 input[1..3].copy_from_slice(&maximum.to_le_bytes());
                 input[4] = fault; input[5] = index;
@@ -490,7 +480,7 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            let result = check_inner::<false, false>(bytes);
+            let result = check_inner::<false>(bytes);
             assert!(
                 result.is_ok(),
                 "writer-derived seed {index} refused: {result:?}"
@@ -512,28 +502,8 @@ mod tests {
             include_bytes!("../../fuzz/corpus/decoder_work/extents-internal-sealed").as_slice(),
         ] {
             assert!(
-                check_inner::<false, false>(bytes).is_err(),
+                check_inner::<false>(bytes).is_err(),
                 "malformed seed admitted"
-            );
-        }
-    }
-
-    #[test]
-    fn missing_completion_is_detected_through_the_real_decoder() {
-        let bytes = fixture(0, &[], 17);
-        for mode in [0, 1, 2, 3, 4] {
-            let mut input = vec![0, 255, 255, mode, 0, 0];
-            input.extend_from_slice(&bytes);
-            let panic =
-                std::panic::catch_unwind(|| check_inner::<true, false>(&input)).unwrap_err();
-            let message = panic
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| panic.downcast_ref::<&str>().copied())
-                .unwrap_or("");
-            assert!(
-                message.contains("missing copy completion callback"),
-                "{message}"
             );
         }
     }
@@ -545,7 +515,7 @@ mod tests {
         for entry in std::fs::read_dir(corpus).unwrap() {
             let path = entry.unwrap().path();
             let input = std::fs::read(&path).unwrap();
-            let admitted = check_inner::<false, false>(&input);
+            let admitted = check_inner::<false>(&input);
             let name = path.file_name().unwrap().to_string_lossy();
             if matches!(
                 name.as_ref(),
@@ -562,9 +532,8 @@ mod tests {
             for number in [0, 1] {
                 let mut input = vec![kind, 255, 255, 0, 0, 0];
                 input.extend_from_slice(&fixture(kind, b"a", number));
-                assert!(check_inner::<false, false>(&input).is_ok());
-                let panic =
-                    std::panic::catch_unwind(|| check_inner::<false, true>(&input)).unwrap_err();
+                assert!(check_inner::<false>(&input).is_ok());
+                let panic = std::panic::catch_unwind(|| check_inner::<true>(&input)).unwrap_err();
                 let message = panic
                     .downcast_ref::<String>()
                     .map(String::as_str)

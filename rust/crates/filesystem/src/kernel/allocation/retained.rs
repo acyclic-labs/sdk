@@ -285,6 +285,32 @@ impl Drop for StandaloneLease {
 }
 
 impl RetainedAllocation {
+    /// Combines leases from the same original ledger without admitting work.
+    pub(crate) fn absorb(&mut self, incoming: &mut Self) -> Result<(), crate::FsError> {
+        match (self, incoming) {
+            (Self::Standalone { _lease: target }, Self::Standalone { _lease: source })
+                if Arc::ptr_eq(&target.ledger, &source.ledger) =>
+            {
+                target.bytes = target
+                    .bytes
+                    .checked_add(source.bytes)
+                    .ok_or(WorkError::Overflow)?;
+                source.bytes = 0;
+                Ok(())
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            (
+                Self::Native {
+                    _allocation: target,
+                },
+                Self::Native {
+                    _allocation: source,
+                },
+            ) => target.absorb(source).map_err(Into::into),
+            _ => Err(crate::FsError::AccountingHandoffActive),
+        }
+    }
+
     /// Splits original admitted backing without another admission or allocation.
     pub(crate) fn split_off(&mut self, bytes: u64) -> Result<Self, crate::FsError> {
         match self {
@@ -350,6 +376,16 @@ impl RetainedAllocation {
 pub(crate) struct Retained<T> {
     pub(crate) value: T,
     pub(crate) allocation: RetainedAllocation,
+}
+
+impl<T> Retained<Vec<T>> {
+    pub(crate) fn allocate(
+        capacity: usize,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Self, crate::FsError> {
+        let owned = crate::kernel::Owned::<Vec<T>>::allocate(capacity, accounting)?;
+        Self::from_owned(owned, accounting)
+    }
 }
 
 impl<T> Retained<T> {

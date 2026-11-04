@@ -571,7 +571,9 @@ fn cancelling_the_dial_origin_releases_its_span_while_b_waits_for_welcome() -> T
             .map_err(|_| "B lost shared initialization")?;
         let _b = b.await?;
         assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
-        assert_eq!(fixture.counts.follows.load(Ordering::Relaxed), 1);
+        // A's interest rode the opening handshake, so the server admitted it
+        // before A withdrew; B joins the same session with its own follow.
+        assert_eq!(fixture.counts.follows.load(Ordering::Relaxed), 2);
         Ok(())
     })
 }

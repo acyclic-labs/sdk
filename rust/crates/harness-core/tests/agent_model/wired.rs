@@ -581,6 +581,7 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
     use acyclic_harness_core::model::{ModelMessage, PreparedModelRequest};
     let request = PreparedModelRequest::prepare(
         ModelRequest {
+            summary: false,
             compose_tools: false,
             model: Model::new("test".into(), "text".into(), "1".into())?,
             messages: vec![ModelMessage {

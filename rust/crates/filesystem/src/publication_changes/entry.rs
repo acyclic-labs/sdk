@@ -21,6 +21,8 @@ use std::fmt::Write;
 pub(crate) struct PathKey {
     bytes: [u8; acyclic_stream::MAX_RECORD_KEY_BYTES],
     len: usize,
+    #[cfg(test)]
+    components: usize,
 }
 impl PathKey {
     fn push(&mut self, bytes: &[u8]) {
@@ -46,10 +48,15 @@ pub(crate) fn key(path: &NamespacePath, config: VolumeConfig) -> PathKey {
     let mut key = PathKey {
         bytes: [0; acyclic_stream::MAX_RECORD_KEY_BYTES],
         len: 0,
+        #[cfg(test)]
+        components: 0,
     };
     for (index, name) in path.components().iter().enumerate() {
         if index != 0 {
             key.push(b"/");
+        }
+        if key.len == key.bytes.len() {
+            break;
         }
         component_key(name, config, &mut key);
     }
@@ -57,6 +64,10 @@ pub(crate) fn key(path: &NamespacePath, config: VolumeConfig) -> PathKey {
 }
 
 fn component_key(name: &LogicalName, config: VolumeConfig, key: &mut PathKey) {
+    #[cfg(test)]
+    {
+        key.components += 1;
+    }
     match name.encoding() {
         NameEncoding::Utf8 | NameEncoding::PosixBytes => {
             if let Ok(text) = std::str::from_utf8(name.as_bytes()) {

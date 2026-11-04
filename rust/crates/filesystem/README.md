@@ -23,6 +23,26 @@ time fork.
 
 Start with the [embedded workspace example](https://github.com/acyclic-labs/sdk/blob/main/rust/crates/filesystem/examples/embedded_workspace.rs), the [hosted example](https://github.com/acyclic-labs/sdk/blob/main/README.md), or the [Rust API](https://docs.rs/acyclic-fs/latest/acyclic_fs/). The [v2 protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/filesystem) defines compatibility.
 
+With the `session` feature, `session::ChangeProvider::follow_subtree` follows
+changes equal to or below a canonical `NamespacePath`. It takes the original
+verified `ResourceFollowRequest` and returns the same `ResourceSubscription` used
+by authorized filesystem follows. Its indexed path selection intersects the
+request and credential filters; lossless metadata checks exclude paths that only
+share a truncated index key. Schedules, file hooks and live views share this event
+source, which is appended in the filesystem authority commit.
+
+Each delivered record retains its origin, sequence, commit and
+`PublicationContext`: the complete generation reference and authority revision.
+The authority revision and change-stream sequence are distinct. Resume with the
+accepted next sequence and preceding commit, including skipped-record progress.
+For a publication split across records, `PublicationContext::exclusive_end`
+identifies its original completion cut. Consumers retain the subscription's
+revocation future and revalidate queued disclosure. Durable read registration
+owns cursor settlement with the consumer's effects; opening a follow alone does
+not persist a cursor. Selection adds no polling or publication, and its work
+depends on the selected path bytes and delivered metadata rather than enumerating
+unrelated filesystem names.
+
 The [publication migration inventory](#filesystem-publication-migration) describes the
 portable Streams record contribution API, compatibility boundaries and pending
 caller migrations.

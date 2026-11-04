@@ -278,6 +278,38 @@ struct Fixture<'a, T: Backend + ?Sized> {
     sent: u64,
 }
 
+/// Observe one original output path, including its first publication.
+async fn observe<P: StreamProvider + ?Sized>(
+    provider: &P,
+    clock: &dyn Clock,
+    mut request: acyclic_stream::FollowRequest,
+    count: usize,
+    budget_ms: u64,
+) -> Result<Vec<String>, Failure> {
+    let mut deadline = clock.sleep_until(clock.now_unix_ms().saturating_add(budget_ms));
+    request.when_absent = acyclic_stream::WhenAbsent::Wait;
+    let mut follow = provider
+        .follow(request)
+        .map_ok(acyclic_stream::records_only)
+        .await
+        .map_err(Error::from)?;
+    let mut records = Vec::new();
+    while records.len() < count {
+        futures::select_biased! {
+            record = follow.next().fuse() => match record {
+                Some(Ok(record)) => records.push(String::from_utf8_lossy(&record.value).into_owned()),
+                Some(Err(error)) => return Err(Error::from(error).into()),
+                None => return Err(Error::from(StreamError::Unavailable).into()),
+            },
+            result = (&mut deadline).fuse() => {
+                result.map_err(Error::from)?;
+                break;
+            },
+        }
+    }
+    Ok(records)
+}
+
 impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
     /// Prepare a fresh actor. Its companion creation rides in the commit that
     /// creates its inbox with the first command, as a spawn does; the host
@@ -381,61 +413,39 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
     }
 
     async fn observe(&self, count: usize, budget_ms: u64) -> Result<Vec<String>, Failure> {
-        let provider = self.target.store().provider();
-        let clock = self.target.clock();
-        let mut records = Vec::new();
-        let mut deadline = clock.sleep_until(clock.now_unix_ms().saturating_add(budget_ms));
-        // The outbox is created by a publication, which always appends the
-        // actor's state in the same commit: wake on state records until it exists.
-        let mut state = provider
-            .follow(acyclic_stream::FollowRequest::new(
-                self.target.store().path(&self.actor)?,
-                0,
-            ))
-            .map_ok(acyclic_stream::records_only)
-            .await
-            .map_err(Error::from)?;
-        let mut follow = loop {
-            match provider
-                .follow(acyclic_stream::FollowRequest::new(self.outbox.clone(), 0))
-                .map_ok(acyclic_stream::records_only)
-                .await
-            {
-                Ok(follow) => break follow,
-                Err(StreamError::NotFound) => {}
-                Err(error) => return Err(Error::from(error).into()),
-            }
-            futures::select_biased! {
-                record = state.next().fuse() => match record {
-                    Some(Ok(_)) => {}
-                    Some(Err(error)) => return Err(Error::from(error).into()),
-                    None => return Err(Error::from(StreamError::Unavailable).into()),
-                },
-                result = (&mut deadline).fuse() => {
-                    result.map_err(Error::from)?;
-                    return Ok(records);
-                },
-            }
-        };
-        while records.len() < count {
-            futures::select_biased! {
-                record = follow.next().fuse() => match record {
-                    Some(Ok(record)) => records.push(String::from_utf8_lossy(&record.value).into_owned()),
-                    Some(Err(error)) => return Err(Error::from(error).into()),
-                    None => break,
-                },
-                result = (&mut deadline).fuse() => {
-                    result.map_err(Error::from)?;
-                    break;
-                },
-            }
-        }
-        Ok(records)
+        observe(
+            self.target.store().provider().as_ref(),
+            self.target.clock(),
+            acyclic_stream::FollowRequest::new(self.outbox.clone(), 0),
+            count,
+            budget_ms,
+        )
+        .await
     }
 
     async fn cursor(&self) -> Result<Option<u64>, Failure> {
         let snapshot = self.target.store().load(&self.actor).await?;
         Ok(snapshot.state().and_then(|state| state.cursor("inbox")))
+    }
+
+    /// Retain an actual provider record as the anchor for `wait_applied`.
+    async fn input(&self, sequence: u64) -> Result<acyclic_stream::Record, Failure> {
+        self.target
+            .store()
+            .provider()
+            .read(acyclic_stream::ReadRequest {
+                key: None,
+                path: self.inbox.clone(),
+                from: sequence,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await
+            .map_err(Error::from)?
+            .next()
+            .await
+            .ok_or(Error::Invalid("conformance input is missing"))?
+            .map_err(|error| Error::from(error).into())
     }
 
     fn violation<R>(&self, detail: String) -> Result<R, Failure> {
@@ -677,21 +687,7 @@ async fn forked<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failur
     child.send("set 600000").await?;
     parent.send("emit").await?;
     parent.expect(&["r0", "r1"]).await?;
-    let input = store
-        .provider()
-        .read(acyclic_stream::ReadRequest {
-            key: None,
-            path: child.inbox.clone(),
-            from: 0,
-            limit: 1,
-            at_least: Default::default(),
-        })
-        .await
-        .map_err(Error::from)?
-        .next()
-        .await
-        .ok_or(Error::Invalid("fork child input is missing"))?
-        .map_err(Error::from)?;
+    let input = child.input(0).await?;
     let applied = store
         .wait_applied(
             &child.actor,
@@ -738,22 +734,7 @@ async fn invoked<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
     let mut fixture = Fixture::create(target, run, "invoked").await?;
     fixture.send("clear").await?;
     // Observe creation's first command before placing the durable pause fence.
-    let input = target
-        .store()
-        .provider()
-        .read(acyclic_stream::ReadRequest {
-            key: None,
-            path: fixture.inbox.clone(),
-            from: 0,
-            limit: 1,
-            at_least: Default::default(),
-        })
-        .await
-        .map_err(Error::from)?
-        .next()
-        .await
-        .ok_or(Error::Invalid("invocation fixture input is missing"))?
-        .map_err(Error::from)?;
+    let input = fixture.input(0).await?;
     let cut = AppliedCut::through("inbox".into(), fixture.inbox.clone(), &input)?;
     target.store().wait_applied(&fixture.actor, cut).await?;
     target.pause(&fixture.actor, true).await?;
@@ -1213,21 +1194,7 @@ async fn applied<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
     fixture.expect(&["r0"]).await?;
     target.pause(&fixture.actor, true).await?;
     fixture.send("emit").await?;
-    let provider = target.store().provider();
-    let input = provider
-        .read(acyclic_stream::ReadRequest {
-            key: None,
-            path: fixture.inbox.clone(),
-            from: 1,
-            limit: 1,
-            at_least: Default::default(),
-        })
-        .await
-        .map_err(Error::from)?
-        .next()
-        .await
-        .ok_or(Error::Invalid("applied fixture input is missing"))?
-        .map_err(Error::from)?;
+    let input = fixture.input(1).await?;
     let cut = AppliedCut::through("inbox".into(), fixture.inbox.clone(), &input)?;
     let mut wait = Box::pin(target.store().wait_applied(&fixture.actor, cut.clone()));
     if futures::poll!(wait.as_mut()).is_ready() {
@@ -1317,7 +1284,7 @@ async fn ordered<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failu
 
 /// An alarm saved with the checkpoint fires once; Clear invalidates the
 /// armed generation; replacing fires only the newest generation.
-async fn alarms<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+pub(crate) async fn alarms<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
     let mut alarm = Fixture::create(target, run, "alarm").await?;
     alarm.send(&format!("set {ALARM_MS}")).await?;
     alarm.expect(&["a1"]).await?;
@@ -1350,14 +1317,26 @@ async fn paused<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failur
 
 /// A restart keeps the checkpoint, cursor and pending alarm, with no
 /// duplicate or lost publication.
-async fn restarted<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+pub(crate) async fn restarted<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
     let mut restarted = Fixture::create(target, run, "restarted").await?;
     restarted.send("emit").await?;
     restarted.expect(&["r0"]).await?;
     restarted.send(&format!("set {}", 2 * ALARM_MS)).await?;
-    // Let the set commit before the restart.
-    if restarted.observe(2, ALARM_MS / 2).await?.len() != 1 {
-        return restarted.violation("unexpected output before restart".into());
+    let input = restarted.input(1).await?;
+    let applied = target
+        .store()
+        .wait_applied(
+            &restarted.actor,
+            AppliedCut::through("inbox".into(), restarted.inbox.clone(), &input)?,
+        )
+        .await?;
+    if applied
+        .snapshot()
+        .state()
+        .and_then(|state| state.alarm().pending())
+        .is_none()
+    {
+        return restarted.violation("consumed set did not retain its alarm before restart".into());
     }
     target.restart().await?;
     restarted.send("emit").await?;

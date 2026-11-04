@@ -16,6 +16,8 @@ pub use runtime::{
 };
 mod sockets;
 pub use sockets::Sockets;
+#[cfg(feature = "test-support")]
+pub use sockets::codec_fuzz as socket_ledger_codec;
 
 use crate::addressing::ActorReference;
 use crate::guest::{
@@ -1086,7 +1088,11 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     }
                 }
                 match &outcome {
-                    Err(source @ (StreamError::Unavailable | StreamError::InvalidResponse)) => {
+                    Err(
+                        source @ (StreamError::Unavailable
+                        | StreamError::Refused(_)
+                        | StreamError::InvalidResponse),
+                    ) => {
                         prepared.acknowledgement_unknown = true;
                         return Err(Error::Unknown {
                             publication: Box::new(prepared),

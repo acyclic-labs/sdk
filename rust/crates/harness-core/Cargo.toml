@@ -30,7 +30,7 @@ path = "tests/main.rs"
 research = ["acyclic-observability/research"]
 provenance-export = ["metrics-export", "dep:oxrdf", "dep:oxttl"]
 metrics-export = ["dep:arrow-array", "dep:arrow-schema", "dep:arrow-ipc", "dep:parquet"]
-conformance = ["acyclic-stream/conformance"]
+conformance = ["acyclic-stream/conformance", "acyclic-objects?/conformance"]
 oidc = ["filesystem", "dep:jsonwebtoken", "dep:oidc-getrandom"]
 oidc-http = ["oidc", "dep:reqwest"]
 tui = []
@@ -150,7 +150,7 @@ acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = 
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["test-support"] }
-acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["grpc", "test-support"] }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["binary", "grpc", "local", "test-support"] }
 rcgen = "0.14.10"
 serde-saphyr = { version = "=2.0.0", default-features = false, features = ["serialize"] }
 shuttle = "=0.9.8"

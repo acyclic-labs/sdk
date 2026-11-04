@@ -117,8 +117,7 @@ impl<'a> Call<'a> {
         journal: &dyn ExecutionJournal,
         terminal: &ExecutionRecord,
     ) -> Result<Settlement<'call, 'a>> {
-        if terminal.operation_id != self.source.operation
-            || terminal.sequence <= self.sequence
+        if terminal.sequence <= self.sequence
             || !super::super::model_observation::matches_turn(
                 &terminal.event,
                 self.step,
@@ -127,33 +126,14 @@ impl<'a> Call<'a> {
         {
             return Err(invalid("terminal differs from its original admission"));
         }
-        let event = super::super::model_observation::load(journal, &terminal.event, None)
-            .await?
-            .ok_or_else(|| invalid("terminal has no original model observation"))?;
-        if !matches!(event, crate::model::ModelEvent::Completed { .. }) {
-            return Err(invalid("source model observation is not terminal"));
-        }
-        let usage = super::super::model_usage::project_record(
+        let (metadata, usage) = super::super::model_usage::project_completion(
             journal,
             self.source.operation,
             self.source.agent_path,
             terminal,
         )
         .await?;
-        if let Some(usage) = &usage {
-            super::super::model_usage::validate(
-                usage,
-                self.source.operation,
-                self.step,
-                self.purpose,
-                &event,
-                None,
-            )?;
-        }
         self.validate_usage(usage.as_ref())?;
-        let crate::model::ModelEvent::Completed { metadata } = event else {
-            return Err(invalid("source model observation is not terminal"));
-        };
         Ok(Settlement {
             call: self,
             sequence: terminal.sequence,

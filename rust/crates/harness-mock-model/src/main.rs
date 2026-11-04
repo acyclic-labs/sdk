@@ -12,9 +12,18 @@ struct Host {
     engine: Engine,
     record: recorder::Recorder,
     sequence: u64,
+    native_authorization: Option<hyper::header::HeaderValue>,
 }
 
 mod recorder;
+
+fn route(path: &str) -> (&str, &str) {
+    let (namespace, endpoint) = path
+        .trim_start_matches('/')
+        .split_once('/')
+        .unwrap_or(("", ""));
+    (namespace, endpoint.strip_prefix("v1/").unwrap_or(endpoint))
+}
 
 struct RecordedReply {
     reply: Response<Body>,
@@ -52,11 +61,7 @@ fn answer(
             response(405, "json", Body::from("{\"error\":\"POST required\"}")),
         );
     }
-    let (namespace, endpoint) = path
-        .trim_start_matches('/')
-        .split_once('/')
-        .unwrap_or(("", ""));
-    let endpoint = endpoint.strip_prefix("v1/").unwrap_or(endpoint);
+    let (namespace, endpoint) = route(path);
     let count = matches!(
         endpoint,
         "count" | "responses/input_tokens" | "messages/count_tokens"
@@ -129,12 +134,9 @@ fn record(
     step: Option<usize>,
     reply: Response<Body>,
 ) -> std::io::Result<RecordedReply> {
-    let (namespace, endpoint) = path
-        .trim_start_matches('/')
-        .split_once('/')
-        .unwrap_or(("", ""));
-    let endpoint = endpoint.strip_prefix("v1/").unwrap_or(endpoint);
+    let (namespace, endpoint) = route(path);
     host.sequence += 1;
+    let namespace = namespace.strip_prefix("native-").unwrap_or(namespace);
     let record = json!({"sequence":host.sequence,"case":namespace,"method":method,"path":endpoint,"body":body,"step":step,"status":reply.status().as_u16()});
     // Consumption and enqueue share one executor turn. The ordered writer
     // owns append -> flush -> event; the HTTP reply waits for that boundary.
@@ -161,7 +163,23 @@ async fn serve(
     request: Request<Incoming>,
 ) -> Result<Response<Body>, Infallible> {
     let method = request.method().to_string();
-    let path = request.uri().path().to_owned();
+    let path = request.uri().path();
+    if route(path).0.starts_with("native-") {
+        let admitted = host
+            .borrow()
+            .native_authorization
+            .as_ref()
+            .zip(request.headers().get(hyper::header::AUTHORIZATION))
+            .is_some_and(|(expected, supplied)| {
+                acyclic_auth::crypto::authentication_eq(expected.as_bytes(), supplied.as_bytes())
+            });
+        if !admitted {
+            // No body decoding, recorder entry or script consumption before
+            // the original native credential has been authenticated.
+            return Ok(response(401, "json", Body::empty()));
+        }
+    }
+    let path = path.to_owned();
     let received = async {
         let bytes = request
             .into_body()
@@ -222,10 +240,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let script = load_script(&std::fs::read(script)?, &format!("http://{address}"))?;
+    let native_authorization = std::env::var("ACYCLIC_E2E_MODEL_CAPABILITY")
+        .ok()
+        .map(|capability| {
+            if capability.len() != 64
+                || !capability.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
+                    "step=admit native model capability; recovery=run node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL installed-pi-recursive"));
+            }
+            hyper::header::HeaderValue::from_str(&format!("Bearer {capability}"))
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput,
+                    "step=admit native model authorization; recovery=run node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL installed-pi-recursive"))
+        })
+        .transpose()?;
     let host = Rc::new(RefCell::new(Host {
         engine: Engine::new(script),
         record: recorder::Recorder::open(File::create(record)?)?,
         sequence: 0,
+        native_authorization,
     }));
     println!("{}", json!({"event":"ready","port":address.port()}));
     std::io::stdout().flush()?;

@@ -11,6 +11,8 @@ use wire::ErrorCode::{Invalid, Storage};
 const PROTOCOL_VERSION: &str = "2";
 mod admission;
 pub(crate) use admission::Quota as CodecQuota;
+mod index;
+pub(crate) use index::BorrowedIndexWork;
 mod protocol;
 #[doc(hidden)]
 pub use protocol::{COMPILED_PROTOCOL, protocol_identity, validate_protocol};

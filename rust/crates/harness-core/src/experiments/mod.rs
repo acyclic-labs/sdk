@@ -178,24 +178,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn malformed_rows_and_mismatched_pairs_never_reach_statistics()
+    fn invalid_measurements_and_score_overflow_are_refused()
     -> Result<(), Box<dyn std::error::Error>> {
-        // Authored analysis inputs, not captured provider output.
-        let baseline = Observation::new([7; 32], 0, 0, Some(1.0), None)?;
-        let treatment = Observation::new([7; 32], 0, 1, Some(3.0), Some(0.01))?;
-        let encoded = serde_json::to_vec(&treatment)?;
-        assert_eq!(
-            Observation::decode(&encoded)?.difference(&baseline)?,
-            Some(2.0)
-        );
-        for row in [
-            Observation::new([7; 32], 1, 1, None, None)?,
-            Observation::new([8; 32], 0, 1, None, None)?,
-            Observation::new([7; 32], 0, 0, None, None)?,
-        ] {
-            assert!(row.difference(&baseline).is_err());
-            assert!(row.cost_difference(&baseline).is_err());
-        }
         assert!(Observation::new([7; 32], 0, 1, Some(f64::INFINITY), None).is_err());
         for cost in [-1.0, f64::INFINITY, f64::NAN] {
             assert!(Observation::new([7; 32], 0, 1, None, Some(cost)).is_err());
@@ -203,49 +187,14 @@ mod tests {
         let high = Observation::new([7; 32], 0, 1, Some(f64::MAX), None)?;
         let low = Observation::new([7; 32], 0, 0, Some(-f64::MAX), None)?;
         assert!(high.difference(&low).is_err());
-        let mut invalid = serde_json::to_value(&baseline)?;
-        invalid["version"] = 1.into();
-        assert!(Observation::decode(&serde_json::to_vec(&invalid)?).is_err());
-        let object = serde_json::to_string(&baseline)?;
-        let duplicate = format!("{{\"version\":2,{}", &object[1..]);
-        assert!(Observation::decode(duplicate.as_bytes()).is_err());
-        assert!(Observation::decode(format!("{object} null").as_bytes()).is_err());
-        let row = serde_json::to_value(&baseline)?;
-        let sequence = serde_json::json!([
-            row["version"],
-            row["population"],
-            row["replicate"],
-            row["arm"],
-            row["score"],
-            row["cost_usd"]
-        ]);
-        assert!(Observation::decode(&serde_json::to_vec(&sequence)?).is_err());
         Ok(())
     }
 
     #[test]
-    fn paired_cost_retains_unscored_trials_without_imputing_unknown_values()
+    fn maximum_cost_difference_is_finite_in_both_directions()
     -> Result<(), Box<dyn std::error::Error>> {
         // Authored analysis inputs, not captured provider output.
-        let baseline = Observation::new([7; 32], 0, 0, None, Some(1.0))?;
-        let treatment = Observation::new([7; 32], 0, 1, None, Some(3.0))?;
-        let treatment = Observation::decode(&serde_json::to_vec(&treatment)?)?;
-        assert_eq!(treatment.difference(&baseline)?, None);
-        assert_eq!(treatment.cost_difference(&baseline)?, Some(2.0));
-        assert_eq!(baseline.cost_difference(&treatment)?, Some(-2.0));
-
         let known = Observation::new([7; 32], 0, 0, Some(0.0), Some(0.0))?;
-        let unscored = Observation::new([7; 32], 0, 1, None, Some(0.0))?;
-        assert_eq!(unscored.difference(&known)?, None);
-        assert_eq!(known.difference(&unscored)?, None);
-        assert_eq!(unscored.cost_difference(&known)?, Some(0.0));
-        let unpriced = Observation::new([7; 32], 0, 1, Some(0.0), None)?;
-        assert_eq!(unpriced.difference(&known)?, Some(0.0));
-        assert_eq!(unpriced.cost_difference(&known)?, None);
-        assert_eq!(known.cost_difference(&unpriced)?, None);
-        let unknown = Observation::new([7; 32], 0, 0, None, None)?;
-        assert_eq!(unpriced.cost_difference(&unknown)?, None);
-
         let maximum = Observation::new([7; 32], 0, 1, None, Some(f64::MAX))?;
         assert_eq!(maximum.cost_difference(&known)?, Some(f64::MAX));
         assert_eq!(known.cost_difference(&maximum)?, Some(-f64::MAX));

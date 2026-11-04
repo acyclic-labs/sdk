@@ -462,7 +462,7 @@ fn rollback_and_gaps_are_refused_and_fence_the_account() {
     assert_eq!(trust.apply(&gapped, NOW), Err(VerifyError::Trust));
     assert_eq!(
         verify::verify(&bytes, &trust, NOW).err(),
-        Some(VerifyError::Trust)
+        Some(VerifyError::Refused)
     );
 
     // Custody refuses to lower its own floor.
@@ -914,7 +914,7 @@ fn account_publication_does_not_hold_global_storage_or_accept_a_retired_signer()
         sequence
     );
     assert_eq!(trust.apply(&old, NOW), Err(VerifyError::Signature));
-    assert_eq!(trust.account("account").err(), Some(VerifyError::Trust));
+    assert_eq!(trust.account("account").err(), Some(VerifyError::Refused));
 
     // The same original frontier advances through the current signer's real
     // writer; no state rollback, history copy, or replacement account is needed.
@@ -1196,6 +1196,38 @@ fn a_close_resolves_every_wait_with_its_cause_and_is_final() {
 }
 
 #[test]
+fn a_refused_account_reads_as_refused_until_its_retained_record_applies() {
+    let issuer = Issuer::new("test", key(1));
+    let global = Issuer::new("test", key(5));
+    let mut frontier = EnvironmentFrontier::genesis("test", issuer.anchor());
+    let first = issuer
+        .environment_keyring(&mut frontier, &issuer.anchor(), NOW)
+        .unwrap();
+    let trust = Follower::new("test", issuer.anchor());
+    assert_eq!(trust.apply(&first, NOW), Ok(Applied::Changed));
+    trust.resume();
+    // Key B is not yet an environment key, so its account genesis refuses.
+    let (_, genesis) = global.genesis("account", key(2), NOW).unwrap();
+    assert!(trust.apply(&genesis[0], NOW).is_err());
+    trust.refuse("account");
+    assert_eq!(trust.account("account").err(), Some(VerifyError::Refused));
+    let second = issuer
+        .environment_keyring(
+            &mut frontier,
+            &[issuer.anchor()[0], global.anchor()[0]],
+            NOW,
+        )
+        .unwrap();
+    assert_eq!(trust.apply(&second, NOW), Ok(Applied::Changed));
+    for record in &genesis {
+        trust.apply_queued("account", record, NOW).unwrap();
+    }
+    trust.release("account");
+    trust.serve("account");
+    assert!(trust.account("account").is_ok());
+}
+
+#[test]
 fn retained_records_do_not_release_an_account_before_its_revocations() {
     let mut world = world();
     let trust = follower(&world);
@@ -1207,12 +1239,12 @@ fn retained_records_do_not_release_an_account_before_its_revocations() {
     trust.apply_queued("account", &keyring, NOW).unwrap();
     assert_eq!(
         verify::verify(&bytes, &trust, NOW).err(),
-        Some(VerifyError::Trust)
+        Some(VerifyError::Refused)
     );
     trust.apply_queued("account", &revoked, NOW).unwrap();
     assert_eq!(
         verify::verify(&bytes, &trust, NOW).err(),
-        Some(VerifyError::Trust)
+        Some(VerifyError::Refused)
     );
     trust.release("account");
     assert_eq!(

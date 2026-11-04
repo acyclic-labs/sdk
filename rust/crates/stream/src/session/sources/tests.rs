@@ -191,60 +191,74 @@ fn negative_control_changes_class_without_moving_the_source() {
 fn every_local_and_global_credit_combination_matches_the_admission_contract() {
     let waker = futures::task::noop_waker();
     let mut cx = Context::from_waker(&waker);
-    for latest in [false, true] {
-        for pending in 0..5 {
-            for frames in 0..2 {
-                for bytes in 0..2 {
-                    for ending in [false, true] {
-                        for room in 0..8 {
-                            let channel = Channel {
-                                binding: None,
-                                generation: 1,
-                                latest,
-                                opaque_cursor: false,
-                                followed: None,
-                                revalidate: None,
-                                progress: None,
-                                pending: (0..pending)
-                                    .map(|_| Pending {
-                                        frame: wire::SessionFrame::default().into(),
-                                        key: None,
-                                    })
-                                    .collect(),
-                                indexed: None,
-                                credit: wire::SessionWindow { frames, bytes },
-                                sent: Default::default(),
-                                applied: Default::default(),
-                                ending: ending.then_some(StreamError::Unavailable.code()),
-                                socket: None,
-                                input: None,
-                            };
-                            let room = (room & 1 != 0, room & 2 != 0, room & 4 != 0);
-                            let expected = !ending
-                                && ((latest && pending < 3 && room.0)
-                                    || (pending == 0
-                                        && frames > 0
-                                        && bytes > 0
-                                        && room.1
-                                        && room.2));
-                            let mut sources = Sources::new();
-                            let identity = wire::SessionChannel {
-                                channel_id: 1,
-                                generation: 1,
-                            };
-                            sources.insert(identity, source(identity), channel.source_mode());
-                            assert!(matches!(
-                                sources.poll(room, &mut cx),
-                                Poll::Ready(Ok(Some((_, Ok(Event::Opened(..))))))
-                            ));
-                            let polled = sources.poll(room, &mut cx);
-                            assert_eq!(
-                                matches!(polled, Poll::Ready(Ok(Some((_, Ok(Event::Record(_))))))),
-                                expected
-                            );
-                            partition(&sources).unwrap();
-                        }
-                    }
+    let authority = testing::authority();
+    let slots = testing::slots();
+    for (binding, lookahead) in [
+        (None, false),
+        (Some(testing::binding()), true),
+        (
+            Some(authority.bind_list(&slots, 0, None, 1).unwrap().0),
+            false,
+        ),
+    ] {
+        let mut channel = Channel {
+            binding,
+            generation: 1,
+            latest: false,
+            opaque_cursor: false,
+            followed: None,
+            revalidate: None,
+            progress: None,
+            pending: Default::default(),
+            indexed: None,
+            credit: Default::default(),
+            sent: Default::default(),
+            applied: Default::default(),
+            ending: None,
+            socket: None,
+            input: None,
+        };
+        // Enumerate all five independent boolean states without sampling.
+        for flags in 0..32 {
+            let latest = flags & 1 != 0;
+            let frames = u32::from(flags & 2 != 0);
+            let bytes = u64::from(flags & 4 != 0);
+            let ending = flags & 8 != 0;
+            let progress = flags & 16 != 0;
+            channel.latest = latest;
+            channel.credit = wire::SessionWindow { frames, bytes };
+            channel.ending = ending.then_some(StreamError::Unavailable.code());
+            channel.progress = progress.then(wire::SessionWatermark::default);
+            for pending in 0..5 {
+                channel.pending = (0..pending)
+                    .map(|_| Pending {
+                        frame: wire::SessionFrame::default().into(),
+                        key: None,
+                    })
+                    .collect();
+                for room in 0..8 {
+                    let room = (room & 1 != 0, room & 2 != 0, room & 4 != 0);
+                    let expected = !ending
+                        && !progress
+                        && ((((latest && pending < 3) || (lookahead && pending == 0)) && room.0)
+                            || (pending == 0 && frames > 0 && bytes > 0 && room.1 && room.2));
+                    let mut sources = Sources::new();
+                    let identity = wire::SessionChannel {
+                        channel_id: 1,
+                        generation: 1,
+                    };
+                    sources.insert(identity, source(identity), channel.source_mode());
+                    assert!(matches!(
+                        sources.poll(room, &mut cx),
+                        Poll::Ready(Ok(Some((_, Ok(Event::Opened(..))))))
+                    ));
+                    let polled = sources.poll(room, &mut cx);
+                    assert_eq!(
+                        matches!(polled, Poll::Ready(Ok(Some((_, Ok(Event::Record(_))))))),
+                        expected,
+                        "source admission differs: lookahead={lookahead} flags={flags} pending={pending} room={room:?}"
+                    );
+                    partition(&sources).unwrap();
                 }
             }
         }

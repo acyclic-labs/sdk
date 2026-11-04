@@ -123,13 +123,11 @@ fn leading_zero_bits(bytes: &[u8]) -> u32 {
 
 impl Identity {
     async fn agent_challenge(&self) -> Result<Challenge, Error> {
-        let value = Self::response(
+        self.response(
             self.client
                 .get(format!("{}/v1/identity/signup/challenge", self.endpoint)),
         )
-        .await?;
-        serde_json::from_value(value)
-            .map_err(|_| Error::new("invalid_response", "invalid agent challenge"))
+        .await
     }
 
     pub(super) async fn signup(&self, store: &Arc<Store>) -> Result<Value, Error> {
@@ -184,14 +182,8 @@ impl Identity {
             )
             .as_ref(),
         );
-        let value = Self::response(self.client.post(format!("{}/v1/identity/signup", self.endpoint))
+        let registration: Registration = self.response(self.client.post(format!("{}/v1/identity/signup", self.endpoint))
             .json(&json!({"challenge": nonce.0.challenge, "public_key": nonce.1, "nonce": nonce.2, "signature": signature}))).await?;
-        let registration: Registration = serde_json::from_value(value).map_err(|_| {
-            Error::new(
-                "invalid_response",
-                "invalid signup response; agent key preserved",
-            )
-        })?;
         if [
             &registration.user_id,
             &registration.org_id,
@@ -242,15 +234,16 @@ impl Identity {
             "acyclic-agent-renew-v1\n{}\n{}\n{}",
             registration.org_id, registration.key_id, challenge.challenge
         ))?;
-        let value = Self::response(
-            self.client
-                .post(format!("{}/v1/identity/signup/renew", self.endpoint))
-                .json(
-                    &json!({"org_id": registration.org_id, "key_id": registration.key_id,
+        let value: Value = self
+            .response(
+                self.client
+                    .post(format!("{}/v1/identity/signup/renew", self.endpoint))
+                    .json(
+                        &json!({"org_id": registration.org_id, "key_id": registration.key_id,
                 "challenge": challenge.challenge, "signature": signature}),
-                ),
-        )
-        .await?;
+                    ),
+            )
+            .await?;
         #[derive(Deserialize)]
         struct Renewal {
             org_id: String,

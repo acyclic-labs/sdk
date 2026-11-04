@@ -54,6 +54,14 @@ struct ShadowSource {
 mod retained;
 use retained::RetainedBatch;
 
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod codec_fuzz;
+
+fn decode_materialized(bytes: &[u8]) -> Result<crate::resources::GenerationRef> {
+    serde_json::from_slice(bytes).map_err(storage)
+}
+
 type UserCatalog = Option<SkillCatalog>;
 
 type Catalog = Option<(acyclic_fs::LazySnapshotId, SkillCatalog)>;
@@ -121,7 +129,7 @@ impl NativeSkills {
             hex::encode(generation.as_resource().key())
         ));
         match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(storage),
+            Ok(bytes) => decode_materialized(&bytes).map(Some),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(storage(error)),
         }

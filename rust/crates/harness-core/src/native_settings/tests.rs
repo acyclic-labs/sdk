@@ -509,7 +509,7 @@ async fn canonical_aliases_preserve_the_first_hook_bearing_source_order() -> Res
     let fixture = Fixture::new()?;
     let hook = |name: &str| {
         json!({"PreToolUse":[{"hooks":[{"type":"command", "command":format!(
-        "printf '%s' '{{\"hookSpecificOutput\":{{\"updatedInput\":{{\"selected\":\"{name}\"}},\"additionalContext\":\"{name}\"}}}}'"
+        "printf '%s' '{}'", json!({"hookSpecificOutput":{"additionalContext":name}})
     ), "shell":"sh"}]}]})
     };
     let source = fixture.home.join(".claude.json");
@@ -536,7 +536,8 @@ async fn canonical_aliases_preserve_the_first_hook_bearing_source_order() -> Res
         )
         .await?;
     assert!(output.diagnostics.is_empty(), "{output:?}");
+    assert!(output.blocked.is_none(), "{output:?}");
     assert_eq!(output.additional_context, ["user", "project"]);
-    assert_eq!(output.updated_input, Some(json!({"selected":"project"})));
+    assert!(output.updated_input.is_none());
     Ok(())
 }

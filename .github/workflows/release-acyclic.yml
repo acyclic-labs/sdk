@@ -36,46 +36,46 @@ jobs:
             backend: linux-fuse
             qualifier: native-mount-qualify
             rust_target: x86_64-unknown-linux-gnu
-            runner: blacksmith-16vcpu-ubuntu-2404
+            runner: kaizen-linux
             executable: acyclic
           - target: linux-x64-musl
             cache_size: 384M
             rust_target: x86_64-unknown-linux-musl
-            runner: blacksmith-4vcpu-ubuntu-2404
+            runner: kaizen-linux
             executable: acyclic
           - target: linux-arm64-gnu
             cache_size: 384M
             rust_target: aarch64-unknown-linux-gnu
-            runner: blacksmith-16vcpu-ubuntu-2404-arm
+            runner: ubuntu-24.04-arm
             executable: acyclic
           - target: linux-arm64-musl
             cache_size: 384M
             rust_target: aarch64-unknown-linux-musl
-            runner: blacksmith-16vcpu-ubuntu-2404-arm
+            runner: ubuntu-24.04-arm
             executable: acyclic
           - target: darwin-x64
             cache_size: 320M
             rust_target: x86_64-apple-darwin
-            runner: blacksmith-6vcpu-macos-15
+            runner: macos-15
             executable: acyclic
           - target: darwin-arm64
             cache_size: 640M
             backend: macos-nfs
             qualifier: native-mount-qualify
             rust_target: aarch64-apple-darwin
-            runner: blacksmith-6vcpu-macos-15
+            runner: macos-15
             executable: acyclic
           - target: win32-x64
             cache_size: 1216M
             backend: windows-projfs
             qualifier: native-mount-qualify.exe
             rust_target: x86_64-pc-windows-msvc
-            runner: blacksmith-32vcpu-windows-2025
+            runner: windows-2025
             executable: acyclic.exe
           - target: win32-arm64
             cache_size: 2048M
             rust_target: aarch64-pc-windows-msvc
-            runner: blacksmith-4vcpu-windows-2025
+            runner: windows-2025
             executable: acyclic.exe
     runs-on: ${{ matrix.runner }}
     env:
@@ -301,7 +301,7 @@ jobs:
   installer-recovery:
     name: Transactional installer recovery
     needs: build
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: kaizen-linux
     timeout-minutes: 5
     permissions:
       contents: read
@@ -337,7 +337,7 @@ jobs:
   assemble:
     name: Validate and assemble
     needs: [ build, sdk-qualification, agent-host-qualification, installer-recovery ]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: kaizen-linux
     permissions:
       actions: read
       attestations: write

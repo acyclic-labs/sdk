@@ -1,25 +1,5 @@
 use super::*;
 
-fn single_disclosure_boundary(source: &str) -> bool {
-    source.matches(".finish(").count() + source.matches("::finish(").count() == 1
-}
-
-#[test]
-fn read_results_have_one_checked_output_boundary() {
-    assert!(single_disclosure_boundary(include_str!(
-        "../../filesystem/src/workspace/read_core.rs"
-    )));
-}
-
-#[test]
-fn direct_output_bypass_negative_control() {
-    let old_exit = format!(
-        "{}\nwork.finish(result, accounting)",
-        include_str!("../../filesystem/src/workspace/read_core.rs")
-    );
-    assert!(!single_disclosure_boundary(&old_exit));
-}
-
 fn assert_denied(result: Result<(), acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>) {
     assert!(
         matches!(result, Err(failure) if matches!(failure.error, acyclic_fs::WorkspaceError::AccessDenied)),

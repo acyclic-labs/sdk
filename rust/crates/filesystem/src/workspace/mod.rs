@@ -48,6 +48,7 @@ mod handle;
 mod identity;
 mod join;
 mod join_apply;
+mod join_directory;
 mod join_git;
 mod join_helpers;
 #[cfg(not(target_arch = "wasm32"))]
@@ -93,11 +94,18 @@ pub use identity::{IdempotencyKey, WorkspaceId, WorkspaceName};
 pub(crate) use join::JoinPreparation;
 pub use join::{JoinBuilder, JoinHistory, JoinPlan};
 pub use join_apply::DrivenJoinError;
-use join_helpers::{
-    binding_conflict_view, conflict_file_id, kernel_conflict, logical_name_text,
-    namespace_path_text, record_conflict_view, resolution_matches_conflict, side_resolution,
+#[cfg(all(not(loom), any(test, feature = "fuzzing")))]
+#[doc(hidden)]
+pub use join_directory::check_merge_directory_resolution;
+pub use join_directory::{
+    MergeCleanFile, MergeConflictFile, MergeConflictFileKind, MergeDirectory, MergeDirectoryPlan,
+    MergeDirectorySection,
 };
-pub use join_preview::{JoinConflictEntry, JoinContent, JoinPathEntry, JoinPreview};
+use join_helpers::{
+    binding_conflict_view, conflict_file_id, kernel_conflict, namespace_path_text,
+    record_conflict_view, resolution_matches_conflict, side_resolution,
+};
+pub use join_preview::{JoinCleanStep, JoinConflictEntry, JoinContent, JoinPathEntry, JoinPreview};
 pub use metadata::{WorkspaceMetadata, WorkspaceStat};
 pub(crate) use namespace_view::NamespaceView;
 pub use outcomes::{

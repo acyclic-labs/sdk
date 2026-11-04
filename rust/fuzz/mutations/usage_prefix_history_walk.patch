@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness-core/src/model/request/encoding.rs b/rust/crates/harness-core/src/model/request/encoding.rs
+--- a/rust/crates/harness-core/src/model/request/encoding.rs
++++ b/rust/crates/harness-core/src/model/request/encoding.rs
+@@ -64,6 +64,8 @@ impl Input {
+     fn stats(&self, request: &ModelRequest) -> Result<InputStats> {
+         if let Some(stats) = self.stats.get() {
+-            return Ok(*stats);
++            let mut rebuilt = InputStats::default();
++            rebuilt.extend(&request.messages, None)?;
++            return Ok(rebuilt);
+         }
+         let mut stats = InputStats::default();
+         stats.extend(&request.messages, None)?;

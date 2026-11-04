@@ -13,16 +13,12 @@ pub(super) fn retention(
     objects: &[ObjectId],
     work: &mut KernelAccounting<'_>,
 ) -> Result<RetentionRequest, crate::FsError> {
-    use crate::kernel::Owned;
-
-    let owned = Owned::<Vec<u8>>::allocate(super::Epoch::ROOT_BYTES, work)?;
-    let root = Retained::from_owned(owned, work)?;
+    let root = Retained::<Vec<u8>>::allocate(super::Epoch::ROOT_BYTES, work)?;
     let root = Retained {
         value: super::Epoch::root_from(epoch, root.value),
         allocation: root.allocation,
     };
-    let owned = Owned::<Vec<acyclic_objects::Digest>>::allocate(objects.len(), work)?;
-    let mut references = Retained::from_owned(owned, work)?;
+    let mut references = Retained::<Vec<acyclic_objects::Digest>>::allocate(objects.len(), work)?;
     references.value.extend(objects.iter().copied().map(blob));
     Ok((root, references))
 }
@@ -36,16 +32,22 @@ pub(super) fn children(
         return Ok((Vec::new(), guard(work)?));
     }
     let (mut references, custody) = vector(plaintext.len() / 33, work)?;
-    crate::kernel::visit_object_references(id, plaintext, work, |child| {
-        if id.storage.is_some() && child.storage.is_none() {
-            return Err(ObjectStoreError::Corrupt.into());
-        }
-        if references.len() == references.capacity() {
-            return Err(ObjectStoreError::Corrupt.into());
-        }
-        references.push(blob(child));
-        Ok(())
-    })?;
+    crate::kernel::visit_object_references(
+        id,
+        plaintext,
+        crate::kernel::DecodeLimits::for_object_bytes(plaintext.len()),
+        work,
+        |child| {
+            if id.storage.is_some() && child.storage.is_none() {
+                return Err(ObjectStoreError::Corrupt.into());
+            }
+            if references.len() == references.capacity() {
+                return Err(ObjectStoreError::Corrupt.into());
+            }
+            references.push(blob(child));
+            Ok(())
+        },
+    )?;
     Ok((references, custody))
 }
 

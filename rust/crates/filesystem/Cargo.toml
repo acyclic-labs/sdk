@@ -210,7 +210,7 @@ required-features = ["local"]
 
 [[example]]
 name = "bench-fs"
-required-features = ["local"]
+required-features = ["local", "native-watch"]
 
 [[example]]
 name = "record_cloud_contract"

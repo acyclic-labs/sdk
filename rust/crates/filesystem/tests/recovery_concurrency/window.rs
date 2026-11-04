@@ -166,12 +166,36 @@ async fn concurrent_open_expiry_and_late_writer_fencing_survive_restart() {
     let restart_store = left_store.inner.clone();
     let first = OperationWindowCoordinator::new(left_store);
     let second = OperationWindowCoordinator::new(right_store);
+    // Both opens read the same empty window before either publishes. Exactly
+    // one conditional publication wins; the other returns its lost revision
+    // without effect, and its caller opens again against the winning window.
     let (left, right) = tokio::join!(
         first.begin(workspace_id, generation(1), "left", 10, 20),
         second.begin(workspace_id, generation(2), "right", 10, 40)
     );
-    let left = left.expect("left lease");
-    let right = right.expect("right lease");
+    let (left, right) = match (left, right) {
+        (Ok(left), Err(OperationWindowError::Contended)) => {
+            let right = second
+                .begin(workspace_id, generation(2), "right", 10, 40)
+                .await
+                .expect("right lease joins the published window");
+            assert_eq!(right.pinned_parent, generation(1));
+            (left, right)
+        }
+        (Err(OperationWindowError::Contended), Ok(right)) => {
+            let left = first
+                .begin(workspace_id, generation(1), "left", 10, 20)
+                .await
+                .expect("left lease joins the published window");
+            assert_eq!(left.pinned_parent, generation(2));
+            (left, right)
+        }
+        (left, right) => panic!(
+            "racing opens must publish exactly once: left {:?}, right {:?}",
+            left.map(|lease| lease.pinned_parent),
+            right.map(|lease| lease.pinned_parent)
+        ),
+    };
     assert_eq!(left.pinned_parent, right.pinned_parent);
 
     drop(first);

@@ -32,7 +32,7 @@ where
             return Err(MountSourceError::Stale.into());
         }
         let retained = {
-            let mut checkout = adapter::await_lock(
+            let mut checkout = adapter::await_with_cancellation(
                 self.authored.shared_checkout().lock(),
                 &mut carrier,
                 cancellation,
@@ -162,7 +162,7 @@ where
         cancellation: &CancellationToken,
     ) -> Result<(), MountSourceError> {
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
-        let retained = adapter::await_lock(
+        let retained = adapter::await_with_cancellation(
             self.authored.shared_checkout().lock(),
             &mut carrier,
             cancellation,

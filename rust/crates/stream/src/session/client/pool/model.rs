@@ -4,7 +4,7 @@ use super::*;
 mod follow_data;
 pub use follow_data::verify_follow_data;
 mod cancellation;
-pub use cancellation::verify_cancel_before_open;
+pub use cancellation::{verify_cancel_before_open, verify_cancelled_queued_open};
 
 /// Models the real abandonment fence, wake registration, new Open and late error.
 pub fn verify_abandoned_reconnect(broken: bool) {
@@ -294,6 +294,31 @@ pub fn verify_link_isolation(broken: bool) {
     loom::model(move || {
         let (mut pool, mut healthy) = fixture(&channel);
         let bad = Arc::clone(&pool.links["bad"].sender);
+        struct ResponseOwner(Arc<AtomicU64>);
+        impl Drop for ResponseOwner {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::Release);
+            }
+        }
+        let retired = Arc::new(AtomicU64::new(0));
+        for node in ["bad", "good"] {
+            let owner = ResponseOwner(Arc::clone(&retired));
+            // Only opaque transport I/O is substituted: neither peer replies
+            // or closes. Pool::read and Link::drop remain the shipping code.
+            pool.read(
+                node.into(),
+                Box::pin(stream::poll_fn(move |_| {
+                    let _ = &owner;
+                    std::task::Poll::Pending
+                })),
+            );
+        }
+        let notified = Arc::new(AtomicU64::new(0));
+        let wake =
+            std::task::Waker::from(std::sync::Arc::new(RegistrationWake(Arc::clone(&notified))));
+        let mut cx = std::task::Context::from_waker(&wake);
+        assert!(pool.reads.poll_next_unpin(&mut cx).is_pending());
+        notified.store(0, Ordering::Release);
         let events = Arc::new(signal::Signal::new());
         let bad_events = Arc::clone(&events);
         let failing = loom::thread::spawn(move || {
@@ -369,6 +394,22 @@ pub fn verify_link_isolation(broken: bool) {
         );
         assert!(!pool.links.contains_key("bad"));
         assert!(pool.links.contains_key("good"));
+        assert!(
+            notified.load(Ordering::Acquire) > 0,
+            "link loss must notify its pending response read"
+        );
+        let std::task::Poll::Ready(Some((node, epoch, response, terminal))) =
+            pool.reads.poll_next_unpin(&mut cx)
+        else {
+            panic!("link loss must complete its pending response read");
+        };
+        assert_eq!((node.as_str(), epoch), ("bad", 1));
+        assert!(terminal.is_none());
+        assert_eq!(retired.load(Ordering::Acquire), 0);
+        drop(response);
+        assert_eq!(retired.load(Ordering::Acquire), 1);
+        assert!(pool.reads.poll_next_unpin(&mut cx).is_pending());
+        assert_eq!(retired.load(Ordering::Acquire), 1);
         assert!(matches!(
             loom::future::block_on(bad.next()),
             Err(StreamError::Unavailable)

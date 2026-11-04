@@ -1,0 +1,11 @@
+--- a/rust/crates/harness/src/local/host_files.rs
++++ b/rust/crates/harness/src/local/host_files.rs
+@@ -1063,7 +1063,7 @@
+                 return Error::after_cleanup(outcome.map(drop), Err(native_file_error(error)));
+             }
+         }
+-        tracked.insert(Tracked::Answered(outcome.err().map(Box::new)));
++        tracked.insert(Tracked::Answered(None));
+         Ok(())
+     }
+ }

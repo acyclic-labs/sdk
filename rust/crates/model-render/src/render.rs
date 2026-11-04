@@ -166,42 +166,122 @@ impl Tail {
 /// One conversation array element. The renderer owns separators, so an
 /// element writes only its own JSON, or nothing when the target drops it.
 pub trait Segment {
-    /// Writes this element for `target`. For a written Gemini element,
-    /// returns whether it is a model turn when that is known.
+    /// Whether this item has a visible projection on the selected target.
+    ///
+    /// # Errors
+    /// A missing admitted projection.
+    fn selected(&self, target: &Provenance) -> Result<bool, RenderError>;
+
+    /// Writes the selected element. A summary instruction may extend a final
+    /// Gemini user turn; returns whether it consumed that instruction.
     ///
     /// # Errors
     /// A projection refusal or the first writer refusal; never retried.
     fn write(
         &self,
         target: &Provenance,
+        instruction: Option<&str>,
         writer: &mut impl Write,
-    ) -> Result<Option<bool>, RenderError>;
+    ) -> Result<bool, RenderError>;
 }
 
 impl<T: Segment + ?Sized> Segment for &T {
+    fn selected(&self, target: &Provenance) -> Result<bool, RenderError> {
+        (**self).selected(target)
+    }
     fn write(
         &self,
         target: &Provenance,
+        instruction: Option<&str>,
         writer: &mut impl Write,
-    ) -> Result<Option<bool>, RenderError> {
-        (**self).write(target, writer)
+    ) -> Result<bool, RenderError> {
+        (**self).write(target, instruction, writer)
     }
 }
 
 impl Segment for WireItem {
+    fn selected(&self, target: &Provenance) -> Result<bool, RenderError> {
+        Ok(seg(target, self)?.is_some())
+    }
     fn write(
         &self,
         target: &Provenance,
+        instruction: Option<&str>,
         writer: &mut impl Write,
-    ) -> Result<Option<bool>, RenderError> {
+    ) -> Result<bool, RenderError> {
         let Some(raw) = seg(target, self)? else {
-            return Ok(None);
+            return Ok(false);
         };
+        if let Some(instruction) = instruction
+            && target.family == Family::Gemini
+            && let Some(turn) = self.gemini_turn(raw)
+            && !turn.model
+        {
+            let (prefix, suffix) = raw.get().as_bytes().split_at(turn.parts_end);
+            writer.write_all(prefix).map_err(RenderError::Write)?;
+            if !turn.empty {
+                writer.write_all(b",").map_err(RenderError::Write)?;
+            }
+            serde_json::to_writer(&mut *writer, &SummaryPart { text: instruction })
+                .map_err(json_error)?;
+            writer.write_all(suffix).map_err(RenderError::Write)?;
+            return Ok(true);
+        }
         writer
             .write_all(raw.get().as_bytes())
             .map_err(RenderError::Write)?;
-        Ok(self.gemini_model_turn(raw))
+        Ok(false)
     }
+}
+
+#[derive(serde::Serialize)]
+struct SummaryPart<'a> {
+    text: &'a str,
+}
+
+/// Encode a transient summary part after the original Gemini user parts.
+/// Both the admitted parts and instruction are borrowed; no payload is copied.
+///
+/// # Errors
+/// The original serialization or writer refusal.
+pub fn gemini_summary<T: serde::Serialize>(
+    parts: &[T],
+    instruction: &str,
+    writer: &mut impl Write,
+) -> Result<(), RenderError> {
+    struct Parts<'a, T> {
+        source: &'a [T],
+        instruction: &'a str,
+    }
+    impl<T: serde::Serialize> serde::Serialize for Parts<'_, T> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeSeq;
+            let mut sequence = serializer.serialize_seq(None)?;
+            for part in self.source {
+                sequence.serialize_element(part)?;
+            }
+            sequence.serialize_element(&SummaryPart {
+                text: self.instruction,
+            })?;
+            sequence.end()
+        }
+    }
+    #[derive(serde::Serialize)]
+    struct Content<'a, T> {
+        role: &'static str,
+        parts: Parts<'a, T>,
+    }
+    serde_json::to_writer(
+        writer,
+        &Content {
+            role: "user",
+            parts: Parts {
+                source: parts,
+                instruction,
+            },
+        },
+    )
+    .map_err(json_error)
 }
 
 /// Maps a serializer failure, keeping the caller's writer error typed.
@@ -284,15 +364,14 @@ pub fn render<S: Segment>(
 
 /// Appends one transient summary instruction to the selected epoch range and
 /// disables tool invocation through the summary [`Tail`]. The header and prior
-/// item bytes are identical to ordinary rendering; provider cache hits are a
+/// item bytes are identical to ordinary rendering, except a final Gemini user
+/// turn gains a transient part before its closing array delimiter. Provider cache hits are a
 /// separate guarantee (Anthropic tool-choice changes invalidate message caching).
 ///
 /// # Errors
 /// Refuses Gemini built-in tools before writing any request bytes: its function
 /// calling control cannot disable those tools. Other failures are the same as
-/// [`render`]. A nonempty Gemini range must end with an admitted model turn;
-/// otherwise rendering refuses after the unchanged prefix, before appending an
-/// instruction. No summary instruction is persisted as conversation history.
+/// [`render`]. No summary instruction is persisted as conversation history.
 pub fn render_summary<S: Segment>(
     header: &Header,
     items: impl IntoIterator<Item = S>,
@@ -345,7 +424,7 @@ fn render_request<S: Segment>(
     header: &Header,
     items: impl IntoIterator<Item = S>,
     tail: &Tail,
-    summary: Option<&str>,
+    mut summary: Option<&str>,
     writer: &mut impl Write,
 ) -> Result<(), RenderError> {
     let mut writer = crate::sink::Sink(writer);
@@ -353,27 +432,44 @@ fn render_request<S: Segment>(
         .write_all(header.bytes())
         .map_err(RenderError::Write)?;
     let mut separator = b"".as_slice();
-    let mut last_gemini_model = None;
-    for item in items {
+    let mut write = |item: S, instruction: Option<&str>| {
         let mut element = Element {
             writer: &mut writer,
             separator,
             wrote: false,
         };
-        let turn = item.write(&header.target, &mut crate::sink::Sink(&mut element))?;
+        let appended = item.write(
+            &header.target,
+            instruction,
+            &mut crate::sink::Sink(&mut element),
+        )?;
         if element.wrote {
-            last_gemini_model = Some(turn);
             separator = b",";
+        }
+        Ok::<_, RenderError>(appended)
+    };
+    if header.target.family == Family::Gemini && summary.is_some() {
+        // Hold one selected element so a dropped continuity item cannot hide
+        // the final user turn. Each item is visited once; storage stays fixed.
+        let mut pending = None;
+        for item in items {
+            if item.selected(&header.target)? {
+                if let Some(previous) = pending.replace(item) {
+                    write(previous, None)?;
+                }
+            }
+        }
+        if let Some(last) = pending {
+            if write(last, summary)? {
+                summary = None;
+            }
+        }
+    } else {
+        for item in items {
+            write(item, None)?;
         }
     }
     if let Some(instruction) = summary {
-        if header.target.family == Family::Gemini
-            && last_gemini_model.is_some_and(|role| role != Some(true))
-        {
-            return Err(RenderError::InvalidItem(
-                "Gemini summary range must end at a model turn",
-            ));
-        }
         writer.write_all(separator).map_err(RenderError::Write)?;
         // Serialize borrowed leaves directly into the original sink. There
         // is no Value tree, second message encoder or request-sized buffer.
@@ -393,22 +489,8 @@ fn render_request<S: Segment>(
                 )
             }
             Family::Gemini => {
-                #[derive(serde::Serialize)]
-                struct Part<'a> {
-                    text: &'a str,
-                }
-                #[derive(serde::Serialize)]
-                struct Content<'a> {
-                    role: &'static str,
-                    parts: [Part<'a>; 1],
-                }
-                serde_json::to_writer(
-                    &mut writer,
-                    &Content {
-                        role: "user",
-                        parts: [Part { text: instruction }],
-                    },
-                )
+                gemini_summary::<serde_json::Value>(&[], instruction, &mut writer)?;
+                Ok(())
             }
         }
         .map_err(json_error)?;

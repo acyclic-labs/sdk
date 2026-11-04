@@ -119,22 +119,6 @@ impl InvokeActorRequest {
     pub fn actor_id(&self) -> &ActorId {
         &self.actor_id
     }
-    /// Returns the invocation method.
-    pub fn method(&self) -> &str {
-        &self.method
-    }
-    /// Returns the invocation URL.
-    pub fn url(&self) -> &str {
-        &self.url
-    }
-    /// Returns the invocation body bytes.
-    pub fn body(&self) -> &[u8] {
-        &self.body
-    }
-    /// Returns headers in their original order.
-    pub fn headers(&self) -> &[Header] {
-        &self.headers
-    }
 }
 
 /// Typed invocation response with byte-preserving body and headers.
@@ -231,23 +215,93 @@ impl InvokeWorkerRequest {
     pub fn worker_name(&self) -> &ActorNamespace {
         &self.worker_name
     }
-    /// Returns the invocation method.
-    pub fn method(&self) -> &str {
-        &self.method
-    }
-    /// Returns the invocation URL.
-    pub fn url(&self) -> &str {
-        &self.url
-    }
-    /// Returns the invocation body bytes.
-    pub fn body(&self) -> &[u8] {
-        &self.body
-    }
-    /// Returns headers in their original order.
-    pub fn headers(&self) -> &[Header] {
-        &self.headers
-    }
 }
+
+// Streaming calls use the canonical product metadata. The wire body's
+// field is absent; input belongs only to the original credited Session owner.
+macro_rules! invocation_header {
+    ($request:ident, $header:ident) => {
+        /// Body-free canonical invocation metadata for before-EOF admission.
+        ///
+        /// This retains the original address, ordering and caller provenance;
+        /// it supplies no authorization, operation context or byte capacity.
+        /// Encode its existing wire message as the Session call header and pass
+        /// the original input owner independently. Never collect input here.
+        #[derive(Clone, Debug, PartialEq)]
+        pub struct $header($request);
+
+        impl $header {
+            /// Original validated product metadata, with no buffered body.
+            #[must_use]
+            pub const fn request(&self) -> &$request {
+                &self.0
+            }
+
+            pub(crate) fn into_http_parts(self) -> (String, String, Vec<Header>) {
+                (self.0.method, self.0.url, self.0.headers)
+            }
+        }
+
+        impl $request {
+            /// Returns the invocation method.
+            pub fn method(&self) -> &str {
+                &self.method
+            }
+            /// Returns the invocation URL.
+            pub fn url(&self) -> &str {
+                &self.url
+            }
+            /// Returns the invocation body bytes.
+            pub fn body(&self) -> &[u8] {
+                &self.body
+            }
+            /// Returns headers in their original order.
+            pub fn headers(&self) -> &[Header] {
+                &self.headers
+            }
+
+            /// Move the original body out without copying or allocating.
+            ///
+            /// The header keeps every original metadata field. A caller that
+            /// already owns streaming input constructs the existing request
+            /// with an empty body and uses the checked header conversion.
+            #[must_use]
+            pub fn into_parts(mut self) -> ($header, Vec<u8>) {
+                let body = std::mem::take(&mut self.body);
+                ($header(self), body)
+            }
+        }
+
+        impl TryFrom<$request> for $header {
+            type Error = DomainError;
+
+            fn try_from(request: $request) -> Result<Self, Self::Error> {
+                if !request.body.is_empty() {
+                    return Err(DomainError::Contract(crate::ContractError::InvalidArgument));
+                }
+                // An empty Vec may still retain a former payload allocation.
+                // A header retains metadata only, including for local callers.
+                Ok(request.into_parts().0)
+            }
+        }
+
+        impl TryFrom<wire::$request> for $header {
+            type Error = DomainError;
+
+            fn try_from(request: wire::$request) -> Result<Self, Self::Error> {
+                Self::try_from($request::try_from(request)?)
+            }
+        }
+
+        impl From<$header> for wire::$request {
+            fn from(header: $header) -> Self {
+                header.0.into()
+            }
+        }
+    };
+}
+invocation_header!(InvokeActorRequest, InvokeActorHeader);
+invocation_header!(InvokeWorkerRequest, InvokeWorkerHeader);
 
 macro_rules! deployment_provenance {
     ($($ty:ty),+ $(,)?) => { $(

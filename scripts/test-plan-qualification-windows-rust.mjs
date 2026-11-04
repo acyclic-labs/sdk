@@ -18,9 +18,6 @@ test("Windows setup forwards the lane to every phase and retains its detached jo
 test("Windows Rust tests run independently without changing workspace or ignored-test selection", () => {
   const matrix = lanes;
   const rust = matrix.find(lane => lane.lane === "windows-rust");
-  assert.equal(rust.runner, "blacksmith-32vcpu-windows-2025");
-  assert.equal(rust.workers, 32);
-  assert.ok(readFileSync(".github/actionlint.yaml", "utf8").includes(rust.runner));
   assert.equal(rust.artifact, "");
   assert.equal(matrix.find(lane => lane.lane === "windows").artifact, "stream-native-windows");
   const script = readFileSync("scripts/qualify-ci.ps1", "utf8");
@@ -33,8 +30,6 @@ test("Windows Rust tests run independently without changing workspace or ignored
   assert.doesNotMatch(body, /--no-default-features|--exclude|--skip|--ignored|--retries|-E /);
   assert.doesNotMatch(body, /fork_join/);
   const fork = matrix.find(lane => lane.lane === "windows-fork-join") ?? assert.fail("missing fork/join lane");
-  assert.equal(fork.runner, "blacksmith-16vcpu-windows-2025");
-  assert.equal(fork.workers, 16);
   const forkBody = script.split("    'windows-fork-join' {")[1]?.split("    'windows-napi' {")[0] ?? assert.fail("missing fork/join dispatch");
   assert.ok(forkBody.includes("cargo test -p acyclic-harness --all-features --locked --lib"));
   assert.ok(forkBody.includes("local::host_workspace::tests:: -- --test-threads=4"));

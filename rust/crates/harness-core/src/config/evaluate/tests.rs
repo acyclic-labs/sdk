@@ -4,7 +4,7 @@ use serde_json::json;
 struct Missing;
 
 impl Tree for Missing {
-    fn read<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<Option<Vec<u8>>>> {
+    fn read<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
         Box::pin(std::future::ready(Ok(None)))
     }
 }

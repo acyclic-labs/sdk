@@ -56,7 +56,7 @@ fn calibration_model(broken: bool) {
     });
 }
 
-// The owned permit and its dependency must use the same Loom primitives.
+// Exercise the production owned mutex; only its callers' scheduling is modeled.
 #[cfg(loom)]
 #[path = "models/refresh.rs"]
 mod refresh;
@@ -65,20 +65,46 @@ mod refresh;
 mod usage_snapshot;
 #[test]
 fn usage_snapshot_is_atomic_across_concurrent_counting_and_completion() {
-    loom::model(|| {
+    use acyclic_harness_core::model::{
+        Model, ModelContent, ModelMessage, ModelRequest, ModelRole, PreparedModelRequest,
+    };
+    // Anchors belong to the prepared input owner, including in the model.
+    // Prepare once; each schedule exercises only the original snapshot lock.
+    let input = |messages: &[&str]| {
+        PreparedModelRequest::prepare(
+            ModelRequest {
+                summary: false,
+                compose_tools: false,
+                model: Model::new("openai".into(), "snapshot".into(), "1".into()).unwrap(),
+                messages: messages
+                    .iter()
+                    .map(|text| ModelMessage {
+                        role: ModelRole::User,
+                        content: ModelContent::Text((*text).into()),
+                    })
+                    .collect(),
+                tools: Vec::new(),
+                sampling: Default::default(),
+                max_output_tokens: None,
+            },
+            Default::default(),
+            None,
+        )
+        .unwrap()
+        .observe_input()
+        .unwrap()
+    };
+    let first = usage_snapshot::Usage {
+        input: input(&["one"]),
+        tokens: 5,
+    };
+    let second = usage_snapshot::Usage {
+        input: input(&["one", "two"]),
+        tokens: 11,
+    };
+    assert_ne!(first.input, second.input);
+    loom::model(move || {
         let cell = Arc::new(usage_snapshot::Snapshot::default());
-        let first = usage_snapshot::Usage {
-            digest: [1; 32],
-            messages: 1,
-            bytes: 3,
-            tokens: 5,
-        };
-        let second = usage_snapshot::Usage {
-            digest: [2; 32],
-            messages: 2,
-            bytes: 7,
-            tokens: 11,
-        };
         cell.set(first).unwrap();
         let writer = cell.clone();
         let task = loom::thread::spawn(move || writer.set(second).unwrap());

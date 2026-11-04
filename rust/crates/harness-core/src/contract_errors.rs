@@ -1,5 +1,5 @@
 use super::OperationId;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 use crate::wire::ErrorCode;
 
 /// Reasons an interaction settled without approving its action. Tool callers
@@ -77,8 +77,11 @@ impl HeadlessOutcome {
     /// Classify a settled error, preserving the original outcome through cleanup.
     #[must_use]
     pub fn from_error(error: &Error) -> Self {
+        if let Error::Command(failure) = error {
+            return failure.classification.outcome;
+        }
         if let Error::Cleanup(failure) = error {
-            return failure.outcome;
+            return failure.classification.outcome;
         }
         if matches!(error, Error::GoalBlocked(_)) {
             return Self::Blocked;
@@ -118,6 +121,12 @@ impl HeadlessOutcome {
 /// Errors shared by harness surfaces.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// One command's cached facts and original local cause or remote diagnostic.
+    #[error("{0}")]
+    Command(#[source] Box<CommandFailure>),
+    /// The command completed but its result could not fit the admitted output bound.
+    #[error("command {0} output omitted")]
+    OutputOmitted(OperationId),
     /// An operation and its independently completed cleanup both failed.
     #[error("{0}")]
     Cleanup(#[source] CleanupFailure),
@@ -477,6 +486,21 @@ pub(crate) fn native_work_error_code(
     }
 }
 
+/// Classify the original cause without formatting or copying its diagnostic.
+#[cfg(feature = "filesystem")]
+fn filesystem_error_code(source: &acyclic_fs::FsError) -> ErrorCode {
+    use acyclic_fs::{AuthorityStoreError, FsError};
+    match source {
+        FsError::InvalidAccessPolicy => ErrorCode::Unauthorized,
+        FsError::UnauthenticatedAccessFacts => ErrorCode::Unsupported,
+        FsError::Authority(AuthorityStoreError::Missing) => ErrorCode::NotFound,
+        FsError::Cancelled(_) => ErrorCode::Cancelled,
+        #[cfg(not(target_arch = "wasm32"))]
+        FsError::NativeKernel(cause) => native_work_error_code(cause),
+        _ => ErrorCode::Storage,
+    }
+}
+
 /// Wire classification of a retained Machines cause.
 #[cfg(feature = "machines")]
 const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::wire::ErrorCode {
@@ -501,6 +525,44 @@ const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::
 }
 
 impl Error {
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn workspace_error_code(source: &acyclic_fs::WorkspaceError) -> ErrorCode {
+        use acyclic_fs::WorkspaceError;
+        match source {
+            WorkspaceError::AccessDenied => ErrorCode::Unauthorized,
+            WorkspaceError::Filesystem(source) => filesystem_error_code(source),
+            WorkspaceError::NotFound => ErrorCode::NotFound,
+            WorkspaceError::RetentionConflict
+            | WorkspaceError::StaleGeneration
+            | WorkspaceError::StaleSource
+            | WorkspaceError::StaleIdentity => ErrorCode::Conflict,
+            WorkspaceError::Name(_)
+            | WorkspaceError::Path(_)
+            | WorkspaceError::NamespacePath(_)
+            | WorkspaceError::ReadLimitExceeded
+            | WorkspaceError::NotRegularFile
+            | WorkspaceError::NotDirectory
+            | WorkspaceError::IsDirectory
+            | WorkspaceError::DirectoryNotEmpty
+            | WorkspaceError::ForeignGeneration
+            | WorkspaceError::IncompatibleWorkspace
+            | WorkspaceError::NoCommonAncestor
+            | WorkspaceError::LineageLimit
+            | WorkspaceError::JoinLimit
+            | WorkspaceError::StaleTarget
+            | WorkspaceError::InvalidMergeResolution
+            | WorkspaceError::ChangeSetContinuity
+            | WorkspaceError::ChangedPathLimit
+            | WorkspaceError::EmptyContentSet
+            | WorkspaceError::NotFork
+            | WorkspaceError::ContentLengthOverflow
+            | WorkspaceError::Work(_)
+            | WorkspaceError::WorkMerge { .. } => ErrorCode::Invalid,
+            WorkspaceError::Cancelled(_) => ErrorCode::Cancelled,
+            WorkspaceError::Engine(_) => ErrorCode::Storage,
+        }
+    }
+
     /// Join an operation with cleanup that has already completed. Neither
     /// concrete cause is discarded. An uncertain cleanup takes precedence over
     /// a settled operation's wire class, so an adapter cannot report settlement.
@@ -519,16 +581,54 @@ impl Error {
                     &primary
                 };
                 Err(Self::Cleanup(CleanupFailure {
-                    code: classification.code(),
-                    outcome: HeadlessOutcome::from_error(classification),
-                    uncertain: primary.uncertain() || cleanup.uncertain(),
-                    effect_uncertain: primary.leaves_effect_uncertain()
-                        || cleanup.leaves_effect_uncertain(),
-                    outcome_uncertain: primary.leaves_outcome_uncertain()
-                        || cleanup.leaves_outcome_uncertain(),
+                    classification: ErrorClassification {
+                        code: classification.code(),
+                        outcome: HeadlessOutcome::from_error(classification),
+                        operation_id: primary.operation_id().or_else(|| cleanup.operation_id()),
+                        uncertain: primary.uncertain() || cleanup.uncertain(),
+                        effect_uncertain: primary.leaves_effect_uncertain()
+                            || cleanup.leaves_effect_uncertain(),
+                        outcome_uncertain: primary.leaves_outcome_uncertain()
+                            || cleanup.leaves_outcome_uncertain(),
+                        native_failure: true,
+                        tool_failure: false,
+                        model_failure: false,
+                    },
+                    request_operation_id: primary
+                        .request_operation_id()
+                        .or_else(|| cleanup.request_operation_id()),
                     causes: Box::new([primary, cleanup]),
                 }))
             }
+        }
+    }
+
+    /// The original operation, including a failed cleanup's receipt
+    /// when the primary failure has none. Nested cleanups retain this identity
+    /// at their join, so reading it never traverses their causes.
+    #[must_use]
+    pub fn operation_id(&self) -> Option<OperationId> {
+        match self {
+            Self::Command(failure) => failure.classification.operation_id,
+            Self::OutputOmitted(operation) => Some(*operation),
+            Self::Indeterminate(id)
+            | Self::CommandIndeterminate {
+                operation_id: id, ..
+            } => Some(*id),
+            Self::Cleanup(failure) => failure.classification.operation_id,
+            _ => None,
+        }
+    }
+
+    /// The original command request, separate from an uncertain effect's identity.
+    /// Cleanup caches it at the join rather than traversing retained causes.
+    #[must_use]
+    pub fn request_operation_id(&self) -> Option<OperationId> {
+        match self {
+            Self::Command(failure) => Some(failure.operation),
+            Self::OutputOmitted(operation) => Some(*operation),
+            Self::Cleanup(failure) => failure.request_operation_id,
+            _ => None,
         }
     }
 
@@ -569,7 +669,9 @@ impl Error {
     pub fn code(&self) -> crate::wire::ErrorCode {
         use crate::wire::ErrorCode;
         match self {
-            Self::Cleanup(failure) => failure.code,
+            Self::Command(failure) => failure.classification.code,
+            Self::OutputOmitted(_) => ErrorCode::Invalid,
+            Self::Cleanup(failure) => failure.classification.code,
             Self::NotFound(_) => ErrorCode::NotFound,
             Self::Conflict(_) | Self::ExactEdit(_) => ErrorCode::Conflict,
             Self::FilesystemAccessConfiguration(_)
@@ -618,31 +720,15 @@ impl Error {
             | Self::NativeSchema { code, .. }
             | Self::NativeReservation { code, .. } => *code,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::NativeWorkspace { source, .. }
-                if matches!(
-                    source.as_ref(),
-                    acyclic_fs::WorkspaceError::NotFound
-                        | acyclic_fs::WorkspaceError::Filesystem(acyclic_fs::FsError::Authority(
-                            acyclic_fs::AuthorityStoreError::Missing,
-                        ))
-                ) =>
-            {
-                ErrorCode::NotFound
-            }
+            Self::NativeWorkspace { source, .. } => Self::workspace_error_code(source),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::NativeFilesystem { source, .. }
-                if matches!(source.as_ref(), acyclic_fs::FsError::InvalidAccessPolicy) =>
-            {
-                ErrorCode::Unauthorized
-            }
+            Self::NativeFilesystem { source, .. } => filesystem_error_code(source),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeConstruction { .. }
             | Self::NativeSupervisor { .. }
             | Self::NativeSource { .. }
-            | Self::NativeWorkspace { .. }
             | Self::NativeDrivenJoin { .. }
-            | Self::NativeStageUncertain { .. }
-            | Self::NativeFilesystem { .. } => ErrorCode::Storage,
+            | Self::NativeStageUncertain { .. } => ErrorCode::Storage,
             #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
             Self::NativeView { .. } | Self::NativeTimeout { .. } => ErrorCode::Storage,
             #[cfg(all(
@@ -668,6 +754,9 @@ impl Error {
     /// Native work, storage and uncertain publication errors are never provider outcomes.
     #[must_use]
     pub(crate) fn is_model_failure(&self) -> bool {
+        if let Self::Command(failure) = self {
+            return failure.classification.model_failure;
+        }
         matches!(self, Self::ModelUnavailable { .. })
             || matches!(self, Self::ModelDiagnostic { code, .. }
                 if !matches!(code, crate::wire::ErrorCode::Storage
@@ -677,8 +766,11 @@ impl Error {
 
     /// An accepted effect that ended this way may have happened: reconcile it, never reject it.
     pub(crate) fn leaves_effect_uncertain(&self) -> bool {
+        if let Self::Command(failure) = self {
+            return failure.classification.effect_uncertain;
+        }
         if let Self::Cleanup(failure) = self {
-            return failure.effect_uncertain;
+            return failure.classification.effect_uncertain;
         }
         #[cfg(feature = "machines")]
         if matches!(self, Self::MachineOwnership(_)) {
@@ -699,8 +791,11 @@ impl Error {
     /// publication) uncertain. A failed task is the one storage-coded failure that is settled.
     #[doc(hidden)]
     pub fn leaves_outcome_uncertain(&self) -> bool {
+        if let Self::Command(failure) = self {
+            return failure.classification.outcome_uncertain;
+        }
         if let Self::Cleanup(failure) = self {
-            return failure.outcome_uncertain;
+            return failure.classification.outcome_uncertain;
         }
         use crate::wire::ErrorCode;
         !matches!(self, Self::TaskFailed { .. })
@@ -718,8 +813,11 @@ impl Error {
     /// classifier every wrapper of a harness error asks.
     #[must_use]
     pub fn uncertain(&self) -> bool {
+        if let Self::Command(failure) = self {
+            return failure.classification.uncertain;
+        }
         if let Self::Cleanup(failure) = self {
-            return failure.uncertain;
+            return failure.classification.uncertain;
         }
         use crate::wire::ErrorCode;
         !matches!(self, Self::TaskFailed { .. })
@@ -735,6 +833,9 @@ impl Error {
     /// A tool's definitive refusal is model feedback. Native accounting and
     /// producer faults remain harness failures even when their wire code is Invalid.
     pub(crate) fn is_tool_failure(&self) -> bool {
+        if let Self::Command(failure) = self {
+            return failure.classification.tool_failure;
+        }
         if self.uncertain() || matches!(self, Self::Cleanup(_)) {
             return false;
         }
@@ -750,10 +851,25 @@ impl Error {
             } | Self::NativeSchema {
                 code: crate::wire::ErrorCode::Invalid,
                 ..
-            } | Self::NativeWorkspace { .. }
-                | Self::NativeFilesystem { .. }
+            } | Self::NativeFilesystem { .. }
         ) {
             return true;
+        }
+        // A retained workspace cause is model feedback only as a definitive
+        // refusal; exhausted work stays a harness failure despite its Invalid code.
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Self::NativeWorkspace { source, .. } = self {
+            use crate::wire::ErrorCode;
+            return !matches!(
+                **source,
+                acyclic_fs::WorkspaceError::Work(_) | acyclic_fs::WorkspaceError::WorkMerge { .. }
+            ) && matches!(
+                Self::workspace_error_code(source),
+                ErrorCode::Invalid
+                    | ErrorCode::NotFound
+                    | ErrorCode::Conflict
+                    | ErrorCode::Unauthorized
+            );
         }
         !self.is_native_failure() || matches!(self, Self::Process(_))
     }
@@ -788,6 +904,8 @@ impl Error {
     #[doc(hidden)]
     pub fn is_native_failure(&self) -> bool {
         match self {
+            Self::Command(failure) => failure.classification.native_failure,
+            Self::OutputOmitted(_) => true,
             Self::Cleanup(_) => true,
             Self::ModelContextOverflow
             | Self::NotFound(_)
@@ -862,16 +980,174 @@ impl Error {
     }
 }
 
+/// A command failure's semantic facts. Construction reads the real error's
+/// classifiers once; decoding never infers them from its code or display.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ErrorClassification {
+    #[serde(with = "classification_code")]
+    code: crate::wire::ErrorCode,
+    outcome: HeadlessOutcome,
+    operation_id: Option<OperationId>,
+    uncertain: bool,
+    effect_uncertain: bool,
+    outcome_uncertain: bool,
+    native_failure: bool,
+    tool_failure: bool,
+    model_failure: bool,
+}
+
+impl Error {
+    /// Constant-time classification, including arbitrarily nested cleanup.
+    #[must_use]
+    pub fn classification(&self) -> ErrorClassification {
+        match self {
+            Self::Command(failure) => return failure.classification,
+            Self::Cleanup(failure) => return failure.classification,
+            _ => {}
+        }
+        ErrorClassification {
+            code: self.code(),
+            outcome: HeadlessOutcome::from_error(self),
+            operation_id: self.operation_id(),
+            uncertain: self.uncertain(),
+            effect_uncertain: self.leaves_effect_uncertain(),
+            outcome_uncertain: self.leaves_outcome_uncertain(),
+            native_failure: self.is_native_failure(),
+            tool_failure: self.is_tool_failure(),
+            model_failure: self.is_model_failure(),
+        }
+    }
+}
+
+/// The original request's fixed semantic facts, separate from its uncertain effect.
+/// Local failures retain their actual cause; remote replies retain only the
+/// admitted diagnostic projection. Classification never traverses either.
+#[derive(Debug)]
+pub struct CommandFailure {
+    operation: OperationId,
+    classification: ErrorClassification,
+    cause: CommandCause,
+}
+
+#[derive(Debug)]
+enum CommandCause {
+    Original(Error),
+    Projection(Option<String>),
+}
+
+impl CommandFailure {
+    /// The actual local failure, if this command failed on this host.
+    #[must_use]
+    pub fn original(&self) -> Option<&Error> {
+        match &self.cause {
+            CommandCause::Original(error) => Some(error),
+            CommandCause::Projection(_) => None,
+        }
+    }
+
+    /// The admitted remote diagnostic, absent when the byte bound omitted it.
+    #[must_use]
+    pub fn diagnostic(&self) -> Option<&str> {
+        match &self.cause {
+            CommandCause::Projection(diagnostic) => diagnostic.as_deref(),
+            CommandCause::Original(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for CommandFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.cause {
+            CommandCause::Original(error) => {
+                write!(formatter, "command {}: {error}", self.operation)
+            }
+            CommandCause::Projection(diagnostic) => formatter.write_str(
+                diagnostic
+                    .as_deref()
+                    .unwrap_or("command failed; diagnostic omitted"),
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CommandFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.original().map(|error| error as &dyn std::error::Error)
+    }
+}
+
+impl Error {
+    /// Retain one request's original failure and cache its classification once.
+    /// An already scoped outcome, including cleanup, needs no further allocation.
+    #[must_use]
+    pub fn for_request(self, operation: OperationId) -> Self {
+        if self.request_operation_id() == Some(operation) {
+            return self;
+        }
+        let classification = self.classification();
+        Self::Command(Box::new(CommandFailure {
+            operation,
+            classification,
+            cause: CommandCause::Original(self),
+        }))
+    }
+
+    /// An admitted request has no trustworthy terminal reply. Its original
+    /// observation or decoding failure remains available for reconciliation.
+    #[must_use]
+    pub fn reply_unavailable(operation: OperationId, cause: Self) -> Self {
+        let classification = ErrorClassification {
+            native_failure: true,
+            ..Self::Indeterminate(operation).classification()
+        };
+        Self::Command(Box::new(CommandFailure {
+            operation,
+            classification,
+            cause: CommandCause::Original(cause),
+        }))
+    }
+}
+
+impl ErrorClassification {
+    /// Reconstruct a remote diagnostic projection, without manufacturing native custody.
+    pub fn into_error(self, operation: OperationId, diagnostic: Option<String>) -> Result<Error> {
+        if self.outcome == HeadlessOutcome::Completed {
+            return Err(Error::Invalid("a failure cannot report completion".into()));
+        }
+        Ok(Error::Command(Box::new(CommandFailure {
+            operation,
+            classification: self,
+            cause: CommandCause::Projection(diagnostic),
+        })))
+    }
+}
+
+mod classification_code {
+    use crate::wire::ErrorCode;
+    use serde::{Deserialize as _, de::Error as _};
+
+    pub fn serialize<S: serde::Serializer>(
+        code: &ErrorCode,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_i32(*code as i32)
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        decoder: D,
+    ) -> Result<ErrorCode, D::Error> {
+        ErrorCode::try_from(i32::deserialize(decoder)?).map_err(D::Error::custom)
+    }
+}
+
 /// Both original errors and their classification at the cleanup boundary.
 /// Classification reads cached facts rather than traversing nested cleanups.
 #[derive(Debug)]
 pub struct CleanupFailure {
     causes: Box<[Error; 2]>,
-    code: crate::wire::ErrorCode,
-    outcome: HeadlessOutcome,
-    uncertain: bool,
-    effect_uncertain: bool,
-    outcome_uncertain: bool,
+    classification: ErrorClassification,
+    request_operation_id: Option<OperationId>,
 }
 
 impl CleanupFailure {
@@ -1096,7 +1372,11 @@ mod cleanup_tests {
         for original in 0..7 {
             for retirement in 0..7 {
                 let primary = cause(original);
-                let cleanup = cause(retirement);
+                let cleanup = if retirement == 4 {
+                    Error::Indeterminate(OperationId::from_bytes([8; 16]))
+                } else {
+                    cause(retirement)
+                };
                 let primary_code = primary.code();
                 let cleanup_code = cleanup.code();
                 let uncertain = primary.uncertain() || cleanup.uncertain();
@@ -1110,6 +1390,18 @@ mod cleanup_tests {
                 };
                 assert_eq!(failure.primary().code(), primary_code);
                 assert_eq!(failure.cleanup().code(), cleanup_code);
+                let expected_operation = if original == 4 {
+                    OperationId::from_bytes([7; 16]).to_string()
+                } else if retirement == 4 {
+                    OperationId::from_bytes([8; 16]).to_string()
+                } else {
+                    String::new()
+                };
+                assert_eq!(
+                    crate::wire_codec::encode_error(&joined).operation_id,
+                    expected_operation,
+                    "wire cleanup must retain the original operation receipt"
+                );
                 if original == 4 {
                     assert!(matches!(failure.primary(), Error::Indeterminate(id)
                         if *id == OperationId::from_bytes([7; 16])));
@@ -1137,6 +1429,11 @@ mod cleanup_tests {
                 assert_eq!(nested.uncertain(), uncertain);
                 assert_eq!(nested.leaves_effect_uncertain(), effect_uncertain);
                 assert_eq!(nested.leaves_outcome_uncertain(), outcome_uncertain);
+                assert_eq!(
+                    crate::wire_codec::encode_error(&nested).operation_id,
+                    expected_operation,
+                    "later cleanup must retain the original operation receipt"
+                );
             }
             let error = Error::after_cleanup::<()>(Err(cause(original)), Ok(())).unwrap_err();
             assert_eq!(error.code(), cause(original).code());

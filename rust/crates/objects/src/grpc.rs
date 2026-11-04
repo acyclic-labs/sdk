@@ -229,37 +229,14 @@ impl GrpcObjects {
     }
 }
 
-/// Maps canonical service details, falling back to stable transport categories.
-fn error_from_status(status: &tonic::Status) -> Error {
-    if let Some(stopped) = std::error::Error::source(status)
-        .and_then(|source| source.downcast_ref::<acyclic_auth::operation::Stopped>())
-    {
-        return (*stopped).into();
-    }
-    if let Ok(detail) = wire::ErrorDetail::decode(status.details())
-        && let Ok(code) = wire::ErrorCode::try_from(detail.code)
-        && code != wire::ErrorCode::Unspecified
-    {
-        return code.into();
-    }
-    match status.code() {
-        tonic::Code::InvalidArgument => wire::ErrorCode::InvalidArgument,
-        tonic::Code::NotFound => wire::ErrorCode::NotFound,
-        tonic::Code::PermissionDenied | tonic::Code::Unauthenticated => {
-            wire::ErrorCode::AccessDenied
-        }
-        tonic::Code::ResourceExhausted => wire::ErrorCode::QuotaExceeded,
-        tonic::Code::OutOfRange => wire::ErrorCode::RangeNotSatisfiable,
-        tonic::Code::Unimplemented => wire::ErrorCode::Unsupported,
-        tonic::Code::DataLoss => wire::ErrorCode::Corrupt,
-        tonic::Code::DeadlineExceeded => wire::ErrorCode::DeadlineElapsed,
-        _ => wire::ErrorCode::Unavailable,
-    }
-    .into()
-}
+/// Canonical status message; a member's own message is retained as its refusal.
+const MESSAGE: &str = "objects operation failed";
+/// Product metadata this protocol owns and stamps on every response itself.
+const OWNED: &[&str] = &[REVISION, MINIMUM_REVISION];
 
-fn status(error: Error) -> tonic::Status {
-    let code = match error.code {
+/// The status `code` encodes to when it carries no refusal.
+fn canonical(code: wire::ErrorCode, detail: &[u8]) -> acyclic_auth::refusal::Canonical<'_> {
+    let status = match code {
         wire::ErrorCode::InvalidArgument
         | wire::ErrorCode::DigestMismatch
         | wire::ErrorCode::Unspecified => tonic::Code::InvalidArgument,
@@ -276,14 +253,68 @@ fn status(error: Error) -> tonic::Status {
         wire::ErrorCode::Corrupt => tonic::Code::DataLoss,
         wire::ErrorCode::Unavailable | wire::ErrorCode::OutcomeUnknown => tonic::Code::Unavailable,
     };
-    let detail = wire::ErrorDetail {
-        code: error.code as i32,
-        request_id: String::new(),
-    };
-    tonic::Status::with_details(
-        code,
-        "objects operation failed",
-        detail.encode_to_vec().into(),
+    acyclic_auth::refusal::Canonical {
+        code: status as i32,
+        message: MESSAGE,
+        details: detail,
+        owned: OWNED,
+    }
+}
+
+/// The canonical detail for `error`'s code and cause.
+fn detail(error: &Error) -> Vec<u8> {
+    wire::ErrorDetail::from(error).encode_to_vec()
+}
+
+/// Maps canonical service details, falling back to stable transport
+/// categories; whatever else the member said is retained as its refusal.
+fn error_from_status(status: &tonic::Status) -> Error {
+    if let Some(stopped) = std::error::Error::source(status)
+        .and_then(|source| source.downcast_ref::<acyclic_auth::operation::Stopped>())
+    {
+        return (*stopped).into();
+    }
+    let mut error = wire::ErrorDetail::decode(status.details())
+        .ok()
+        .and_then(Error::from_detail)
+        .unwrap_or_else(|| {
+            match status.code() {
+                tonic::Code::InvalidArgument => wire::ErrorCode::InvalidArgument,
+                tonic::Code::NotFound => wire::ErrorCode::NotFound,
+                tonic::Code::PermissionDenied | tonic::Code::Unauthenticated => {
+                    wire::ErrorCode::AccessDenied
+                }
+                tonic::Code::ResourceExhausted => wire::ErrorCode::QuotaExceeded,
+                tonic::Code::OutOfRange => wire::ErrorCode::RangeNotSatisfiable,
+                tonic::Code::Unimplemented => wire::ErrorCode::Unsupported,
+                tonic::Code::DataLoss => wire::ErrorCode::Corrupt,
+                tonic::Code::DeadlineExceeded => wire::ErrorCode::DeadlineElapsed,
+                _ => wire::ErrorCode::Unavailable,
+            }
+            .into()
+        });
+    error.refusal = acyclic_auth::refusal::Refusal::capture(
+        status.code() as i32,
+        status.message(),
+        status.details(),
+        status.metadata().as_ref(),
+        canonical(error.code, &detail(&error)),
+        error.cause().cloned(),
+    );
+    error
+}
+
+fn status(error: Error) -> tonic::Status {
+    let detail = detail(&error);
+    let parts = acyclic_auth::refusal::Refusal::encode(
+        error.refusal.as_ref(),
+        canonical(error.code, &detail),
+    );
+    tonic::Status::with_details_and_metadata(
+        tonic::Code::from_i32(parts.code),
+        parts.message,
+        parts.details,
+        tonic::metadata::MetadataMap::from_headers(parts.metadata),
     )
 }
 

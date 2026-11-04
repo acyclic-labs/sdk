@@ -7,12 +7,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 mod admission;
 mod continuation;
 mod encoding;
+pub use encoding::InputAnchor;
 
 /// Complete immutable provider-neutral model request.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(deny_unknown_fields)]
 pub struct ModelRequest {
+    /// Generate a summary from the context preceding the final user instruction.
+    /// Declarations stay in the header; the renderer disables invocation in the trailer.
+    pub summary: bool,
     /// Pinned model selection.
     pub model: Model,
     /// Ordered reconstructable context.
@@ -32,6 +36,25 @@ pub struct ModelRequest {
     pub max_output_tokens: Option<u32>,
 }
 impl ModelRequest {
+    /// Separates the transient summary instruction from its selected context.
+    /// Ordinary requests expose the whole conversation without an instruction.
+    pub fn split_summary_instruction(&self) -> Result<(&[ModelMessage], Option<&ModelContent>)> {
+        if !self.summary {
+            return Ok((&self.messages, None));
+        }
+        let Some((instruction, messages)) = self.messages.split_last() else {
+            return Err(Error::Invalid(
+                "summary request lacks its final user instruction".into(),
+            ));
+        };
+        if instruction.role != ModelRole::User {
+            return Err(Error::Invalid(
+                "summary request must end with its user instruction".into(),
+            ));
+        }
+        Ok((messages, Some(&instruction.content)))
+    }
+
     /// Native declarations sent to providers. Dynamic code capabilities retain
     /// their validation schemas here and are announced through tools.changed.
     pub fn model_tools(&self) -> impl Iterator<Item = &crate::tool::ToolDefinition> {
@@ -329,10 +352,12 @@ pub struct PreparedModelRequest {
     request: ModelRequest,
     bytes: acyclic_stream::OwnedBytes,
     request_digest: [u8; 32],
+    replay_key: std::sync::OnceLock<[u8; 32]>,
     projection_nodes: AtomicUsize,
     admitted_limits: Limits,
     instruction_remaining: u64,
     encoding: Vec<encoding::EncodingPrefix>,
+    input: encoding::Input,
     content_admission: Option<admission::ContentAdmission>,
     #[cfg(feature = "filesystem")]
     resident_payload: Option<u64>,
@@ -344,10 +369,12 @@ impl Clone for PreparedModelRequest {
             request: self.request.clone(),
             bytes: self.bytes.clone(),
             request_digest: self.request_digest,
+            replay_key: self.replay_key.clone(),
             projection_nodes: AtomicUsize::new(self.projection_nodes.load(Ordering::Relaxed)),
             admitted_limits: self.admitted_limits,
             instruction_remaining: self.instruction_remaining,
             encoding: self.encoding.clone(),
+            input: self.input.clone(),
             content_admission: None,
             // Vec and String clones need not retain the producer's capacity.
             // The next continuation inventories its new storage once.
@@ -358,6 +385,19 @@ impl Clone for PreparedModelRequest {
 }
 
 impl PreparedModelRequest {
+    /// Semantic replay identity, retained after its first successful use.
+    /// Warm consumers need no decode, hash, payload copy or history walk;
+    /// requests outside replay pay no hash work. Concurrent cold consumers may
+    /// compute independently, so a failed producer cannot leave a waiter behind.
+    pub fn replay_key(&self) -> Result<[u8; 32]> {
+        if let Some(key) = self.replay_key.get() {
+            return Ok(*key);
+        }
+        let key = super::recorded::replay_key_of(&self.request)?;
+        let _ = self.replay_key.set(key);
+        Ok(key)
+    }
+
     pub(crate) fn take_content_admission(
         &mut self,
         executor: crate::executor::ExecutionJournalCacheId,
@@ -462,6 +502,7 @@ impl PreparedModelRequest {
             bytes_hold = io.guard_bytes(&bytes)?;
             let retained_payload = request.retained_payload_bytes()?;
             request_hold = io.reserve_decode(add(size_of::<Self>() as u64, retained_payload)?)?;
+            request.split_summary_instruction()?;
             let instruction_remaining =
                 request.validate_with_instruction_budget(limits, Some(io))?;
             let request_digest = hash_bytes(&bytes, Some(io))?;
@@ -474,10 +515,12 @@ impl PreparedModelRequest {
                 request,
                 bytes,
                 request_digest,
+                replay_key: std::sync::OnceLock::new(),
                 projection_nodes: AtomicUsize::new(0),
                 admitted_limits: limits,
                 instruction_remaining,
                 encoding: Vec::new(),
+                input: Default::default(),
                 content_admission: None,
                 resident_payload,
             });
@@ -521,6 +564,7 @@ impl PreparedModelRequest {
         instruction_remaining: u64,
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
+        request.split_summary_instruction()?;
         #[cfg(feature = "filesystem")]
         let bytes_hold;
         let bytes: acyclic_stream::OwnedBytes = match io {
@@ -543,10 +587,12 @@ impl PreparedModelRequest {
             request,
             bytes,
             request_digest,
+            replay_key: std::sync::OnceLock::new(),
             projection_nodes: AtomicUsize::new(0),
             admitted_limits: limits,
             instruction_remaining,
             encoding: Vec::new(),
+            input: Default::default(),
             content_admission: None,
             #[cfg(feature = "filesystem")]
             resident_payload,

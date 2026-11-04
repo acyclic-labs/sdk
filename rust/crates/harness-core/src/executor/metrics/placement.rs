@@ -28,19 +28,12 @@ pub fn project(
     selected: &StreamPath,
     record: &Record,
 ) -> Result<Batch> {
-    let refuse = |reason: &str| {
-        export_error(format_args!(
-            "Machine placement {reason}; recovery: read the original settled binding at agent.machine(target), from=1, limit=1"
-        ))
-    };
-    let target = selected
-        .as_str()
-        .strip_prefix(agent.as_str())
-        .and_then(|suffix| suffix.strip_prefix("/machines/"))
-        .filter(|target| !target.is_empty() && !target.contains('/'))
-        .ok_or_else(|| refuse("has a foreign source or target"))?;
-    let binding = MachineBinding::decode(target, record)?;
-    let mut row = Row::stream(Some(agent.as_str()), account, selected, record, "placement");
+    let binding = MachineBinding::decode_selected(agent, selected, record)?;
+    let mut row = Row::stream(
+        Some(agent.as_str()),
+        crate::live::resources::Source::project(account, selected, record),
+        "placement",
+    );
     row.binding_version = Some(binding.version);
     row.provider = Some(
         serde_json::to_string(binding.machine.as_resource().provider()).map_err(export_error)?,

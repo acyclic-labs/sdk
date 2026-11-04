@@ -7,7 +7,7 @@ use proptest::test_runner::TestCaseResult;
 type MemoryWorkspace = Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>;
 type MemoryTransaction = Transaction<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>;
 type Output = (
-    Result<GenerationId, String>,
+    Result<BTreeMap<String, FileKind>, String>,
     BTreeMap<String, Result<Vec<u8>, String>>,
     WorkCounters,
     acyclic_test_support::AllocationInfo,
@@ -43,6 +43,43 @@ async fn commit(transaction: &mut MemoryTransaction) -> Result<GenerationId, Str
         | crate::TransactionCommit::AlreadyCommitted(generation) => Ok(generation.id()),
         _ => Err("unexpected publication outcome".to_owned()),
     }
+}
+
+/// Every name and kind the published head binds. File identities are not
+/// compared: an authored creation's identity includes its working file table
+/// and its ordinal in the compiled batch (#1951), so it depends on whether the
+/// same files were staged serially or as one batch.
+async fn namespace(workspace: &MemoryWorkspace) -> Result<BTreeMap<String, FileKind>, String> {
+    let cancellation = CancellationToken::new();
+    let mut names = BTreeMap::new();
+    let mut pending = vec!["/".to_owned()];
+    while let Some(directory) = pending.pop() {
+        let mut after = None;
+        loop {
+            let (page, _allocation) = value!(workspace.list_directory(
+                &directory,
+                after.as_ref(),
+                64,
+                WorkBudget::UNBOUNDED,
+                &cancellation
+            ))
+            .map_err(|error| format!("{error:?}"))?;
+            for entry in &page.entries {
+                let name = String::from_utf8(entry.name.as_bytes().to_vec())
+                    .map_err(|error| error.to_string())?;
+                let path = format!("{}/{name}", directory.trim_end_matches('/'));
+                if entry.kind == FileKind::Directory {
+                    pending.push(path.clone());
+                }
+                names.insert(path, entry.kind);
+            }
+            if !page.has_more {
+                break;
+            }
+            after = page.entries.last().map(|entry| entry.name.clone());
+        }
+    }
+    Ok(names)
 }
 
 async fn initialize() -> (MemoryWorkspace, MemoryTransaction) {
@@ -148,15 +185,17 @@ fn pair(
                 });
             });
             let result = match result {
-                Ok(()) => runtime.block_on(commit(&mut transaction)),
+                Ok(()) => runtime.block_on(async {
+                    let published = commit(&mut transaction).await?;
+                    let head = workspace
+                        .head(WorkBudget::UNBOUNDED, &cancellation)
+                        .await
+                        .map_err(|failure| format!("{:?}", failure.error))?;
+                    assert_eq!(head.value.id(), published);
+                    namespace(&workspace).await
+                }),
                 Err(error) => Err(format!("{error:?}")),
             };
-            if let Ok(id) = &result {
-                let head = runtime
-                    .block_on(workspace.head(WorkBudget::UNBOUNDED, &cancellation))
-                    .unwrap();
-                assert_eq!(head.value.id(), *id);
-            }
             let mut bytes = BTreeMap::new();
             for path in observed {
                 let read = runtime
@@ -189,6 +228,7 @@ fn equivalent(
     let expected_error = invalid.then(|| format!("{:?}", WorkspaceError::NotRegularFile));
     prop_assert_eq!(old.0.as_ref().err(), expected_error.as_ref());
     prop_assert_eq!(new.0.as_ref().err(), expected_error.as_ref());
+    prop_assert_eq!(&old.0, &new.0);
     prop_assert_eq!(&old.1, &new.1);
     prop_assert_eq!(old_trace, new_trace);
     Ok(())

@@ -2,6 +2,22 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 
+// The returned native cause and physical exit are independent observations.
+// A successful exit cannot erase a selected startup or execution failure.
+export function executionSucceeded(result) {
+  assert.equal(result.termination?.startup_rejection ?? result.termination?.execution_failure,
+    undefined, "selected native execution reported failure");
+  if (result.code !== 0) assert.equal(result.code, 0, `executable exit ${result.code}: ${result.stderr}`);
+  assert.equal(result.signal, null, "executable was interrupted");
+}
+
+// A selected native execution also owns the original report-ready exchange.
+// Output, exit and a diagnostic ACK cannot substitute for that capability.
+export function requireReportCapability(result, recovery) {
+  assert.equal(result.report_capability?.ready, true,
+    `step=admit selected native report capability; recovery=${recovery}`);
+}
+
 // JSONL replies carry either a committed answer or an explicit message error.
 // The same contract applies to live, scripted and multi-turn acceptance.
 export function messageReply(value, id) {
@@ -22,6 +38,20 @@ export function jsonlReply(stdout, id) {
 
 export async function fileBytes(path, expected) {
   assert.deepEqual(await readFile(path), Buffer.from(expected, "utf8"), path);
+}
+
+// Both public FileReadSource variants retain identity inside their envelope.
+export function fileRead(result, path, expected) {
+  assert.equal(result.text, expected, "read returned different file bytes");
+  const variants = Object.keys(result.file ?? {});
+  assert.equal(variants.length, 1, "read needs exactly one original file source");
+  assert.ok(variants[0] === "authored" || variants[0] === "content", "unknown file read source");
+  const file = result.file[variants[0]];
+  assert.equal(file?.path, path, "read names a different file");
+  assert.ok(typeof file?.volume?.id === "string" && file.volume.id.length > 0, "read lost its volume identity");
+  assert.ok(variants[0] === "authored" ? file.generation !== undefined : typeof file.version === "string",
+    "read lost its selected revision");
+  return file;
 }
 
 // A request notification is the mock's commit boundary: append and flush precede
@@ -56,6 +86,8 @@ export function subset(actual, expected) {
 // admit one, regardless of the enclosing process's successful exit.
 export function toolOutcome(value, expectedErrors, recovery, caseId) {
   const error = value && typeof value === "object" ? value.error
+    ?? (value.version === 2 && Array.isArray(value.context) ? value.output?.error : undefined)
+    ?? (Array.isArray(value.settled) ? value.settled.find(child => child.phase?.done?.outcome?.failed)?.phase.done.outcome.failed : undefined)
     ?? (value.success === false || (typeof value.exit_code === "number" && value.exit_code !== 0)
       ? `tool reported success=${value.success}, exit_code=${value.exit_code}` : undefined)
     : typeof value === "string" && value.startsWith("tool executor rejected the admitted call (") ? value : undefined;
@@ -77,6 +109,25 @@ export function toolResults(records) {
   return [...new Set(results)];
 }
 
+// Evidence names a provider body, never an observer's path or diagnostic.
+// Each selected body is encoded once for all presence/absence queries.
+export function modelInputs(expected, generations) {
+  const all = expected.model_contains?.length || expected.model_absent?.length
+    || expected.each_model_contains?.length || expected.each_model_absent?.length;
+  if (!all && !expected.last_model_contains?.length && !expected.last_model_absent?.length) return;
+  const selected = all || generations.length === 0 ? generations : [generations.at(-1)];
+  const inputs = selected.map(request => JSON.stringify(request.body));
+  const last = inputs.at(-1) ?? "";
+  for (const text of expected.model_contains ?? []) assert.ok(inputs.some(input => input.includes(text)), `model wire missing ${text}`);
+  for (const text of expected.model_absent ?? []) assert.ok(inputs.every(input => !input.includes(text)), `model wire contains forbidden ${text}`);
+  for (const text of expected.last_model_contains ?? []) assert.ok(last.includes(text), `final model input missing ${text}`);
+  for (const text of expected.last_model_absent ?? []) assert.ok(!last.includes(text), `final model input contains forbidden ${text}`);
+  for (const [index, input] of inputs.entries()) {
+    for (const text of expected.each_model_contains ?? []) assert.ok(input.includes(text), `model input ${index} missing ${text}`);
+    for (const text of expected.each_model_absent ?? []) assert.ok(!input.includes(text), `model input ${index} contains forbidden ${text}`);
+  }
+}
+
 export function requests(test, records) {
   const generations = records.filter(record => ["responses", "messages", "chat/completions"].includes(record.path)
     || /^models\/[^/]+:streamGenerateContent(?:\?alt=sse)?$/.test(record.path));
@@ -85,16 +136,7 @@ export function requests(test, records) {
   assert.deepEqual(records.filter(record => record.step !== null).map(record => record.step).sort((a,b) => a-b), [...expected].sort((a,b) => a-b), "each expected script step consumed exactly once");
   assert.ok(records.every(record => record.status !== 409), "unmatched model request");
   for (const expected of test.assert.http ?? []) assert.ok(records.some(record => subset(record, expected)), `missing HTTP request ${JSON.stringify(expected)}`);
-  const wire = JSON.stringify(records), last = JSON.stringify(generations.at(-1)?.body);
-  for (const text of test.assert.model_contains ?? []) assert.ok(wire.includes(text), `model wire missing ${text}`);
-  for (const text of test.assert.model_absent ?? []) assert.ok(!wire.includes(text), `model wire contains forbidden ${text}`);
-  for (const text of test.assert.last_model_contains ?? []) assert.ok(last.includes(text), `final model input missing ${text}`);
-  for (const text of test.assert.last_model_absent ?? []) assert.ok(!last.includes(text), `final model input contains forbidden ${text}`);
-  for (const [index, request] of generations.entries()) {
-    const input = JSON.stringify(request.body);
-    for (const text of test.assert.each_model_contains ?? []) assert.ok(input.includes(text), `model input ${index} missing ${text}`);
-    for (const text of test.assert.each_model_absent ?? []) assert.ok(!input.includes(text), `model input ${index} contains forbidden ${text}`);
-  }
+  modelInputs(test.assert, generations);
   // Auxiliary search/fetch requests have independent, non-conversation schemas.
   const outputs = toolResults(generations).map(value => { try { return JSON.parse(value); } catch { return value; } });
   for (const expected of test.assert.tool_results ?? []) assert.ok(outputs.some(value => subset(value, expected)), `step=assert exact tool result; actual tool result missing exact value ${JSON.stringify(expected)}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${test.id}`);

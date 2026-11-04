@@ -62,9 +62,13 @@ struct Model {
 
 impl Model {
     fn new(fault: Fault, result: Outcome) -> Self {
+        Self::with_provider(MemoryStream::default(), fault, result)
+    }
+
+    fn with_provider(provider: MemoryStream, fault: Fault, result: Outcome) -> Self {
         let root = StreamPath::new("caller").expect("root");
         Self {
-            provider: MemoryStream::default(),
+            provider,
             call: CallPath::new(&root, "c1").expect("call"),
             fence: StreamPath::new("executor/sessions/1/ended").expect("fence"),
             fault,
@@ -659,4 +663,156 @@ pub async fn check(bytes: &[u8]) -> Result<(), String> {
         model.step(hop).await?;
     }
     model.step(Hop::Cancel).await
+}
+
+/// Capture the original committed call records, with independent decoded and
+/// contextual dispositions. Provider metadata comes from real commits.
+pub async fn codec_seeds(
+    clock: std::sync::Arc<dyn acyclic_stream::UnixMillisClock>,
+) -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
+    use acyclic_stream::{MemoryLimits, wire_codec};
+    use prost::Message as _;
+    use std::sync::Arc;
+
+    let mut seeds = Vec::new();
+    for (name, outcome, requested, accepted, fenced) in [
+        (
+            "call-ok",
+            Outcome::Ok(OwnedBytes::from(&b"done"[..])),
+            true,
+            true,
+            false,
+        ),
+        (
+            "call-error",
+            Outcome::Error("refused: λ".into()),
+            false,
+            true,
+            true,
+        ),
+        (
+            "call-cancelled-accepted",
+            Outcome::Cancelled("stop".into()),
+            true,
+            true,
+            true,
+        ),
+        (
+            "call-cancelled",
+            Outcome::Cancelled("stop".into()),
+            true,
+            false,
+            false,
+        ),
+        (
+            "call-indeterminate",
+            Outcome::Indeterminate("unknown".into()),
+            false,
+            false,
+            false,
+        ),
+    ] {
+        let model = Model::with_provider(
+            MemoryStream::new_with_clock(MemoryLimits::default(), Arc::clone(&clock)),
+            Fault::None,
+            outcome.clone(),
+        );
+        let call = &model.call;
+        let fence = StreamPath::new("codec/executor/ended").map_err(Error::Stream)?;
+        let acceptance = Accepted {
+            executor: OwnedBytes::from(&b"executor"[..]),
+            fence: fenced.then_some(fence),
+        };
+        let mut steps = Vec::new();
+        if requested {
+            let body = OwnedBytes::from(&b"request"[..]);
+            steps.push((
+                "call-request",
+                call.request(body.clone())?,
+                Entry::Request(body),
+            ));
+        }
+        if accepted {
+            steps.push((
+                if fenced {
+                    "call-accepted-fenced"
+                } else {
+                    "call-accepted"
+                },
+                call.accept(&acceptance, requested)?,
+                Entry::Accepted(acceptance.clone()),
+            ));
+            let body = OwnedBytes::from(&b"\x00\xffchunk"[..]);
+            steps.push((
+                if fenced {
+                    "call-chunk-fenced"
+                } else {
+                    "call-chunk"
+                },
+                call.chunk(acceptance.fence.as_ref(), body.clone())?,
+                Entry::Chunk(body),
+            ));
+        }
+        steps.push((
+            name,
+            call.settle(acceptance.fence.as_ref(), &outcome)?,
+            Entry::Terminal(outcome.clone()),
+        ));
+        let mut journal = Journal::default();
+        for (index, (label, commit, expected)) in steps.into_iter().enumerate() {
+            let key = IdempotencyKey::new(format!("{name}/{index}")).map_err(Error::Stream)?;
+            assert!(matches!(
+                model
+                    .provider
+                    .commit(commit.request(key))
+                    .await
+                    .map_err(Error::Stream)?,
+                CommitOutcome::Committed(_)
+            ));
+            let mut records = model.records(call.log(), journal.next()).await?;
+            assert_eq!(records.len(), 1, "one original call append per commit");
+            let record = records.pop().expect("original committed call record");
+            let bytes = wire_codec::record_wire(record, None).encode_to_vec();
+            let record = wire_codec::record(
+                acyclic_stream::wire::Record::decode(bytes.as_slice()).expect("original call wire"),
+                None,
+            )
+            .map_err(Error::Stream)?;
+            assert_eq!(
+                Entry::decode(&record)?,
+                expected,
+                "call writer must admit its committed record"
+            );
+            let contextual = match &expected {
+                Entry::Terminal(Outcome::Cancelled(reason)) if accepted => Entry::Terminal(
+                    Outcome::Indeterminate(format!("cancelled after acceptance: {reason}")),
+                ),
+                _ => expected,
+            };
+            assert_eq!(
+                journal.apply(&record)?,
+                contextual,
+                "call reader must retain its acceptance context"
+            );
+            // Keep one original capture per wire shape. Other topologies still
+            // pass through the same independent producer admission above.
+            if !seeds.iter().any(|(name, _)| *name == label) {
+                seeds.push((label, bytes));
+            }
+        }
+        let receipt = journal
+            .receipt(call.log())
+            .expect("original terminal receipt");
+        assert_eq!(receipt.request.is_some(), requested);
+        assert!(receipt.terminal.is_some());
+        assert_eq!(
+            receipt.outcome,
+            if accepted && matches!(outcome, Outcome::Cancelled(_)) {
+                Outcome::Indeterminate("cancelled after acceptance: stop".into())
+            } else {
+                outcome
+            }
+        );
+    }
+    Ok(seeds)
 }

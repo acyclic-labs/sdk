@@ -1,4 +1,6 @@
 //! Replay captured inputs and check their recorded provenance.
+//! An optional target, or captured-name prefix containing `/`, scopes the same
+//! checks to matching inputs.
 use sha2::{Digest as _, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -39,8 +41,23 @@ fn external_expectations() -> Result<BTreeMap<String, (String, String)>, Box<dyn
     Ok(expectations)
 }
 
-fn replay() -> Result<usize, Box<dyn Error>> {
+/// Whether `name` is selected: a bare target selects that whole target, and a
+/// selector containing `/` selects captured names with that prefix.
+fn selects(selected: Option<&str>, name: &str) -> bool {
+    selected.is_none_or(|selected| {
+        if selected.contains('/') {
+            name.starts_with(selected)
+        } else {
+            name.split_once('/')
+                .is_some_and(|(target, _)| target == selected)
+        }
+    })
+}
+
+fn replay(selected: Option<&str>, entry: Option<&str>) -> Result<usize, Box<dyn Error>> {
+    std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))?;
     let mut expectations = external_expectations()?;
+    expectations.retain(|name, _| selects(selected, name));
     let sources = [
         ("corpus", std::fs::read_to_string("corpus/SOURCES.tsv")?),
         ("external", std::fs::read_to_string("corpus/EXTERNAL.tsv")?),
@@ -60,6 +77,9 @@ fn replay() -> Result<usize, Box<dyn Error>> {
                 return Err(format!("duplicate captured name: {name}").into());
             }
             let (target, _) = name.split_once('/').ok_or("captured name has no target")?;
+            if !selects(selected, name) {
+                continue;
+            }
             let bytes = std::fs::read(Path::new("corpus").join(name))?;
             if bytes.len() != length.parse::<usize>()?
                 || hex::encode(Sha256::digest(&bytes)) != *digest
@@ -79,21 +99,19 @@ fn replay() -> Result<usize, Box<dyn Error>> {
             } else {
                 None
             };
-            match std::panic::catch_unwind(|| {
-                acyclic_codec_fuzz::exercise(target, &bytes)?;
+            let entry = entry.unwrap_or(target);
+            std::panic::catch_unwind(|| {
+                acyclic_codec_fuzz::exercise(entry, &bytes)?;
                 if let Some((codec, method)) = &expectation {
                     acyclic_codec_fuzz::admit_external(codec, method, &bytes)
                         .map_err(|error| format!("positive external admission {name}: {error}"))?;
                 }
                 Ok::<(), String>(())
-            }) {
-                Ok(result) => result?,
-                Err(_) => {
-                    return Err(format!(
-                        "decoder oracle {name} panicked; recovery: cargo +nightly fuzz run --fuzz-dir . {target} corpus/{name}"
-                    ).into());
-                }
-            }
+            })
+            .unwrap_or_else(|_| Err("panicked".into()))
+            .map_err(|error| format!(
+                "decoder oracle {name} (entry {entry}) failed: {error}; recovery: cargo +nightly fuzz run --fuzz-dir . {entry} corpus/{name}"
+            ))?;
             count += 1;
         }
     }
@@ -107,16 +125,27 @@ fn replay() -> Result<usize, Box<dyn Error>> {
 }
 
 fn main() {
-    match std::panic::catch_unwind(replay) {
+    let mut arguments = std::env::args().skip(1);
+    let selected = arguments.next();
+    let entry = arguments.next();
+    let recovery = format!(
+        "cargo run --locked --example replay -- {}",
+        [selected.as_deref(), entry.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    match std::panic::catch_unwind(|| replay(selected.as_deref(), entry.as_deref())) {
         Ok(Ok(count)) => println!("replayed {count} captured inputs"),
         Ok(Err(error)) => {
             eprintln!(
-                "corpus replay failed: {error}; recovery after correcting the reported mismatch: cargo run --example replay"
+                "corpus replay failed: {error}; recovery after correcting the reported mismatch: {recovery}"
             );
             std::process::exit(1);
         }
         Err(_) => {
-            eprintln!("corpus decoder validation panicked; recovery: cargo run --example replay");
+            eprintln!("corpus decoder validation panicked; recovery: {recovery}");
             std::process::exit(1);
         }
     }

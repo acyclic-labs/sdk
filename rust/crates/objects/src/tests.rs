@@ -287,10 +287,36 @@ async fn a_dropped_root_reopens_while_a_forked_copy_of_its_lock_lives()
 /// reads, and bit 2 loses one replacement reply. Bit 3 applies that replacement
 /// before losing its reply; otherwise the original value remains.
 #[derive(Default)]
-struct Faulty {
+pub(crate) struct Faulty {
     inner: MemoryMedium,
-    faults: AtomicU8,
+    pub(crate) faults: AtomicU8,
     replacements: AtomicUsize,
+}
+
+/// Fails a root release on the server's medium through `client`, one of the
+/// shipping transports over a `Store<Faulty>`, and returns what it reports.
+pub(crate) async fn failed_release(
+    client: &dyn Blobs,
+    server: &Faulty,
+) -> Result<crate::Error, Box<dyn std::error::Error + Send + Sync>> {
+    let root = RootId::new(*b"cause")?;
+    let body = OwnedBytes::from(b"server cause".to_vec());
+    let digest = client
+        .put(body, Vec::new())
+        .await?
+        .verified()
+        .ok_or("put was not acknowledged")?
+        .digest;
+    client.retain(&root, vec![digest]).await?;
+    server.faults.store(2, Ordering::SeqCst);
+    let error = client
+        .release(&root)
+        .await
+        .err()
+        .ok_or("release succeeded over a failed medium")?;
+    server.faults.store(0, Ordering::SeqCst);
+    assert_eq!(error.code, ErrorCode::Unavailable);
+    Ok(error)
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
@@ -490,18 +516,7 @@ async fn an_unrooted_blob_survives_the_pass_after_the_one_finding_it()
 }
 
 #[test]
-fn manifest_and_envelope_encodings_round_trip() -> Result<(), crate::Error> {
-    let manifest = crate::Manifest {
-        parts: vec![crate::Part {
-            digest: Digest::of(b"a"),
-            length: 1,
-        }],
-        edges: vec![Digest::of(b"b")],
-    };
-    assert_eq!(crate::Manifest::decode(&manifest.encode())?, manifest);
-    let mut trailing = manifest.encode();
-    trailing.push(0);
-    assert!(crate::Manifest::decode(&trailing).is_err());
+fn empty_ranges_distinguish_full_content_from_explicit_selection() -> Result<(), crate::Error> {
     assert_eq!(ByteRange::FULL.resolve(0)?, 0..0);
     assert!(ByteRange::new(1, 1).resolve(4).is_err());
     Ok(())

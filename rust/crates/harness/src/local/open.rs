@@ -544,7 +544,11 @@ fn scopes(
         ]);
     }
     for volume in [project, scratch] {
-        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+        for operation in [
+            VolumeOperation::Read,
+            VolumeOperation::Write,
+            VolumeOperation::Delete,
+        ] {
             grants.push(volume.capability(operation, &mut None)?);
         }
         grants.push(volume.directory_read_capability("", &mut None)?);
@@ -666,8 +670,10 @@ fn configure_tools(config: &mut LocalHarnessConfig) -> Result<ToolRegistry> {
 async fn fence_stale_processes(
     path: std::path::PathBuf,
 ) -> Result<Arc<acyclic_native_runtime::ProcessCustody>> {
-    tokio::task::spawn_blocking(move || acyclic_native_runtime::ProcessCustody::acquire(&path))
-        .await
-        .map_err(storage)?
-        .map_err(storage)
+    acyclic_native_runtime::spawn_blocking(move || {
+        acyclic_native_runtime::ProcessCustody::acquire(&path)
+    })
+    .await
+    .map_err(storage)?
+    .map_err(storage)
 }

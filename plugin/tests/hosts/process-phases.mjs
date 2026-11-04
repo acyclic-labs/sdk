@@ -27,7 +27,7 @@ const required=['node-spawn','stdin-write-admitted','stdin-write-complete','stdi
 // In particular, transcript write completion is not pipe arrival, stdin finish
 // is not child consumption, and Node close is not native tree retirement.
 export class ProcessPhases {
- #operation; #ordinal; #report; #times=Object.create(null); #exit;
+ #operation; #ordinal; #report; #times=Object.create(null); #exit; #latest=0;
  constructor(operation) {this.#operation=operation;}
  observe(event) {
   if(event.operation!==this.#operation)return;
@@ -38,7 +38,9 @@ export class ProcessPhases {
   this.#report??=report;assert.deepEqual(report,this.#report,'original selected report binding changed');
   assert.ok(phases.has(event.phase),'unknown physical phase');
   assert.ok(!Object.hasOwn(this.#times,event.phase),'duplicate physical phase');
-  assert.ok(Number.isFinite(event.elapsed_seconds)&&event.elapsed_seconds>=0);
+  assert.ok(Number.isFinite(event.elapsed_seconds)&&event.elapsed_seconds>=this.#latest,
+   'step=admit native process clock; recovery=node --test plugin/tests/hosts/process-phases.test.mjs');
+  this.#latest=event.elapsed_seconds;
   this.#times[event.phase]=event.elapsed_seconds;
   if(event.phase==='node-exit')this.#exit={code:event.code,signal:event.signal};
  }

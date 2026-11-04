@@ -1,8 +1,31 @@
-//! Owning Actors dispatch on the same authority and credit boundaries as follows.
+//! Product dispatch on the same original authority and credit boundaries as follows.
 use super::*;
 use futures::TryStreamExt as _;
 
-/// Verified admission for one canonical Actors invocation. Only session
+/// Canonical product target decoded by the owning call provider before dispatch.
+/// It names the requested operation; only the original session credential can
+/// authorize it. It is never read from a peer-selected authority header.
+pub struct CallTarget {
+    pub(super) resource: String,
+    pub(super) action: &'static str,
+}
+
+impl CallTarget {
+    /// Validate one exact resource/action pair at the product ingress boundary.
+    /// The resource and declared action must name the same product.
+    pub fn new(resource: String, action: &'static str) -> Result<Self, StreamError> {
+        if !acyclic_auth::valid_resource(&resource)
+            || !acyclic_auth::valid_action(action)
+            || resource.split_once(":/").map(|(product, _)| product)
+                != action.split_once('/').map(|(product, _)| product)
+        {
+            return Err(StreamError::InvalidArgument);
+        }
+        Ok(Self { resource, action })
+    }
+}
+
+/// Verified admission for one canonical product invocation. Only session
 /// admission constructs this value. It contains no caller-supplied identity.
 #[derive(Clone)]
 pub struct CallAuthorization(pub(super) ResourceAuthorization);
@@ -31,7 +54,7 @@ impl CallAuthorization {
         self.0.principal()
     }
 
-    /// Recheck current credential/trust and the owner's current actor policy at
+    /// Recheck current credential/trust and the owner's current product policy at
     /// dispatch. The canonical resource must remain within the admitted target.
     pub fn authorize(
         &self,
@@ -49,9 +72,9 @@ impl CallAuthorization {
 
 /// Product-owned decoding/routing, without another session or transport loop.
 pub trait CallProvider: crate::ProviderPlatform + 'static {
-    /// Validate/decode the canonical Actors invocation and return its exact
-    /// canonical actor resource. This phase MUST NOT perform I/O or dispatch.
-    fn resource(&self, invocation: &[u8]) -> Result<String, StreamError>;
+    /// Validate/decode the canonical invocation and derive its exact product
+    /// resource and declared action. This phase MUST NOT perform I/O or dispatch.
+    fn target(&self, invocation: &[u8]) -> Result<CallTarget, StreamError>;
 
     /// Dispatch once after credential admission. The owner derives identity from
     /// `authorization`, checks current actor policy before staging/mutation, and
@@ -84,12 +107,21 @@ pub(super) enum InputReleased {
     Stopped(wire::SessionChannel),
 }
 
+/// Original receive credit retained by one call input fragment.
+///
+/// Only the admitted Session producer constructs this owner. Its public name
+/// lets downstream bodies declare `BodyChunk<CallInputCredit>` as their data
+/// type without exposing or replacing the original credit-return mechanism.
+pub struct CallInputCredit {
+    _original: signal::Guard<InputReleased>,
+}
+
 /// One original admitted call's input. Data retains its original receive
 /// credit; EOF is successful only after the explicit input terminal. Losing
 /// the session or its producer returns the original typed cause, or
 /// `Unavailable` when the producer disappeared without a terminal.
 pub struct CallInput {
-    data: tokio::sync::mpsc::Receiver<crate::body::BodyChunk<signal::Guard<InputReleased>>>,
+    data: tokio::sync::mpsc::Receiver<crate::body::BodyChunk<CallInputCredit>>,
     terminal: Option<oneshot::Receiver<Result<wire::SessionInputEnd, StreamError>>>,
     end: Option<wire::SessionInputEnd>,
     failed: bool,
@@ -111,58 +143,45 @@ impl CallInput {
     /// Consume one original input fragment without returning its capacity.
     pub async fn next_chunk(
         &mut self,
-    ) -> Result<Option<crate::body::BodyChunk<impl Sized + use<>>>, StreamError> {
+    ) -> Result<Option<crate::body::BodyChunk<CallInputCredit>>, StreamError> {
+        future::poll_fn(|cx| self.poll_chunk(cx)).await
+    }
+
+    /// Poll the SAME original input owner from a downstream body adapter.
+    /// Registers both original producer events before waiting; it does not
+    /// collect, allocate a future or introduce another credit/terminal loop.
+    /// Failure wins over queued data and is returned once. Successful terminal
+    /// metadata remains available while the original queued data drains.
+    pub fn poll_chunk(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<Option<crate::body::BodyChunk<CallInputCredit>>, StreamError>> {
+        use std::{future::Future as _, pin::Pin, task::Poll};
         if self.failed {
-            return Ok(None);
+            return Poll::Ready(Ok(None));
         }
-        loop {
-            let Some(terminal) = self.terminal.as_mut() else {
-                return Ok(self.data.recv().await);
-            };
-            let event = {
-                let data = self.data.recv();
-                futures::pin_mut!(data);
-                match future::select(terminal, data).await {
-                    future::Either::Left((terminal, _)) => future::Either::Left(terminal),
-                    future::Either::Right((data, _)) => future::Either::Right(data),
-                }
-            };
-            match event {
-                future::Either::Left(terminal) => {
-                    self.terminal = None;
-                    match terminal.unwrap_or(Err(StreamError::Unavailable)) {
-                        Ok(end) => self.end = Some(end),
-                        Err(error) => {
-                            self.failed = true;
-                            self.data.close();
-                            while self.data.try_recv().is_ok() {}
-                            return Err(error);
-                        }
-                    }
-                }
-                future::Either::Right(Some(data)) => return Ok(Some(data)),
-                future::Either::Right(None) => {
-                    // The terminal and data producers are the same owner.
-                    // Dropping it settles the terminal even with credit held.
-                    let result = self
-                        .terminal
-                        .take()
-                        .ok_or(StreamError::Unavailable)?
-                        .await
-                        .unwrap_or(Err(StreamError::Unavailable));
-                    match result {
-                        Ok(end) => self.end = Some(end),
-                        Err(error) => {
-                            self.failed = true;
-                            return Err(error);
-                        }
-                    }
-                    return Ok(None);
+        if let Some(terminal) = self.terminal.as_mut()
+            && let Poll::Ready(result) = Pin::new(terminal).poll(cx)
+        {
+            self.terminal = None;
+            match result.unwrap_or(Err(StreamError::Unavailable)) {
+                Ok(end) => self.end = Some(end),
+                Err(error) => {
+                    self.failed = true;
+                    self.data.close();
+                    // Only this call's fixed receive window can be queued.
+                    while self.data.try_recv().is_ok() {}
+                    return Poll::Ready(Err(error));
                 }
             }
         }
+        match self.data.poll_recv(cx) {
+            // The SAME producer closes data and settles terminal. Its terminal
+            // waker was installed above, including a concurrent final drop.
+            Poll::Ready(None) if self.terminal.is_some() => Poll::Pending,
+            data => data.map(Ok),
+        }
     }
-
     /// Ordered metadata once the original input terminal has been observed.
     #[must_use]
     pub fn trailers(&self) -> Option<&[wire::SessionHeader]> {
@@ -171,7 +190,7 @@ impl CallInput {
 }
 
 pub(super) struct InputProducer {
-    sender: Option<tokio::sync::mpsc::Sender<crate::body::BodyChunk<signal::Guard<InputReleased>>>>,
+    sender: Option<tokio::sync::mpsc::Sender<crate::body::BodyChunk<CallInputCredit>>>,
     terminal: Option<oneshot::Sender<Result<wire::SessionInputEnd, StreamError>>>,
     pub credit: wire::SessionWindow,
     pub next: u64,
@@ -212,13 +231,15 @@ impl InputProducer {
         length: u64,
         released: sync::Arc<signal::Signal<InputReleased>>,
     ) -> Result<(), StreamError> {
-        let credit = signal::Guard::new(
-            released,
-            InputReleased::Credit {
-                identity,
-                bytes: length,
-            },
-        );
+        let credit = CallInputCredit {
+            _original: signal::Guard::new(
+                released,
+                InputReleased::Credit {
+                    identity,
+                    bytes: length,
+                },
+            ),
+        };
         let next = wire_codec::session::input_sequence(self.next, &input)?;
         let Some(Item::ActorCall(bytes)) = input.item else {
             return Err(StreamError::InvalidArgument);

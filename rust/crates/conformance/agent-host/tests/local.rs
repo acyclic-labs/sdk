@@ -86,28 +86,6 @@ async fn shared_benchmark_and_scale_check_native_and_guest_work() -> Result {
     }
     let extra = extra.finish();
     for backend in [native().await?, guest_wire().await?] {
-        let sample = acyclic_agent_host_conformance::bench(&backend).await?;
-        assert_eq!(sample.deliveries, 64);
-        assert_eq!(sample.idle_agents, 0);
-        assert_eq!(sample.turns.len(), sample.deliveries);
-        assert_eq!(
-            sample
-                .turns
-                .iter()
-                .map(|turn| turn.requests.data())
-                .sum::<u64>(),
-            sample.requests.data()
-        );
-        assert_eq!(
-            sample
-                .turns
-                .iter()
-                .map(|turn| turn.requests.control())
-                .sum::<u64>(),
-            sample.requests.control()
-        );
-        assert!(sample.requests.data() >= sample.deliveries as u64);
-        println!("AGENT_BENCH {sample:?}");
         let mut samples = acyclic_agent_host_conformance::scale(
             &backend,
             acyclic_agent_host_conformance::Scale {
@@ -118,6 +96,27 @@ async fn shared_benchmark_and_scale_check_native_and_guest_work() -> Result {
         .await?;
         assert_eq!(samples.small.idle_agents, 4);
         assert_eq!(samples.large.idle_agents, 16);
+        // Scale uses the same checked turn workload as bench. Keep its aggregate
+        // checks on both retained populations instead of running it a third time.
+        for sample in [&samples.small, &samples.large] {
+            assert_eq!(
+                sample
+                    .turns
+                    .iter()
+                    .map(|turn| turn.requests.data())
+                    .sum::<u64>(),
+                sample.requests.data()
+            );
+            assert_eq!(
+                sample
+                    .turns
+                    .iter()
+                    .map(|turn| turn.requests.control())
+                    .sum::<u64>(),
+                sample.requests.control()
+            );
+            assert!(sample.requests.data() >= sample.deliveries as u64);
+        }
         println!("AGENT_SCALE {samples:?}");
 
         let original_small = samples.small.turns[0];
@@ -140,17 +139,5 @@ async fn shared_benchmark_and_scale_check_native_and_guest_work() -> Result {
         samples.large.turns.push(missing);
         samples.validate_dispatch()?;
     }
-    Ok(())
-}
-
-#[tokio::test]
-#[ignore = "on-demand scale qualification: creates 1,000 and 10,000 agents"]
-async fn agent_scale() -> Result {
-    let samples = acyclic_agent_host_conformance::scale(
-        &native().await?,
-        acyclic_agent_host_conformance::Scale::default(),
-    )
-    .await?;
-    println!("AGENT_SCALE {samples:?}");
     Ok(())
 }

@@ -172,24 +172,8 @@ impl<'io> StockExecution<'io> {
                 .await?;
                 return Ok(ToolInvocationOutcome::Interrupted);
             }
-            // A resumed driver settles an unreconcilable effect as a typed
-            // failure instead of running it again; reconciliation records nothing.
-            Ok(None) | Err(Error::Indeterminate(_))
-                if !claimed
-                    && !self.stock.reconciliation_only
-                    && !crate::executor::unsettled_resume::enabled() =>
-            {
-                self.reject_tool_call(
-                    journal,
-                    operation_id,
-                    step,
-                    &invocation.call_id,
-                    ToolFailureKind::Interrupted,
-                    Error::Indeterminate(operation_id),
-                )
-                .await?;
-                return Ok(ToolInvocationOutcome::Interrupted);
-            }
+            // Unknown completion retains the original invocation for later
+            // reconciliation; it does not establish a terminal tool failure.
             Ok(None) | Err(Error::Indeterminate(_)) => {
                 return Err(Error::Indeterminate(operation_id));
             }

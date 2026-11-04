@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/kernel/closure/memory.rs
++++ b/rust/crates/filesystem/src/kernel/closure/memory.rs
+@@ -169,7 +169,7 @@
+                 let mut accounting = state
+                     .try_lock()
+                     .ok_or(crate::FsError::AccountingHandoffActive)?;
+-                let mut frame = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
++                let mut frame = crate::AuthorityWork::new(accounting.remaining()?, cancellation);
+                 let mut work = frame
+                     .scope()
+                     .map_err(crate::ObjectStoreError::from)

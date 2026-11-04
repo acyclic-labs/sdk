@@ -577,3 +577,123 @@ async fn a_transfer_deadline_is_the_callers_alone() -> TestResult {
     }
     Ok(())
 }
+
+/// A member's refusals as Cloud ingress relays them, with and without
+/// canonical details or the server's cause, beside the protocol's own
+/// revision stamp.
+fn member_refusals(code: wire::ErrorCode) -> Vec<tonic::Status> {
+    let unserved = |status: tonic::Status, entries: &[(&'static str, &'static str)]| {
+        let mut status = status;
+        for (name, value) in entries {
+            status
+                .metadata_mut()
+                .append(*name, tonic::metadata::MetadataValue::from_static(*value));
+        }
+        status
+    };
+    let canonical = status(code.into());
+    let cause = acyclic_auth::refusal::Cause {
+        request_id: "member-request".into(),
+        ..acyclic_auth::refusal::Cause::new("objects.medium", "failed")
+    };
+    let caused = status(Error::caused(code, cause));
+    vec![
+        caused.clone(),
+        tonic::Status::with_details(
+            caused.code(),
+            "member-drained",
+            caused.details().to_vec().into(),
+        ),
+        unserved(
+            tonic::Status::unavailable("not-leader"),
+            &[
+                ("acyclic-unserved", "1"),
+                ("acyclic-scope-owner", "7"),
+                ("acyclic-scope-term", "3"),
+            ],
+        ),
+        unserved(
+            tonic::Status::unavailable("authorization-unavailable"),
+            &[("acyclic-unserved", "1")],
+        ),
+        unserved(tonic::Status::internal("heap-unavailable"), &[]),
+        tonic::Status::with_details(
+            canonical.code(),
+            "account-quarantined",
+            canonical.details().to_vec().into(),
+        ),
+        unserved(
+            canonical.clone(),
+            &[("acyclic-unserved-reason", "no-leader")],
+        ),
+        unserved(
+            tonic::Status::permission_denied("denied"),
+            &[("content-type", "application/grpc")],
+        ),
+    ]
+}
+
+fn original(status: &tonic::Status) -> (tonic::Code, String, Vec<u8>, Vec<(String, Vec<u8>)>) {
+    let metadata = status
+        .metadata()
+        .as_ref()
+        .iter()
+        .filter(|(name, _)| {
+            name.as_str().starts_with("acyclic-") && !OWNED.contains(&name.as_str())
+        })
+        .map(|(name, value)| (name.as_str().to_owned(), value.as_bytes().to_vec()))
+        .collect();
+    (
+        status.code(),
+        status.message().to_owned(),
+        status.details().to_vec(),
+        metadata,
+    )
+}
+
+/// Every category, canonical or carrying any member refusal, decodes then
+/// encodes to its original status, and encodes then decodes to itself.
+/// `Unspecified` is not a failure: its detail is indistinguishable from none.
+#[test]
+fn every_member_refusal_round_trips_its_original_status() -> TestResult {
+    for value in 1..=15 {
+        let code = wire::ErrorCode::try_from(value)?;
+        let local = Error::from(code);
+        assert_eq!(error_from_status(&status(local.clone())), local);
+        for relayed in member_refusals(code) {
+            let mut stamped = relayed.clone();
+            stamped.metadata_mut().insert_bin(
+                REVISION,
+                tonic::metadata::MetadataValue::from_bytes(b"protocol-owned"),
+            );
+            let error = error_from_status(&stamped);
+            assert!(
+                error.refusal.is_some(),
+                "{relayed:?} decoded blind as {error:?}"
+            );
+            assert_eq!(original(&status(error.clone())), original(&relayed));
+            assert_eq!(error_from_status(&status(error.clone())), error);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_servers_cause_reaches_the_grpc_client() -> TestResult {
+    let store = crate::Store::new(crate::tests::Faulty::default());
+    let account: Arc<dyn Blobs> = Arc::new(store.account(b"cause")?);
+    let resolve: AccountResolver = Arc::new(move |_| Ok(Arc::clone(&account)));
+    let client = resolved_client(resolve, "cause");
+    let error = crate::tests::failed_release(&client, store.medium()).await?;
+    let cause = acyclic_auth::refusal::Cause::new("objects.medium", "failed");
+    assert_eq!(
+        std::error::Error::source(&error)
+            .and_then(|source| source.downcast_ref::<acyclic_auth::refusal::Cause>()),
+        Some(&cause)
+    );
+    assert_eq!(
+        error.to_string(),
+        "Objects operation failed (Unavailable): objects.medium: failed"
+    );
+    Ok(())
+}

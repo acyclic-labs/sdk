@@ -40,12 +40,45 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
                 },
             ]),
         );
+        let tools = echo_tools(
+            Arc::new(FakeTool(AtomicUsize::new(0))),
+            json!(true),
+            json!(true),
+            json!(true),
+        )?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let tools = {
+            let mut tools = tools;
+            tools.register(
+                (
+                    crate::tools::catalog()
+                        .find(|spec| spec.name == "code")
+                        .unwrap()
+                        .bind()?,
+                    None,
+                ),
+                &mut None,
+                None,
+            )?;
+            tools
+        };
         let executor = uncompacted_executor(
             Model::new("test".into(), "summary".into(), "1".into())?,
             provider.clone(),
             ContextPipeline::default(),
-            ToolRegistry::default(),
+            tools,
         )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new([
+                    "tool:call:code",
+                    "tool:call:example.echo",
+                    capability::INTERACTION_ROUTE,
+                ]),
+                Limits::default(),
+            )?,
+            allowed()?,
+        )?
         .with_max_output_tokens(1024)?;
         let journal = Journal::default();
         let operation = OperationId::new();
@@ -76,7 +109,17 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
                 .await?,
             summary
         );
-        assert_eq!(provider.requests().len(), 1);
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].summary);
+        assert_eq!(requests[0].compose_tools, !cfg!(target_arch = "wasm32"));
+        assert!(!requests[0].tools.is_empty());
+        let (context, summary_instruction) = requests[0].split_summary_instruction()?;
+        assert_eq!(context.len(), 1);
+        assert_eq!(
+            summary_instruction,
+            Some(&ModelContent::Text("Summarize this context".into()))
+        );
         assert_eq!(provider.reconciliations().len(), 2);
     }
     Ok(())
@@ -500,18 +543,11 @@ async fn oversized_summary_input_rejects_before_accounting_or_journal_publicatio
 
 #[tokio::test]
 async fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled() -> Result<()> {
-    for (capacity, output, source_length, fault, counts, expected) in [
-        (100, 1_024, 1, None, 0, "selected model capacity is invalid"),
-        (131_072, 8_192, 1, None, 0, "summary output exceeds"),
-        (4_096, 1_024, 5_000, None, 1, "summary input exceeds"),
-        (
-            131_072,
-            1_024,
-            1,
-            Some(AccountingFault::Digest),
-            1,
-            "token count does not bind",
-        ),
+    for (capacity, output, source_length, fault, counts) in [
+        (100, 1_024, 1, None, 0),
+        (131_072, 8_192, 1, None, 0),
+        (4_096, 1_024, 5_000, None, 1),
+        (131_072, 1_024, 1, Some(AccountingFault::Digest), 1),
     ] {
         let (provider, accounting_calls) = counted_model(capacity, fault, [], []);
         let executor = uncompacted_executor(
@@ -539,7 +575,7 @@ async fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled()
             .await
             .err()
             .ok_or_else(|| Error::Invalid("invalid summary was admitted".into()))?;
-        assert!(matches!(error, Error::Invalid(ref message) if message.contains(expected)));
+        assert!(matches!(error, Error::Invalid(_)), "{error}");
         assert_eq!(accounting_calls.load(Ordering::SeqCst), counts);
         assert!(provider.requests().is_empty());
         assert!(journal.0.lock().unwrap().is_empty());

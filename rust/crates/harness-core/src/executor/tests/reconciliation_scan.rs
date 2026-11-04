@@ -176,14 +176,15 @@ async fn drive(modes: &[Mode]) -> Result<()> {
     let output = loop {
         match executor.execute(input.clone(), &journal).await {
             Ok(output) => break output,
-            Err(Error::Indeterminate(_)) => {}
+            Err(error) if error.uncertain() => {}
             Err(error) => return Err(error),
         }
         retries += 1;
         assert!(retries <= lost, "{modes:?}: retry made no progress");
         let before = settlements(&journal).len();
         match reconciling.execute(input.clone(), &journal).await {
-            Ok(_) | Err(Error::Indeterminate(_)) => {}
+            Ok(_) => {}
+            Err(error) if error.uncertain() => {}
             Err(error) => return Err(error),
         }
         assert_eq!(
@@ -230,34 +231,39 @@ async fn drive(modes: &[Mode]) -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn denied_call_does_not_block_reconciling_a_later_uncertain_call() -> Result<()> {
-    drive(&[Mode::Deny, Mode::Lost]).await?;
-    drive(&[Mode::Ghost, Mode::Lost]).await
-}
-
-proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
-
-    /// Every combination of settled-without-start, settled-with-start, settled success,
-    /// uncertain and unstarted calls in one response is reconciled exactly once, in order.
-    #[test]
-    fn every_call_in_a_response_reconciles_exactly_once(
-        modes in proptest::collection::vec(
-            proptest::prop_oneof![
-                proptest::strategy::Just(Mode::Deny),
-                proptest::strategy::Just(Mode::Ghost),
-                proptest::strategy::Just(Mode::Ok),
-                proptest::strategy::Just(Mode::Fail),
-                proptest::strategy::Just(Mode::Lost),
-            ],
-            1..=5,
-        )
-    ) {
-        tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap()
-            .block_on(drive(&modes))
-            .unwrap();
+/// Settled and uncertain calls reconcile exactly once, including both original
+/// settled-without-start regressions on every run.
+#[test]
+fn every_call_in_a_response_reconciles_exactly_once() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    for first in [Mode::Deny, Mode::Ghost] {
+        runtime.block_on(drive(&[first, Mode::Lost]))?;
     }
+    let modes = proptest::collection::vec(
+        proptest::prop_oneof![
+            proptest::strategy::Just(Mode::Deny),
+            proptest::strategy::Just(Mode::Ghost),
+            proptest::strategy::Just(Mode::Ok),
+            proptest::strategy::Just(Mode::Fail),
+            proptest::strategy::Just(Mode::Lost),
+        ],
+        1..=5,
+    );
+    let config = proptest::test_runner::Config {
+        source_file: Some(file!()),
+        test_name: Some(concat!(
+            module_path!(),
+            "::every_call_in_a_response_reconciles_exactly_once"
+        )),
+        ..proptest::test_runner::Config::with_cases(64)
+    };
+    proptest::test_runner::TestRunner::new(config)
+        .run(&modes, |modes| {
+            runtime.block_on(drive(&modes)).unwrap();
+            Ok(())
+        })
+        .unwrap();
+    Ok(())
 }

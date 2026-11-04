@@ -71,6 +71,16 @@ pub fn session(bytes: &[u8]) -> bool {
     true
 }
 
+fn truncated_header_is_invalid<T>(
+    bytes: &[u8],
+    domain: &[u8],
+    decoded: &Result<T, StreamError>,
+) -> bool {
+    !bytes.starts_with(domain)
+        || bytes.len() >= domain.len() + persistence::FACT_VERSION.len()
+        || matches!(decoded, Err(StreamError::InvalidArgument))
+}
+
 /// Exercise canonical journal commands and immutable retained facts.
 pub fn check(bytes: &[u8]) -> bool {
     #[cfg(feature = "local")]
@@ -90,12 +100,20 @@ pub fn check(bytes: &[u8]) -> bool {
             return false;
         }
     }
-    if let Ok(value) = persistence::decode_observation(bytes, usize::MAX) {
+    let observation = persistence::decode_observation(bytes, usize::MAX);
+    if !truncated_header_is_invalid(bytes, persistence::OBSERVATION_DOMAIN, &observation) {
+        return false;
+    }
+    if let Ok(value) = observation {
         if persistence::encode_observation(&value, usize::MAX).as_deref() != Ok(bytes) {
             return false;
         }
     }
-    if let Ok(value) = persistence::decode_envelope(bytes, usize::MAX) {
+    let envelope = persistence::decode_envelope(bytes, usize::MAX);
+    if !truncated_header_is_invalid(bytes, persistence::ENVELOPE_DOMAIN, &envelope) {
+        return false;
+    }
+    if let Ok(value) = envelope {
         if persistence::encode_envelope(&value, usize::MAX).as_deref() != Ok(bytes) {
             return false;
         }

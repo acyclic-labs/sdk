@@ -488,6 +488,8 @@ fn default_interval() -> u64 {
 struct Identity {
     client: Client,
     endpoint: String,
+    #[cfg(test)]
+    response_values: std::sync::atomic::AtomicUsize,
 }
 
 impl Identity {
@@ -505,18 +507,26 @@ impl Identity {
         Ok(Self {
             client,
             endpoint: url.origin().ascii_serialization(),
+            #[cfg(test)]
+            response_values: Default::default(),
         })
     }
 
-    async fn response(request: reqwest::RequestBuilder) -> Result<Value, Error> {
+    async fn response<T: serde::de::DeserializeOwned + 'static>(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<T, Error> {
         let response = request
             .send()
             .await
             .map_err(|_| Error::new("transport_error", "identity request failed"))?;
-        Self::decode(response).await
+        self.decode(response).await
     }
 
-    async fn decode(response: reqwest::Response) -> Result<Value, Error> {
+    async fn decode<T: serde::de::DeserializeOwned + 'static>(
+        &self,
+        response: reqwest::Response,
+    ) -> Result<T, Error> {
         let status = response.status();
         let bytes = response.bytes().await.map_err(|_| {
             Error::http(
@@ -525,14 +535,14 @@ impl Identity {
                 status,
             )
         })?;
-        let value: Value = serde_json::from_slice(&bytes).map_err(|_| {
-            Error::http(
-                "invalid_response",
-                format!("identity returned non-JSON (HTTP {status})"),
-                status,
-            )
-        })?;
         if !status.is_success() {
+            let value: Value = serde_json::from_slice(&bytes).map_err(|_| {
+                Error::http(
+                    "invalid_response",
+                    format!("identity returned non-JSON (HTTP {status})"),
+                    status,
+                )
+            })?;
             // Both descriptions and arbitrary error codes can echo credentials.
             // Retain only the protocol's fixed control vocabulary.
             let code = match value.get("error").and_then(Value::as_str) {
@@ -560,7 +570,18 @@ impl Identity {
                 status,
             ));
         }
-        Ok(value)
+        #[cfg(test)]
+        if std::any::TypeId::of::<T>() == std::any::TypeId::of::<Value>() {
+            self.response_values
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        serde_json::from_slice(&bytes).map_err(|_| {
+            Error::http(
+                "invalid_response",
+                format!("identity returned an invalid response (HTTP {status})"),
+                status,
+            )
+        })
     }
 
     async fn device_code(&self, kind: &str, store: &Arc<Store>) -> Result<DeviceCode, Error> {
@@ -599,14 +620,14 @@ impl Identity {
             );
         }
         let request = |body: &serde_json::Map<String, Value>| {
-            Self::response(
+            self.response::<DeviceCode>(
                 self.client
                     .post(format!("{}/v1/identity/device/code", self.endpoint))
                     .json(body),
             )
         };
         let mut reconcile_upgrade = false;
-        let value = match request(&body).await {
+        let mut device = match request(&body).await {
             Err(error)
                 if upgrade.is_some()
                     && error.status == Some(StatusCode::UNAUTHORIZED)
@@ -621,8 +642,6 @@ impl Identity {
             }
             result => result?,
         };
-        let mut device: DeviceCode = serde_json::from_value(value)
-            .map_err(|_| Error::new("invalid_response", "invalid device code response"))?;
         if device.device_code.is_empty() || device.user_code.is_empty() || device.expires_in == 0 {
             return Err(Error::new(
                 "invalid_response",
@@ -662,12 +681,13 @@ impl Identity {
                 store.write(endpoint, session)
             })
             .await?;
-        let value = Self::response(
-            self.client
-                .get(format!("{}/v1/identity/orgs", self.endpoint))
-                .bearer_auth(&session.access_token),
-        )
-        .await?;
+        let value: Value = self
+            .response(
+                self.client
+                    .get(format!("{}/v1/identity/orgs", self.endpoint))
+                    .bearer_auth(&session.access_token),
+            )
+            .await?;
         let (org_id, _) = device
             .binding
             .upgrade
@@ -693,7 +713,7 @@ impl Identity {
     }
 
     async fn token(&self, fields: &[(&str, &str)]) -> Result<Session, Error> {
-        let value = Self::response(
+        self.response::<Tokens>(
             self.client
                 .post(format!("{}/v1/identity/token", self.endpoint))
                 .json(
@@ -703,10 +723,8 @@ impl Identity {
                         .collect::<std::collections::BTreeMap<_, _>>(),
                 ),
         )
-        .await?;
-        serde_json::from_value::<Tokens>(value)
-            .map_err(|_| Error::new("invalid_response", "invalid token response"))?
-            .session()
+        .await?
+        .session()
     }
 
     async fn login(
@@ -817,7 +835,7 @@ impl Identity {
                 .map_err(|_| Error::new("transport_error", "identity revocation failed"))?;
         }
         if response.status() != StatusCode::NO_CONTENT {
-            Self::decode(response).await?;
+            self.decode::<Value>(response).await?;
             return Err(Error::new(
                 "invalid_response",
                 "invalid revocation response",
@@ -866,9 +884,9 @@ impl Identity {
                 ));
             }
             session = self.refresh(store, &session).await?;
-            return Self::response(request(&session)).await;
+            return self.response(request(&session)).await;
         }
-        Self::decode(response).await
+        self.decode(response).await
     }
 
     async fn bearer(&self, store: &Arc<Store>, org: &str, output: &Path) -> Result<Value, Error> {

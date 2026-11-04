@@ -77,19 +77,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "acyclic-actors-timer-fuzz"
-version = "0.0.0"
-dependencies = [
- "acyclic-stream",
- "libfuzzer-sys",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "ts-rs",
- "uuid",
-]
-
-[[package]]
 name = "acyclic-actors-wasm"
 version = "0.2.0"
 dependencies = [
@@ -136,6 +123,7 @@ dependencies = [
  "bytes",
  "ed25519-dalek 3.0.0",
  "futures",
+ "http",
  "js-sys",
  "proptest",
  "prost",
@@ -480,7 +468,9 @@ version = "0.0.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-objects",
+ "acyclic-stream",
  "libfuzzer-sys",
+ "prost",
  "serde_json",
 ]
 
@@ -1069,6 +1059,7 @@ dependencies = [
  "compio-driver",
  "dirs",
  "futures-core",
+ "futures-util",
  "getrandom 0.3.4",
  "indexmap",
  "keyring",
@@ -1238,6 +1229,7 @@ dependencies = [
  "libfuzzer-sys",
  "proptest",
  "prost",
+ "serde",
  "serde_json",
 ]
 
@@ -1330,7 +1322,6 @@ dependencies = [
  "futures",
  "loom",
  "proptest",
- "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -3861,6 +3852,7 @@ dependencies = [
 name = "harness-mock-model"
 version = "0.0.0"
 dependencies = [
+ "acyclic-auth",
  "axum",
  "futures",
  "http-body-util",

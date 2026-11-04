@@ -1,0 +1,26 @@
+diff --git a/rust/crates/stream/src/runtime/signal.rs b/rust/crates/stream/src/runtime/signal.rs
+--- a/rust/crates/stream/src/runtime/signal.rs
++++ b/rust/crates/stream/src/runtime/signal.rs
+@@ -39,8 +39,8 @@ impl<T> Signal<T> {
+         }
+     }
+     pub(crate) fn send(&self, value: T) -> Result<(), StreamError> {
++        let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+         let wake = {
+-            let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+             state.0.push_back(value);
+             state.1.take()
+         };
+diff --git a/rust/crates/stream/src/session/gate.rs b/rust/crates/stream/src/session/gate.rs
+--- a/rust/crates/stream/src/session/gate.rs
++++ b/rust/crates/stream/src/session/gate.rs
+@@ -16,8 +16,8 @@ impl Gate {
+         }
+     }
+     pub(super) fn set(&self, enabled: bool) -> Result<(), StreamError> {
++        let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+         let wake = {
+-            let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+             if state.0 == enabled {
+                 return Ok(());
+             }

@@ -323,18 +323,31 @@ fn gemini_summary_admission_uses_the_selected_guarded_projection_role() {
         let reopened: WireItem = serde_json::from_slice(&stored).unwrap();
         for (provider, role) in [("producing-provider", native), ("other-provider", visible)] {
             let mut output = Vec::new();
-            assert_eq!(
-                render_summary(
-                    &header_for(Family::Gemini, provider),
-                    [&reopened],
-                    "summarize",
-                    &summary_tail(Family::Gemini),
-                    &mut output
-                )
-                .is_ok(),
-                role == "model"
-            );
+            render_summary(
+                &header_for(Family::Gemini, provider),
+                [&reopened],
+                "summarize",
+                &summary_tail(Family::Gemini),
+                &mut output,
+            )
+            .unwrap();
+            let mut parts = vec![json!({"text":"visible"})];
+            if provider == "producing-provider" {
+                parts.push(json!({"text":"private","thought":true}));
+            }
+            let mut expected = vec![json!({"role":role,"parts":parts})];
+            if role == "user" {
+                expected[0]["parts"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"text":"summarize"}));
+            } else {
+                expected.push(json!({"role":"user","parts":[{"text":"summarize"}]}));
+            }
+            let actual: Value = serde_json::from_slice(&output).unwrap();
+            assert_eq!(actual["contents"], json!(expected));
         }
+        assert_eq!(serde_json::to_vec(&reopened).unwrap(), stored);
     }
 }
 
@@ -460,56 +473,83 @@ fn interrupted_and_partial_writers_preserve_progress_and_exact_bytes() {
             unreachable!("rendering never flushes")
         }
     }
-    let source = item(Family::Responses, ItemKind::Message, "original bytes");
-    let header = header(Family::Responses);
-    let ordinary = bytes(&header, std::slice::from_ref(&source));
-    let mut summary = Vec::new();
-    let instruction = "summarize \"\\\n猫";
-    let closer = summary_tail(Family::Responses);
-    render_summary(&header, [&source], instruction, &closer, &mut summary).unwrap();
-    for (is_summary, expected) in [(false, ordinary), (true, summary)] {
-        let run = |writer: &mut Writer| {
-            if is_summary {
-                render_summary(&header, [&source], instruction, &closer, writer)
-            } else {
-                render(&header, [&source], &tail(), writer)
-            }
+    for family in [Family::Responses, Family::Gemini] {
+        let source = if family == Family::Gemini {
+            // Generated IR with a non-final parts field, escaped role and
+            // original whitespace. Metadata must admit decoded role semantics.
+            WireItem::capture(
+                target(family, "producing-provider"),
+                ItemKind::Message,
+                raw(
+                    r#"{ "role":"u\u0073er", "parts" : [ { "text":"original bytes" } ], "extra":true }"#
+                        .into(),
+                ),
+                BTreeMap::new(),
+            )
+            .unwrap()
+        } else {
+            item(family, ItemKind::Message, "original bytes")
         };
-        let mut partial = Writer {
-            writes: 0,
-            fail_at: None,
-            chunk: 1,
-            bytes: Vec::new(),
-        };
-        run(&mut partial).unwrap();
-        assert_eq!(partial.bytes, expected);
-        assert_eq!(partial.writes, expected.len());
-        // Every failure position, including JSON instruction escaping, is
-        // finite. The writer would succeed on the next call: retrying here
-        // would silently convert an interrupted request into a successful one.
-        for fail_at in 1..=expected.len() {
-            let mut interrupted = Writer {
+        let header = header(family);
+        let ordinary = bytes(&header, std::slice::from_ref(&source));
+        let mut summary = Vec::new();
+        let instruction = "summarize \"\\\n猫";
+        let closer = summary_tail(family);
+        render_summary(&header, [&source], instruction, &closer, &mut summary).unwrap();
+        if family == Family::Gemini {
+            let value: Value = serde_json::from_slice(&summary).unwrap();
+            assert_eq!(value["contents"].as_array().unwrap().len(), 1);
+            assert_eq!(
+                value["contents"][0]["parts"],
+                json!([
+                    {"text": "original bytes"}, {"text": instruction}
+                ])
+            );
+        }
+        for (is_summary, expected) in [(false, ordinary), (true, summary)] {
+            let run = |writer: &mut Writer| {
+                if is_summary {
+                    render_summary(&header, [&source], instruction, &closer, writer)
+                } else {
+                    render(&header, [&source], &tail(), writer)
+                }
+            };
+            let mut partial = Writer {
                 writes: 0,
-                fail_at: Some(fail_at),
+                fail_at: None,
                 chunk: 1,
                 bytes: Vec::new(),
             };
-            assert!(
-                matches!(run(&mut interrupted), Err(RenderError::Write(error))
+            run(&mut partial).unwrap();
+            assert_eq!(partial.bytes, expected);
+            assert_eq!(partial.writes, expected.len());
+            // Every failure position, including JSON instruction escaping, is
+            // finite. The writer would succeed on the next call: retrying here
+            // would silently convert an interrupted request into a successful one.
+            for fail_at in 1..=expected.len() {
+                let mut interrupted = Writer {
+                    writes: 0,
+                    fail_at: Some(fail_at),
+                    chunk: 1,
+                    bytes: Vec::new(),
+                };
+                assert!(
+                    matches!(run(&mut interrupted), Err(RenderError::Write(error))
                 if error.kind() == io::ErrorKind::Interrupted)
-            );
-            assert_eq!(interrupted.writes, fail_at);
-            assert_eq!(interrupted.bytes, expected[..fail_at - 1]);
-        }
-        let mut stopped = Writer {
-            writes: 0,
-            fail_at: None,
-            chunk: 0,
-            bytes: Vec::new(),
-        };
-        assert!(matches!(run(&mut stopped), Err(RenderError::Write(error))
+                );
+                assert_eq!(interrupted.writes, fail_at);
+                assert_eq!(interrupted.bytes, expected[..fail_at - 1]);
+            }
+            let mut stopped = Writer {
+                writes: 0,
+                fail_at: None,
+                chunk: 0,
+                bytes: Vec::new(),
+            };
+            assert!(matches!(run(&mut stopped), Err(RenderError::Write(error))
             if error.kind() == io::ErrorKind::WriteZero));
-        assert_eq!(stopped.writes, 1);
+            assert_eq!(stopped.writes, 1);
+        }
     }
     // The actual former primitive retries Interrupted. This control exposes
     // the incorrect success with a finite producer, without a hang or timeout.
@@ -581,12 +621,13 @@ proptest! {
             let mut visited = 0;
             let result = render_summary(&header, items.iter().inspect(|_| visited += 1), &instruction, &closer, &mut summary);
             prop_assert_eq!(visited, items.len());
-            if family == Family::Gemini && items.len() % 2 == 1 {
-                prop_assert!(matches!(result, Err(RenderError::InvalidItem(_))));
-                prop_assert_eq!(summary, prefix);
-                continue;
-            }
             result.unwrap();
+            let prefix = if family == Family::Gemini && items.len() % 2 == 1 {
+                // These generated turns contain one parts array. Its closing
+                // bracket moves when the instruction is appended, regardless
+                // of whether the role field precedes or follows that array.
+                &prefix[..prefix.iter().rposition(|byte| *byte == b']').unwrap()]
+            } else { prefix };
             prop_assert!(summary.starts_with(prefix));
             prop_assert!(summary.ends_with(closer.bytes()));
             let actual: Value = serde_json::from_slice(&summary).unwrap();
@@ -596,7 +637,12 @@ proptest! {
                 Family::Responses => ("input", json!({"role":"user","content":instruction})),
                 _ => ("messages", json!({"role":"user","content":instruction})),
             };
-            expected[input].as_array_mut().unwrap().push(message);
+            if family == Family::Gemini && items.len() % 2 == 1 {
+                expected[input].as_array_mut().unwrap().last_mut().unwrap()["parts"]
+                    .as_array_mut().unwrap().push(json!({"text": instruction}));
+            } else {
+                expected[input].as_array_mut().unwrap().push(message);
+            }
             match family {
                 Family::Gemini => expected["toolConfig"] = json!({"functionCallingConfig":{"mode":"NONE"}}),
                 Family::Anthropic => expected["tool_choice"] = json!({"type":"none"}),

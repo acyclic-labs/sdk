@@ -69,9 +69,7 @@ async fn counter_only_keeps_effects_and_dispatch_counts_without_request_retentio
         assert!(requests.control() > 0, "failed calls must remain counted");
         samples.push(requests);
         if capture {
-            let retained = provider.take_commits().len()
-                + provider.take_appends().len()
-                + provider.take_follows().len();
+            let retained = provider.take_commits().len() + provider.take_follows().len();
             assert!(retained > 0);
             assert!(provider.history_reads.load(Ordering::SeqCst) > 0);
         } else {

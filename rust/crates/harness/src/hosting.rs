@@ -11,7 +11,7 @@
 //! else { /* uncertain: retain it and `resubmit` */ };
 //! let service = acyclic_stream::session::Service::new(stream, authority, node, limits)
 //!     .with_products(None, server.clone());
-//! tokio::spawn(async move { server.run(|actor, error| report(actor, error)).await });
+//! acyclic_native_runtime::spawn(async move { server.run(|actor, error| report(actor, error)).await });
 //! ```
 //!
 //! Every command arrives as a canonical Actors invocation on the session's
@@ -1094,9 +1094,12 @@ where
     P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
-    fn resource(&self, invocation: &[u8]) -> Result<String, StreamError> {
+    fn target(
+        &self,
+        invocation: &[u8],
+    ) -> Result<acyclic_stream::session::CallTarget, StreamError> {
         self.admit(invocation)?;
-        Ok(self.resource.clone())
+        acyclic_stream::session::CallTarget::new(self.resource.clone(), "actors/invoke")
     }
 
     fn call(

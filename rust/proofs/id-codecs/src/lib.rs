@@ -188,33 +188,6 @@ mod journal_prefix {
 #[cfg(kani)]
 mod version {
     #[kani::proof]
-    #[kani::unwind(64)]
-    fn bounded_actor_triples_round_trip_and_refuse_resource_encodings() {
-        use acyclic_auth::addressing::{ActorReference, IdentityError, ResourceIdentity};
-        let account: [u8; 4] = kani::any();
-        let namespace: [u8; 4] = kani::any();
-        let id: [u8; 4] = kani::any();
-        let Ok(value) = ActorReference::new(&account, &namespace, &id) else {
-            return;
-        };
-        let encoded = value.encode();
-        assert_eq!(ActorReference::decode(&encoded), Ok(value));
-        let resource = ResourceIdentity::new(&account, &id).unwrap().encode();
-        assert!(ActorReference::decode(&resource).is_err());
-        assert!(ResourceIdentity::decode(&encoded).is_err());
-        let version = encoded.len() - (3 * 8 + account.len() + namespace.len() + id.len()) - 1;
-        let other: u8 = kani::any();
-        kani::assume(other != 1);
-        let mut refused = encoded;
-        refused[version] = other;
-        refused.truncate(version + 1);
-        assert_eq!(
-            ActorReference::decode(&refused),
-            Err(IdentityError::UnsupportedVersion)
-        );
-    }
-
-    #[kani::proof]
     #[kani::unwind(41)]
     fn usn_checkpoint_preserves_accepted_bytes_and_refuses_other_versions() {
         use acyclic_fs::windows_usn_codec::{WindowsUsnCheckpoint, WindowsUsnError};

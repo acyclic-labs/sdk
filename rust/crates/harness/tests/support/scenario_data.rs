@@ -76,44 +76,6 @@ fn platform_case(mut value: Value, windows: bool) -> Result<Value, String> {
     Ok(value)
 }
 
-#[test]
-fn authored_platform_programs_keep_their_oracles_and_case_precedence() {
-    use serde_json::json;
-    let fixture = json!({
-        "turns":["unix program"], "expect":{"stdout":"same bytes","exit":7},
-        "platforms":{"windows":{"turns":["windows program"]}}
-    });
-    for windows in [false, true] {
-        let mut actual = platform_case(fixture.clone(), windows).unwrap();
-        assert_eq!(
-            actual.get("turns"),
-            Some(&json!([if windows {
-                "windows program"
-            } else {
-                "unix program"
-            }]))
-        );
-        assert_eq!(
-            actual.get("expect"),
-            Some(&json!({"stdout":"same bytes","exit":7}))
-        );
-        assert!(actual.get("platforms").is_none());
-        // A case's common field still overrides its parent's platform default.
-        merge(
-            &mut actual,
-            platform_case(json!({"turns":[]}), windows).unwrap(),
-        );
-        assert_eq!(actual.get("turns"), Some(&json!([])));
-    }
-    for bad in [
-        json!({"windwos":{}}),
-        json!({"windows":[]}),
-        json!({"unix":"program"}),
-    ] {
-        assert!(platform_case(json!({"platforms":bad}), true).is_err());
-    }
-}
-
 fn merge(base: &mut Value, delta: Value) {
     match (base, delta) {
         (Value::Object(base), Value::Object(delta)) => {

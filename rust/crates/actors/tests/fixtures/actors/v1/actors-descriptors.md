@@ -106,3 +106,11 @@ cargo run --locked -p sdk-proto-codegen -- canonicalize actors target/actor-publ
 `actors-buf-v1.bin` was copied only to the Buf fixture path. The independent
 descriptor comparison passed. `node scripts/check-compatibility-digests.mjs write`
 recorded the emitted descriptor and maintained schema digests in the manifest.
+
+The 2026-11-03 capture adds the shared `machines.read-results` extractor
+declaration to the imported `validation/v1/options.proto`; Actors sources are
+unchanged. The Rust descriptor came from
+`cargo run --locked -p sdk-proto-codegen -- descriptors . OUTPUT` and was
+copied to both Rust descriptor paths. The Buf fixture came from the Buf build
+and `canonicalize actors` commands above. `node
+scripts/check-compatibility-digests.mjs write` recorded the descriptor digest.

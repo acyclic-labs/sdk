@@ -38,47 +38,29 @@ pub(super) struct ReplacedFile {
 }
 
 /// The record that `name` in directory `directory` binds in `view`, if any.
-/// The directory is found by identity, so a renamed or moved directory still
-/// names the same binding in every generation, as the kernel sees it.
+/// Read the original directory/name identity directly, as the kernel does.
+/// A directory's current path and aliases cannot substitute another binding.
 async fn bound_in_directory<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     view: &Generation<A, O>,
     directory: FileId,
-    name: &str,
-) -> Result<Option<WorkspaceStat>, WorkspaceError> {
-    let paths = view
-        .paths_for_file_id(
-            directory,
-            1,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
+    name: &LogicalName,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<Option<FileRecord>, WorkspaceError> {
+    view.workspace
+        .volume
+        .fs
+        .workspace_merge_record_with_accounting(
+            &view.workspace.volume,
+            view.id,
+            &MergeConflict::Binding {
+                directory_id: directory,
+                name: name.clone(),
+            },
+            accounting,
+            cancellation,
         )
         .await
-        .map_err(|failure| failure.error)?
-        .value;
-    let Some(parent) = paths.into_iter().next() else {
-        return Ok(None);
-    };
-    let path = if parent == "/" {
-        format!("/{name}")
-    } else {
-        format!("{parent}/{name}")
-    };
-    bound_record(view, &path).await
-}
-
-/// The record `path` binds in `view`, if any.
-async fn bound_record<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
-    view: &Generation<A, O>,
-    path: &str,
-) -> Result<Option<WorkspaceStat>, WorkspaceError> {
-    match view
-        .stat(path, WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-    {
-        Ok(receipt) => Ok(Some(receipt.value)),
-        Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => Ok(None),
-        Err(failure) => Err(failure.error),
-    }
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A, O> {
@@ -96,19 +78,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         &self,
         file_id: FileId,
         path: &str,
+        records: [Option<FileRecord>; 3],
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
     ) -> Result<Option<ReplacedFile>, WorkspaceError> {
         let volume = &self.target_head.workspace.volume;
         let fs = &volume.fs;
-        let mut records = [None; 3];
-        for (slot, generation) in
-            records
-                .iter_mut()
-                .zip([self.base.id, self.target_head.id, self.source_head.id])
-        {
-            *slot = fs
-                .workspace_conflict_record(volume, generation, file_id)
-                .await?;
-        }
         // `ours_replaced`: the target head deleted the base identity.
         let (side, editing, ours_replaced) = match records {
             [Some(_), None, Some(_)] => (&self.target_head, &self.source_head, true),
@@ -120,41 +95,61 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             id: self.base.id,
             publication_closure: None,
         };
-        let Some((parent, name)) = path.rsplit_once('/') else {
+        // The namespace and lookup backing are temporary; only scalar records
+        // escape. Keep parsing, authorization and reads on the original frame.
+        let mut scope = accounting.allocation_scope()?;
+        let accounting = &mut *scope;
+        let parsed = customer_path_with_accounting(path, volume.config, accounting, cancellation)?;
+        let (_allocation, namespace) = (parsed.1, parsed.0);
+        let Some((_, name)) = namespace.split_last() else {
             return Ok(None);
         };
-        let parent = if parent.is_empty() { "/" } else { parent };
-        if bound_record(editing, path)
-            .await?
-            .is_none_or(|record| record.file_id != file_id)
-        {
+        let entry = {
+            let selected = read_core::lookup_paths(
+                &editing.workspace,
+                GenerationSelector::Exact(editing.id),
+                std::slice::from_ref(&namespace),
+                accounting,
+                cancellation,
+            )
+            .await?;
+            let (_allocation, lookup) = (selected.1, selected.0);
+            *lookup.entries.first().ok_or(FsError::InvalidDiff)?
+        };
+        if entry.record.is_none_or(|record| record.file_id != file_id) {
             return Ok(None);
         }
-        let Some(directory) = bound_record(editing, parent).await? else {
+        let Some(directory) = entry.parent else {
             return Ok(None);
         };
         if directory.kind != FileKind::Directory
-            || bound_in_directory(&base, directory.file_id, name)
+            || bound_in_directory(&base, directory.file_id, name, accounting, cancellation)
                 .await?
                 .is_none_or(|record| record.file_id != file_id)
         {
             return Ok(None);
         }
-        let Some(replacement) = bound_in_directory(side, directory.file_id, name).await? else {
+        let Some(replacement) =
+            bound_in_directory(side, directory.file_id, name, accounting, cancellation).await?
+        else {
             return Ok(None);
         };
         if replacement.kind != FileKind::Regular
             || replacement.file_id == file_id
             || fs
-                .workspace_conflict_record(volume, self.base.id, replacement.file_id)
+                .workspace_merge_record_with_accounting(
+                    volume,
+                    self.base.id,
+                    &MergeConflict::File(replacement.file_id),
+                    accounting,
+                    cancellation,
+                )
                 .await?
                 .is_some()
         {
             return Ok(None);
         }
-        let replacement = fs
-            .workspace_conflict_record(volume, side.id, replacement.file_id)
-            .await?;
+        let replacement = Some(replacement);
         let [base, ours, theirs] = records;
         let records = if ours_replaced {
             [base, replacement, theirs]
@@ -185,7 +180,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         let Some(path) = path else {
             return Ok(None);
         };
-        let Some(replaced) = self.replaced_file(file_id, path).await? else {
+        let cancellation = CancellationToken::new();
+        let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+        let records = self
+            .conflict_records(file_id, &mut accounting, &cancellation)
+            .await?;
+        let Some(replaced) = self
+            .replaced_file(file_id, path, records, &mut accounting, &cancellation)
+            .await?
+        else {
             return Ok(None);
         };
         self.replaced_file_resolution(file_id, replaced, resolution)

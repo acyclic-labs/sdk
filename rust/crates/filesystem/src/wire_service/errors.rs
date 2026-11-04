@@ -217,6 +217,8 @@ fn object_code(error: &ObjectStoreError) -> Code {
         E::NativeObjects(error) => native_objects_code(error),
         #[cfg(any(test, feature = "distributed"))]
         E::LogicalObjects(error) => objects_service_code(error),
+        E::Decode(error) => kernel_code(error),
+        E::Filesystem(error) => filesystem_code(error),
     }
 }
 
@@ -233,7 +235,7 @@ fn stream_code(error: &acyclic_stream::StreamError) -> Code {
         E::OutOfRange => Code::OutOfRange,
         E::Capacity => Code::ResourceExhausted,
         E::AccessDenied => Code::PermissionDenied,
-        E::Unavailable => Code::Unavailable,
+        E::Unavailable | E::Refused(_) => Code::Unavailable,
         E::DeadlineElapsed => Code::DeadlineExceeded,
         E::Unsupported => Code::Unimplemented,
         E::InvalidResponse => Code::DataLoss,

@@ -46,12 +46,12 @@ fn direct_stat(root: &HostRoot, name: &str) -> Result<(HostStat, u64), Box<dyn s
             .map_err(|(error, _)| error)?;
     #[cfg(unix)]
     let stat = unix_name(OsStr::new(name), &mut &work, |name, work| {
-        stat_at(root.directory.as_raw_fd(), name, work)
+        stat_at(root.directory().as_raw_fd(), name, work)
     })?;
     #[cfg(windows)]
     let stat = {
         let file = open_windows_at(
-            &root.directory,
+            &root.directory(),
             &test_path(name),
             fs::FILE_READ_ATTRIBUTES | fs::SYNCHRONIZE,
             nt::FILE_OPEN,
@@ -122,7 +122,7 @@ fn flat_stat_matches_direct_leaf_and_exact_admission() -> Result<(), Box<dyn std
             // Real old-path control: a duplicate of this same authority precedes
             // the retained leaf operation. It must fail the exact-read oracle.
             let duplicate = HostRoot::from_parts(
-                clone_directory(&root.directory, &mut &legacy)
+                clone_directory(&root.directory(), &mut &legacy)
                     .map_err(|e| TestCaseError::fail(e.to_string()))?,
                 root.identity(),
             );

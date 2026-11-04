@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_collections::page::Direction;
 
 pub(super) async fn list_directory_to_file_root_with_accounting<
     A: AsyncAuthorityStore,
@@ -7,8 +8,7 @@ pub(super) async fn list_directory_to_file_root_with_accounting<
     volume: &Volume<A, O>,
     root: &GenerationRoot,
     path: &NamespacePath,
-    after: Option<&LogicalName>,
-    maximum_entries: u32,
+    page: (Option<&LogicalName>, u32, Direction),
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<
@@ -42,8 +42,10 @@ pub(super) async fn list_directory_to_file_root_with_accounting<
             &volume.fs.inner.objects,
             entries,
             (
-                (after).map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
-                maximum_entries,
+                page.0
+                    .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
+                page.1,
+                page.2,
             ),
             DecodeLimits::for_volume(volume.config),
             accounting,
@@ -187,7 +189,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 let (page, allocation) = crate::kernel::list_tree_entries_async_with_accounting(
                     &this.volume.fs.inner.objects,
                     entries,
-                    (after, maximum_entries),
+                    (after, maximum_entries, Direction::Ascending),
                     DecodeLimits::for_volume(this.volume.config),
                     accounting,
                     cancellation,

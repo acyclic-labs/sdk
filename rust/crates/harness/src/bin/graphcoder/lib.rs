@@ -12,12 +12,11 @@ mod lifecycle;
 mod usage_export;
 mod view;
 
-pub use lifecycle::{
-    CliCompletion, CliFailure, CliPhase, DiagnosticConfigurationError, FailureReport,
-};
+pub use acyclic_harness::completion::{CliCompletion, CliFailure, CliPhase, FailureReport};
+pub use lifecycle::DiagnosticConfigurationError;
 
 use acyclic_harness::{
-    OperationId,
+    OperationId, completion,
     local::{Connection, LocalHarness, LocalHarnessConfig, agent_conversation::Conversation},
     native_settings::SettingsConfig,
     server::ServerConfig,
@@ -152,7 +151,8 @@ pub fn main_with(
         let diagnostics = match setup {
             Ok(diagnostics) => diagnostics,
             Err((phase, cause)) => {
-                let report = lifecycle::reject_startup(port, shutdown, phase, cause.as_ref()).await;
+                let report =
+                    completion::report_failure(port, shutdown, phase, cause.as_ref()).await;
                 return CliCompletion::rejected(phase, cause, report);
             }
         };
@@ -192,7 +192,7 @@ pub fn main_with(
             }
             result
         });
-        let original = lifecycle::observe(&report, Ok(port), shutdown, graceful, operation);
+        let original = completion::observe(&report, Ok(port), shutdown, graceful, operation);
         let ((result, _report_result, failure_report), _diagnostic_failure) =
             lifecycle::diagnostics(original, diagnostics).await;
         CliCompletion::executed(result, failure_report)
@@ -234,7 +234,7 @@ fn configure(
 async fn run(
     args: Args,
     seams: impl FnOnce(ServerConfig) -> ServerConfig,
-    shutdown: lifecycle::Shutdown,
+    shutdown: completion::Shutdown,
     event_output: Option<&mut headless::Output>,
 ) -> Result<u8, Box<dyn std::error::Error>> {
     let output = headless::Prepared::open(&args).map_err(headless::PreparationFailure)?;

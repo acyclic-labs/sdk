@@ -111,9 +111,8 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
             .await;
         }
         let overflowing = {
-            let (object_id, bytes) = object.into_parts();
             let mut index = self.index_mut();
-            index.admit_resident(object_id, bytes)? && index.resident_bytes > MAXIMUM_RESIDENT_BYTES
+            index.admit_resident(object)? && index.resident_bytes > MAXIMUM_RESIDENT_BYTES
         };
         if !overflowing {
             return Ok(());

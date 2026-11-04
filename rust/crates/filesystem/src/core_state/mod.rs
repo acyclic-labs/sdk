@@ -308,7 +308,7 @@ impl LocalCoreStateStore {
                 let mut paths_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
                 let path = measured_record_path(&root, OWNER_LOCK, work, &mut paths_allocation)?;
                 let lock = materialization_open_at(
-                    &parent.directory,
+                    &parent.directory(),
                     &path,
                     &if self.inspection {
                         crate::native_host::NativeOpenOptions::Read

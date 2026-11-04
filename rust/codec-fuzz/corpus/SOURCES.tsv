@@ -1477,13 +1477,7 @@ identities/route-6	8276	fb246e5602131c43c512a7f32e5b86c35653b8523a8c730e7a3c433a
 identities/actor	67	dad9dcfd82aa42fd549a4d65be226c25d134d56e54c8c52d386dd2dcba44fd6e	ActorReference::encode
 identities/resource	56	3b780e9a3aa2ccc5e2c61f64a87373682624c7657fe593fe79b2b8b1c1ada7bf	ResourceIdentity::encode
 actor_codecs/invocation	202	816eaae6c9f2cbc6ca1f8949345b0a6cfa1ee776f249f9f937a3489514d4d8bf	Invocation::record and wire_codec::record_wire
-actor_codecs/reservation-request	181	cd067a01d61cdc48539bba7d5e4fb772804e784459f3f48b11fcbcbaaf944fcf	actors::reservation canonical request/decision/checkpoint encoder
-actor_codecs/reservation-decision	20	6b02addd82fd7b08d610be481f536cc2037ae6ccb7da8fd34bc42c99f3947105	actors::reservation canonical request/decision/checkpoint encoder
-actor_codecs/reservation-book	50	09f0c9276a5f6d29d11633100b130218c9dbd7f782b88f79d590d8557e40fe5c	actors::reservation canonical request/decision/checkpoint encoder
-actor_codecs/artifact-checkpoint	88	13447dd28761081ee89922a863900ccb05967f359fb5cc6792af9450beedf4f3	serde_json::to_vec(guest::Checkpoint) with current artifact codec identity
-actor_codecs/manifest	89	9f5ec38ef77c41bf1aee6821a380f58b37559a4e9a3b879e69181004d04643ac	guest::wire::encode_manifest(reservation::Package::manifest)
 actor_codecs/state	91	e90b0a8d98fb6c062c66f0f50243b31e16b251aa504dd3f22e7880d25a937c03	local::Store::create state encoder
-actor_codecs/delivery	225	726fdcb5330ef5f89523ba4c874c81baa243fe5c11511d3b59373831e3c9ba56	guest::wire::encode_delivery
 actor_codecs/transition	625	a20adb1bc80bf7c3ebcfb8a11e2298547d3e9440e1f997e10b197fba927fa5d8	guest::wire::encode_transition
 actor_codecs/timer	126	bd02cd539cf0f500fbda15c132223d2b0d5d56835d20caa08cbf474c9df930a3	TimerRecord::encode
 filesystem_codecs/authority	107	93255d0f89df408acfb87ebb558138bf80a6d14c27170e4d6ec9f6dc75345b18	StreamsAuthorityRecord::encode
@@ -1798,3 +1792,90 @@ agent_controls/actor-response-unknown	123	052e63f0aed23e759df16810e434ecf876defd
 agent_controls/unknown	88	bcef3d717b6c7cbc7aaacd2b9c928078c24d8760636c0fcd9b18f42b20f0756e	acyclic_codec_fuzz::agent_controls::seeds via PreparedCommand/AgentBinding/encode_agent_reply; NUL separates command from reply
 agent_controls/actor-response-refused	110	f7de6c4b4f748c28d0c12c13ab586be6d17d1ef33487f6c0f8b4057f98ebbbd3	PreparedCommand/AgentBinding/AgentCall::reply public writers; NUL separates the invocation from its original Actors response
 agent_controls/refused	75	105ba186effe00454ba61ab138eb0dd5e66760da9a71534f555ced64db798dfa	acyclic_codec_fuzz::agent_controls::seeds via PreparedCommand/AgentBinding/encode_agent_reply; NUL separates command from reply
+actor_codecs/invocation-v2	226	01e644a4a013a2e08afce0a7bff3923f4f3f93f1a9b34d85152e2b181092990b	Invocation::record and wire_codec::record_wire
+actor_codecs/invocation-committed-v2	359	c8fe8e9b0de22e122393b2dff25073601627719165288b4a5c0ea73ada0c92cc	Store::enqueue_invoke original InvocationTicket::record and wire_codec::record_wire
+actor_codecs/call-request	92	a3d972bf93366c05fda9baefee8f0aba4f2a1964bc7353e32b2f000c1a09e9c2	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
+actor_codecs/call-accepted	96	1224ce6b93a1d7a8db4591c4af45892a623c9b784d40a5bc5abb01bdd999468e	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
+actor_codecs/call-chunk	92	f0800fb0d3e7b7e9f2764b4f3a886f34ced2e22fe8ed505a176aa847aa2ee0b8	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
+actor_codecs/call-ok	86	8045ad468f0fe8e62d1597e066ef63b6b81030985fb9ffa7cd1fa64a6cb254a0	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
+actor_codecs/call-accepted-fenced	141	4f450da6f5a8f22c970bb4b77b6b7084e009aea9b4233126a03a8c516b2a0a5e	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
+actor_codecs/call-chunk-fenced	139	c743c405c1d1a5fdad339bffdf0950058ebacd231b8ca22b261e3f42b5b21f9f	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
+actor_codecs/call-error	143	d8ff2e545a0c6ca351e1a953efb43468be7e4d649a8f2482906e0b52dea0fa45	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
+actor_codecs/call-cancelled-accepted	140	1e982c74da521b949243fed46b74a09924906528c620c197b94d7e05f5c65259	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
+actor_codecs/call-cancelled	93	7ef51b49b0f27fbba3fbebe876af47a2b768f761be3f63934bb59a39a109fc04	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
+actor_codecs/call-indeterminate	98	b1bdee610c6d948a64b1aeaa26c7e9186ac595984e9d3c262101776b9b8d2637	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
+actor_codecs/reservation-request	181	cd067a01d61cdc48539bba7d5e4fb772804e784459f3f48b11fcbcbaaf944fcf	actors::reservation canonical request/decision/checkpoint encoder
+actor_codecs/reservation-decision	20	6b02addd82fd7b08d610be481f536cc2037ae6ccb7da8fd34bc42c99f3947105	actors::reservation canonical request/decision/checkpoint encoder
+actor_codecs/reservation-book	50	09f0c9276a5f6d29d11633100b130218c9dbd7f782b88f79d590d8557e40fe5c	actors::reservation canonical request/decision/checkpoint encoder
+actor_codecs/reservation-committed-reserve	180	76a7b7e8bc7e33c618be9ea332423d7d1f7c4f4384a7eb7cc55d35f27021af58	actors::reservation canonical request/decision/checkpoint encoder
+actor_codecs/reservation-granted	554	77cb09a67595836f0c9793cc7ac302f1ffbb94cbf1f53e57a30d4e088abc6caa	actors::reservation canonical request/decision/checkpoint encoder
+actor_codecs/reservation-populated	589	3abc2e3f328a5594ced45a0f6158960654cbf2cfc00dd7af0b76148725e2e6f0	actors::reservation canonical request/decision/checkpoint encoder
+actor_codecs/reservation-expired	18	f640eb96409b4abc4dfac4bb1817486efaa18a2bee00bc9e5985a40aaadb59c2	actors::reservation canonical request/decision/checkpoint encoder
+actor_codecs/reservation-release	554	c7c73c3407e05078b31d39ef2a5b5820501cefb3dbcad089aa040020452d7a0e	actors::reservation canonical request/decision/checkpoint encoder
+actor_codecs/reservation-released	19	6db3982ca93224f93712fe06fc04c87adab44e279c510b86a5f659fbc7a369ea	actors::reservation canonical request/decision/checkpoint encoder
+actor_codecs/reservation-released-book	50	60c3c8830c1e18fbfb86dfa58c6a50977522800a6b228a24df6d4204889c3c69	actors::reservation canonical request/decision/checkpoint encoder
+actor_codecs/reservation-stale	16	053d46666e6ab9f3e76a8d14d39810a9ca82842eb041985fca9aa8d90551346c	actors::reservation canonical request/decision/checkpoint encoder
+actor_codecs/artifact-checkpoint	88	13447dd28761081ee89922a863900ccb05967f359fb5cc6792af9450beedf4f3	serde_json::to_vec(guest::Checkpoint) with current artifact codec identity
+actor_codecs/manifest	89	9f5ec38ef77c41bf1aee6821a380f58b37559a4e9a3b879e69181004d04643ac	guest::wire::encode_manifest(reservation::Package::manifest)
+actor_codecs/state-v2	91	922356bc4277e3200bf7e79fe1731ed1873dec0d96354b1b2cfa75167e708c4f	local::Store::create state encoder
+actor_codecs/delivery	225	726fdcb5330ef5f89523ba4c874c81baa243fe5c11511d3b59373831e3c9ba56	guest::wire::encode_delivery
+actor_codecs/transition-state-v2	625	74222540c8fab56c17bef028cef30336bb63eb1b0813fe523e028bb46152c363	guest::wire::encode_transition
+actor_codecs/transition-set-zero	625	944372a5a2c352b8554f1077c51d0c7fb3a12f9a8b22c6208e609cc8d088bf31	guest::wire::encode_transition
+actor_codecs/transition-set	625	5f2841822f6bfe5b2ae0a4c522a3ab81391b98a9c2178de446f1c8b135960b77	guest::wire::encode_transition
+actor_codecs/transition-set-max	634	90637bcf54dde452cd6a37b19ec4bd5a8c797f5554645cb2b63b8d56857fbbbc	guest::wire::encode_transition
+actor_codecs/transition-clear	625	9110fbbd345411a3aebcd3dc729a41acc121299af89639026e7774e57b2e6eee	guest::wire::encode_transition
+actor_codecs/state-alarm-set-v2	129	68f2437c0b0d7c7b0e6c9e4905116f0cd6b5601bd6ec0396b5bf12eaf30e5418	local::Store::publish and local::State::encode
+actor_codecs/state-alarm-delivered-v2	131	6c6c37526ca3f8ec00c247ced679366543ecec4fe4ed818d5bf4373341d173c2	local::Store::publish and local::State::encode
+actor_codecs/state-alarm-clear-v2	127	87330ec1b4c83f70ee54145d5c6e5c24a81805c9eba0183bc970cc43ae97f80f	local::Store::publish and local::State::encode
+actor_codecs/socket-open-v1	131	61f1fcba5aac888664c37e0ffcf53b9bc744a698fb3b6913def82a3578977f3a	sockets::SocketOpen::encode
+actor_codecs/socket-text-v1	6	c016cb6198e66e208aafebe8e188025f1cf78e91f85804dc4787f41f95fdc164	sockets::SocketFrame::encode
+actor_codecs/socket-binary-v1	4	23bb4dd5e62a35b75f9f57833b4874e8702d5d0b06932e41c8f6a7dc5abfa488	sockets::SocketFrame::encode
+actor_codecs/socket-close-peer-v1	12	df9865cac42ee97ab9ad6f0849778060f1be47c06c6a42dc040ce0797c361d2e	sockets::SocketFrame::encode
+actor_codecs/socket-close-actor-v1	14	0ebcdb2b6fe4d528ce8fe83d2a478e34ea04c44594e42b40e4947efbbeeab3a2	sockets::SocketFrame::encode
+actor_codecs/socket-close-runtime-v1	17	7647c372ac0207d62d391b458f487e3d8927c681e29d7de523809ae95cf24181	sockets::SocketFrame::encode
+actor_codecs/socket-accepted-v1	8	4504dab6f9042ce3d2c5b2601db5a7b2b61b75bf61bdbcc3c4c300ff84dbc5bb	sockets::SocketFrame::encode
+actor_codecs/socket-accepted-none-v1	2	37aa3970b6801c9d286464f7d86e50bf41c88e54c7b4d08f3ff61935b3f59c3c	sockets::SocketFrame::encode
+actor_codecs/socket-rejected-v1	13	09ffc7e5fa9d3d11144f6e9138c9986b568a19e28d72e252eb68651719baf668	sockets::SocketFrame::encode
+actor_codecs/socket-verdict-accept-v1	112	c50f1dbabb5c7dd97f2f0200b08d5373234ad2e135b6f892fc69ea93368dd266	sockets::socket_reply
+actor_codecs/socket-verdict-none-v1	68	e7ad83a89499711e1e8e9defccb780c4207cbd8c25eadf08e4e665f30e5b50a9	sockets::socket_reply
+actor_codecs/socket-verdict-unoffered-v1	75	662154c825e8df3d19c6c3614a19c0fdc97f77758da03b6e62494611f4787d6a	sockets::socket_reply
+actor_codecs/socket-verdict-reject-v1	54	9191059245768710a08dc039e78ce7a8e58ef31d102d39e91d197959101986a4	sockets::socket_reply
+actor_codecs/socket-verdict-reply-v1	48	6326a9ccd4537c603573637796760b734aa29ff103a7f5021406fd1296b3b55a	sockets::socket_reply
+actor_codecs/socket-input-open	908	c0b94f8d09e5386887c5982f957922c6f167c768bfb7204e820911e50aaf5fdc	Runtime::run -> SocketPackage::on_record -> guest::wire::encode_delivery
+actor_codecs/socket-input-text	548	cdd6ae5e82dff1a19bbb8250750355158afedf84de4453028ab54d3b063c3e23	Runtime::run -> SocketPackage::on_record -> guest::wire::encode_delivery
+actor_codecs/socket-input-binary	548	c451ecbd79ffc94f9a263b21face58dbe8c6cc206294c1dcfe24fc679c71c64f	Runtime::run -> SocketPackage::on_record -> guest::wire::encode_delivery
+actor_codecs/socket-input-close-peer	552	47f02331a090ca6ca465045ba042f5dc973427af9029eaa4d415fb9e7b60ec30	Runtime::run -> SocketPackage::on_record -> guest::wire::encode_delivery
+actor_codecs/socket-input-close-actor	566	d2a398e0783846f2d83cc3c7392bb9f5307f82d8cbbbe4088ce669a6ea554a78	Runtime::run -> SocketPackage::on_record -> guest::wire::encode_delivery
+actor_codecs/socket-input-close-runtime	590	9c5ee03113a43dd79f9390c9ea741ae2b4429359b9b98db59eb4eafac74ea6b8	Runtime::run -> SocketPackage::on_record -> guest::wire::encode_delivery
+actor_codecs/socket-ledger-epoch-initial	6	62c95f0794ac8cb791a312934c50dc0f9f48fbd5febb0f3119b9a4ccf9f270ed	local::Sockets::open/commit_open/commit_close -> LocalStream
+actor_codecs/socket-ledger-epoch-fenced	6	cfdbbdd4664518fcc682cfbd0b1892f8c454280b8a7e3945b538888b03c2b8f3	local::Sockets::open/commit_open/commit_close -> LocalStream
+actor_codecs/socket-ledger-epoch-recovered	6	55e1930c9dc378186940654f4d6d19e77d22dabeda0e88f07d807c182c0bbf3b	local::Sockets::open/commit_open/commit_close -> LocalStream
+actor_codecs/socket-ledger-opened	108	ec6dcefe10c43a934c4f6825b02b297ede811ae83a0e06089da094e94059bc24	local::Sockets::open/commit_open/commit_close -> LocalStream
+actor_codecs/socket-ledger-closed	8	0a2a11f692fb0ddf6b2aa222e6d3280d9a9be6ed3d8be355fd3f9b96519a4685	local::Sockets::open/commit_open/commit_close -> LocalStream
+actor_codecs/socket-ledger-exhausted-zero-frontier	13	738e8afa7051218cf4b21bfa93a78257dbcaf9af6c09449546ded637be0a4b4d	local::sockets::epoch_record
+actor_codecs/socket-ledger-exhausted	24	9499245d7b75a10f680f47b5732ce17ef12cdb8bf6208e3f96f7bf60ce51c696	local::sockets::epoch_record
+actor_codecs/socket-ledger-last-incarnation	24	250dda37b343a1877f7bb0d8ff68265759babd88fc1719f0b0a4b61788d57862	local::sockets::epoch_record
+actor_codecs/socket-ledger-invalid-frontier	15	78f37df85e9855de658d6369266423f408e2f47beccf688c7bbc4925b290662a	local::sockets::epoch_record
+harness_codecs/resource-summary	1062	c15ba4e0d0be00aaa9a2140ff4a0613c775c899ea58bad2759db226db36f755f	harness_resources::seeds: cache/summary serde writers and Snapshot::encode; genesis envelope from MemoryStream commit/read; no provider attribution or transport authentication claim
+harness_codecs/resource-summary-portable	440	0599a6e71b2b29933c9cd318e72020ed0ead648c796cfc2e9ab74707da678742	harness_resources::seeds: cache/summary serde writers and Snapshot::encode; genesis envelope from MemoryStream commit/read; no provider attribution or transport authentication claim
+harness_codecs/resource-cache	352	8d0ccdf8f0e5564ea6e185d2754c0e3d6408df5496f407813e1d8db1e1d91745	harness_resources::seeds: cache/summary serde writers and Snapshot::encode; genesis envelope from MemoryStream commit/read; no provider attribution or transport authentication claim
+harness_codecs/resource-cache-metadata	362	63c5c09fcd62d0e4f4a7360e17b6d8944bc396bfc92fc4cf5c59271cc85e3346	harness_resources::seeds: cache/summary serde writers and Snapshot::encode; genesis envelope from MemoryStream commit/read; no provider attribution or transport authentication claim
+harness_codecs/resource-cache-breakpoint	171	ca42ddcac031058c7f76e8db2c7926a721de82316e2c00c232055d45034a76a9	harness_resources::seeds: cache/summary serde writers and Snapshot::encode; genesis envelope from MemoryStream commit/read; no provider attribution or transport authentication claim
+harness_codecs/resource-cache-ttl	33	f6a479d71ddebb501eab44211f71b2a706793874f938e5bfb8025a1f74bd48b9	harness_resources::seeds: cache/summary serde writers and Snapshot::encode; genesis envelope from MemoryStream commit/read; no provider attribution or transport authentication claim
+harness_codecs/resource-cache-key	168	9f498563f8791f1af3cc75d3639c5dab1a8348dc7a7ca47f2e2cc33181ebbc9c	harness_resources::seeds: cache/summary serde writers and Snapshot::encode; genesis envelope from MemoryStream commit/read; no provider attribution or transport authentication claim
+harness_codecs/resource-cache-unknown	118	42a33205ba439fe753ac828c85de22ec822a4c444dbfd9e0b7d18cee34544ac9	harness_resources::seeds: cache/summary serde writers and Snapshot::encode; genesis envelope from MemoryStream commit/read; no provider attribution or transport authentication claim
+harness_codecs/resource-cache-residency	327	e5a914b1c804254d398c72c5ac697ea0d462af8bf7207dcdd08fea3392d5a78c	harness_resources::seeds: cache/summary serde writers and Snapshot::encode; genesis envelope from MemoryStream commit/read; no provider attribution or transport authentication claim
+harness_codecs/resource-epoch-genesis	378	2f1417db9f4cae4a963a042a54f2779d808379629b243c558fd7ac3889fba341	harness_resources::seeds: cache/summary serde writers and Snapshot::encode; genesis envelope from MemoryStream commit/read; no provider attribution or transport authentication claim
+harness_codecs/resource-epoch-prepared	542	2ef5b350b3f0cfce732901723736d39ab93896e8bf48494a88ae20c428a4de4c	harness_resources::seeds: cache/summary serde writers and Snapshot::encode; genesis envelope from MemoryStream commit/read; no provider attribution or transport authentication claim
+harness_codecs/resource-epoch-failed	555	1edf8a06930dc0760159d9be665b99683567ad898884c19abebdf804ac3cc253	harness_resources::seeds: cache/summary serde writers and Snapshot::encode; genesis envelope from MemoryStream commit/read; no provider attribution or transport authentication claim
+harness_codecs/resource-epoch-ready	1624	e9b6704825627af54cf35cbf00f90301cb878ecf15cf4a6807b51061c3081751	harness_resources::seeds: cache/summary serde writers and Snapshot::encode; genesis envelope from MemoryStream commit/read; no provider attribution or transport authentication claim
+harness_codecs/resource-epoch-swapped	1437	36ce38c8ccc22fa88efa8523c73361ff5b8ae60cf67db2968d08300ad2a756e0	harness_resources::seeds: cache/summary serde writers and Snapshot::encode; genesis envelope from MemoryStream commit/read; no provider attribution or transport authentication claim
+harness_codecs/resource-epoch	1370	a80f41dbfbdd83ea3b4571dd15b208d430485227ec2cb00279e6fb106bd6cd44	harness_resources::seeds: cache/summary serde writers and Snapshot::encode; genesis envelope from MemoryStream commit/read; no provider attribution or transport authentication claim
+harness_codecs/resource-summary-key	138	fff01fce5c36a36d864310d206ea2187dd0d39816521c478ba2b11b9e5b3e538	harness_resources::seeds: cache/summary serde writers and Snapshot::encode; genesis envelope from MemoryStream commit/read; no provider attribution or transport authentication claim
+harness_codecs/resource-summary-outcome	17	1f7bc4c70130df179e4bbf5c2fff18047ccd910b4f9185db2e7e57a053cfe819	harness_resources::seeds: cache/summary serde writers and Snapshot::encode; genesis envelope from MemoryStream commit/read; no provider attribution or transport authentication claim
+harness_codecs/resource-epoch-genesis-positional	347	febcce26c95a969bc83b5c650b206d39a91f78a28823ae34d17d77ce4e5b2bee	harness_resources::seeds: Snapshot::encode payload fields in serde positional spelling, admitted by original Snapshot::decode; original MemoryStream envelope; no provider attribution or transport authentication claim
+harness_codecs/resource-epoch-prepared-positional	511	08563bb695d8d402262a848d4acbabd7dae0f58bfa296b3d2d11ced80f25b3a3	harness_resources::seeds: Snapshot::encode payload fields in serde positional spelling, admitted by original Snapshot::decode; original MemoryStream envelope; no provider attribution or transport authentication claim
+harness_codecs/resource-epoch-failed-positional	524	b06797107e1d1be8901988a1d1f324f7bf79075f57b852b14f9c01014e2167a1	harness_resources::seeds: Snapshot::encode payload fields in serde positional spelling, admitted by original Snapshot::decode; original MemoryStream envelope; no provider attribution or transport authentication claim
+harness_codecs/resource-epoch-ready-positional	1593	bb1543428c6f95519fe790c829460c51b4cc562f90c557f194ff36a6d042fa37	harness_resources::seeds: Snapshot::encode payload fields in serde positional spelling, admitted by original Snapshot::decode; original MemoryStream envelope; no provider attribution or transport authentication claim
+harness_codecs/resource-epoch-swapped-positional	1406	b3d12601905a7ded51f303a9c31826ca030d299e7200edb83cf0537bab0fcf41	harness_resources::seeds: Snapshot::encode payload fields in serde positional spelling, admitted by original Snapshot::decode; original MemoryStream envelope; no provider attribution or transport authentication claim
+harness_codecs/resource-cache-residency-unknown	319	0e2aca6112b901eeac3857a4aff1889d99be9bb739f0a290f0721be36e75ee92	harness_resources::seeds: cache/summary serde writers and Snapshot::encode; genesis envelope from MemoryStream commit/read; no provider attribution or transport authentication claim

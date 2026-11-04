@@ -33,7 +33,7 @@ mod calls;
 mod pages;
 mod resources;
 mod sockets;
-pub use calls::{CallAuthorization, CallInput, CallProvider};
+pub use calls::{CallAuthorization, CallInput, CallInputCredit, CallProvider, CallTarget};
 pub use resources::{
     ResourceAuthorization, ResourceFollowRequest, ResourceProvider, ResourceRevalidation,
     ResourceSubscription,
@@ -64,10 +64,10 @@ pub use client::{
 };
 #[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub use client::{
-    verify_abandoned_reconnect, verify_cache, verify_cancel_before_open, verify_follow_data,
-    verify_initial_retry_yield, verify_interest_accounting, verify_link_isolation,
-    verify_node_dials, verify_pool_lifetime, verify_registration_cancellation,
-    verify_terminal_cursor_dial,
+    verify_abandoned_reconnect, verify_cache, verify_cancel_before_open,
+    verify_cancelled_queued_open, verify_follow_data, verify_initial_retry_yield,
+    verify_interest_accounting, verify_link_isolation, verify_node_dials, verify_pool_lifetime,
+    verify_registration_cancellation, verify_terminal_cursor_dial,
 };
 #[cfg(loom)]
 pub use client::{verify_admission_binding, verify_admission_cancellation};

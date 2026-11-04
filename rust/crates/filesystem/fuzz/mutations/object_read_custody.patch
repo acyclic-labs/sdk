@@ -1,0 +1,35 @@
+--- a/rust/crates/filesystem/src/kernel/file_read.rs
++++ b/rust/crates/filesystem/src/kernel/file_read.rs
+@@ -385,6 +385,9 @@
+             .map_err(read_store_error);
+     }
+     let mut frame = crate::async_storage::AuthorityFrame::borrow(accounting)?;
++    if std::env::var("ACYCLIC_READ_CUSTODY_OMISSION").as_deref() == Ok("single") {
++        *frame = crate::AuthorityWork::new(frame.remaining()?, frame.cancellation);
++    }
+     cancellation.check()?;
+     let mut work = frame
+         .scope()
+@@ -438,6 +441,9 @@
+         });
+     }
+     let mut frame = crate::async_storage::AuthorityFrame::borrow(accounting)?;
++    if std::env::var("ACYCLIC_READ_CUSTODY_OMISSION").as_deref() == Ok("batch") {
++        *frame = crate::AuthorityWork::new(frame.remaining()?, frame.cancellation);
++    }
+     cancellation.check()?;
+     let mut work = frame
+         .scope()
+--- a/rust/crates/filesystem/src/async_storage/work/scope.rs
++++ b/rust/crates/filesystem/src/async_storage/work/scope.rs
+@@ -25,7 +25,9 @@
+                 return Err(crate::kernel::allocation::AllocationError::ReleaseInvariant
+                     .into_work_or(crate::FsError::PendingMutationAllocationFailed));
+             }
+-            self.work.scratch_floor = retained;
++            if std::env::var("ACYCLIC_READ_CUSTODY_OMISSION").as_deref() != Ok("retirement") {
++                self.work.scratch_floor = retained;
++            }
+         }
+         Ok(owned)
+     }

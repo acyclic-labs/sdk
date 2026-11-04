@@ -1,0 +1,15 @@
+diff --git a/rust/crates/harness-core/src/executor/code_mode/allocator.rs b/rust/crates/harness-core/src/executor/code_mode/allocator.rs
+--- a/rust/crates/harness-core/src/executor/code_mode/allocator.rs
++++ b/rust/crates/harness-core/src/executor/code_mode/allocator.rs
+@@ -49,7 +49,10 @@ impl EngineAllocator {
+         value.push_str(text.as_str());
+         Ok(BridgeText {
+             value,
+-            _custody: custody,
++            _custody: {
++                drop(custody);
++                None
++            },
+         })
+     }
+     pub(super) fn new(work: crate::NativeWork<'_>) -> Self {

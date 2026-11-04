@@ -65,17 +65,13 @@ fn mounts_at(root: &Path) -> std::io::Result<usize> {
         .count())
 }
 
-fn thread_names() -> std::collections::BTreeMap<String, usize> {
+fn thread_names() -> std::io::Result<std::collections::BTreeMap<String, usize>> {
     let mut names = std::collections::BTreeMap::new();
-    for task in std::fs::read_dir("/proc/self/task")
-        .into_iter()
-        .flatten()
-        .flatten()
-    {
-        let name = std::fs::read_to_string(task.path().join("comm")).unwrap_or_default();
+    for task in std::fs::read_dir("/proc/self/task")? {
+        let name = std::fs::read_to_string(task?.path().join("comm"))?;
         *names.entry(name.trim().to_owned()).or_default() += 1;
     }
-    names
+    Ok(names)
 }
 
 fn entries(path: &str) -> std::io::Result<usize> {
@@ -237,6 +233,16 @@ pub(super) fn shared_view_costs_in_this_process() -> Result<(), Box<dyn std::err
     // The first view starts the instance; measure views after it, at N and 2N.
     views.push(start(sources.next().ok_or("source")?, 0)?);
     let measure = || -> std::io::Result<(usize, usize, usize)> {
+        let threads = thread_names()?;
+        // The session runner starts its fixed callback pool asynchronously.
+        // Account for that one instance separately from per-view resources.
+        let packet_threads = threads.get("acyclic-fuse").copied().unwrap_or(0);
+        if shared {
+            assert!(
+                packet_threads <= 1 + crate::native_mount::CALLBACK_THREADS as usize,
+                "one instance owns one runner and its fixed callback pool: {threads:?}"
+            );
+        }
         // Only this test's mounts: other processes share the namespace.
         let table = std::fs::read_to_string("/proc/self/mountinfo")?;
         let mounts = table
@@ -245,7 +251,7 @@ pub(super) fn shared_view_costs_in_this_process() -> Result<(), Box<dyn std::err
             .filter(|point| Path::new(point).starts_with(&root))
             .count();
         Ok((
-            entries("/proc/self/task")?,
+            threads.values().sum::<usize>() - packet_threads,
             entries("/proc/self/fd")?,
             mounts,
         ))
@@ -281,10 +287,9 @@ pub(super) fn shared_view_costs_in_this_process() -> Result<(), Box<dyn std::err
         println!("unshared view costs: grow");
         return Ok(());
     }
-    // Process-wide pools and the instance's threads all exist once the
-    // first view is up; further views add nothing.
-    assert_eq!(at_n, base, "4 more views: {:?}", thread_names());
-    assert_eq!(at_2n, base, "8 more views: {:?}", thread_names());
+    // Further views add no resources beyond the original fixed packet pool.
+    assert_eq!(at_n, base, "4 more views: {:?}", thread_names()?);
+    assert_eq!(at_2n, base, "8 more views: {:?}", thread_names()?);
     assert_eq!(base.2, 1);
     for mut view in views {
         assert!(view.stop()?);

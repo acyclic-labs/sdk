@@ -255,6 +255,25 @@ impl<'a> AuthorityWork<'a> {
         Ok(remaining)
     }
 
+    /// Borrows original read custody with its existing resident-byte allowance.
+    pub(crate) fn read_accounting(
+        &mut self,
+    ) -> Result<crate::kernel::allocation::KernelAccounting<'_>, ObjectStoreError> {
+        use crate::kernel::allocation::KernelAccounting;
+        if !self.is_native() {
+            self.read_budget()?;
+        }
+        let standing = self.read_observation.map_or(0, |(_, standing)| standing);
+        let mut accounting = self.accounting();
+        if let KernelAccounting::BorrowedStandalone { budget, .. } = &mut accounting {
+            budget.peak_allocation_bytes = budget
+                .peak_allocation_bytes
+                .checked_sub(standing)
+                .ok_or(WorkError::Overflow)?;
+        }
+        Ok(accounting)
+    }
+
     pub(crate) fn read_receipt(
         &self,
         result: Result<ObjectRead, ObjectStoreError>,
@@ -304,15 +323,6 @@ impl<'a> AuthorityWork<'a> {
             .peak_allocation_bytes
             .max(self.allocations.live_bytes());
         self.work.admit(&delta, &self.budget).map_err(Into::into)
-    }
-
-    pub(crate) fn operation(&mut self) -> Result<AuthorityWork<'a>, AuthorityStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = self.original {
-            self.check()?;
-            return Ok(Self::native(original, self.cancellation));
-        }
-        Ok(Self::new(self.remaining()?, self.cancellation))
     }
 
     pub(crate) fn charge(&mut self, delta: WorkCounters) -> Result<(), AuthorityStoreError> {

@@ -1,7 +1,9 @@
 //! Native full and data-only flushes of a held descriptor, each returning its first result.
 use std::io;
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd as _;
 #[cfg(unix)]
-use std::os::fd::{AsRawFd as _, BorrowedFd};
+use std::os::fd::BorrowedFd;
 #[cfg(windows)]
 use std::os::windows::io::{AsRawHandle as _, BorrowedHandle};
 
@@ -72,7 +74,7 @@ pub fn sync_descriptor_once(
     #[cfg(windows)] descriptor: BorrowedHandle<'_>,
 ) -> io::Result<()> {
     #[cfg(target_vendor = "apple")]
-    return crate::apple::sync_descriptor_once(descriptor);
+    return crate::apple::sync_descriptor_once(descriptor, None);
     #[cfg(not(target_vendor = "apple"))]
     sync_descriptor_requested_once(descriptor, crate::Durability::Full)
 }

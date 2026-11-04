@@ -19,6 +19,7 @@ use crate::storage::{FenceOutcome, ObjectKind, object_digest};
 use sha2::{Digest as _, Sha256};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+const ROOT_FILE_ID: FileId = FileId::from_bytes([3; 16]);
 fn accept<T>(_: T) -> Result<(), CanonicalDecodeError> {
     Ok(())
 }
@@ -118,13 +119,13 @@ async fn fixture(objects: &MemoryObjectStore, volume_id: VolumeId) -> TestResult
     Ok(generation(
         objects,
         volume_id,
-        FileId::from_bytes([3; 16]),
+        ROOT_FILE_ID,
         metadata,
         Vec::new(),
         Vec::new(),
-        Vec::new(),
     )
-    .await?[2])
+    .await?
+    .0[2])
 }
 async fn metadata_object(objects: &MemoryObjectStore) -> TestResult<ObjectId> {
     put_file_metadata(objects, FileMetadata::default()).await
@@ -134,22 +135,47 @@ async fn generation(
     volume_id: VolumeId,
     root_file_id: FileId,
     metadata: ObjectId,
-    entries: Vec<TreeEntry>,
-    mut files: Vec<FileRecord>,
+    children: Vec<(TreeEntry, FileRecord)>,
     parents: Vec<crate::GenerationId>,
-) -> TestResult<[ObjectId; 3]> {
+) -> TestResult<([ObjectId; 3], Vec<ObjectId>)> {
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let mut binding_pages = Vec::new();
+    let mut entries = Vec::new();
+    let mut files = Vec::new();
+    for (entry, mut file) in children {
+        let mutation = crate::kernel::bindings::BindingMutation {
+            binding: crate::kernel::bindings::Binding {
+                parent: root_file_id,
+                name: entry.name.clone(),
+            },
+            present: true,
+        };
+        let bindings = crate::kernel::bindings::apply_with_accounting(
+            objects,
+            None,
+            std::slice::from_ref(&mutation),
+            1,
+            limits().decode,
+            &mut accounting,
+            &cancellation,
+        )
+        .await?;
+        file.bindings = Some(bindings);
+        binding_pages.push(bindings);
+        entries.push(entry);
+        files.push(file);
+    }
     let tree = put_tree_page(objects, &TreePage::Leaf(entries), 8).await?;
-    files.insert(
-        0,
-        FileRecord {
-            bindings: None,
-            file_id: root_file_id,
-            kind: FileKind::Directory,
-            link_count: 1,
-            metadata,
-            payload: FilePayload::Directory { entries: tree },
-        },
-    );
+    files.push(FileRecord {
+        bindings: None,
+        file_id: root_file_id,
+        kind: FileKind::Directory,
+        link_count: 1,
+        metadata,
+        payload: FilePayload::Directory { entries: tree },
+    });
+    files.sort_unstable_by_key(|file| file.file_id);
     let table = put_file_table_page(objects, &FileTablePage::Leaf(files), 8).await?;
     let root = put_generation_root(
         objects,
@@ -162,7 +188,7 @@ async fn generation(
         },
     )
     .await?;
-    Ok([tree, table, root])
+    Ok(([tree, table, root], binding_pages))
 }
 fn regular(
     file_id: FileId,

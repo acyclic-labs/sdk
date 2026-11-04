@@ -11,6 +11,10 @@ mod actor;
 pub use actor::{
     ActorReference, DEFAULT_ACTOR_NAMESPACE, NamespaceId, validate_actor_id, validate_location_hint,
 };
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+#[path = "../tests/common/addressing.rs"]
+pub mod testing;
 
 /// Invalid identity component or canonical encoding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -216,8 +220,10 @@ fn validate_id(bytes: &[u8]) -> Result<(), IdentityError> {
     Ok(())
 }
 fn field<'a>(bytes: &mut &'a [u8]) -> Result<&'a [u8], IdentityError> {
-    let (prefix, rest) = bytes.split_at_checked(8).ok_or(IdentityError::Malformed)?;
-    let length = u64::from_be_bytes(prefix.try_into().map_err(|_| IdentityError::Malformed)?);
+    let (prefix, rest) = bytes
+        .split_first_chunk::<8>()
+        .ok_or(IdentityError::Malformed)?;
+    let length = u64::from_be_bytes(*prefix);
     let length = usize::try_from(length).map_err(|_| IdentityError::Malformed)?;
     let (value, rest) = rest
         .split_at_checked(length)

@@ -3,6 +3,18 @@ fn delivery_registration_cannot_lose_a_wakeup() {
     registration(0);
 }
 #[test]
+fn replacing_waiter_retires_previous_outside_lock() {
+    loom::model(|| {
+        let signal = super::Arc::new(Signal::new());
+        let inspected = super::Arc::clone(&signal);
+        super::waiter_replacement(
+            |wake| signal.poll(&mut Context::from_waker(wake)),
+            || signal.send(7_u8).unwrap(),
+            move || inspected.state.try_lock().is_ok(),
+        );
+    });
+}
+#[test]
 #[should_panic(expected = "a parked receiver must be woken")]
 fn delivery_negative_control_omits_notification() {
     registration(1);

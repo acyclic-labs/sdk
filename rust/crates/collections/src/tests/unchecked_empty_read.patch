@@ -1,0 +1,11 @@
+diff --git a/rust/crates/collections/src/lib.rs b/rust/crates/collections/src/lib.rs
+--- a/rust/crates/collections/src/lib.rs
++++ b/rust/crates/collections/src/lib.rs
+@@ -217,7 +217,6 @@
+         key: [u8; N],
+         accounting: &mut W,
+     ) -> Result<Option<&V>, W::Error> {
+-        accounting.validate()?;
+         let mut cursor = self.root.as_ref();
+         while let Some(node) = cursor {
+             accounting.examine(1)?;

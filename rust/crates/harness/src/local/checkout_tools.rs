@@ -74,7 +74,7 @@ impl State {
 }
 
 // Keep the whole command, including its publication and cursor replacement,
-// inside one guard. The async model exercises this same boundary.
+// inside one guard.
 async fn serialized<T, R>(
     state: &StateArc<AsyncMutex<T>>,
     command: impl AsyncFnOnce(OwnedMutexGuard<T>) -> R,

@@ -1,0 +1,11 @@
+--- a/rust/crates/harness/src/completion.rs
++++ b/rust/crates/harness/src/completion.rs
+@@ -149,7 +149,7 @@
+     tokio::select! {
+         result = write => match result {
+             Ok(()) => FailureReport::Written,
+-            Err(error) => FailureReport::Incomplete(Some(error)),
++            Err(_error) => FailureReport::Written,
+         },
+         stopped = shutdown => FailureReport::Incomplete(Some(match stopped {
+             Ok(_) => io::Error::new(io::ErrorKind::Interrupted, "shutdown interrupted CLI failure delivery"),

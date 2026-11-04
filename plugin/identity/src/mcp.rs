@@ -1394,9 +1394,16 @@ mod tests {
             );
             drop(completed);
             assert!(!client.served.is_finished());
-            client.close();
             drop(paused);
             let mut ids = Vec::new();
+            if !eof {
+                // Credential commit precedes protocol settlement. Keep input
+                // open until both replies arrive; EOF withdraws parked replies.
+                for _ in 0..2 {
+                    ids.extend(client.reply().await.get("id").cloned());
+                }
+                client.close();
+            }
             while let Some(reply) = client.next_reply().await {
                 ids.extend(reply.get("id").cloned());
             }

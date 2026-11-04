@@ -247,6 +247,38 @@ async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()>
         .await?;
     assert_eq!(selected, published);
     assert_eq!(bytes.as_ref(), b"private bytes");
+    let (auxiliary, _) = publisher
+        .stage_once(
+            OperationId::new(),
+            ".volumes/home/note",
+            b"original",
+            "text/plain",
+            "note",
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+    let mounts = &publisher.tools.workspace.mounts;
+    crate::local::workspace::volumes::native_scope(mounts, async |claims| {
+        let path = directory.path().join(".volumes/home/note");
+        assert_eq!(std::fs::read(&path).map_err(storage)?, b"original");
+        publisher
+            .stage_at(
+                OperationId::new(),
+                &auxiliary,
+                b"live replacement",
+                None,
+                None,
+            )?
+            .await?;
+        assert_eq!(
+            std::fs::read(path).map_err(storage)?,
+            b"live replacement",
+            "logical replacement did not refresh the active projection"
+        );
+        Ok(((), claims))
+    })
+    .await?;
+    assert!(!directory.path().join(".volumes/home").exists());
     Ok(())
 }
 
@@ -343,10 +375,23 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         )
         .await?;
         assert_eq!(result.value["text"], "first");
-        assert_eq!(
-            result.value["file"],
-            serde_json::to_value(&file).map_err(storage)?
-        );
+        let selected: crate::tool::files::FileReadSource =
+            serde_json::from_value(result.value["file"].clone()).map_err(storage)?;
+        match (version.is_null(), selected) {
+            (true, crate::tool::files::FileReadSource::Authored(selected)) => {
+                assert_eq!(selected.volume, *file.volume());
+                assert_eq!(selected.path, file.path());
+                assert_eq!(selected.byte_length, file.descriptor().byte_length());
+                assert_eq!(
+                    hex::encode(selected.generation.as_resource().key()),
+                    file.version()
+                );
+            }
+            (false, crate::tool::files::FileReadSource::Content(selected)) => {
+                assert_eq!(selected, file);
+            }
+            (_, selected) => panic!("read returned another source kind: {selected:?}"),
+        }
         assert!(projected.to_string().contains(path));
     }
     let wrong_path = run(
@@ -731,6 +776,41 @@ async fn atomic_patch_uses_the_checkout_publisher_and_recovers_its_original_cut(
         std::fs::read(directory.path().join("one")).map_err(storage)?,
         b"first\n"
     );
+    // Neither ordinary write authority nor removal authority for another volume
+    // may remove this source, even though the owning publisher can do so.
+    let write_only = Capabilities::new(
+        harness
+            .signed
+            .capabilities()
+            .iter()
+            .filter(|label| !label.starts_with(VolumeOperation::Delete.capability_prefix())),
+    );
+    let foreign_delete = Capabilities::new(
+        write_only.iter().map(str::to_owned).chain([harness
+            .seed
+            .0
+            .capability(VolumeOperation::Delete, &mut None)?]),
+    );
+    for ceiling in [&write_only, &foreign_delete] {
+        assert!(matches!(
+            publisher
+                .stage_changes(
+                    &harness.project,
+                    OperationId::new(),
+                    &[crate::conversation::ContentChange::DeleteExpected { source }],
+                    crate::conversation::ContentAccess {
+                        ceiling: Some(ceiling),
+                        io: None
+                    },
+                )?
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert_eq!(
+            std::fs::read(directory.path().join("one")).map_err(storage)?,
+            b"first\n"
+        );
+    }
     let task = task_for(harness.signed.capabilities().clone())?;
     let context = ToolContext::new(task.clone(), OperationId::new(), "atomic-refusal")?;
     let invalid = ToolInvocation {

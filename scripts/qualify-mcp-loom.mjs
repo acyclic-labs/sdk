@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,11 +16,12 @@ export const gateQualifications = [
   { args: ["--hook-lifecycle", "--all-features"] },
   { args: ["--native-registry"] },
   { args: ["--e2e-progress"] }, { args: ["--native-progress"] },
-  { args: ["--timer"] }, { args: ["--guest"] },
+  { args: ["--guest"] },
   { args: ["--fs-binding", "--all-features"] },
   { args: ["--fs-policy"] },
   { args: ["--session-fs"] }, { args: ["--ownership"] },
   { args: ["--skill-materializer"] },
+  { args: ["--provider-refresh"] },
   { args: ["--harness-models", "--all-features"] },
 ];
 // Cargo's workspace wrapper leaves registry dependencies (including Tokio's own
@@ -51,24 +54,224 @@ export function qualifySkillMaterializerLoom(run = runCommand) {
   return qualifyLoom("acyclic-harness-core", "main",
     ["--features", "filesystem-local,native-execution,test-support"], run, {
       targetCfg: ["--", "--cfg", "loom"],
-      filters: ["skill_materializer_loom::journal_owner_serializes_first_publications", "skill_materializer_loom::former_independent_publishers_can_conflict"],
+      filters: ["skill_materializer_loom::journal_owner_serializes_first_publications", "skill_materializer_loom::cancelled_waiter_does_not_take_the_next_owners_wake"],
     });
 }
 
-// Checkout and projection models retain physical cleanup custody.
+export function qualifyProviderRefreshLoom(run = runCommand) {
+  return qualifyLoom("acyclic-harness-providers", "main", [], run, {
+    modelFeatures: [],
+    suites: [["verification_models::refresh::", 3]],
+  });
+}
+
+export function qualifyProviderRefreshMutationsLoom(run = runCommand) {
+  const recovery = "node scripts/qualify-mcp-loom.mjs --provider-refresh-mutations";
+  return qualifySourceMutationsLoom({
+    name: "Refresh", recovery,
+    source: "../rust/crates/harness-providers/src/refresh.rs",
+    model: "../rust/crates/harness-providers/tests/models/refresh.rs",
+    mutations: [
+      ["return Err(failure);", "let _ = failure;", "failed refresh was repeated by a waiter"],
+      ["lock_owned(self.result.clone()).await", "lock_owned(Arc::new(Mutex::new(None))).await", "refresh ownership overlapped"],
+    ],
+    qualify: (run, expectedFailure) => qualifyLoom("acyclic-harness-providers", "main", [], run, {
+      modelFeatures: [], expectedFailure, recovery,
+      filter: "verification_models::refresh::refresh_attempt_failure_retains_exclusive_ownership",
+    }),
+    restored: qualifyProviderRefreshLoom,
+  }, run);
+}
+
+export function qualifySkillMaterializerMutationsLoom(run = runCommand) {
+  const recovery = "node scripts/qualify-mcp-loom.mjs --skill-materializer-mutations";
+  return qualifySourceMutationsLoom({
+    name: "SkillMaterializer", recovery,
+    source: "../rust/crates/harness-core/src/context/skill_materializer.rs",
+    model: "../rust/crates/harness-core/tests/skill_materializer_loom.rs",
+    mutations: [["lock_owned(self.0.clone()).await", "lock_owned(Arc::new(Mutex::new(()))).await", "materialization conflict"]],
+    qualify: (run, expectedFailure) => qualifyLoom("acyclic-harness-core", "main",
+      ["--features", "filesystem-local,native-execution,test-support"], run, {
+        targetCfg: ["--", "--cfg", "loom"], expectedFailure, recovery,
+        filter: "skill_materializer_loom::journal_owner_serializes_first_publications",
+      }),
+    restored: qualifySkillMaterializerLoom,
+  }, run);
+}
+
+export function qualifyProjectionMutationsLoom(run = runCommand) {
+  const recovery = "node scripts/qualify-mcp-loom.mjs --projection-mutations";
+  return qualifyProjectionSourceMutations([
+    ["if slot.is_none() {", "if true {", "projection initialized twice", "first_native_users_share_one_initialization"],
+    ["== 0;", ">= 0;", "projection retired under a running command", "the_last_execution_scope_alone_retires_the_projection"],
+    ["publish(&mut slot, retire).await", "if retire { publish(&mut slot, retire).await } else { Ok(()) }", "successful command skipped publication", "every_completed_command_publishes_before_its_acknowledgement"],
+  ], recovery, run);
+}
+
+export function qualifyProjectionCustodyMutationsLoom(run = runCommand) {
+  const recovery = "node scripts/qualify-mcp-loom.mjs --projection-custody-mutations";
+  return qualifyProjectionSourceMutations([[
+    `    let mut slot = lock_owned(StateArc::clone(slot)).await;
+    // Keep the completed worker's claim until its publication owns the slot.
+    // Another completing command must not retire this projection first.
+    drop(entered);`,
+    `    drop(entered);
+    let mut slot = lock_owned(StateArc::clone(slot)).await;`,
+    "completion lost its unpublished projection",
+    "every_completing_worker_retains_its_projection_until_publication",
+  ], [
+    `    let mut slot = lock_owned(StateArc::clone(slot)).await;
+    if slot.is_none() {
+        *slot = Some(create().await?);
+    }
+    Ok(slot)`,
+    `    let mut slot = std::mem::ManuallyDrop::new(lock_owned(StateArc::clone(slot)).await);
+    if slot.is_none() {
+        **slot = Some(create().await?);
+    }
+    Ok(std::mem::ManuallyDrop::into_inner(slot))`,
+    "initialization did not wake its registered successor",
+    "failed_or_cancelled_initialization_wakes_waiters_without_partial_state",
+  ]], recovery, run);
+}
+
+export function qualifyNativeScopeMutations(run = runCommand) {
+  return qualifyNativeSourceMutation({
+    name: "NativeScope", selector: "--native-scope-mutations",
+    source: "workspace/volumes", model: "workspace/volumes/publication_tests",
+    test: "local::workspace::volumes::publication_tests::failed_scope_entry_retires_the_projections_it_entered",
+    mutation: ["let _ = leave_all(std::mem::take(&mut claims.entries)).await;", "claims.entries.clear();",
+      "failed later entry stranded the earlier projection"],
+  }, run);
+}
+
+export function qualifyNativeCancellationMutations(run = runCommand) {
+  return qualifyNativeSourceMutation({
+    name: "NativeScope", selector: "--native-cancellation-mutations",
+    source: "workspace/volumes", model: "workspace/volumes/publication_tests",
+    test: "local::workspace::volumes::publication_tests::cancelled_command_retires_before_next_entrant_and_preserves_acknowledged_head",
+    mutation: ["claim.source.abandon(claim.entered).await", "{ drop(claim.entered); Ok::<(), Error>(()) }",
+      "cancelled command exposed unverified physical bytes"],
+  }, run);
+}
+
+export function qualifyNativePublicationMutations(run = runCommand) {
+  return qualifyNativeSourceMutation({
+    name: "NativePublication", selector: "--native-publication-mutations",
+    source: "checkout_tools/publisher", model: "checkout_tools/publisher/mount_tests",
+    test: "local::checkout_tools::publisher::mount_tests::file_publication_materializes_its_exact_committed_bytes",
+    mutation: [
+      "if let Some(native) = native {\n                native.advance_to_head().await?;\n            } else if mount.view.source.is_none() {",
+      "if let Some(native) = native {\n                let _ = native;\n            } else if mount.view.source.is_none() {",
+      "logical replacement did not refresh the active projection",
+    ],
+  }, run);
+}
+
+export function qualifyNativeRetirementMutations(run = runCommand) {
+  return qualifyNativeSourceMutation({
+    name: "NativeRetirement", selector: "--native-retirement-mutations",
+    source: "workspace/volumes", model: "workspace/volumes/publication_tests",
+    test: "local::workspace::volumes::publication_tests::retirement_continues_past_a_volume_a_worker_still_owns",
+    mutation: [
+      "keep_first(&mut retired, Box::pin(source.retire()).await);",
+      "Box::pin(source.retire()).await?;",
+      "a conflict stranded a later projection",
+    ],
+  }, run);
+}
+
+export function qualifyCaptureCursorMutations(run = runCommand) {
+  return qualifyNativeSourceMutation({
+    name: "CaptureCursor", selector: "--capture-cursor-mutations",
+    source: "checkout_tools/capture", model: "checkout_tools/capture/tests",
+    test: "local::checkout_tools::capture::tests::cursor_custody_follows_actual_capture_admission",
+    mutations: [[
+      "    before_effect().await?;\n    let (physical, view) = selected;",
+      "    drop(slot.take());\n    before_effect().await?;\n    let (physical, view) = selected;",
+      "capture consumed its cursor before admission",
+    ], [
+      "let mut cursor = match slot.take() {",
+      "let mut cursor = match slot.replace(Cursor::open(physical, policy)?) {",
+      "capture retained its cursor after consumed cancellation",
+    ]],
+  }, run);
+}
+
+function qualifyNativeSourceMutation({ name, selector, source, model, test, mutation, mutations = [mutation] }, run) {
+  const recovery = `node scripts/qualify-mcp-loom.mjs ${selector}`;
+  const qualify = (run, expectedFailure) => qualifyLoom("acyclic-harness", "acyclic_harness",
+    ["--features", "filesystem-local,native-execution,test-support"], run, {
+      kind: "--lib", modelFeatures: [], targetCfg: [], expectedFailure, recovery, filter: test,
+    });
+  const root = "../rust/crates/harness/src/local/";
+  return qualifySourceMutationsLoom({
+    name, recovery, source: `${root}${source}.rs`, model: `${root}${model}.rs`,
+    mutations, qualify, restored: run => qualify(run),
+  }, run);
+}
+
+function qualifyProjectionSourceMutations(mutations, recovery, run) {
+  const prefix = "local::workspace::projection::tests::";
+  const oracles = Object.fromEntries(mutations.map(([, , message, test]) => [message, `${prefix}${test}`]));
+  const qualify = (run, expectedFailure) => qualifyLoom("acyclic-harness", "acyclic_harness",
+    ["--all-features"], run, {
+      kind: "--lib", env: loomEnvironment(), targetCfg: [], expectedFailure, recovery,
+      filters: expectedFailure ? [oracles[expectedFailure]] : Object.values(oracles),
+    });
+  return qualifySourceMutationsLoom({
+    name: "Projection", recovery,
+    source: "../rust/crates/harness/src/local/workspace/projection.rs",
+    model: "../rust/crates/harness/src/local/workspace/projection/tests.rs",
+    mutations,
+    qualify, restored: run => qualify(run),
+  }, run);
+}
+
+// Each control changes an exact entrance in the included production source;
+// the model and its semantic assertion stay byte-identical across the build.
+function qualifySourceMutationsLoom({ name, source, model, mutations, qualify, restored, recovery }, run) {
+  if (run === planOnly) return mutations.map(([, , message]) => qualify(run, message));
+  const path = new URL(source, import.meta.url);
+  const fail = (step, detail) => {
+    throw new Error(`${name} ${step}: ${detail}\nRecovery after correcting the cause: ${recovery}`);
+  };
+  let original;
+  try { original = readFileSync(path, "utf8"); }
+  catch (error) { fail("read production source", String(error)); }
+  const hash = source => createHash("sha256").update(source).digest("hex");
+  try {
+    console.log(`${name} unchanged model=${hash(readFileSync(new URL(model, import.meta.url)))}`);
+    for (const [before, after, expectedFailure] of mutations) {
+      if (original.split(before).length !== 2) fail("source mutation", "expected exactly one original source entrance");
+      const planted = original.replace(before, after);
+      writeFileSync(path, planted);
+      console.log(`${name}: original=${hash(original)} planted=${hash(planted)}`);
+      qualify(run, expectedFailure);
+    }
+  } catch (error) {
+    fail("source mutation qualification", String(error));
+  } finally {
+    try {
+      writeFileSync(path, original);
+      if (readFileSync(path, "utf8") !== original) fail("restore production source", "original bytes differ");
+      console.log(`PASS: original ${name} source restored ${hash(original)}`);
+    } catch (error) { fail("restore production source", String(error)); }
+  }
+  try { restored(run); }
+  catch (error) { fail("restored production qualification", String(error)); }
+}
+
+// These models check shared projection ownership; native process cleanup is separate.
 export function qualifyHookLifecycleLoom(features = ["--features", "filesystem-local,native-execution,terminal,mcp-http,test-support,grpc"], run = runCommand) {
   return qualifyLoom("acyclic-harness", "acyclic_harness", [...features, "--features", "model-checking"], run, {
     kind: "--lib", filters: [
-      "local::checkout_tools::tests::cancelled_bash_retains_projection_until_physical_cleanup",
       "local::workspace::projection::tests::first_native_users_share_one_initialization",
-      "local::workspace::projection::tests::first_projection_and_logical_publication_share_custody",
-      "local::workspace::projection::tests::failed_initialization_leaves_no_published_projection",
-      "local::workspace::projection::tests::cancelling_initialization_releases_waiters_without_partial_state",
+      "local::workspace::projection::tests::failed_or_cancelled_initialization_wakes_waiters_without_partial_state",
       "local::workspace::projection::tests::checkout_then_projection_order_cannot_deadlock",
       "local::workspace::projection::tests::the_last_execution_scope_alone_retires_the_projection",
       "local::workspace::projection::tests::every_completed_command_publishes_before_its_acknowledgement",
       "local::workspace::projection::tests::every_completing_worker_retains_its_projection_until_publication",
-      "local::workspace::projection::tests::execution_guard_covers_physical_cleanup_and_unpublished_retirement",
     ],
     env: loomEnvironment(), targetCfg: [],
   });
@@ -81,14 +284,6 @@ export function qualifyNativeRegistryLoom(run = runCommand) {
       "native_mount::fence::models::retirement_preserves_registry_identity_for_pending_and_new_starters",
     ],
     env: loomEnvironment(), targetCfg: [],
-  });
-}
-
-export function qualifyTimerLoom(run = runCommand) {
-  return qualifyLoom("acyclic-actors", "main", [
-    "--features", "acyclic-stream/local", "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"),
-  ], run, {
-    env: loomEnvironment(), targetCfg: [], suites: [["timer_loom::", 2]],
   });
 }
 
@@ -179,7 +374,7 @@ export function qualifyOwnershipLoom(run = runCommand) {
 export const harnessModelSuites = {
   "acyclic-harness": [
     ["local::workspace::bootstrap::loom_tests::", 1],
-    ["local::checkout_tools::tests::", 9],
+    ["local::checkout_tools::tests::", 1],
   ],
 };
 
@@ -201,7 +396,8 @@ function qualifyLoom(crate, target, features, run, options = {}) {
   const args = [
     options.kind === "--lib" ? "test" : "rustc", "--locked", "--message-format=json", "-p", crate,
     ...(options.kind === "--lib" ? ["--lib", "--no-run"] : ["--test", target]),
-    ...features, "--features", "model-checking", ...(options.targetCfg ?? ["--", "--cfg", "loom"]),
+    ...features, ...(options.modelFeatures ?? ["--features", "model-checking"]),
+    ...(options.targetCfg ?? ["--", "--cfg", "loom"]),
   ];
   const tests = options.suites?.map(([filter, passed]) => ({ args: [filter], passed })) ?? (options.filters ?? [options.filter]).map(filter => ({
     args: filter ? [filter, ...(options.exact === false ? [] : ["--exact"])] : [],
@@ -209,6 +405,7 @@ function qualifyLoom(crate, target, features, run, options = {}) {
   }));
   const env = options.env ?? process.env;
   const plan = { args, target, tests, rustflags: env.RUSTFLAGS ?? "", wrapper: env.RUSTC_WORKSPACE_WRAPPER ?? null };
+  if (options.expectedFailure) plan.expectedFailure = options.expectedFailure;
   if (run === planOnly) return plan;
   const build = run("cargo", args, { encoding: "utf8", maxBuffer: 4 * 1024 * 1024, ...(options.env ? { env: options.env } : {}) });
   if (build.error) throw build.error;
@@ -233,6 +430,15 @@ function qualifyLoom(crate, target, features, run, options = {}) {
     process.stdout.write(result.stdout ?? "");
     process.stderr.write(result.stderr ?? "");
     if (result.error) throw result.error;
+    if (options.expectedFailure) {
+      const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+      if (result.status !== 101 || !output.includes(options.expectedFailure)
+        || !/^test result: FAILED\. 0 passed; 1 failed; 0 ignored; 0 measured; [0-9]+ filtered out;/m.test(output)) {
+        throw new Error(`Production source mutation: unchanged semantic oracle did not fail as required\nRecovery after correcting the cause: ${options.recovery}`);
+      }
+      console.log(`PASS: production mutation reached unchanged oracle: ${options.expectedFailure}`);
+      continue;
+    }
     if (result.status !== 0) throw new Error(`MCP Loom tests failed: ${result.status}`);
     const complete = test.passed === null
       ? /^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;/m
@@ -245,11 +451,21 @@ function qualifyLoom(crate, target, features, run, options = {}) {
 
 // Every model flag is named here; anything else is a cargo feature selection or an error.
 const fixedModels = {
-  "--native-progress": qualifyNativeProgressLoom, "--timer": qualifyTimerLoom,
+  "--native-progress": qualifyNativeProgressLoom,
   "--guest": qualifyGuestLoom,
   "--session-fs": qualifySessionFsLoom, "--ownership": qualifyOwnershipLoom,
   "--native-registry": qualifyNativeRegistryLoom,
   "--skill-materializer": qualifySkillMaterializerLoom,
+  "--provider-refresh": qualifyProviderRefreshLoom,
+  "--provider-refresh-mutations": qualifyProviderRefreshMutationsLoom,
+  "--skill-materializer-mutations": qualifySkillMaterializerMutationsLoom,
+  "--projection-mutations": qualifyProjectionMutationsLoom,
+  "--projection-custody-mutations": qualifyProjectionCustodyMutationsLoom,
+  "--native-scope-mutations": qualifyNativeScopeMutations,
+  "--native-cancellation-mutations": qualifyNativeCancellationMutations,
+  "--native-publication-mutations": qualifyNativePublicationMutations,
+  "--native-retirement-mutations": qualifyNativeRetirementMutations,
+  "--capture-cursor-mutations": qualifyCaptureCursorMutations,
   "--fs-policy": qualifyFsPolicyLoom,
 };
 const selectableModels = {

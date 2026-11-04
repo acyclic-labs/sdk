@@ -105,16 +105,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         .await;
         name.retire(accounting)?;
         let bytes = bytes?.ok_or(FsError::InvalidAccessPolicy)?;
-        // No provider I/O is performed under this single-flight lock. A
-        // concurrent miss may read the same record, but compiles it once.
-        let _compilation = cache
-            .compilation
-            .lock()
-            .map_err(|_| FsError::InvalidAccessPolicy)?;
-        if let Some(view) = cache.get(self.volume.id, revision) {
-            return Ok(view);
-        }
-        compile_cached_policy(&self.volume, revision, &bytes.bytes, accounting)
+        cache.get_or_compile(self.volume.id, revision, || {
+            compile_cached_policy(&self.volume, &bytes.bytes, accounting)
+        })
     }
 
     /// Reads the policy record from this checkout's pinned volume metadata.
@@ -337,7 +330,6 @@ pub(crate) fn policy_head_is_current(observed: Head, current: Head) -> bool {
 
 fn compile_cached_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     volume: &Volume<A, O>,
-    revision: MetadataField<ObjectId>,
     bytes: &[u8],
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<Arc<crate::access::CompiledPolicy>, FsError> {
@@ -400,9 +392,7 @@ fn compile_cached_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let capacity = accounting.remaining()?.peak_allocation_bytes / 4;
         cache.initialize(capacity)?;
         compiled.cache_charge = Some(cache.charge(bytes)?);
-        let compiled = Arc::new(compiled);
-        cache.insert(volume.id, revision, Arc::clone(&compiled))?;
-        Ok(compiled)
+        Ok(Arc::new(compiled))
     })();
     for (mut allocation, bytes) in stages.into_iter().flatten() {
         accounting.release_owned(&mut allocation, bytes)?;

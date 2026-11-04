@@ -687,7 +687,11 @@ proptest! {
         malformed in prop::collection::vec(any::<u8>(), 0..4096),
         generation_key in any::<[u8; 32]>(),
     ) {
-        for actions in [acyclic_fs::access::ActionSet::SourceRead, acyclic_fs::access::ActionSet::DestinationWrite, acyclic_fs::access::ActionSet::MountWrite] {
+        for operation in [VolumeOperation::Read, VolumeOperation::Write, VolumeOperation::Delete] {
+            acyclic_harness::filesystem::check_access_record(&serde_json::to_vec(&operation)?)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+        }
+        for actions in [acyclic_fs::access::ActionSet::SourceRead, acyclic_fs::access::ActionSet::DestinationWrite, acyclic_fs::access::ActionSet::DestinationEdit, acyclic_fs::access::ActionSet::DestinationDelete, acyclic_fs::access::ActionSet::MountWrite] {
             let encoded = serde_json::to_vec(&Capability::whole_volume(None, actions.actions()))?;
             acyclic_harness::filesystem::check_access_record(&encoded)
                 .map_err(|error| TestCaseError::fail(error.to_string()))?;

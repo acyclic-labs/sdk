@@ -51,12 +51,9 @@ impl From<scenario::Scenario> for Case {
 
 pub(super) async fn run(case: impl Into<Case>) -> TestResult {
     // The shared corpus already owns a guard; direct tests enter the same path.
-    Box::pin(super::stall::guarded(
-        std::path::Path::new("driver"),
-        dispatch(case.into()),
-    ))
-    .await
-    .map_err(std::io::Error::other)?
+    super::stall::guarded(std::path::Path::new("driver"), dispatch(case.into()))
+        .await
+        .map_err(std::io::Error::other)?
 }
 
 async fn dispatch(case: Case) -> TestResult {

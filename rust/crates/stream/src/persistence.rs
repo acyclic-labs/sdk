@@ -8,6 +8,9 @@ use prost::Message;
 
 const OBSERVATION_MAGIC: &[u8] = b"ACYCLIC-STREAM-OBSERVATION-V1\0";
 const ENVELOPE_MAGIC: &[u8] = b"ACYCLIC-STREAM-ENVELOPE-V1\0";
+pub(crate) const OBSERVATION_DOMAIN: &[u8] = b"ACYCLIC-STREAM-OBSERVATION-V";
+pub(crate) const ENVELOPE_DOMAIN: &[u8] = b"ACYCLIC-STREAM-ENVELOPE-V";
+pub(crate) const FACT_VERSION: &[u8] = b"1\0";
 
 /// Admit a binary format's domain and version before interpreting its payload.
 ///
@@ -15,8 +18,9 @@ const ENVELOPE_MAGIC: &[u8] = b"ACYCLIC-STREAM-ENVELOPE-V1\0";
 /// copies nothing, and takes constant work independent of the payload length.
 ///
 /// # Errors
-/// Returns [`StreamError::InvalidArgument`] for another domain, and
-/// [`StreamError::Unsupported`] for an absent, old or unknown version.
+/// Returns [`StreamError::InvalidArgument`] for another domain or a header
+/// truncated before its version ends, and [`StreamError::Unsupported`] for an
+/// old or unknown version.
 pub fn header<'a>(
     encoded: &'a [u8],
     domain: &[u8],
@@ -50,7 +54,7 @@ pub fn decode_observation(
     maximum_bytes: usize,
 ) -> Result<IdempotencyObservation, StreamError> {
     observation_from_wire(decode::<wire::IdempotencyObservation>(
-        header(input, b"ACYCLIC-STREAM-OBSERVATION-V", b"1\0")?,
+        header(input, OBSERVATION_DOMAIN, FACT_VERSION)?,
         maximum_bytes.saturating_sub(OBSERVATION_MAGIC.len()),
     )?)
 }
@@ -83,7 +87,7 @@ pub fn decode_envelope(
     maximum_bytes: usize,
 ) -> Result<CommittedEnvelope, StreamError> {
     envelope_from_wire(decode::<wire::CommittedEnvelope>(
-        header(input, b"ACYCLIC-STREAM-ENVELOPE-V", b"1\0")?,
+        header(input, ENVELOPE_DOMAIN, FACT_VERSION)?,
         maximum_bytes.saturating_sub(ENVELOPE_MAGIC.len()),
     )?)
 }

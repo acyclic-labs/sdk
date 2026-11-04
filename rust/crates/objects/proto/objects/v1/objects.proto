@@ -218,4 +218,8 @@ enum ErrorCode {
 message ErrorDetail {
   ErrorCode code = 1;
   string request_id = 2;
+  // Closed snake_case server component token, such as `objects.medium`.
+  string component = 3;
+  // Closed snake_case failure token within that component, never prose.
+  string reason = 4;
 }

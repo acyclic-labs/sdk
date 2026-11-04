@@ -83,9 +83,7 @@ pub fn project(
     };
     let mut row = Row::stream(
         source.agent.map(AgentPath::as_str),
-        source.account,
-        selected,
-        record,
+        crate::live::resources::Source::project(source.account, selected, record),
         "call_receipt",
     );
     row.scope_path = Some(source.scope.as_str().into());

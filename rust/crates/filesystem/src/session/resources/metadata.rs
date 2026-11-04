@@ -5,14 +5,27 @@ use acyclic_auth::authority::PolicyDecision;
 use acyclic_auth::contract::{Attribute, RecordAttributes};
 use acyclic_stream::{AppendRecord, Record};
 
+pub(super) struct Projection<'a> {
+    pub volume: VolumeId,
+    pub scope: [u8; 16],
+    pub config: VolumeConfig,
+    pub trie: &'a PathTrie,
+    pub authorization: &'a acyclic_stream::session::ResourceAuthorization,
+    pub selected: Option<&'a super::subtree::Selection>,
+}
+
 pub(super) fn project(
     mut record: Record,
-    volume: VolumeId,
-    scope: [u8; 16],
-    config: VolumeConfig,
-    trie: &PathTrie,
-    authorization: &acyclic_stream::session::ResourceAuthorization,
+    projection: Projection<'_>,
 ) -> Result<FollowUpdate, StreamError> {
+    let Projection {
+        volume,
+        scope,
+        config,
+        trie,
+        authorization,
+        selected,
+    } = projection;
     let changes = acyclic_stream::decode_changes(record.value.as_ref())?;
     let context = crate::PublicationContext::from_bytes(&changes.context)?;
     if !acyclic_stream::is_changes(&record.headers)
@@ -57,6 +70,9 @@ pub(super) fn project(
             continue;
         }
         let name = canonical_resource(volume, &entry_facts.path, config)?;
+        if selected.is_some_and(|selected| !selected.contains(&name)) {
+            continue;
+        }
         if authorization
             .authorize(
                 &name,
@@ -107,7 +123,7 @@ fn appended_by_context(
         .is_some_and(|path| path == record.origin.as_str())
 }
 
-fn canonical_resource(
+pub(super) fn canonical_resource(
     volume: VolumeId,
     path: &NamespacePath,
     config: VolumeConfig,
@@ -139,7 +155,7 @@ mod tests {
     }
     use acyclic_stream::wire;
     #[test]
-    fn long_full_metadata_paths_cannot_hide_behind_an_allowed_truncated_key() {
+    fn volume_changes_subtree_checks_lossless_paths_and_appender_identity() {
         let config = crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral);
         let components = vec!["component"; 130];
         let text = components.join("/");
@@ -286,18 +302,31 @@ mod tests {
             let mut forged = record.clone();
             forged.origin = origin;
             assert!(matches!(
-                project(forged, volume, [0; 16], config, &trie, &authorization),
+                project(
+                    forged,
+                    Projection {
+                        volume,
+                        scope: [0; 16],
+                        config,
+                        trie: &trie,
+                        authorization: &authorization,
+                        selected: None
+                    }
+                ),
                 Err(StreamError::InvalidArgument)
             ));
         }
         assert!(matches!(
             project(
                 record.clone(),
-                volume,
-                [0; 16],
-                config,
-                &trie,
-                &authorization
+                Projection {
+                    volume,
+                    scope: [0; 16],
+                    config,
+                    trie: &trie,
+                    authorization: &authorization,
+                    selected: None
+                }
             )
             .unwrap(),
             FollowUpdate::Progress { next: 4, .. }
@@ -322,6 +351,15 @@ mod tests {
             &capability,
         )
         .unwrap();
+        let selected = super::super::subtree::Selection::new(volume, &full, config).unwrap();
+        let outside = NamespacePath::from_text_in_profile(
+            &format!("/{}/outside", text.rsplit_once('/').unwrap().0),
+            config.profile,
+            config.limits,
+        )
+        .unwrap();
+        let outside = super::super::subtree::Selection::new(volume, &outside, config).unwrap();
+        assert!(outside.filter().matches(&record.headers));
         // Inherited records retain the ancestor appender while authorization
         // still applies to the executing volume's resources.
         for appender in [volume, VolumeId::from_bytes([14; 16])] {
@@ -337,11 +375,14 @@ mod tests {
             record.origin = changes_stream([0; 16], appender);
             let projected = project(
                 record.clone(),
-                volume,
-                [0; 16],
-                config,
-                &allowing,
-                &authorization,
+                Projection {
+                    volume,
+                    scope: [0; 16],
+                    config,
+                    trie: &allowing,
+                    authorization: &authorization,
+                    selected: None,
+                },
             )
             .unwrap();
             let FollowUpdate::Record(projected) = projected else {
@@ -352,6 +393,28 @@ mod tests {
             assert_eq!(projected.commit_id, record.commit_id);
             let changes = acyclic_stream::decode_changes(projected.value.as_ref()).unwrap();
             assert_eq!(changes.context.as_ref(), context.as_ref());
+            let project_selected = |selected| {
+                project(
+                    record.clone(),
+                    Projection {
+                        volume,
+                        scope: [0; 16],
+                        config,
+                        trie: &allowing,
+                        authorization: &authorization,
+                        selected: Some(selected),
+                    },
+                )
+                .unwrap()
+            };
+            let FollowUpdate::Record(selected_record) = project_selected(&selected) else {
+                panic!("selected full path was skipped");
+            };
+            assert_eq!(selected_record, projected);
+            assert!(matches!(
+                project_selected(&outside),
+                FollowUpdate::Progress { next: 4, preceding } if preceding == record.commit_id
+            ));
         }
         for cut in [0, 1, entry.metadata.len() - 1] {
             let mut malformed = entry.clone();

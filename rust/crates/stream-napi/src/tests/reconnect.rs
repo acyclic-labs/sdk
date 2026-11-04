@@ -184,11 +184,20 @@ impl StreamSessionService for DisconnectingHost {
         let input = futures::stream::iter(buffered)
             .chain(incoming)
             .map(move |frame| {
-                if let Ok(wire::SessionFrame {
-                    body: Some(wire::session_frame::Body::Interest(interest)),
-                    ..
-                }) = &frame
-                {
+                // A physical session carries its opening interest in Hello;
+                // later changes use Interest. Audit both.
+                let interest = match &frame {
+                    Ok(wire::SessionFrame {
+                        body: Some(wire::session_frame::Body::Interest(interest)),
+                        ..
+                    }) => Some(interest),
+                    Ok(wire::SessionFrame {
+                        body: Some(wire::session_frame::Body::Hello(hello)),
+                        ..
+                    }) => hello.interest.as_ref(),
+                    _ => None,
+                };
+                if let Some(interest) = interest {
                     outage
                         .subscriptions
                         .lock()

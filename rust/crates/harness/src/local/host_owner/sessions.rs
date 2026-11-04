@@ -79,15 +79,8 @@ fn native_session_id(event: &Value) -> Option<&str> {
 }
 
 /// The last valid native resume id a turn's event log names.
-fn logged_session_id(log: &[u8]) -> Option<String> {
+pub fn logged_session_id(log: &[u8]) -> Option<String> {
     log.split(|byte| *byte == b'\n')
-        // Only lines that can name a session are decoded.
-        .filter(|line| {
-            line.windows(b"_id".len()).any(|window| window == b"_id")
-                || line
-                    .windows(b"session".len())
-                    .any(|window| window == b"session")
-        })
         .filter_map(|line| serde_json::from_slice::<Value>(line).ok())
         .filter_map(|event| native_session_id(&event).map(str::to_owned))
         .filter(|id| valid_session_id(id))

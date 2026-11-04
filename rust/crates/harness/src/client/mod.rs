@@ -9,7 +9,7 @@ pub use acyclic_harness_client::{
 pub use acyclic_harness_core::preset::Preset;
 
 mod command_result;
-pub use command_result::{HeadlessOutcome, encode_command_result};
+pub use command_result::{HeadlessOutcome, decode_command_result, encode_command_result};
 pub mod commands;
 mod mentions;
 pub use mentions::*;

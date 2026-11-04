@@ -94,6 +94,14 @@ pub(crate) use transcript::load_projection as load_response_projection;
 mod code_mode;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use code_mode::MEMORY_BYTES as ENGINE_MEMORY;
+/// Exercises the original JavaScript interpreter and native allocation owner.
+#[cfg(all(
+    feature = "test-support",
+    feature = "filesystem",
+    not(target_arch = "wasm32")
+))]
+#[doc(hidden)]
+pub use code_mode::model::check as check_code_mode;
 mod summary;
 #[cfg(any(test, feature = "filesystem"))]
 pub(crate) mod summary_identity;
@@ -532,6 +540,23 @@ pub struct TurnOutput {
     /// them costs no extra write.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub transcript: Vec<ModelMessage>,
+}
+
+impl TurnOutput {
+    /// Creates an output without a model transcript, attachments or an
+    /// accepted execution-journal cut. Adapters can supply their original
+    /// transcript and attachments after construction.
+    pub fn new(text: String, metadata: Value, steps: u32) -> Self {
+        Self {
+            #[cfg(feature = "research")]
+            journal_cut: None,
+            text,
+            attachments: Vec::new(),
+            metadata,
+            steps,
+            transcript: Vec::new(),
+        }
+    }
 }
 
 /// Execution progress with its settled value or pending approval operation.

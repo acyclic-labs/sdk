@@ -1,0 +1,145 @@
+{
+  "version": 1,
+  "provenance": {
+    "source": "943c9d40e41c6a022a241ab19dab5431d7639aa8",
+    "capture_sha256": "c2595e1aeb909a779576672b12440fbbaa76e4834b1a90887e5da97635243369",
+    "record": 3,
+    "projection": "Unchanged original installed Codex Responses namespace declaration. Other request fields and tool declarations are omitted."
+  },
+  "tool": {
+    "description": "Tools in the mcp__acyclic_sessions namespace.",
+    "name": "mcp__acyclic_sessions",
+    "tools": [
+      {
+        "description": "archive a separate native session in an admitted harness view. Native tools and policy are preserved. Native subagents are unmanaged. This tool is part of plugin `Acyclic`.",
+        "name": "archive",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "prompt": {
+              "type": "string"
+            },
+            "reference": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "reference"
+          ],
+          "type": "object"
+        },
+        "strict": false,
+        "type": "function"
+      },
+      {
+        "description": "cancel a separate native session in an admitted harness view. Native tools and policy are preserved. Native subagents are unmanaged. This tool is part of plugin `Acyclic`.",
+        "name": "cancel",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "prompt": {
+              "type": "string"
+            },
+            "reference": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "reference"
+          ],
+          "type": "object"
+        },
+        "strict": false,
+        "type": "function"
+      },
+      {
+        "description": "resume a separate native session in an admitted harness view. Native tools and policy are preserved. Native subagents are unmanaged. This tool is part of plugin `Acyclic`.",
+        "name": "resume",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "prompt": {
+              "type": "string"
+            },
+            "reference": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "reference",
+            "prompt"
+          ],
+          "type": "object"
+        },
+        "strict": false,
+        "type": "function"
+      },
+      {
+        "description": "send a separate native session in an admitted harness view. Native tools and policy are preserved. Native subagents are unmanaged. This tool is part of plugin `Acyclic`.",
+        "name": "send",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "prompt": {
+              "type": "string"
+            },
+            "reference": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "reference",
+            "prompt"
+          ],
+          "type": "object"
+        },
+        "strict": false,
+        "type": "function"
+      },
+      {
+        "description": "spawn a separate native session in an admitted harness view. Native tools and policy are preserved. Native subagents are unmanaged. This tool is part of plugin `Acyclic`.",
+        "name": "spawn",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "prompt": {
+              "type": "string"
+            },
+            "reference": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "reference",
+            "prompt"
+          ],
+          "type": "object"
+        },
+        "strict": false,
+        "type": "function"
+      },
+      {
+        "description": "wait a separate native session in an admitted harness view. Native tools and policy are preserved. Native subagents are unmanaged. This tool is part of plugin `Acyclic`.",
+        "name": "wait",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "prompt": {
+              "type": "string"
+            },
+            "reference": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "reference"
+          ],
+          "type": "object"
+        },
+        "strict": false,
+        "type": "function"
+      }
+    ],
+    "type": "namespace"
+  }
+}

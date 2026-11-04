@@ -20,6 +20,7 @@ pub(in crate::native_mount) fn native_retirement_source(
             demand,
             "physical-retirement",
             crate::MemoryLazyWorkspaceStore::default(),
+            crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
             Some(original),
         )
         .await
@@ -129,13 +130,24 @@ pub(super) async fn mounted_view_of<D: DemandSource + 'static, S: LazyWorkspaceS
     >,
     Box<dyn std::error::Error>,
 > {
-    mounted_view_of_with_authored_work(demand, name, store, None).await
+    mounted_view_of_with_authored_work(
+        demand,
+        name,
+        store,
+        crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+        None,
+    )
+    .await
 }
 
-async fn mounted_view_of_with_authored_work<D: DemandSource + 'static, S: LazyWorkspaceStore>(
+pub(super) async fn mounted_view_of_with_authored_work<
+    D: DemandSource + 'static,
+    S: LazyWorkspaceStore,
+>(
     demand: Arc<D>,
     name: &str,
     store: S,
+    config: crate::VolumeConfig,
     original: Option<&crate::NativeMaterializationWork>,
 ) -> Result<
     LazyMountSource<
@@ -157,7 +169,7 @@ async fn mounted_view_of_with_authored_work<D: DemandSource + 'static, S: LazyWo
             demand,
             store,
             crate::VolumeInitialization {
-                config: crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+                config,
                 access_policy: None,
             },
             crate::OperationId::new(),

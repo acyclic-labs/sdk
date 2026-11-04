@@ -1,0 +1,11 @@
+diff --git a/rust/crates/stream/src/session/client/link.rs b/rust/crates/stream/src/session/client/link.rs
+--- a/rust/crates/stream/src/session/client/link.rs
++++ b/rust/crates/stream/src/session/client/link.rs
+@@ -421,7 +421,6 @@
+             self.dials.insert(
+                 destination.into(),
+                 Box::pin(async move {
+-                    executor.sleep(10).await;
+                     dial.await
+                 }),
+             );

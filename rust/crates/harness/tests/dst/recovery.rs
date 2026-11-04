@@ -25,15 +25,14 @@ fn local_turn<'a>(
         let provider = Arc::new(
             ScriptedModelProvider::new([ScriptedTurn::Text("done".into())]).with_dispatch_observer(
                 move |_| {
-                    dispatch_write
-                        .store(dispatch_schedule.durable_writes().len(), Ordering::SeqCst);
+                    dispatch_write.store(dispatch_schedule.durable_write_count(), Ordering::SeqCst);
                 },
             ),
         );
         let config = local_harness_config(directory.join("checkout"), (model, provider))?
             .state_directory(directory.join("state"));
         let harness = Arc::new(entry(LocalHarness::open(config)).await?);
-        first_turn_write.set(Some(schedule.durable_writes().len()));
+        first_turn_write.set(Some(schedule.durable_write_count()));
         prompt(&harness, "first", "finish this turn", "done").await?;
         Ok(())
     })
@@ -75,7 +74,7 @@ fn crash_reopen(point: Cut) -> Result<()> {
         };
         assert!(cut >= start, "cut precedes turn admission");
         assert!(
-            baseline.schedule.durable_writes().len() > cut,
+            baseline.schedule.durable_write_count() > cut,
             "turn made no durable writes"
         );
         drop(baseline);

@@ -1,0 +1,11 @@
+diff --git a/rust/crates/harness-core/src/executor/code_mode/allocator.rs b/rust/crates/harness-core/src/executor/code_mode/allocator.rs
+--- a/rust/crates/harness-core/src/executor/code_mode/allocator.rs
++++ b/rust/crates/harness-core/src/executor/code_mode/allocator.rs
+@@ -67,6 +67,6 @@ impl EngineAllocator {
+             #[cfg(feature = "filesystem")]
+             failure: Default::default(),
+             #[cfg(feature = "filesystem")]
+-            work: work.cloned(),
++            work: None,
+         }
+     }

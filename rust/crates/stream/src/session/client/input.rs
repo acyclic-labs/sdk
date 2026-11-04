@@ -35,13 +35,13 @@ impl Window {
         Ok(())
     }
 
-    async fn reserve(self: &Arc<Self>, length: u32) -> Result<Reservation, StreamError> {
-        let frames = self
+    async fn reserve(window: &Arc<Self>, length: u32) -> Result<Reservation, StreamError> {
+        let frames = window
             .frames
             .acquire()
             .await
             .map_err(|_| StreamError::Unavailable)?;
-        let bytes = self
+        let bytes = window
             .bytes
             .acquire_many(length)
             .await
@@ -49,7 +49,7 @@ impl Window {
         frames.forget();
         bytes.forget();
         Ok(Reservation {
-            window: self.clone(),
+            window: window.clone(),
             length,
             debited: false,
             accepted: false,
@@ -229,8 +229,8 @@ impl State {
             .map_err(|_| StreamError::Unavailable)?
             .clone()
             .ok_or(StreamError::Unavailable)?;
-        let channel = self.window.reserve(length).await?;
-        let aggregate = connection.reserve(length).await?;
+        let channel = Window::reserve(&self.window, length).await?;
+        let aggregate = Window::reserve(&connection, length).await?;
         Ok(Credit { channel, aggregate })
     }
     pub(super) fn sender(state: &Arc<Self>) -> Result<CallInputSender, StreamError> {

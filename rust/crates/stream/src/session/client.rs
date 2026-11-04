@@ -43,9 +43,9 @@ pub use admissions::{verify_admission_binding, verify_admission_cancellation};
 pub use cache::verify_cache;
 #[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub use pool::model::{
-    verify_abandoned_reconnect, verify_cancel_before_open, verify_follow_data,
-    verify_interest_accounting, verify_link_isolation, verify_node_dials, verify_pool_lifetime,
-    verify_registration_cancellation, verify_terminal_cursor_dial,
+    verify_abandoned_reconnect, verify_cancel_before_open, verify_cancelled_queued_open,
+    verify_follow_data, verify_interest_accounting, verify_link_isolation, verify_node_dials,
+    verify_pool_lifetime, verify_registration_cancellation, verify_terminal_cursor_dial,
 };
 #[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub use pool::retry_model::verify_initial_retry_yield;
@@ -535,7 +535,8 @@ impl Client {
         request: crate::FollowRequest,
         acknowledge: bool,
     ) -> Result<crate::FollowStream, StreamError> {
-        self.follow_updates(request, acknowledge).await
+        self.follow_updates::<crate::FollowUpdate>(request, acknowledge)
+            .await
     }
     /// Follows only records, boxed once and carrying no state beyond the
     /// subscription: the typed form of [`Self::follow`] without progress.
@@ -543,13 +544,13 @@ impl Client {
         &self,
         request: crate::FollowRequest,
     ) -> Result<RecordStream, StreamError> {
-        Ok(crate::records_only(self.follow(request).await?))
+        self.follow_updates::<crate::Record>(request, true).await
     }
-    async fn follow_updates(
+    async fn follow_updates<T: Projected>(
         &self,
         request: crate::FollowRequest,
         acknowledge: bool,
-    ) -> Result<crate::FollowStream, StreamError> {
+    ) -> Result<crate::Opened<T>, StreamError> {
         let filter = Some(request.filter.transport_filter()?);
         let (from, progress, path) = (request.from, request.progress, request.path.clone());
         let mut source = self
@@ -565,39 +566,16 @@ impl Client {
         let (snapshot, mut selection, has_bootstrap) = wire_codec::selection_from_opened(
             &source.opened.take().ok_or(StreamError::InvalidResponse)?,
         )?;
-        let mut updates = super::runtime::boxed(source.flat_map(move |item| {
-            let opening = match &item {
-                Ok(frame) if progress => match frame.wire().body.as_ref() {
-                    Some(Body::Watermark(mark)) => mark
-                        .opening_tail
-                        .map(|tail| Ok(crate::FollowUpdate::Opening { tail })),
-                    _ => None,
-                },
-                _ => None,
-            };
-            let update = match item {
-                Ok(frame) => match frame.wire().body.as_ref() {
-                    Some(Body::Data(_)) => {
-                        Some(frame.into_record(&path).map(crate::FollowUpdate::Record))
-                    }
-                    Some(Body::Watermark(mark)) if progress => mark.after.as_ref().map(|after| {
-                        wire_codec::commit_id(&mark.preceding_commit_id).map(|preceding| {
-                            crate::FollowUpdate::Progress {
-                                next: after.next,
-                                preceding,
-                            }
-                        })
-                    }),
-                    Some(Body::Watermark(_)) => None,
-                    _ => Some(Err(StreamError::Unavailable)),
-                },
-                Err(error) => Some(Err(error)),
-            };
-            futures::stream::iter(opening.into_iter().chain(update))
-        }));
+        let mut updates = super::runtime::boxed(Updates::<T> {
+            source: source.records,
+            path,
+            progress,
+            pending: None,
+            projected: std::marker::PhantomData,
+        });
         if has_bootstrap {
             let update = updates.next().await.ok_or(StreamError::InvalidResponse)??;
-            let crate::FollowUpdate::Record(record) = update else {
+            let Some(record) = update.bootstrap() else {
                 return Err(StreamError::InvalidResponse);
             };
             if record.sequence.checked_add(1) != Some(selection.from)
@@ -928,6 +906,100 @@ impl Drop for Cursor {
 /// One follow's subscription kind. It carries only the caller's explicit
 /// minimum; the pool adds the tracked floor on every physical open, so a
 /// resume never lowers it.
+/// The item a session follow yields, projected inside its one cursor box.
+/// One typed follow cursor: frames project inside the single public box.
+struct Updates<T> {
+    source: crate::BoxProviderStream<'static, Result<Frame, StreamError>>,
+    path: crate::StreamPath,
+    progress: bool,
+    /// Progress carried by the watermark whose opening cut was just yielded.
+    pending: Option<(u64, crate::CommitId)>,
+    projected: std::marker::PhantomData<fn() -> T>,
+}
+
+impl<T: Projected> futures::Stream for Updates<T> {
+    type Item = Result<T, StreamError>;
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        loop {
+            let update = if let Some((next, preceding)) = this.pending.take() {
+                crate::FollowUpdate::Progress { next, preceding }
+            } else {
+                let frame = match std::task::ready!(this.source.as_mut().poll_next(cx)) {
+                    Some(Ok(frame)) => frame,
+                    Some(Err(error)) => return std::task::Poll::Ready(Some(Err(error))),
+                    None => return std::task::Poll::Ready(None),
+                };
+                match frame.wire().body.as_ref() {
+                    Some(Body::Data(_)) => match frame.into_record(&this.path) {
+                        Ok(record) => crate::FollowUpdate::Record(record),
+                        Err(error) => return std::task::Poll::Ready(Some(Err(error))),
+                    },
+                    Some(Body::Watermark(mark)) if this.progress => {
+                        let after = match mark
+                            .after
+                            .as_ref()
+                            .map(|after| {
+                                wire_codec::commit_id(&mark.preceding_commit_id)
+                                    .map(|preceding| (after.next, preceding))
+                            })
+                            .transpose()
+                        {
+                            Ok(after) => after,
+                            Err(error) => return std::task::Poll::Ready(Some(Err(error))),
+                        };
+                        match (mark.opening_tail, after) {
+                            (Some(tail), after) => {
+                                this.pending = after;
+                                crate::FollowUpdate::Opening { tail }
+                            }
+                            (None, Some((next, preceding))) => {
+                                crate::FollowUpdate::Progress { next, preceding }
+                            }
+                            (None, None) => continue,
+                        }
+                    }
+                    Some(Body::Watermark(_)) => continue,
+                    _ => return std::task::Poll::Ready(Some(Err(StreamError::Unavailable))),
+                }
+            };
+            if let Some(item) = T::project(update) {
+                return std::task::Poll::Ready(Some(Ok(item)));
+            }
+        }
+    }
+}
+
+trait Projected: Send + Sized + 'static {
+    fn project(update: crate::FollowUpdate) -> Option<Self>;
+    /// The bootstrap record this item carries.
+    fn bootstrap(self) -> Option<crate::Record>;
+}
+
+impl Projected for crate::FollowUpdate {
+    fn project(update: crate::FollowUpdate) -> Option<Self> {
+        Some(update)
+    }
+    fn bootstrap(self) -> Option<crate::Record> {
+        match self {
+            Self::Record(record) => Some(record),
+            Self::Opening { .. } | Self::Progress { .. } => None,
+        }
+    }
+}
+
+impl Projected for crate::Record {
+    fn project(update: crate::FollowUpdate) -> Option<Self> {
+        update.bootstrap()
+    }
+    fn bootstrap(self) -> Option<crate::Record> {
+        Some(self)
+    }
+}
+
 fn follow_kind(request: crate::FollowRequest) -> Kind {
     Kind::Follow(wire::SessionFollow {
         opening_cut: request.progress && request.until.is_none(),

@@ -9,7 +9,7 @@ use acyclic_harness::{
     client::{DiffLimits, DiffPath, DiffPublication, DiffView},
     context::{CompactionPolicy, ContextRoot, PinnedContextPath},
     conversation::{FileDescriptor, FileRef},
-    model::{Model, ModelContentPart, ModelEvent, ModelRequest},
+    model::{Model, ModelContentPart, ModelEvent, ModelRequest, ModelRole},
     native_settings::SettingsConfig,
     test_support::{
         PromptOutcome, ScriptedEvent, ScriptedModelProvider, ScriptedTurn, local_harness_config,
@@ -390,6 +390,7 @@ async fn verify_prompt(
     let dispatched = first
         .messages
         .iter()
+        .filter(|message| message.role == ModelRole::User)
         .flat_map(|message| message.content.parts())
         .any(|part| matches!(part, ModelContentPart::File { file, .. } if *file == *body));
     if staged.as_ref() != prompt.as_bytes() || !dispatched {

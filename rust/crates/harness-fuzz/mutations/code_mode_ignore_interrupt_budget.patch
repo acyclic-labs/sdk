@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/executor/code_mode/interpreter.rs b/rust/crates/harness-core/src/executor/code_mode/interpreter.rs
+--- a/rust/crates/harness-core/src/executor/code_mode/interpreter.rs
++++ b/rust/crates/harness-core/src/executor/code_mode/interpreter.rs
+@@ -37,7 +37,7 @@
+     runtime
+         .set_interrupt_handler(Some(Box::new(move || {
+             remaining = remaining.saturating_sub(1);
+-            interrupt.is_cancelled() || remaining == 0
++            interrupt.is_cancelled() || remaining == u64::MAX
+         })))
+         .await;
+     let context = AsyncContext::full(&runtime)

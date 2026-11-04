@@ -10,6 +10,9 @@ mod events;
 mod sessions;
 pub use agents::{Control, TurnClaim};
 pub use sessions::SessionAction;
+/// The production closed-log selector, exposed only for validation.
+#[cfg(feature = "test-support")]
+pub use sessions::logged_session_id;
 #[cfg(all(test, not(loom)))]
 mod tests;
 

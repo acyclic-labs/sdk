@@ -1,5 +1,5 @@
 use super::{FileHealth, HealthOwner};
-use crate::{FileIdentity, NativeFilePayload, NativeReadMeter, file_identity};
+use crate::{FileIdentity, HeldFile, NativeReadMeter, file_identity};
 use std::{
     fs::File,
     io,
@@ -250,7 +250,7 @@ fn new_health(
     Ok(Arc::new(FileHealth::default()))
 }
 
-pub(crate) fn poison_file_health(file: &Arc<NativeFilePayload>, health: &Arc<FileHealth>) {
+pub(crate) fn poison_file_health(file: &Arc<HeldFile>, health: &Arc<FileHealth>) {
     let identity = file_identity(file).unwrap_or_else(|_| std::process::abort());
     let lock = FILE_HEALTH.get().unwrap_or_else(|| std::process::abort());
     let mut registry = lock

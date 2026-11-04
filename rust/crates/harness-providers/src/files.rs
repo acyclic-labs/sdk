@@ -64,47 +64,6 @@ impl FileText {
     }
 }
 
-fn validate(file: &FileRef, policy: &FileProjectionPolicy, maximum: u64) -> Result<()> {
-    match policy {
-        FileProjectionPolicy::Reference => (),
-        FileProjectionPolicy::BoundedFull | FileProjectionPolicy::ProjectInstructions(_) => {
-            if !FileProjectionPolicy::is_text(file.descriptor().media_type()) {
-                return Err(Error::Unsupported(
-                    "bounded model files must be text".into(),
-                ));
-            }
-        }
-        FileProjectionPolicy::Native(policy) => {
-            let supported = match policy.intent {
-                acyclic_harness_core::model::NativeMediaIntent::Image { .. } => matches!(
-                    file.descriptor().media_type(),
-                    "image/png" | "image/jpeg" | "image/gif" | "image/webp"
-                ),
-                acyclic_harness_core::model::NativeMediaIntent::Document { .. } => {
-                    file.descriptor().media_type() == "application/pdf"
-                }
-                _ => false,
-            };
-            if !supported || policy.configuration.is_some() {
-                return Err(Error::Unsupported(
-                    "unsupported native model media policy".into(),
-                ));
-            }
-        }
-    }
-    if !matches!(policy, FileProjectionPolicy::Reference) {
-        let bytes = projected_bytes(file, policy)?;
-        let mut byte_limit = maximum;
-        if let FileProjectionPolicy::Native(native) = policy {
-            byte_limit = byte_limit.min(native.maximum_bytes);
-            let mut work = native.maximum_work;
-            charge(&mut work, bytes, "work")?;
-        }
-        charge(&mut byte_limit, bytes, "byte")?;
-    }
-    Ok(())
-}
-
 // Every projection, including native media, pays through the same pre-I/O
 // subtraction. Work is admitted source bytes (framed bytes for instructions).
 fn charge(remaining: &mut u64, bytes: u64, kind: &str) -> Result<()> {
@@ -114,22 +73,14 @@ fn charge(remaining: &mut u64, bytes: u64, kind: &str) -> Result<()> {
     Ok(())
 }
 
-fn projected_bytes(file: &FileRef, policy: &FileProjectionPolicy) -> Result<u64> {
-    if let FileProjectionPolicy::ProjectInstructions(source) = policy {
-        acyclic_harness_core::model::InstructionSource::with_identity(file, source).framed_bytes()
-    } else {
-        Ok(file.descriptor().byte_length())
-    }
-}
-
 pub(crate) fn extra_bytes(content: &ModelContent, maximum: u64) -> Result<usize> {
     let mut extra = 0usize;
     for (file, policy) in content.file_parts() {
-        validate(file, policy, maximum)?;
+        policy.validate_projection(file, maximum)?;
         if !matches!(policy, FileProjectionPolicy::Reference) {
             // Planning never performs I/O. Six bytes covers JSON escaping of
             // every source byte, including control characters.
-            let bytes = usize::try_from(projected_bytes(file, policy)?)
+            let bytes = usize::try_from(policy.projected_bytes(file)?)
                 .ok()
                 .and_then(|bytes| bytes.checked_mul(6))
                 .ok_or_else(|| invalid("model file token estimate overflow"))?;
@@ -150,11 +101,11 @@ pub(crate) async fn resolve(
     let mut remaining = files.maximum_bytes;
     for message in &request.messages {
         for (file, policy) in message.content.file_parts() {
-            validate(file, policy, files.maximum_bytes)?;
+            policy.validate_projection(file, files.maximum_bytes)?;
             if !matches!(policy, FileProjectionPolicy::Reference) {
                 charge(
                     &mut remaining,
-                    projected_bytes(file, policy)?,
+                    policy.projected_bytes(file)?,
                     "aggregate byte",
                 )?;
             }

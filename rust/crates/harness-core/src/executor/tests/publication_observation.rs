@@ -34,7 +34,7 @@ impl Sink for Publications {
     }
 }
 
-async fn journal() -> Result<(
+pub(super) async fn journal() -> Result<(
     crate::filesystem::FilesystemExecutionJournal<
         acyclic_stream::MemoryStream,
         acyclic_fs::MemoryAuthorityBackend,

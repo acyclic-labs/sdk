@@ -385,7 +385,7 @@ pub(super) fn materialization_parent(
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    crate::native_host::HostRoot::open(parent, &mut &*work).map(|root| root.directory)
+    crate::native_host::HostRoot::open(parent, &mut &*work).map(|root| root.into_directory())
 }
 
 pub(super) fn materialization_open_options(

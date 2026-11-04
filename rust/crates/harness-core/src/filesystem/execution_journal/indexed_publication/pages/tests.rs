@@ -645,3 +645,139 @@ async fn check_publication(_native: bool, large: bool) -> Result<()> {
     }
     Ok(())
 }
+
+/// A member that decides each commit, then reports a refusal instead of its
+/// acknowledgement. The publication's outcome stays unknown until recovered.
+struct RefusedAcknowledgment {
+    inner: acyclic_stream::MemoryStream,
+    land: bool,
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl acyclic_stream::StreamProvider for RefusedAcknowledgment {
+    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+        self.inner.context()
+    }
+
+    async fn heads(
+        &self,
+        request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, StreamError> {
+        self.inner.heads(request).await
+    }
+
+    async fn inspect_idempotency(
+        &self,
+        key: acyclic_stream::IdempotencyKey,
+    ) -> std::result::Result<Option<acyclic_stream::IdempotencyObservation>, StreamError> {
+        self.inner.inspect_idempotency(key).await
+    }
+
+    fn write(
+        &self,
+        request: acyclic_stream::WriteRequest,
+    ) -> futures::future::BoxFuture<
+        '_,
+        std::result::Result<acyclic_stream::WriteOutcome, StreamError>,
+    > {
+        Box::pin(async move {
+            if !matches!(request, acyclic_stream::WriteRequest::Commit(_)) {
+                return self.inner.write(request).await;
+            }
+            if self.land {
+                self.inner.write(request).await?;
+            }
+            let canonical = acyclic_auth::refusal::Canonical {
+                code: 14,
+                message: "stream unavailable",
+                details: b"",
+                owned: &[],
+            };
+            let refusal = acyclic_auth::refusal::Refusal::capture(
+                14,
+                "member refused",
+                b"",
+                &http::HeaderMap::new(),
+                canonical,
+                None,
+            )
+            .expect("a non-canonical status is retained");
+            Err(StreamError::Refused(refusal))
+        })
+    }
+
+    async fn read(
+        &self,
+        request: acyclic_stream::ReadRequest,
+    ) -> std::result::Result<acyclic_stream::RecordStream, StreamError> {
+        self.inner.read(request).await
+    }
+
+    async fn follow(
+        &self,
+        request: acyclic_stream::FollowRequest,
+    ) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
+        self.inner.follow(request).await
+    }
+
+    async fn read_commit(
+        &self,
+        id: acyclic_stream::CommitId,
+    ) -> std::result::Result<acyclic_stream::CommittedEnvelope, StreamError> {
+        self.inner.read_commit(id).await
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for RefusedAcknowledgment {}
+
+#[tokio::test]
+async fn a_refused_acknowledgment_recovers_the_publication_by_its_key() -> Result<()> {
+    let execution = StreamPath::new("refused/execution")?;
+    let head = StreamPath::new("refused/head")?;
+    let pages = StreamPath::new("refused/pages")?;
+    let operation = OperationId::from_bytes([9; 16]);
+    let cut = Cut {
+        operation,
+        execution: &execution,
+        head: &head,
+        pages: &pages,
+        execution_condition: CommitCondition::Absent {
+            path: execution.clone(),
+        },
+        head_condition: CommitCondition::Absent { path: head.clone() },
+        execution_tail: 0,
+        head_tail: 0,
+        base: 0,
+        digest: [9; 32],
+        contributions: &[],
+    };
+    let records = [OwnedBytes::from_static(b"page")];
+    let observation = OwnedBytes::from_static(b"observation");
+    let checkpoint = OwnedBytes::from_static(b"checkpoint");
+    // A decided commit returns its receipt, not the member's refusal.
+    let landed = Arc::new(RefusedAcknowledgment {
+        inner: acyclic_stream::MemoryStream::default(),
+        land: true,
+    });
+    let committed = cut
+        .publish(&landed, &records, &observation, &checkpoint, &mut None)
+        .await?
+        .expect("recovered publication");
+    let published = crate::store::operations::one_record(&landed, &head, 0, &mut None)
+        .await?
+        .expect("published checkpoint");
+    assert_eq!(published.commit_id, committed);
+    // Control: an undecided commit with no idempotency fact stays unknown.
+    let lost = Arc::new(RefusedAcknowledgment {
+        inner: acyclic_stream::MemoryStream::default(),
+        land: false,
+    });
+    assert!(matches!(
+        cut.publish(&lost, &records, &observation, &checkpoint, &mut None)
+            .await,
+        Err(Error::Indeterminate(id)) if id == operation
+    ));
+    Ok(())
+}

@@ -9,6 +9,8 @@ struct Calls {
 
 struct InputCalls {
     admitted: tokio::sync::mpsc::UnboundedSender<(CallInput, oneshot::Sender<Bytes>)>,
+    resource: &'static str,
+    action: &'static str,
 }
 
 // Hold the actual request stream at EOF while the original server and client
@@ -54,8 +56,8 @@ impl transport::Transport for HeldInputTerminal {
     }
 }
 impl CallProvider for InputCalls {
-    fn resource(&self, _: &[u8]) -> Result<String, StreamError> {
-        Ok("actors:/fixture".into())
+    fn target(&self, _: &[u8]) -> Result<CallTarget, StreamError> {
+        CallTarget::new(self.resource.into(), self.action)
     }
     fn call(
         &self,
@@ -71,11 +73,12 @@ impl CallProvider for InputCalls {
         input: CallInput,
     ) -> crate::BoxProviderFuture<'static, Result<Bytes, StreamError>> {
         let admitted = self.admitted.clone();
+        let resource = self.resource;
         Box::pin(async move {
             let attributes = acyclic_auth::contract::RecordAttributes::try_new(vec![])
                 .map_err(|_| StreamError::InvalidArgument)?;
             authorization.authorize(
-                "actors:/fixture",
+                resource,
                 &[],
                 &attributes,
                 acyclic_auth::authority::PolicyDecision::Allow,
@@ -91,6 +94,17 @@ impl CallProvider for InputCalls {
 
 #[tokio::test]
 async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestResult {
+    for (resource, action) in [
+        ("actors:/fixture", "actors/invoke"),
+        ("objects:/bucket/key", "objects/put"),
+        ("workers:/fixture", "workers/invoke"),
+    ] {
+        product_input_control(resource, action).await?;
+    }
+    Ok(())
+}
+
+async fn product_input_control(resource: &'static str, action: &'static str) -> TestResult {
     use acyclic_auth::contract::*;
     let credential = acyclic_auth::testing::root(|block| {
         block
@@ -105,10 +119,10 @@ async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestRe
             grants: vec![Grant {
                 kind: GrantKind::Resource(ResourceGrant {
                     resource: ResourcePattern {
-                        name: "actors:/fixture".into(),
+                        name: resource.into(),
                         prefix: false,
                     },
-                    actions: vec!["actors/invoke".into()],
+                    actions: vec![action.into()],
                 }),
             }],
         };
@@ -117,7 +131,11 @@ async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestRe
     let (host, lifetime) = tokio::sync::watch::channel(());
     let (held, mut terminals) = tokio::sync::mpsc::unbounded_channel();
     let endpoint: transport::Endpoint = Arc::new(HeldInputTerminal {
-        calls: Arc::new(InputCalls { admitted }),
+        calls: Arc::new(InputCalls {
+            admitted,
+            resource,
+            action,
+        }),
         lifetime,
         held,
     });
@@ -277,6 +295,11 @@ async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestRe
     stopped.send(second_original.clone()).await?;
     let held = input.next_chunk().await?.ok_or("no held input")?;
     let held_second = input.next_chunk().await?.ok_or("no second held input")?;
+    assert_eq!(held_second.as_ref().as_ptr(), second_original.as_ptr());
+    drop(held_second);
+    stopped
+        .send(Bytes::from_static(b"queued before source loss"))
+        .await?;
     let mut finish = Box::pin(stopped.finish(Vec::new()));
     assert!(futures::poll!(finish.as_mut()).is_pending());
     let _withheld = terminals
@@ -284,18 +307,22 @@ async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestRe
         .await
         .ok_or("no blocked terminal before host loss")?;
     drop(host);
-    assert!(
-        matches!(input.next_chunk().await, Err(StreamError::Unavailable)),
-        "producer loss cannot become EOF"
-    );
     assert_eq!(finish.await, Err(StreamError::Unavailable));
     futures::pin_mut!(lost);
     assert!(matches!(
         lost.next().await,
         Some(Err(StreamError::Unavailable))
     ));
+    // The held EOF followed the queued data on the same ordered transport.
+    // Once source loss is observed, a data-first adapter would disclose that
+    // data instead of the original failure. Return the cause exactly once.
+    assert!(
+        matches!(input.next_chunk().await, Err(StreamError::Unavailable)),
+        "producer loss must win over queued data"
+    );
+    assert!(input.next_chunk().await?.is_none());
+    assert!(input.trailers().is_none());
     assert_eq!(held.as_ref().as_ptr(), original.as_ptr());
-    assert_eq!(held_second.as_ref().as_ptr(), second_original.as_ptr());
 
     // Exact generation-local sequence and input/reply grammar are disjoint.
     let data = wire::SessionData {
@@ -313,8 +340,8 @@ async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestRe
     Ok(())
 }
 impl CallProvider for Calls {
-    fn resource(&self, _: &[u8]) -> Result<String, StreamError> {
-        Ok("actors:/fixture".into())
+    fn target(&self, _: &[u8]) -> Result<CallTarget, StreamError> {
+        CallTarget::new("actors:/fixture".into(), "actors/invoke")
     }
     fn call(
         &self,

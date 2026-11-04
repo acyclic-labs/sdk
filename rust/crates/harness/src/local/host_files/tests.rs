@@ -2,17 +2,43 @@ use super::*;
 use crate::local::host_owner::SessionAction;
 use std::time::Duration;
 
+fn request_storage_cause(error: &Error, operation: OperationId) -> &str {
+    assert_eq!(
+        error.request_operation_id(),
+        Some(operation),
+        "observation failure must retain its typed request identity"
+    );
+    let Error::Command(failure) = error else {
+        panic!("original request cause was discarded")
+    };
+    let original = failure
+        .original()
+        .expect("local observation retains its actual cause");
+    assert_eq!(
+        error.classification(),
+        original.classification(),
+        "request identity must not change the original failure classification"
+    );
+    let Error::Storage(cause) = original else {
+        panic!("original storage cause was replaced")
+    };
+    cause
+}
+
 fn carrier_io() -> Result<(tempfile::TempDir, CarrierIo, std::fs::File)> {
+    use acyclic_fs::NativeDurability::Visibility;
+
     let checkout = tempfile::tempdir().map_err(storage)?;
     let root = acyclic_fs::hold_root(checkout.path()).map_err(native_file_error)?;
+    // The fixture is discarded after its live-handle ownership controls.
     let directory = root
-        .create_directories(Path::new(DIRECTORY), acyclic_fs::NativeDurability::Durable)
+        .create_directories(Path::new(DIRECTORY), Visibility)
         .map_err(native_file_error)?;
     let requests = directory
-        .create_directories(Path::new("requests"), acyclic_fs::NativeDurability::Durable)
+        .create_directories(Path::new("requests"), Visibility)
         .map_err(native_file_error)?;
     let status = directory
-        .create_directories(Path::new("status"), acyclic_fs::NativeDurability::Durable)
+        .create_directories(Path::new("status"), Visibility)
         .map_err(native_file_error)?;
     let lock_file = || {
         directory
@@ -95,7 +121,7 @@ async fn carrier_io_publishes_without_blocking_its_coordinator() -> Result<()> {
     .expect_err("an accepted write retains its original owner");
     assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
     release.send(()).map_err(storage)?;
-    let files = pending.await?;
+    let mut files = pending.await?;
     assert!(
         report.snapshot().is_empty(),
         "physical completion retires its wait"
@@ -103,6 +129,40 @@ async fn carrier_io_publishes_without_blocking_its_coordinator() -> Result<()> {
     let reply: Value = serde_json::from_slice(&regular_bytes(&reply_path(&status, operation))?)
         .map_err(storage)?;
     assert_eq!(reply["ok"], serde_json::json!({"reply": 7}));
+    // Publishing a diagnostic does not retire its original allocation. Use a
+    // real rejected directory read and keep that exact cause until withdrawal.
+    let original = regular_bytes(&files.requests).expect_err("a directory is not a reply");
+    let diagnostic = |cause: &Error| match cause {
+        Error::Invalid(message) | Error::Storage(message) => message.as_ptr(),
+        cause => panic!("directory refusal must retain its diagnostic: {cause}"),
+    };
+    let original_diagnostic = diagnostic(&original);
+    let original_code = original.code();
+    let failed = OperationId::new();
+    files
+        .served
+        .known
+        .insert(failed, Tracked::Running { withdrawn: false });
+    files = files
+        .apply(failed, move |files| {
+            files.served.answer(&files.status, failed, Err(original))
+        })
+        .await?;
+    let Some(Tracked::Answered(Some(cause))) = files.served.known.get(&failed) else {
+        panic!("published failure must retain its original cause until withdrawal");
+    };
+    assert_eq!(cause.code(), original_code);
+    assert_eq!(diagnostic(cause), original_diagnostic);
+    files = files
+        .apply(failed, move |files| {
+            files.served.withdraw(&files.requests, failed)
+        })
+        .await?;
+    assert!(!files.served.known.contains_key(&failed));
+    assert!(matches!(
+        regular_bytes(&reply_path(&status, failed)),
+        Err(Error::NotFound(_))
+    ));
     drop(files);
     acyclic_native_runtime::FileLock::try_acquire(
         probe,
@@ -151,6 +211,45 @@ async fn carrier_io_producer_loss_keeps_its_failure_and_releases_its_files() -> 
         })
         .await;
     assert!(matches!(result, Err(Error::Storage(cause)) if cause == mpsc::RecvError.to_string()));
+    acyclic_native_runtime::FileLock::try_acquire(
+        probe,
+        acyclic_native_runtime::FileLockMode::Shared,
+    )
+    .map_err(storage)?;
+
+    let (_checkout, mut files, probe) = carrier_io()?;
+    let operation = OperationId::new();
+    let original = regular_bytes(&files.requests).expect_err("a directory is not a reply");
+    let message = original.to_string();
+    let code = original.code();
+    files
+        .served
+        .known
+        .insert(operation, Tracked::Running { withdrawn: false });
+    files = files
+        .apply(operation, move |files| {
+            files
+                .served
+                .answer(&files.status, operation, Err(original))?;
+            let path = reply_path(files.status.path(), operation);
+            remove_projection(&path)?;
+            std::fs::create_dir(path).map_err(storage)
+        })
+        .await?;
+    let cleanup = remove_projection(&reply_path(files.status.path(), operation))
+        .expect_err("a directory cannot be retired as a reply file");
+    let result = files
+        .apply(operation, move |files| {
+            files.served.withdraw(&files.requests, operation)
+        })
+        .await;
+    let Err(Error::Cleanup(causes)) = result else {
+        panic!("failed withdrawal must retain the original reply and retirement causes");
+    };
+    assert_eq!(causes.primary().code(), code);
+    assert_eq!(causes.primary().to_string(), message);
+    assert_eq!(causes.cleanup().code(), cleanup.code());
+    assert_eq!(causes.cleanup().to_string(), cleanup.to_string());
     acyclic_native_runtime::FileLock::try_acquire(
         probe,
         acyclic_native_runtime::FileLockMode::Shared,
@@ -309,8 +408,8 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
         .owner_finished(Err(std::io::ErrorKind::BrokenPipe.into()));
     let failure = lock(&failed.shared.waiters).failure.clone().unwrap();
     assert!(matches!(response.try_recv(),
-        Ok(Delivery::Reply(Err(Error::Storage(error))))
-            if error == format!("operation={operation}; {failure}")));
+        Ok(Delivery::Reply(Err(error)))
+            if request_storage_cause(&error, operation) == failure));
     assert!(!lock(&failed.shared.waiters).gone);
     assert!(lock(&failed.shared.waiters).retirement.is_none());
     assert_eq!(lock(&registry).bridges.len(), 1);
@@ -549,7 +648,16 @@ fn rejected_requests_end_without_owner_exit() -> Result<()> {
         drop(owner);
         observation
     })?;
-    assert!(matches!(result, Err(Error::Indeterminate(id)) if id == operation));
+    let error = result.expect_err("a rejected request has no completed reply");
+    assert_eq!(error.request_operation_id(), Some(operation));
+    assert_eq!(
+        error.classification(),
+        Error::Indeterminate(operation).classification()
+    );
+    let Error::Command(failure) = error else {
+        panic!("the request lost its original terminal cause")
+    };
+    assert!(matches!(failure.original(), Some(Error::Indeterminate(id)) if *id == operation));
     Ok(())
 }
 
@@ -684,33 +792,6 @@ async fn workspace_shutdown_retains_its_cause_when_retirement_refuses() -> Resul
         assert!(matches!(retirement, Error::Conflict(cause)
             if cause == "native owner still has live harness handles"));
     }
-    Ok(())
-}
-
-#[test]
-fn rejected_request_retains_its_admission_and_withdrawal_failures() -> Result<()> {
-    let (_checkout, mut files, _probe) = carrier_io()?;
-    let name = format!("{}.json", OperationId::from_bytes([7; 16]));
-    let path = files.requests.join(&name);
-    // A directory at the request leaf is neither a regular request nor a
-    // removable file. Both refusals come from the original held native root.
-    std::fs::create_dir(&path).map_err(storage)?;
-    let admission = regular_bytes(&path).expect_err("a directory cannot be admitted as a request");
-    let withdrawal =
-        remove_projection(&path).expect_err("file withdrawal cannot remove a directory");
-    let result = files.served.observe(
-        &files.requests,
-        uuid::Uuid::from_bytes([9; 16]),
-        std::ffi::OsStr::new(&name),
-    );
-    let error = result.expect_err("the failed withdrawal must end this owner");
-    assert!(files.served.known.is_empty());
-    assert!(files.served.ready.is_empty());
-    let Error::Cleanup(causes) = error else {
-        panic!("rejected request must retain admission and withdrawal causes");
-    };
-    assert_eq!(causes.primary().to_string(), admission.to_string());
-    assert_eq!(causes.cleanup().to_string(), withdrawal.to_string());
     Ok(())
 }
 
@@ -892,7 +973,9 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     let Delivery::Reply(Ok(committed)) = committed else {
         panic!("the actual owner must publish its committed result");
     };
-    assert!(committed.get("ok").is_some());
+    let _: crate::agent::AgentPath =
+        serde_json::from_value(committed["task"].clone()).map_err(storage)?;
+    assert!(Path::new(committed["cwd"].as_str().expect("committed workspace path")).is_absolute());
     remove_projection(&recovery_path)?;
     drop(waiting);
     let (delivery, response) = mpsc::sync_channel(1);
@@ -933,7 +1016,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
                     session: "conflicting-reply".into(),
                 },
             ),
-            Err(Error::Storage(_))
+            Err(error) if error.request_operation_id() == Some(operation) && error.code() == crate::wire::ErrorCode::Indeterminate
         ));
         served.withdraw(&directory.join("requests"), operation)?;
         // The actual shared owner must still complete an unrelated request.
@@ -1008,15 +1091,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         let complete = |claim| {
             session(SessionAction::Complete {
                 claim,
-                outcome: crate::Outcome::Succeeded(crate::executor::TurnOutput {
-                    #[cfg(feature = "research")]
-                    journal_cut: None,
-                    text: "done".into(),
-                    metadata: Value::Null,
-                    steps: 1,
-                    transcript: Vec::new(),
-                    attachments: Vec::new(),
-                }),
+                outcome: crate::Outcome::Succeeded(crate::executor::TurnOutput::new("done".into(), Value::Null, 1)),
             })
         };
         let settled = complete(claim.clone())?;
@@ -1050,7 +1125,8 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
                     .or_else(|error| match error {
                         // Locating the root may be refused; it must still
                         // be answered, never left waiting.
-                        Error::Conflict(_) | Error::Invalid(_) | Error::NotFound(_) => Ok(()),
+                        error if matches!(error.code(), crate::wire::ErrorCode::Conflict
+                            | crate::wire::ErrorCode::Invalid | crate::wire::ErrorCode::NotFound) => Ok(()),
                         error => Err(error),
                     })
             })
@@ -1136,7 +1212,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         .try_recv()
         .expect("watch failure settles the first reply")
     {
-        Delivery::Reply(Err(Error::Storage(failure))) => failure,
+        Delivery::Reply(Err(error)) => error,
         _ => panic!("watch failure must retain its storage cause"),
     };
     let failure = lock(&bridge.shared.waiters)
@@ -1144,16 +1220,16 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         .clone()
         .expect("the first notification cause remains available");
     assert_eq!(
-        first_failure,
-        format!("operation={}; {failure}", first.operation)
+        request_storage_cause(&first_failure, first.operation),
+        failure
     );
-    assert!(Error::Storage(first_failure).uncertain());
+    assert!(first_failure.uncertain());
     assert!(failure.contains("step=observe native workspace files:"));
     assert!(failure.ends_with("recovery=acyclic agents"));
     assert!(matches!(
         second_reply.try_recv(),
-        Ok(Delivery::Reply(Err(Error::Storage(ref error))))
-            if error == &format!("operation={}; {failure}", second.operation)
+        Ok(Delivery::Reply(Err(ref error)))
+            if request_storage_cause(error, second.operation) == failure
     ));
     drop((first, second));
     bridge
@@ -1165,9 +1241,12 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         Arc::ptr_eq(&Registry::bridge(&registry, &cwd, Bridge::open)?, &bridge),
         "a failed live connection must not reopen its notification source"
     );
-    assert!(matches!(request_with(&registry, &cwd, HostAction::Agents {
+    let refused_operation = OperationId::new();
+    assert!(
+        matches!(request_operation(&registry, &cwd, refused_operation, HostAction::Agents {
         task: serde_json::from_value(result["task"].clone()).map_err(storage)?,
-    }), Err(Error::Storage(ref error)) if error == &failure));
+    }), Err(ref error) if request_storage_cause(error, refused_operation) == failure)
+    );
     assert_eq!(
         std::fs::read_dir(&requests).map_err(storage)?.count(),
         0,
@@ -1189,14 +1268,14 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         .shared
         .owner_finished(Err(std::io::ErrorKind::BrokenPipe.into()));
     let first = match response.try_recv().expect("owner observer must settle") {
-        Delivery::Reply(Err(Error::Storage(error))) => error,
+        Delivery::Reply(Err(error)) => error,
         _ => panic!("owner observation failure must preserve its native cause"),
     };
     let failure = lock(&observed.shared.waiters)
         .failure
         .clone()
         .expect("owner observation failure remains available");
-    assert_eq!(first, format!("operation={}; {failure}", waiting.operation));
+    assert_eq!(request_storage_cause(&first, waiting.operation), failure);
     assert!(failure.contains("step=observe native workspace owner exit:"));
     assert!(failure.ends_with("recovery=graphcoder --host-workspace"));
     assert!(!lock(&observed.shared.waiters).gone);
@@ -1231,12 +1310,24 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     let waiting = blocked.wait(operation, delivery)?;
     // A directory at a canonical request leaf is rejected by the no-follow
     // reader and cannot be unlinked as a file on any supported platform.
-    std::fs::create_dir(requests.join(format!("{operation}.json"))).map_err(storage)?;
+    let rejected = requests.join(format!("{operation}.json"));
+    std::fs::create_dir(&rejected).map_err(storage)?;
     blocked.shared.published(operation);
-    owner
+    let failure = owner
         .await
         .map_err(storage)?
         .expect_err("failed request withdrawal must end its original owner");
+    let Error::Cleanup(causes) = failure else {
+        panic!("rejected request must retain admission and withdrawal causes: {failure}");
+    };
+    // Compare both original native failures, without pinning diagnostic wording.
+    // Neither operation can remove this directory, including during retirement.
+    let admission =
+        regular_bytes(&rejected).expect_err("a directory cannot be admitted as a request");
+    let withdrawal =
+        remove_projection(&rejected).expect_err("file withdrawal cannot remove a directory");
+    assert_eq!(causes.primary().to_string(), admission.to_string());
+    assert_eq!(causes.cleanup().to_string(), withdrawal.to_string());
     assert!(matches!(
         response
             .recv_timeout(Duration::from_secs(2))
@@ -1264,7 +1355,7 @@ fn absent_owner_never_creates_a_service_or_state_directory() -> Result<()> {
                 session: "fixture".into()
             }
         ),
-        Err(Error::NotFound(_))
+        Err(error) if error.code() == crate::wire::ErrorCode::NotFound
     ));
     assert_eq!(
         std::fs::read_dir(checkout.path()).map_err(storage)?.count(),
@@ -1370,7 +1461,7 @@ fn request_observation_failure_preserves_accepted_work_until_real_withdrawal() -
             match served.known.get(&operation) {
                 Some(Tracked::Queued) => phase == 0,
                 Some(Tracked::Running { withdrawn: false }) => phase == 1,
-                Some(Tracked::Answered) => phase == 2,
+                Some(Tracked::Answered(None)) => phase == 2,
                 _ => false,
             },
             "observation failure retired accepted work"

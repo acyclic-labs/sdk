@@ -7,8 +7,11 @@ use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd};
 // attempt: stage the descriptor with `fsync`, then share one `F_FULLFSYNC`
 // of its device with every concurrent request (see `device_flush`). The
 // original caller owns admission and observes its first result.
-pub(crate) fn sync_descriptor_once(descriptor: BorrowedFd<'_>) -> io::Result<()> {
-    sync_descriptor_requested_once(descriptor, Durability::Full, None)
+pub(crate) fn sync_descriptor_once(
+    descriptor: BorrowedFd<'_>,
+    held: Option<&crate::device_flush::HeldDevice>,
+) -> io::Result<()> {
+    sync_descriptor_requested_once(descriptor, Durability::Full, held)
 }
 
 fn sync_descriptor_requested_once(

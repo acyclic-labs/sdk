@@ -83,18 +83,69 @@ impl std::error::Error for ExecutionRefusal {}
 #[derive(Debug)]
 struct Grant {
     workspace: BoundPath,
-    read: Vec<BoundPath>,
+    read: acyclic_collections::CompiledPrefixIndex<BoundPath, ()>,
     network: ExecutionNetwork,
     #[cfg(target_os = "linux")]
     filter: &'static [linux::Instruction],
 }
 
 impl Grant {
-    fn read_root(&self, path: &Path) -> Option<&BoundPath> {
-        self.read
-            .binary_search_by(|root| root.path.as_path().cmp(path))
-            .ok()
-            .map(|index| &self.read[index])
+    fn read_roots(
+        &self,
+        path: &Path,
+        meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<acyclic_collections::PrefixMatches<'_, BoundPath>> {
+        let query = path.as_os_str().as_encoded_bytes();
+        self.read.matches(
+            query,
+            |root| {
+                let key: &[u8] = root.as_ref();
+                // Canonical paths have normalized separators. Test the next
+                // byte, not all prior components, at each radix terminal.
+                key.last().is_some_and(|byte| separator(*byte))
+                    || query.get(key.len()).is_some_and(|byte| separator(*byte))
+            },
+            &mut RootIndexRead(meter),
+        )
+    }
+}
+
+fn separator(byte: u8) -> bool {
+    byte == b'/' || cfg!(windows) && byte == b'\\'
+}
+
+struct RootIndexRead<'a>(Option<&'a dyn crate::NativeReadMeter>);
+
+impl acyclic_collections::IndexReadWork for RootIndexRead<'_> {
+    type Error = io::Error;
+
+    fn validate(&mut self) -> io::Result<()> {
+        self.0.map_or(Ok(()), crate::NativeReadMeter::check)
+    }
+
+    fn examine(&mut self, items: u64) -> io::Result<()> {
+        self.0.map_or(Ok(()), |meter| meter.examine(items, 0))
+    }
+}
+
+// Explicit host grant construction is unmetered, including its original path
+// vector and pinned descriptors. Admission reads use their original ledger.
+struct RootIndexBuild;
+
+impl acyclic_collections::IndexWork for RootIndexBuild {
+    type Error = std::convert::Infallible;
+    type Allocation = ();
+
+    fn check(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn charge_items(&mut self, _: u64) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn claim(&mut self, _: u64) -> Result<(), Self::Error> {
+        Ok(())
     }
 }
 
@@ -219,6 +270,12 @@ impl AsRef<Path> for BoundPath {
     }
 }
 
+impl AsRef<[u8]> for BoundPath {
+    fn as_ref(&self) -> &[u8] {
+        self.path.as_os_str().as_encoded_bytes()
+    }
+}
+
 impl ExecutionGrant {
     /// Binds existing, absolute workspace and read-only roots. Symlinks are
     /// resolved here; the adapter binds native objects again at active launch.
@@ -242,8 +299,22 @@ impl ExecutionGrant {
             .into_iter()
             .map(|path| BoundPath::new(&path))
             .collect::<io::Result<Vec<_>>>()?;
-        read.sort_unstable_by(|left, right| left.path.cmp(&right.path));
+        read.sort_unstable_by(|left, right| {
+            AsRef::<[u8]>::as_ref(left).cmp(AsRef::<[u8]>::as_ref(right))
+        });
         read.dedup_by(|left, right| left.path == right.path);
+        let read = acyclic_collections::CompiledPrefixIndex::from_sorted(read, &mut RootIndexBuild)
+            .map_err(|error| {
+                use acyclic_collections::CompiledPrefixError;
+                match error {
+                    CompiledPrefixError::Work(impossible) => match impossible {},
+                    CompiledPrefixError::Order(_) => refused("execution root keys are not ordered"),
+                    CompiledPrefixError::Capacity => {
+                        refused("execution root index exceeds address space")
+                    }
+                    CompiledPrefixError::Allocation(error) => failure(io::Error::other(error)),
+                }
+            })?;
         #[cfg(target_os = "linux")]
         let filter = linux::filter(&network)?;
         Ok(Self {
@@ -392,10 +463,11 @@ impl ExecutionGrant {
         {
             return Err(refused("execution grant exceeds its authority ceiling"));
         }
-        for path in &requested.policy.read {
+        for path in requested.policy.read.entries() {
             // An already granted root needs only its original object proof.
             // An overlapping ancestor may require an unavailable subtree proof.
-            if let Some(root) = self.policy.read_root(&path.path) {
+            let roots = self.policy.read_roots(&path.path, meter)?;
+            if let Some(root) = roots.exact {
                 if root.contains(path, meter)? {
                     continue;
                 }
@@ -403,17 +475,9 @@ impl ExecutionGrant {
             if self.policy.workspace.contains(path, meter)? {
                 continue;
             }
-            // Only a component ancestor can confer authority. Search the
-            // existing sorted roots instead of scanning unrelated roots.
-            // The last match is the shallowest ancestor, preserving the
-            // original sorted proof order for overlapping declared roots.
-            let root = path
-                .path
-                .ancestors()
-                .skip(1)
-                .filter_map(|ancestor| self.policy.read_root(ancestor))
-                .last();
-            let permitted = match root {
+            // Keep the original shallowest component ancestor's object proof.
+            // The same radix traversal already found it beside the exact key.
+            let permitted = match roots.shortest {
                 Some(root) => root.contains(path, meter)?,
                 None => false,
             };

@@ -184,6 +184,22 @@ fn capture() -> Result<(), Box<dyn Error>> {
         capture_agent_controls(&mut manifest)?;
         return finish(&manifest, prefix);
     }
+    if std::env::args().any(|arg| arg == "--only-actors") {
+        let prefix = "actor_codecs/";
+        let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?;
+        capture_actors(&mut manifest)?;
+        return finish_latest(&manifest, prefix);
+    }
+    if std::env::args().any(|arg| arg == "--only-resources") {
+        let prefix = "harness_codecs/resource-";
+        let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
+            .lines()
+            .filter(|line| !line.starts_with(prefix))
+            .map(|line| format!("{line}\n"))
+            .collect::<String>();
+        capture_resources(&mut manifest)?;
+        return finish(&manifest, prefix);
+    }
     if std::env::args().any(|arg| arg == "--only-agents") {
         let prefix = agent_prefix();
         let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
@@ -205,18 +221,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
                 &mut manifest,
             )?;
         }
-        // Keep prior captures as refusal inputs, without duplicate provenance.
-        let mut seen = std::collections::HashSet::new();
-        let manifest = manifest
-            .lines()
-            .rev()
-            .filter(|line| seen.insert(line.split('\t').next().unwrap_or(line)))
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .map(|line| format!("{line}\n"))
-            .collect::<String>();
-        return finish(&manifest, "object_persistence/");
+        return finish_latest(&manifest, "object_persistence/");
     }
     if std::env::args().any(|arg| arg == "--only-protobuf") {
         golden_controls()?;
@@ -356,26 +361,10 @@ fn capture() -> Result<(), Box<dyn Error>> {
         }
     }
     capture_semantic(&mut manifest)?;
-    // Preserve retained captures without inventing replacement writers.
-    let current_agents = agent_prefix();
-    for line in std::fs::read_to_string("corpus/SOURCES.tsv")?
-        .lines()
-        .filter(|line| {
-            (line.starts_with("harness_codecs/agent-") && !line.starts_with(&current_agents))
-                || line.starts_with("object_revisions/")
-                || matches!(
-                    line.split('\t').next(),
-                    Some(
-                        "actor_codecs/timer"
-                            | "object_persistence/head-live"
-                            | "object_persistence/head-dying"
-                    )
-                )
-        })
-    {
-        manifest.push_str(line);
-        manifest.push('\n');
-    }
+    retain_historical(
+        &mut manifest,
+        &std::fs::read_to_string("corpus/SOURCES.tsv")?,
+    );
     save(
         "harness_codecs",
         "attachment-manifest-empty",
@@ -385,6 +374,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
     )?;
     capture_agents(&mut manifest)?;
     capture_agent_controls(&mut manifest)?;
+    capture_resources(&mut manifest)?;
     for (name, bytes) in acyclic_harness_core::filesystem::execution_codec_fuzz::seeds()? {
         save(
             "harness_codecs",
@@ -781,6 +771,60 @@ fn capture_agent_controls(manifest: &mut String) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+// Keep historical inputs without restoring obsolete writers or replacing fresh provenance.
+fn retain_historical(manifest: &mut String, previous: &str) {
+    let current_agents = agent_prefix();
+    let mut names = manifest
+        .lines()
+        .filter_map(|line| line.split('\t').next())
+        .map(str::to_owned)
+        .collect::<std::collections::HashSet<_>>();
+    for line in previous.lines().filter(|line| {
+        line.starts_with("actor_codecs/")
+            || (line.starts_with("harness_codecs/agent-") && !line.starts_with(&current_agents))
+            || line.starts_with("object_revisions/")
+            || matches!(
+                line.split('\t').next(),
+                Some("object_persistence/head-live" | "object_persistence/head-dying")
+            )
+    }) {
+        let name = line.split('\t').next().unwrap_or(line);
+        if names.insert(name.to_owned()) {
+            manifest.push_str(line);
+            manifest.push('\n');
+        }
+    }
+}
+
+#[test]
+fn full_capture_retains_original_actor_inputs_once() {
+    let previous = include_str!("../corpus/SOURCES.tsv");
+    let original = previous
+        .lines()
+        .filter(|line| line.starts_with("actor_codecs/"))
+        .collect::<Vec<_>>();
+    let current = original
+        .iter()
+        .find(|line| line.starts_with("actor_codecs/invocation-committed-v2\t"))
+        .expect("original Store invocation capture");
+    let mut manifest = format!("{current}\n");
+    retain_historical(&mut manifest, previous);
+    for row in &original {
+        assert_eq!(
+            manifest.lines().filter(|line| line == row).count(),
+            1,
+            "full capture must retain each original Actor input and its provenance once: {row}"
+        );
+    }
+    assert_eq!(
+        manifest
+            .lines()
+            .filter(|line| line.starts_with("actor_codecs/"))
+            .count(),
+        original.len()
+    );
+}
+
 fn capture_agents(manifest: &mut String) -> Result<(), Box<dyn Error>> {
     for (name, bytes) in acyclic_harness_core::agent::codec_fuzz::seeds()? {
         save(
@@ -791,6 +835,38 @@ fn capture_agents(manifest: &mut String) -> Result<(), Box<dyn Error>> {
             ),
             &bytes,
             "harness-core canonical agent record, effect and checkpoint encoders",
+            manifest,
+        )?;
+    }
+    Ok(())
+}
+
+// Keep prior captures as refusal inputs, without duplicate provenance.
+fn finish_latest(manifest: &str, replaced_prefix: &str) -> Result<(), Box<dyn Error>> {
+    let mut seen = std::collections::HashSet::new();
+    let manifest = manifest
+        .lines()
+        .rev()
+        .filter(|line| seen.insert(line.split('\t').next().unwrap_or(line)))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|line| format!("{line}\n"))
+        .collect::<String>();
+    finish(&manifest, replaced_prefix)
+}
+
+fn capture_resources(manifest: &mut String) -> Result<(), Box<dyn Error>> {
+    for (name, bytes) in acyclic_codec_fuzz::harness_resources::seeds()? {
+        save(
+            "harness_codecs",
+            &format!("resource-{name}"),
+            &bytes,
+            if name.ends_with("-positional") {
+                "harness_resources::seeds: Snapshot::encode payload fields in serde positional spelling, admitted by original Snapshot::decode; original MemoryStream envelope; no provider attribution or transport authentication claim"
+            } else {
+                "harness_resources::seeds: cache/summary serde writers and Snapshot::encode; genesis envelope from MemoryStream commit/read; no provider attribution or transport authentication claim"
+            },
             manifest,
         )?;
     }
@@ -856,14 +932,8 @@ fn capture_identity_vectors() -> Result<(), Box<dyn Error>> {
 }
 
 fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
-    use acyclic_actors::{
-        domain,
-        guest::{self, Handler as _},
-    };
     use acyclic_auth::addressing::{ActorReference, ResourceIdentity};
-    use acyclic_stream::{CommitId, CommitMutation, MemoryStream, StreamPath};
     use bytes::Bytes;
-    use std::{collections::BTreeMap, sync::Arc};
     for (name, bytes) in acyclic_codec_fuzz::auth_addressing::seeds()? {
         save(
             "identities",
@@ -888,116 +958,7 @@ fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
         "ResourceIdentity::encode",
         manifest,
     )?;
-    let invocation = acyclic_actors::invocation::Invocation::new(
-        acyclic_stream::StreamPath::new("invoke-control/caller")?,
-        actor.clone(),
-        "inbox".into(),
-        Bytes::from_static(b"operation"),
-        Bytes::from_static(b"request"),
-    )?;
-    let encoded = invocation.record(&StreamPath::new("codec/actors/state")?)?;
-    let record = acyclic_stream::Record {
-        sequence: 0,
-        value: encoded.value,
-        headers: encoded.headers,
-        commit_id: CommitId::from_bytes([1; 32]),
-        committed_at_micros: 42,
-        origin: StreamPath::new("codec/actors/inbox")?,
-    };
-    save(
-        "actor_codecs",
-        "invocation",
-        &acyclic_stream::wire_codec::record_wire(record, None).encode_to_vec(),
-        "Invocation::record and wire_codec::record_wire",
-        manifest,
-    )?;
-    for (name, bytes) in acyclic_actors::reservation::codec_fuzz::seeds()? {
-        save(
-            "actor_codecs",
-            name,
-            &bytes,
-            "actors::reservation canonical request/decision/checkpoint encoder",
-            manifest,
-        )?;
-    }
-    save(
-        "actor_codecs",
-        "artifact-checkpoint",
-        &serde_json::to_vec(&guest::Checkpoint {
-            codec: guest::CodecIdentity {
-                name: "codec".into(),
-                version: "1".into(),
-            },
-            bytes: Bytes::from_static(b"checkpoint"),
-        })?,
-        "serde_json::to_vec(guest::Checkpoint) with current artifact codec identity",
-        manifest,
-    )?;
-    let package = acyclic_actors::reservation::Package::new(
-        domain::CodeSha256::new(vec![1; 32])?,
-        domain::ActorLimits::new(1, 1024, 4096)?,
-    );
-    save(
-        "actor_codecs",
-        "manifest",
-        &guest::wire::encode_manifest(package.manifest()),
-        "guest::wire::encode_manifest(reservation::Package::manifest)",
-        manifest,
-    )?;
-    let store = acyclic_actors::local::Store::new(
-        Arc::new(MemoryStream::default()),
-        StreamPath::new("codec/actors")?,
-    );
-    let checkpoint = acyclic_actors::reservation::initial_checkpoint(7)?;
-    let effects = store.create(&actor, BTreeMap::new(), Some(checkpoint.clone()))?;
-    if let CommitMutation::Append { records, .. } = &effects[0].mutation {
-        let record = records.first().ok_or("actor creation emitted no state")?;
-        save(
-            "actor_codecs",
-            "state",
-            &record.value,
-            "local::Store::create state encoder",
-            manifest,
-        )?;
-    } else {
-        return Err("actor creation did not append state".into());
-    }
-    let delivery = guest::Delivery {
-        actor,
-        epoch: 1,
-        trigger: guest::Trigger::Alarm {
-            generation: 1,
-            now_unix_ms: 42,
-        },
-        now_unix_ms: 42,
-        record: None,
-        subscriptions: guest::SubscriptionCuts::new(
-            StreamPath::new("codec/actors/state")?,
-            CommitId::from_bytes([1; 32]),
-            BTreeMap::new(),
-        ),
-    };
-    save(
-        "actor_codecs",
-        "delivery",
-        &guest::wire::encode_delivery(&delivery, Some(&checkpoint)),
-        "guest::wire::encode_delivery",
-        manifest,
-    )?;
-    let transition = guest::Transition {
-        response: None,
-        checkpoint,
-        alarm: guest::AlarmChange::Keep,
-        effects: effects.into(),
-        participant: None,
-    };
-    save(
-        "actor_codecs",
-        "transition",
-        &guest::wire::encode_transition(&transition)?,
-        "guest::wire::encode_transition",
-        manifest,
-    )?;
+    capture_actors(manifest)?;
     use acyclic_fs::{
         Digest, DurableCommit, Epoch, OperationId, ProposedCommit, Sequence,
         streams_record::{StreamsAuthorityRecord, StreamsDurableRecord},
@@ -1041,6 +1002,13 @@ fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
         "workspace_context_wire::encode_discard",
         manifest,
     )?;
+    Ok(())
+}
+
+fn capture_actors(manifest: &mut String) -> Result<(), Box<dyn Error>> {
+    for (name, bytes, producer) in acyclic_codec_fuzz::actor_seeds()? {
+        save("actor_codecs", name, &bytes, producer, manifest)?;
+    }
     Ok(())
 }
 

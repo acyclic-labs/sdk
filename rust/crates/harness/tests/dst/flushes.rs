@@ -1,47 +1,35 @@
-//! Device flushes per settled reply turn, counted at the original file calls.
-//! A steady reply turn buys exactly three, each for a public guarantee:
-//! - one ordering barrier: the turn's object bytes precede every log frame
-//!   that names them, so no durable frame names missing bytes;
-//! - one drain of a filesystem authority publication at the turn's end, so
-//!   the generation the settlement names is durable before it is named;
-//! - one drain of the settlement commit, the turn's acknowledgement.
-//!
-//! Model events, payloads and journal cuts inside the turn add none: the
-//! dispatch phase defers them to its barrier. The count is exact, so a new
-//! per-event or per-payload flush, or a lost acknowledgement drain, fails.
+//! Original file calls through the hosted actor's committed reply settlement.
+//! Private model payloads need an ordering barrier before their publication;
+//! their deferred journal frames share the dispatch phase's device drain.
+//! History adds neither. One independent durable commit adds exactly one drain.
 use super::*;
 use acyclic_harness::{model::ModelEvent, test_support::ScriptedEvent};
 
-/// (ordering barriers, device drains) of one steady text reply turn.
-const REPLY_TURN_FLUSHES: (usize, usize) = (1, 2);
-
 fn flushes(writes: &[DurableWrite]) -> (usize, usize) {
-    let barriers = writes
-        .iter()
-        .filter(|write| write.operation.ends_with("_barrier"))
-        .count();
-    let drains = writes
-        .iter()
-        .filter(|write| {
-            matches!(
+    writes.iter().fold((0, 0), |(barriers, drains), write| {
+        if write.operation.ends_with("_barrier") {
+            (barriers + 1, drains)
+        } else {
+            let drain = matches!(
                 write.operation,
-                "file:sync" | "file:sync_data" | "file:sync_all" | "file:sync_parent"
-            )
-        })
-        .count();
-    (barriers, drains)
+                "file:sync"
+                    | "file:sync_data"
+                    | "file:sync_all"
+                    | "file:sync_parent"
+                    | "file:sync_filesystem"
+            );
+            (barriers, drains + usize::from(drain))
+        }
+    })
 }
 
-/// Opens a harness and settles three reply turns, returning the durable
-/// trace length before the second and third turns and after the third. With
-/// `extra`, the last window also holds one eagerly durable commit on the
-/// harness's own log.
+/// Settles five replies on one hosted actor, then commits one independent
+/// record. Each cut follows the same actor's committed settlement.
 fn turns(
     schedule: acyclic_native_runtime::testing::Schedule,
     directory: &Path,
-    replies: [ScriptedTurn; 3],
-    extra: bool,
-) -> EntryFuture<'_, Result<[usize; 3]>> {
+    replies: [ScriptedTurn; 5],
+) -> EntryFuture<'_, Result<[usize; 6]>> {
     entry(async move {
         let reference =
             ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
@@ -71,35 +59,35 @@ fn turns(
             .volume(volume)
             .state_directory(directory.join("state"));
         let harness = Arc::new(entry(LocalHarness::open(config)).await?);
-        let mut cuts = [0; 3];
+        let (agents, root) = entry(harness.agents()).await?;
+        let mut cuts = [0; 6];
         for (turn, expected) in expected.iter().enumerate() {
-            if turn > 0 {
-                cuts[turn - 1] = schedule.durable_writes().len();
-            }
             prompt(&harness, &format!("turn-{turn}"), "reply", expected).await?;
+            // The reply is observable before its serving delivery retires.
+            // Wait on that same actor's delivery lock and committed checkpoint,
+            // while its ordinary continuous runtime remains running.
+            entry(agents.drain(root)).await.map_err(storage)?;
+            cuts[turn] = schedule.durable_write_count();
         }
-        cuts[2] = schedule.durable_writes().len();
-        if extra {
-            use acyclic_stream::StreamProviderExt as _;
-            let (agents, _) = entry(harness.agents()).await?;
-            agents
-                .provider()
-                .append(acyclic_stream::AppendRequest {
-                    path: acyclic_stream::StreamPath::new("dst/extra").map_err(storage)?,
-                    records: vec!["extra".into()],
-                    if_tail: None,
-                    idempotency_key: acyclic_stream::IdempotencyKey::unique(),
-                })
-                .await
-                .map_err(storage)?;
-        }
+        use acyclic_stream::StreamProviderExt as _;
+        agents
+            .provider()
+            .append(acyclic_stream::AppendRequest {
+                path: acyclic_stream::StreamPath::new("dst/extra").map_err(storage)?,
+                records: vec!["extra".into()],
+                if_tail: None,
+                idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+            })
+            .await
+            .map_err(storage)?;
+        cuts[5] = schedule.durable_write_count();
         Ok(cuts)
     })
 }
 
-/// Flushes of the second and third settled turns; the third window runs to
-/// the end of all accepted work. Every physical boundary is released at once.
-fn measure(replies: [ScriptedTurn; 3], extra: bool) -> Result<[(usize, usize); 2]> {
+/// Observe four settled reply windows and the independent commit. Teardown
+/// drains every accepted worker outside those windows.
+fn measure(replies: [ScriptedTurn; 5]) -> Result<[(usize, usize); 5]> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -113,15 +101,14 @@ fn measure(replies: [ScriptedTurn; 3], extra: bool) -> Result<[(usize, usize); 2
             }
         });
         let cuts = schedule
-            .scope(turns(schedule.clone(), directory.path(), replies, extra))
+            .scope(turns(schedule.clone(), directory.path(), replies))
             .await?;
         schedule.drained().await;
         releaser.abort();
         let writes = schedule.durable_writes();
-        Ok([
-            flushes(&writes[cuts[0]..cuts[1]]),
-            flushes(&writes[cuts[1]..]),
-        ])
+        Ok(std::array::from_fn(|index| {
+            flushes(&writes[cuts[index]..cuts[index + 1]])
+        }))
     })
 }
 
@@ -130,27 +117,7 @@ fn text(reply: &str) -> ScriptedTurn {
 }
 
 #[test]
-fn a_reply_turn_flushes_once_at_its_settlement() -> Result<()> {
-    let [second, third] = measure([text("one"), text("two"), text("three")], false)?;
-    // History length never adds a flush.
-    assert_eq!(second, third, "reply-turn flushes grew with history");
-    assert_eq!(third, REPLY_TURN_FLUSHES, "reply-turn flushes changed");
-    Ok(())
-}
-
-#[test]
-fn negative_control_one_more_durable_commit_is_counted() -> Result<()> {
-    let [_, third] = measure([text("one"), text("two"), text("three")], true)?;
-    assert_eq!(
-        third,
-        (REPLY_TURN_FLUSHES.0, REPLY_TURN_FLUSHES.1 + 1),
-        "the oracle missed an eager commit's drain"
-    );
-    Ok(())
-}
-
-#[test]
-fn streamed_events_add_no_flush_to_a_reply_turn() -> Result<()> {
+fn reply_publication_drains_follow_commits_and_not_history_or_event_count() -> Result<()> {
     // Equal text in 2 or 32 content deltas; only the event count differs.
     let streamed = |parts: usize| {
         let mut events: Vec<ScriptedEvent> = (0..parts)
@@ -170,9 +137,42 @@ fn streamed_events_add_no_flush_to_a_reply_turn() -> Result<()> {
         }));
         ScriptedTurn::Events(events)
     };
-    let [_, short] = measure([text("one"), text("two"), streamed(2)], false)?;
-    let [_, long] = measure([text("one"), text("two"), streamed(32)], false)?;
-    assert_eq!(short, long, "each streamed event paid its own flush");
-    assert_eq!(long, REPLY_TURN_FLUSHES);
+    let observed = measure([
+        text("one"),
+        text("two"),
+        text("three"),
+        streamed(2),
+        streamed(32),
+    ])?;
+    // Includes input publication through committed actor settlement. This
+    // absolute budget also rejects uniform added or missing reply drains.
+    // Thirty extra content parts need thirty extra ordering barriers.
+    assert_eq!(
+        observed,
+        [(8, 11), (8, 11), (9, 11), (39, 11), (0, 1)],
+        "settled reply publication budget changed"
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn negative_control_filesystem_wide_flush_is_counted() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(storage)?;
+    std::fs::write(directory.path().join("dirty"), b"durable").map_err(storage)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .map_err(storage)?;
+    let (schedule, _) = acyclic_native_runtime::testing::Schedule::seeded(71);
+    runtime
+        .block_on(
+            schedule.scope(async { acyclic_native_runtime::sync_filesystem(directory.path()) }),
+        )
+        .map_err(storage)?;
+    assert_eq!(
+        flushes(&schedule.durable_writes()),
+        (0, 1),
+        "the oracle missed the native filesystem-wide drain"
+    );
     Ok(())
 }

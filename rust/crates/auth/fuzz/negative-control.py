@@ -1,4 +1,4 @@
-"""Require an unchanged Auth fuzz oracle to catch a production defect."""
+"""Require an unchanged authority fuzz oracle to catch a production defect."""
 import hashlib
 import os
 from pathlib import Path
@@ -7,7 +7,34 @@ import sys
 
 root = Path(__file__).resolve().parent
 choice = sys.argv[1] if len(sys.argv) == 2 else "delimiter"
-if choice.startswith("secret-"):
+if choice.startswith("filesystem-"):
+    root = root.parent.parent / "harness-fuzz"
+    target = "filesystem_access"
+    source = root.parent / "harness-core/src/core/authority/workload/admission.rs"
+    oracle = source.with_name("verification.rs")
+elif choice.startswith("addressing-"):
+    target = "addressing"
+    source = root.parent / "src" / {
+        "addressing-fragment": "addressing/routes.rs",
+        "addressing-resource": "addressing.rs",
+        "addressing-account-empty": "addressing.rs",
+        "addressing-id-empty": "addressing.rs",
+        "addressing-field-endian": "addressing.rs",
+        "addressing-resource-framing": "addressing.rs",
+        "addressing-resource-tail": "addressing.rs",
+        "addressing-resource-version": "format.rs",
+        "addressing-resource-domain": "format.rs",
+        "addressing-resource-admission": "addressing.rs",
+        "addressing-actor": "addressing/actor.rs",
+        "addressing-actor-tail": "addressing/actor.rs",
+        "addressing-actor-version": "format.rs",
+        "addressing-actor-domain": "format.rs",
+        "addressing-actor-admission": "addressing/actor.rs",
+        "addressing-name-length": "addressing/actor.rs",
+        "addressing-name-character": "addressing/actor.rs",
+    }.get(choice, "addressing/dns.rs")
+    oracle = root.parent / "tests/common/addressing.rs"
+elif choice.startswith("secret-"):
     target = "secret_ref"
     source = root.parent / "src/secrets.rs"
     oracle = root.parent / "tests/common/secret_ref.rs"
@@ -26,9 +53,111 @@ else:
 step = "read original Auth source and oracle"
 try:
     original = source.read_bytes()
-    oracle_hash = hashlib.sha256(oracle.read_bytes()).digest()
+    oracles = [oracle, root / "fuzz_targets" / (target + ".rs")]
+    if choice.startswith("filesystem-"):
+        oracles.append(root.parent / "harness-core/src/filesystem/access/verification.rs")
+    oracle_hashes = {path: hashlib.sha256(path.read_bytes()).digest() for path in oracles}
     newline = b"\r\n" if b"\r\n" in original else b"\n"
     mutations = {
+        "addressing-resource-framing": (
+            b"            output.extend_from_slice(&(field.len() as u64).to_be_bytes());", b"",
+            "resource writer output must admit", "resource",
+        ),
+        "addressing-host-url": (
+            b"url::Host::parse(host).map_err(|_| DnsError::InvalidCharacter)?",
+            b"url::Host::Domain(host.to_owned())",
+            "URL-incompatible A-label must retain typed refusal", "canonical-alabel-hostname",
+        ),
+        "addressing-account-empty": (
+            b"return Err(IdentityError::EmptyAccount);", b"return Ok(());",
+            "empty account must retain typed refusal", "resource",
+        ),
+        "addressing-id-empty": (
+            b"return Err(IdentityError::EmptyId);", b"return Ok(());",
+            "empty resource id must retain typed refusal", "resource",
+        ),
+        "addressing-resource-domain": (
+            b".strip_prefix(domain)", b".get(domain.len()..)",
+            "identity domain must retain typed refusal", "resource",
+        ),
+        "addressing-actor-domain": (
+            b".strip_prefix(domain)", b".get(domain.len()..)",
+            "identity domain must retain typed refusal", "actor",
+        ),
+        "addressing-host-numeric": (
+            b"return Err(DnsError::NumericHost);", b"()",
+            "numeric DNS host must retain typed refusal", "resource-hostname",
+        ),
+        "addressing-host-length": (
+            b"if host.len() > 253 {", b"if false && host.len() > 253 {",
+            "oversized DNS host must refuse", "resource-hostname",
+        ),
+        "addressing-name-length": (
+            b"(1..=128).contains(&bytes.len())", b"true",
+            "namespace name aliases must refuse", "actor",
+        ),
+        "addressing-name-character": (
+            b'b"-_.".contains(byte)', b'b"-_./".contains(byte)',
+            "namespace name aliases must refuse", "actor",
+        ),
+        "addressing-field-endian": (
+            b"u64::from_be_bytes(*prefix)", b"u64::from_le_bytes(*prefix)",
+            "resource writer output must admit", "resource",
+        ),
+        "addressing-resource-admission": (
+            b"            RESOURCE_VERSION,", b"            b\"\\x02\",",
+            "resource writer output must admit", "resource",
+        ),
+        "addressing-actor-admission": (
+            b"            b\"\\x01\",", b"            b\"\\x02\",",
+            "actor writer output must admit", "actor",
+        ),
+        "addressing-resource-version": (
+            b".strip_prefix(version)", b".get(version.len()..)",
+            "identity version must refuse before fields", "resource",
+        ),
+        "addressing-actor-version": (
+            b".strip_prefix(version)", b".get(version.len()..)",
+            "identity version must refuse before fields", "actor",
+        ),
+        "addressing-resource-tail": (
+            b"if !bytes.is_empty() {", b"if false && !bytes.is_empty() {",
+            "identity framing must refuse trailing bytes", "resource",
+        ),
+        "addressing-actor-tail": (
+            b"if !bytes.is_empty() {", b"if false && !bytes.is_empty() {",
+            "identity framing must refuse trailing bytes", "actor",
+        ),
+        "addressing-resource": (
+            b"Self::new(account, id)", b"Self::new(id, account)",
+            "resource bytes must roundtrip exactly", "resource",
+        ),
+        "addressing-actor": (
+            b"Self::new(account, namespace, id)", b"Self::new(account, id, namespace)",
+            "actor bytes must roundtrip exactly", "actor",
+        ),
+        "addressing-case": (
+            b"b.is_ascii_lowercase()", b"b.is_ascii_alphabetic()",
+            "DNS label aliases must refuse", "resource-hostname",
+        ),
+        "addressing-length": (
+            b"if label.len() > 63 {", b"if false && label.len() > 63 {",
+            "oversized DNS label must refuse", "resource-hostname",
+        ),
+        "addressing-fragment": (
+            b"            || url.fragment().is_some()", b"",
+            "routing must refuse credentials, fragments and unsupported schemes", "route-0",
+        ),
+        "filesystem-ancestor": (
+            b".is_some_and(|parent| !capabilities.is_subset_of(&parent.capabilities))",
+            b".is_some_and(|parent| false && !capabilities.is_subset_of(&parent.capabilities))",
+            "signed refinement removed its ancestor ceiling", "ceiling-set",
+        ),
+        "filesystem-certified": (
+            b"if !refined.is_subset_of(&capabilities) {",
+            b"if false && !refined.is_subset_of(&capabilities) {",
+            "filesystem label gained uncertified authority", "ceiling-set",
+        ),
         "delimiter": (
             b"        && !value.contains(['\\r', '\\n', '\\0'])", b"",
             "credential transport delimiter must refuse", "v2-opaque-bearer",
@@ -72,9 +201,11 @@ try:
         if original.count(check) != 1:
             raise RuntimeError("expected exactly one production mutation site")
         source.write_bytes(original.replace(check, replacement))
-        command = ["cargo", "+nightly", "fuzz", "run", "--dev"]
+        command = ["cargo", "+nightly", "fuzz", "run", "--dev", "--fuzz-dir", str(root)]
         if cargo_target := os.environ.get("CARGO_TARGET_DIR"):
             command += ["--target-dir", cargo_target]
+        if choice.startswith("filesystem-"):
+            command += ["--features", "filesystem-access"]
         command += [target, "corpus/" + target + "/" + seed, "--", "-runs=1"]
         step = "detect " + choice + " through the " + target + " fuzzer"
         result = subprocess.run(
@@ -88,7 +219,8 @@ try:
     finally:
         source.write_bytes(original)
     step = "verify unchanged Auth oracle"
-    if hashlib.sha256(oracle.read_bytes()).digest() != oracle_hash:
+    if any(hashlib.sha256(path.read_bytes()).digest() != digest
+           for path, digest in oracle_hashes.items()):
         raise RuntimeError("Auth oracle changed during the negative control")
 except (OSError, RuntimeError) as error:
     print(

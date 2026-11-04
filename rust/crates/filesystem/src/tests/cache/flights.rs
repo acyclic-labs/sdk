@@ -47,7 +47,7 @@ async fn missing_scalar_and_batch_reads_release_every_flight_for_retry()
         .await
         .err()
         .ok_or("empty cache batch succeeded")?;
-    assert!(matches!(empty.error, ObjectStoreError::Rejected(_)));
+    assert!(matches!(empty.error, ObjectStoreError::EmptyReadBatch));
     assert_eq!(*empty.work, WorkCounters::default());
     Ok(())
 }
@@ -66,6 +66,7 @@ async fn concurrent_reads_share_one_original_backend_request()
         let cached = CachedObjectStore::new(
             GatedStore {
                 reads_before_gate: 0,
+                complete_before_gate: false,
                 inner: Arc::new(inner),
                 gate: gate.clone(),
                 reads: Arc::clone(&reads),
@@ -117,6 +118,7 @@ async fn concurrent_scalar_and_batch_reads_share_the_original_success_or_failure
             let cached = CachedObjectStore::new(
                 GatedStore {
                     reads_before_gate: 0,
+                    complete_before_gate: false,
                     inner: Arc::new(inner),
                     gate: gate.clone(),
                     reads: Arc::clone(&reads),
@@ -192,6 +194,7 @@ async fn dropped_leaders_release_flights_and_retry_without_a_stale_identity()
     let cached = CachedObjectStore::new(
         GatedStore {
             reads_before_gate: 0,
+            complete_before_gate: false,
             inner: Arc::new(inner),
             gate: gate.clone(),
             reads: Arc::clone(&reads),
@@ -254,6 +257,7 @@ async fn cancelled_followers_release_their_wakers_before_the_original_read_finis
     let cached = CachedObjectStore::new(
         GatedStore {
             reads_before_gate: 0,
+            complete_before_gate: false,
             inner: Arc::new(inner),
             gate: futures::FutureExt::shared(gate),
             reads: reads.clone(),
@@ -324,6 +328,7 @@ async fn distinct_reads_and_followers_cross_previous_admission_totals()
     let cached = CachedObjectStore::new(
         GatedStore {
             reads_before_gate: 0,
+            complete_before_gate: false,
             inner: Arc::new(inner),
             gate: futures::FutureExt::shared(gate),
             reads: reads.clone(),

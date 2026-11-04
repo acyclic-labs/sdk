@@ -11,6 +11,7 @@ type MemoryFs = Fs<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectB
 type Host = FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
 
 struct Fixture {
+    _issuer: AuthorityRoot,
     home: tempfile::TempDir,
     retained: tempfile::TempDir,
     filesystem: MemoryFs,
@@ -87,6 +88,7 @@ async fn fixture() -> Result<Fixture> {
     assert_eq!(skills.len(), 2);
     host = host.with_native_skills(sources.clone())?;
     Ok(Fixture {
+        _issuer: issuer,
         home,
         retained,
         filesystem,
@@ -163,6 +165,7 @@ async fn committed_skill_body_recovers_its_receipt_without_the_host_source() -> 
 #[tokio::test]
 async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Result<()> {
     let Fixture {
+        _issuer,
         home: _home,
         retained,
         filesystem: _filesystem,

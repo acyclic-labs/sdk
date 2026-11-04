@@ -121,21 +121,78 @@ const MAX_PEM_BYTES: usize = 64 * 1024;
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 
 /// Semantic service failure or the original local operation stop.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("Objects operation failed ({code:?})")]
+///
+/// Its `source` is the local stop or, for a remote failure, the server's
+/// [`Cause`](acyclic_auth::refusal::Cause).
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Error {
     /// Public semantic category, suitable for programmatic handling.
     pub code: wire::ErrorCode,
     /// Original local stop, when the caller's operation budget ended. Neither
     /// cancellation nor expiry proves that a remote mutation did not commit.
-    #[source]
     pub stopped: Option<acyclic_auth::operation::Stopped>,
+    /// What the server said beyond `code`: its cause, and the member's
+    /// original status when that said more than `code`'s canonical status.
+    /// A diagnostic only; recovery follows `code`.
+    pub refusal: Option<acyclic_auth::refusal::Refusal>,
+}
+impl Error {
+    /// A failure of `code` the server attributes to `cause`.
+    #[must_use]
+    pub fn caused(code: wire::ErrorCode, cause: acyclic_auth::refusal::Cause) -> Self {
+        Self {
+            code,
+            stopped: None,
+            refusal: Some(acyclic_auth::refusal::Refusal::caused(cause)),
+        }
+    }
+    /// The failure a transport detail reports, unless it names no canonical
+    /// semantic code.
+    #[must_use]
+    pub fn from_detail(detail: wire::ErrorDetail) -> Option<Self> {
+        let code = wire::ErrorCode::try_from(detail.code).ok()?;
+        (code != wire::ErrorCode::Unspecified).then(|| Self {
+            code,
+            stopped: None,
+            refusal: acyclic_auth::refusal::Cause::reported(
+                detail.component,
+                detail.reason,
+                detail.request_id,
+            )
+            .map(acyclic_auth::refusal::Refusal::caused),
+        })
+    }
+    /// The server's attribution, when it reported one.
+    #[must_use]
+    pub fn cause(&self) -> Option<&acyclic_auth::refusal::Cause> {
+        self.refusal.as_ref()?.cause()
+    }
+}
+impl std::fmt::Display for Error {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "Objects operation failed ({:?})", self.code)?;
+        match &self.refusal {
+            Some(refusal) => write!(formatter, "{refusal}"),
+            None => Ok(()),
+        }
+    }
+}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.stopped {
+            Some(stopped) => Some(stopped),
+            None => self
+                .cause()
+                .map(|cause| cause as &(dyn std::error::Error + 'static)),
+        }
+    }
 }
 impl From<wire::ErrorCode> for Error {
     fn from(code: wire::ErrorCode) -> Self {
         Self {
             code,
             stopped: None,
+            refusal: None,
         }
     }
 }
@@ -147,6 +204,19 @@ impl From<acyclic_auth::operation::Stopped> for Error {
                 acyclic_auth::operation::Stopped::Cancelled => wire::ErrorCode::OutcomeUnknown,
             },
             stopped: Some(stopped),
+            refusal: None,
+        }
+    }
+}
+/// The one detail every transport carries for a failure: its code and cause.
+impl From<&Error> for wire::ErrorDetail {
+    fn from(error: &Error) -> Self {
+        let cause = error.cause().cloned().unwrap_or_default();
+        Self {
+            code: error.code as i32,
+            request_id: cause.request_id,
+            component: cause.component,
+            reason: cause.reason,
         }
     }
 }

@@ -372,10 +372,11 @@ pub fn session_registration_and_recovery_never_splice(omit_anchor: bool) {
                 provider
                     .follow(crate::FollowRequest::new(path, cursor.next))
                     .map_ok(crate::records_only)
+                    .map_ok(futures::future::Either::Left)
                     .await
             } else {
                 wire_codec::session::follow_records(&provider, &follow, &cursor)
-                    .map_ok(|records| records.boxed())
+                    .map_ok(futures::future::Either::Right)
                     .await
             };
             let error = match registered {

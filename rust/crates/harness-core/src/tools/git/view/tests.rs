@@ -15,9 +15,18 @@ async fn fixture() -> TestResult<(
     let filesystem =
         LocalFs::local(acyclic_fs::LocalOptions::new(directory.path().join("fs"))).await?;
     let store = LocalCoreStateStore::new(directory.path().join("core"));
+    let workspace = registered_workspace(&filesystem, &store, "project").await?;
+    Ok((directory, filesystem, store, workspace))
+}
+
+async fn registered_workspace(
+    filesystem: &LocalFs,
+    store: &LocalCoreStateStore,
+    name: &str,
+) -> TestResult<LocalWorkspace> {
     let workspace = filesystem
         .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
-            "project",
+            name,
             acyclic_fs::VolumeInitialization {
                 config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
                 access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
@@ -33,7 +42,7 @@ async fn fixture() -> TestResult<(
     WorkspaceGraph::new(store.clone())
         .register_root(&workspace)
         .await?;
-    Ok((directory, filesystem, store, workspace))
+    Ok(workspace)
 }
 
 async fn execute(
@@ -133,21 +142,7 @@ async fn saved_command_replay_authenticates_its_original_repository_sources() ->
     restored.current_branch = branch;
     restored.revision += 1;
     assert!(GitCompatStore::compare_and_swap(&store, main.id(), expected, restored).await?);
-    let foreign = filesystem
-        .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
-            "foreign-replay-source",
-            acyclic_fs::VolumeInitialization {
-                config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
-                access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
-            },
-            OperationId::new(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            None,
-        )
-        .await?
-        .value
-        .workspace();
+    let foreign = registered_workspace(&filesystem, &store, "foreign-replay-source").await?;
     let mut state = GitCompatStore::load(&store, main.id())
         .await?
         .ok_or("missing repository")?;
@@ -168,7 +163,11 @@ async fn saved_command_replay_authenticates_its_original_repository_sources() ->
         Some(request),
     )
     .await;
-    assert!(matches!(denied, Err(Error::Unauthorized(_))));
+    assert!(
+        matches!(denied, Err(ref error) if error.code() == crate::wire::ErrorCode::Unauthorized),
+        "{:?}",
+        denied.as_ref().err()
+    );
     Ok(())
 }
 
@@ -400,118 +399,137 @@ async fn manual_binary_resolution_can_continue_without_committing_markers() -> T
 
 #[tokio::test]
 async fn delete_modify_conflicts_accept_manual_content_and_deletion() -> TestResult {
-    for (ours_deleted, delete_resolution) in [(false, false), (true, false), (false, true)] {
-        let (_directory, filesystem, store, main) = fixture().await?;
-        let repository = main.id();
-        main.write_text("/note", "base\n").await?;
-        execute(
-            &filesystem,
-            &store,
-            (&main).into(),
-            repository,
-            &["commit", "-m", "base"],
-        )
-        .await?;
-        let child = execute(
-            &filesystem,
-            &store,
-            (&main).into(),
-            repository,
-            &["checkout", "-b", "topic"],
-        )
-        .await?
-        .switched
-        .ok_or("missing child")?;
-        if ours_deleted {
-            child.workspace().write_text("/note", "child\n").await?;
-        } else {
-            child.workspace().remove("/note").await?;
-        }
-        child
-            .workspace()
-            .write_text("/clean", "nonconflicting source\n")
+    let (_directory, filesystem, store, main) = fixture().await?;
+    let cases = [
+        (main, false, false),
+        (
+            registered_workspace(&filesystem, &store, "ours-deleted").await?,
+            true,
+            false,
+        ),
+        (
+            registered_workspace(&filesystem, &store, "delete-resolution").await?,
+            false,
+            true,
+        ),
+    ];
+    let filesystem = &filesystem;
+    let store = &store;
+    futures::future::try_join_all(cases.into_iter().map(
+        |(main, ours_deleted, delete_resolution)| async move {
+            let repository = main.id();
+            main.write_text("/note", "base\n").await?;
+            execute(
+                filesystem,
+                store,
+                (&main).into(),
+                repository,
+                &["commit", "-m", "base"],
+            )
             .await?;
-        execute(
-            &filesystem,
-            &store,
-            child.view(),
-            repository,
-            &["commit", "-m", "child"],
-        )
-        .await?;
-        execute(
-            &filesystem,
-            &store,
-            child.view(),
-            repository,
-            &["checkout", "main"],
-        )
-        .await?;
-        if ours_deleted {
-            main.remove("/note").await?;
-        } else {
-            main.write_text("/note", "parent\n").await?;
-        }
-        execute(
-            &filesystem,
-            &store,
-            (&main).into(),
-            repository,
-            &["commit", "-m", "parent"],
-        )
-        .await?;
-        let merge = execute(
-            &filesystem,
-            &store,
-            (&main).into(),
-            repository,
-            &["merge", "topic"],
-        )
-        .await;
-        assert!(
-            matches!(merge, Err(Error::Conflict(_))),
-            "merge: {:?}",
-            merge.err()
-        );
-        assert_eq!(
-            View::Volume(&main).read("/note", 64).await?.as_ref(),
+            let child = execute(
+                filesystem,
+                store,
+                (&main).into(),
+                repository,
+                &["checkout", "-b", "topic"],
+            )
+            .await?
+            .switched
+            .ok_or("missing child")?;
             if ours_deleted {
-                b"child\n".as_slice()
+                child.workspace().write_text("/note", "child\n").await?;
             } else {
-                b"parent\n".as_slice()
+                child.workspace().remove("/note").await?;
             }
-        );
-        if delete_resolution {
-            main.remove("/note").await?;
-        } else {
-            main.write_text("/note", "resolved\n").await?;
-        }
-        execute(
-            &filesystem,
-            &store,
-            (&main).into(),
-            repository,
-            &["merge", "--continue"],
-        )
-        .await?;
-        assert_eq!(
-            View::Volume(&main).read("/clean", 64).await?.as_ref(),
-            b"nonconflicting source\n"
-        );
-        if !delete_resolution {
+            child
+                .workspace()
+                .write_text("/clean", "nonconflicting source\n")
+                .await?;
+            execute(
+                filesystem,
+                store,
+                child.view(),
+                repository,
+                &["commit", "-m", "child"],
+            )
+            .await?;
+            execute(
+                filesystem,
+                store,
+                child.view(),
+                repository,
+                &["checkout", "main"],
+            )
+            .await?;
+            if ours_deleted {
+                main.remove("/note").await?;
+            } else {
+                main.write_text("/note", "parent\n").await?;
+            }
+            execute(
+                filesystem,
+                store,
+                (&main).into(),
+                repository,
+                &["commit", "-m", "parent"],
+            )
+            .await?;
+            let merge = execute(
+                filesystem,
+                store,
+                (&main).into(),
+                repository,
+                &["merge", "topic"],
+            )
+            .await;
+            assert!(
+                matches!(merge, Err(Error::Conflict(_))),
+                "merge: {:?}",
+                merge.err()
+            );
             assert_eq!(
                 View::Volume(&main).read("/note", 64).await?.as_ref(),
-                b"resolved\n"
+                if ours_deleted {
+                    b"child\n".as_slice()
+                } else {
+                    b"parent\n".as_slice()
+                }
             );
-        } else {
-            assert!(
-                !GitCompatRepository::new(repository, store.clone())
-                    .tracked_paths()
-                    .await?
-                    .contains("note")
+            if delete_resolution {
+                main.remove("/note").await?;
+            } else {
+                main.write_text("/note", "resolved\n").await?;
+            }
+            execute(
+                filesystem,
+                store,
+                (&main).into(),
+                repository,
+                &["merge", "--continue"],
+            )
+            .await?;
+            assert_eq!(
+                View::Volume(&main).read("/clean", 64).await?.as_ref(),
+                b"nonconflicting source\n"
             );
-        }
-    }
+            if !delete_resolution {
+                assert_eq!(
+                    View::Volume(&main).read("/note", 64).await?.as_ref(),
+                    b"resolved\n"
+                );
+            } else {
+                assert!(
+                    !GitCompatRepository::new(repository, store.clone())
+                        .tracked_paths()
+                        .await?
+                        .contains("note")
+                );
+            }
+            Ok::<(), Box<dyn std::error::Error>>(())
+        },
+    ))
+    .await?;
     Ok(())
 }
 
@@ -701,7 +719,9 @@ async fn volume_branches_use_the_same_facade_without_a_native_source() -> TestRe
 
 #[test]
 fn volume_view_pins_exact_generations_for_both_capture_modes() -> TestResult {
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     let (_directory, _filesystem, _store, workspace) = runtime.block_on(fixture())?;
     // Property: for arbitrary UTF-8 bytes, exact and lazy requests over an SDK
     // volume select the identical current generation and return identical bytes.

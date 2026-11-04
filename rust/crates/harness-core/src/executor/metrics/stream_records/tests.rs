@@ -61,6 +61,21 @@ async fn real_forks_keep_one_logical_identity_without_claiming_physical_savings(
         unique.insert(text(&row, "source").to_owned());
         assert_eq!(text(&row, "source_stream"), destination);
         assert_eq!(text(&row, "source_origin"), parent.path().as_str());
+        for (name, expected) in [
+            ("sequence", original.sequence),
+            ("source_committed_at_micros", original.committed_at_micros),
+        ] {
+            assert_eq!(
+                row.data
+                    .column_by_name(name)
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<UInt64Array>()
+                    .unwrap()
+                    .value(0),
+                expected
+            );
+        }
         assert_eq!(
             text(&row, "source_commit_id"),
             digest(*original.commit_id.as_bytes())

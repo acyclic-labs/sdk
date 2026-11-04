@@ -103,14 +103,19 @@ pub(super) const RULES: Rules = Rules {
     normalize: super::text::normalize,
 };
 
-pub(super) fn finish(adapter: Adapter, messages: &mut Vec<Message<'_>>) -> Result<()> {
-    finish_with(adapter, messages, RULES)
+pub(super) fn finish(
+    adapter: Adapter,
+    messages: &mut Vec<Message<'_>>,
+    summary: bool,
+) -> Result<()> {
+    finish_with(adapter, messages, RULES, summary)
 }
 
 pub(super) fn finish_with(
     adapter: Adapter,
     messages: &mut Vec<Message<'_>>,
     rules: Rules,
+    summary: bool,
 ) -> Result<()> {
     match adapter {
         Adapter::Anthropic | Adapter::Gemini => {
@@ -161,7 +166,7 @@ pub(super) fn finish_with(
                     (rules.normalize)(adapter, content);
                 }
             }
-            if !(rules.boundary)(messages.last().map(role)) {
+            if !summary && !(rules.boundary)(messages.last().map(role)) {
                 messages.push(continuation(adapter));
             }
         }

@@ -6,6 +6,7 @@ type Host = FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::Memor
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 struct Fixture {
+    _issuer: AuthorityRoot,
     host: Arc<Host>,
     authority: acyclic_fs::MemoryAuthorityBackend,
     workspace: Workspace<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>,
@@ -126,6 +127,7 @@ impl Fixture {
             &mut None,
         )?;
         Ok(Self {
+            _issuer: issuer,
             host,
             authority,
             workspace,

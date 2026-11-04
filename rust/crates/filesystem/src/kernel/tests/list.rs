@@ -489,7 +489,12 @@ async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
             crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
         persistent_pagination::paginate_with_accounting::<_, TreeFormat>(
             &store,
-            (root, Bound::Unbounded, 2),
+            (
+                root,
+                Bound::Unbounded,
+                2,
+                acyclic_collections::page::Direction::Ascending,
+            ),
             DecodeLimits::default(),
             &mut accounting,
             &cancellation,
@@ -512,5 +517,280 @@ async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
     );
     assert_eq!(known.object_bytes_read, 0);
     assert_eq!(owner.operation_cache_bytes(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn reverse_pages_seek_only_the_selected_frontier() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::allocation::KernelAccounting;
+    use acyclic_collections::page::Direction;
+    let cancel = CancellationToken::new();
+    let store = MemoryObjectStore::default();
+    let root = tree(&store).await?;
+    // Every cut crosses original child boundaries, including exclusive first keys.
+    for direction in [Direction::Ascending, Direction::Descending] {
+        for cursor in [
+            None,
+            Some("0"),
+            Some("a"),
+            Some("b"),
+            Some("c"),
+            Some("cc"),
+            Some("e"),
+            Some("f"),
+            Some("z"),
+        ] {
+            let cursor = cursor.map(name).transpose()?;
+            for maximum in 1..=4 {
+                for bound in [
+                    cursor.as_ref().map_or(Bound::Unbounded, Bound::Excluded),
+                    cursor.as_ref().map_or(Bound::Unbounded, Bound::Included),
+                ] {
+                    let mut accounting =
+                        KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
+                    let (page, _) =
+                        persistent_pagination::paginate_with_accounting::<_, TreeFormat>(
+                            &store,
+                            (root, bound, maximum, direction),
+                            DecodeLimits::default(),
+                            &mut accounting,
+                            &cancel,
+                            None,
+                        )
+                        .await?;
+                    let mut expected: Vec<_> = ["a", "b", "c", "d", "e", "f"]
+                        .into_iter()
+                        .filter(|value| match (direction, bound) {
+                            (_, Bound::Unbounded) => true,
+                            (Direction::Ascending, Bound::Excluded(cursor)) => {
+                                value.as_bytes() > cursor.as_bytes()
+                            }
+                            (Direction::Ascending, Bound::Included(cursor)) => {
+                                value.as_bytes() >= cursor.as_bytes()
+                            }
+                            (Direction::Descending, Bound::Excluded(cursor)) => {
+                                value.as_bytes() < cursor.as_bytes()
+                            }
+                            (Direction::Descending, Bound::Included(cursor)) => {
+                                value.as_bytes() <= cursor.as_bytes()
+                            }
+                        })
+                        .collect();
+                    if direction == Direction::Descending {
+                        expected.reverse();
+                    }
+                    assert_eq!(
+                        page.values
+                            .iter()
+                            .map(|value| value.name.as_bytes())
+                            .collect::<Vec<_>>(),
+                        expected
+                            .iter()
+                            .take(maximum as usize)
+                            .map(|value| value.as_bytes())
+                            .collect::<Vec<_>>()
+                    );
+                    assert_eq!(page.has_more, expected.len() > maximum as usize);
+                }
+            }
+        }
+    }
+    // A selected child must obey the actual adjacent separator, including when
+    // its successor is outside the bounded selected frontier.
+    let bad = put(
+        &store,
+        &TreePage::Leaf(vec![entry("a", 1)?, entry("z", 2)?]),
+        8,
+    )
+    .await?;
+    let good = put(&store, &TreePage::Leaf(vec![entry("c", 3)?]), 8).await?;
+    let forged = put(
+        &store,
+        &TreePage::Internal(vec![
+            Child {
+                first: name("a")?,
+                page: bad,
+            },
+            Child {
+                first: name("c")?,
+                page: good,
+            },
+        ]),
+        8,
+    )
+    .await?;
+    let before = name("c")?;
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
+    let failure = persistent_pagination::paginate_with_accounting::<_, TreeFormat>(
+        &store,
+        (forged, Bound::Excluded(&before), 1, Direction::Descending),
+        DecodeLimits::default(),
+        &mut accounting,
+        &cancel,
+        None,
+    )
+    .await
+    .err()
+    .ok_or("forged upper child boundary was accepted")?;
+    assert!(matches!(
+        failure,
+        crate::FsError::Directory(DirectoryReadError::ChildBoundsMismatch)
+    ));
+    assert_eq!(
+        accounting
+            .standalone_parts()
+            .ok_or("ordinary ledger absent")?
+            .0
+            .scratch_bytes(),
+        0
+    );
+
+    let mut costs = Vec::new();
+    for population in [1_u32, 100_000] {
+        let store = MemoryObjectStore::default();
+        let mut level = Vec::new();
+        for start in (0..population).step_by(32) {
+            let values = (start..(start + 32).min(population))
+                .map(|index| entry(&format!("a{index:06}"), 1))
+                .collect::<Result<Vec<_>, _>>()?;
+            let first = values[0].name.clone();
+            let page = put(&store, &TreePage::Leaf(values), 32).await?;
+            level.push(Child { first, page });
+        }
+        while level.len() > 1 {
+            let mut next = Vec::new();
+            let mut children = level.into_iter();
+            while children.len() != 0 {
+                let batch: Vec<_> = children.by_ref().take(32).collect();
+                let first = batch[0].first.clone();
+                let page = put(&store, &TreePage::Internal(batch), 32).await?;
+                next.push(Child { first, page });
+            }
+            level = next;
+        }
+        let foreign = level.pop().ok_or("foreign subtree absent")?;
+        let selected = put(
+            &store,
+            &TreePage::Leaf(vec![
+                entry("z000", 2)?,
+                entry("z001", 3)?,
+                entry("z002", 4)?,
+            ]),
+            32,
+        )
+        .await?;
+        let root = put(
+            &store,
+            &TreePage::Internal(vec![
+                foreign,
+                Child {
+                    first: name("z000")?,
+                    page: selected,
+                },
+            ]),
+            32,
+        )
+        .await?;
+        // Provider point selection also contributes examined items. Its fixed
+        // full-reference width bounds that work independently of stored history.
+        let key_bound =
+            acyclic_collections::FixedIndex::<(), (), { ObjectId::ENCODED_LEN }>::insertion_bound(
+                1,
+            )
+            .ok_or("reference selection bound overflow")?
+            .examined_items;
+        let mut accounting = KernelAccounting::standalone(
+            WorkBudget {
+                page_reads: 2,
+                items_examined: 2 * key_bound + 64,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancel,
+        );
+        let (page, _) = persistent_pagination::paginate_with_accounting::<_, TreeFormat>(
+            &store,
+            (root, Bound::Unbounded, 1, Direction::Descending),
+            DecodeLimits::default(),
+            &mut accounting,
+            &cancel,
+            None,
+        )
+        .await?;
+        assert_eq!(page.values[0].name.as_bytes(), b"z002");
+        assert!(page.has_more);
+        assert_eq!(page.work.page_reads, 2);
+        costs.push((
+            page.work.page_reads,
+            page.work.items_examined,
+            page.work.object_bytes_read,
+        ));
+        // Restore the historical enumeration with the same examined-name credit.
+        // It must refuse instead of silently scanning to the last name.
+        let mut accounting = KernelAccounting::standalone(
+            WorkBudget {
+                items_examined: page.work.items_examined,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancel,
+        );
+        let failure = persistent_pagination::paginate_with_accounting::<_, TreeFormat>(
+            &store,
+            (root, Bound::Unbounded, population + 3, Direction::Ascending),
+            DecodeLimits::default(),
+            &mut accounting,
+            &cancel,
+            None,
+        )
+        .await
+        .err()
+        .ok_or("historical enumeration fit selected-name credit")?;
+        assert!(matches!(
+            failure,
+            crate::FsError::Directory(DirectoryReadError::Work(WorkError::BudgetExceeded {
+                counter: "items_examined",
+                ..
+            }))
+        ));
+        assert_eq!(
+            accounting
+                .standalone_parts()
+                .ok_or("ordinary ledger absent")?
+                .0
+                .scratch_bytes(),
+            0
+        );
+    }
+    assert_eq!(costs[0].0, costs[1].0);
+    assert_eq!(costs[0].2, costs[1].2);
+    eprintln!("reverse selected pages/examined/read bytes at 1 and 100000 earlier names={costs:?}");
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
+            .map_err(|(error, _)| error)?;
+        let meter = std::sync::Arc::downgrade(&original.state);
+        let baseline = original.live_allocation_bytes();
+        assert_eq!(
+            baseline,
+            crate::NativeMaterializationWork::accounting_state_bytes()
+        );
+        let mut accounting = KernelAccounting::native(&original, &cancel);
+        let (page, allocation) = persistent_pagination::paginate_with_accounting::<_, TreeFormat>(
+            &store,
+            (root, Bound::Unbounded, 2, Direction::Descending),
+            DecodeLimits::default(),
+            &mut accounting,
+            &cancel,
+            None,
+        )
+        .await?;
+        assert_eq!(page.values[0].name.as_bytes(), b"f");
+        assert!(original.live_allocation_bytes() > baseline);
+        drop(page);
+        drop(allocation);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        drop(accounting);
+        drop(original);
+        assert!(meter.upgrade().is_none());
+    }
     Ok(())
 }

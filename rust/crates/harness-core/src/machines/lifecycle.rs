@@ -48,6 +48,34 @@ pub struct MachineBinding {
 }
 
 impl MachineBinding {
+    /// Admits an already-authorized original record selected under `agent`.
+    ///
+    /// The selected path supplies the target, independently of the payload.
+    /// Live and offline views share this path/position/format boundary. Account
+    /// authorization remains the original reader's responsibility; inherited
+    /// records retain their original origin and publication identity.
+    ///
+    /// # Errors
+    /// When the selected path belongs to another agent, is not one Machine
+    /// target, or the original record fails [`Self::decode`].
+    pub fn decode_selected(
+        agent: &AgentPath,
+        selected: &acyclic_stream::StreamPath,
+        record: &acyclic_stream::Record,
+    ) -> Result<Self> {
+        let target = selected
+            .as_str()
+            .strip_prefix(agent.as_str())
+            .and_then(|suffix| suffix.strip_prefix("/machines/"))
+            .filter(|target| !target.is_empty() && !target.contains('/'))
+            .ok_or_else(|| {
+                Error::Storage(
+                    "Machine binding has a foreign selected path or target; recovery: read the original authorized agent.machine(target) at from=1, limit=1".into(),
+                )
+            })?;
+        Self::decode(target, record)
+    }
+
     /// Decodes the original settled record for an already-authorized target.
     ///
     /// The original reader supplies `target` from its selected binding path;

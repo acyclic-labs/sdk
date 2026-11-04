@@ -1,4 +1,6 @@
 /// Stable public failures. CAS and absence conflicts are values instead.
+/// With `serde`, failures use their canonical [`Self::code`] string; unknown
+/// codes are refused rather than replaced with another cause.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum StreamError {
     /// Peer violated the response contract; retrying the connection cannot repair it.
@@ -40,6 +42,11 @@ pub enum StreamError {
     /// Required authority is unavailable.
     #[error("stream unavailable")]
     Unavailable,
+    /// [`Self::Unavailable`] as a member reported it, with the member's
+    /// original status retained verbatim. Recovery is exactly Unavailable's;
+    /// the refusal is a diagnostic, never retry permission.
+    #[error("stream unavailable{0}")]
+    Refused(acyclic_auth::refusal::Refusal),
     /// A provider-evaluated commit deadline elapsed before linearization.
     #[error("stream commit deadline elapsed")]
     DeadlineElapsed,
@@ -49,6 +56,32 @@ pub enum StreamError {
     /// A minimum revision names another authority scope or incarnation.
     #[error("stream revision belongs to another authority or incarnation")]
     RevisionForeign,
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for StreamError {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.code())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for StreamError {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct FailureCode;
+        impl serde::de::Visitor<'_> for FailureCode {
+            type Value = StreamError;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a canonical stream failure code")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, code: &str) -> Result<Self::Value, E> {
+                StreamError::from_code(code).ok_or_else(|| E::custom("unknown stream failure code"))
+            }
+        }
+        deserializer.deserialize_str(FailureCode)
+    }
 }
 
 impl StreamError {
@@ -76,7 +109,10 @@ impl StreamError {
     /// its deadline elapsed, so the same request may yet succeed unchanged.
     #[must_use]
     pub const fn uncertain(&self) -> bool {
-        matches!(self, Self::Unavailable | Self::DeadlineElapsed)
+        matches!(
+            self,
+            Self::Unavailable | Self::Refused(_) | Self::DeadlineElapsed
+        )
     }
 
     /// Stable `snake_case` code shared by the HTTP, gRPC, and WASM transports.
@@ -94,7 +130,7 @@ impl StreamError {
             Self::IdempotencyMismatch => "idempotency_mismatch",
             Self::Capacity => "capacity",
             Self::AccessDenied => "access_denied",
-            Self::Unavailable => "unavailable",
+            Self::Unavailable | Self::Refused(_) => "unavailable",
             Self::HierarchyChanged => "hierarchy_changed",
             Self::DeadlineElapsed => "deadline_elapsed",
             Self::Unsupported => "unsupported",

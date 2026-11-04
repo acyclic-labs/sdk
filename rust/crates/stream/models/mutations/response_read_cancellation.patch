@@ -1,0 +1,21 @@
+diff --git a/rust/crates/stream/src/session/client/link.rs b/rust/crates/stream/src/session/client/link.rs
+--- a/rust/crates/stream/src/session/client/link.rs
++++ b/rust/crates/stream/src/session/client/link.rs
+@@ -190,16 +190,8 @@ impl Pool {
+             return;
+         };
+         let epoch = link.epoch;
+-        let sender = Arc::clone(&link.sender);
+         self.reads.push(Box::pin(async move {
+-            let frame = {
+-                let closed = sender.cancelled();
+-                futures::pin_mut!(closed);
+-                match future::select(response.next(), closed).await {
+-                    future::Either::Left((frame, _)) => frame,
+-                    future::Either::Right(_) => None,
+-                }
+-            };
++            let frame = response.next().await;
+             (node, epoch, response, frame)
+         }));
+     }

@@ -28,15 +28,13 @@ const browserConstructors = [
 type Constructor = readonly [string, string];
 
 function constructorRemoval(check: (value: unknown) => void, entries: readonly Constructor[]): void {
-  // Exhaust every nonempty subset; a missing constructor must refuse before IO.
-  for (let mask = 1; mask < 2 ** entries.length; mask++) {
+  // Admission requires every constructor. Check each missing dependency once;
+  // supersets repeat the same refusal without exercising another guard.
+  for (const [name, symbol] of entries) {
     const rawCandidate: Record<string, unknown> = { ...raw };
     const wrapperCandidate: Record<string, unknown> = { ...wrappers };
-    for (const [index, [name, symbol]] of entries.entries()) {
-      if ((mask & (2 ** index)) === 0) continue;
-      delete rawCandidate[symbol];
-      delete wrapperCandidate[name];
-    }
+    delete rawCandidate[symbol];
+    delete wrapperCandidate[name];
     expect(() => check(rawCandidate)).toThrow();
     expect(() => check(wrapperCandidate)).toThrow();
   }

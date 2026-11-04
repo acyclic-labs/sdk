@@ -11,75 +11,165 @@ async fn funded_request_and_projection_share_one_owned_history() -> Result<()> {
         ToolRegistry::default(),
     );
     for native in [false, true] {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024);
-        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let io = if native {
-            PreparationIo::from_native_work(&work)?
-        } else {
-            PreparationIo::from_budget(budget, &cancellation)?
-        };
-        let scope = crate::filesystem::PreparationScope::new(Some(&io))?;
-        let execution = StockExecution {
-            io: scope.io(),
-            ..StockExecution::ordinary(&executor)
-        };
-        let input = ContextInput {
-            input: ModelContent::Text("input".into()),
-            selected_context: None,
-            step: 0,
-            prior_messages: vec![],
-        };
-        let messages: Vec<_> = (0..32)
-            .map(|index| ModelMessage {
-                role: ModelRole::User,
-                content: ModelContent::Text(format!("{index}:{}", "payload".repeat(16))),
-            })
-            .collect();
-        let original = messages.as_ptr();
-        let expected = crate::model::PreparedModelRequest::prepare(
-            execution.request_from_messages(messages.clone())?,
-            executor.limits,
+        let mut admission_work = None;
+        let mut decoded_work = None;
+        for count in [1, 32, 1000] {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024);
+            let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let io = if native {
+                PreparationIo::from_native_work(&work)?
+            } else {
+                PreparationIo::from_budget(budget, &cancellation)?
+            };
+            let scope = crate::filesystem::PreparationScope::new(Some(&io))?;
+            let execution = StockExecution {
+                io: scope.io(),
+                ..StockExecution::ordinary(&executor)
+            };
+            let input = ContextInput {
+                input: ModelContent::Text("input".into()),
+                selected_context: None,
+                step: 0,
+                prior_messages: vec![],
+            };
+            let messages: Vec<_> = (0..count)
+                .map(|index| ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text(format!("{index}:{}", "payload".repeat(16))),
+                })
+                .collect();
+            let original = messages.as_ptr();
+            let expected = crate::model::PreparedModelRequest::prepare(
+                execution.request_from_messages(messages.clone())?,
+                executor.limits,
+                None,
+            )?;
+            let context = crate::context::Context {
+                messages,
+                current_input_index: Some(0),
+                ..Default::default()
+            };
+            let (mut projection, prepared) = execution
+                .prepare_transformed_request(&input, context)
+                .await?;
+            assert_eq!(
+                prepared.request().messages.as_ptr(),
+                original,
+                "native={native}: preparation copied history"
+            );
+            assert!(
+                projection.messages.is_empty(),
+                "projection retained a second transcript"
+            );
+            assert_eq!(prepared.bytes(), expected.bytes());
+            let before = io.receipt();
+            crate::context::validate_projected_request(&projection, &prepared, execution.io)?;
+            let examined = io.receipt().items_examined - before.items_examined;
+            assert_eq!(
+                *admission_work.get_or_insert(examined),
+                examined,
+                "native={native}: projection revalidated {count} admitted messages"
+            );
+            projection.current_input_index = Some(count as u32);
+            assert_eq!(
+                crate::context::validate_projected_request(&projection, &prepared, execution.io)
+                    .unwrap_err()
+                    .code(),
+                crate::wire::ErrorCode::Invalid
+            );
+            projection.current_input_index = Some(0);
+            // The former funded path makes another vector and nested text buffers.
+            let copied = crate::model::clone_messages(&prepared.request().messages, execution.io)?;
+            assert_ne!(
+                copied.as_ptr(),
+                original,
+                "negative control reused the request vector"
+            );
+            let decoded = crate::context::Context {
+                messages: copied,
+                current_input_index: Some(0),
+                ..Default::default()
+            };
+            let before = io.receipt();
+            crate::context::validate_projected_context(&decoded, executor.limits, execution.io)?;
+            let raw_work = io.receipt().items_examined - before.items_examined;
+            eprintln!(
+                "native={native} messages={count} admitted_items={examined} decoded_items={raw_work}"
+            );
+            assert!(
+                raw_work > examined,
+                "full validation escaped the cost control"
+            );
+            if let Some(previous) = decoded_work.replace(raw_work) {
+                assert!(
+                    raw_work > previous,
+                    "full validation did not visit growing history"
+                );
+            }
+            drop(decoded);
+            cancellation.cancel();
+            assert_eq!(
+                crate::context::validate_projected_request(&projection, &prepared, execution.io)
+                    .unwrap_err()
+                    .code(),
+                crate::wire::ErrorCode::Cancelled
+            );
+            drop(prepared);
+            drop(projection);
+            drop(execution);
+            drop(scope);
+            assert_eq!(io.owned_bytes()?, 0);
+        }
+    }
+    let storage =
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+    let journal = storage.journal();
+    let metadata = journal
+        .stage(
+            OperationId::new(),
+            "metadata",
+            b"metadata",
+            "text/plain",
             None,
-        )?;
+        )?
+        .await?;
+    let request =
+        StockExecution::ordinary(&executor).request_from_messages(vec![ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Text("input".into()),
+        }])?;
+    let limits = Limits {
+        attachments: 1,
+        ..executor.limits
+    };
+    for (limits, count, expected) in [
+        (limits, 1, Ok(())),
+        (limits, 2, Err(crate::wire::ErrorCode::Invalid)),
+        (
+            Limits {
+                path_bytes: 1,
+                ..limits
+            },
+            1,
+            Err(crate::wire::ErrorCode::Invalid),
+        ),
+    ] {
+        let prepared = crate::model::PreparedModelRequest::prepare(request.clone(), limits, None)?;
         let context = crate::context::Context {
-            messages,
+            messages: request.messages.clone(),
+            metadata: (0..count)
+                .map(|index| (index.to_string(), metadata.clone()))
+                .collect(),
             current_input_index: Some(0),
-            ..Default::default()
         };
-        let (projection, prepared) = execution
-            .prepare_transformed_request(&input, context)
-            .await?;
-        assert_eq!(
-            prepared.request().messages.as_ptr(),
-            original,
-            "native={native}: preparation copied history"
-        );
-        assert!(
-            projection.messages.is_empty(),
-            "projection retained a second transcript"
-        );
-        assert_eq!(prepared.bytes(), expected.bytes());
-        crate::context::validate_projected_messages(
-            &projection,
-            &prepared.request().messages,
-            executor.limits,
-            execution.io,
-        )?;
-        // The former funded path makes another vector and nested text buffers.
-        let copied = crate::model::clone_messages(&prepared.request().messages, execution.io)?;
-        assert_ne!(
-            copied.as_ptr(),
-            original,
-            "negative control reused the request vector"
-        );
-        drop(copied);
-        drop(prepared);
-        drop(projection);
-        drop(execution);
-        drop(scope);
-        assert_eq!(io.owned_bytes()?, 0);
+        for result in [
+            crate::context::validate_projected_request(&context, &prepared, None),
+            crate::context::validate_projected_context(&context, limits, None),
+        ] {
+            assert_eq!(result.map_err(|error| error.code()), expected);
+        }
     }
     Ok(())
 }

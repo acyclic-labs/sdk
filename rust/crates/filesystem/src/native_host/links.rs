@@ -179,7 +179,7 @@ impl HostRoot {
         maximum: u64,
         work: &mut W,
     ) -> Result<(Vec<NativeUnit>, W::Allocation), W::Error> {
-        with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+        with_parent_leaf(&self.directory(), path, work, |parent, leaf, work| {
             read_link_held(parent, leaf, maximum, work)
         })
     }
@@ -196,7 +196,7 @@ impl HostRoot {
         NativeHostWork::check(&original)?;
         let ownership = crate::demand::SourcePayloadOwnership::new(work)?;
         let (bytes, target, allocation) =
-            with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+            with_parent_leaf(&self.directory(), path, work, |parent, leaf, work| {
                 read_link_buffer(parent, leaf, maximum, work)
             })?;
         if let Err(error) = ownership.retain(allocation, work) {

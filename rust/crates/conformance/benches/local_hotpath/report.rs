@@ -1,3 +1,4 @@
+use super::quantiles::Quantiles;
 use acyclic_stream::testing::{RequestClass, RequestLedger, Requests};
 use acyclic_test_support::{
     AllocationInfo,
@@ -28,10 +29,13 @@ struct OperationEvidence<'a> {
     #[serde(flatten)]
     fields: serde_json::Value,
     #[serde(serialize_with = "serialize_work_receipts")]
-    original_work_receipts: &'a [(serde_json::Value, Work)],
-    coordinator_allocations_count_and_bytes: &'a [Option<[u64; 2]>],
-    provider_request_counts: &'a [Option<[u64; 7]>],
-    native_attempt_counts: &'a [Option<[u64; 3]>],
+    original_work_receipts: &'a [RetainedObservation],
+    #[serde(serialize_with = "serialize_allocations")]
+    coordinator_allocations_count_and_bytes: &'a [RetainedObservation],
+    #[serde(serialize_with = "serialize_requests")]
+    provider_request_counts: &'a [RetainedObservation],
+    #[serde(serialize_with = "serialize_attempts")]
+    native_attempt_counts: &'a [RetainedObservation],
     #[serde(serialize_with = "serialize_work_summary")]
     work: &'a [Counter; METRICS.len()],
 }
@@ -68,7 +72,7 @@ fn serialize_work_summary<S: serde::Serializer>(
 }
 
 fn serialize_work_receipts<S: serde::Serializer>(
-    receipts: &[(serde_json::Value, Work)],
+    receipts: &[RetainedObservation],
     serializer: S,
 ) -> std::result::Result<S::Ok, S::Error> {
     #[derive(Serialize)]
@@ -80,52 +84,48 @@ fn serialize_work_receipts<S: serde::Serializer>(
         progress: &'static str,
     }
 
-    serializer.collect_seq(receipts.iter().enumerate().map(|(sample, (identity, work))| {
+    serializer.collect_seq(receipts.iter().enumerate().map(|(sample, retained)| {
         Receipt {
             sample,
-            identity,
-            work: &work.0,
+            identity: &retained.identity,
+            work: &retained.observation.work.0,
             physical_admission_binding: None,
-            progress: "original operation returned; operation-specific result oracle checked before the report",
+            progress: "original operation returned successfully; result oracles are complete only when cohort_completed is true",
         }
     }))
 }
 
-#[derive(Clone, Copy, Serialize)]
-pub(super) struct Quantiles {
-    pub(super) samples: usize,
-    pub(super) p50_ns: f64,
-    pub(super) p99_ns: f64,
+fn serialize_allocations<S: serde::Serializer>(
+    observations: &[RetainedObservation],
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    serializer.collect_seq(
+        observations
+            .iter()
+            .map(|sample| &sample.observation.coordinator_allocations),
+    )
 }
 
-impl Quantiles {
-    pub(super) fn new(values: &mut [f64]) -> Result<Self> {
-        if values.is_empty()
-            || values
-                .iter()
-                .any(|value| !value.is_finite() || *value < 0.0)
-        {
-            return Err("quantiles require nonnegative finite samples".into());
-        }
-        values.sort_unstable_by(f64::total_cmp);
-        let rank = |percent: usize| -> Result<f64> {
-            let index = values
-                .len()
-                .checked_mul(percent)
-                .ok_or("sample rank overflow")?
-                .div_ceil(100)
-                .saturating_sub(1);
-            values
-                .get(index)
-                .copied()
-                .ok_or_else(|| "sample rank missing".into())
-        };
-        Ok(Self {
-            samples: values.len(),
-            p50_ns: rank(50)?,
-            p99_ns: rank(99)?,
-        })
-    }
+fn serialize_requests<S: serde::Serializer>(
+    observations: &[RetainedObservation],
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    serializer.collect_seq(
+        observations
+            .iter()
+            .map(|sample| &sample.observation.provider_requests),
+    )
+}
+
+fn serialize_attempts<S: serde::Serializer>(
+    observations: &[RetainedObservation],
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    serializer.collect_seq(
+        observations
+            .iter()
+            .map(|sample| &sample.observation.native_attempts),
+    )
 }
 
 pub(super) fn check_observations() -> Result {
@@ -138,6 +138,40 @@ pub(super) fn check_observations() -> Result {
     if small.samples != 5 || small.p50_ns != 3.0 || small.p99_ns != 5.0 {
         return Err("small-cohort quantiles changed".into());
     }
+    let singleton = Quantiles::new(&mut [7.0])?;
+    if singleton.samples != 1 || singleton.p50_ns != 7.0 || singleton.p99_ns != 7.0 {
+        return Err("coincident quantile ranks changed".into());
+    }
+    // Deterministic shuffled observations, independent of clock resolution.
+    let original: Vec<_> = (0..4096)
+        .map(|index| f64::from((index * 251) % 4096))
+        .collect();
+    let mut selected = original.clone();
+    let mut selection_comparisons = 0;
+    let mut result = None;
+    let allocations = acyclic_test_support::measure(|| {
+        result = Some(Quantiles::with_order(&mut selected, |left, right| {
+            selection_comparisons += 1;
+            left.total_cmp(right)
+        }));
+    });
+    let selected = result.ok_or("quantile selection did not complete")??;
+    let mut sorted = original;
+    let mut sort_comparisons = 0;
+    // Restore the former full sort as an independent work negative.
+    sorted.sort_unstable_by(|left, right| {
+        sort_comparisons += 1;
+        left.total_cmp(right)
+    });
+    if selected.samples != sorted.len()
+        || selected.p50_ns != sorted[2047]
+        || selected.p99_ns != sorted[4055]
+        || allocations.count_total != 0
+        || allocations.bytes_total != 0
+        || selection_comparisons >= sort_comparisons
+    {
+        return Err("quantile selection changed ranks or retained full-sort work".into());
+    }
     // A timestamp pair can occupy one clock tick. Preserve that observation
     // rather than fabricating a positive elapsed duration.
     let zero = Quantiles::new(&mut [0.0; 100])?;
@@ -149,29 +183,46 @@ pub(super) fn check_observations() -> Result {
             return Err("invalid observations admitted by quantile negative control".into());
         }
     }
-    let mut cohort = Measurements::new(
-        1,
-        RequestLedger::default(),
-        None,
-        "use samples with identical floor terms",
-        &[Operation::ObjectGet],
-    );
+    let requests = RequestLedger::default();
+    let recovery = "use samples with identical floor terms";
+    let operations = [Operation::ObjectGet];
+    let mut cohort = None;
+    let construction = acyclic_test_support::measure(|| {
+        cohort = Some(Measurements::new(1, requests, None, recovery, &operations));
+    });
+    if construction.count_total != 0 || construction.bytes_total != 0 {
+        return Err("measurement construction copied caller-owned inputs".into());
+    }
+    let copied = acyclic_test_support::measure(|| {
+        std::hint::black_box((recovery.to_owned(), operations.to_vec()));
+    });
+    if copied.count_total != 2
+        || copied.bytes_total != (recovery.len() + std::mem::size_of_val(&operations)) as u64
+    {
+        return Err("owned measurement-input negative did not expose both copies".into());
+    }
+    let mut cohort = cohort.ok_or("measurement construction did not complete")?;
     let mut record = |bytes, observation| {
-        cohort.record(
-            Operation::ObjectGet,
-            Terms {
-                copy_bytes: bytes,
-                ..Terms::default()
-            },
-            Duration::ZERO,
-            observation,
-            serde_json::json!({
-                "request": {"operation": "object.get", "requested_copy_bytes": bytes},
-                "resource": {"path": "original/requested/object"},
-            }),
-        )
+        let identity = serde_json::json!({
+            "request": {"operation": "object.get", "requested_copy_bytes": bytes},
+            "resource": {"path": "original/requested/object"},
+        });
+        let mut result = Ok(());
+        let allocations = acyclic_test_support::measure(|| {
+            result = cohort.record(
+                Operation::ObjectGet,
+                Terms {
+                    copy_bytes: bytes,
+                    ..Terms::default()
+                },
+                Duration::ZERO,
+                observation,
+                identity,
+            );
+        });
+        result.map(|()| allocations)
     };
-    record(
+    let first = record(
         1024,
         Observation {
             work: Work([Some(u64::MAX), Some(0), None, None, None, None, None, None]),
@@ -180,6 +231,11 @@ pub(super) fn check_observations() -> Result {
             native_attempts: Some([1, 0, 0]),
         },
     )?;
+    // One row node, its timestamp buffer and its original observation buffer.
+    // Reintroducing separate diagnostic buffers adds three allocations here.
+    if first.count_total != 3 {
+        return Err("original sample retention added independent backing allocations".into());
+    }
     if record(2048, Observation::default()).is_ok() {
         return Err("different required work was admitted into one latency cohort".into());
     }
@@ -215,25 +271,31 @@ pub(super) fn check_observations() -> Result {
         return Err("exhausted observation count admitted another sample".into());
     }
     let row = &cohort.rows[&Operation::ObjectGet];
-    if row.work != full
-        || [
-            row.raw_ns.len(),
-            row.coordinator_allocations.len(),
-            row.provider_requests.len(),
-            row.native_attempts.len(),
-            row.original_work.len(),
-        ] != [2; 5]
-    {
+    if row.work != full || [row.raw_ns.len(), row.observations.len()] != [2; 2] {
         return Err("refused observation changed the retained evidence".into());
     }
-    let evidence = OperationEvidence {
-        fields: serde_json::json!({"schema": 1, "kind": "negative_control"}),
-        original_work_receipts: &row.original_work,
-        coordinator_allocations_count_and_bytes: &row.coordinator_allocations,
-        provider_request_counts: &row.provider_requests,
-        native_attempt_counts: &row.native_attempts,
-        work: &row.work.work,
-    };
+    // Restore the three former diagnostic buffers from the same retained
+    // observations, independently of the serializer under test.
+    let copied = acyclic_test_support::measure(|| {
+        std::hint::black_box((
+            row.observations
+                .iter()
+                .map(|sample| sample.observation.coordinator_allocations)
+                .collect::<Vec<_>>(),
+            row.observations
+                .iter()
+                .map(|sample| sample.observation.provider_requests)
+                .collect::<Vec<_>>(),
+            row.observations
+                .iter()
+                .map(|sample| sample.observation.native_attempts)
+                .collect::<Vec<_>>(),
+        ));
+    });
+    if copied.count_total != 3 || copied.bytes_total == 0 {
+        return Err("separate diagnostic buffer negative did not retain three allocations".into());
+    }
+    let evidence = row.evidence(serde_json::json!({"schema": 1, "kind": "negative_control"}));
     check_borrowed_serialization(&evidence, "operation evidence")?;
     let encoded = serde_json::to_value(&evidence)?;
     // Compare against the former independent map builder, outside measurement.
@@ -262,8 +324,8 @@ pub(super) fn check_observations() -> Result {
     if encoded["coordinator_allocations_count_and_bytes"] != serde_json::json!([[2, 1024], null])
         || encoded["provider_request_counts"] != serde_json::json!([[1, 0, 0, 0, 0, 0, 0], null])
         || encoded["native_attempt_counts"] != serde_json::json!([[1, 0, 0], null])
-        || encoded["original_work_receipts"][0]["identity"] != row.original_work[0].0
-        || encoded["original_work_receipts"][1]["identity"] != row.original_work[1].0
+        || encoded["original_work_receipts"][0]["identity"] != row.observations[0].identity
+        || encoded["original_work_receipts"][1]["identity"] != row.observations[1].identity
     {
         return Err("operation encoding changed original diagnostic evidence".into());
     }
@@ -274,9 +336,178 @@ pub(super) fn check_observations() -> Result {
         },
         "raw samples",
     )?;
-    emit(
-        serde_json::json!({"schema": 1, "kind": "negative_control", "control": "invalid quantile observations and mismatched floor terms", "result": "rejected"}),
-    )
+    // Capture a real operation failure. Neither a failed terminal nor a
+    // sampler refusal may enter the successful cohort or replace its cause.
+    // Retire the independent count-exhaustion control before testing admission:
+    // a full cohort or mismatched floor would mask an incorrectly stored error.
+    let row = cohort
+        .rows
+        .get_mut(&Operation::ObjectGet)
+        .ok_or("missing failure cohort")?;
+    row.work.observations = 2;
+    let full = row.work.clone();
+    let floor = row.terms;
+    let directory = tempfile::tempdir()?;
+    let missing_path = directory.path().join("missing");
+    let failed_identity = serde_json::json!({"path": missing_path});
+    let missing = std::fs::read(&missing_path).unwrap_err();
+    let original_code = missing.raw_os_error();
+    let original_error = missing.to_string();
+    let mut failed = Vec::new();
+    let before = cohort.start(None);
+    let returned = cohort
+        .record_terminal(
+            Operation::ObjectGet,
+            floor,
+            (Duration::ZERO, before),
+            failed_identity.clone(),
+            Err::<(), _>(missing),
+            |receipt| emit_to(&mut failed, receipt),
+        )?
+        .unwrap_err();
+    if returned.raw_os_error() != original_code {
+        return Err("failed observation replaced the original OS cause".into());
+    }
+    let receipt: serde_json::Value = serde_json::from_slice(&failed)?;
+    if receipt["kind"] != "failed_operation"
+        || receipt["operation"] != Operation::ObjectGet.name()
+        || receipt["identity"] != failed_identity
+        || receipt["error"] != original_error
+        || receipt.get("observation_error") != Some(&serde_json::Value::Null)
+        || receipt["work"] != serde_json::json!([null, null, null, null, 0, null, null, null])
+        || receipt["provider_request_counts"] != serde_json::to_value([0; 7])?
+        || receipt.get("native_attempt_counts") != Some(&serde_json::Value::Null)
+        || receipt.get("physical_admission_binding") != Some(&serde_json::Value::Null)
+        || receipt["ratio_qualified"] != false
+        || receipt["raw_ns"] != 0.0
+    {
+        return Err("failed receipt lost its original error, identity or observed work".into());
+    }
+    let row = &cohort.rows[&Operation::ObjectGet];
+    if row.work != full || [row.raw_ns.len(), row.observations.len()] != [2; 2] {
+        return Err("failed terminal changed the successful observation inventory".into());
+    }
+    failed.clear();
+    let before = cohort.start(Some(RequestClass::Head));
+    let returned = cohort
+        .record_terminal(
+            Operation::ObjectGet,
+            floor,
+            (Duration::ZERO, before),
+            failed_identity.clone(),
+            Err::<(), _>(returned),
+            |receipt| emit_to(&mut failed, receipt),
+        )?
+        .unwrap_err();
+    if returned.raw_os_error() != original_code {
+        return Err("sampler refusal replaced the original operation cause".into());
+    }
+    let receipt: serde_json::Value = serde_json::from_slice(&failed)?;
+    let retains_refusal = |receipt: &serde_json::Value| {
+        receipt["identity"] == failed_identity
+            && receipt["error"] == original_error
+            && receipt["observation_error"] == "requested query has no original provider dispatch"
+            && [
+                "work",
+                "provider_request_counts",
+                "coordinator_allocations_count_and_bytes",
+                "native_attempt_counts",
+            ]
+            .iter()
+            .all(|field| receipt.get(*field) == Some(&serde_json::Value::Null))
+    };
+    if !retains_refusal(&receipt) {
+        return Err("failed receipt hid observer refusal metadata or fabricated work".into());
+    }
+    // Remove one field from the actual encoded receipt, rather than inventing
+    // a wire fixture. The same oracle must refuse this loss independently of
+    // the preserved operation error and identity.
+    let mut dropped = receipt;
+    dropped
+        .as_object_mut()
+        .ok_or("failed receipt was not an object")?
+        .remove("observation_error");
+    if retains_refusal(&dropped) {
+        return Err("refusal metadata oracle admitted a dropped original field".into());
+    }
+    let before = cohort.start(Some(RequestClass::Head));
+    let mut published_success = false;
+    let success_refusal = cohort.record_terminal(
+        Operation::ObjectGet,
+        floor,
+        (Duration::ZERO, before),
+        failed_identity,
+        Ok::<_, std::io::Error>(()),
+        |_| {
+            published_success = true;
+            Ok(())
+        },
+    );
+    if published_success
+        || success_refusal.err().is_none_or(|error| {
+            error.to_string() != "requested query has no original provider dispatch"
+        })
+    {
+        return Err("successful operation hid its sampler refusal".into());
+    }
+    let row = &cohort.rows[&Operation::ObjectGet];
+    if row.work != full || [row.raw_ns.len(), row.observations.len()] != [2; 2] {
+        return Err("failed terminal changed the successful observation inventory".into());
+    }
+    let mut partial = Vec::new();
+    let original = super::durability::retain_diagnostics(
+        Err::<(), _>(returned),
+        || cohort.publish_partial(&mut partial),
+        cohort.recovery,
+    )?
+    .unwrap_err();
+    let partial: serde_json::Value = serde_json::from_slice(&partial)?;
+    if original.raw_os_error() != original_code
+        || partial["kind"] != "partial_operation"
+        || partial["cohort_completed"] != false
+        || partial["ratio_qualified"] != false
+        || partial.get("quantiles").is_some()
+        || partial.get("floor_ns").is_some()
+        || partial["raw_ns"].as_array().map(Vec::len) != Some(2)
+        || partial["original_work_receipts"] != encoded["original_work_receipts"]
+    {
+        return Err("family failure lost or qualified its original partial receipts".into());
+    }
+    // Exercise the completed production report, including its retained sample
+    // backing. Standalone primitive medians cannot qualify public-path ratios.
+    let mut completed = Vec::new();
+    let (complete, _) = cohort.finish_to(&mut completed)?;
+    let completed: serde_json::Value = serde_json::from_slice(&completed)?;
+    let unknown_floor = |receipt: &serde_json::Value| {
+        receipt["ratio_qualified"] == false
+            && ["floor_ns", "p50_ratio", "p99_ratio"]
+                .into_iter()
+                .all(|field| receipt.get(field) == Some(&serde_json::Value::Null))
+    };
+    if !complete
+        || completed["cohort_completed"] != true
+        || !unknown_floor(&completed)
+        || completed["raw_ns"] != partial["raw_ns"]
+        || completed["original_work_receipts"] != partial["original_work_receipts"]
+    {
+        return Err("completed report qualified a surrogate floor or lost original samples".into());
+    }
+    for field in ["floor_ns", "p50_ratio", "p99_ratio", "ratio_qualified"] {
+        let mut restored = completed.clone();
+        restored[field] = if field == "ratio_qualified" {
+            true.into()
+        } else {
+            1.0.into()
+        };
+        if unknown_floor(&restored) {
+            return Err(format!("surrogate floor negative accepted restored {field}").into());
+        }
+    }
+    emit(serde_json::json!({
+        "schema": 1, "kind": "negative_control",
+        "control": "invalid quantile observations and mismatched floor terms", "result": "rejected",
+        "rank_comparisons": {"selection": selection_comparisons, "full_sort_negative": sort_comparisons},
+    }))
 }
 
 fn check_borrowed_serialization(evidence: impl Serialize, kind: &str) -> Result {
@@ -307,7 +538,11 @@ pub(super) fn ns(duration: Duration) -> f64 {
 
 pub(super) fn emit(value: impl Serialize) -> Result {
     let mut output = std::io::stdout().lock();
-    serde_json::to_writer(&mut output, &value)?;
+    emit_to(&mut output, value)
+}
+
+fn emit_to(output: &mut impl Write, value: impl Serialize) -> Result {
+    serde_json::to_writer(&mut *output, &value)?;
     writeln!(output)?;
     output.flush()?;
     Ok(())
@@ -398,23 +633,38 @@ fn floor_units(terms: Terms) -> serde_json::Value {
     })
 }
 
-pub(super) struct Measurements {
+pub(super) struct Measurements<'a> {
     agents: usize,
     requests: RequestLedger,
     durability: DurabilityQuery,
-    recovery: String,
+    recovery: &'a str,
     rows: BTreeMap<Operation, Row>,
-    operations: Vec<Operation>,
+    operations: &'a [Operation],
 }
 
 struct Row {
     terms: Terms,
     raw_ns: Vec<f64>,
     work: Sample,
-    coordinator_allocations: Vec<Option<[u64; 2]>>,
-    provider_requests: Vec<Option<[u64; 7]>>,
-    native_attempts: Vec<Option<[u64; 3]>>,
-    original_work: Vec<(serde_json::Value, Work)>,
+    observations: Vec<RetainedObservation>,
+}
+
+struct RetainedObservation {
+    identity: serde_json::Value,
+    observation: Observation,
+}
+
+impl Row {
+    fn evidence(&self, fields: serde_json::Value) -> OperationEvidence<'_> {
+        OperationEvidence {
+            fields,
+            original_work_receipts: &self.observations,
+            coordinator_allocations_count_and_bytes: &self.observations,
+            provider_request_counts: &self.observations,
+            native_attempt_counts: &self.observations,
+            work: &self.work.work,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -454,21 +704,21 @@ pub(super) struct Observation {
     native_attempts: Option<[u64; 3]>,
 }
 
-impl Measurements {
+impl<'a> Measurements<'a> {
     pub(super) fn new(
         agents: usize,
         requests: RequestLedger,
         durability: DurabilityQuery,
-        recovery: &str,
-        operations: &[Operation],
+        recovery: &'a str,
+        operations: &'a [Operation],
     ) -> Self {
         Self {
             agents,
             requests,
             durability,
-            recovery: recovery.into(),
+            recovery,
             rows: BTreeMap::new(),
-            operations: operations.to_vec(),
+            operations,
         }
     }
 
@@ -581,25 +831,77 @@ impl Measurements {
             terms: floor,
             raw_ns: Vec::new(),
             work: Sample::new(operation),
-            coordinator_allocations: Vec::new(),
-            provider_requests: Vec::new(),
-            native_attempts: Vec::new(),
-            original_work: Vec::new(),
+            observations: Vec::new(),
         });
         if row.terms != floor {
             return Err(format!("{} samples have different floor terms", operation.name()).into());
         }
-        row.work.record(observation.work, &self.recovery)?;
+        row.work.record(observation.work, self.recovery)?;
         row.raw_ns.push(ns(elapsed));
-        row.coordinator_allocations
-            .push(observation.coordinator_allocations);
-        row.provider_requests.push(observation.provider_requests);
-        row.native_attempts.push(observation.native_attempts);
-        row.original_work.push((identity, observation.work));
+        row.observations.push(RetainedObservation {
+            identity,
+            observation,
+        });
         Ok(())
     }
 
-    pub(super) fn finish(mut self, floors: &super::calibrate::Floors) -> Result<(bool, Point)> {
+    /// Keep failed terminals outside successful latency cohorts while retaining
+    /// their original identity, observed work and error. Sampler failure must
+    /// not replace a different error type returned by the operation.
+    pub(super) fn record_terminal<T, E: std::fmt::Display>(
+        &mut self,
+        operation: Operation,
+        floor: Terms,
+        interval: (Duration, Before),
+        identity: serde_json::Value,
+        result: std::result::Result<T, E>,
+        publish: impl FnOnce(serde_json::Value) -> Result,
+    ) -> Result<std::result::Result<T, E>> {
+        let (elapsed, before) = interval;
+        let observed = self.stop(before);
+        let diagnostic = if let Err(error) = &result {
+            let observation = observed.as_ref().ok();
+            publish(serde_json::json!({
+                "schema": 1, "kind": "failed_operation", "operation": operation.name(),
+                "agents": self.agents, "identity": identity, "raw_ns": ns(elapsed),
+                "error": error.to_string(),
+                "observation_error": observed.as_ref().err().map(ToString::to_string),
+                "work_columns": METRICS, "work": observation.map(|sample| sample.work.0),
+                "coordinator_allocations_count_and_bytes": observation.and_then(|sample| sample.coordinator_allocations),
+                "provider_request_counts": observation.and_then(|sample| sample.provider_requests),
+                "native_attempt_counts": observation.and_then(|sample| sample.native_attempts),
+                "physical_admission_binding": null, "ratio_qualified": false,
+                "recovery": self.recovery,
+            }))
+        } else {
+            observed.and_then(|observation| {
+                self.record(operation, floor, elapsed, observation, identity)
+            })
+        };
+        super::durability::retain_diagnostics(result, || diagnostic, self.recovery)
+    }
+
+    pub(super) fn publish_partial(&self, output: &mut impl Write) -> Result {
+        for (operation, row) in &self.rows {
+            emit_to(output, RawSamples {
+                fields: row.evidence(serde_json::json!({
+                    "schema": 1, "kind": "partial_operation", "operation": operation.name(),
+                    "agents": self.agents, "cohort_completed": false, "ratio_qualified": false,
+                    "work_columns": METRICS, "work_observations": row.work.observations,
+                    "reason": "operation family or result oracle failed; retained successful returns are not a qualified cohort",
+                    "recovery": self.recovery,
+                })),
+                raw_ns: &row.raw_ns,
+            })?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn finish(self) -> Result<(bool, Point)> {
+        self.finish_to(&mut std::io::stdout().lock())
+    }
+
+    fn finish_to(mut self, output: &mut impl Write) -> Result<(bool, Point)> {
         let mut complete = true;
         let mut point = Point {
             agents: u64::try_from(self.agents)?,
@@ -607,7 +909,7 @@ impl Measurements {
             // Original physical retained-resource observers are required.
             idle: Idle::default(),
         };
-        for operation in self.operations {
+        for &operation in self.operations {
             let Some(row) = self.rows.remove(&operation) else {
                 complete = false;
                 let reason = match operation {
@@ -616,28 +918,20 @@ impl Measurements {
                     }
                     _ => "the operation adapter did not supply observations",
                 };
-                emit(serde_json::json!({
-                    "schema": 1, "kind": "refused", "operation": operation.name(), "agents": self.agents,
-                    "reason": reason,
-                    "recovery": self.recovery,
-                }))?;
+                emit_to(
+                    output,
+                    serde_json::json!({
+                        "schema": 1, "kind": "refused", "operation": operation.name(), "agents": self.agents,
+                        "reason": reason,
+                        "recovery": self.recovery,
+                    }),
+                )?;
                 continue;
             };
-            let Row {
-                terms,
-                raw_ns,
-                work,
-                coordinator_allocations,
-                provider_requests,
-                native_attempts,
-                original_work,
-            } = row;
-            let quantiles = Quantiles::new(&mut raw_ns.clone())?;
-            let floor_ns = floors.compose(terms);
-            let timer = floors.timer();
-            emit(RawSamples {
-                fields: OperationEvidence {
-                    fields: serde_json::json!({
+            let terms = row.terms;
+            let quantiles = Quantiles::new(&mut row.raw_ns.clone())?;
+            emit_to(output, RawSamples {
+                fields: row.evidence(serde_json::json!({
                     "schema": 1, "kind": "operation", "operation": operation.name(),
                     "measurement_label": match operation {
                         Operation::ActorWake => "event-drain-to-handler-entry",
@@ -645,35 +939,26 @@ impl Measurements {
                         _ => operation.name(),
                     },
                     "agents": self.agents, "active": 1, "quantiles": quantiles,
-                    "floor": terms, "floor_ns": floor_ns,
+                    "cohort_completed": true,
+                    "floor": terms, "floor_ns": null,
                     "guarantee": guarantee(operation),
                     "floor_units": floor_units(terms),
                     "ratio_qualified": false,
-                    "ratio_qualification": "raw semantic-model comparison; physical work, provider group coverage and matched device guarantee remain unqualified",
-                    "p50_ratio": quantiles.p50_ns / floor_ns,
-                    "p99_ratio": quantiles.p99_ns / floor_ns,
-                    "timer_only_quantiles": timer,
-                    "minimum_positive_timer_ns": floors.minimum_positive_timer_ns(),
-                    "floor_resolution_limited": floor_ns < timer.p50_ns.max(floors.minimum_positive_timer_ns()),
-                    "resolution_scope": "timestamp pair only; async polling and other instrumentation add cost; no subtraction",
+                    "ratio_qualification": "unknown: no authenticated physical work or matched public-path device cohort; semantic terms and standalone calibration do not qualify a floor",
+                    "p50_ratio": null,
+                    "p99_ratio": null,
                     "work_columns": METRICS,
                     "identity_scope": "original API request/resource/cursor supplied by the operation driver in raw sample order; not an authenticated admission or physical coverage token",
-                    "work_observations": work.observations,
+                    "work_observations": row.work.observations,
                     "coordinator_allocations_scope": "current thread only; excluded from qualification",
                     "provider_request_columns": ["data", "metadata", "list", "head", "lease", "token", "requested_query_dispatches"],
                     "control_request_scope": "public metadata/list/head/lease/token calls excluding exactly the original requested query; additional probes remain controls",
                     "native_attempt_columns": ["ok", "err", "incomplete"],
                     "native_attempt_scope": "diagnostic completed observed native calls between the original counter boundaries; includes concurrent work; unobserved leaves and provider/group attribution remain unknown; excluded from durability_calls qualification",
-                    }),
-                    original_work_receipts: &original_work,
-                    coordinator_allocations_count_and_bytes: &coordinator_allocations,
-                    provider_request_counts: &provider_requests,
-                    native_attempt_counts: &native_attempts,
-                    work: &work.work,
-                },
-                raw_ns: &raw_ns,
+                    })),
+                raw_ns: &row.raw_ns,
             })?;
-            point.samples.push(work);
+            point.samples.push(row.work);
         }
         if !self.rows.is_empty() {
             return Err("unknown core operation in measurement report".into());

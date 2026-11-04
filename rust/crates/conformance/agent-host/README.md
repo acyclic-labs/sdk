@@ -19,7 +19,7 @@ The vectors cover:
 - OIDC signature forgery, expiry, issuer/subject/audience mismatch, symmetric/unsigned algorithm refusal, token-supplied key sources, multiple audiences, key rotation/removal, bounded refresh and last-good expiry. Valid identities attenuate an existing agent-bound parent through ordinary `TurnAdmission`; refusals perform zero turn I/O and cached admission performs no JWKS fetch. `scripts/qualify-oidc.sh` additionally runs the same suite with a disposable real Dex issuer.
 - Admitted root preparation over one placement: a covering admission prepares the same request twice and creates exactly that root, and its exact resubmission replays. Read-only fresh private or shared volumes, wrong audience, wrong agent, expired and revoked admissions are refused with zero provider reads/writes.
 - Strict manifest, delivery and transition codec round trips and malformed-input refusal. A timed-out handler drops its in-flight guest turn and leaves its input unconsumed.
-- Runtime interruption of an in-flight turn by a later Cancel, preserving intervening input and keeping the next turn's token independent (G41). Checkpointed activation discovery resumes its saved cursor after reopening without explicit tracking, keeps the opening append's key, and retries the exact cursor publication after lost acknowledgement (G40).
+- Runtime interruption of an in-flight turn by a later Cancel, preserving intervening input and keeping the next turn's token independent (G41). Checkpointed activation discovery waits for its original dispatcher state publication, resumes its saved cursor after reopening without explicit tracking, and retries the exact cursor publication after lost acknowledgement (G40).
 - The same hosted protocol script on every backend: exact Prompt and Decide replay, preset approvals and wrong-binding refusal, correlated committed Reply replay and wrong-prompt conflict, immutable output, exact Spawn replay and saved cut, changed-prompt conflict, lazy children and typed outside-tree refusal. The DO entry invokes its actual named host and packaged guest, rather than substituting an in-process turn host. `protocol::Endpoint` and the fixture functions are public for client-protocol consumers.
 - A deterministic program interrupted immediately before and after every provider API call, including commit acceptance before a lost acknowledgement. Both the host and provider are dropped, storage is reopened, the caller's intents are replayed, and the final state and single conversation effect must match the uninterrupted result. This is an API-boundary crash model; physical torn writes belong to each storage provider's suite.
 
@@ -50,14 +50,15 @@ exactly one registration per provisioned agent and leave none ready after the
 global drain. It does not measure physical memory or allocations inside a
 provider. Reported control traffic remains visible even if the dispatch check passes.
 
-Run the native 1,000 versus 10,000 idle-agent vector explicitly:
+Run the shared dispatch and registration control on native and guest handlers:
 
 ```sh
-cargo test --locked -p acyclic-agent-host-conformance --features local --test main local::agent_scale -- --ignored --nocapture
+cargo test --locked -p acyclic-agent-host-conformance --features local --test main local::shared_benchmark_and_scale_check_native_and_guest_work -- --exact --nocapture
 ```
 
-No CI workflow or merge-gate step invokes this workload. Downstream adapters can
-call the same public `bench` and `scale` functions with their own `Backend`.
+This control covers the same workload at two populations and rejects extra work,
+misbound counters and missing turns. Downstream adapters can call the same public
+`bench` and `scale` functions with their own `Backend` and selected populations.
 
 To execute browser tests after compiling them, use the workspace's pinned `wasm-bindgen-test-runner` and Chrome driver:
 

@@ -197,7 +197,7 @@ where
             &capture,
         )
         .await?;
-    if super::super::adapter::await_lock(
+    if super::super::adapter::await_with_cancellation(
         source.shared_checkout().lock(),
         &mut super::super::adapter::NativeDemandCarrier::Native(&capture),
         cancellation,

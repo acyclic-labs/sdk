@@ -57,7 +57,8 @@
             "name": "send",
             "arguments": {
               "agent": "worker",
-              "message": "CHILD_E2E_MESSAGE"
+              "message": "CHILD_E2E_MESSAGE",
+              "delivery": "follow_up"
             }
           }
         ]

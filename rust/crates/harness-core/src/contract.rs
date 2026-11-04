@@ -512,7 +512,8 @@ pub fn resolve_policy_layers(layers: &[PolicyLayer]) -> Result<Capabilities> {
 #[path = "contract_errors.rs"]
 mod errors;
 pub use errors::{
-    CleanupFailure, Error, HeadlessOutcome, InteractionRejection, ModelTransportFailure, Result,
+    CleanupFailure, CommandFailure, Error, ErrorClassification, HeadlessOutcome,
+    InteractionRejection, ModelTransportFailure, Result,
 };
 
 #[cfg(test)]

@@ -78,7 +78,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         // Record invalidation before adoption, then dispatch only after every lease drops.
         let result = async move {
             recorded?;
-            let state = await_lock(self.lock(), carrier, cancellation, lifetime).await?;
+            let state =
+                await_with_cancellation(self.lock(), carrier, cancellation, lifetime).await?;
             if self.view_gate.generation() != candidate.epoch
                 || state.publication_operation.is_some()
                     && state.publication_operation != candidate.operation
@@ -168,7 +169,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             let mut state = match state {
                 Some(state) => state,
                 None => {
-                    let state = await_lock(self.lock(), carrier, cancellation, lifetime).await?;
+                    let state =
+                        await_with_cancellation(self.lock(), carrier, cancellation, lifetime)
+                            .await?;
                     if self.view_gate.generation() != candidate.epoch
                         || state.publication_operation.is_some()
                             && state.publication_operation != candidate.operation

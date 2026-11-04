@@ -155,12 +155,29 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
         .join(".acyclic-sdk/host-processes")
         .join(child.id().as_str());
     std::fs::create_dir_all(&custody).map_err(storage)?;
-    std::fs::write(
-        custody.join(format!("events-{}.jsonl", claim(&first)?.operation)),
-        b"{\"type\":\"thread.started\",\"thread_id\":\"superseded-id\"}
+    let (events, native_id) = if host == "claude-code" {
+        let original = include_str!("../host_process/fixtures/claude-code-completed.jsonl");
+        // A representation mutation of the original capture, not another
+        // native response: JSON member spelling cannot change recovery.
+        let escaped = original.replace(r#""session_id""#, r#""sess\u0069on\u005fid""#);
+        assert_eq!(
+            serde_json::from_str::<Value>(&escaped).map_err(storage)?,
+            serde_json::from_str::<Value>(original).map_err(storage)?
+        );
+        (escaped, "a14f2590-4397-48a1-a076-1f2dac2d5349")
+    } else {
+        (
+            "{\"type\":\"thread.started\",\"thread_id\":\"superseded-id\"}
 {\"thread_id\":\"opaque-native-resume-id\"}
 not json naming a session_id
-",
+"
+            .into(),
+            "opaque-native-resume-id",
+        )
+    };
+    std::fs::write(
+        custody.join(format!("events-{}.jsonl", claim(&first)?.operation)),
+        events,
     )
     .map_err(storage)?;
     native_write(&view.join("child.txt"), b"native")?;
@@ -194,7 +211,8 @@ not json naming a session_id
     assert_eq!(next["prompt"], "follow-up");
     assert_eq!(
         next.pointer("/session/id"),
-        Some(&json!("opaque-native-resume-id"))
+        Some(&json!(native_id)),
+        "settlement must preserve the captured native resume id after an owner restart"
     );
     assert_eq!(
         std::fs::read(cwd(&next)?.join("child.txt")).map_err(storage)?,
@@ -250,7 +268,7 @@ not json naming a session_id
             },
         )
         .await?;
-    assert_eq!(session["id"], "opaque-native-resume-id");
+    assert_eq!(session["id"], native_id);
     assert!(
         !fixture.owner.views()?.contains_key(&child),
         "reading committed session metadata must not reattach its retired view"
@@ -578,15 +596,11 @@ async fn native_prompts_resolve_through_the_committed_reply() -> Result<()> {
     assert_eq!(turn["prompt"], "first");
     let complete = SessionAction::Complete {
         claim: claim(&turn)?,
-        outcome: crate::Outcome::Succeeded(crate::executor::TurnOutput {
-            #[cfg(feature = "research")]
-            journal_cut: None,
-            text: "done".into(),
-            metadata: Value::Null,
-            steps: 1,
-            transcript: Vec::new(),
-            attachments: Vec::new(),
-        }),
+        outcome: crate::Outcome::Succeeded(crate::executor::TurnOutput::new(
+            "done".into(),
+            Value::Null,
+            1,
+        )),
     };
     fixture.session("child", complete).await?;
     let answered = fixture.session("child", first).await?;

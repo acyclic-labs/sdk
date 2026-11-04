@@ -22,7 +22,10 @@ struct Files {
 }
 
 impl Tree for Files {
-    fn read<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<Option<Vec<u8>>>> {
+    fn read<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
         Box::pin(async move {
             Ok(match path {
                 "sys/input.json" => Some(self.input.clone()),
@@ -33,7 +36,7 @@ impl Tree for Files {
                     b"import input from './input.json'; export default input;".to_vec()
                 }),
                 _ => None,
-            })
+            }.map(acyclic_stream::OwnedBytes::from))
         })
     }
 }

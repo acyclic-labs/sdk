@@ -73,7 +73,7 @@ fn unconnected() -> Result<Client, ConnectError> {
 /// Ends its first follow cleanly, then denies or delegates later follows.
 pub(super) struct EndingFollow {
     pub(super) inner: MemoryStream,
-    pub(super) follows: AtomicUsize,
+    pub(super) follows: Arc<AtomicUsize>,
     pub(super) deny: bool,
     pub(super) finite: bool,
 }
@@ -117,7 +117,16 @@ impl StreamProvider for EndingFollow {
             let opened = self.inner.follow(request).await?;
             return Ok(opened.map_cursor(|cursor| {
                 if attempt == 0 {
-                    cursor.take(20).boxed()
+                    // Twenty records: a progress follow's opening cut is not one.
+                    cursor
+                        .filter(|update| {
+                            futures::future::ready(!matches!(
+                                update,
+                                Ok(crate::FollowUpdate::Opening { .. })
+                            ))
+                        })
+                        .take(20)
+                        .boxed()
                 } else {
                     stream::empty().boxed()
                 }
@@ -302,7 +311,7 @@ async fn invalid_configuration_is_rejected_before_network_io() -> TestResult {
 async fn source_eof_is_unavailable_without_reopening() -> TestResult {
     let provider = EndingFollow {
         inner: MemoryStream::default(),
-        follows: AtomicUsize::new(0),
+        follows: Arc::new(AtomicUsize::new(0)),
         deny: false,
         finite: false,
     };
@@ -316,13 +325,16 @@ async fn source_eof_is_unavailable_without_reopening() -> TestResult {
             idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
+    let follows = Arc::clone(&provider.follows);
     let transport = client(provider)?;
     let mut records = transport
         .follow(crate::FollowRequest::new(path, 0))
         .map_ok(crate::records_only)
         .await?;
-    let record = records.next().await.ok_or("follow ended")??;
-    assert_eq!(record.value.as_slice(), b"resumed");
+    // The provider's EOF is terminal: one Unavailable, no second provider follow.
+    assert_eq!(records.next().await, Some(Err(StreamError::Unavailable)));
+    assert_eq!(records.next().await, None);
+    assert_eq!(follows.load(Ordering::SeqCst), 1);
     Ok(())
 }
 
@@ -330,7 +342,7 @@ async fn source_eof_is_unavailable_without_reopening() -> TestResult {
 async fn a_denied_follow_reports_access_denied_once_and_then_ends() -> TestResult {
     let transport = client(EndingFollow {
         inner: MemoryStream::default(),
-        follows: AtomicUsize::new(0),
+        follows: Arc::new(AtomicUsize::new(0)),
         deny: true,
         finite: false,
     })?;
@@ -567,7 +579,7 @@ async fn platform_roots_and_exclusive_ca() -> TestResult {
 async fn source_eof_never_discards_records_queued_before_terminal_close() -> TestResult {
     let provider = EndingFollow {
         inner: MemoryStream::default(),
-        follows: AtomicUsize::new(0),
+        follows: Arc::new(AtomicUsize::new(0)),
         deny: false,
         finite: true,
     };
@@ -646,23 +658,106 @@ async fn concurrent_retry_captures_keep_their_own_dispatcher() -> TestResult {
     Ok(())
 }
 
+/// A member's refusals as Cloud ingress relays them: the refusal reason in the
+/// message and the product metadata beside it.
+fn member_refusals() -> Vec<Status> {
+    let refusal = |code: Code, message: &str, metadata: &[(&'static str, &'static str)]| {
+        let mut status = Status::new(code, message);
+        for (name, value) in metadata {
+            status
+                .metadata_mut()
+                .append(*name, tonic::metadata::MetadataValue::from_static(*value));
+        }
+        status
+    };
+    vec![
+        refusal(
+            Code::Unavailable,
+            "not-leader",
+            &[
+                ("acyclic-unserved", "1"),
+                ("acyclic-scope-owner", "7"),
+                ("acyclic-scope-term", "3"),
+            ],
+        ),
+        refusal(
+            Code::Unavailable,
+            "authorization-unavailable",
+            &[("acyclic-unserved", "1")],
+        ),
+        refusal(
+            Code::Unavailable,
+            "stream unavailable",
+            &[("acyclic-unserved-reason", "no-leader")],
+        ),
+        refusal(Code::Unavailable, "owner-draining", &[]),
+        refusal(Code::Internal, "heap-unavailable", &[]),
+        refusal(Code::Unknown, "", &[]),
+        Status::with_details(Code::Aborted, "aborted", bytes::Bytes::from_static(b"")),
+        refusal(
+            Code::FailedPrecondition,
+            "placement-unavailable",
+            &[("content-type", "application/grpc")],
+        ),
+    ]
+}
+
+fn original(status: &Status) -> (Code, String, Vec<u8>, Vec<(String, Vec<u8>)>) {
+    let metadata = status
+        .metadata()
+        .as_ref()
+        .iter()
+        .filter(|(name, _)| name.as_str().starts_with("acyclic-"))
+        .map(|(name, value)| (name.as_str().to_owned(), value.as_bytes().to_vec()))
+        .collect();
+    (
+        status.code(),
+        status.message().to_owned(),
+        status.details().to_vec(),
+        metadata,
+    )
+}
+
+#[test]
+fn every_member_refusal_round_trips_its_original_status() {
+    for relayed in member_refusals() {
+        let error = status(&relayed);
+        assert!(
+            matches!(error, StreamError::Refused(_)),
+            "{relayed:?} decoded blind as {error:?}"
+        );
+        assert!(error.uncertain());
+        assert_eq!(error.code(), "unavailable");
+        assert_eq!(original(&error_status(&error)), original(&relayed));
+        assert_eq!(status(&error_status(&error)), error);
+    }
+}
+
 proptest::proptest! {
+    /// Every category's canonical status decodes to itself, and any
+    /// unavailable-class status encodes back to its original after decoding.
     #[test]
-    fn canonical_status_round_trip_preserves_every_stream_error(
+    fn status_decode_then_encode_is_the_identity(
         index in 0usize..StreamError::ALL.len(),
-        context in ".{0,64}",
+        code in 0i32..17,
+        message in ".{0,32}",
+        details in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..8),
+        reason in proptest::option::of("[a-z-]{1,24}"),
     ) {
         let error = StreamError::ALL
             .get(index)
             .ok_or_else(|| proptest::test_runner::TestCaseError::fail("no such error"))?;
-        let wire = error_status(error);
-        proptest::prop_assert_eq!(status(&wire), error.clone());
-        // Only the contract's discriminating messages carry extra meaning.
-        // Diagnostics for unambiguous status classes cannot change their code.
-        if matches!(wire.code(), Code::NotFound | Code::AlreadyExists | Code::OutOfRange
-            | Code::PermissionDenied | Code::ResourceExhausted | Code::Unavailable) {
-            let annotated = Status::new(wire.code(), context);
-            proptest::prop_assert_eq!(status(&annotated), error.clone());
+        proptest::prop_assert_eq!(status(&error_status(error)), error.clone());
+        let mut relayed = Status::with_details(Code::from_i32(code), message, details.into());
+        if let Some(reason) = reason {
+            let value = tonic::metadata::MetadataValue::try_from(reason.as_str())
+                .map_err(|_| proptest::test_runner::TestCaseError::fail("reason"))?;
+            relayed.metadata_mut().insert("acyclic-unserved-reason", value);
         }
+        let decoded = status(&relayed);
+        if decoded.code() == "unavailable" {
+            proptest::prop_assert_eq!(original(&error_status(&decoded)), original(&relayed));
+        }
+        proptest::prop_assert_eq!(status(&error_status(&decoded)), decoded);
     }
 }

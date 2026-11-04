@@ -101,3 +101,106 @@ version refusal, and exact canonical protobuf admission. Run
 JSON unknown-field or protobuf canonicality guard. Each must fail its unchanged
 semantic assertion; the runner restores source bytes. This target does not
 qualify secret-value custody, catalog providers or live operation cancellation.
+
+The same mutation runner covers signed harness filesystem refinements through
+`python3 negative-control.py filesystem-ancestor` and `filesystem-certified`.
+It runs the existing `harness-fuzz/filesystem_access` target against its retained
+`ceiling-set` policy input. The shared oracle uses the actual scope bootstrap,
+append, signing and verification APIs to produce descendants in memory. Each
+control removes one production admission guard and requires its specific
+unchanged refusal assertion to fail. The retained unsigned policy seed originates
+in the initial filesystem-access corpus; no external capture provenance is
+inferred. The runner checks the shared oracle and target bytes and restores the
+original production source. These controls cover ceiling restoration and
+uncertified labels; source coverage and other admission branches need their own
+qualification.
+
+Both addressing fuzz entrances and the existing identity properties use Auth's
+`addressing::testing` oracle for hostname identity and route decisions. The shared
+corpus's seven `route-*` inputs are retained unchanged in `corpus/addressing`;
+`corpus/addressing-sources.tsv` joins their original producer, size and SHA-256.
+They contain actual SDK route-pattern writer output with caller URL context in
+a NUL-separated fuzz tuple. That tuple is not a product format. Run
+`python3 negative-control.py addressing-fragment` to remove the production URL
+fragment guard and require the unchanged routing-refusal assertion to fail.
+The same oracle constructs lowercase LDH labels with letter or digit edges,
+checks single-byte and 63-byte boundaries, and requires invalid aliases, empty
+labels and 64-byte labels to refuse. Both the existing arbitrary-byte property
+and fuzz entrances call it, including for non-UTF-8 input. Run
+`python3 negative-control.py addressing-case` or `addressing-length` to weaken
+the production character or length guard. Each must fail its unchanged semantic
+assertion. These replace the fixed label table's mock-validator control.
+The generated label also supplies a 253-byte host with valid label boundaries;
+adding one byte must return `HostTooLong`. Decimal and hexadecimal final labels
+must return `NumericHost` before URL-parser fallback. Run
+`python3 negative-control.py addressing-host-length` or
+`addressing-host-numeric` to remove each actual host guard and require its
+unchanged typed refusal assertion to fail. These shared checks subsume the
+numeric entries in the hostname alias example.
+The runner restores the source and checks oracle custody. Complete source and
+branch coverage, and the other addressing guards, need separate qualification.
+The original URL/IDNA boundary control is shared by both fuzz callers too:
+an invalid LDH A-label must retain `InvalidCharacter`, while a valid A-label
+keeps its exact URL authority. This replaces the separate example without
+dropping its production URL-parser assertions. Run
+`python3 negative-control.py addressing-host-url` to bypass the actual URL host
+parser with its unvalidated input; the unchanged typed refusal must fail.
+
+Binary actor/resource admission uses this same oracle before text admission.
+The original empty account/id constructor assertions also live here, outside
+decode-success and nonempty-input gates. Both fuzz callers now require their
+exact typed refusals on every input. Run
+`python3 negative-control.py addressing-account-empty` or `addressing-id-empty`
+to admit an empty component through its actual shared production validator;
+the unchanged constructor refusal assertion must catch each defect.
+Arbitrary nonempty input also supplies opaque fields to the real resource writer
+and an account plus generated legal actor name to the real actor writer. Their
+outputs must decode to the original values, so rejecting valid writer output
+cannot evade the checks gated on successful decoding. The actor name generator
+obeys the public 128-byte name grammar; it does not bound opaque resource fields.
+The same oracle sends empty, 129-byte, slash, NUL and non-UTF-8 names through the
+owning namespace constructor and actor-name validator, requiring their exact
+typed refusals. `python3 negative-control.py addressing-name-length` removes
+the shared name-length guard; `addressing-name-character` admits a slash through
+the actual shared character guard. Both must trip the unchanged namespace
+refusal assertion. Existing golden namespace/legacy/actor vectors are retained.
+`python3 negative-control.py addressing-resource-admission` and
+`addressing-actor-admission` make each production reader expect a different
+version from its unchanged writer. Each must trip its forward admission check.
+The shared field reader obtains the eight-byte length prefix as an array through
+`split_first_chunk`, so no second fallible slice-to-array conversion is needed.
+`python3 negative-control.py addressing-field-endian` reverses the actual shared
+length reader's byte order and must trip the same writer admission assertion.
+`python3 negative-control.py addressing-resource-framing` removes length prefixes
+from the actual resource writer. The unchanged writer-admission assertion must
+catch the defect through the original resource capture. This replaces the
+substitute concatenation encoder control. The retained arbitrary-byte pair
+property checks exact recovery of both fields: a left inverse implies injectivity,
+so separate random pair-collision cases are redundant.
+The oracle preserves both original decode/encode round trips and actor/resource grammar
+disjointness. `python3 negative-control.py addressing-resource` and
+`addressing-actor` swap fields in the actual production decoders; the original
+writer captures `resource` and `actor` must fail their unchanged exact-byte
+assertions. No reference decoder or alternative wire format is introduced.
+
+For each admitted binary input, the shared oracle also requires a trailing byte
+and a truncated final field to return `IdentityError::Malformed`. The existing
+framing examples delegate those assertions and retain their full-prefix checks.
+`python3 negative-control.py addressing-resource-tail` and
+`addressing-actor-tail` remove each production decoder's trailing-byte guard;
+the same original writer captures must trip the unchanged framing assertion.
+
+The oracle also derives header-only aliases from admitted identity bytes using
+the owning format's header boundary. Old, unknown and missing versions must
+return `UnsupportedVersion` before fields are available. Both existing framing
+examples reach these shared checks; the separate Actor version example is
+redundant. Run `python3 negative-control.py addressing-resource-version` or
+`addressing-actor-version` to bypass the actual shared header's version guard
+and require each original writer capture to trip the unchanged refusal oracle.
+The same header oracle changes a domain byte and removes the complete header;
+resource inputs must retain `UnsupportedVersion`, and actor inputs `Malformed`.
+It subsumes the separate headerless-resource example. Run
+`python3 negative-control.py addressing-resource-domain` or
+`addressing-actor-domain` to bypass the actual shared domain guard. Each original
+writer capture must trip the unchanged typed domain-refusal assertion, while
+the previously qualified version checks remain in the same shared oracle.

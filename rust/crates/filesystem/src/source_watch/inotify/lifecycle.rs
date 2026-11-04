@@ -87,9 +87,10 @@ impl NativeSourceWatch {
                     libc::fcntl(directory.directory_fd(), libc::F_DUPFD_CLOEXEC, 0)
                 })?);
             }
+            let directory_view = directory.directory();
             let held_root = match &root {
                 Some(root) => root.as_fd(),
-                None => directory.directory.as_fd(),
+                None => directory_view.as_fd(),
             };
             watch_ancestors(
                 initialized,

@@ -122,7 +122,7 @@ async fn records(
     .boxed();
     if local {
         let span = crate::obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.stream.follow",
+            "acyclic.stream.follow.cursor",
             rev = 0_u64,
             terminal = tracing::field::Empty,
             outcome = tracing::field::Empty,

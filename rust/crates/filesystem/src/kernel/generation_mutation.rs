@@ -671,6 +671,7 @@ impl Owned<TransactionState> {
                 (
                     (None).map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
                     1,
+                    acyclic_collections::page::Direction::Ascending,
                 ),
                 DecodeLimits::for_volume(config),
                 accounting,
@@ -1413,9 +1414,10 @@ impl TransactionState {
                     if binding.kind != record.kind || binding.kind == FileKind::Directory {
                         return Err(GenerationMutationError::InconsistentState.into());
                     }
-                    let link_count = self.record(leaf, *file_id)?.working.link_count;
+                    let current = self.record(leaf, *file_id)?.working;
                     self.record_mut(leaf, *file_id)?.working = FileRecord {
-                        link_count,
+                        bindings: current.bindings,
+                        link_count: current.link_count,
                         ..*record
                     };
                 }

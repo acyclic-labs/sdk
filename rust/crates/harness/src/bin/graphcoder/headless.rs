@@ -1477,7 +1477,13 @@ mod tests {
                 (owner, reader, terminate)
             };
             let ((result, report_result, _failure_report), (owner, reader, _terminate)) = tokio::join!(
-                crate::lifecycle::observe(&report, Ok(Some(port)), shutdown, false, operation),
+                acyclic_harness::completion::observe(
+                    &report,
+                    Ok(Some(port)),
+                    shutdown,
+                    false,
+                    operation,
+                ),
                 host,
             );
             match terminal {

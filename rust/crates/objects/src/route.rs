@@ -102,7 +102,12 @@ pub async fn put_blobs(
     let mut published = blobs.put_batch_sealed(admitted).await.into_iter();
     for outcome in &mut outcomes {
         if outcome.is_none() {
-            *outcome = Some(published.next().ok_or(wire::ErrorCode::Unavailable)?);
+            *outcome = Some(published.next().ok_or_else(|| {
+                Error::caused(
+                    wire::ErrorCode::Unavailable,
+                    acyclic_auth::refusal::Cause::new("objects.route", "batch_result_missing"),
+                )
+            })?);
         }
     }
     let mut outcomes: Vec<_> = outcomes.into_iter().flatten().collect();
@@ -117,7 +122,7 @@ pub async fn put_blobs(
         // No member it covered is acknowledged; repeating one is safe.
         for outcome in &mut outcomes {
             if outcome.as_ref().is_ok_and(|put| put.verified().is_some()) {
-                *outcome = Err(error);
+                *outcome = Err(error.clone());
             }
         }
     }

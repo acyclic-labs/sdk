@@ -9,8 +9,8 @@ use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue,
 };
 use crate::cancellation::CancellationToken;
+use crate::kernel::Owned;
 use crate::kernel::allocation::retained::RetainedArc;
-use crate::kernel::{Owned, allocation::KernelOwnedAllocation};
 use crate::performance::WorkCounters;
 use crate::storage::{
     ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError, ObjectWrite,
@@ -759,9 +759,13 @@ mod tests;
 #[path = "cache/decoded_model.rs"]
 mod decoded_model;
 #[cfg(test)]
-#[cfg(not(loom))]
+#[cfg(all(not(loom), feature = "memory"))]
 #[path = "cache/decoded_properties.rs"]
 mod decoded_properties;
+
+#[cfg(all(any(test, feature = "fuzzing"), not(loom), feature = "memory"))]
+#[doc(hidden)]
+pub mod decoded_fuzz;
 
 impl<S: acyclic_stream::ProviderPlatform> crate::async_storage::DecodedCacheOrigin
     for CachedObjectStore<S>

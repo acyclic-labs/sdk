@@ -36,7 +36,7 @@ fn prefix(
     (None, (copied, hashed, items))
 }
 
-fn replay<const OMIT_COMPLETION: bool, const PREFIX_MUTANT: u8, const CHECK_PREFIX: bool>(
+fn replay<const PREFIX_MUTANT: u8, const CHECK_PREFIX: bool>(
     steps: &[(u8, u8, bool)],
     budget: WorkBudget,
     cancel_at: usize,
@@ -113,9 +113,6 @@ fn replay<const OMIT_COMPLETION: bool, const PREFIX_MUTANT: u8, const CHECK_PREF
             cancellation.cancel();
         }
         let complete = (|| {
-            if OMIT_COMPLETION {
-                return Ok(());
-            }
             if direct {
                 observed.record_completed(delta)?;
             } else {
@@ -180,16 +177,9 @@ proptest! {
             #[cfg(not(target_arch = "wasm32"))] 3,
             #[cfg(not(target_arch = "wasm32"))] 4,
         ] {
-            replay::<false, 0, true>(&steps, budget, cancel_at, mode)?;
+            replay::<0, true>(&steps, budget, cancel_at, mode)?;
         }
     }
-}
-
-#[test]
-fn prefix_oracle_rejects_missing_completed_charges() {
-    let steps = [(0, 8, false), (1, 7, true), (2, 0, false)];
-    replay::<false, 0, true>(&steps, WorkBudget::UNBOUNDED, usize::MAX, 0).unwrap();
-    assert!(replay::<true, 0, true>(&steps, WorkBudget::UNBOUNDED, usize::MAX, 0).is_err());
 }
 
 fn check_prefix_control<const MUTANT: u8>() {
@@ -215,8 +205,8 @@ fn check_prefix_control<const MUTANT: u8>() {
             ),
             (WorkBudget::UNBOUNDED, 1),
         ] {
-            replay::<false, 0, true>(&steps, budget, cancel, mode).unwrap();
-            let failure = replay::<false, MUTANT, true>(&steps, budget, cancel, mode).unwrap_err();
+            replay::<0, true>(&steps, budget, cancel, mode).unwrap();
+            let failure = replay::<MUTANT, true>(&steps, budget, cancel, mode).unwrap_err();
             assert!(
                 failure
                     .to_string()
@@ -225,7 +215,7 @@ fn check_prefix_control<const MUTANT: u8>() {
             );
             // Deleting that assertion makes the identical mutant pass; neither
             // the receipt assertion nor the error-counter check detects it.
-            replay::<false, MUTANT, false>(&steps, budget, cancel, mode).unwrap();
+            replay::<MUTANT, false>(&steps, budget, cancel, mode).unwrap();
         }
     }
 }

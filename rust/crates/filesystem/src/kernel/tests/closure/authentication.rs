@@ -15,7 +15,163 @@ async fn minimal_generation_has_a_complete_authenticated_closure()
     assert_eq!(proof.logical_file_bytes, 0);
     assert_eq!(u64::try_from(proof.objects.len()).unwrap_or(u64::MAX), 4);
     assert_eq!(proof.root.root_file_id, FileId::from_bytes([1; 16]));
+    let traced = OriginalReadTrace { inner: &store };
+    let cancellation = CancellationToken::new();
+    let mut ordinary = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    original_closure_custody(&traced, generation, &mut ordinary).await?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let cancellation = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let mut native = crate::AuthorityWork::native(&original, &cancellation);
+        original_closure_custody(&traced, generation, &mut native).await?;
+    }
     Ok(())
+}
+
+// The observer delegates the physical read to the shipped store. Admission and
+// completion use the received frame, including seven additional codec units.
+struct OriginalReadTrace<'a> {
+    inner: &'a MemoryObjectStore,
+}
+
+impl crate::AsyncObjectStore for OriginalReadTrace<'_> {
+    async fn read_many(
+        &self,
+        requests: &[crate::storage::ObjectReadRequest],
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
+        observe_original_read(work)?;
+        self.inner.read_many(requests, work).await
+    }
+
+    async fn put(
+        &self,
+        id: ObjectId,
+        bytes: acyclic_stream::OwnedBytes,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        self.inner.put(id, bytes, work).await
+    }
+
+    async fn contains(
+        &self,
+        id: ObjectId,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<bool, ObjectStoreError> {
+        self.inner.contains(id, work).await
+    }
+
+    async fn read(
+        &self,
+        id: ObjectId,
+        maximum: u64,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::storage::ObjectRead, ObjectStoreError> {
+        observe_original_read(work)?;
+        self.inner.read(id, maximum, work).await
+    }
+}
+
+fn observe_original_read(work: &mut crate::AuthorityWork<'_>) -> Result<(), ObjectStoreError> {
+    assert!(
+        work.spent().bytes_encoded >= 7,
+        "closure read replaced its original frame"
+    );
+    work.charge(WorkCounters {
+        bytes_encoded: 7,
+        ..WorkCounters::UNCHARGED
+    })
+    .map_err(ObjectStoreError::from)
+}
+
+async fn original_closure_custody(
+    store: &OriginalReadTrace<'_>,
+    generation: ObjectId,
+    work: &mut crate::AuthorityWork<'_>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::allocation::retained::RetainedAllocation;
+    let cancellation = work.cancellation;
+    work.charge(WorkCounters {
+        bytes_encoded: 7,
+        ..WorkCounters::UNCHARGED
+    })?;
+    let independent = RetainedAllocation::claim(73, 1, &mut work.accounting())?;
+    // The same shipped single and batch read adapters are used by incremental
+    // closure walks. Their actual backend must see this original frame too.
+    let (read, bytes) = crate::kernel::read_object_with_accounting(
+        store,
+        generation,
+        limits().maximum_object_bytes,
+        &mut work.accounting(),
+        cancellation,
+    )
+    .await?;
+    assert!(!read.bytes.is_empty());
+    drop(read);
+    crate::kernel::file_read::release_standalone_read_bytes(bytes, &mut work.accounting())?;
+    let requests = [crate::storage::ObjectReadRequest {
+        object_id: generation,
+        maximum_bytes: limits().maximum_object_bytes,
+    }];
+    let batch_baseline = original_live(work);
+    let batch = crate::kernel::read_objects_with_accounting(
+        store,
+        &requests,
+        &mut work.accounting(),
+        cancellation,
+    )
+    .await?;
+    assert_eq!(batch.value.len(), requests.len());
+    let retained = crate::kernel::file_read::retained_object_reads_bytes(
+        &batch.value,
+        batch.value.capacity(),
+    )?;
+    assert!(
+        original_live(work) >= batch_baseline + retained,
+        "batch output funding retired at scope exit"
+    );
+    drop(batch.value);
+    crate::kernel::file_read::release_read_allocation(
+        retained,
+        batch.custody,
+        &mut work.accounting(),
+    )?;
+    assert_eq!(original_live(work), batch_baseline);
+    let before = work.spent();
+    let (proof, guard) = {
+        let meter = ProofMeter::from_accounting(work.accounting())?;
+        let mut context = ProofContext::new(store, limits(), meter.clone());
+        let proof = context.prove(generation).await?;
+        assert_eq!(proof.0.work, meter.work());
+        proof
+    };
+    assert_eq!(proof.work, work.spent(), "outer receipt lost original work");
+    assert_eq!(
+        proof.work.bytes_encoded - before.bytes_encoded,
+        7 * (proof.work.object_probes - before.object_probes)
+    );
+    let retained = guard.retained_bytes();
+    let funded = original_live(work);
+    assert!(funded >= retained + 73);
+    work.cancellation.cancel();
+    assert!(work.check().is_err());
+    drop(proof);
+    drop(guard);
+    assert_eq!(original_live(work), funded - retained);
+    drop(independent);
+    assert_eq!(original_live(work), funded - retained - 73);
+    Ok(())
+}
+
+fn original_live(work: &mut crate::AuthorityWork<'_>) -> u64 {
+    let mut accounting = work.accounting();
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(original) = accounting.native_work() {
+        return original.live_allocation_bytes();
+    }
+    accounting.standalone_parts().unwrap().0.live_bytes()
 }
 
 #[tokio::test]

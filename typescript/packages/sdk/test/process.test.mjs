@@ -14,6 +14,15 @@ import {fileURLToPath} from 'node:url';
 import {commandCapture, commandProcess, withProcessSignals} from '@acyclic-labs/sdk/process';
 import {fuzz} from './process-completion.fuzz.mjs';
 
+// Simple children execute only their fixture work, without importing this
+// control runner or its SDK, fuzz and filesystem dependencies in every child.
+const exitArguments = ['-e', 'process.exitCode = 17'];
+const echoArguments = ['-e', String.raw`process.stderr.write('native stderr π\n');
+process.stdin.pipe(process.stdout);`];
+const joinArguments = ['-e', String.raw`process.stdout.write('accepted write\n');
+process.stdin.once('data', () => process.stderr.write('sink refusal\n'));
+process.stdin.resume();`];
+
 const signalMutations = new Map([
   ['omit-release', ['process.removeListener(name, handler)', 'void handler']],
   ['omit-abort', ['stop.signal.throwIfAborted();', '']],
@@ -53,7 +62,7 @@ async function statusBindingControl(run, host) {
   };
   subscribe('child_process', spawned);
   let result;
-  try { result = await run(process.execPath, [script, 'exit'], {host}); }
+  try { result = await run(process.execPath, exitArguments, {host}); }
   finally { unsubscribe('child_process', spawned); }
   assert.equal(spawns, 1);
   assert.ok(original.process_tree_retired);
@@ -152,7 +161,7 @@ async function descriptorControl(host, input, original) {
     stderr = await open(join(directory, 'stderr'), 'wx', 0o600);
     for (const forwarded of [1, 2, 3]) {
       const observed = {stdout: [], stderr: []};
-      const result = await commandProcess(process.execPath, [script, 'echo'], {
+      const result = await commandProcess(process.execPath, echoArguments, {
         host, input: forwarded === 3 ? undefined : input, signal: AbortSignal.timeout(2000),
         stdio: ['pipe', forwarded & 1 ? stdout.fd : 'pipe', forwarded & 2 ? stderr.fd : 'pipe'],
         onOutput: (stream, bytes) => { observed[stream].push(bytes); },
@@ -183,7 +192,7 @@ async function terminalControls(run, host) {
     let entered, release, settled = false, closeCalls = 0, terminalCalls = 0;
     const terminalSeen = new Promise(resolve => { entered = resolve; });
     const terminalReleased = new Promise(resolve => { release = resolve; });
-    const completed = run(process.execPath, [script, 'exit'], {
+    const completed = run(process.execPath, exitArguments, {
       host,
       onClose(result) {
         closeCalls++;
@@ -434,9 +443,6 @@ if (mode === 'signal-owner') {
   } finally { process.disconnect(); }
 } else if (mode === 'signals') {
   await processSignalControls();
-} else if (mode === 'echo') {
-  process.stderr.write('native stderr π\n');
-  process.stdin.pipe(process.stdout);
 } else if (mode === 'descendant') {
   const server = createServer(socket => socket.write('accepted\n'));
   server.listen(0, '127.0.0.1', () => process.stdout.write(`${server.address().port}\n`));
@@ -450,12 +456,6 @@ if (mode === 'signal-owner') {
   descendant.once('exit', code => { process.exitCode = code ?? 1; process.stdin.destroy(); });
   descendant.stdout.pipe(process.stdout);
   process.stdin.resume();
-} else if (mode === 'join') {
-  process.stdout.write('accepted write\n');
-  process.stdin.once('data', () => process.stderr.write('sink refusal\n'));
-  process.stdin.resume();
-} else if (mode === 'exit') {
-  process.exitCode = 17;
 } else {
   const host = process.env.ACYCLIC_PROCESS_HOST;
   assert.ok(host, 'step=process-control-admission; recovery=run cargo test --locked -p acyclic-native-runtime --test node_process');
@@ -463,14 +463,14 @@ if (mode === 'signal-owner') {
   await processSignalControls();
   await argumentControls(host);
   const input = Buffer.from('stdin is independent of cancellation\nπ\n');
-  const captured = await commandCapture(process.execPath, [script, 'echo'], {...options, input});
+  const captured = await commandCapture(process.execPath, echoArguments, {...options, input});
   assert.equal(captured.stdout, input.toString());
   assert.equal(captured.stderr, 'native stderr π\n');
   await captureCancellationControl(commandCapture, host);
   await descriptorControl(host, input, captured);
 
   const unfinishedInput = new PassThrough();
-  const normal = await commandProcess(process.execPath, [script, 'exit'], {...options, input: unfinishedInput});
+  const normal = await commandProcess(process.execPath, exitArguments, {...options, input: unfinishedInput});
   assert.equal(normal.code, 17);
   assert.equal(normal.failures.length, 0);
   assert.ok(unfinishedInput.destroyed, 'original exit must close an input producer that has no terminal');
@@ -524,7 +524,7 @@ if (mode === 'signal-owner') {
   let writeStarted = false, settled = false, terminalCalls = 0;
   let release;
   const acceptedWrite = new Promise(resolve => { release = resolve; });
-  const failed = commandProcess(process.execPath, [script, 'join'], {
+  const failed = commandProcess(process.execPath, joinArguments, {
     ...options, input: inputGate,
     async onOutput(stream) {
       if (stream === 'stderr') throw sinkFailure;
@@ -547,7 +547,7 @@ if (mode === 'signal-owner') {
   assert.ok(sinkResult.failures.some(failure => failure.error === stdoutFailure));
   assert.equal(terminalCalls, 1);
   assert.ok(sinkResult.completion.process_tree_retired);
-  await assert.rejects(commandCapture(process.execPath, [script, 'echo'], {...options, input, maxBuffer: 0}),
+  await assert.rejects(commandCapture(process.execPath, echoArguments, {...options, input, maxBuffer: 0}),
     error => error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
       || error instanceof AggregateError && error.errors.some(cause => cause.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'));
   console.log('real native process bridge controls passed');

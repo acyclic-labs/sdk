@@ -3,4 +3,4 @@
   "result":{"source_messages":2,"step":0},"requests":[{"max_output_tokens":10,"tools":[],"messages":[{"role":"user",
   "content":"original request"},{"role":"assistant","content":"original response"},{"role":"user",
   "content":"Summarize this context."}]}],"events":[{"kind":"model_started","purpose":"summary"},{"kind":"model",
-  "purpose":"summary","event":{"kind":"completed"}}]},"resume":["offline"]}
+  "purpose":"summary","event":{"kind":"completed"}}]},"resume":[]}

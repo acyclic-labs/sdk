@@ -8,6 +8,7 @@ import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ProcessReport } from "./process-report.mjs";
 import { listenReportPipe } from "./report-pipe.mjs";
+import { Lines } from "./lines.mjs";
 
 export async function schedule(items, platform, execute) {
   if (platform !== "win32") return Promise.all(items.map(execute));
@@ -23,6 +24,8 @@ export async function schedule(items, platform, execute) {
 // the scope's transcript directory, and a settled result reads it on demand.
 // onProgress is a synchronous metadata sink. Its first thrown failure is
 // retained until closed, after the original transcript and physical joins.
+// scopeCapture observes that completed result. Scope cleanup joins it and
+// retains its failure even when the caller discards the returned owner.
 // Node exit describes the launched process, which may itself be a host;
 // the selected root's native completion receipt remains authoritative.
 export class Processes {
@@ -34,12 +37,11 @@ export class Processes {
   #closing;
   #onReport;
   #onProgress;
-  #progressFailure;
-  #progressJoins;
+  #observationFailure;
+  #terminalJoins;
   #admissions = new Set();
   constructor({ transcripts, onReport, onProgress } = {}) {
     this.#transcripts = transcripts; this.#onReport = onReport; this.#onProgress = onProgress;
-    if (onProgress) this.#progressJoins = new Set();
   }
   get transcripts() { return this.#transcripts ??= mkdtempSync(join(tmpdir(), "e2e-transcripts-")); }
   start(program, args, options = {}) {
@@ -64,7 +66,8 @@ export class Processes {
   }
   #start(program, args, options = {}, selectedReport, endpoint) {
     if (this.stopping) throw new Error("suite process scope is closed (deadline or cleanup)");
-    const { scopeKillSignal = "SIGKILL", scopeTreeControl = false, scopeReport = false, scopeOperation, ...spawnOptions } = options;
+    const { scopeKillSignal = "SIGKILL", scopeTreeControl = false, scopeReport = false, scopeOperation,
+      scopeCapture, ...spawnOptions } = options;
     if (scopeOperation !== undefined && (typeof scopeOperation !== "string"
       || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(scopeOperation))) {
       throw new Error("step=process-progress-operation; recovery=pass the original opaque operation UUID as scopeOperation");
@@ -85,7 +88,7 @@ export class Processes {
       try { this.#onProgress(event); }
       catch (cause) {
         progressFailure ??= new ProcessObservationFailed(event, cause);
-        this.#progressFailure ??= progressFailure;
+        this.#observationFailure ??= progressFailure;
       }
     } : undefined;
     // Admit both original sinks before a child can act. The writers consume
@@ -153,21 +156,27 @@ export class Processes {
         // Settle only after both transcripts are complete on disk.
         Promise.all([written, reaped]).then(() => {
           observe?.("closed");
-          if (progressFailure) { reject(progressFailure); return; }
+          if (progressFailure) throw progressFailure;
           const result = settled(code, signal, stdoutPath, stderrPath);
-          if (report?.termination) result.termination = report.termination;
-          resolve(result);
-        }, reject);
+          if (report) {
+            result.report_capability = report.capability;
+            const termination = report.termination;
+            if (termination) result.termination = termination;
+          }
+          if (!scopeCapture) return result;
+          return Promise.resolve().then(() => scopeCapture(result)).then(() => result);
+        }).then(resolve, reject);
       });
     });
     // The caller may be waiting for a ready/screen event instead of exit.
-    closed.catch(() => {});
-    if (this.#progressJoins) {
+    closed.catch(error => { if (scopeCapture) this.#observationFailure ??= error; });
+    if (observe || scopeCapture) {
       // Retain only active original terminal joins. A child can be physically
       // reaped while its transcript and final observer are still pending.
       const joined = Promise.allSettled([written, reaped, closed]);
-      this.#progressJoins.add(joined);
-      joined.then(() => this.#progressJoins.delete(joined));
+      const joins = this.#terminalJoins ??= new Set();
+      joins.add(joined);
+      joined.then(() => joins.delete(joined));
     }
     this.children.set(child, { kill, reaped, report,
       cancel: process.platform === "win32" ? undefined : () => child.kill("SIGTERM") });
@@ -227,13 +236,13 @@ export class Processes {
     await Promise.allSettled(this.#admissions);
     const children = [...this.children.values()];
     const reporting = children.filter(child => child.report);
-    let observationError = this.#progressFailure;
+    let observationError = this.#observationFailure;
     const observed = (report, outcome) => {
       try {
         this.#onReport?.({ request_id: report.requestId, generation: report.generation,
           outcome, acknowledged: report.termination?.report_acknowledged === true,
           cause: report.termination?.report_cause });
-      } catch (error) { observationError ??= this.#progressFailure ?? error; }
+      } catch (error) { observationError ??= this.#observationFailure ?? error; }
     };
     try {
       if (reporting.length) {
@@ -257,9 +266,9 @@ export class Processes {
     } finally {
       for (const child of children) child.kill();
       await Promise.all(children.map(child => child.reaped));
-      if (this.#progressJoins) await Promise.all(this.#progressJoins);
+      if (this.#terminalJoins) await Promise.all(this.#terminalJoins);
     }
-    if (observationError ?? this.#progressFailure) throw observationError ?? this.#progressFailure;
+    if (observationError ?? this.#observationFailure) throw observationError ?? this.#observationFailure;
   }
 }
 
@@ -422,14 +431,9 @@ export class Spool {
         if (error) this.#break(error);
       });
     }
-    const decoder = new StringDecoder("utf8");
-    let partial = "";
-    const lines = (text, done) => {
-      const parts = (partial + text).split("\n");
-      partial = parts.pop();
-      let full = false;
-      for (const line of parts) if (!this.#line(line.endsWith("\r") ? line.slice(0, -1) : line)) full = true;
-      if (!full || !this.#state.open) { done(); return; }
+    const lines = new Lines(line => this.#line(line.endsWith("\r") ? line.slice(0, -1) : line));
+    const accepted = (room, done) => {
+      if (room || !this.#state.open) { done(); return; }
       // Lines already in this chunk are written; the next chunk waits for drain.
       let released = false;
       this.#blocked = () => { if (!released) { released = true; this.#blocked = undefined; done(); } };
@@ -437,8 +441,8 @@ export class Spool {
       this.#file.once("drain", this.#blocked);
     };
     const sink = new Writable({
-      write: (chunk, _encoding, done) => lines(decoder.write(chunk), done),
-      final: done => { const rest = partial + decoder.end(); partial = ""; rest ? lines(rest + "\n", done) : done(); },
+      write: (chunk, _encoding, done) => accepted(lines.write(chunk), done),
+      final: done => accepted(lines.end(), done),
     });
     // Every line taken, or a source that closed without ending.
     const drained = new Promise(resolve => {

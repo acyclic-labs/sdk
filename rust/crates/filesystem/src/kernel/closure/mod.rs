@@ -162,6 +162,9 @@ pub(crate) fn closure_error(error: crate::FsError) -> ClosureError {
         crate::FsError::Object(error) => ClosureError::Storage(error),
         crate::FsError::Decode(error) => ClosureError::Decode(error),
         crate::FsError::Work(error) => ClosureError::Work(error),
+        crate::FsError::AccountingHandoffActive => {
+            ClosureError::Storage(ObjectStoreError::AccountingHandoffActive)
+        }
         crate::FsError::Cancelled(_) => ClosureError::Storage(ObjectStoreError::Cancelled),
         #[cfg(not(target_arch = "wasm32"))]
         crate::FsError::NativeKernel(error) => ClosureError::Native(error),

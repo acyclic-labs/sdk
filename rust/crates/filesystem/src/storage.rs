@@ -712,6 +712,15 @@ pub enum ObjectReadRetention {
     },
 }
 
+impl ObjectReadRetention {
+    pub(crate) const fn owned_bytes(self) -> u64 {
+        match self {
+            Self::Shared => 0,
+            Self::Owned { logical_bytes } => logical_bytes,
+        }
+    }
+}
+
 /// Immutable bytes plus explicit retention evidence for zero-copy and peak allocation accounting.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObjectRead {
@@ -829,6 +838,14 @@ pub enum ObjectStoreError {
     #[cfg(any(test, feature = "distributed"))]
     #[error(transparent)]
     LogicalObjects(#[from] acyclic_objects::Error),
+    /// Canonical bytes failed decoding, including a wrong domain or an
+    /// unsupported codec version.
+    #[error(transparent)]
+    Decode(#[from] crate::kernel::CanonicalDecodeError),
+    /// A filesystem failure raised behind an object-store boundary, kept whole
+    /// so its original cause and wire status survive the conversion.
+    #[error(transparent)]
+    Filesystem(Box<crate::FsError>),
 }
 
 #[cfg(test)]

@@ -1,6 +1,19 @@
 use super::{Arc, Ordering, wake_probe};
 use std::future::Future as _;
 
+#[test]
+fn replacing_waiter_retires_previous_outside_lock() {
+    loom::model(|| {
+        let queue = Arc::new(Outbound::new(1, 2));
+        let inspected = Arc::clone(&queue);
+        super::waiter_replacement(
+            |wake| queue.poll(&mut Context::from_waker(wake)),
+            || queue.push(7_u8, 2).unwrap(),
+            move || inspected.state.try_lock().is_ok(),
+        );
+    });
+}
+
 fn saturation(broken: bool) {
     loom::model(move || {
         let stalled = Arc::new(Outbound::new(1, 2));

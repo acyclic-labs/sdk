@@ -78,6 +78,20 @@ impl Default for DecodeLimits {
 }
 
 impl DecodeLimits {
+    /// Canonical bounds for a store that has already admitted one complete object.
+    /// Callers with a selected volume must preserve its stricter limits instead.
+    pub(crate) fn for_object_bytes(bytes: usize) -> Self {
+        let length = u32::try_from(bytes).unwrap_or(u32::MAX);
+        Self {
+            maximum_object_bytes: bytes as u64,
+            maximum_page_bytes: length,
+            maximum_name_bytes: length,
+            maximum_page_items: length,
+            maximum_page_height: u16::MAX,
+            maximum_visited_pages: length,
+        }
+    }
+
     /// Derives canonical decode bounds from the selected volume's limits.
     #[must_use]
     pub fn for_volume(config: VolumeConfig) -> Self {

@@ -1,0 +1,39 @@
+diff --git a/rust/crates/stream/src/runtime/signal.rs b/rust/crates/stream/src/runtime/signal.rs
+--- a/rust/crates/stream/src/runtime/signal.rs
++++ b/rust/crates/stream/src/runtime/signal.rs
+@@ -66,7 +66,8 @@
+             if let Some(value) = state.0.pop_front() {
+                 return Poll::Ready(Ok(value));
+             }
+-            state.1.replace(wake)
++            drop(state.1.replace(wake));
++            None::<Waker>
+         };
+         drop(previous);
+         Poll::Pending
+diff --git a/rust/crates/stream/src/session/gate.rs b/rust/crates/stream/src/session/gate.rs
+--- a/rust/crates/stream/src/session/gate.rs
++++ b/rust/crates/stream/src/session/gate.rs
+@@ -39,7 +39,8 @@
+             if state.0 != expected {
+                 return Poll::Ready(Ok(()));
+             }
+-            state.1.replace(wake)
++            drop(state.1.replace(wake));
++            None::<Waker>
+         };
+         drop(previous);
+         Poll::Pending
+diff --git a/rust/crates/stream/src/session/client/outbound.rs b/rust/crates/stream/src/session/client/outbound.rs
+--- a/rust/crates/stream/src/session/client/outbound.rs
++++ b/rust/crates/stream/src/session/client/outbound.rs
+@@ -66,7 +66,8 @@
+                 state.bytes -= bytes;
+                 return Poll::Ready(Ok(value));
+             }
+-            state.reader.replace(wake)
++            drop(state.reader.replace(wake));
++            None::<Waker>
+         };
+         drop(previous);
+         Poll::Pending

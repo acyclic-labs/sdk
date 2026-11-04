@@ -16,9 +16,11 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[derive(Clone)]
 struct Service {
-    store: crate::Store<crate::MemoryMedium>,
+    store: crate::Store<crate::tests::Faulty>,
     granted: Arc<AtomicBool>,
 }
+
+const GATEWAY_REQUEST: &str = "gateway-request";
 
 async fn dispatch(
     State(service): State<Service>,
@@ -72,14 +74,13 @@ async fn dispatch(
         Ok(bytes) => json::encode_binary(output, &bytes, 1024 * 1024)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
         Err(error) => {
-            let bytes = json::encode(
-                "ErrorDetail",
-                &wire::ErrorDetail {
-                    code: error.code as i32,
-                    ..Default::default()
-                },
-            )
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            // The gateway names its request, as a deployed one does.
+            let detail = wire::ErrorDetail {
+                request_id: GATEWAY_REQUEST.into(),
+                ..wire::ErrorDetail::from(&error)
+            };
+            let bytes = json::encode("ErrorDetail", &detail)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             return HttpResponse::builder()
                 .status(400)
                 .header("content-type", "application/json")
@@ -96,7 +97,7 @@ async fn dispatch(
 #[tokio::test]
 async fn http_availability_uses_shared_accounts_framing_and_terminal_failure() -> TestResult {
     let service = Service {
-        store: crate::Store::new(crate::MemoryMedium::default()),
+        store: crate::Store::new(crate::tests::Faulty::default()),
         granted: Arc::new(AtomicBool::new(true)),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:15441").await?;
@@ -149,7 +150,7 @@ async fn http_availability_uses_shared_accounts_framing_and_terminal_failure() -
 #[tokio::test(start_paused = true)]
 async fn http_availability_retains_original_context_at_open_and_delivery() -> TestResult {
     let service = Service {
-        store: crate::Store::new(crate::MemoryMedium::default()),
+        store: crate::Store::new(crate::tests::Faulty::default()),
         granted: Arc::new(AtomicBool::new(true)),
     };
     let source = service
@@ -201,7 +202,7 @@ impl Drop for Stop {
 
 async fn counting_gateway() -> Result<Counting, Box<dyn std::error::Error>> {
     let service = Service {
-        store: crate::Store::new(crate::MemoryMedium::default()),
+        store: crate::Store::new(crate::tests::Faulty::default()),
         granted: Arc::new(AtomicBool::new(true)),
     };
     let calls = Arc::new(AtomicUsize::new(0));
@@ -328,5 +329,38 @@ fn the_request_bound_covers_every_encoded_batch() -> TestResult {
             }
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_servers_cause_reaches_the_http_client() -> TestResult {
+    let service = Service {
+        store: crate::Store::new(crate::tests::Faulty::default()),
+        granted: Arc::new(AtomicBool::new(true)),
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("http://{}", listener.local_addr()?);
+    let router = axum::Router::new()
+        .fallback(dispatch)
+        .with_state(service.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, router).await });
+    let _stop = Stop(server.abort_handle());
+    let client = HttpObjects::new(&endpoint, "first", 1024 * 1024, None)?;
+    let error = crate::tests::failed_release(&client, service.store.medium())
+        .await
+        .map_err(|error| error as Box<dyn std::error::Error>)?;
+    let cause = acyclic_auth::refusal::Cause {
+        request_id: GATEWAY_REQUEST.into(),
+        ..acyclic_auth::refusal::Cause::new("objects.medium", "failed")
+    };
+    assert_eq!(
+        std::error::Error::source(&error)
+            .and_then(|source| source.downcast_ref::<acyclic_auth::refusal::Cause>()),
+        Some(&cause)
+    );
+    assert_eq!(
+        error.to_string(),
+        "Objects operation failed (Unavailable): objects.medium: failed, request gateway-request"
+    );
     Ok(())
 }

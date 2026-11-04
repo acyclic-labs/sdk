@@ -27,7 +27,7 @@ impl CachedRoot {
         work: &mut W,
     ) -> Result<Self, W::Error> {
         let identity = root.identity;
-        let directory = root.directory.into_std_file();
+        let directory = root.into_directory().into_std_file();
         let directory = charging(work, |charge| {
             acyclic_native_runtime::CachedFile::directory(directory, path, charge)
         })?;
@@ -93,7 +93,7 @@ fn charging<W: NativeHostWork, T>(
 
 /// A held root whose relative operations cannot escape through links.
 pub struct HostRoot {
-    pub(crate) directory: Dir,
+    pub(super) file: acyclic_native_runtime::HeldFile,
     pub(crate) identity: NativeRootIdentity,
     /// The cached root this was reopened from, which a holder that outlives
     /// it keeps instead of a descriptor: an inotify watch, which on Linux
@@ -102,6 +102,17 @@ pub struct HostRoot {
     pub(crate) origin: Option<CachedRoot>,
 }
 impl HostRoot {
+    /// A capability view borrows the same descriptor without cloning or closing
+    /// it. The original file owner retains its durability evidence between uses.
+    pub(crate) fn directory(&self) -> cap_std::io_lifetimes::views::FilelikeView<'_, Dir> {
+        use cap_std::io_lifetimes::AsFilelike as _;
+        self.file.as_file().as_filelike_view()
+    }
+
+    pub(crate) fn into_directory(self) -> Dir {
+        Dir::from_std_file(self.file.into_file())
+    }
+
     pub(crate) fn open<W: NativeHostWork>(path: &Path, work: &mut W) -> Result<Self, W::Error> {
         let (directory, identity) = open_root_directory(path, work)?;
         Ok(Self::from_parts(directory, identity))
@@ -110,9 +121,9 @@ impl HostRoot {
         self.identity
     }
     /// A root held as `directory`, whose identity is `identity`.
-    pub(crate) const fn from_parts(directory: Dir, identity: NativeRootIdentity) -> Self {
+    pub(crate) fn from_parts(directory: Dir, identity: NativeRootIdentity) -> Self {
         Self {
-            directory,
+            file: acyclic_native_runtime::HeldFile::new(directory.into_std_file()),
             identity,
             #[cfg(target_os = "linux")]
             origin: None,
@@ -132,10 +143,10 @@ impl HostRoot {
     ) -> Result<crate::NativeRootIncarnation, DemandError> {
         #[cfg(all(test, target_os = "linux"))]
         if stat_probe::duplicate() {
-            directory_identity(&self.directory, work)?;
+            directory_identity(&self.directory(), work)?;
         }
         #[cfg(target_os = "linux")]
-        let generation = match root_file_handle(self.directory.as_raw_fd(), work) {
+        let generation = match root_file_handle(self.file.as_raw_fd(), work) {
             Ok(handle) => crate::NativeRootGeneration::FileHandle(handle),
             Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::Unsupported => {
                 crate::NativeRootGeneration::Unstable
@@ -144,7 +155,7 @@ impl HostRoot {
         };
         #[cfg(target_os = "macos")]
         let generation = {
-            let fd = self.directory.as_raw_fd();
+            let fd = self.file.as_raw_fd();
             let unique = work.attempt_io(READ, || {
                 let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
                 // SAFETY: the held descriptor and complete output remain live.
@@ -159,11 +170,11 @@ impl HostRoot {
             stable_object_ids(unique)
         };
         #[cfg(windows)]
-        let generation = stable_object_ids(reports_every_change(&self.directory, work)?);
+        let generation = stable_object_ids(reports_every_change(&self.directory(), work)?);
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         let generation = stable_object_ids(false);
         #[cfg(target_os = "linux")]
-        let volume = durable_volume(&self.directory, self.identity.device, work)?;
+        let volume = durable_volume(&self.directory(), self.identity.device, work)?;
         // A Windows volume serial number is durable; a BSD `f_fsid` is the
         // device number, so the device is already the best volume witness.
         #[cfg(not(target_os = "linux"))]
@@ -176,19 +187,19 @@ impl HostRoot {
     }
     #[cfg(unix)]
     pub(crate) fn directory_fd(&self) -> std::os::fd::RawFd {
-        self.directory.as_raw_fd()
+        self.file.as_raw_fd()
     }
     #[cfg(windows)]
     pub(crate) fn directory_handle(&self) -> std::os::windows::io::BorrowedHandle<'_> {
         use std::os::windows::io::AsHandle as _;
-        self.directory.as_handle()
+        self.file.as_handle()
     }
     pub(crate) fn open_dir_held<W: NativeHostWork>(
         &self,
         path: &NativePath,
         work: &mut W,
     ) -> Result<Dir, W::Error> {
-        directory_path(&self.directory, path, false, work)
+        directory_path(&self.directory(), path, false, work)
     }
     pub(crate) fn read_dir_stats<W: NativeHostWork>(
         &self,
@@ -205,16 +216,16 @@ impl HostRoot {
         #[cfg(windows)]
         if path.is_empty() || path == [46] {
             return stat_windows_file(
-                &self.directory,
+                &self.file,
                 u32::try_from(self.identity.device).map_err(|_| W::invalid_request())?,
                 work,
             );
         }
         #[cfg(unix)]
         if path.as_os_str().is_empty() {
-            return stat_at(self.directory.as_raw_fd(), c"", work);
+            return stat_at(self.file.as_raw_fd(), c"", work);
         }
-        with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+        with_parent_leaf(&self.directory(), path, work, |parent, leaf, work| {
             #[cfg(windows)]
             {
                 let file = open_windows_at(
@@ -250,7 +261,7 @@ impl HostRoot {
             if path.is_empty() || path == [46] {
                 return self.stat(path, work);
             }
-            with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+            with_parent_leaf(&self.directory(), path, work, |parent, leaf, work| {
                 let volume =
                     u32::try_from(self.identity.device).map_err(|_| W::invalid_request())?;
                 let name = windows_open_name(leaf, work)?;
@@ -296,9 +307,9 @@ impl HostRoot {
         #[cfg(target_os = "linux")]
         {
             if path.as_os_str().is_empty() {
-                return stat_at_metadata(self.directory.as_raw_fd(), c"", work);
+                return stat_at_metadata(self.file.as_raw_fd(), c"", work);
             }
-            with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+            with_parent_leaf(&self.directory(), path, work, |parent, leaf, work| {
                 stat_at_metadata(parent.as_raw_fd(), leaf, work)
             })
         }
@@ -360,7 +371,7 @@ impl HostRoot {
         #[cfg(windows)] synchronization: nt::NTCREATEFILE_CREATE_OPTIONS,
         work: &mut W,
     ) -> Result<cap_std::fs::File, W::Error> {
-        with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+        with_parent_leaf(&self.directory(), path, work, |parent, leaf, work| {
             #[cfg(windows)]
             let file = open_windows_at(
                 parent,
@@ -404,23 +415,28 @@ impl HostRoot {
         {
             return Err(DemandError::NotRegularFile);
         }
-        with_parent_leaf(&self.directory, destination, work, |parent, leaf, work| {
-            // SAFETY: the held source, destination parent and terminated leaf outlive the call.
-            match unix_mutation(work, || unsafe {
-                libc::fclonefileat(source.as_raw_fd(), parent.as_raw_fd(), leaf.as_ptr(), 0)
-            }) {
-                Ok(()) => Ok(true),
-                Err(DemandError::Io(e))
-                    if matches!(
-                        e.raw_os_error(),
-                        Some(libc::ENOTSUP | libc::ENOSYS | libc::EXDEV)
-                    ) =>
-                {
-                    Ok(false)
+        with_parent_leaf(
+            &self.directory(),
+            destination,
+            work,
+            |parent, leaf, work| {
+                // SAFETY: the held source, destination parent and terminated leaf outlive the call.
+                match unix_mutation(work, || unsafe {
+                    libc::fclonefileat(source.as_raw_fd(), parent.as_raw_fd(), leaf.as_ptr(), 0)
+                }) {
+                    Ok(()) => Ok(true),
+                    Err(DemandError::Io(e))
+                        if matches!(
+                            e.raw_os_error(),
+                            Some(libc::ENOTSUP | libc::ENOSYS | libc::EXDEV)
+                        ) =>
+                    {
+                        Ok(false)
+                    }
+                    Err(e) => Err(e),
                 }
-                Err(e) => Err(e),
-            }
-        })
+            },
+        )
     }
     /// Opens a held-root output with the access needed by FlushFileBuffers.
     #[cfg(all(windows, any(test, feature = "native-mount")))]
@@ -429,7 +445,7 @@ impl HostRoot {
         path: &[u16],
         work: &mut W,
     ) -> Result<cap_std::fs::File, W::Error> {
-        with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+        with_parent_leaf(&self.directory(), path, work, |parent, leaf, work| {
             open_windows_at(
                 parent,
                 leaf,
@@ -480,13 +496,13 @@ impl HostRoot {
     ) -> Result<File, DemandError> {
         if path.as_os_str().is_empty() {
             return open_unix(
-                self.directory.as_raw_fd(),
+                self.file.as_raw_fd(),
                 c".",
                 libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
                 work,
             );
         }
-        with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+        with_parent_leaf(&self.directory(), path, work, |parent, leaf, work| {
             open_unix(
                 parent.as_raw_fd(),
                 leaf,
@@ -517,9 +533,9 @@ impl HostRoot {
             )
         };
         let file = if path.is_empty() {
-            open(&self.directory, &[46], work)?
+            open(&self.directory(), &[46], work)?
         } else {
-            with_parent_leaf(&self.directory, path, work, open)?
+            with_parent_leaf(&self.directory(), path, work, open)?
         };
         Ok(cap_std::fs::File::from_std(file))
     }

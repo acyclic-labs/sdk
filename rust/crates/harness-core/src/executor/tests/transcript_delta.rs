@@ -4,6 +4,7 @@ use crate::executor::transcript as segments;
 fn request(messages: &[ModelMessage]) -> Result<crate::model::PreparedModelRequest> {
     crate::model::PreparedModelRequest::prepare(
         ModelRequest {
+            summary: false,
             compose_tools: false,
             model: Model::new("test".into(), "segments".into(), "1".into())?,
             messages: messages.to_vec(),
@@ -39,12 +40,16 @@ async fn a_thousand_request_deltas_write_only_the_suffix_and_reopen_exact_bytes(
         ..Default::default()
     };
     let operation = OperationId::new();
-    let mut messages = Vec::new();
+    let mut prepared = request(&[message(1)])?;
     let mut previous = None;
     let mut largest_delta = 0;
     for step in 1..=1000 {
-        messages.push(message(step));
-        let prepared = request(&messages)?;
+        if step > 1 {
+            let mut continuation = prepared.into_continuation();
+            continuation.messages().push(message(step));
+            prepared = continuation.finish(Limits::default(), None)?;
+        }
+        assert_eq!(prepared.request().messages.len(), step);
         let key = format!("request:{step}");
         let reads = journal.4.load(Ordering::SeqCst);
         let reference = segments::stage_request(
@@ -61,12 +66,13 @@ async fn a_thousand_request_deltas_write_only_the_suffix_and_reopen_exact_bytes(
             usize::from(step > 2)
         );
         let prefix = format!("{operation}:{key}");
+        let children = format!("{prefix}:");
         let (files, bytes) = journal
             .1
             .lock()
             .unwrap()
             .iter()
-            .filter(|(key, _)| key.starts_with(&format!("{prefix}:")) || **key == prefix)
+            .filter(|(key, _)| key.starts_with(&children) || **key == prefix)
             .fold((0, 0), |(files, bytes), (_, (_, value))| {
                 (files + 1, bytes + value.len())
             });
@@ -85,6 +91,21 @@ async fn a_thousand_request_deltas_write_only_the_suffix_and_reopen_exact_bytes(
                 load_model_request(&journal, &reference, Limits::default(), None).await?;
             assert_eq!(reopened.bytes(), prepared.bytes());
             assert_eq!(reopened.request_digest(), prepared.request_digest());
+            let expected = request(&(1..=step).map(message).collect::<Vec<_>>())?;
+            assert_eq!(reopened.request(), expected.request());
+            assert_eq!(reopened.bytes(), expected.bytes());
+            assert_eq!(
+                segments::stage_request(
+                    &journal,
+                    operation,
+                    &key,
+                    &expected,
+                    previous.as_ref(),
+                    None,
+                )
+                .await?,
+                reference
+            );
             if step == 1000 {
                 // The former pair of full transcript writes fails exactly the
                 // same byte bound; this is actual canonical encoding, not an
@@ -92,7 +113,7 @@ async fn a_thousand_request_deltas_write_only_the_suffix_and_reopen_exact_bytes(
                 let old_request = crate::contract::canonical_json_bytes(prepared.request())?;
                 let old_projection = crate::contract::canonical_json_bytes(&ResponseProjection {
                     context: crate::context::Context {
-                        messages: messages.clone(),
+                        messages: prepared.request().messages.clone(),
                         ..Default::default()
                     },
                     steering: None,
@@ -147,10 +168,11 @@ fn recovered_requests_must_match_the_selected_header() -> Result<()> {
     );
     let execution = StockExecution::ordinary(&executor);
     execution.validate_response_request(&prepared)?;
-    for field in ["model", "tools", "output", "composition"] {
+    for field in ["model", "tools", "output", "composition", "summary"] {
         let mut changed = prepared.request().clone();
         match field {
             "composition" => changed.compose_tools = true,
+            "summary" => changed.summary = true,
             "model" => changed.model.revision = "2".into(),
             "tools" => changed.tools.push(crate::tool::ToolDefinition {
                 name: "example.echo".into(),

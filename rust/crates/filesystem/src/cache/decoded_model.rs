@@ -34,7 +34,12 @@ fn publish(cache: &CachedObjectStore<()>, id: u8, split: bool) {
             .decoded_admit_bounded::<false>(key(id), cache.shared.fill_epoch(), value(id))
             .unwrap();
     } else {
-        cache.decoded_admit(key(id), value(id)).unwrap();
+        match cache.decoded_lookup(key(id)).unwrap() {
+            crate::async_storage::DecodedCacheLookup::Hit(_) => {}
+            crate::async_storage::DecodedCacheLookup::Miss(miss) => {
+                miss.admit(value(id)).unwrap();
+            }
+        }
     }
 }
 fn scenario(alias: bool, split: bool) {
@@ -53,7 +58,10 @@ fn scenario(alias: bool, split: bool) {
     let observed = if alias {
         cache.decoded_get_matching::<false>(key(1))
     } else {
-        cache.decoded_get(key(1))
+        cache.decoded_lookup(key(1)).map(|lookup| match lookup {
+            crate::async_storage::DecodedCacheLookup::Hit(value) => Some(value),
+            crate::async_storage::DecodedCacheLookup::Miss(_) => None,
+        })
     }
     .unwrap();
     let correct = observed.is_none_or(|v| *v.value.downcast::<u64>().unwrap() == 1);

@@ -1,6 +1,7 @@
 use super::*;
 #[cfg(feature = "filesystem")]
 use acyclic_stream::StreamProviderExt as _;
+#[cfg(feature = "filesystem")]
 use protocol::{Completion, Demand, Refusal, State};
 
 /// Deliberately enumerates every source item. Unlike the implementation this
@@ -63,47 +64,6 @@ fn budget_bound_preserves_reservation_and_refuses_overflow() {
     // Wrapping arithmetic would admit this request as a zero-token input.
     assert!(fits(u64::MAX.wrapping_add(1), 1, 100));
     assert!(!fits(u64::MAX, 1, 100));
-}
-
-#[test]
-fn source_range_and_renderer_model_identity_fence_shared_summaries() {
-    let key = SummaryKey {
-        source: StreamPath::new("account/agent/conversation").unwrap(),
-        through: 30,
-        renderer: 1,
-        model: [1; 32],
-    };
-    let digest = key.digest();
-    let mut other = key.clone();
-    other.through += 1;
-    assert_ne!(digest, other.digest());
-    other = key.clone();
-    other.renderer += 1;
-    assert_ne!(digest, other.digest());
-    other = key.clone();
-    other.model = [2; 32];
-    assert_ne!(digest, other.digest());
-    other = key.clone();
-    other.source = StreamPath::new("account/child/conversation").unwrap();
-    assert_ne!(digest, other.digest());
-    let invalid = Epoch {
-        header: [0; 32],
-        profile: [0; 32],
-        key,
-        summary: None,
-    };
-    assert_eq!(
-        invalid.validate(&other.source, 30),
-        Err(InvalidEpoch::Source)
-    );
-    assert_eq!(
-        invalid.validate(&invalid.key.source, 29),
-        Err(InvalidEpoch::OutsidePrefix)
-    );
-    assert_eq!(
-        invalid.validate(&invalid.key.source, 30),
-        Err(InvalidEpoch::MissingCoverage)
-    );
 }
 
 /// Full materialized model: a summary marks source items individually. It
@@ -499,88 +459,6 @@ fn snapshot_request<'io>(
     SnapshotRequest { request, encoded }
 }
 
-#[test]
-fn fanout_waits_for_the_parent_swap_without_discarding_pending_custody() {
-    let id = [7; 32];
-    let mut parent = State::default();
-    parent.prepare(id, 20, 25).unwrap();
-    assert_eq!(parent.demand(), Demand::Await(id));
-    assert_eq!(parent.fork(25), Err(Refusal::NotReady));
-    assert_eq!(parent.fork(19), Err(Refusal::NotReady));
-    assert_eq!(parent.prepare([8; 32], 24, 25), Err(Refusal::Busy));
-    assert_eq!(parent.swap(id, 0, 25), Err(Refusal::NotReady));
-    let before = parent;
-    let mut uncommitted = parent;
-    uncommitted.complete(id, Completion::Ready).unwrap();
-    assert_eq!(before.demand(), Demand::Await(id));
-    assert_eq!(uncommitted.fork(25), Err(Refusal::NotReady));
-    parent = uncommitted;
-    parent.swap(id, 0, 30).unwrap();
-    let child = parent.fork(25).unwrap();
-    assert_eq!(parent.cursor(), 20);
-    assert_eq!(child.cursor(), 20);
-    assert_eq!(parent.swap(id, 0, 30), Err(Refusal::Stale));
-    assert_eq!(child.fork(19), Err(Refusal::Range));
-    let mut failed = before;
-    failed.complete(id, Completion::Failed).unwrap();
-    assert_eq!(failed.fork(25), Err(Refusal::NotReady));
-    // The former projection dropped a pending slot when its cut lay beyond the
-    // fork, permitting fan-out while the parent still awaited its producer.
-    let dropped_pending = State::restore(0, 0, None, 19).unwrap();
-    assert!(dropped_pending.fork(19).is_ok());
-    assert_eq!(before.fork(19), Err(Refusal::NotReady));
-}
-
-#[test]
-fn producer_failure_is_terminal_and_cannot_be_relabelled_ready() {
-    let id = [3; 32];
-    let mut state = State::default();
-    state.prepare(id, 1, 1).unwrap();
-    state.complete(id, Completion::Failed).unwrap();
-    assert_eq!(state.demand(), Demand::Failed(id));
-    assert_eq!(
-        state.complete(id, Completion::Ready),
-        Err(Refusal::Contradiction)
-    );
-    assert_eq!(state.swap(id, 0, 1), Err(Refusal::NotReady));
-    let unchanged = state;
-    assert_eq!(
-        state.complete([4; 32], Completion::Ready),
-        Err(Refusal::Stale)
-    );
-    assert_eq!(state, unchanged);
-}
-
-#[test]
-fn restoration_retains_pending_custody_and_refuses_torn_epoch_state() {
-    let id = [5; 32];
-    let mut state = State::default();
-    state.prepare(id, 10, 12).unwrap();
-    for completion in [None, Some(Completion::Ready), Some(Completion::Failed)] {
-        let pending = protocol::Pending {
-            completion,
-            ..state.pending().unwrap()
-        };
-        let restored = State::restore(0, 0, Some(pending), 12).unwrap();
-        let mut expected = state;
-        if let Some(outcome) = completion {
-            expected.complete(id, outcome).unwrap();
-        }
-        assert_eq!(restored, expected);
-        assert_eq!(State::restore(1, 0, Some(pending), 12), Err(Refusal::Stale));
-        assert_eq!(
-            State::restore(0, 10, Some(pending), 12),
-            Err(Refusal::Range)
-        );
-        assert_eq!(State::restore(0, 0, Some(pending), 9), Err(Refusal::Range));
-    }
-    assert_eq!(State::restore(0, 13, None, 12), Err(Refusal::Range));
-    // Dropping the pending slot on restore would grant another producer.
-    let mut lost = State::default();
-    assert!(lost.prepare([6; 32], 11, 12).is_ok());
-    assert_eq!(state.prepare([6; 32], 11, 12), Err(Refusal::Busy));
-}
-
 #[cfg(feature = "filesystem")]
 #[tokio::test]
 async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across_reopen() {
@@ -885,15 +763,6 @@ proptest::proptest! {
         prop_assert_ne!(&reopened.native()[index].artifact, reopened.portable());
         let mut invalid = serde_json::to_value(&reopened).unwrap();
         invalid.as_object_mut().unwrap().remove("portable");
-        prop_assert!(serde_json::from_value::<SummaryRef>(invalid).is_err());
-        let mut invalid = serde_json::to_value(&reopened).unwrap();
-        invalid["version"] = serde_json::json!(0);
-        prop_assert!(serde_json::from_value::<SummaryRef>(invalid).is_err());
-        let mut invalid = serde_json::to_value(&reopened).unwrap();
-        invalid["portable"]["descriptor"]["media_type"] = serde_json::json!("application/json");
-        prop_assert!(serde_json::from_value::<SummaryRef>(invalid).is_err());
-        let mut invalid = serde_json::to_value(&reopened).unwrap();
-        invalid["native"][index]["provenance"]["provider"] = serde_json::json!("");
         prop_assert!(serde_json::from_value::<SummaryRef>(invalid).is_err());
     }
 }

@@ -6,14 +6,10 @@ import {PassThrough} from 'node:stream';
 import test from 'node:test';
 import {commandCapture, commandProcess} from '@acyclic-labs/sdk/process';
 
-async function withMissingHost(action) {
+test('missing native host retains OS causes and joins accepted terminal work', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'process-admission-'));
-  try { await action(join(directory, 'missing-host')); }
-  finally { await rm(directory, {recursive: true, force: true}); }
-}
-
-test('missing native host retains its OS cause and joins accepted terminal work', async () => {
-  await withMissingHost(async host => {
+  const host = join(directory, 'missing-host');
+  try {
     for (const stdio of ['ipc', ['pipe', 'ipc', 'pipe'], ['pipe', 'pipe', 'pipe', 'pipe']]) {
       await assert.rejects(commandProcess(process.execPath, ['--version'], {host, stdio}), error => {
         assert.ok(error instanceof TypeError);
@@ -54,18 +50,13 @@ test('missing native host retains its OS cause and joins accepted terminal work'
     assert.equal(terminalCalls, 1);
     assert.equal(outputCalls, 0, 'a refused host cannot produce command output');
     assert.equal(result.code, null, 'failed host admission has no selected root exit');
-  });
-});
-
-test('capture preserves the same real host-admission cause', async () => {
-  await withMissingHost(async host => {
-    const input = new PassThrough();
+    const captureInput = new PassThrough();
     await assert.rejects(commandCapture(process.execPath, ['--version'], {
-      host, input, signal: new AbortController().signal,
+      host, input: captureInput, signal: new AbortController().signal,
     }), error => {
       const causes = error instanceof AggregateError ? error.errors : [error];
       return causes.some(cause => cause.code === 'ENOENT' && cause.path === host);
     });
-    assert.ok(input.destroyed);
-  });
+    assert.ok(captureInput.destroyed);
+  } finally { await rm(directory, {recursive: true, force: true}); }
 });

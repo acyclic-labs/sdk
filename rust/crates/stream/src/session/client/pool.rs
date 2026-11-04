@@ -124,12 +124,17 @@ impl Pool {
                     }
                 }
                 if !reused && let Some(opening) = opening {
-                    if self
+                    match self
                         .routes
                         .get(&opening.channel_id)
-                        .is_none_or(|route| route.generation != opening.generation || !route.live())
+                        .filter(|route| route.generation == opening.generation && route.live())
                     {
-                        self.cancel_subscription(&installed, opening)?;
+                        Some(route) => {
+                            if let Some(link) = self.links.get(&installed) {
+                                link.joined(route);
+                            }
+                        }
+                        None => self.cancel_subscription(&installed, opening)?,
                     }
                 }
                 if reused {
@@ -204,9 +209,9 @@ impl Pool {
                 // A received frame that fails structural validation is terminal.
                 // Transport I/O failures use the reconnect path in `run`.
                 let error = match error {
-                    StreamError::Unavailable | StreamError::InvalidArgument => {
-                        StreamError::InvalidResponse
-                    }
+                    StreamError::Unavailable
+                    | StreamError::Refused(_)
+                    | StreamError::InvalidArgument => StreamError::InvalidResponse,
                     other => other,
                 };
                 self.fail_link(node, &error);
@@ -516,7 +521,7 @@ impl Pool {
                                 let link = self.links.get(node).ok_or(StreamError::Unavailable)?;
                                 input.0.bind(Arc::clone(&link.input))?;
                             }
-                            Self::opened(route, id, &opened).err()
+                            Self::opened(route, id, opened).err()
                         }
                     }
                     Err(error) => Some(error),
@@ -664,8 +669,8 @@ impl Pool {
         }
         let applied = opened
             .applied
-            .clone()
-            .map(wire_codec::revision_from_wire)
+            .as_ref()
+            .map(wire_codec::revision_from)
             .transpose()
             .map_err(|_| StreamError::InvalidResponse)?;
         if let Kind::Follow(follow) = &route.kind
@@ -675,10 +680,10 @@ impl Pool {
         }
         Ok(applied)
     }
-    fn opened(route: &mut Route, id: u64, opened: &wire::SessionOpened) -> Result<(), StreamError> {
+    fn opened(route: &mut Route, id: u64, opened: wire::SessionOpened) -> Result<(), StreamError> {
         if let Kind::Follow(follow) = &route.kind {
             if follow.bootstrap_head && route.received == 0 {
-                let (_, selected, bootstrap) = wire_codec::selection_from_opened(opened)?;
+                let (_, selected, bootstrap) = wire_codec::selection_from_opened(&opened)?;
                 route.received = route.progress.select_bootstrap(
                     route.generation,
                     &selected,
@@ -688,7 +693,7 @@ impl Pool {
             }
         }
         if let Some(ready) = route.ready.take() {
-            let _ = ready.send(Ok((id, Some(opened.clone()))));
+            let _ = ready.send(Ok((id, Some(opened))));
         }
         route.observation.record("generation", route.generation);
         route.opened = true;
@@ -864,7 +869,7 @@ impl Pool {
         if node == self.home
             && matches!(
                 error,
-                StreamError::Unavailable | StreamError::InvalidArgument
+                StreamError::Unavailable | StreamError::Refused(_) | StreamError::InvalidArgument
             )
         {
             self.reset_home();

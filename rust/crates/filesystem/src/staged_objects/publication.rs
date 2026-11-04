@@ -24,8 +24,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             .await?;
         let targets = {
             let index = self.index();
-            let targets = work.vec_owned(objects.len())?;
-            let mut targets = Retained::from_owned(targets, &mut work.accounting())
+            let mut targets = Retained::allocate(objects.len(), &mut work.accounting())
                 .map_err(crate::async_storage::object_error)?;
             let mut visit = |id: ObjectId| -> Result<(), ObjectStoreError> {
                 work.accounting()
@@ -77,7 +76,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         } else {
             None
         };
-        let targets = ordered.as_ref().map_or(targets, |(_, ids)| ids.as_slice());
+        let targets = ordered.as_ref().map_or(targets, |ids| ids.value.as_slice());
         let mut position = 0;
         while position < targets.len() {
             work.accounting()
@@ -107,86 +106,37 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                     end += 1;
                 }
             }
-            let writes = work.vec_owned::<ObjectWrite>(count)?;
-            let mut writes = Retained::from_owned(writes, &mut work.accounting())
+            let mut writes = Retained::allocate(count, &mut work.accounting())
                 .map_err(crate::async_storage::object_error)?;
-            let spilled = work.vec_owned::<(ObjectId, u64, u64, usize)>(spilled_count)?;
-            let mut spilled = Retained::from_owned(spilled, &mut work.accounting())
-                .map_err(crate::async_storage::object_error)?;
-            {
-                let mut index = self.index_mut();
+            let mut spilled = Retained::allocate(
+                if work.original.is_none() {
+                    spilled_count
+                } else {
+                    0
+                },
+                &mut work.accounting(),
+            )
+            .map_err(crate::async_storage::object_error)?;
+            if work.original.is_none() {
+                let index = self.index();
                 for &id in &targets[position..end] {
                     work.accounting()
                         .charge_items(1)
                         .map_err(crate::async_storage::object_error)?;
-                    if index.drained.contains(&id) {
-                        self.collection.writing(unswept, [id]);
-                        index.remove(id);
-                        continue;
-                    }
-                    match index.objects.get(&id) {
-                        Some(Staged::Resident { bytes, .. }) => writes.value.push(ObjectWrite {
-                            object_id: id,
-                            bytes: bytes.clone(),
-                        }),
-                        Some(&Staged::Spilled { offset, length }) => {
-                            spilled.value.push((id, offset, length, writes.value.len()));
-                            writes.value.push(ObjectWrite {
-                                object_id: id,
-                                bytes: OwnedBytes::new(),
-                            });
-                        }
-                        None => {}
+                    if !index.drained.contains(&id)
+                        && let Some(&Staged::Spilled { offset, length }) = index.objects.get(&id)
+                    {
+                        spilled.value.push((id, offset, length));
                     }
                 }
             }
-            position = end;
-            if writes.value.is_empty() && spilled.value.is_empty() {
-                continue;
-            }
-            if let Some(native) = work.original {
-                for &(id, offset, length, position) in &spilled.value {
-                    work.cancellation
-                        .check()
-                        .map_err(|_| ObjectStoreError::Cancelled)?;
-                    let hashed = length;
-                    native.admit(WorkCounters {
-                        object_bytes_read: length,
-                        bytes_hashed: hashed,
-                        ..WorkCounters::UNCHARGED
-                    })?;
-                    let bytes = staged_native_read(
-                        spill.as_ref().ok_or(ObjectStoreError::Corrupt)?,
-                        offset,
-                        usize::try_from(length).map_err(|_| ObjectStoreError::Corrupt)?,
-                        native,
-                    )
-                    .await?;
-                    let observed = byte_length(&bytes);
-                    native.record_admitted(WorkCounters {
-                        object_bytes_read: observed,
-                        ..WorkCounters::UNCHARGED
-                    })?;
-                    if observed != length {
-                        return Err(ObjectStoreError::Corrupt);
-                    }
-                    native.charge(WorkCounters {
-                        bytes_hashed: hashed,
-                        ..WorkCounters::UNCHARGED
-                    })?;
-                    if crate::storage::object_digest(&bytes) != id.digest {
-                        return Err(ObjectStoreError::Corrupt);
-                    }
-                    writes.value[position] = ObjectWrite {
-                        object_id: id,
-                        bytes,
-                    };
-                }
-            } else if !spilled.value.is_empty() {
+            let recovered = if spilled.value.is_empty() {
+                None
+            } else {
                 let bytes = spilled
                     .value
                     .iter()
-                    .fold(0_u64, |sum, &(_, _, length, _)| sum.saturating_add(length));
+                    .fold(0_u64, |sum, &(_, _, length)| sum.saturating_add(length));
                 work.accounting()
                     .charge(WorkCounters {
                         backend_read_operations: 1,
@@ -195,36 +145,76 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                         ..WorkCounters::UNCHARGED
                     })
                     .map_err(crate::async_storage::object_error)?;
-                let reads = work.vec_owned(spilled.value.len())?;
-                let mut reads = Retained::from_owned(reads, &mut work.accounting())
-                    .map_err(crate::async_storage::object_error)?;
-                reads.value.extend(
-                    spilled
-                        .value
-                        .iter()
-                        .map(|&(id, offset, length, _)| (id, offset, length)),
-                );
-                for (object, &(_, _, _, position)) in read_spilled(
-                    spill.as_ref().ok_or(ObjectStoreError::Corrupt)?,
-                    &reads.value,
+                Some(
+                    read_spilled(
+                        spill.as_ref().ok_or(ObjectStoreError::Corrupt)?,
+                        &spilled.value,
+                    )
+                    .await?,
                 )
-                .await?
-                .into_iter()
-                .zip(&spilled.value)
-                {
-                    let (object_id, bytes) = object.into_parts();
-                    writes.value[position] = ObjectWrite { object_id, bytes };
-                }
+            };
+            let mut recovered = recovered.map(Vec::into_iter);
+            for &id in &targets[position..end] {
+                work.accounting()
+                    .charge_items(1)
+                    .map_err(crate::async_storage::object_error)?;
+                let staged = {
+                    let index = self.index();
+                    if index.drained.contains(&id) {
+                        drop(index);
+                        self.collection.writing(unswept, [id]);
+                        self.index_mut().remove(id);
+                        continue;
+                    }
+                    match index.objects.get(&id) {
+                        Some(Staged::Resident { object, .. }) => Ok(object.clone()),
+                        Some(&Staged::Spilled { offset, length }) => Err((offset, length)),
+                        None => continue,
+                    }
+                };
+                let object = match staged {
+                    Ok(object) => object,
+                    Err((offset, length)) => {
+                        if let Some(native) = work.original {
+                            work.cancellation
+                                .check()
+                                .map_err(|_| ObjectStoreError::Cancelled)?;
+                            read_spilled_native(
+                                spill.as_ref().ok_or(ObjectStoreError::Corrupt)?,
+                                id,
+                                offset,
+                                length,
+                                native,
+                            )
+                            .await?
+                        } else {
+                            let object = recovered
+                                .as_mut()
+                                .and_then(Iterator::next)
+                                .ok_or(ObjectStoreError::Corrupt)?;
+                            if object.object_id() != id {
+                                return Err(ObjectStoreError::Corrupt);
+                            }
+                            object
+                        }
+                    }
+                };
+                writes.value.push(object);
             }
+            position = end;
+            drop(recovered);
             drop(spilled);
+            if writes.value.is_empty() {
+                continue;
+            }
             self.collection
-                .writing(unswept, writes.value.iter().map(|write| write.object_id));
+                .writing(unswept, writes.value.iter().map(HashedObject::object_id));
             // A failed batch may have written a prefix. Keep every member staged
             // until the provider acknowledges the batch; immutable retries are safe.
-            self.inner.put_many(&writes.value, work).await?;
+            self.inner.put_many_hashed(&writes.value, work).await?;
             let mut index = self.index_mut();
             for write in &writes.value {
-                index.acknowledge(write.object_id);
+                index.acknowledge(write.object_id());
             }
         }
         let (empty, truncate) = {

@@ -1,0 +1,14 @@
+diff --git a/rust/crates/harness-core/src/executor/code_mode/interpreter.rs b/rust/crates/harness-core/src/executor/code_mode/interpreter.rs
+--- a/rust/crates/harness-core/src/executor/code_mode/interpreter.rs
++++ b/rust/crates/harness-core/src/executor/code_mode/interpreter.rs
+@@ -175,9 +175,7 @@
+                 return result;
+             }
+             if !runtime.is_job_pending().await {
+-                return Err(
+-                    "JavaScript promise cannot settle: no pending jobs or tool calls".into(),
+-                );
++                return Ok(Value::Null);
+             }
+         }
+     };

@@ -206,7 +206,7 @@ fn open_log_file(
             Some(work) => {
                 let parent = crate::native_host::HostRoot::open(paths.directory(), &mut &*work)?;
                 materialization_open_at(
-                    &parent.directory,
+                    &parent.directory(),
                     &paths.current,
                     &crate::native_host::NativeOpenOptions::Read,
                     work,
@@ -217,20 +217,20 @@ fn open_log_file(
     } else if let Some(work) = work {
         let parent = crate::native_host::create_directories(paths.directory(), &mut &*work)?;
         match materialization_open_at(
-            &parent.directory,
+            &parent.directory(),
             &paths.current,
             &crate::native_host::NativeOpenOptions::ReadWriteCreateNew,
             work,
         ) {
             Ok(file) => {
-                crate::native_host::sync_directory_held(&parent.directory, &mut &*work)?;
+                crate::native_host::sync_directory_held(&parent.directory(), &mut &*work)?;
                 file
             }
             Err(crate::materializer::NativeTreeMaterializationError::Io(error))
                 if error.kind() == std::io::ErrorKind::AlreadyExists =>
             {
                 materialization_open_at(
-                    &parent.directory,
+                    &parent.directory(),
                     &paths.current,
                     &crate::native_host::NativeOpenOptions::ReadWrite,
                     work,

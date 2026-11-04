@@ -5,6 +5,7 @@ use crate::model::{Model, ModelMessage, ModelRequest, ModelRole, PreparedModelRe
 fn prepare(messages: &[ModelMessage]) -> Result<PreparedModelRequest> {
     PreparedModelRequest::prepare(
         ModelRequest {
+            summary: false,
             compose_tools: false,
             model: Model::new("test".into(), "segmented".into(), "1".into())?,
             messages: messages.to_vec(),
@@ -18,7 +19,7 @@ fn prepare(messages: &[ModelMessage]) -> Result<PreparedModelRequest> {
 }
 
 #[tokio::test]
-async fn admitted_request_append_reads_only_the_manifest_at_every_history_length() -> Result<()> {
+async fn admitted_request_append_reads_only_the_manifest_as_history_grows() -> Result<()> {
     let (journal, _issuer) = test_support::journal().await?;
     let operation = OperationId::new();
     journal
@@ -33,19 +34,28 @@ async fn admitted_request_append_reads_only_the_manifest_at_every_history_length
         .await?;
     let mut retained: Option<PreparedModelRequest> = None;
     let mut previous = None;
-    for step in 1..=1000 {
-        let message = ModelMessage {
-            role: ModelRole::User,
-            content: ModelContent::Text(format!("turn {step}")),
+    // Grow the same admitted history to 1,000 messages in geometric batches.
+    // The receipt measures the append itself; publishing every intermediate
+    // message adds setup work without strengthening that bound.
+    for step in [
+        1, 2, 4, 8, 16, 32, 64, 100, 128, 192, 256, 384, 512, 640, 768, 1000,
+    ] {
+        let messages = |start| {
+            (start..step).map(|index| ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text(format!("turn {}", index + 1)),
+            })
         };
         let prepared = match retained.take() {
             Some(previous) => {
+                let count = previous.request().messages.len() as u32;
                 let mut continued = previous.into_continuation();
-                continued.messages().push(message);
+                continued.messages().extend(messages(count));
                 continued.finish(Limits::default(), None)?
             }
-            None => prepare(&[message])?,
+            None => prepare(&messages(0).collect::<Vec<_>>())?,
         };
+        assert_eq!(prepared.request().messages.len(), step as usize);
         let key = format!("request:{step}");
         let request = journal
             .stage_prepared_model_request(operation, &key, &prepared, previous.as_ref(), None)?

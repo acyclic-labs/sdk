@@ -166,7 +166,7 @@ async fn read_reported_generation(
 
 #[tokio::test]
 async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<()> {
-    let (_temp, _root, fs, store, main) = fixture().await?;
+    let (temp, _root, fs, store, main) = fixture().await?;
     let stop = CancellationToken::new();
     let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
     main.write(
@@ -177,6 +177,16 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
         &mut work,
     )
     .await?;
+    for path in ["/binary.dat", "/deleted.txt"] {
+        main.write(
+            path,
+            bytes::Bytes::from_static(b"base\0").into(),
+            IdempotencyKey::new(),
+            PublicationPermit::Unrestricted,
+            &mut work,
+        )
+        .await?;
+    }
     acyclic_fs::WorkspaceGraph::new(store.clone())
         .register_root(main.workspace())
         .await?;
@@ -385,7 +395,43 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
             )
             .await?;
     }
-    let plan = acyclic_harness_core::filesystem::plan_agent_merge(
+    for (workspace, bytes) in [(&main, b"ours\n".as_slice()), (&child, b"theirs\n")] {
+        workspace
+            .write(
+                "/file.txt",
+                bytes::Bytes::copy_from_slice(bytes).into(),
+                IdempotencyKey::new(),
+                PublicationPermit::Unrestricted,
+                &mut work,
+            )
+            .await?;
+    }
+    // Force native object-backed content as well as the inline text path. These
+    // are authored filesystem inputs; descriptors must retain their records,
+    // rather than embedding opaque bodies or borrowing the current HEAD.
+    for (workspace, prefix) in [(&main, b"ours\0".as_slice()), (&child, b"theirs\0")] {
+        let mut body = vec![0; 4096];
+        body[..prefix.len()].copy_from_slice(prefix);
+        workspace
+            .write(
+                "/binary.dat",
+                bytes::Bytes::from(body).into(),
+                IdempotencyKey::new(),
+                PublicationPermit::Unrestricted,
+                &mut work,
+            )
+            .await?;
+    }
+    main.write(
+        "/deleted.txt",
+        bytes::Bytes::from_static(b"modified\0").into(),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut work,
+    )
+    .await?;
+    child.remove("/deleted.txt", None, &mut work).await?;
+    let (plan, join) = acyclic_harness_core::filesystem::plan_agent_merge(
         &fs,
         &store,
         &child,
@@ -393,6 +439,9 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
         repo,
     )
     .await?;
+    assert_eq!(join.source_head(), plan.source_generation);
+    assert_eq!(join.target_head(), plan.target_generation);
+    assert_eq!(join.common_ancestor(), plan.base_generation);
     assert!(
         plan.child_wins_bindings
             .contains(&"/ignored/child.txt".to_owned())
@@ -402,6 +451,201 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
             .contains(&"/.acyclic-sdk/state".to_owned())
     );
     assert!(!plan.child_wins_bindings.contains(&"/result.txt".to_owned()));
+
+    // Use the configured native planner's retained join, then reopen completed
+    // proposals after retiring its preview and the original filesystem handles.
+    // This checks durable files, not recovery of an interrupted page cursor.
+    let projection_cancel = CancellationToken::new();
+    let preview = join
+        .preview_pages(
+            acyclic_fs::ApplyOptions {
+                if_target: plan.target_generation,
+                idempotency_key: IdempotencyKey::new(),
+            },
+            WorkBudget::UNBOUNDED,
+            &projection_cancel,
+        )
+        .await?
+        .value;
+    let staging = fs
+        .create_workspace_with_config(
+            "merge-proposals",
+            VolumeConfig::native(Lifecycle::Durable),
+            WorkBudget::UNBOUNDED,
+            &stop,
+        )
+        .await?
+        .value;
+    let mut directory = preview.directory(staging.clone(), OperationId::new())?;
+    let conflict_id = main
+        .workspace()
+        .stat("/file.txt", WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value
+        .file_id;
+    let conflict_path =
+        directory.conflict_file_path(&acyclic_fs::ConflictKey::File(conflict_id))?;
+    let mut non_text = Vec::new();
+    for (path, kind) in [
+        (
+            "/binary.dat",
+            acyclic_fs::workspace::MergeConflictFileKind::Binary,
+        ),
+        (
+            "/deleted.txt",
+            acyclic_fs::workspace::MergeConflictFileKind::Deleted,
+        ),
+    ] {
+        let id = main
+            .workspace()
+            .stat(path, WorkBudget::UNBOUNDED, &stop)
+            .await?
+            .value
+            .file_id;
+        non_text.push((
+            id,
+            path,
+            kind,
+            format!(
+                "{}.conflict.json",
+                directory.conflict_file_path(&acyclic_fs::ConflictKey::File(id))?
+            ),
+        ));
+    }
+    let step = std::num::NonZeroU32::new(1).ok_or("zero page size")?;
+    while !directory.plan().complete {
+        let before = directory.plan().examined_clean + directory.plan().exposed_conflicts;
+        let section = if directory.plan().conflicts_complete {
+            acyclic_fs::workspace::MergeDirectorySection::Clean
+        } else {
+            acyclic_fs::workspace::MergeDirectorySection::Conflicts
+        };
+        directory
+            .write_page(section, step, PublicationPermit::Unrestricted)
+            .await?;
+        let after = directory.plan().examined_clean + directory.plan().exposed_conflicts;
+        assert!(
+            after - before <= 1,
+            "native page consumed an unbounded delta"
+        );
+    }
+    let expected = directory.plan().clone();
+    assert_eq!(expected.ours, plan.target_generation);
+    assert_eq!(expected.theirs, plan.source_generation);
+    assert_eq!(expected.base, plan.base_generation);
+    assert!(expected.clean > 1, "fixture must cross the page boundary");
+    assert!(
+        expected.conflicts >= 3,
+        "fixture must stage text, binary and deletion conflicts"
+    );
+    assert_eq!(
+        main.workspace()
+            .head(WorkBudget::UNBOUNDED, &stop)
+            .await?
+            .value
+            .id(),
+        expected.ours,
+        "proposal staging published the target"
+    );
+    let plan_path = format!("{}/plan.json", directory.path());
+    let binary_key = acyclic_fs::ConflictKey::File(non_text[0].0);
+    let resolution_path = format!(
+        "{}.resolve.json",
+        directory.conflict_file_path(&binary_key)?
+    );
+    staging
+        .write_text(&resolution_path, r#"{"take":"theirs"}"#)
+        .await?;
+    let selected = staging.head(WorkBudget::UNBOUNDED, &stop).await?.value;
+    assert!(matches!(
+        directory.resolution(&selected, &binary_key).await?,
+        acyclic_fs::MergeResolution::Select(acyclic_fs::ConflictSide::Theirs)
+    ));
+    projection_cancel.cancel();
+    assert!(matches!(
+        directory.resolution(&selected, &binary_key).await,
+        Err(acyclic_fs::DrivenJoinError::Workspace(
+            acyclic_fs::WorkspaceError::Cancelled(_)
+        ))
+    ));
+    assert!(matches!(
+        directory
+            .write_page(
+                acyclic_fs::workspace::MergeDirectorySection::Conflicts,
+                step,
+                PublicationPermit::Unrestricted,
+            )
+            .await,
+        Err(acyclic_fs::WorkspaceError::Cancelled(_))
+    ));
+    assert_eq!(
+        staging.head(WorkBudget::UNBOUNDED, &stop).await?.value.id(),
+        selected.id(),
+        "cancelled projection wrote another staging generation"
+    );
+    drop(directory);
+    drop(staging);
+    drop(child);
+    drop(main);
+    drop(fs);
+    let reopened = LocalFs::local(LocalOptions::new(temp.path().join("fs"))).await?;
+    let staging = reopened
+        .open_workspace("merge-proposals", WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value;
+    let bytes = staging
+        .read(&plan_path, 16384, WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value;
+    let restored: acyclic_fs::workspace::MergeDirectoryPlan = serde_json::from_slice(&bytes)?;
+    assert_eq!(restored, expected);
+    let text = staging
+        .read(&conflict_path, 16384, WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value;
+    let text = std::str::from_utf8(&text)?;
+    assert!(text.contains("<<<<<<<") && text.contains("=======") && text.contains(">>>>>>>"));
+    assert!(text.contains("ours\n") && text.contains("theirs\n"));
+    for (file_id, source_path, kind, path) in non_text {
+        let bytes = staging
+            .read(&path, 16384, WorkBudget::UNBOUNDED, &stop)
+            .await?
+            .value;
+        let descriptor: acyclic_fs::workspace::MergeConflictFile = serde_json::from_slice(&bytes)?;
+        assert_eq!(descriptor.version, 1);
+        assert_eq!(descriptor.kind, kind);
+        assert_eq!(descriptor.conflict.path.as_deref(), Some(source_path));
+        assert_eq!(
+            descriptor.conflict.key,
+            acyclic_fs::ConflictKey::File(file_id)
+        );
+        assert_eq!(
+            descriptor.conflict.base,
+            acyclic_fs::ConflictValue::Record {
+                generation: expected.base,
+                file_id,
+            }
+        );
+        assert_eq!(
+            descriptor.conflict.ours,
+            acyclic_fs::ConflictValue::Record {
+                generation: expected.ours,
+                file_id,
+            }
+        );
+        let theirs = if kind == acyclic_fs::workspace::MergeConflictFileKind::Deleted {
+            acyclic_fs::ConflictValue::Absent
+        } else {
+            acyclic_fs::ConflictValue::Record {
+                generation: expected.theirs,
+                file_id,
+            }
+        };
+        assert_eq!(
+            descriptor.conflict.theirs, theirs,
+            "durable non-text descriptor substituted content or a live-head identity"
+        );
+    }
     Ok(())
 }
 

@@ -24,7 +24,7 @@ fn file_opens_check_kind_and_reparse_during_the_open_for_every_disposition()
             let (result, events) = acyclic_test_support::differential::observe::<_, _, &'static str>(
                 || stat_probe::Probe::rescan(false),
                 |probe| {
-                    let result = open_leaf(&root.directory, Path::new(&name), options, &mut work);
+                    let result = open_leaf(&root.directory(), Path::new(&name), options, &mut work);
                     probe.publish();
                     result
                 },
@@ -70,7 +70,7 @@ fn file_opens_check_kind_and_reparse_during_the_open_for_every_disposition()
         std::fs::create_dir(temporary.path().join(&directory))?;
         assert!(
             open_leaf(
-                &root.directory,
+                &root.directory(),
                 Path::new(&directory),
                 options,
                 &mut ordinary_work()
@@ -103,7 +103,13 @@ fn file_opens_preserve_budget_and_unspent_cancellation_checks()
                 NativeOpenOptions::Read
             };
             assert_eq!(
-                open_leaf(&root.directory, Path::new("existing"), &options, &mut &work).is_ok(),
+                open_leaf(
+                    &root.directory(),
+                    Path::new("existing"),
+                    &options,
+                    &mut &work
+                )
+                .is_ok(),
                 limit == 1
             );
             assert_eq!(
@@ -125,7 +131,15 @@ fn file_opens_preserve_budget_and_unspent_cancellation_checks()
         } else {
             NativeOpenOptions::Read
         };
-        assert!(open_leaf(&root.directory, Path::new("existing"), &options, &mut &work).is_err());
+        assert!(
+            open_leaf(
+                &root.directory(),
+                Path::new("existing"),
+                &options,
+                &mut &work
+            )
+            .is_err()
+        );
         assert_eq!(work.receipt().backend_read_operations, 0);
         assert_eq!(work.receipt().backend_write_operations, 0);
     }
@@ -156,7 +170,7 @@ fn file_opens_reject_final_links_without_changing_the_target()
         NativeOpenOptions::ReadWriteCreate,
     ] {
         let result = open_leaf(
-            &root.directory,
+            &root.directory(),
             Path::new("link"),
             &options,
             &mut ordinary_work(),
@@ -187,7 +201,7 @@ fn held_full_flush_preserves_file_directory_attempts_and_native_access_errors()
     let mut work = ordinary_work();
     sync_file_held(&file, &mut work)?;
     assert_eq!(work.receipt().durability_operations, 1);
-    sync_directory_held(&root.directory, &mut work)?;
+    sync_directory_held(&root.directory(), &mut work)?;
     assert_eq!(work.receipt().durability_operations, 2);
     let readonly = std::fs::File::open(&path)?;
     let result = sync_file_held(&readonly, &mut work);

@@ -14,8 +14,9 @@ use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectReadRequest};
+use acyclic_collections::page::Direction;
 use std::mem::size_of;
-use std::ops::Bound;
+use std::ops::{Bound, Range};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Receipt<V> {
@@ -50,7 +51,7 @@ impl<K> Pending<K> {
 )]
 pub(crate) async fn paginate<S, F>(
     store: &S,
-    query: (ObjectId, Bound<&F::Key>, u32),
+    query: (ObjectId, Bound<&F::Key>, u32, Direction),
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
@@ -60,11 +61,11 @@ where
     S: AsyncObjectStore,
     F: Format,
 {
-    let (root, bound, maximum_values) = query;
+    let (root, bound, maximum_values, direction) = query;
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     let result = paginate_with_accounting::<S, F>(
         store,
-        (root, bound, maximum_values),
+        (root, bound, maximum_values, direction),
         limits,
         &mut accounting,
         cancellation,
@@ -82,7 +83,7 @@ where
 )]
 pub(crate) async fn paginate_with_accounting<S, F>(
     store: &S,
-    query: (ObjectId, Bound<&F::Key>, u32),
+    query: (ObjectId, Bound<&F::Key>, u32, Direction),
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -92,12 +93,13 @@ where
     S: AsyncObjectStore,
     F: Format,
 {
-    let (root, bound, maximum_values) = query;
+    let (root, bound, maximum_values, direction) = query;
     accounting.check()?;
     let mut machine = Machine::<F>::new_with_accounting(
         root,
         bound,
         maximum_values,
+        direction,
         limits,
         accounting,
         data_custody,
@@ -154,6 +156,7 @@ where
 
 struct Machine<'a, 'accounting, F: Format> {
     bound: Bound<&'a F::Key>,
+    direction: Direction,
     target: usize,
     maximum_traversal_pages: usize,
     limits: DecodeLimits,
@@ -177,6 +180,7 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         root: ObjectId,
         bound: Bound<&'a F::Key>,
         maximum_values: u32,
+        direction: Direction,
         limits: DecodeLimits,
         accounting: &'a mut KernelAccounting<'accounting>,
         data_custody: Option<&'a super::ProofDataCustody>,
@@ -282,6 +286,7 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         };
         let mut machine = Self {
             bound,
+            direction,
             target,
             maximum_traversal_pages,
             limits,
@@ -450,33 +455,79 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         Ok(within)
     }
 
-    fn value_start(&mut self, values: &[F::Value]) -> Result<usize, Failure> {
+    fn value_range(&mut self, values: &[F::Value]) -> Result<Range<usize>, Failure> {
         let bound = self.bound;
-        if matches!(bound, Bound::Unbounded) {
-            return Ok(0);
-        }
-        let result = partition_point_with_accounting(values, self.accounting, |value| {
-            let key = F::key(value);
-            match bound {
-                Bound::Included(cursor) => key < cursor,
-                Bound::Excluded(cursor) => key <= cursor,
-                Bound::Unbounded => false,
+        let direction = self.direction;
+        let edge = if matches!(bound, Bound::Unbounded) {
+            match direction {
+                Direction::Ascending => 0,
+                Direction::Descending => values.len(),
             }
-        });
-        result.map_err(|error| self.failure(error))
+        } else {
+            partition_point_with_accounting(values, self.accounting, |value| {
+                let key = F::key(value);
+                match (direction, bound) {
+                    (Direction::Ascending, Bound::Included(cursor))
+                    | (Direction::Descending, Bound::Excluded(cursor)) => key < cursor,
+                    (Direction::Ascending, Bound::Excluded(cursor))
+                    | (Direction::Descending, Bound::Included(cursor)) => key <= cursor,
+                    (_, Bound::Unbounded) => false,
+                }
+            })
+            .map_err(|error| self.failure(error))?
+        };
+        Ok(match direction {
+            Direction::Ascending => edge..values.len(),
+            Direction::Descending => 0..edge,
+        })
     }
 
-    fn child_start(&mut self, children: &[Child<F::Key>]) -> Result<usize, Failure> {
-        let cursor = match self.bound {
-            Bound::Included(cursor) | Bound::Excluded(cursor) => cursor,
-            Bound::Unbounded => return Ok(0),
+    fn child_range(&mut self, children: &[Child<F::Key>]) -> Result<Range<usize>, Failure> {
+        let direction = self.direction;
+        let edge = match self.bound {
+            Bound::Unbounded => match direction {
+                Direction::Ascending => 0,
+                Direction::Descending => children.len(),
+            },
+            bound => {
+                let partition = partition_point_with_accounting(
+                    children,
+                    self.accounting,
+                    |child| match bound {
+                        Bound::Included(cursor) => child.first <= *cursor,
+                        Bound::Excluded(cursor) if direction == Direction::Descending => {
+                            child.first < *cursor
+                        }
+                        Bound::Excluded(cursor) => child.first <= *cursor,
+                        Bound::Unbounded => false,
+                    },
+                )
+                .map_err(|error| self.failure(error))?;
+                match direction {
+                    Direction::Ascending => partition.saturating_sub(1),
+                    Direction::Descending => partition,
+                }
+            }
         };
-        let result = partition_point_with_accounting(children, self.accounting, |child| {
-            child.first <= *cursor
-        });
-        result
-            .map(|index| index.saturating_sub(1))
-            .map_err(|error| self.failure(error))
+        let maximum = self
+            .target
+            .saturating_sub(self.values.len())
+            .saturating_add(1);
+        let range = match direction {
+            Direction::Ascending => edge..edge.saturating_add(maximum).min(children.len()),
+            Direction::Descending => edge.saturating_sub(maximum)..edge,
+        };
+        let successor = match direction {
+            Direction::Ascending => children.get(range.end),
+            Direction::Descending => range
+                .start
+                .checked_sub(1)
+                .and_then(|index| children.get(index)),
+        };
+        if let Some(child) = successor {
+            self.successor_page = Some(child.page);
+        }
+        Ok(range)
     }
 
     fn accept(
@@ -528,12 +579,12 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         if !self.leaf_bounds(values, pending)? {
             return Err(failed(Error::ChildBoundsMismatch, self.accounting.spent()));
         }
-        let start = self.value_start(values)?;
-        for value in values
-            .iter()
-            .skip(start)
-            .take(self.target.saturating_sub(self.values.len()))
-        {
+        let range = self.value_range(values)?;
+        let mut selected = values[range].iter();
+        while self.values.len() < self.target {
+            let Some(value) = self.direction.next(&mut selected) else {
+                break;
+            };
             self.examine_value(value)?;
             let prefix = begin_custody_leaf(self.accounting, self.data_custody)
                 .map_err(|error| self.failure(error))?;
@@ -567,50 +618,30 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         if !self.child_bounds(children, pending)? {
             return Err(failed(Error::ChildBoundsMismatch, self.accounting.spent()));
         }
-        let start = self.child_start(children)?;
+        let range = self.child_range(children)?;
         let height = self.next_height(pending.height)?;
-        let end = start
-            .saturating_add(
-                self.target
-                    .saturating_sub(self.values.len())
-                    .saturating_add(1),
-            )
-            .min(children.len());
-        if let Some(child) = children.get(end) {
-            self.successor_page = Some(child.page);
-        }
-        let mut next_lower: Option<Owned<F::Key>> = None;
-        let result = (|| {
-            for (offset, child) in children.iter().enumerate().take(end).skip(start).rev() {
-                let lower = self.clone_key(&child.first)?;
-                let upper = next_lower.take().or_else(|| pending.upper.take());
-                let previous = if offset == start {
-                    Ok(None)
-                } else {
-                    self.clone_key(&child.first).map(Some)
-                };
-                let previous = match previous {
-                    Ok(previous) => previous,
+        let mut offsets = range;
+        while let Some(offset) = self.direction.reversed().next(&mut offsets) {
+            let child = &children[offset];
+            let lower = self.clone_key(&child.first)?;
+            let upper = match children.get(offset + 1) {
+                Some(next) => match self.clone_key(&next.first) {
+                    Ok(upper) => Some(upper),
                     Err(failure) => {
-                        self.retire_bounds(Some(lower), upper)?;
+                        self.retire_bounds(Some(lower), None)?;
                         return Err(failure);
                     }
-                };
-                if let Err(failure) = self.push_pending(Pending {
-                    page: child.page,
-                    lower: Some(lower),
-                    upper,
-                    height,
-                }) {
-                    self.retire_bounds(previous, None)?;
-                    return Err(failure);
-                }
-                next_lower = previous;
-            }
-            Ok(())
-        })();
-        self.retire_bounds(next_lower, None)?;
-        result
+                },
+                None => pending.upper.take(),
+            };
+            self.push_pending(Pending {
+                page: child.page,
+                lower: Some(lower),
+                upper,
+                height,
+            })?;
+        }
+        Ok(())
     }
 
     fn next_height(&self, height: u16) -> Result<u16, Failure> {
@@ -650,12 +681,13 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
             if !self.leaf_bounds(&values, pending)? {
                 return Err(failed(Error::ChildBoundsMismatch, self.accounting.spent()));
             }
-            let start = self.value_start(&values)?;
+            let range = self.value_range(&values)?;
             // Iterator destruction drops every skipped/unselected item and the source buffer.
-            for value in values.into_iter().skip(start) {
-                if self.values.len() == self.target {
+            let mut selected = values.into_iter().skip(range.start).take(range.len());
+            while self.values.len() < self.target {
+                let Some(value) = self.direction.next(&mut selected) else {
                     break;
-                }
+                };
                 let nested = self.examine_value(&value)?;
                 let tag =
                     split_allocation(allocation, nested).map_err(|error| self.failure(error))?;
@@ -685,36 +717,41 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
     ) -> Result<(), Failure> {
         let mut moved_nested = 0_u64;
         let mut next_lower: Option<Owned<F::Key>> = None;
+        let mut outer_upper: Option<Owned<F::Key>> = None;
         let result = (|| {
             if !self.child_bounds(&children, pending)? {
                 return Err(failed(Error::ChildBoundsMismatch, self.accounting.spent()));
             }
-            let start = self.child_start(&children)?;
-            let height = self.next_height(pending.height)?;
-            let end = start
-                .saturating_add(
-                    self.target
-                        .saturating_sub(self.values.len())
-                        .saturating_add(1),
-                )
-                .min(children.len());
-            if let Some(child) = children.get(end) {
-                self.successor_page = Some(child.page);
+            let range = self.child_range(&children)?;
+            if range.is_empty() {
+                return Ok(());
             }
+            let height = self.next_height(pending.height)?;
+            outer_upper = match children.get(range.end) {
+                Some(next) => Some(self.clone_key(&next.first)?),
+                None => pending.upper.take(),
+            };
             let mut children = children;
-            children.truncate(end);
-            let mut tail = children.drain(start..);
-            while let Some(child) = tail.next_back() {
-                let previous = if tail.len() == 0 {
-                    None
-                } else {
-                    Some(self.clone_key(&child.first)?)
+            children.truncate(range.end);
+            let mut tail = children.drain(range.start..);
+            while let Some(child) = self.direction.reversed().next(&mut tail) {
+                let adjacent = match self.direction {
+                    Direction::Ascending if tail.len() != 0 => Some(&child.first),
+                    Direction::Descending => tail.as_slice().first().map(|next| &next.first),
+                    Direction::Ascending => None,
+                };
+                let previous = match adjacent.map(|key| self.clone_key(key)).transpose() {
+                    Ok(previous) => previous,
+                    Err(failure) => {
+                        self.retire_bounds(outer_upper.take(), None)?;
+                        return Err(failure);
+                    }
                 };
                 let bytes = F::key_owned_bytes(&child.first);
                 let tag = match split_allocation(allocation, bytes) {
                     Ok(tag) => tag,
                     Err(error) => {
-                        self.retire_bounds(previous, None)?;
+                        self.retire_bounds(previous, outer_upper.take())?;
                         return Err(self.failure(error));
                     }
                 };
@@ -722,23 +759,32 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
                     .checked_add(bytes)
                     .ok_or_else(|| failed(Error::AllocationFailed, self.accounting.spent()))?;
                 let lower = Owned::new(child.first, tag, bytes);
-                let upper = next_lower.take().or_else(|| pending.upper.take());
+                let (upper, previous) = match self.direction {
+                    Direction::Ascending => {
+                        (next_lower.take().or_else(|| outer_upper.take()), previous)
+                    }
+                    Direction::Descending => (previous.or_else(|| outer_upper.take()), None),
+                };
                 if let Err(failure) = self.push_pending(Pending {
                     page: child.page,
                     lower: Some(lower),
                     upper,
                     height,
                 }) {
-                    self.retire_bounds(previous, None)?;
+                    if self.direction == Direction::Ascending {
+                        self.retire_bounds(previous, outer_upper.take())?;
+                    }
                     return Err(failure);
                 }
-                next_lower = previous;
+                if self.direction == Direction::Ascending {
+                    next_lower = previous;
+                }
             }
             drop(tail);
             drop(children);
             Ok(())
         })();
-        self.retire_bounds(next_lower, None)?;
+        self.retire_bounds(next_lower, outer_upper)?;
         let released = decoded_bytes
             .checked_sub(moved_nested)
             .ok_or_else(|| failed(Error::TraversalState, self.accounting.spent()))?;

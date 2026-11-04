@@ -31,11 +31,11 @@ proptest::proptest! {
 proptest::proptest! {
     #[test]
     fn seeded_reference_binding_preserves_other_arguments_and_text(
-        text in ".{0,48}", pinned in proptest::bool::ANY,
+        text in ".{0,48}", editing in proptest::bool::ANY,
     ) {
         use acyclic_harness::{model::{ModelEvent, ToolCall}, test_support::{ScriptedEvent, ScriptedTurn}};
         use serde_json::json;
-        let name = if pinned { "read@portable-7" } else { "read" };
+        let name = if editing { "edit" } else { "read" };
         let script = vec![ScriptedTurn::Events(vec![ScriptedEvent::Event(ModelEvent::ToolCall(
             ToolCall::new("call".into(), name.into(), json!({"path":"seed","version":"seed","range":{"start":2,"end":4},"text":text})),
         ))]), ScriptedTurn::Text(text.clone())];
@@ -64,7 +64,7 @@ proptest::proptest! {
         proptest::prop_assert!(super::drivers::check_results(&expected, &broken).is_err());
         use acyclic_harness::model::{Model, ModelContent, ModelContentPart, ModelMessage, ModelRequest, ModelRole, ToolResultContent};
         let part = ModelContentPart::ToolResult {call_id:"call".into(), name:"read".into(), content:ToolResultContent::Json {value:json!(text)}};
-        let request = ModelRequest {compose_tools: false,model:Model::new("scripted".into(),"local".into(),"1".into())?,
+        let request = ModelRequest {summary: false,compose_tools: false,model:Model::new("scripted".into(),"local".into(),"1".into())?,
             messages:vec![ModelMessage {role:ModelRole::Tool,content:ModelContent::Parts(vec![part.clone(),part])}], tools:vec![], sampling: Default::default(), max_output_tokens:None};
         proptest::prop_assert!(super::drivers::model_results(&request).is_err());
     }
@@ -143,7 +143,7 @@ async fn bash_family_rejects_corrupted_stdout_with_the_same_persisted_bytes() ->
 
 #[tokio::test]
 async fn fs_family_rejects_executing_a_rejected_command() -> crate::TestResult {
-    reject_changed_command("default-tools/fs/whitespace.json", "add plans/a.md").await
+    reject_changed_command("default-tools/fs/whitespace.json", "commit -m plans").await
 }
 
 #[tokio::test]

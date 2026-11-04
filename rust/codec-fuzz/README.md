@@ -27,6 +27,84 @@ cargo run --locked --example capture
 cargo run --locked --example replay
 ```
 
+Pass a target name to replay only its retained corpus, for example
+`cargo run --locked --example replay -- actor_codecs`. The Actors oracle first
+requires admission of the production writers shared with capture, including
+their original invocation, checkpoint and effect values. The current invocation
+wire capture comes from `Store::enqueue_invoke` and the returned ticket's original
+record, including provider-assigned sequence, commit, time and origin. Earlier
+invocation captures remain historical inputs. Run
+`python3 actor-negative-control.py` to prove that the same corpus oracle detects
+a production invocation decoder that rejects every marked request. The control
+also demonstrates that conditional round trips alone miss that mutation and
+restores both source files on exit. Corpus replay does not establish instrumented
+fuzz coverage or distributed recovery guarantees.
+
+`python3 actor-negative-control.py --guest-wire` plants refusals in the actual
+manifest and delivery decoders. The conditional oracle must miss both, then the
+unchanged positive writer oracle must reject each independently. Exact source
+restoration replays the retained corpus. This reuses the original manifest and
+delivery producers, corpus and provenance; it does not qualify complete branch
+coverage or physical guest transport.
+
+The `call_record` target drives `call::model::check` through the original commit
+builders, provider and journal. The `actor_codecs` target feeds committed Stream wire envelopes to
+`Entry::decode`, `fence` and `Journal::apply`. Its positive records are captured
+from actual commits with a fixed provider clock and stable retry identities.
+Admission distinguishes cancellation before acceptance from the indeterminate
+outcome after acceptance. `python3 actor-negative-control.py --call-records`
+shows that admission without the call binding misses loss of acceptance context;
+the unchanged expanded oracle must reject that same production defect. Existing
+Host producer admission already rejects a call decoder which refuses every
+record. This finite provider model does not establish physical
+recovery, distributed ownership or complete branch coverage.
+
+Call schedules reuse the original Actors corpus and its provenance without
+copying it: `cargo run --locked --example replay -- actor_codecs call_record`
+or `cargo +nightly fuzz run --fuzz-dir . call_record corpus/actor_codecs`.
+These bytes select arbitrary schedules; they are not a call wire format.
+Decoder replay performs no per-input call commits. Keep schedule exploration
+in `call_record` so larger codec captures do not expand unrelated histories.
+
+`python3 actor-negative-control.py --alarms` checks the original guest transition
+decoder with independent mutations that lose `Set` or `Clear`. It first shows
+that the earlier `Keep`-only producer/corpus misses lost `Set`, requires the same
+expanded oracle to reject both mutations, then captures and replays the original
+writers. Captures include zero, ordinary and maximum unsigned deadlines through
+the shared transition encoder. Refresh only these Actors captures with
+`cargo run --locked --example capture -- --only-actors --extend-goldens`.
+Use `python3 actor-negative-control.py --capture` to capture and replay without
+repeating source mutations already qualified on unchanged decoder/oracle paths.
+Full and Actors-only capture retain every historical Actors input and its provenance.
+Versioned invocation and State writer captures retain the earlier corpus and
+provenance, including transitions that contain the earlier State version.
+
+`python3 actor-negative-control.py --persisted-alarms` covers the deployed
+State codec after actual Store publications: a committed input sets an alarm,
+its firing preserves the deadline while consuming the generation, and a second
+committed input clears it. The shared producer checks the expected cursor and
+alarm tuple after each publication. The control removes delivery-generation
+decoding in production, shows the create-only oracle misses it, and requires the
+unchanged expanded oracle to reject it before capturing original writer bytes.
+These finite MemoryStream publications cover the persisted codec and Store
+transition path; physical restart, membership and runtime scheduling remain
+separate obligations.
+
+The existing `stream_persistence` target also checks typed refusal before a
+fixed header is complete. Its corpus contains actual retained-fact encoder
+output captured by `acyclic_stream::codec_fuzz::seeds`; the persisted-version
+control derives every foreign version byte and its truncated header from
+those same production encoders, for observations and envelopes. Run it with:
+
+```sh
+cargo nextest run --locked -p acyclic-stream --features local,test-support --lib -E 'test(=persistence::tests::old_and_unknown_fact_versions_refuse_before_payload)'
+```
+
+Apply `rust/codec-fuzz/negative-controls/stream-header-truncated-foreign.patch`
+from the repository root to restore the original production guard. The same
+control must fail at `persisted fuzz oracle`; this checks the actual oracle
+used by the fuzz target. Reverse the patch before running the intact source.
+
 Refresh only the current agent record and checkpoint writers with:
 
 ```sh
@@ -89,6 +167,50 @@ names, so wire mutation must preserve those fields. Quiet Usage and Events
 snapshots must refuse a live wait without source progress or settlement.
 These are SDK writer captures, not hosted traffic or
 evidence of authentication, dispatch, restart or distributed progress.
+
+Capture cache facts, summary references and epoch snapshots through their original
+writers with `cargo run --locked --example capture -- --only-resources --extend-goldens`.
+The existing `harness_codecs` target checks their public decoders, round trips,
+unsupported versions, mandatory portable text, native provenance and snapshot
+source/range/preparation identity. Its genesis envelope comes from a real
+`MemoryStream` commit/read; fuzz mutations replace only the value. These internal
+writer captures do not qualify stream authentication, hosted transport, provider
+cache attribution or physical producer retirement.
+Five additional inputs use serde's positional SnapshotWire fields derived from
+the original writer payloads. Each must pass the production decoder first.
+The oracle builds mutations from the successfully re-encoded snapshot, so all
+accepted field spellings use the writer's canonical object shape. A protective
+writer refusal still leaves source and settled-prefix checks exercised; the
+writer-dependent mutation checks apply only when encoding succeeds.
+
+Run the retained production mutations with
+`python3 mutations/resource-codecs.py`. It first captures and checks the writer
+inputs, then removes each production admission guard while keeping the fuzz
+oracle unchanged. Rejection requires that guard's semantic diagnostic at the
+resource oracle's source location; an unrelated assertion, compiler or tool
+failure does not count.
+Use `--only snapshot-generation` (or another listed guard) to qualify a changed
+oracle without repeating unrelated mutation controls. The pending-generation
+challenge changes only the pending field, reaching `State::restore` through
+`Snapshot::decode` while leaving the earlier epoch parity fence satisfied.
+The two pending-range challenges recompute the content address with the original
+`SummaryKey::digest` writer, so the later identity fence cannot mask an omitted
+range check. They require the original typed range refusal at the covered cursor
+and beyond the source head. The settled-epoch prefix check remains separate;
+pending-state range checks run only through these typed oracles. Select both with
+`--only snapshot-range-start snapshot-range-end`; one original writer replay
+precedes only those two mutations.
+Corpus capture, executed coverage and mutation results must be recorded separately;
+the presence of a target does not establish complete format or state coverage.
+
+The residency harness in `harness-core/src/executor/model_cache.rs` calls the
+production reducer under `cfg(kani)`. It checks every initial access followed by
+every retained access, with independent explicit/managed lifetimes, full-width
+deadline arithmetic, field preservation, source-order and foreign-key/clock
+refusals. This is a two-transition scope from an empty entry, not induction over
+arbitrary histories or arbitrary restored entries. Neither this proof nor the
+codec oracle establishes original provider attribution, funding, physical release
+or whole-system constant cost. Running the codec target does not run Kani.
 
 Agent capture names include the shared record version. Previous captures and
 their provenance stay unchanged; waiting-status and checkpoint seeds retain
@@ -387,3 +509,58 @@ with the caller's original key before releasing IO. The plant must fail at
 require the unchanged control to pass. Successful publication and later
 admission while a read is held remain covered; no timeout, polling or physical
 provider claim is involved.
+
+Reservation producer admission also runs the shipped `Host::wake`, `Package`
+and `Store` with original enqueued invocation records and a controlled clock.
+The existing Actors target compares Granted/Exhausted/Expired/Released/Stale
+results and the populated and released checkpoint against the original owner,
+generation, capacity and deadline. Release uses the actual returned grant.
+`python3 actor-negative-control.py --reservation-book` shows that empty-only
+admission misses a production `Book::validate` which refuses populated state;
+the unchanged producer oracle must catch that same defect. Captures are emitted
+by the original production writers. This finite MemoryStream path does not
+establish physical restart, distributed ownership or instrumented coverage.
+
+The same Actors target admits the actual `SocketOpen::encode`,
+`SocketFrame::encode` and `socket_reply` writers before decoding arbitrary input.
+It checks all frame variants and close initiators, reply fields, and offered
+versus unoffered subprotocols through `socket_verdict`. The documented peer-close
+initiator alias is accepted and normalised by the original decoder.
+`python3 actor-negative-control.py --sockets` requires this unchanged oracle to
+reject production open refusal, lost close codes and skipped subprotocol checks,
+then replays the original retained corpus. These codec controls do not cover
+the separate inbox `InputWire` or prove physical session/recovery behavior.
+
+The same target also admits retained Runtime-created deliveries at
+`SocketPackage::on_record`. The shared physical socket suite independently sends
+and checks Open, text, binary and peer/actor/runtime Close events. Their original
+guest wire envelopes and event projections are in `captures/socket-deliveries.capture`;
+`Delivery::socket` must preserve the connection and every captured event field.
+Arbitrary guest deliveries enter that same private input decoder.
+`python3 actor-negative-control.py --socket-inputs` requires the unchanged oracle
+to reject an actual production `Delivery::socket` returning no events. Error input
+has no shipped producer capture yet; these controls do not establish complete
+branch coverage, non-owner routing or upgrades.
+
+`python3 actor-negative-control.py --socket-metadata` derives wrong sequence,
+alarm trigger, unknown marker version and overflowing offset from those same
+captured deliveries. The positive-only oracle misses a production sequence-guard
+bypass; the unchanged derived-record oracle must catch actual sequence/version
+guard removal. It reuses the original corpus without reconstructing a wire schema.
+
+The same target covers persisted socket epochs and Opened/Closed ledger records.
+`captures/socket-ledger.capture` pairs actual committed LocalStream records with
+their original writer inputs. Admission checks their frontiers and targets,
+unknown fields and versions, and independently computes counter capacity in u128.
+`python3 actor-negative-control.py --socket-ledger` checks production refusal,
+canonicality bypass and wrapping arithmetic with that unchanged oracle. Recovery
+and compaction reserve their required epoch positions before publishing anything.
+
+`python3 actor-negative-control.py --call-schedules` restores the former decoder
+schedule drive and requires a production schedule-entry refusal to expose it.
+The separated decoder must still replay; the unchanged schedule entry must
+reject removal of the actual settlement guard, then replay the original corpus.
+
+Mutation-only controls leave captured inputs and provenance unchanged. Their final
+replay still admits production writers. Use `--capture` explicitly when adding
+original writer inputs; it remains the single corpus and golden update path.

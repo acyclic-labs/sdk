@@ -7,9 +7,22 @@ import { fileURLToPath } from "node:url";
 export const rows = Array.from({ length: 26 }, (_, index) => `A${index + 1}`);
 const directory = dirname(fileURLToPath(import.meta.url));
 
+// A steering `send` lands at the recipient's next model boundary, so whether it
+// joins the recipient's running turn or starts a new one races the recipient's
+// own progress, and the scripted conversation would depend on that race. A
+// scripted send names `follow_up`, which always starts a subsequent turn.
+function scriptedSends(value, id) {
+  if (Array.isArray(value)) return value.forEach(item => scriptedSends(item, id));
+  if (!value || typeof value !== "object") return;
+  if (value.name === "send" && value.arguments)
+    assert.equal(value.arguments.delivery, "follow_up", `${id}: scripted send ${value.id} must use delivery follow_up; a steer races the recipient's model boundary`);
+  for (const item of Object.values(value)) scriptedSends(item, id);
+}
+
 export function inventory(root = directory) {
   return readdirSync(join(root, "cases")).filter(name => name.endsWith(".json")).sort()
     .map(name => JSON.parse(readFileSync(join(root, "cases", name), "utf8")))
+    .map(test => (scriptedSends(test.model, test.id), test))
     .flatMap(test => Array.isArray(test.workspace?.kind)
       ? test.workspace.kind.map(kind => ({ ...test, id: `${test.id}-${kind}`,
         workspace: { ...test.workspace, kind } }))

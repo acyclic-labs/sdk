@@ -12,6 +12,11 @@ fn negative_control_omits_the_source_wake() {
 }
 
 #[test]
+fn cancellation_cannot_be_overtaken_by_a_queued_open() {
+    acyclic_stream::session::verify_cancelled_queued_open();
+}
+
+#[test]
 fn cancelled_follow_is_removed_before_replacement_admission() {
     acyclic_stream::session::verify_cancel_before_open(false);
 }

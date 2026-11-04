@@ -642,20 +642,22 @@ async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<
                 .clone()
                 .with_task_context(&bind(vec![old.clone(), new.clone()])?, operation)?;
             let mut messages = vec![call_message(&invocation)];
-            assert!(matches!(
-                StockExecution::ordinary(&first)
-                    .settle_tool_call(
-                        &journal,
-                        operation,
-                        0,
-                        invocation.clone(),
-                        0,
-                        &mut messages,
-                        &mut Vec::new(),
-                    )
-                    .await,
-                Err(Error::Indeterminate(_))
-            ));
+            let error = StockExecution::ordinary(&first)
+                .settle_tool_call(
+                    &journal,
+                    operation,
+                    0,
+                    invocation.clone(),
+                    0,
+                    &mut messages,
+                    &mut Vec::new(),
+                )
+                .await
+                .err()
+                .expect("lost device reply remains unresolved");
+            assert!(error.uncertain());
+            assert!(matches!(error, Error::Storage(reason)
+                if reason == "device reply lost after effect"));
             let (_, records) = StockExecution::ordinary(&first)
                 .tool_records(&journal, operation, 0, "command")
                 .await?;

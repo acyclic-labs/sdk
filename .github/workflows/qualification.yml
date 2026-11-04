@@ -24,7 +24,7 @@ env:
 jobs:
   plan:
     name: plan
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: kaizen-linux
     timeout-minutes: 10
     permissions:
       contents: read
@@ -106,7 +106,7 @@ jobs:
     name: SDK Qualification
     if: always()
     needs: [ plan, qualification ]
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: kaizen-linux
     timeout-minutes: 2
     steps:
       - name: Require every qualification lane
