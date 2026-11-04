@@ -1243,8 +1243,13 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             .await
             .map_err(storage)?
             .map_err(storage)?;
-    let Delivery::Reply(Ok(committed)) = committed else {
-        panic!("the actual owner must publish its committed result");
+    let committed = match committed {
+        Delivery::Reply(result) => result?,
+        Delivery::Gone => {
+            return Err(Error::Storage(
+                "workspace owner exited before its reply".into(),
+            ));
+        }
     };
     let _: crate::agent::AgentPath =
         serde_json::from_value(committed["task"].clone()).map_err(storage)?;

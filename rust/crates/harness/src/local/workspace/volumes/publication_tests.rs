@@ -403,8 +403,8 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
     // The second binding's refusal proves that ordered entry passed the first
     // binding. An earlier mount failure must not make retirement pass vacuously.
     assert!(
-        matches!(error, Error::Conflict(message) if message == "volume alias replaces a project file"),
-        "scope did not reach the authored blocker"
+        matches!(&error, Error::Conflict(message) if message == "volume alias replaces a project file"),
+        "scope did not reach the authored blocker: {error:?}"
     );
     assert!(!ran.into_inner());
     assert!(
