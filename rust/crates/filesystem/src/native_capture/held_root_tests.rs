@@ -113,33 +113,22 @@ fn every_identity_query_fault_keeps_one_incarnation_or_its_cause() -> Result<(),
     Ok(())
 }
 
-/// The physical native queries of one held-root capture.
-fn capture_queries(duplicate: bool) -> Result<Vec<&'static str>, DemandError> {
-    let directory = tempfile::tempdir()?;
-    let probe = Probe::rescan(false);
-    if duplicate {
-        probe.duplicate_queries();
-    }
-    capture(directory.path())?;
-    Ok(events())
-}
-
 #[test]
 fn a_held_root_capture_makes_exactly_one_open_identity_handle_and_volume_query()
 -> Result<(), DemandError> {
-    assert_eq!(
-        capture_queries(false)?,
-        ["openat", "fstat", "handle", "fsid"]
-    );
-    Ok(())
-}
-
-#[test]
-fn negative_control_a_repeated_identity_query_is_counted() -> Result<(), DemandError> {
-    assert_ne!(
-        capture_queries(true)?,
-        ["openat", "fstat", "handle", "fsid"]
-    );
+    let directory = tempfile::tempdir()?;
+    for duplicate in [false, true] {
+        let probe = Probe::rescan(false);
+        if duplicate {
+            probe.duplicate_queries();
+        }
+        capture(directory.path())?;
+        assert_eq!(
+            events() == ["openat", "fstat", "handle", "fsid"],
+            !duplicate,
+            "the physical-query oracle must distinguish repeated native work"
+        );
+    }
     Ok(())
 }
 
