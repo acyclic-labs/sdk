@@ -608,7 +608,7 @@ fn declared_stream(bytes: &[u8]) {
                     bytes
                         .get(32 + pair * 2 + arm)
                         .copied()
-                        .unwrap_or(arm as u8 + 1),
+                        .unwrap_or(((pair + 1) * (arm + 1)) as u8),
                 );
                 row["score"] = if mask & (1 << arm) != 0 {
                     json!(value - 128)
@@ -654,6 +654,38 @@ fn declared_stream(bytes: &[u8]) {
                     (estimate.difference - mean).abs() <= 64.0 * f64::EPSILON * magnitude.max(1.0),
                     "independent streamed analysis invariant: metric mean"
                 );
+                let n = count as f64;
+                let g = clusters as f64;
+                let paired = differences
+                    .iter()
+                    .flatten()
+                    .map(|value| (*value as f64 - mean).powi(2))
+                    .sum::<f64>();
+                let clustered = [&differences[..2], &differences[2..]]
+                    .into_iter()
+                    .map(|group| {
+                        let sum = group.iter().flatten().sum::<i64>();
+                        let size = group.iter().flatten().count();
+                        (sum as f64 - size as f64 * mean).powi(2)
+                    })
+                    .sum::<f64>();
+                for (name, actual, expected) in [
+                    (
+                        "paired",
+                        estimate.paired_se,
+                        (paired / (n - 1.0) / n).sqrt(),
+                    ),
+                    (
+                        "clustered",
+                        estimate.clustered_se,
+                        (g / (g - 1.0) * clustered / n / n).sqrt(),
+                    ),
+                ] {
+                    assert!(
+                        (actual - expected).abs() <= 128.0 * f64::EPSILON * magnitude.max(1.0),
+                        "independent streamed analysis invariant: {name} uncertainty"
+                    );
+                }
             }
         }
         for (arm, actual) in [&report.baseline_cost, &report.treatment_cost]

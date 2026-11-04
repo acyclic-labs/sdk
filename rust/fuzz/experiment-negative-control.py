@@ -8,6 +8,16 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 FUZZ = ROOT / "rust/fuzz"
 CASES = {
+    "analysis-paired-uncertainty": (
+        "experiments/analysis.rs", "Some(self.stats.estimate()?)",
+        "Some(Estimate { paired_se: 0.0, ..self.stats.estimate()? })", "decision",
+        "independent streamed analysis invariant: paired uncertainty",
+    ),
+    "analysis-clustered-uncertainty": (
+        "experiments/analysis.rs", "Some(self.stats.estimate()?)",
+        "Some(Estimate { clustered_se: 0.0, ..self.stats.estimate()? })", "decision",
+        "independent streamed analysis invariant: clustered uncertainty",
+    ),
     "analysis-metric-mean": (
         "experiments/analysis.rs", "Some(self.stats.estimate()?)",
         "Some(Estimate { difference: 0.0, ..self.stats.estimate()? })", "decision",

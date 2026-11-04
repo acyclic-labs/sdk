@@ -277,3 +277,22 @@ python3 rust/fuzz/experiment-negative-control.py --previous-oracle d0ecdc6026637
 
 The runner restores both production and oracle bytes, and accepts only a runtime
 panic at the named metric-mean assertion as the repaired negative control.
+
+The same streamed histories check ordinary paired and CR1 clustered standard
+errors against direct batch residuals, independently of the online QR update.
+Their three differences span two populations, with unequal cluster sizes and
+score/cost availability varied separately. Short inputs construct unequal pair
+differences, so zeroed uncertainty cannot hide behind identical differences.
+The at-most-three integer operands bound the explicit floating-point comparison
+budget; arbitrary floating-point accuracy remains outside this property.
+
+Two retained controls independently zero the reported paired or clustered
+standard error without changing the standalone statistics implementation:
+
+```sh
+python3 rust/fuzz/experiment-negative-control.py --previous-oracle c0d8de3e5bc48e2101e4bba8770cb91eff5055fe analysis-paired-uncertainty analysis-clustered-uncertainty
+```
+
+Each comparison must show the previous unchanged oracle miss the same defect
+and the repaired unchanged oracle reject its named uncertainty assertion.
+No extra histories, analyses, buffers or production operations are introduced.
