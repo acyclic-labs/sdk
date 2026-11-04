@@ -114,3 +114,30 @@ unchanged. The Rust descriptor came from
 copied to both Rust descriptor paths. The Buf fixture came from the Buf build
 and `canonicalize actors` commands above. `node
 scripts/check-compatibility-digests.mjs write` recorded the descriptor digest.
+
+The 2026-11-04 attribution capture uses schema and exporter source
+`732b61931ee4eb6c65c4a46a1233d178cc095ffc`. `ServiceError` supplies Error
+fields 3-5 (`component`, `reason`, `request_id`). The original exporter output
+matches the maintained `actors/v1/actors.proto` byte for byte. Its descriptor
+and the selected Rust compiler output both have SHA-256
+`c628e85818454161cc061a13073c6e6f1721841bd73b30fc8f9c22cd55dfb4dc`:
+
+```sh
+cargo run --locked -p acyclic-actors --example actors-http-routes -- target/actors-cause-capture/actors-service.ts --proto-out target/actors-cause-capture/proto
+cmp target/actors-cause-capture/proto/actors/v1/actors.proto rust/crates/actors/proto/actors/v1/actors.proto
+cargo run --locked -p sdk-proto-codegen -- descriptors . target/actors-cause-descriptors actors
+node_modules/.bin/buf build --path rust/crates/actors/proto/actors --exclude-source-info -o actors-cause-buf-raw.bin
+cargo run --locked -p sdk-proto-codegen -- canonicalize actors actors-cause-buf-raw.bin actors-cause-buf-v1.bin
+node scripts/check-compatibility-digests.mjs write
+```
+
+The locked Rust pipeline uses `protoc-bin-vendored-linux-x86_64` 3.3.0 and
+Rust 1.98.1. The independently installed Buf package is 1.75.0. Its original
+image has SHA-256
+`e225cde47e304a3692764ff7d071af525d1d4baae66e45d060e30cef5170d0cc`;
+the shared canonicalizer produces SHA-256
+`9794310409f2890c7528dc026cf2968acb89e8fabb5e5a1965e7df66bec654c8`.
+Only the Rust output is copied to `compatibility/descriptors/actors-v1.bin`
+and `actors-v1.bin` here. Only the independent canonical Buf image is copied
+to `actors-buf-v1.bin`; its file metadata and unknown options are retained.
+The comparison controls continue to qualify these outputs independently.
