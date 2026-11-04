@@ -1,10 +1,12 @@
-//! Serial measurements of native providers against same-device primitive floors.
+//! Serial native-provider observations and standalone primitive calibration.
 #[path = "local_hotpath/actor_delivery.rs"]
 mod actor_delivery;
 #[path = "local_hotpath/calibrate.rs"]
 mod calibrate;
 #[path = "local_hotpath/durability.rs"]
 mod durability;
+#[path = "local_hotpath/options.rs"]
+mod options;
 #[path = "local_hotpath/population.rs"]
 mod population;
 #[cfg(feature = "local-hotpath-proofs")]
@@ -13,160 +15,23 @@ mod proofs;
 #[cfg(feature = "local-hotpath-proofs")]
 #[path = "local_hotpath/proofs_resources.rs"]
 mod proofs_resources;
+#[path = "local_hotpath/quantiles.rs"]
+mod quantiles;
 #[path = "local_hotpath/report.rs"]
 mod report;
 #[path = "local_hotpath/storage.rs"]
 mod storage;
 
-use acyclic_test_support::scale::{CORE_OPERATIONS, Operation, POPULATIONS, Report};
+use acyclic_test_support::scale::{CORE_OPERATIONS, POPULATIONS, Report};
+use options::Options;
 use report::{Result, emit};
-use std::path::PathBuf;
 
 acyclic_test_support::counting_allocator!();
-
-struct Options {
-    root: PathBuf,
-    samples: usize,
-    source: String,
-    operations: Vec<Operation>,
-    populations: Vec<u64>,
-    setup_credit: usize,
-    proofs: bool,
-    observe_durability: bool,
-}
-
-impl Options {
-    fn recovery(&self) -> String {
-        fn quoted(value: &str) -> String {
-            if cfg!(windows) {
-                format!("'{}'", value.replace('\'', "''"))
-            } else {
-                format!("'{}'", value.replace('\'', "'\\''"))
-            }
-        }
-        let mut root = self.root.as_os_str().to_owned();
-        root.push(".retry");
-        if self.proofs {
-            return format!(
-                "cargo bench --locked -p acyclic-conformance --features local-hotpath-proofs --bench local_hotpath -- --proofs --root {} --source {} --operations 'swarm.session_start'",
-                quoted(&root.to_string_lossy()),
-                quoted(&self.source),
-            );
-        }
-        format!(
-            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root {} --source {} --samples {} --setup-credit {} --operations {} --populations {}{}",
-            quoted(&root.to_string_lossy()),
-            quoted(&self.source),
-            self.samples,
-            self.setup_credit,
-            quoted(
-                &self
-                    .operations
-                    .iter()
-                    .map(|operation| operation.name())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ),
-            quoted(
-                &self
-                    .populations
-                    .iter()
-                    .map(u64::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ),
-            if self.observe_durability {
-                " --observe-durability"
-            } else {
-                ""
-            },
-        )
-    }
-
-    fn parse() -> Result<Self> {
-        let mut arguments = std::env::args().skip(1);
-        let mut root = None;
-        let mut samples = 200;
-        let mut source = None;
-        let mut operations = CORE_OPERATIONS.to_vec();
-        let mut populations = POPULATIONS.to_vec();
-        let mut setup_credit = 1;
-        let mut proofs = false;
-        let mut observe_durability = false;
-        while let Some(argument) = arguments.next() {
-            match argument.as_str() {
-                "--proofs" => proofs = true,
-                "--observe-durability" => observe_durability = true,
-                "--root" => root = arguments.next().map(PathBuf::from),
-                "--samples" => samples = arguments.next().ok_or("missing sample count")?.parse()?,
-                "--source" => source = arguments.next(),
-                "--setup-credit" => {
-                    setup_credit = arguments.next().ok_or("missing setup credit")?.parse()?;
-                    if setup_credit == 0 {
-                        return Err("setup credit must be positive".into());
-                    }
-                }
-                "--operations" => {
-                    let names = arguments
-                        .next()
-                        .ok_or("missing comma-separated operation names")?;
-                    operations.clear();
-                    for name in names.split(',') {
-                        let operation = CORE_OPERATIONS
-                            .iter()
-                            .copied()
-                            .find(|operation| operation.name() == name)
-                            .ok_or_else(|| format!("unknown core operation {name}"))?;
-                        if operations.contains(&operation) {
-                            return Err(format!("duplicate operation {name}").into());
-                        }
-                        operations.push(operation);
-                    }
-                }
-                "--populations" => {
-                    let sizes = arguments
-                        .next()
-                        .ok_or("missing comma-separated populations")?;
-                    populations.clear();
-                    for size in sizes.split(',') {
-                        let agents = size.parse()?;
-                        if !POPULATIONS.contains(&agents) {
-                            return Err(format!("unknown qualification population {agents}").into());
-                        }
-                        if populations.contains(&agents) {
-                            return Err(format!("duplicate population {agents}").into());
-                        }
-                        populations.push(agents);
-                    }
-                }
-                // Cargo passes this flag to harness=false benchmarks.
-                "--bench" => {}
-                _ => return Err(format!("unknown option {argument}").into()),
-            }
-        }
-        if !proofs && samples == 0 {
-            return Err("measurement requires at least one observation".into());
-        }
-        // Report growth checks require increasing cohorts. Normalize before
-        // calibration or any population preparation can consume resources.
-        populations.sort_unstable();
-        Ok(Self {
-            root: root.ok_or("--root <fresh directory on the measured device> is required")?,
-            samples,
-            source: source.ok_or("--source <source revision> is required")?,
-            operations,
-            populations,
-            setup_credit,
-            proofs,
-            observe_durability,
-        })
-    }
-}
 
 fn main() {
     if std::env::args().any(|argument| argument == "--help") {
         println!(
-            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root <fresh-directory> --source <revision> [--samples 200] [--setup-credit 1] [--operations comma-separated-core-operation-names] [--populations comma-separated-qualification-populations] [--observe-durability]\nUse --check-observations to run only the quantile and cohort admission controls, without calibration or population setup.\nFor native root crash controls, use --features local-hotpath-proofs and --proofs --operations 'swarm.session_start'."
+            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root <fresh-directory> --source <revision> [--samples 200] [--setup-credit 1] [--operations comma-separated-core-operation-names] [--populations comma-separated-qualification-populations] [--observe-durability]\nUse --check-observations to run only the quantile selection, cohort admission and encoding controls, without calibration or population setup.\nFor native root crash controls, use --features local-hotpath-proofs and --proofs --operations 'swarm.session_start'."
         );
         return;
     }
@@ -180,7 +45,7 @@ fn main() {
         let recovery = if observations_only {
             "cargo test --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --check-observations".into()
         } else {
-            match Options::parse() {
+            match Options::parse_from(std::env::args().skip(1)) {
                 Ok(options) => options.recovery(),
                 Err(_) => "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --help".into(),
             }
@@ -191,7 +56,7 @@ fn main() {
 }
 
 fn run() -> Result {
-    let options = Options::parse()?;
+    let options = Options::parse_from(std::env::args().skip(1))?;
     let recovery = options.recovery();
     if options.proofs {
         #[cfg(feature = "local-hotpath-proofs")]

@@ -57,11 +57,18 @@ a sample with different required work refuses before changing that cohort.
 `--samples` accepts any positive count and defaults to 200. Each reported
 quantile includes its actual sample count; below 100 observations, nearest-rank
 p99 is the sample maximum, without an independently established tail guarantee.
-Run the same quantile and cohort admission controls without calibration, storage
+Run quantile selection, cohort admission and encoding controls without calibration, storage
 setup or model calls:
 
 ```sh
 cargo test --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --check-observations
+```
+
+The report quantile constructor has an independent nearest-rank property over
+generated cohorts, invalid values and signed zeros:
+
+```sh
+cargo test --locked -p acyclic-sdk-fuzz --no-default-features --features local-hotpath-quantiles --test local_hotpath_quantiles
 ```
 
 These are single-operation latency measurements, not throughput or concurrency
@@ -152,9 +159,11 @@ terminal, rather than a fabricated successful transfer. These terminal samples
 do not count still-active jobs, queue latency, final backing retirement or native
 Worker execution, and supply no authenticated physical admission binding.
 Run the deterministic observer controls with
-`cargo test --locked -p acyclic-test-support scale::tests`. They execute an
-injected scan, real per-agent threads, virtual timer registrations and a lost
-event producer; these controls validate the observer, not production liveness.
+`cargo test --locked -p acyclic-test-support scale::tests`. Generated observations
+pass through the original `Sample` and `Report` implementations and an independent
+mean and maximum oracle. The controls reject missing counters, growing work and
+idle resources, and malformed reports. They validate the report checker;
+native resource ownership and producer liveness require their original-path controls.
 
 Select core operation names with `--operations`, for example
 `--operations 'actors.create,actors.durable_write,actors.warm_read,actors.wake'`.
@@ -206,8 +215,10 @@ The native floor report uses the shared local provider defaults: memory capacity
 is unbounded, journal compaction retains its normal targets, and durability uses
 the full-flush policy.
 
-The native floor report also retains a timer-only observation control. Ratios
-include sampler cost; rows flag modeled floors below the measured timestamp resolution.
+The native report retains a timer-only observation control in calibration output.
+Operation `floor_ns`, `p50_ratio` and `p99_ratio` are null: standalone calibration
+and semantic coefficients do not supply a matched public-path physical floor.
+Operation rows retain `ratio_qualified: false` and explain the missing evidence.
 The control never inflates the semantic floor or subtracts quantiles, and its
 timestamp pair excludes the additional cost of async polling and observers.
 Call and copy calibration use4096-operation batches; hashing uses64-operation
@@ -215,8 +226,8 @@ batches. Their observations and quantiles are normalized batch averages, so
 their calibration p99 does not describe an individual call's tail. Operation
 rows retain individually timed samples without batch averaging.
 Zero-duration samples are retained when both timestamps occupy the same clock
-tick. The floor-resolution flag also uses the smallest positive timer-only observation;
-an entirely unresolved timer or a zero-median semantic floor refuses calibration.
+tick. Calibration retains the smallest positive timer-only observation;
+an entirely unresolved timer or a zero-median primitive measurement refuses calibration.
 Requested HEAD and LIST results are data. The shared observer excludes exactly
 the original query dispatch from control overhead, retains every provider class,
 and checks that an additional real HEAD remains one control request.
@@ -225,9 +236,9 @@ Each raw sample has an `original_work_receipts` entry with its original API
 key, resource or cursor, and the same interval's work dimensions. These diagnostic
 identities do not supply an authenticated admission token or physical group
 coverage. Missing dimensions remain null. Each operation reports its public
-guarantee and the modeled work units used to compose its floor; these coefficients
-are separate from observed counts. Raw ratios remain unqualified while physical
-coverage or the matching durability guarantee is missing. File creation plus
+guarantee and modeled work units; these coefficients are separate from observed
+counts and are not combined into a numerical floor. Physical coverage and matching
+durability guarantees remain unknown. File creation plus
 directory durability is calibrated separately from an in-place flush.
 
 The [tooling qualification plan](../../../docs/tooling-qualification.md) separates logical counters, physical requests, hosted execution and on-demand measurements. Side proof/model/fuzz packages remain explicitly selected; they are not added to ordinary default workspace commands.

@@ -1,0 +1,20 @@
+--- a/rust/crates/conformance/benches/local_hotpath/report.rs
++++ b/rust/crates/conformance/benches/local_hotpath/report.rs
+@@ -78,7 +78,7 @@
+     #[derive(Serialize)]
+     struct Receipt<'a> {
+         sample: usize,
+-        identity: &'a serde_json::Value,
++        identity: serde_json::Value,
+         work: &'a [Option<u64>],
+         physical_admission_binding: Option<()>,
+         progress: &'static str,
+@@ -87,7 +87,7 @@
+     serializer.collect_seq(receipts.iter().enumerate().map(|(sample, retained)| {
+         Receipt {
+             sample,
+-            identity: &retained.identity,
++            identity: retained.identity.clone(),
+             work: &retained.observation.work.0,
+             physical_admission_binding: None,
+             progress: "original operation returned successfully; result oracles are complete only when cohort_completed is true",
