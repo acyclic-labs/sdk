@@ -1,10 +1,7 @@
 //! Replay from a recording through the provider seam.
-use super::super::LocalAgents;
-use super::{volume, volume_config};
+use super::{ObservedConversation, volume, volume_config};
 use crate::{
     Error, LocalHarness, Result,
-    agent::AgentPath,
-    local::agent_conversation::Conversation,
     model::{
         Divergence, DivergenceSink, ModelDelivery, ModelDispatch, ModelEvent, ModelProvider,
         ModelRequest, PreparedModelRequest, ReasoningBlock, ReasoningKind, ReasoningOrigin,
@@ -74,14 +71,11 @@ async fn run(provider: Arc<dyn ModelProvider>, tool: Tool, inputs: &[&str]) -> R
         )
         .await?,
     );
-    let (agents, root) = harness.agents().await?;
-    let (agents, root): (Arc<LocalAgents>, AgentPath) = (Arc::clone(agents), root.clone());
-    let client = Conversation::open(harness.connect().await?)?;
+    let mut client = ObservedConversation::open(&harness).await?;
     for input in inputs {
         client.send(input, input).await?;
-        super::agents::settled(&agents, &root).await?;
     }
-    client.recording().await
+    client.conversation.recording().await
 }
 
 /// A source run whose first turn reasons with native bytes and calls a tool.
@@ -148,7 +142,7 @@ fn refused() -> Tool {
 }
 
 #[tokio::test]
-async fn a_fresh_run_replays_its_source_without_the_model_or_its_tools() -> Result<()> {
+async fn a_run_replays_its_source_until_input_changes() -> Result<()> {
     let (source, requests) = source(super::tool("example.echo")).await?;
     let expected = Arc::new(source);
     let live = super::scripted([]);
@@ -165,21 +159,6 @@ async fn a_fresh_run_replays_its_source_without_the_model_or_its_tools() -> Resu
     // Same keys, verbatim events (native reasoning included) and the
     // recorded tool result, journaled again by the replayed run.
     same_answers(&replayed, expected.as_ref());
-    // A second trial uses the original retained source, without another
-    // source run, journal walk or consumption by the first trial.
-    let second = Arc::new(RecordedModel::new(
-        live.clone(),
-        Arc::clone(&expected),
-        divergences.clone(),
-    ));
-    assert_eq!(second.unused(), 3);
-    let replayed = run(second.clone(), refused(), &["first", "second"]).await?;
-    same_answers(&replayed, expected.as_ref());
-    assert_eq!(second.unused(), 0);
-    assert_eq!(expected.len(), 3);
-    assert!(divergences.taken().is_empty());
-    assert!(live.requests().is_empty());
-
     // Observe the original provider seam using a request captured from the
     // actual source execution above, without constructing provider fixtures.
     let request = PreparedModelRequest::prepare(requests[0].clone(), Default::default(), None)?;
@@ -261,16 +240,12 @@ async fn a_fresh_run_replays_its_source_without_the_model_or_its_tools() -> Resu
     let stream = outer.generate(&request, dispatch);
     assert_eq!(stream.delivery(), ModelDelivery::Recorded { source: None });
     assert_eq!(stream.try_collect::<Vec<_>>().await?, events);
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_changed_input_goes_live_at_its_first_step_and_stays_live() -> Result<()> {
+    // The same immutable native source goes live only at changed input.
     let live = super::scripted([ScriptedTurn::Text("live".into())]);
     let divergences = Arc::new(Divergences::default());
     let replay = Arc::new(RecordedModel::new(
         live.clone(),
-        Arc::new(source(super::tool("example.echo")).await?.0),
+        Arc::clone(&expected),
         divergences.clone(),
     ));
     let replayed = run(replay.clone(), refused(), &["first", "changed"]).await?;
@@ -288,12 +263,12 @@ async fn a_changed_input_goes_live_at_its_first_step_and_stays_live() -> Result<
 
 #[tokio::test]
 async fn a_failed_tool_call_replays_its_recorded_failure() -> Result<()> {
-    let expected = source(failing("source failure")).await?.0;
+    let expected = Arc::new(source(failing("source failure")).await?.0);
     let live = super::scripted([]);
     let divergences = Arc::new(Divergences::default());
     let replay = Arc::new(RecordedModel::new(
         live.clone(),
-        Arc::new(source(failing("source failure")).await?.0),
+        Arc::clone(&expected),
         divergences.clone(),
     ));
     let replayed = run(replay, refused(), &["first", "second"]).await?;

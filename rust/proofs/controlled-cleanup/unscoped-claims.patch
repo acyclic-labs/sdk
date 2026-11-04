@@ -1,0 +1,14 @@
+diff --git a/rust/crates/harness/src/local/workspace/volumes.rs b/rust/crates/harness/src/local/workspace/volumes.rs
+index 1627fb3d1f..2e2e7bfdf9 100644
+--- a/rust/crates/harness/src/local/workspace/volumes.rs
++++ b/rust/crates/harness/src/local/workspace/volumes.rs
+@@ -222,3 +222,3 @@ pub(in crate::local) struct Claims {
+     entries: Vec<Claim>,
+-    tasks: acyclic_native_runtime::TaskSpawner,
++    tasks: tokio::runtime::Handle,
+ }
+@@ -250,3 +250,3 @@ pub(in crate::local) async fn native_scope<T>(
+         entries: Vec::new(),
+-        tasks: acyclic_native_runtime::TaskSpawner::current(),
++        tasks: tokio::runtime::Handle::current(),
+     };

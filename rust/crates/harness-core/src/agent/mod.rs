@@ -7,7 +7,7 @@
 //! effect) as one Streams commit. There is no coordinator, polling or timer.
 
 mod checkpoint;
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod codec_fuzz;
 mod commit;

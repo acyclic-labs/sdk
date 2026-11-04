@@ -204,7 +204,7 @@ fn corpus_delivery_seeds_reach_their_named_outcomes() {
 #[test]
 fn browser_corpus_uses_the_shared_rust_codec_and_exact_outcomes() {
     use acyclic_stream::{CommitId, wire_codec::session::confirm_follow};
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/session");
+    let root = acyclic_test_support::crate_path!("fuzz/corpus/session");
     for (name, delivery, after, accepted, durable, length, expected) in [
         ("latest-jump", 2, 9, 10, 8, 1, Ok(8)),
         (

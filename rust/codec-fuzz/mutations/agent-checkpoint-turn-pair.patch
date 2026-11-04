@@ -1,0 +1,10 @@
+diff --git a/rust/crates/harness-core/src/agent/checkpoint.rs b/rust/crates/harness-core/src/agent/checkpoint.rs
+--- a/rust/crates/harness-core/src/agent/checkpoint.rs
++++ b/rust/crates/harness-core/src/agent/checkpoint.rs
+@@ -190,5 +190,5 @@
+     state.turn = match (encoded.turn, encoded.turn_inbox) {
+         (Some(checkpoint), Some(inbox)) => Some(super::Progress { inbox, checkpoint }),
+         (None, None) => None,
+-        _ => return Err(malformed()),
++        _ => None,
+     };

@@ -24,7 +24,13 @@ pub(super) fn temporary() -> std::io::Result<tempfile::TempDir> {
 pub(super) async fn seed(
     directory: &Path,
     seed: &std::collections::BTreeMap<String, String>,
-) -> TestResult<(Arc<Host>, VolumeRef, WorkspaceRef, Arc<Reader>)> {
+) -> TestResult<(
+    Arc<Host>,
+    VolumeRef,
+    WorkspaceRef,
+    Arc<Reader>,
+    AuthorityRoot,
+)> {
     acyclic_native_runtime::initialize_native_io_services()?;
     let provider = acyclic_harness::resources::ProviderRef::new(
         "diff-e2e".into(),
@@ -78,5 +84,7 @@ pub(super) async fn seed(
         65_536,
         None,
     )?;
-    Ok((host, volume, workspace, reader))
+    // The verifier observes this owner's trust publications. Dropping the
+    // signing custodian closes admission, so it must outlive the reader.
+    Ok((host, volume, workspace, reader, issuer))
 }

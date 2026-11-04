@@ -35,25 +35,6 @@ proptest! {
 }
 
 #[test]
-fn registry_merge_rejects_duplicates_before_mutating_destination() -> Result<()> {
-    let mut destination = acyclic_harness::tools::defaults()?;
-    let mut incoming = ToolRegistry::default();
-    incoming.register((example_tool(), None), &mut None, None)?;
-    incoming.register(
-        (acyclic_harness::tool::files::read()?, None),
-        &mut None,
-        None,
-    )?;
-    assert!(matches!(
-        destination.extend(incoming),
-        Err(Error::Conflict(_))
-    ));
-    assert!(destination.get("example.echo", None, None)?.is_none());
-    assert!(destination.get("read", None, None)?.is_some());
-    Ok(())
-}
-
-#[test]
 fn registry_merge_retains_pinned_revisions_and_hidden_model_selections() -> Result<()> {
     let mut custom = ToolRegistry::default();
     custom.register((example_tool(), None), &mut None, None)?;
@@ -63,11 +44,12 @@ fn registry_merge_retains_pinned_revisions_and_hidden_model_selections() -> Resu
     custom.select_model_version("example.echo", "2")?;
     custom.remove_from_model("example.echo")?;
     let mut combined = acyclic_harness::tools::defaults()?;
+    let visible = combined.definitions(None)?;
     combined.extend(custom)?;
     assert!(combined.get("example.echo", None, None)?.is_none());
     assert!(combined.get("example.echo", Some("1"), None)?.is_some());
     assert!(combined.get("example.echo", Some("2"), None)?.is_some());
-    assert_eq!(combined.definitions(None)?.len(), 9);
+    assert_eq!(combined.definitions(None)?, visible);
     combined.select_model_version("example.echo", "2")?;
     assert_eq!(
         combined

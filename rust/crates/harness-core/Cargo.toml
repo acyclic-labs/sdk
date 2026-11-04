@@ -22,6 +22,11 @@ path = "examples/agent-record-corpus.rs"
 name = "experiment-analysis"
 path = "examples/experiment-analysis.rs"
 
+[[example]]
+name = "history-codec-corpus"
+path = "examples/history-codec-corpus.rs"
+required-features = ["test-support"]
+
 [[test]]
 name = "main"
 path = "tests/main.rs"
@@ -87,6 +92,7 @@ futures.workspace = true
 hex.workspace = true
 http.workspace = true
 jsonschema.workspace = true
+rmp-serde = "=1.3.1"
 rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
 regex-lite = { version = "0.1.9", optional = true }
 js-sys = { workspace = true, optional = true }

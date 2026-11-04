@@ -28,6 +28,26 @@ use std::sync::Arc;
 
 type Host<P, O> = FilesystemHost<StreamAuthorityStore<P>, O>;
 
+/// A fork cut either needs a new source selection or failed permanently.
+#[derive(Debug, thiserror::Error)]
+pub enum ForkCutError {
+    /// The source no longer matches the generation selected by the caller.
+    #[error("fork source differs from its selected generation")]
+    SourceChanged,
+    /// Preparing the selected cut failed for another reason.
+    #[error(transparent)]
+    Failed(#[from] crate::Error),
+}
+
+impl From<ForkCutError> for GuestError {
+    fn from(error: ForkCutError) -> Self {
+        match error {
+            ForkCutError::SourceChanged => Self::PreconditionChanged,
+            ForkCutError::Failed(error) => guest(error),
+        }
+    }
+}
+
 /// Spawned volumes of agents whose store shares the volumes' authority stream.
 pub struct FilesystemSpawnVolumes<P: ?Sized + 'static, O: 'static> {
     host: Arc<Host<P, O>>,
@@ -40,13 +60,15 @@ pub struct FilesystemSpawnVolumes<P: ?Sized + 'static, O: 'static> {
 /// stopped attempt retained, and returns its generation; `None` forks the
 /// source's head.
 pub trait ForkCuts: acyclic_stream::ProviderPlatform + 'static {
-    /// The generation of `source` that `destination` forks.
+    /// The generation of workspace `source` that `destination` forks. An
+    /// exact `generation` retains that cut or refuses a changed source.
     fn cut<'a>(
         &'a self,
-        source: &'a VolumeRef,
-        destination: &'a VolumeRef,
+        source: &'a str,
+        destination: &'a str,
         operation: acyclic_fs::OperationId,
-    ) -> BoxProviderFuture<'a, crate::Result<Option<acyclic_fs::GenerationId>>>;
+        generation: Option<acyclic_fs::GenerationId>,
+    ) -> BoxProviderFuture<'a, Result<Option<acyclic_fs::GenerationId>, ForkCutError>>;
 }
 
 impl<P: ?Sized, O> FilesystemSpawnVolumes<P, O> {
@@ -389,23 +411,23 @@ where
                     None => text(source)?,
                 };
                 let workspace = fs
-                    .open_workspace(source_name, WorkBudget::UNBOUNDED, &cancellation)
+                    .open_workspace(&source_name, WorkBudget::UNBOUNDED, &cancellation)
                     .await
                     .map_err(|failure| guest(failure.error))?
                     .value;
-                let cut = match &saved {
-                    Some(saved) => Some(saved.retained_generation),
-                    None => match &self.cuts {
-                        Some(cuts) => cuts
-                            .cut(
-                                source,
-                                &planned.destination,
-                                acyclic_fs::OperationId::from_bytes(planned.key),
-                            )
-                            .await
-                            .map_err(guest)?,
-                        None => None,
-                    },
+                let selected = saved.as_ref().map(|saved| saved.retained_generation);
+                let cut = match &self.cuts {
+                    Some(cuts) => cuts
+                        .cut(
+                            &source_name,
+                            &text(&planned.destination)?,
+                            acyclic_fs::OperationId::from_bytes(planned.key),
+                            selected,
+                        )
+                        .await
+                        .map_err(GuestError::from)?
+                        .or(selected),
+                    None => selected,
                 };
                 let at_head = cut.is_none();
                 let generation = match cut {
@@ -451,7 +473,7 @@ where
         }
         let mut commit = FilesystemCommit::new(request);
         if let Some((parent, next)) = &self.history {
-            super::history::capture(fs, parent, next, &mut commit).await?;
+            super::history::capture(fs, parent, next, self.cuts.as_deref(), &mut commit).await?;
         }
         fs.prepare_fork_many(&forks, &mut commit, WorkBudget::UNBOUNDED, &cancellation)
             .await

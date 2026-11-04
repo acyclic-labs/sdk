@@ -84,10 +84,17 @@ pub struct ScriptedReconciliation {
     pub continuation: Option<Vec<ModelEvent>>,
 }
 
-/// Observes each dispatch; thread-safe wherever providers must be.
-trait DispatchObserver: Fn(ModelDispatch) + acyclic_stream::ProviderPlatform {}
+/// Observes each dispatch before its first event; thread-safe wherever providers must be.
+trait DispatchObserver:
+    Fn(ModelDispatch) -> BoxProviderFuture<'static, Result<()>> + acyclic_stream::ProviderPlatform
+{
+}
 
-impl<T: Fn(ModelDispatch) + acyclic_stream::ProviderPlatform> DispatchObserver for T {}
+impl<T> DispatchObserver for T where
+    T: Fn(ModelDispatch) -> BoxProviderFuture<'static, Result<()>>
+        + acyclic_stream::ProviderPlatform
+{
+}
 
 #[derive(Default)]
 struct State {
@@ -167,12 +174,16 @@ impl ScriptedModelProvider {
         self
     }
 
-    /// Signals an accepted scripted dispatch after recording it and releasing the state lock.
-    /// Runs before returning its stream; invalid requests and exhausted scripts do not signal.
+    /// Observes an accepted dispatch after recording it and releasing the state lock.
+    /// Its future completes before the first scripted event, allowing native I/O
+    /// to progress while the actual model turn retains its resources. An error
+    /// ends that stream; invalid requests and exhausted scripts do not observe.
     #[must_use]
     pub fn with_dispatch_observer(
         mut self,
-        observer: impl Fn(ModelDispatch) + acyclic_stream::ProviderPlatform + 'static,
+        observer: impl Fn(ModelDispatch) -> BoxProviderFuture<'static, Result<()>>
+        + acyclic_stream::ProviderPlatform
+        + 'static,
     ) -> Self {
         self.dispatch_observer = Some(Arc::new(observer));
         self
@@ -293,14 +304,19 @@ impl ScriptedModelProvider {
         dispatch: ModelDispatch,
     ) -> BoxProviderStream<'_, Result<ModelEvent>> {
         let turn = self.next(request, dispatch);
-        if turn.is_ok()
-            && let Some(observer) = &self.dispatch_observer
-        {
-            observer(dispatch);
-        }
-        match turn {
-            Ok(turn) => turn.stream(),
-            Err(error) => Box::pin(futures::stream::iter([Err(error)])),
+        match (turn, self.dispatch_observer.as_ref()) {
+            (Ok(turn), Some(observer)) => {
+                let observed = observer(dispatch);
+                Box::pin(
+                    futures::stream::once(async move {
+                        observed.await?;
+                        Ok::<_, Error>(turn.stream())
+                    })
+                    .try_flatten(),
+                )
+            }
+            (Ok(turn), None) => turn.stream(),
+            (Err(error), _) => Box::pin(futures::stream::iter([Err(error)])),
         }
     }
 }

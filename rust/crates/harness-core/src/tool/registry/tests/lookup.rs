@@ -37,40 +37,46 @@ proptest! {
             else { (query.as_str(), (form == 0).then_some(revision.as_str())) };
         let cancellation = CancellationToken::new();
         let budget = WorkBudget {
-            bytes_copied: allowance, allocation_operations: allowance + 1,
-            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + allowance,
+            bytes_copied: 0, allocation_operations: 1,
+            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes(),
             items_examined: allowance,
             ..WorkBudget::UNBOUNDED
         };
         let actual_work = checked(NativeMaterializationWork::new(budget, &cancellation))?;
-        let expected_work = checked(NativeMaterializationWork::new(budget, &cancellation))?;
         let actual_io = checked(crate::filesystem::PreparationIo::from_native_work(&actual_work))?;
-        let expected_io = checked(crate::filesystem::PreparationIo::from_native_work(&expected_work))?;
+        let before = checked(actual_work.remaining())?;
+        let expected = registry.get(query, explicit, None)?.is_some();
         let actual = registry.get(query, explicit, Some(&actual_io));
-        let expected = (|| {
-            if explicit.is_none() {
-                expected_io.charge(acyclic_fs::WorkCounters {
-                    items_examined: query.len() as u64, ..Default::default()
-                })?;
+        // Only an unpinned query needs its name scanned. Resolving the map's
+        // borrowed key requires neither copied bytes nor another allocation.
+        let scanned = if explicit.is_none() { query.len() as u64 } else { 0 };
+        if scanned > allowance {
+            prop_assert!(matches!(actual, Err(Error::NativeFilesystem { source, .. })
+                if matches!(source.as_ref(), acyclic_fs::FsError::NativeKernel(
+                    acyclic_fs::NativeTreeMaterializationError::Work(
+                        acyclic_fs::WorkError::BudgetExceeded {
+                            counter: "items_examined", ..
+                        })))), "unfunded query scan must refuse");
+        } else {
+            prop_assert_eq!(actual?.is_some(), expected);
+            let after = checked(actual_work.remaining())?;
+            prop_assert_eq!(after.bytes_copied, before.bytes_copied);
+            prop_assert_eq!(after.allocation_operations, before.allocation_operations);
+            prop_assert_eq!(after.peak_allocation_bytes, before.peak_allocation_bytes);
+            prop_assert_eq!(after.items_examined, before.items_examined - scanned);
+            cancellation.cancel();
+            let cancelled = registry.get(query, explicit, Some(&actual_io));
+            if explicit.is_some() {
+                prop_assert!(matches!(cancelled, Err(Error::NativeWork {
+                    cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, ..
+                })), "cancelled pinned lookup must refuse");
+            } else {
+                prop_assert!(matches!(cancelled, Err(Error::NativeFilesystem { source, .. })
+                    if matches!(source.as_ref(), acyclic_fs::FsError::NativeKernel(
+                        acyclic_fs::NativeTreeMaterializationError::Cancelled))),
+                    "cancelled query scan must refuse");
             }
-            let (name, revision) = match explicit {
-                Some(revision) => (query, revision),
-                None => match query.rsplit_once('@') {
-                    Some(pinned) => pinned,
-                    None => match registry.data.selected.get(query) {
-                        Some(ModelSelection::Revision(revision)) => (query, revision.as_str()),
-                        _ => return Ok(None),
-                    },
-                },
-            };
-            Ok::<_, Error>(registry.data.versions.get(&(
-                crate::executor::stock_string_copy(name, Some(&expected_io))?,
-                crate::executor::stock_string_copy(revision, Some(&expected_io))?,
-            )).map(Arc::as_ref))
-        })();
-        prop_assert_eq!(actual.map(|tool| tool.is_some()).map_err(|error| error.to_string()),
-            expected.map(|tool| tool.is_some()).map_err(|error| error.to_string()));
-        prop_assert_eq!(checked(actual_work.remaining())?, checked(expected_work.remaining())?);
+        }
     }
 }
 
@@ -92,7 +98,6 @@ fn resolution_with_accounting() -> Result<()> {
 
 fn resolution_needs_no_temporary_key(mode: u8) -> Result<()> {
     let prototype = prototype()?;
-    let mut totals = Vec::new();
     let dispatch = if mode == 1 {
         tracing::Dispatch::new(tracing_subscriber::registry())
     } else {
@@ -120,8 +125,9 @@ fn resolution_needs_no_temporary_key(mode: u8) -> Result<()> {
                 _ => (name.as_str(), None),
             };
             let mut counts = None;
-            let mut samples = Vec::with_capacity(32);
-            for _ in 0..32 {
+            // Observe both the first lookup and its warmed repeat. Allocation
+            // counts are exact; repeating a timing benchmark adds no coverage.
+            for _ in 0..2 {
                 #[cfg(feature = "filesystem")]
                 let cancellation = acyclic_fs::CancellationToken::new();
                 #[cfg(feature = "filesystem")]
@@ -137,21 +143,16 @@ fn resolution_needs_no_temporary_key(mode: u8) -> Result<()> {
                 #[cfg(not(feature = "filesystem"))]
                 let io = None;
                 let mut error = None;
-                let started = std::time::Instant::now();
                 let allocation = acyclic_test_support::measure(|| {
-                    for _ in 0..128 {
-                        match registry.get(std::hint::black_box(name), revision, io.as_ref()) {
-                            Ok(Some(tool)) => {
-                                std::hint::black_box(tool);
-                            }
-                            result => {
-                                error = Some(result.map(|_| ()));
-                                break;
-                            }
+                    match registry.get(std::hint::black_box(name), revision, io.as_ref()) {
+                        Ok(Some(tool)) => {
+                            std::hint::black_box(tool);
+                        }
+                        result => {
+                            error = Some(result.map(|_| ()));
                         }
                     }
                 });
-                samples.push(started.elapsed() / 128);
                 assert!(error.is_none(), "lookup failed: {error:?}");
                 let actual = (
                     allocation.count_total,
@@ -159,20 +160,15 @@ fn resolution_needs_no_temporary_key(mode: u8) -> Result<()> {
                     allocation.bytes_max,
                 );
                 assert_eq!(*counts.get_or_insert(actual), actual);
-            }
-            samples.sort_unstable();
-            eprintln!(
-                "resolve mode={mode} tools={count} form={form}: allocation_per_128={counts:?}; median={:?}",
-                samples.get(samples.len() / 2)
-            );
-            if mode != 2 {
-                totals.push(counts);
+                if mode != 2 {
+                    assert_eq!(
+                        actual,
+                        (0, 0, 0),
+                        "temporary lookup key: mode={mode} tools={count} form={form}"
+                    );
+                }
             }
         }
     }
-    assert!(
-        totals.iter().all(|counts| *counts == Some((0, 0, 0))),
-        "temporary lookup keys: {totals:?}"
-    );
     Ok(())
 }

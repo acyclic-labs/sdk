@@ -127,7 +127,7 @@ pub async fn prompt_settled(
     use crate::local::Event;
     let conversation =
         crate::local::agent_conversation::Conversation::open(harness.connect().await?)?;
-    let mut events = conversation.observe(conversation.settled().await?).await?;
+    let mut events = conversation.observe(None).await?;
     let inbox = conversation.send(id, prompt).await?;
     let mut phase = None;
     let entry = loop {

@@ -834,7 +834,11 @@ fn capture_agents(manifest: &mut String) -> Result<(), Box<dyn Error>> {
                 acyclic_harness_core::agent::RECORD_VERSION
             ),
             &bytes,
-            "harness-core canonical agent record, effect and checkpoint encoders",
+            if name.starts_with("history-") {
+                "harness-core agent::codec_fuzz::history_seeds via HistoryCheckpoint typed serde_json writer (descriptor syntax only)"
+            } else {
+                "harness-core canonical agent record, effect and checkpoint encoders"
+            },
             manifest,
         )?;
     }

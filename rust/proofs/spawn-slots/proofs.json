@@ -88,6 +88,22 @@
           "expected": "unchanged bounded host admission assertion fails"
         }
       ]
+    },
+    {
+      "id": "persisted_slot_inputs",
+      "production": "rust/crates/harness-core/src/agent/checkpoint.rs",
+      "proofs": [
+        "harness-core: agent_model::runtime::native_reopen_preserves_reserved_spawns_until_the_matching_approval"
+      ],
+      "controls": [
+        {
+          "file": "rust/crates/harness-core/src/agent/checkpoint.rs",
+          "before": "    Ok(state)\n}",
+          "after": "    state.reserved_children = 0;\n    Ok(state)\n}",
+          "expected": "The unchanged native reopen oracle rejects loss of the three reserved spawns; compilation failure does not qualify the control."
+        }
+      ],
+      "qualification": "Linux x86_64: the exact native reopen target passed 1/1 in 0.02 s at f9410d59b19fc0869d457c6ef3bd36fd642cb773. Clearing reserved_children in the production decoder failed the unchanged target at runtime (0 instead of 3), 0/1 in 0.04 s. Actual LocalStream, original AgentHost and committed writer/reader; controlled turn driver, not native executor/provider wire or complete shell refinement."
     }
   ],
   "execution_receipts": [
@@ -143,6 +159,6 @@
     }
   ],
   "remaining": [
-    "queue and merge this one PR"
+    "Extend the qualified native reservation-reopen control to complete shell progress, cancellation and failure branches; arithmetic source inclusion and a controlled driver do not qualify native executor/provider behavior."
   ]
 }

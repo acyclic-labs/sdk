@@ -67,7 +67,7 @@ fn cli_accepts_stdin_and_rejects_a_failed_report_from_a_path()
     input.write_all(&bytes)?;
     input.seek(SeekFrom::Start(0))?;
     let mut child = acyclic_native_runtime::ProcessTree::spawn(
-        ProcessCommand::new(env!("CARGO_BIN_EXE_harness-conformance"))
+        ProcessCommand::new(acyclic_test_support::binary_path!("harness-conformance"))
             .stdin(ProcessStdio::from(input))
             .stdout(ProcessStdio::piped()),
     )?;
@@ -108,7 +108,7 @@ fn cli_accepts_stdin_and_rejects_a_failed_report_from_a_path()
     ));
     fs::write(&path, serde_json::to_vec(&failed)?)?;
     let failed_output = acyclic_native_runtime::process_output(
-        ProcessCommand::new(env!("CARGO_BIN_EXE_harness-conformance")).arg(&path),
+        ProcessCommand::new(acyclic_test_support::binary_path!("harness-conformance")).arg(&path),
         std::time::Duration::from_secs(120),
         8 * 1024 * 1024,
     );

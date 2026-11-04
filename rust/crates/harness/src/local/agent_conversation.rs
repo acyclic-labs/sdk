@@ -557,16 +557,21 @@ impl Conversation {
         Ok(self.settlement().await?.0)
     }
 
-    /// Every settled turn from conversation sequence `from`, the agent's
-    /// phase from its latest status on, and its newest tool call's output. A
-    /// status records only a phase change; a settled turn is its conversation
-    /// entry.
+    /// Every settled turn from conversation sequence `from`, or from the current
+    /// settled tail when `None`, together with the agent's latest phase and its
+    /// newest tool call's output. The default turn cursor and status cursor come
+    /// from one actor observation. A status records only a phase change; a
+    /// settled turn is its conversation entry.
     ///
     /// # Errors
-    /// When the follows are refused.
-    pub async fn observe(&self, from: u64) -> Result<super::Observer> {
-        let (_, statuses, _) = self.settlement().await?;
-        super::Observer::open(&self.connection, from, statuses.saturating_sub(1))
+    /// Session or host failures, or refused follows.
+    pub async fn observe(&self, from: Option<u64>) -> Result<super::Observer> {
+        let (settled, statuses, _) = self.settlement().await?;
+        super::Observer::open(
+            &self.connection,
+            from.unwrap_or(settled),
+            statuses.saturating_sub(1),
+        )
     }
 
     /// Replay every committed transition after the source cursors in `projection`.

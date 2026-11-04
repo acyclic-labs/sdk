@@ -43,6 +43,49 @@ async fn private(path: &AgentPath) -> Result<(Host, VolumeBinding)> {
     private_on(path, Fs::memory()).await
 }
 
+/// Turns and filesystem history participate in the same publication domain.
+async fn private_in(stream: &Arc<MemoryStream>, path: &AgentPath) -> Result<(Host, VolumeBinding)> {
+    private_on(
+        path,
+        Fs::from_memory_providers(
+            stream.clone(),
+            Arc::new(acyclic_objects::MemoryObjects::memory()),
+        ),
+    )
+    .await
+}
+
+fn committing(
+    stream: &Arc<MemoryStream>,
+    filesystem: &Host,
+    driver: impl TurnDriver + 'static,
+) -> Result<AgentHost<MemoryStream>> {
+    Ok(AgentHost::with_spawn_volumes(
+        stream.clone(),
+        driver,
+        within(),
+        acyclic_actors::domain::ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(acyclic_actors::local::SystemClock),
+        Arc::new(acyclic_harness_core::filesystem::FilesystemSpawnVolumes::new(filesystem.clone())),
+    )?)
+}
+
+async fn deliver(
+    host: &AgentHost<MemoryStream>,
+    path: &AgentPath,
+    wake: Wake,
+) -> Result<AgentState> {
+    let Wake::Inbox { record, .. } = wake else {
+        return Err("delivery requires an inbox record".into());
+    };
+    assert!(matches!(
+        host.send(path, &super::user(), &record).await?,
+        Delivered::Committed { .. }
+    ));
+    host.drain(path).await?;
+    Ok(host.state(path).await?)
+}
+
 async fn private_on(
     path: &AgentPath,
     filesystem: Fs<MemoryAuthorityBackend, MemoryObjectBackend>,
@@ -1255,11 +1298,11 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
         ScriptedTurn::Text("one".into()),
         ScriptedTurn::Text("two".into()),
     ]));
-    let (host, binding) = private(&path).await?;
+    let (host, binding) = private_in(&stream, &path).await?;
     let driver = ExecutorDriver::new(FilesystemTurnHost::new(
         stream.clone(),
         within(),
-        host,
+        host.clone(),
         AuthorityRoot::new(
             "agents",
             [7; 32],
@@ -1275,50 +1318,13 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
     ));
     let mut adoption = adopted(id(3));
     adoption.volumes = vec![binding];
-    let state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
-    // Settling the conversation creates the subtree; its inbox stays empty,
-    // so these directly driven turns retain cursor 0.
-    let first = step(
-        &driver,
-        &path,
-        Some(state),
-        (0, 0),
-        requested("r1", &path),
-        acyclic_actors::guest::CancellationToken::new(),
-    )
-    .await?;
-    // Settle the first turn's conversation record as its step commit would.
-    let records = first
-        .outs
-        .iter()
-        .filter_map(|out| match out {
-            Out::Conversation(bytes) => Some(bytes.clone().into()),
-            _ => None,
-        })
-        .collect();
-    stream
-        .commit(CommitRequest {
-            deadline_unix_millis: None,
-            conditions: vec![CommitCondition::Absent {
-                path: path.conversation()?,
-            }],
-            mutations: vec![CommitMutation::Append {
-                path: path.conversation()?,
-                records,
-            }],
-            idempotency_key: intent_key("settle", &[path.as_str()])?,
-        })
-        .await?;
-    assert_eq!(first.state.conversation_tail, 1);
-    step(
-        &driver,
-        &path,
-        Some(first.state),
-        (0, 0),
-        requested("r2", &path),
-        acyclic_actors::guest::CancellationToken::new(),
-    )
-    .await?;
+    let host = committing(&stream, &host, driver)?;
+    host.create(&intent("root"), adoption).await?;
+    let first = deliver(&host, &path, requested("r1", &path)).await?;
+    assert_eq!(first.phase, Phase::Idle);
+    assert_eq!(first.conversation_tail, 1);
+    let second = deliver(&host, &path, requested("r2", &path)).await?;
+    assert_eq!(second.phase, Phase::Idle);
     let requests = model.requests();
     assert_eq!(requests.len(), 2);
     let roles = |index: usize| -> Vec<ModelRole> {
@@ -1380,11 +1386,11 @@ async fn every_request_retains_the_roster_across_history_and_compaction_boundari
                 .executor
                 .clone(),
         )?);
-        let (host, binding) = private(&path).await?;
+        let (host, binding) = private_in(&stream, &path).await?;
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
             stream.clone(),
             within(),
-            host,
+            host.clone(),
             AuthorityRoot::new(
                 "agents",
                 [7; 32],
@@ -1403,7 +1409,8 @@ async fn every_request_retains_the_roster_across_history_and_compaction_boundari
         ));
         let mut adoption = adopted(id(31));
         adoption.volumes = vec![binding];
-        let mut state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
+        let host = committing(&stream, &host, driver)?;
+        host.create(&intent("root"), adoption).await?;
         let mut announced = Vec::new();
         let mut roster_file = None;
         for n in 0..6 {
@@ -1419,24 +1426,11 @@ async fn every_request_retains_the_roster_across_history_and_compaction_boundari
             } else {
                 requested(&format!("r{n}"), &path)
             };
-            let settled = step(
-                &driver,
-                &path,
-                Some(state),
-                (0, 0),
-                wake,
-                acyclic_actors::guest::CancellationToken::new(),
-            )
-            .await?;
-            let bytes = settled
-                .outs
-                .iter()
-                .find_map(|out| match out {
-                    Out::Conversation(bytes) => Some(bytes),
-                    _ => None,
-                })
-                .ok_or("turn did not settle")?;
-            let entry = ConversationEntry::decode(bytes)?;
+            let settled = deliver(&host, &path, wake).await?;
+            assert_eq!(settled.phase, Phase::Idle);
+            assert_eq!(settled.conversation_tail, n + 1);
+            let entries = super::values(stream.as_ref(), path.conversation()?).await?;
+            let entry = ConversationEntry::decode(entries.last().ok_or("turn did not settle")?)?;
             announced.push(entry.targets.is_some());
             if roster_file.is_none() {
                 roster_file = entry.targets.clone();
@@ -1448,18 +1442,6 @@ async fn every_request_retains_the_roster_across_history_and_compaction_boundari
                     "reuse the immutable roster"
                 );
             }
-            stream
-                .commit(CommitRequest {
-                    deadline_unix_millis: None,
-                    conditions: vec![],
-                    mutations: vec![CommitMutation::Append {
-                        path: path.conversation()?,
-                        records: vec![bytes.clone().into()],
-                    }],
-                    idempotency_key: intent_key("settle-roster", &[&n.to_string()])?,
-                })
-                .await?;
-            state = settled.state;
         }
         let requests = model.requests();
         assert_eq!(requests.len(), 6);
@@ -1495,13 +1477,14 @@ async fn every_request_retains_the_roster_across_history_and_compaction_boundari
 #[tokio::test]
 async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Result {
     let parent = AgentPath::root(&id(5));
-    let child = parent.child(&id(6))?;
+    let child_intent = intent("child");
+    let child = parent.child(&AgentId::derive(&parent.id(), child_intent.as_str()))?;
     let stream = Arc::new(MemoryStream::default());
     let model = Arc::new(ScriptedModelProvider::new([
         ScriptedTurn::Text("parent answer".into()),
         ScriptedTurn::Text("child answer".into()),
     ]));
-    let (host, binding) = private(&parent).await?;
+    let (host, binding) = private_in(&stream, &parent).await?;
     let own = VolumeRef::new(
         binding.volume.provider().clone(),
         "agent-private".into(),
@@ -1512,10 +1495,10 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
         &mut None,
     )?;
     host.create_volume(&own).await?;
-    let driver = ExecutorDriver::new(FilesystemTurnHost::new(
+    let turn_host = Arc::new(FilesystemTurnHost::new(
         stream.clone(),
         within(),
-        host,
+        host.clone(),
         AuthorityRoot::new(
             "agents",
             [7; 32],
@@ -1531,44 +1514,16 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
     ));
     let mut adoption = adopted(id(5));
     adoption.volumes = vec![binding];
-    let state = AgentState::adopted(parent.clone(), &adoption).expect("adopts");
-    let first = step(
-        &driver,
-        &parent,
-        Some(state),
-        (0, 0),
-        requested("p1", &parent),
-        acyclic_actors::guest::CancellationToken::new(),
-    )
-    .await?;
-    let entry: Vec<_> = first
-        .outs
-        .iter()
-        .filter_map(|out| match out {
-            Out::Conversation(bytes) => Some(bytes.clone()),
-            _ => None,
-        })
-        .collect();
-    // The parent's settled turn, and the child's conversation as the spawn
-    // fork leaves it: the same entry, inherited at the cut.
-    for path in [parent.conversation()?, child.conversation()?] {
-        stream
-            .commit(CommitRequest {
-                deadline_unix_millis: None,
-                conditions: vec![CommitCondition::Absent { path: path.clone() }],
-                mutations: vec![CommitMutation::Append {
-                    path: path.clone(),
-                    records: entry.iter().cloned().map(Into::into).collect(),
-                }],
-                idempotency_key: intent_key("settle", &[path.as_str()])?,
-            })
-            .await?;
-    }
+    let root_host = committing(&stream, &host, ExecutorDriver::new(turn_host.clone()))?;
+    root_host.create(&intent("root"), adoption).await?;
+    let parent_state = deliver(&root_host, &parent, requested("p1", &parent)).await?;
+    assert_eq!(parent_state.phase, Phase::Idle);
+    assert_eq!(parent_state.conversation_tail, 1);
     let forked = ForkAdopted {
         profile: None,
-        agent: id(6),
+        agent: child.id(),
         parent: Some(parent.clone()),
-        forked_at: 0,
+        forked_at: 2,
         conversation_tail: 1,
         checkpoint: None,
         volumes: vec![VolumeBinding {
@@ -1578,16 +1533,29 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
         brief: None,
         policy: None,
     };
+    let fork = spawn(&parent, &child_intent, 2, forked.clone())?;
+    assert_eq!(fork.child, child);
+    assert!(matches!(
+        submit(&*stream, fork.request).await?,
+        Submitted::Committed(_)
+    ));
     let state = AgentState::adopted(child.clone(), &forked).expect("adopts");
-    step(
-        &driver,
+    let settled = step(
+        &ExecutorDriver::new(turn_host),
         &child,
         Some(state),
-        (0, 0),
-        requested("c1", &child),
+        (3, 0),
+        Wake::Inbox {
+            sequence: 3,
+            record: InboxRecord::ApprovalRequested(ApprovalRequested {
+                child: child.clone(),
+                id: intent("c1"),
+            }),
+        },
         acyclic_actors::guest::CancellationToken::new(),
     )
     .await?;
+    assert_eq!(settled.state.phase, Phase::Idle);
     let requests = model.requests();
     assert_eq!(requests.len(), 2);
     assert!(
@@ -1629,7 +1597,7 @@ async fn admitted_root_after_its_child(
             ScriptedTurn::Text("first".into()),
             ScriptedTurn::Text("second".into()),
         ]));
-        let (host, binding) = private(&root).await?;
+        let (host, binding) = private_in(&stream, &root).await?;
         let own = VolumeRef::new(
             binding.volume.provider().clone(),
             "child-private".into(),
@@ -1721,50 +1689,14 @@ async fn admitted_root_after_its_child(
         let driver = driver(root_scope);
         let mut adoption = adopted(id(base));
         adoption.volumes = vec![binding];
-        let stepped = step(
-            &driver,
-            &root,
-            Some(AgentState::adopted(root.clone(), &adoption).expect("adopts")),
-            (0, 0),
-            first,
-            acyclic_actors::guest::CancellationToken::new(),
-        )
-        .await?;
-        if matches!(stepped.state.phase, Phase::Done { .. }) {
-            return Ok((model.requests(), *result, stepped.state.phase));
+        let host = committing(&stream, &host, driver)?;
+        host.create(&intent("root"), adoption).await?;
+        let stepped = deliver(&host, &root, first).await?;
+        if matches!(stepped.phase, Phase::Done { .. }) {
+            return Ok((model.requests(), *result, stepped.phase));
         }
-        // Settle the first turn as its step commit would.
-        let records = stepped
-            .outs
-            .iter()
-            .filter_map(|out| match out {
-                Out::Conversation(bytes) => Some(bytes.clone().into()),
-                _ => None,
-            })
-            .collect();
-        stream
-            .commit(CommitRequest {
-                deadline_unix_millis: None,
-                conditions: vec![CommitCondition::Absent {
-                    path: root.conversation()?,
-                }],
-                mutations: vec![CommitMutation::Append {
-                    path: root.conversation()?,
-                    records,
-                }],
-                idempotency_key: intent_key("settle", &[root.as_str()])?,
-            })
-            .await?;
-        let settled = step(
-            &driver,
-            &root,
-            Some(stepped.state),
-            (0, 0),
-            second,
-            acyclic_actors::guest::CancellationToken::new(),
-        )
-        .await?;
-        Ok::<_, Box<dyn std::error::Error>>((model.requests(), *result, settled.state.phase))
+        let settled = deliver(&host, &root, second).await?;
+        Ok::<_, Box<dyn std::error::Error>>((model.requests(), *result, settled.phase))
     };
     run.await.map_err(|error| error.to_string())
 }
@@ -2239,8 +2171,8 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
         }
         fn read(&self) -> BoxProviderFuture<'_, acyclic_harness_core::Result<Option<GoalView>>> {
             Box::pin(async move {
-                let observed = self.original.read().await?;
                 self.edit.reads.fetch_add(1, Ordering::SeqCst);
+                let observed = self.original.read().await?;
                 if self.edit.pending.swap(false, Ordering::SeqCst) {
                     // An actual file publication changes the original observation
                     // after its read and before its conditioned rewrite.
@@ -2421,8 +2353,13 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
             acyclic_actors::guest::CancellationToken::new(),
         )
         .await?;
+        assert_eq!(
+            second.state.phase,
+            Phase::Idle,
+            "resumed goal: {:?}",
+            second.state
+        );
         assert_eq!(edit.reads.load(Ordering::SeqCst), 2);
-        assert_eq!(second.state.phase, Phase::Idle);
         assert_eq!(second.state.conversation_tail, 1);
         assert_eq!(
             model.requests().len(),

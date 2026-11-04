@@ -1,0 +1,11 @@
+diff --git a/rust/crates/harness/src/local/workspace/children.rs b/rust/crates/harness/src/local/workspace/children.rs
+--- a/rust/crates/harness/src/local/workspace/children.rs
++++ b/rust/crates/harness/src/local/workspace/children.rs
+@@ -45,7 +45,6 @@
+             .and_then(|state| state.fork_origin)
+             .filter(|origin| origin.operation_id == operation);
+         if let Some(origin) = retained {
+-            require_selected_generation(generation, origin.snapshot.authored_generation)?;
+             return Ok(Some(origin.snapshot.authored_generation));
+         }
+         let Some(state) = self

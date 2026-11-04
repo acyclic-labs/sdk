@@ -210,50 +210,82 @@ fn malformed_script_events_are_rejected() {
 
 #[tokio::test]
 async fn pending_script_signals_recorded_dispatch_and_reconciles_after_drop() -> Result<()> {
-    let prefix = ModelEvent::Content {
-        delta: "partial".into(),
-    };
-    let turns: Vec<ScriptedTurn> = serde_json::from_value(json!([
-        [{"type":"event","kind":"content","delta":"partial"},{"type":"pending"}]
-    ]))
-    .map_err(|error| crate::Error::Invalid(error.to_string()))?;
-    let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();
-    let provider = std::sync::Arc::new_cyclic(|weak: &std::sync::Weak<ScriptedModelProvider>| {
-        let weak = weak.clone();
-        ScriptedModelProvider::new(turns)
-            .with_reconciliations([ScriptedReconciliation {
-                orphan: false,
-                observed: vec![prefix.clone()],
-                continuation: Some(vec![ModelEvent::Completed {
-                    metadata: json!(null),
-                }]),
-            }])
-            .with_dispatch_observer(move |dispatch| {
-                // Reenter the observer accessors to verify the provider unlocked its state.
-                assert_eq!(
-                    weak.upgrade().map(|provider| provider.dispatches()),
-                    Some(vec![dispatch])
-                );
-                assert!(sent.send(dispatch).is_ok());
-            })
-    });
-    let (request, dispatch) = request()?;
-    let mut stream = provider.generate(&request, dispatch);
-    assert_eq!(received.try_recv(), Ok(dispatch));
-    assert_eq!(provider.requests().len(), 1);
-    assert_eq!(provider.remaining(), 0);
-    assert_eq!(stream.next().await.transpose()?, Some(prefix.clone()));
-    assert!(futures::poll!(stream.next()).is_pending());
-    drop(stream);
-    assert!(matches!(provider.reconcile(dispatch, &[prefix]).await?,
+    for release in [true, false] {
+        let prefix = ModelEvent::Content {
+            delta: "partial".into(),
+        };
+        let turns: Vec<ScriptedTurn> = serde_json::from_value(json!([
+            [{"type":"event","kind":"content","delta":"partial"},{"type":"pending"}]
+        ]))
+        .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let (inspected, inspection) = tokio::sync::oneshot::channel::<()>();
+        let inspection = std::sync::Mutex::new(Some(inspection));
+        let provider =
+            std::sync::Arc::new_cyclic(|weak: &std::sync::Weak<ScriptedModelProvider>| {
+                let weak = weak.clone();
+                ScriptedModelProvider::new(turns)
+                    .with_reconciliations([ScriptedReconciliation {
+                        orphan: false,
+                        observed: vec![prefix.clone()],
+                        continuation: Some(vec![ModelEvent::Completed {
+                            metadata: json!(null),
+                        }]),
+                    }])
+                    .with_dispatch_observer(move |dispatch| {
+                        // Reenter the observer accessors to verify the provider unlocked its state.
+                        assert_eq!(
+                            weak.upgrade().map(|provider| provider.dispatches()),
+                            Some(vec![dispatch])
+                        );
+                        assert!(sent.send(dispatch).is_ok());
+                        let inspection = inspection.lock().unwrap().take().expect("one inspection");
+                        Box::pin(async move {
+                            inspection.await.map_err(|_| {
+                                crate::Error::Storage("dispatch inspection producer closed".into())
+                            })
+                        })
+                    })
+            });
+        let (request, dispatch) = request()?;
+        let mut stream = provider.generate(&request, dispatch);
+        assert_eq!(received.try_recv(), Ok(dispatch));
+        assert_eq!(provider.requests().len(), 1);
+        assert_eq!(provider.remaining(), 0);
+        let first = {
+            let first = stream.next();
+            futures::pin_mut!(first);
+            assert!(
+                futures::poll!(&mut first).is_pending(),
+                "dispatch events escaped inspection"
+            );
+            if release {
+                inspected.send(()).expect("live inspection");
+            } else {
+                drop(inspected);
+            }
+            first.await
+        };
+        if !release {
+            assert!(
+                matches!(first, Some(Err(crate::Error::Storage(reason))) if reason == "dispatch inspection producer closed")
+            );
+            assert!(stream.next().await.is_none());
+            continue;
+        }
+        assert_eq!(first.transpose()?, Some(prefix.clone()));
+        assert!(futures::poll!(stream.next()).is_pending());
+        drop(stream);
+        assert!(matches!(provider.reconcile(dispatch, &[prefix]).await?,
         Some(events) if matches!(events.as_slice(), [ModelEvent::Completed { .. }])));
-    assert_eq!(provider.dispatches(), vec![dispatch]);
-    assert_eq!(provider.reconciliations(), vec![dispatch]);
-    assert_eq!(
-        serde_json::to_value(ScriptedEvent::Pending {})
-            .map_err(|error| crate::Error::Invalid(error.to_string()))?,
-        json!({"type":"pending"})
-    );
+        assert_eq!(provider.dispatches(), vec![dispatch]);
+        assert_eq!(provider.reconciliations(), vec![dispatch]);
+        assert_eq!(
+            serde_json::to_value(ScriptedEvent::Pending {})
+                .map_err(|error| crate::Error::Invalid(error.to_string()))?,
+            json!({"type":"pending"})
+        );
+    }
     Ok(())
 }
 
@@ -263,6 +295,7 @@ async fn invalid_or_exhausted_dispatch_does_not_signal() -> Result<()> {
     let provider = ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())])
         .with_dispatch_observer(move |dispatch| {
             assert!(sent.send(dispatch).is_ok());
+            Box::pin(async { Ok(()) })
         });
     let (request, dispatch) = request()?;
     let invalid = ModelDispatch {

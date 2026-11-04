@@ -1,0 +1,9 @@
+diff --git a/rust/crates/harness-core/src/agent/checkpoint.rs b/rust/crates/harness-core/src/agent/checkpoint.rs
+--- a/rust/crates/harness-core/src/agent/checkpoint.rs
++++ b/rust/crates/harness-core/src/agent/checkpoint.rs
+@@ -156,4 +156,4 @@
+     if encoded.archive_pending.len() != bitmap
+-        || !(encoded.awaiting.is_empty() || encoded.awaiting.len() == bitmap)
++        || encoded.awaiting.len() > bitmap
+     {
+         return Err(malformed());

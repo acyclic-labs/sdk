@@ -53,6 +53,7 @@ pub(super) async fn capture<P, O>(
     fs: &Fs<StreamAuthorityStore<P>, O>,
     parent: &AgentState,
     next: &AgentState,
+    cuts: Option<&dyn super::ForkCuts>,
     commit: &mut FilesystemCommit,
 ) -> Result<(), GuestError>
 where
@@ -324,16 +325,31 @@ where
             hash.update(parent.path.as_str().as_bytes());
             hash.update(&sequence.to_be_bytes());
             hash.update(binding.name.as_bytes());
+            // A refused publication can retry this turn at a newer project
+            // head. Both the companion cut and fork operation belong to the
+            // complete selected generation, not just the conversation slot.
+            hash.update(head.id().to_bytes().as_slice());
+            let identity = hash.finalize();
             let mut key = [0; 16];
-            hash.finalize_xof().fill(&mut key);
+            key.copy_from_slice(&identity.as_bytes()[..16]);
             let destination = WorkspaceName::new(
-                format!("history-{}-{sequence}-{}", parent.path.id(), binding.name),
+                format!("history-{}", identity.to_hex()),
                 &WorkBudget::UNBOUNDED,
                 &cancel,
             )
             .map_err(|failure| guest(failure.error))?
             .value;
             let retained_workspace = destination.as_str().to_owned();
+            if let Some(cuts) = cuts {
+                cuts.cut(
+                    &binding.volume.storage_name(&mut None).map_err(guest)?,
+                    &retained_workspace,
+                    acyclic_fs::OperationId::from_bytes(key),
+                    Some(head.id()),
+                )
+                .await
+                .map_err(GuestError::from)?;
+            }
             let prepared = fs
                 .prepare_fork_many(
                     &[ForkSpec {

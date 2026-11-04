@@ -178,6 +178,7 @@ mod tests {
                                     }
                                 });
                             *observation.lock().expect("observation lock") = Some(result);
+                            Box::pin(async { Ok(()) })
                         })
                         .with_context_capacity(ModelContextCapacity {
                             context_tokens: if case == 6 { 32 } else { 8192 },

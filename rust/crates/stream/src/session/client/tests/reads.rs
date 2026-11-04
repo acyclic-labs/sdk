@@ -702,6 +702,7 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
                                 &capability,
                                 "streams/list",
                                 &crate::session::authority::stream_resource(Some(&child.path)),
+                                acyclic_auth::authority::Scope::Children,
                                 visibility.channels,
                             )
                             .map_err(|_| StreamError::AccessDenied)?;
@@ -712,6 +713,7 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
                                     &capability,
                                     "streams/follow",
                                     &crate::session::authority::stream_resource(Some(&target)),
+                                    acyclic_auth::authority::Scope::Follow,
                                     visibility.channels,
                                 ),
                                 Err(crate::session::authority::Rejection::Forbidden)

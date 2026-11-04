@@ -485,11 +485,10 @@ pub async fn run(
     let (tty, output) = tty.split();
     let mut terminal = FrameTerminal::new(output, size()?)?;
     let mut keys = terminal_events(tty)?;
-    let settled = conversation.settled().await?;
     let from = if resume {
-        settled.saturating_sub(HISTORY)
+        Some(conversation.settled().await?.saturating_sub(HISTORY))
     } else {
-        settled
+        None
     };
     // Its settled turns, its phase and, while it works, the newest tool
     // call's output or its streaming answer.

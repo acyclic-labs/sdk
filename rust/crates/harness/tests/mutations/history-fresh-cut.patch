@@ -1,0 +1,11 @@
+diff --git a/rust/crates/harness/src/local/workspace/children.rs b/rust/crates/harness/src/local/workspace/children.rs
+--- a/rust/crates/harness/src/local/workspace/children.rs
++++ b/rust/crates/harness/src/local/workspace/children.rs
+@@ -66,7 +66,6 @@
+             None => self.project_view(source).await?,
+         };
+         let cut = view.snapshot(&mut accounting).await.map_err(storage)?;
+-        require_selected_generation(generation, cut.authored_generation)?;
+         view.prepare_fork_snapshot(destination, cut, operation, &mut accounting)
+             .await
+             .map_err(storage)?;

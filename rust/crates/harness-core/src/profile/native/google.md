@@ -18,7 +18,7 @@ tools:
   - {capability: glob, variant: glob, revision: gemini-cli-6814e00d6b14-v1}
   - {capability: search, variant: grep_search, revision: gemini-cli-6814e00d6b14-v1}
   - capability: shell
-    variant: run_shell_command
+    variant: shell
     revision: gemini-cli-6814e00d6b14-v1
     arguments: {command: $command, cwd: $dir_path}
     refuse: [is_background, delay_ms]
