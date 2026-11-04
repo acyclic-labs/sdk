@@ -191,7 +191,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 return Ok(());
             }
             if gate.producers == 0 {
-                if self.native_original.is_some() {
+                let recorded = if self.native_original.is_some() {
                     let (poll_credit, final_credit) = self
                         .cleanup_credit
                         .lock()
@@ -200,17 +200,21 @@ impl<A, O> CheckoutMountSource<A, O> {
                         .ok_or(MountSourceError::NativeWork(
                             crate::NativeTreeMaterializationError::InvalidLayout,
                         ))?;
-                    final_credit
+                    let recorded = final_credit
                         .record_completed(crate::WorkCounters {
                             items_examined: 1,
                             ..crate::WorkCounters::UNCHARGED
                         })
-                        .map_err(MountSourceError::NativeWork)?;
+                        .map_err(MountSourceError::NativeWork);
                     drop(poll_credit);
-                }
+                    recorded
+                } else {
+                    Ok(())
+                };
+                // Recording cannot undo the last physical producer's departure.
                 gate.retired = true;
                 self.capture_quiesced.notify_all();
-                return Ok(());
+                return recorded;
             }
             if let Some(wait) = wait.filter(|_| cancellation.is_none()) {
                 // A quiescent source needs no registration or fresh allocation.
