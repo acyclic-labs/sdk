@@ -264,7 +264,7 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
             .await;
         match (expected, actual) {
             (Some(expected), Ok(bytes)) if bytes.as_ref() == expected.as_bytes() => {}
-            (None, Err(acyclic_harness::Error::NotFound(_))) => {}
+            (None, Err(error)) if error.code() == acyclic_harness::wire::ErrorCode::NotFound => {}
             (_, actual) => {
                 return Err(format!("provider persisted file differs: {path}: {actual:?}").into());
             }
