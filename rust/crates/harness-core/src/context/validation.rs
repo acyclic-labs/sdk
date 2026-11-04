@@ -57,14 +57,35 @@ pub(crate) fn validate_projected_context(
     limits: Limits,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
-    validate_projected_messages(context, &context.messages, limits, io)
+    validate_projection_metadata(context, context.messages.len(), limits, io)?;
+    crate::executor::with_history_io(io, |work| -> Result<()> {
+        for message in &context.messages {
+            message.content.validate_limits(limits, work)?;
+        }
+        Ok(())
+    })?;
+    let mut remaining = limits.render_bytes;
+    crate::model::reserve_instruction_bodies(&context.messages, &mut remaining, io)
 }
 
-/// Validate projection metadata against messages owned by an admitted request.
-/// Render bounds apply to each part; verified token admission bounds the request.
-pub(crate) fn validate_projected_messages(
+/// Message and instruction bounds were established by this immutable request's
+/// admission. Only projection metadata remains to be admitted at publication.
+pub(crate) fn validate_projected_request(
     context: &Context,
-    messages: &[ModelMessage],
+    prepared: &crate::model::PreparedModelRequest,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    validate_projection_metadata(
+        context,
+        prepared.request().messages.len(),
+        prepared.admitted_limits(),
+        io,
+    )
+}
+
+fn validate_projection_metadata(
+    context: &Context,
+    message_count: usize,
     limits: Limits,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
@@ -73,24 +94,17 @@ pub(crate) fn validate_projected_messages(
         limits.validate(work)?;
         if context
             .current_input_index
-            .is_some_and(|index| index as usize >= messages.len())
+            .is_some_and(|index| index as usize >= message_count)
         {
             return Err(invalid("current input index is outside context"));
         }
-        if messages.len() > limits.context_messages || context.metadata.len() > limits.attachments {
+        if message_count > limits.context_messages || context.metadata.len() > limits.attachments {
             return Err(invalid("context projection exceeded declared bounds"));
-        }
-        for message in messages {
-            message.content.validate_limits(limits, work)?;
         }
         for file in context.metadata.values() {
             limits.validate_record(file, work)?;
         }
         Ok(())
-    })
-    .and_then(|()| {
-        let mut remaining = limits.render_bytes;
-        crate::model::reserve_instruction_bodies(messages, &mut remaining, io)
     })
 }
 

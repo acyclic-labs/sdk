@@ -56,7 +56,7 @@ pub use checkpoint::*;
 mod validation;
 pub(crate) use validation::{
     plan_compaction_budget, restrict_context_limits, validate_compaction,
-    validate_projected_context, validate_projected_messages,
+    validate_projected_context, validate_projected_request,
 };
 mod value;
 pub use value::*;

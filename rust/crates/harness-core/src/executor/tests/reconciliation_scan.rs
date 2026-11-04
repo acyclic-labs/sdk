@@ -231,32 +231,39 @@ async fn drive(modes: &[Mode]) -> Result<()> {
     Ok(())
 }
 
-proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
-
-    /// Every combination of settled-without-start, settled-with-start, settled success,
-    /// uncertain and unstarted calls in one response is reconciled exactly once, in order.
-    #[test]
-    fn every_call_in_a_response_reconciles_exactly_once(
-        modes in proptest::prop_oneof![
-            proptest::strategy::Just(vec![Mode::Deny, Mode::Lost]),
-            proptest::strategy::Just(vec![Mode::Ghost, Mode::Lost]),
-            proptest::collection::vec(
-                proptest::prop_oneof![
-                    proptest::strategy::Just(Mode::Deny),
-                    proptest::strategy::Just(Mode::Ghost),
-                    proptest::strategy::Just(Mode::Ok),
-                    proptest::strategy::Just(Mode::Fail),
-                    proptest::strategy::Just(Mode::Lost),
-                ],
-                1..=5,
-            ),
-        ]
-    ) {
-        tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap()
-            .block_on(drive(&modes))
-            .unwrap();
+/// Settled and uncertain calls reconcile exactly once, including both original
+/// settled-without-start regressions on every run.
+#[test]
+fn every_call_in_a_response_reconciles_exactly_once() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    for first in [Mode::Deny, Mode::Ghost] {
+        runtime.block_on(drive(&[first, Mode::Lost]))?;
     }
+    let modes = proptest::collection::vec(
+        proptest::prop_oneof![
+            proptest::strategy::Just(Mode::Deny),
+            proptest::strategy::Just(Mode::Ghost),
+            proptest::strategy::Just(Mode::Ok),
+            proptest::strategy::Just(Mode::Fail),
+            proptest::strategy::Just(Mode::Lost),
+        ],
+        1..=5,
+    );
+    let config = proptest::test_runner::Config {
+        source_file: Some(file!()),
+        test_name: Some(concat!(
+            module_path!(),
+            "::every_call_in_a_response_reconciles_exactly_once"
+        )),
+        ..proptest::test_runner::Config::with_cases(64)
+    };
+    proptest::test_runner::TestRunner::new(config)
+        .run(&modes, |modes| {
+            runtime.block_on(drive(&modes)).unwrap();
+            Ok(())
+        })
+        .unwrap();
+    Ok(())
 }
