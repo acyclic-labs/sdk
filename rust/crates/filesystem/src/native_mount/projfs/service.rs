@@ -6,7 +6,7 @@
 //! the service holds nothing of it.
 
 use super::*;
-use std::collections::VecDeque;
+use crate::native_mount::shared::ready::ReadyViews;
 use std::sync::Weak;
 
 pub(super) struct ServiceHook {
@@ -29,8 +29,7 @@ struct Shared {
 
 #[derive(Default)]
 struct State {
-    views: HashMap<u64, View>,
-    ready: VecDeque<u64>,
+    views: ReadyViews<View>,
     running: Option<u64>,
     next: u64,
     stopping: bool,
@@ -39,18 +38,12 @@ struct State {
 struct View {
     runtime: Arc<Runtime>,
     context: SendContext,
-    queued: bool,
 }
 
 impl Shared {
     fn schedule(&self, id: u64) {
         let mut state = lock_recover(&self.state);
-        let state = &mut *state;
-        if let Some(view) = state.views.get_mut(&id)
-            && !view.queued
-        {
-            view.queued = true;
-            state.ready.push_back(id);
+        if state.views.schedule(id) {
             self.changed.notify_all();
         }
     }
@@ -61,11 +54,7 @@ impl Shared {
             if state.stopping {
                 return;
             }
-            if let Some(id) = state.ready.pop_front() {
-                let Some(view) = state.views.get_mut(&id) else {
-                    continue;
-                };
-                view.queued = false;
+            if let Some((id, view)) = state.views.pop() {
                 let runtime = Arc::clone(&view.runtime);
                 let context = view.context.0;
                 state.running = Some(id);
@@ -75,17 +64,9 @@ impl Shared {
                 state = lock_recover(&self.state);
                 state.running = None;
                 self.changed.notify_all();
-                if !state.views.contains_key(&id) {
-                    continue;
-                }
                 match readiness {
                     Readiness::Ready => {
-                        if let Some(view) = state.views.get_mut(&id)
-                            && !view.queued
-                        {
-                            view.queued = true;
-                            state.ready.push_back(id);
-                        }
+                        state.views.schedule(id);
                     }
                     Readiness::Idle | Readiness::Stopped => {}
                 }
@@ -139,19 +120,23 @@ impl ProjectorService {
                 View {
                     runtime: Arc::clone(runtime),
                     context: SendContext(context),
-                    queued: false,
                 },
             );
             id
         };
-        runtime
+        if runtime
             .projector
             .service
             .set(ServiceHook {
                 service: Arc::downgrade(&self.shared),
                 id,
             })
-            .map_err(|_| NativeMountError::ControlPending)?;
+            .is_err()
+        {
+            let refused = lock_recover(&self.shared.state).views.remove(id);
+            drop(refused);
+            return Err(NativeMountError::ControlPending);
+        }
         self.shared.schedule(id);
         Ok(id)
     }
@@ -160,8 +145,7 @@ impl ProjectorService {
     /// holds no reference to it and never runs it again.
     pub(super) fn detach(&self, id: u64) {
         let mut state = lock_recover(&self.shared.state);
-        state.views.remove(&id);
-        state.ready.retain(|queued| *queued != id);
+        state.views.remove(id);
         while state.running == Some(id) {
             state = self
                 .shared
