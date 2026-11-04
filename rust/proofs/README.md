@@ -21,6 +21,11 @@ an oracle that rejects a population-dependent implementation.
 
 ## Current closure work
 
+The [Auth producer-loss control](auth-producer-loss/README.md) retains a
+production mutation that captures the global watch sender in its own account
+dependency future. The original retained-account oracle must reject the resulting
+pending wait when the follower is dropped, without waiting for a timeout.
+
 The [Objects empty-range dispatch control](objects-empty-dispatch/README.md)
 retains a production mutation that disables the index-only presence path. The
 existing real-log oracle must reject the resulting extra native submission;

@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss"])
 claim = parser.parse_args().claim
 if claim == "retained-credit":
     source = "rust/crates/filesystem/src/kernel/allocation.rs"
@@ -34,12 +34,18 @@ elif claim == "admission-rebind":
     test = "session::client::admissions::tests::home_rebinding_preserves_pending_memberships_without_allocating"
     diagnostic = "home rebinding allocated per pending membership"
     features = ["--no-default-features", "--features", "session"]
-else:
+elif claim == "objects-empty-dispatch":
     source = "rust/crates/objects/src/local.rs"
     crate = "acyclic-objects"
     test = "local::outcome_tests::empty_ranges_preserve_native_presence_without_dispatch"
     diagnostic = "empty range dispatched a physical job for key"
     features = ["--no-default-features", "--features", "local,test-support"]
+else:
+    source = "rust/crates/auth/src/trust/follower.rs"
+    crate = "acyclic-auth"
+    test = "trust::follower::tests::account_events_preserve_exact_dependencies_without_unrelated_wakes"
+    diagnostic = "account wait retained its lost global producer"
+    features = ["--no-default-features"]
 SOURCE = ROOT / source
 COMMAND = ["cargo", "test", "--locked", "-p", crate, *features, "--lib", test,
            "--", "--exact", "--nocapture"]

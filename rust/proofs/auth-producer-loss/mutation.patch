@@ -1,0 +1,19 @@
+diff --git a/rust/crates/auth/src/trust/follower.rs b/rust/crates/auth/src/trust/follower.rs
+--- a/rust/crates/auth/src/trust/follower.rs
++++ b/rust/crates/auth/src/trust/follower.rs
+@@ -1096,6 +1096,7 @@ impl ChangeSource for Follower {
+         // sender, so neither an idle wait nor an account operation can keep the
+         // global producer alive. Unknown names never create retained accounts.
+         let mut global = self.global.subscribe();
++        let producer = self.global.clone();
+         let state = self.state.subscribe();
+         let account = self
+             .find_account(account)
+@@ -1104,6 +1105,7 @@ impl ChangeSource for Follower {
+             .flatten()
+             .map(|entry| entry.changes.subscribe());
+         Box::pin(async move {
++            let _producer = producer;
+             let mut account = account.ok_or(SourceClosed)?;
+             if matches!(*state.borrow(), FollowerState::Closed(_)) {
+                 return Err(SourceClosed);
