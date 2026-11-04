@@ -79,7 +79,7 @@ async fn conflicting_creation_config_is_rejected_without_changing_opened_config(
     #[cfg(not(target_arch = "wasm32"))]
     {
         crate::initialize_test_native_io();
-        for admitted in [0, 1] {
+        for admitted in [0, 2] {
             let caller = CancellationToken::new();
             let original =
                 crate::NativeMaterializationWork::new(B, &caller).map_err(|(cause, _)| cause)?;
@@ -93,7 +93,7 @@ async fn conflicting_creation_config_is_rejected_without_changing_opened_config(
                 &mut crate::kernel::KernelAccounting::native(&original, &cancel),
             )?;
             let restricted = original.native_volume_work(WorkBudget {
-                authority_records_read: admitted,
+                backend_read_operations: admitted,
                 ..B
             })?;
             let baseline = original.live_allocation_bytes();
@@ -106,7 +106,7 @@ async fn conflicting_creation_config_is_rejected_without_changing_opened_config(
                             crate::AuthorityStoreError::NativeOriginal(
                                 crate::NativeTreeMaterializationError::Work(
                                     crate::WorkError::BudgetExceeded {
-                                        counter: "authority_records_read",
+                                        counter: "backend_read_operations",
                                         ..
                                     }
                                 )
@@ -119,10 +119,10 @@ async fn conflicting_creation_config_is_rejected_without_changing_opened_config(
                 assert_eq!(result?.config(), config());
             }
             let spent = original.receipt();
-            assert_eq!(spent.authority_records_read, admitted);
+            assert_eq!(spent.authority_records_read, u64::from(admitted != 0));
             assert!(spent.items_examined >= 7);
             assert_eq!(spent.authority_records_appended, 0);
-            assert_eq!(spent.backend_read_operations, 1);
+            assert_eq!(spent.backend_read_operations, admitted);
             assert_eq!(spent.backend_write_operations, 0);
             assert_eq!(original.live_allocation_bytes(), baseline);
 
