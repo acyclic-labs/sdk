@@ -136,14 +136,18 @@ fn every_stat_of_a_file_reports_its_one_handle() -> std::io::Result<()> {
 }
 #[test]
 fn held_root_rejects_intermediate_symlink_escape_for_reads_and_writes() -> std::io::Result<()> {
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _, symlink};
     let temporary = tempfile::tempdir()?;
     let root_path = temporary.path().join("root");
     let outside_path = temporary.path().join("outside");
     std::fs::create_dir(&root_path)?;
     std::fs::create_dir(&outside_path)?;
-    std::fs::write(outside_path.join("secret"), b"outside")?;
-    symlink(&outside_path, root_path.join("pivot"))?;
+    let target = outside_path.join("secret");
+    std::fs::write(&target, b"outside")?;
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644))?;
+    let link = root_path.join("pivot");
+    symlink(&outside_path, &link)?;
+    assert!(test_root(&link).is_err());
     let root = test_root(&root_path)?;
     assert!(filesystem_is_local(&root.directory, &mut ordinary_work()).map_err(ordinary_error)?);
     assert!(
@@ -165,31 +169,16 @@ fn held_root_rejects_intermediate_symlink_escape_for_reads_and_writes() -> std::
     let mut secret = String::new();
     std::fs::File::open(outside_path.join("secret"))?.read_to_string(&mut secret)?;
     assert_eq!(secret, "outside");
-    Ok(())
-}
-#[test]
-fn held_special_metadata_rejects_intermediate_symlink_escape() -> std::io::Result<()> {
-    use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _, symlink};
-    let temporary = tempfile::tempdir()?;
-    let root_path = temporary.path().join("root");
-    let outside_path = temporary.path().join("outside");
-    std::fs::create_dir(&root_path)?;
-    std::fs::create_dir(&outside_path)?;
-    let target = outside_path.join("target");
-    std::fs::write(&target, b"outside")?;
-    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644))?;
-    symlink(&outside_path, root_path.join("pivot"))?;
-    let root = test_root(&root_path)?;
     #[cfg(target_os = "linux")]
     assert!(
-        root.open_linux_metadata_target(Path::new("pivot/target"), &mut ordinary_work())
+        root.open_linux_metadata_target(Path::new("pivot/secret"), &mut ordinary_work())
             .is_err()
     );
     #[cfg(target_os = "macos")]
     assert!(
         open_macos_metadata_target(
             &root.directory,
-            Path::new("pivot/target"),
+            Path::new("pivot/secret"),
             &mut ordinary_work()
         )
         .is_err()
@@ -306,17 +295,6 @@ fn held_linux_symlink_metadata_does_not_mutate_target() -> Result<(), Box<dyn st
     assert_eq!(outside_after.mtime(), outside_before.mtime());
     assert_eq!(outside_after.mtime_nsec(), outside_before.mtime_nsec());
     assert_eq!(std::fs::read(outside)?, b"outside");
-    Ok(())
-}
-#[test]
-fn root_symbolic_link_is_never_admitted() -> std::io::Result<()> {
-    use std::os::unix::fs::symlink;
-    let temporary = tempfile::tempdir()?;
-    let real = temporary.path().join("real");
-    let link = temporary.path().join("link");
-    std::fs::create_dir(&real)?;
-    symlink(&real, &link)?;
-    assert!(test_root(&link).is_err());
     Ok(())
 }
 #[test]
