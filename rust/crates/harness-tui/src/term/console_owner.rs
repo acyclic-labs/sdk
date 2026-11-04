@@ -559,7 +559,7 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{e}"))
                 .original = Some(original_id);
             let cancelling_owner = Arc::clone(&owner);
-            thread::spawn(move || {
+            let canceller = thread::spawn(move || {
                 cancelling_owner
                     .quiesce_generation(true, Some(generation))
                     .unwrap_or_else(|e| panic!("{e}"));
@@ -576,9 +576,12 @@ mod tests {
                 Owner::submit(&owner, &mut state, false, |_| Ok(()))
                     .unwrap_or_else(|e| panic!("{e}"));
             }
-            // Loom runs every spawned thread to completion before accepting a
-            // schedule. The callback checks every cancellation at its source;
-            // an observer join and a second acknowledgement wait add no claim.
+            // Retire the callback before Loom drops its lazy cancellation state.
+            // Each call checks its target directly; another acknowledgement wait
+            // and an observer-state read add no cancellation claim.
+            canceller
+                .join()
+                .unwrap_or_else(|e| std::panic::resume_unwind(e));
         });
     }
 
