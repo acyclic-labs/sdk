@@ -317,7 +317,6 @@ async fn first_publication_preserves_the_baseline_and_captures_external_edits() 
             .as_ref(),
             b"external\n"
         );
-        harness.disconnect().await?;
     }
     Ok(())
 }
