@@ -3,7 +3,8 @@ use super::{IndexReadWork, IndexWork};
 use std::ops::Range;
 
 /// A stable borrowed byte view of an immutable entry. Implementations must
-/// return the same bytes throughout the index's lifetime.
+/// return the same bytes throughout the index's lifetime. The view's own cost
+/// is the caller's responsibility, just like the prefix acceptance predicate.
 pub trait PrefixKey<V> {
     /// Borrows the entry's key without allocating or copying it.
     fn bytes<'a>(&self, entry: &'a V) -> &'a [u8];
@@ -84,6 +85,7 @@ impl<V: AsRef<[u8]>, A> CompiledPrefixIndex<V, A> {
         entries: Vec<V>,
         work: &mut W,
     ) -> Result<Self, CompiledPrefixError<W::Error>> {
+        work.check().map_err(CompiledPrefixError::Work)?;
         Self::compile(entries, EntryBytes, |position| position, work)
     }
 }
@@ -112,6 +114,7 @@ impl<V, A> CompiledPrefixIndex<V, A> {
         // Declared after its funding so backing retires first on every error.
         let mut order = Vec::new();
         order.try_reserve_exact(entries.len()).map_err(Allocation)?;
+        work.charge_items(entries.len() as u64).map_err(Work)?;
         order.extend(0..entries.len());
         sort(&mut order, &mut |&left, &right| {
             let left = key.bytes(&entries[left]);
@@ -173,7 +176,6 @@ impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
         work: &mut W,
     ) -> Result<Self, CompiledPrefixError<W::Error>> {
         use CompiledPrefixError::{Allocation, Capacity, Order, Work};
-        work.check().map_err(Work)?;
         for index in 1..entries.len() {
             let left = key.bytes(&entries[position(index - 1)]);
             let right = key.bytes(&entries[position(index)]);
