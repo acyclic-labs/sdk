@@ -664,7 +664,9 @@ impl Shape {
         Self {
             answer: answer.trim().to_owned(),
             results: vec![
-                pick(&parsed("shell"), &["/exit_code", "/stdout"]),
+                // The shared shell projects its exit and output as text to
+                // the model; structured file and child results remain JSON.
+                parsed("shell"),
                 pick(
                     &parsed("write"),
                     &["/file/descriptor", "/file/path", "/file/volume/class"],
@@ -735,7 +737,11 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
     }
     let (_, local) = &shapes[0];
     assert_eq!(local.answer, "root answer\nfollowup answer");
-    assert_eq!(local.results[0], json!([0, "conformance-shell\n"]));
+    let newline = if cfg!(windows) { "\r\n" } else { "\n" };
+    assert_eq!(
+        local.results[0],
+        json!(format!("Exit code: 0\nconformance-shell{newline}"))
+    );
     assert_eq!(
         local.results[1][0]["byte_length"],
         WRITTEN.len(),
