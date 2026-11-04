@@ -228,7 +228,11 @@ impl IssuedDestination {
             let parent = root
                 .root
                 .try_clone(&mut crate::native_host::ordinary_work())?;
-            parent.create_dir(&name, &mut crate::native_host::ordinary_work())?;
+            crate::native_host::host_path(
+                &name,
+                &mut crate::native_host::ordinary_work(),
+                |name, work| parent.create_dir(name, work),
+            )?;
             Ok((parent, root.path().join(&name)))
         })?;
         Ok(Self {

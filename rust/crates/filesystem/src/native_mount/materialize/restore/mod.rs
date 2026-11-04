@@ -291,20 +291,11 @@ pub(super) fn held_parent(
     relative: &Path,
     work: &mut impl crate::demand::SourceDemandReadWork,
 ) -> Result<HostRoot, MaterializeError> {
-    {
-        #[cfg(unix)]
-        {
-            root.create_dir_all_held(relative.parent().unwrap_or_else(|| Path::new("")), work)
-        }
-        #[cfg(windows)]
-        {
-            crate::native_host::with_wide_path(
-                relative.parent().unwrap_or_else(|| Path::new("")),
-                work,
-                |path, work| root.create_dir_all_held(path, work),
-            )
-        }
-    }
+    crate::native_host::host_path(
+        relative.parent().unwrap_or_else(|| Path::new("")),
+        work,
+        |path, work| root.create_dir_all_held(path, work),
+    )
     .map_err(MaterializeError::from)
 }
 

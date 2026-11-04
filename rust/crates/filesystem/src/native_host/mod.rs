@@ -38,6 +38,22 @@ pub(crate) type NativeUnit = u16;
 type NativePath = Path;
 #[cfg(windows)]
 type NativePath = [u16];
+/// Runs `operation` on `path` in this host's native path encoding. Callers
+/// holding a `Path` use this one spelling on every OS.
+pub(crate) fn host_path<W: NativeHostWork, T>(
+    path: &Path,
+    work: &mut W,
+    operation: impl FnOnce(&NativePath, &mut W) -> Result<T, W::Error>,
+) -> Result<T, W::Error> {
+    #[cfg(unix)]
+    {
+        operation(path, work)
+    }
+    #[cfg(windows)]
+    {
+        with_wide_path(path, work, operation)
+    }
+}
 #[cfg(unix)]
 type NativeLeaf = std::ffi::CStr;
 #[cfg(windows)]
