@@ -377,6 +377,72 @@ fn canonical(mut filter: wire::SessionFilter) -> Result<wire::SessionFilter, Str
     Ok(filter)
 }
 
+// The persistence fuzzer and the default property share this check. Expected
+// entries come from the admitted record, independently of filter projection.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn projection_contract(record: &crate::Record) -> bool {
+    let Ok(Some(_)) = crate::changes::reader_format(&record.headers) else {
+        return true;
+    };
+    let Ok(original) = crate::changes::decode(&record.value, &record.headers) else {
+        return false;
+    };
+    let Some(pivot) = original.entries.get(original.entries.len() / 2) else {
+        return false;
+    };
+    for selection in 0..3 {
+        // An empty range end means unbounded, so it cannot select the empty
+        // prefix before a first empty key. The suffix still covers that key.
+        if selection == 1 && pivot.key.is_empty() {
+            continue;
+        }
+        let keys = match selection {
+            1 => vec![wire::KeyRange {
+                start: Default::default(),
+                end: pivot.key.clone(),
+            }],
+            2 => vec![wire::KeyRange {
+                start: pivot.key.clone(),
+                end: Default::default(),
+            }],
+            _ => vec![],
+        };
+        let Ok(filter) = FollowFilter::new(wire::SessionFilter {
+            keys,
+            ..Default::default()
+        }) else {
+            return false;
+        };
+        let mut expected = original.clone();
+        expected.entries.retain(|entry| match selection {
+            1 => entry.key < pivot.key,
+            2 => entry.key >= pivot.key,
+            _ => true,
+        });
+        let Ok(projected) = filter.project(record.clone()) else {
+            return false;
+        };
+        let Some(projected) = projected else {
+            if !expected.entries.is_empty() {
+                return false;
+            }
+            continue;
+        };
+        if expected.entries.is_empty()
+            || crate::changes::decode(&projected.value, &projected.headers) != Ok(expected)
+            || projected.headers.attributes() != record.headers.attributes()
+            || projected.sequence != record.sequence
+            || projected.commit_id != record.commit_id
+            || projected.committed_at_micros != record.committed_at_micros
+            || projected.origin != record.origin
+            || (selection == 0 && projected != *record)
+        {
+            return false;
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,6 +561,11 @@ mod tests {
             }),
             vec![],
         )?;
+        assert!(projection_contract(&retained));
+        let mut current_record = retained.clone();
+        current_record.value = current.value.clone();
+        current_record.headers = current.headers.clone();
+        assert!(projection_contract(&current_record));
         let filters = [
             FollowFilter::default(),
             FollowFilter::new(wire::SessionFilter {

@@ -840,3 +840,21 @@ service reply and checks decoded cardinality before zip-based comparisons.
 guard to reject only missing replies; the unchanged property must reject its
 extra reply. The earlier count-guard control still covers missing members.
 This is a derived adversarial input, not an additional captured service packet.
+The existing `stream_persistence` target also checks typed change projection
+through `FollowFilter::project`, using the same oracle as the default
+`projection_reuses_validation_and_skips_unrestricted_decoding` property. The
+oracle checks complete, lower-prefix and upper-suffix selections against the
+admitted entries, retaining context, operations, metadata, attributes and record
+identity. Its v1 input is the retained `stream.changes-v1` protocol golden; its
+v2 input and multi-entry corpus seeds come from `AppendRecord::changes`. These
+are SDK codec inputs, not recorded remote-service responses.
+
+`negative-controls/change_projection_leak.patch` bypasses the production entry
+selection for valid operations. Apply it, then run:
+
+```sh
+cargo test --locked -p acyclic-stream --features test-support --lib follow_filter::tests::projection_reuses_validation_and_skips_unrestricted_decoding -- --exact
+```
+
+The unchanged property must reject the leaked entry. Reverse the patch before
+the positive run. A compiler failure is not a successful negative control.

@@ -139,6 +139,9 @@ pub fn check(bytes: &[u8]) -> bool {
         let followed = crate::StreamPath::new("codec/events").expect("canonical fixture path");
         for context in [None, Some(&followed)] {
             if let Ok(record) = crate::wire_codec::record(value.clone(), context) {
+                if !crate::follow_filter::projection_contract(&record) {
+                    return false;
+                }
                 if crate::wire_codec::record(
                     crate::wire_codec::record_wire(record.clone(), context),
                     context,
@@ -289,11 +292,11 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
     }
     let changes = crate::AppendRecord::changes(
         b"codec",
-        &[crate::wire::ChangeEntry {
-            key: bytes::Bytes::from_static(b"file"),
+        &[b"file".as_slice(), b"file/child".as_slice()].map(|key| crate::wire::ChangeEntry {
+            key: bytes::Bytes::copy_from_slice(key),
             operation: "write".into(),
             metadata: bytes::Bytes::from_static(b"metadata"),
-        }],
+        }),
         Vec::new(),
     )?;
     seeds.push(("changes".into(), changes.value.to_vec()));
