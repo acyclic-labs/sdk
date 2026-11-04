@@ -48,6 +48,7 @@ async fn check(schedule: &[u8]) -> Result<()> {
     for context in 0..2 {
         let request = PreparedModelRequest::prepare(
             ModelRequest {
+                summary: false,
                 compose_tools: false,
                 model: Model::new("recorded-control".into(), "schedule".into(), "1".into())?,
                 messages: vec![ModelMessage {
