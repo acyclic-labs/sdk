@@ -274,7 +274,7 @@ fn availability(initial: AvailabilityCursor, candidate: AvailabilityCursor) {
     );
     assert_eq!(
         feed.cursor(),
-        expected.clone().unwrap_or(forward),
+        expected.as_ref().copied().unwrap_or(forward),
         "refusal retains the last admitted cut"
     );
     if expected.is_err() {
