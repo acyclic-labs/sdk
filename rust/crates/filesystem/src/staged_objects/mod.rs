@@ -133,16 +133,7 @@ impl<S> StagedObjects<S> {
         self.index.write().unwrap_or_else(PoisonError::into_inner)
     }
     fn lookup(&self, object_id: ObjectId) -> Lookup {
-        match self.index().objects.get(&object_id) {
-            None => Lookup::Absent,
-            Some(Staged::Resident {
-                object, referenced, ..
-            }) => {
-                referenced.store(true, Ordering::Relaxed);
-                Lookup::Resident(object.bytes().clone())
-            }
-            Some(&Staged::Spilled { offset, length }) => Lookup::Spilled { offset, length },
-        }
+        self.index().lookup(object_id)
     }
 }
 

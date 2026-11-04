@@ -150,33 +150,46 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
         assert!(matches!(store.lookup(id), Lookup::Spilled { .. }));
     }
 
-    let work =
-        NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
-    let spill_file = store.spill_io.write().await;
-    let mut future = Box::pin(async {
-        store
-            .read(
-                id,
-                bytes.len() as u64,
-                &mut crate::AuthorityWork::native(&work, &token),
+    for batch in [false, true] {
+        let work = NativeMaterializationWork::new(native_read_budget(), &token)
+            .map_err(|(error, _)| error)?;
+        let spill_file = store.spill_io.write().await;
+        let mut future = Box::pin(async {
+            let mut work = AuthorityWork::native(&work, &token);
+            if batch {
+                store
+                    .read_many(
+                        &[ObjectReadRequest {
+                            object_id: id,
+                            maximum_bytes: bytes.len() as u64,
+                        }],
+                        &mut work,
+                    )
+                    .await
+                    .map(drop)
+            } else {
+                store
+                    .read(id, bytes.len() as u64, &mut work)
+                    .await
+                    .map(drop)
+            }
+        });
+        assert!(
+            Future::poll(
+                future.as_mut(),
+                &mut std::task::Context::from_waker(std::task::Waker::noop())
             )
-            .await
-    });
-    assert!(
-        Future::poll(
-            future.as_mut(),
-            &mut std::task::Context::from_waker(std::task::Waker::noop())
-        )
-        .is_pending()
-    );
-    assert!(work.live_allocation_bytes() > NativeMaterializationWork::accounting_state_bytes());
-    drop(future);
-    drop(spill_file);
-    assert_eq!(work.receipt().backend_read_operations, 0);
-    assert_eq!(
-        work.live_allocation_bytes(),
-        NativeMaterializationWork::accounting_state_bytes()
-    );
+            .is_pending()
+        );
+        assert!(work.live_allocation_bytes() > NativeMaterializationWork::accounting_state_bytes());
+        drop(future);
+        drop(spill_file);
+        assert_eq!(work.receipt().backend_read_operations, 0);
+        assert_eq!(
+            work.live_allocation_bytes(),
+            NativeMaterializationWork::accounting_state_bytes()
+        );
+    }
 
     store
         .spill_file(&mut *store.spill_io.write().await, None)
