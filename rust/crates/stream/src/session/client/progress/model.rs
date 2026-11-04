@@ -16,10 +16,9 @@ fn verify_opening_retirement(broken: bool) {
             progress.cancel();
         }
         let admitted = sender.join().unwrap();
-        assert_eq!(
-            progress.opening_admitted(),
-            admitted,
-            "withdrawal must preserve the original Hello handoff"
+        assert!(
+            progress.cancelled() && progress.opening_admitted() == admitted,
+            "withdrawal must preserve cancellation and the original Hello handoff"
         );
         progress.reset_opening();
         assert!(progress.cancelled());
@@ -34,7 +33,7 @@ fn opening_retirement_preserves_the_transport_handoff() {
 }
 
 #[test]
-#[should_panic(expected = "withdrawal must preserve the original Hello handoff")]
+#[should_panic(expected = "withdrawal must preserve cancellation and the original Hello handoff")]
 fn opening_retirement_negative_control_erases_the_transport_handoff() {
     verify_opening_retirement(true);
 }
