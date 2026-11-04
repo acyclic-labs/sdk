@@ -485,19 +485,23 @@ async fn a_later_publication_changes_the_watermark_without_changing_consumed_fac
 // Inject only the final credit refusal; all preceding records and objects come
 // from the same real publication. The two runs differ only in admitted work
 // spent before refusal, so their returned receipts must differ by exactly it.
-struct RefusingProof<'a> {
-    objects: &'a MemoryObjectBackend,
+struct RefusingProof<'a, O> {
+    objects: &'a O,
     later: ObjectId,
     archive: bool,
-    spent: u64,
+    spent: Option<u64>,
+    later_hash: std::sync::atomic::AtomicU64,
 }
 
-impl RefusingProof<'_> {
+impl<O> RefusingProof<'_, O> {
     fn refuse(&self, work: &mut AuthorityWork<'_>) -> Result<(), crate::ObjectStoreError> {
+        let Some(spent) = self.spent else {
+            return Ok(());
+        };
         work.accept::<_, crate::ObjectStoreError>(Ok(crate::OperationReceipt {
             value: (),
             work: crate::WorkCounters {
-                items_examined: self.spent,
+                items_examined: spent,
                 ..crate::WorkCounters::UNCHARGED
             },
         }))?;
@@ -510,7 +514,7 @@ impl RefusingProof<'_> {
     }
 }
 
-impl AsyncObjectStore for RefusingProof<'_> {
+impl<O: AsyncObjectStore> AsyncObjectStore for RefusingProof<'_, O> {
     async fn put(
         &self,
         id: ObjectId,
@@ -563,8 +567,14 @@ impl AsyncObjectStore for RefusingProof<'_> {
         maximum_objects: u64,
         work: &mut AuthorityWork<'_>,
     ) -> Result<Option<crate::kernel::HistoricalGenerationEvidence>, crate::ObjectStoreError> {
-        if self.archive && record.sequence == Sequence::new(2) {
-            self.refuse(work)?;
+        if record.sequence == Sequence::new(2) {
+            self.later_hash.store(
+                work.spent().bytes_hashed,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            if self.archive {
+                self.refuse(work)?;
+            }
         }
         self.objects
             .historical_generation_evidence(id, record, maximum, maximum_objects, work)
@@ -588,19 +598,107 @@ async fn refused_archive_and_closure_preserve_exact_spent_work() -> Result<(), B
             objects: &objects,
             later,
             archive,
-            spent: 0,
+            spent: Some(0),
+            later_hash: std::sync::atomic::AtomicU64::new(0),
         };
         let original = page(&authority, &store, id, AccountingCursor::genesis(), 2).await?;
         assert_eq!(original.facts().len(), 1);
         assert!(!original.complete);
-        store.spent = 7;
+        store.spent = Some(7);
         let charged = page(&authority, &store, id, AccountingCursor::genesis(), 2).await?;
         assert_eq!(charged.facts(), original.facts());
         assert_eq!(charged.next, original.next);
         let mut expected = original.work;
-        expected.items_examined += store.spent;
+        expected.items_examined += store.spent.unwrap();
         assert_eq!(charged.work, expected, "archive={archive}");
         charged.work.verify(BUDGET)?;
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn record_admission_refusals_preserve_proven_prefix() -> Result<(), Box<dyn Error>> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    crate::initialize_test_native_io();
+    let directory = tempfile::tempdir()?;
+    let provider =
+        acyclic_objects::local::LocalObjects::open(directory.path(), Default::default(), None)
+            .await?;
+    let objects = Arc::new(crate::LogicalObjectStore::new(Arc::new(provider)));
+    let authority = StreamAuthorityStore::new(Arc::new(acyclic_stream::MemoryStream::default()));
+    let fs = Fs::new(
+        authority.clone(),
+        Arc::clone(&objects),
+        crate::EmbeddedCapabilities::MEMORY,
+    );
+    let cancel = CancellationToken::new();
+    let workspace = fs
+        .create_workspace("refused-record", B, &cancel)
+        .await?
+        .value;
+    workspace.write_text("/file", "original").await?;
+    let id = volume_authority_id(workspace.id().volume_id());
+    let durable = records(&authority, id).await?;
+    let store = RefusingProof {
+        objects: &objects,
+        later: root(workspace.head(B, &cancel).await?.value.id()),
+        archive: true,
+        spent: None,
+        later_hash: AtomicU64::new(0),
+    };
+    for native in [false, true] {
+        let original =
+            crate::NativeMaterializationWork::new(BUDGET, &cancel).map_err(|(e, _)| e)?;
+        let mut work = if native {
+            AuthorityWork::native(&original, &cancel)
+        } else {
+            AuthorityWork::new(BUDGET, &cancel)
+        };
+        let full = accounting_page(
+            &authority,
+            &store,
+            id,
+            AccountingCursor::genesis(),
+            2,
+            &mut work,
+        )
+        .await?;
+        assert!(full.complete && full.facts().len() == 2);
+        let before_later_hash = store.later_hash.load(Ordering::Relaxed)
+            - crate::AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES
+            - durable[1].payload.len() as u64;
+        for hash in [true, false] {
+            let mut budget = BUDGET;
+            if hash {
+                budget.bytes_hashed = before_later_hash;
+            } else {
+                budget.items_returned = 1;
+            }
+            let original =
+                crate::NativeMaterializationWork::new(budget, &cancel).map_err(|(e, _)| e)?;
+            let mut work = if native {
+                AuthorityWork::native(&original, &cancel)
+            } else {
+                AuthorityWork::new(budget, &cancel)
+            };
+            let prefix = accounting_page(
+                &authority,
+                &store,
+                id,
+                AccountingCursor::genesis(),
+                2,
+                &mut work,
+            )
+            .await
+            .expect("record admission refusal dropped proven facts");
+            assert_eq!(prefix.facts(), &full.facts()[..1]);
+            assert_eq!(prefix.next, cursor(&durable[0])?);
+            assert!(!prefix.complete);
+            assert_eq!(prefix.work.items_returned, 1);
+            assert_eq!(prefix.work, work.spent());
+            prefix.work.verify(budget)?;
+        }
     }
     Ok(())
 }
