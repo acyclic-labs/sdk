@@ -1,0 +1,12 @@
+--- a/rust/crates/harness/src/local/host_files.rs
++++ b/rust/crates/harness/src/local/host_files.rs
+@@ -765,7 +765,8 @@ pub async fn serve_until(
+         status,
+         _ownership: Arc::clone(&ownership),
+     };
+-    let result = match ready() {
++    let _ready = ready;
++    let result = match Ok::<_, Error>(()) {
+         Ok(()) => serve_requests(&owner, files, session, &notices, shutdown).await,
+         Err(error) => Err(error),
+     };

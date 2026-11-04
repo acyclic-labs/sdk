@@ -585,27 +585,87 @@ async fn workspace_shutdown_retains_its_cause_when_retirement_refuses() -> Resul
     );
     let mut failures = Vec::new();
     let operation = OperationId::from_bytes([7; 16]);
-    for shutdown in [
-        Err(Error::Cancelled),
-        Err(Error::Unsupported("original shutdown producer".into())),
-        Err(Error::Indeterminate(operation)),
-        Ok(()),
+    let descriptor = checkout.path().join(DIRECTORY).join("owner.json");
+    for (ready, shutdown) in [
+        (Ok(()), Err(Error::Cancelled)),
+        (
+            Ok(()),
+            Err(Error::Unsupported("original shutdown producer".into())),
+        ),
+        (Ok(()), Err(Error::Indeterminate(operation))),
+        (Ok(()), Ok(())),
+        (
+            Err(Error::Unsupported("original readiness output".into())),
+            Ok(()),
+        ),
     ] {
-        let expected = shutdown.as_ref().err().map(Error::code);
+        let expected = ready
+            .as_ref()
+            .err()
+            .or_else(|| shutdown.as_ref().err())
+            .map(Error::code);
+        let refused = ready.is_err();
+        let stale = descriptor.is_file();
+        let (mut announced, mut owned, mut shutdown_polled) = (0, false, false);
         // The extra public harness handle makes the original retirement
         // refuse disconnect after it has joined view cleanup. No replacement
         // producer or injected filesystem result supplies that refusal.
-        let failure = serve_until(Arc::clone(&local), async move { shutdown })
-            .await
-            .expect_err("the retained harness handle must refuse retirement");
-        failures.push((expected, failure));
+        let failure = serve_until(
+            Arc::clone(&local),
+            || {
+                announced += 1;
+                owned = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(checkout.path().join(DIRECTORY).join("owner.lock"))
+                    .and_then(|file| {
+                        acyclic_native_runtime::FileLock::try_acquire(
+                            file,
+                            acyclic_native_runtime::FileLockMode::Exclusive,
+                        )
+                    })
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::WouldBlock);
+                ready
+            },
+            async {
+                shutdown_polled = true;
+                shutdown
+            },
+        )
+        .await
+        .expect_err("the retained harness handle must refuse retirement");
+        failures.push((
+            expected,
+            failure,
+            announced,
+            owned,
+            stale,
+            refused,
+            shutdown_polled,
+        ));
     }
     Arc::try_unwrap(local)
         .map_err(|_| Error::Conflict("workspace owner retained after retirement".into()))?
         .disconnect()
         .await?;
     // Release the actual harness before any regression assertion can fail.
-    for (expected, failure) in failures {
+    for (index, (expected, failure, announced, owned, stale, refused, shutdown_polled)) in
+        failures.into_iter().enumerate()
+    {
+        assert_eq!(
+            announced, 1,
+            "each serving lifetime must announce readiness"
+        );
+        assert!(owned, "readiness must retain the original exclusive owner");
+        assert_eq!(
+            stale,
+            index != 0,
+            "restart retains its discovery descriptor"
+        );
+        assert_eq!(
+            shutdown_polled, !refused,
+            "readiness refusal must retire without starting request serving"
+        );
         assert_eq!(
             failure.code(),
             expected.unwrap_or(crate::wire::ErrorCode::Conflict),
@@ -667,9 +727,6 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         }
     })
     .map_err(storage)?;
-    watcher
-        .watch(checkout.path(), RecursiveMode::Recursive)
-        .map_err(storage)?;
     let local = Arc::new(
         LocalHarness::open(
             LocalHarnessConfig::native_host(checkout.path())
@@ -677,14 +734,15 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         )
         .await?,
     );
-    let mut owner = tokio::spawn(Box::pin(serve(Arc::clone(&local))));
-    let descriptor = checkout.path().join(DIRECTORY).join("owner.json");
-    while !descriptor.is_file() {
-        projection_event(&mut changes, &mut owner).await?;
-    }
+    let (ready, started) = tokio::sync::oneshot::channel();
+    let mut owner = tokio::spawn(Box::pin(serve_until(
+        Arc::clone(&local),
+        move || ready.send(()).map_err(|()| Error::Cancelled),
+        std::future::pending(),
+    )));
+    started.await.map_err(storage)?;
     // Follow only coordination files once published, before any native view
     // is admitted. The observer never traverses mounted agent filesystems.
-    watcher.unwatch(checkout.path()).map_err(storage)?;
     watcher
         .watch(&checkout.path().join(DIRECTORY), RecursiveMode::Recursive)
         .map_err(storage)?;
@@ -731,9 +789,6 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     };
     let cwd = std::fs::canonicalize(checkout.path()).map_err(storage)?;
     let other_checkout = tempfile::tempdir().map_err(storage)?;
-    watcher
-        .watch(other_checkout.path(), RecursiveMode::Recursive)
-        .map_err(storage)?;
     let other_local = Arc::new(
         LocalHarness::open(
             LocalHarnessConfig::native_host(other_checkout.path())
@@ -741,12 +796,13 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         )
         .await?,
     );
-    let mut other_owner = tokio::spawn(Box::pin(serve(Arc::clone(&other_local))));
-    let other_descriptor = other_checkout.path().join(DIRECTORY).join("owner.json");
-    while !other_descriptor.is_file() {
-        projection_event(&mut changes, &mut other_owner).await?;
-    }
-    watcher.unwatch(other_checkout.path()).map_err(storage)?;
+    let (ready, started) = tokio::sync::oneshot::channel();
+    let other_owner = tokio::spawn(Box::pin(serve_until(
+        Arc::clone(&other_local),
+        move || ready.send(()).map_err(|()| Error::Cancelled),
+        std::future::pending(),
+    )));
+    started.await.map_err(storage)?;
     let other_cwd = std::fs::canonicalize(other_checkout.path()).map_err(storage)?;
     let opening_registry = Arc::clone(&registry);
     let opening_cwd = cwd.clone();
