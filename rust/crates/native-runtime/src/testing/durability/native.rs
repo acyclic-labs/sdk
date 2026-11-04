@@ -120,7 +120,7 @@ fn retains_cut(
         }
     }
     assert_eq!(
-        schedule.durable_writes().len(),
+        schedule.durable_write_count(),
         1,
         "operation dispatched after the cut"
     );
