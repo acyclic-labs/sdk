@@ -157,14 +157,6 @@ impl<T: Copy> Index<T> {
         self.vacant.push(current);
         Ok(value)
     }
-    pub(super) fn get_history(
-        &self,
-        domain: usize,
-        key: &[u8; 32],
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<Option<T>> {
-        self.get_with(domain, key, |items| history_step_traced(work, items))
-    }
     fn get_with(
         &self,
         domain: usize,
@@ -193,15 +185,6 @@ impl<T: Copy> Index<T> {
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         self.set_with(domain, key, value, |items| step(io, items))
-    }
-    pub(super) fn set_history(
-        &mut self,
-        domain: usize,
-        key: [u8; 32],
-        value: Option<T>,
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<()> {
-        self.set_with(domain, key, value, |items| history_step_traced(work, items))
     }
     fn set_with(
         &mut self,

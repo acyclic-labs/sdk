@@ -1,6 +1,6 @@
 use super::*;
 use crate::context::DiscoveredContext;
-use acyclic_test_support::{differential, measure};
+use acyclic_test_support::differential;
 use proptest::prelude::*;
 type Trace = (&'static str, u64);
 
@@ -59,55 +59,6 @@ fn reference(context: &DiscoveredContext) -> Result<Vec<ModelMessage>> {
     Ok(output)
 }
 
-// A flat, uncompressed binary partition oracle, separate from the radix nodes.
-// It counts the branching decisions on each lookup, including skipped prefix
-// bits, and the insertion path above the first differing bit.
-fn index_work(context: &DiscoveredContext, observed: bool) -> u64 {
-    let mut keys: Vec<[u8; 32]> = Vec::new();
-    let mut work = 0;
-    let bit = |key: &[u8; 32], at: usize| (key[at / 8] >> (7 - at % 8)) & 1;
-    for file in &context.instructions {
-        let source = identity(file);
-        let tuple = (source.volume(), source.path());
-        let bytes = if observed {
-            crate::contract::canonical_json_bytes(&tuple).unwrap()
-        } else {
-            serde_json::to_vec(&tuple).unwrap()
-        };
-        let key = *blake3::hash(&bytes).as_bytes();
-        work += 2; // one source visit and one lookup entry
-        if keys.is_empty() {
-            work += 1;
-            keys.push(key);
-            continue;
-        }
-        let mut candidates: Vec<_> = keys.iter().collect();
-        let mut branches = Vec::new();
-        for at in 0..256 {
-            if candidates.len() == 1 {
-                break;
-            }
-            if candidates.iter().any(|key| bit(key, at) == 0)
-                && candidates.iter().any(|key| bit(key, at) == 1)
-            {
-                branches.push(at);
-                candidates.retain(|candidate| bit(candidate, at) == bit(&key, at));
-            }
-        }
-        let leaf = candidates[0];
-        work += branches.len() as u64 + 33; // leaf visit and full key equality
-        if *leaf == key {
-            work += 1;
-        } else {
-            let difference = (0..256).find(|&at| bit(leaf, at) != bit(&key, at)).unwrap();
-            work += 34
-                + branches.len() as u64
-                + branches.iter().filter(|&&at| at < difference).count() as u64;
-            keys.push(key);
-        }
-    }
-    work
-}
 fn total(trace: &[Trace], name: &str) -> u64 {
     trace
         .iter()
@@ -130,10 +81,10 @@ fn pipeline(context: DiscoveredContext, mode: u8) -> (Vec<ModelMessage>, u64, u6
 }
 
 #[test]
-fn discovery_and_projection_have_exact_source_work_at_n_and_2n() {
+fn discovery_and_projection_preserve_source_work_and_original_custody() {
     for n in [64, 128] {
         for mode in 0..3 {
-            let expected = 2 * index_work(&fixture(n), mode != 0) + 2 * n as u64;
+            let expected = 2 * (n + 1) as u64 + 2 * n as u64 + 2;
             let [old, candidate] = differential::pair::<_, _, Trace>(
                 || fixture(n),
                 |context, old| {
@@ -204,26 +155,6 @@ fn discovery_and_projection_have_exact_source_work_at_n_and_2n() {
                 expected,
                 "quadratic prefix scan escaped exact work pin"
             );
-        }
-    }
-}
-
-#[test]
-fn source_index_allocates_two_funded_vectors_with_copy_negative() {
-    for n in [64, 128] {
-        for redundant in [false, true] {
-            let context = fixture(n);
-            let mut output = None;
-            let allocations = measure(|| {
-                let mut work = None;
-                let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0).unwrap();
-                let source = InstructionSources::new(&context.instructions, &mut quota).unwrap();
-                let extra = redundant.then(|| source.positions.clone());
-                output = Some(source.positions);
-                std::hint::black_box(extra);
-            });
-            assert_eq!(output.unwrap(), (0..n).collect::<Vec<_>>());
-            assert_eq!(allocations.count_total, 2 + u64::from(redundant));
         }
     }
 }

@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/wire_codec/index.rs b/rust/crates/harness-core/src/wire_codec/index.rs
+--- a/rust/crates/harness-core/src/wire_codec/index.rs
++++ b/rust/crates/harness-core/src/wire_codec/index.rs
+@@ -65,7 +65,7 @@
+ 
+     fn claim(&mut self, bytes: u64) -> Result<Self::Allocation> {
+         self.with(|original| {
+-            let mut quota = CodecQuota::new(original, bytes)?;
++            let mut quota = CodecQuota::new(original, 0)?;
+             if let Some(io) = quota.work().as_deref_mut() {
+                 io.allocation_attempt(bytes)?;
+             }
