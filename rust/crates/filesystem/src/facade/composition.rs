@@ -111,7 +111,7 @@ where
                 let generation_root = copied
                     .as_ref()
                     .map_or(restore.source.id().object_id(), |(root, _, _, _)| {
-                        root.value.generation_root
+                        root.generation_root
                     });
                 let prepared = crate::kernel::prepare_publication(
                     self,
@@ -141,7 +141,7 @@ where
                     return Err(WorkspaceError::StaleGeneration);
                 }
                 if let Some((root, _, _, _)) = copied {
-                    root.retire(&mut accounting)?;
+                    drop(root);
                 }
                 generations.push(crate::Generation {
                     workspace: restore.expected.workspace.clone(),
