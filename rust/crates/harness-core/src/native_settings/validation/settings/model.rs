@@ -1,7 +1,6 @@
 //! File admission through the public configured-model entrance.
 
 use super::super::selection;
-use super::harness;
 use super::{Files, SettingsConfig, write};
 
 fn config(files: &Files, maximum: u64) -> SettingsConfig {

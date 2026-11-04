@@ -107,6 +107,15 @@ pub(super) fn inactive(bytes: &[u8]) {
     }
 }
 
+// Fuzz binaries select both native startup APIs through their dependency.
+// Unit builds expose them only with the production APIs' feature selection.
+#[cfg(any(
+    not(test),
+    all(
+        feature = "filesystem-local",
+        any(feature = "mcp-stdio", feature = "mcp-http")
+    )
+))]
 pub(super) fn partial(bytes: &[u8]) {
     // Refine the original MCP startup property through both public queries.
     let files = Files::new();
