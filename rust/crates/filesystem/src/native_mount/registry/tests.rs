@@ -131,15 +131,19 @@ fn empty_state_override_uses_the_fallback_in_a_fresh_process()
 }
 
 #[test]
+#[cfg(not(loom))]
 fn mount_guards_share_one_registry_directory_and_lock() -> Result<(), Box<dyn std::error::Error>> {
     initialize()?;
     let fixture = tempfile::tempdir()?;
+    let directory = fixture.path().join("registry");
+    std::fs::create_dir(&directory)?;
+    let slot = RegistrySlot::new();
     let cancellation = crate::CancellationToken::new();
     let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let registry = shared(&mut &work)?;
+    let registry = slot.open(&directory, &mut &work)?;
     let before = work.receipt();
-    let same = shared(&mut &work)?;
+    let same = slot.open(&directory, &mut &work)?;
     assert!(
         crate::sync::native::Arc::ptr_eq(&registry, &same),
         "each mount reopened the registry directory and lock"
@@ -154,7 +158,14 @@ fn mount_guards_share_one_registry_directory_and_lock() -> Result<(), Box<dyn st
         let destination = fixture.path().join(name);
         std::fs::create_dir(&destination)?;
         let mut guard = None;
-        MountDestinationGuard::acquire_with_work(&destination, false, &work, &mut guard, false)?;
+        MountDestinationGuard::acquire_with_registry(
+            &destination,
+            false,
+            &work,
+            &mut guard,
+            false,
+            |work| slot.open(&directory, &mut &*work),
+        )?;
         let guard = guard.unwrap();
         assert!(
             crate::sync::native::Arc::ptr_eq(&registry, guard.registry_file.as_ref().unwrap()),
@@ -166,13 +177,18 @@ fn mount_guards_share_one_registry_directory_and_lock() -> Result<(), Box<dyn st
         guard.release_cleanup(None)?;
     }
     assert!(
-        path()?.is_file(),
+        directory.join(NATIVE_REGISTRY_NAME).is_file(),
         "retirement unlinked the process-shared registry"
     );
-    // Another process may acquire this user-wide lock after cleanup returns.
-    // Wait on its unlock before checking acquisition through a separate descriptor.
-    let probe = open(&mut &work)?;
-    fence_io::lock(&probe)?;
+    let (_, probe) = open_in_directory(&directory, &mut &work)?;
+    // The independent descriptor must detect a retained lock; no other test
+    // can hold this fixture's registry and counterfeit that failure.
+    {
+        let held = registry.lock(&mut &work)?;
+        assert!(fence_io::try_lock(&probe).is_err_and(|error| lock_is_contended(&error)));
+        held.unlock(&mut &work)?;
+    }
+    fence_io::try_lock(&probe)?;
     fence_io::unlock(&probe)?;
     Ok(())
 }

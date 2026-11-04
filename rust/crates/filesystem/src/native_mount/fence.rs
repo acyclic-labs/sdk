@@ -194,15 +194,15 @@ impl MountDestinationGuard {
             crate::native_host::with_wide_path(destination, &mut &*native, |canonical, _work| {
                 Ok(Self::fence_name(canonical, None, false, native, true))
             })??;
-        let (cleanup_name, birth_cleanup) = Self::prepare_cleanup(&name, native)?;
+        let cleanup = Self::prepare_cleanup(&name, native)?;
         Self::acquire_files(
-            cleanup_name,
-            birth_cleanup,
+            cleanup,
             None,
             name,
             FenceAcquisition::ExistingRecovery,
             guard,
             native,
+            |native| registry::shared(&mut &*native),
         )
     }
 
@@ -214,12 +214,42 @@ impl MountDestinationGuard {
         guard: &mut Option<Self>,
         recovery: bool,
     ) -> Result<(), NativeMountError> {
+        Self::acquire_with_registry(
+            destination,
+            allow_nonempty,
+            native,
+            guard,
+            recovery,
+            |native| registry::shared(&mut &*native),
+        )
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    pub(super) fn acquire_with_registry(
+        destination: &Path,
+        allow_nonempty: bool,
+        native: &NativeMaterializationWork,
+        guard: &mut Option<Self>,
+        recovery: bool,
+        registry: impl FnOnce(
+            &NativeMaterializationWork,
+        )
+            -> Result<crate::sync::native::Arc<registry::Registry>, NativeMountError>,
+    ) -> Result<(), NativeMountError> {
         if guard.is_some() {
             return Err(NativeMountError::ControlPending);
         }
         let (directory, parent) =
             Self::destination_directory(destination, allow_nonempty, recovery, native)?;
-        Self::acquire_held(destination, directory, parent, native, guard, recovery)
+        Self::acquire_held(
+            destination,
+            directory,
+            parent,
+            native,
+            guard,
+            recovery,
+            registry,
+        )
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -229,7 +259,15 @@ impl MountDestinationGuard {
         native: &NativeMaterializationWork,
         guard: &mut Option<Self>,
     ) -> Result<(), NativeMountError> {
-        Self::acquire_held(destination, directory, None, native, guard, true)
+        Self::acquire_held(
+            destination,
+            directory,
+            None,
+            native,
+            guard,
+            true,
+            |native| registry::shared(&mut &*native),
+        )
     }
 
     fn acquire_held(
@@ -239,6 +277,10 @@ impl MountDestinationGuard {
         native: &NativeMaterializationWork,
         guard: &mut Option<Self>,
         recovery: bool,
+        registry: impl FnOnce(
+            &NativeMaterializationWork,
+        )
+            -> Result<crate::sync::native::Arc<registry::Registry>, NativeMountError>,
     ) -> Result<(), NativeMountError> {
         use crate::native_host::NativeHostWork as _;
         let work = &mut &*native;
@@ -302,7 +344,7 @@ impl MountDestinationGuard {
         let name = result?;
         // Prepare all retirement names and accepted controls before either
         // registry or fence creation can mutate the destination namespace.
-        let (cleanup_name, birth_cleanup) = Self::prepare_cleanup(&name, native)?;
+        let cleanup = Self::prepare_cleanup(&name, native)?;
         // The namespace parent is the capability used to open this child.
         // Never resolve the lexical parent again after opening the root: an
         // alias replacement could otherwise place its fence in another tree.
@@ -310,8 +352,7 @@ impl MountDestinationGuard {
             .or(recovery_directory?)
             .ok_or(NativeMountError::ControlPending)?;
         Self::acquire_files(
-            cleanup_name,
-            birth_cleanup,
+            cleanup,
             Some(parent_directory),
             name,
             if recovery {
@@ -321,6 +362,7 @@ impl MountDestinationGuard {
             },
             guard,
             native,
+            registry,
         )
     }
 
@@ -510,18 +552,23 @@ impl MountDestinationGuard {
     }
 
     fn acquire_files(
-        cleanup_name: Option<
-            crate::native_host::PreparedAsciiLeaf<{ NATIVE_FENCE_NAME_BYTES + 1 }>,
-        >,
-        birth_cleanup: Option<crate::NativeWorkReservation>,
+        cleanup: (
+            Option<crate::native_host::PreparedAsciiLeaf<{ NATIVE_FENCE_NAME_BYTES + 1 }>>,
+            Option<crate::NativeWorkReservation>,
+        ),
         parent_directory: Option<cap_std::fs::Dir>,
         name: [u8; NATIVE_FENCE_NAME_BYTES],
         acquisition: FenceAcquisition,
         guard: &mut Option<Self>,
         native: &NativeMaterializationWork,
+        registry: impl FnOnce(
+            &NativeMaterializationWork,
+        )
+            -> Result<crate::sync::native::Arc<registry::Registry>, NativeMountError>,
     ) -> Result<(), NativeMountError> {
+        let (cleanup_name, birth_cleanup) = cleanup;
         let work = &mut &*native;
-        let registry = registry::shared(work)?;
+        let registry = registry(native)?;
         let held = registry.lock(work)?;
         let options = match acquisition {
             #[cfg(any(target_os = "macos", test))]
@@ -765,7 +812,13 @@ impl MountDestinationGuard {
                     .ok_or(NativeMountError::InvalidDestination)?,
             ),
         };
-        let registry = registry::shared(work)?;
+        let shared;
+        let registry = if let Some(registry) = self.registry_file.as_ref() {
+            registry
+        } else {
+            shared = registry::shared(work)?;
+            &shared
+        };
         let held = registry.lock(work)?;
         match crate::native_host::remove_leaf(directory, lock_name, false, work) {
             Ok(()) => {}
@@ -938,6 +991,7 @@ mod cleanup_credit_tests {
             &work,
             &mut guard,
             false,
+            |native| registry::shared(&mut &*native),
         )?;
         let mut guard = guard.ok_or("missing fence owner")?;
         let actual = crate::native_host::directory_identity(

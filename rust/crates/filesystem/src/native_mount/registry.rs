@@ -198,15 +198,37 @@ where
     }
     #[cfg(not(loom))]
     {
-        static SHARED: std::sync::Mutex<Option<std::sync::Arc<Registry>>> =
-            std::sync::Mutex::new(None);
-        let mut shared = SHARED
+        static SHARED: RegistrySlot = RegistrySlot::new();
+        with_directory(|directory| SHARED.open(directory, work))
+    }
+}
+
+/// One registry descriptor per owner, lazily charged to its first user.
+#[cfg(not(loom))]
+pub(super) struct RegistrySlot(std::sync::Mutex<Option<std::sync::Arc<Registry>>>);
+
+#[cfg(not(loom))]
+impl RegistrySlot {
+    pub(super) const fn new() -> Self {
+        Self(std::sync::Mutex::new(None))
+    }
+
+    pub(super) fn open<W: crate::native_host::NativeHostWork>(
+        &self,
+        directory: &Path,
+        work: &mut W,
+    ) -> Result<std::sync::Arc<Registry>, NativeMountError>
+    where
+        NativeMountError: From<W::Error>,
+    {
+        let mut shared = self
+            .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(registry) = shared.as_ref() {
             return Ok(std::sync::Arc::clone(registry));
         }
-        let (directory, file) = open_with_directory(work)?;
+        let (directory, file) = open_in_directory(directory, work)?;
         let registry = std::sync::Arc::new(Registry::new(directory, file));
         *shared = Some(std::sync::Arc::clone(&registry));
         Ok(registry)
