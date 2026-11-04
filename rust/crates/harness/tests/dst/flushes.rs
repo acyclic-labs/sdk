@@ -24,6 +24,7 @@ fn flushes(writes: &[DurableWrite]) -> (usize, usize) {
     })
 }
 
+#[derive(Debug)]
 struct Windows {
     open: (usize, usize),
     first: (usize, usize),
@@ -97,7 +98,6 @@ fn turns(
             .await
             .map_err(storage)?;
         cuts[7] = schedule.durable_write_count();
-        drop(agents);
         drop(harness);
         let reopened = Arc::new(entry(LocalHarness::open(config()?)).await?);
         cuts[8] = schedule.durable_write_count();
@@ -174,17 +174,27 @@ fn reply_publication_drains_follow_commits_and_not_history_or_event_count() -> R
         streamed(32),
         text("four"),
     ])?;
-    assert_eq!(observed.open, (7, 11), "fresh open flushes changed");
+    assert_eq!(
+        observed.open,
+        (7, 11),
+        "fresh open flushes changed: {observed:?}"
+    );
     assert_eq!(observed.reopen, (1, 5), "reopen flushes changed");
-    assert_eq!(observed.first.0, 2, "first-turn barriers changed");
+    // Cold root creation adds its policy barrier and may share its one drain
+    // with the first reply. A reopened root needs only the settled reply work.
+    let steady = observed.replies[0];
+    assert_eq!(
+        observed.first.0,
+        steady.0 + 1,
+        "first-turn policy barrier changed"
+    );
     assert!(
-        (2..=3).contains(&observed.first.1),
+        (steady.1..=steady.1 + 1).contains(&observed.first.1),
         "first-turn drains changed: {:?}",
         observed.first
     );
     assert_eq!(
-        observed.reopened_first,
-        (2, 2),
+        observed.reopened_first, steady,
         "first turn after reopen flushes changed"
     );
     // Includes input publication through committed actor settlement. This
