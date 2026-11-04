@@ -20,21 +20,13 @@ impl OwnedBytes {
                 },
             ),
             #[cfg(not(target_arch = "wasm32"))]
-            Self {
-                data: Data::Native(guard),
-                range,
-                retained_capacity,
-            } => {
+            bytes => {
                 let control = ReadAllocation::new(
-                    guard.metadata.meter(),
+                    bytes.data.meter().ok_or(std::io::ErrorKind::InvalidData)?,
                     acyclic_auth::operation::bytes_owner_allocation_bytes::<NativeTransport>(),
                 )?;
                 Ok(Bytes::from_owner(NativeTransport {
-                    bytes: Self {
-                        data: Data::Native(guard),
-                        range,
-                        retained_capacity,
-                    },
+                    bytes,
                     _control: control,
                 }))
             }

@@ -1571,7 +1571,7 @@ impl<M: Medium> Account<M> {
                         for part in &parts {
                             bytes.extend_from_slice(part);
                         }
-                        bytes.into()
+                        self.medium.finish_allocation(bytes).map_err(medium)?
                     }
                 };
                 if body.len() as u64 != selected.end - selected.start {

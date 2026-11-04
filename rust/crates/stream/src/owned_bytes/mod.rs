@@ -29,11 +29,39 @@ enum Data {
     Plain(Bytes),
     #[cfg(not(target_arch = "wasm32"))]
     Native(Arc<GuardBundle<dyn Send + Sync>>),
+    #[cfg(not(target_arch = "wasm32"))]
+    Retained(Arc<GuardBundle<dyn Send + Sync, RetainedBytes>>),
+}
+#[cfg(not(target_arch = "wasm32"))]
+struct RetainedBytes {
+    bytes: OwnedBytes,
+    identity: (u8, usize),
+}
+impl Data {
+    fn identity(&self) -> (u8, usize) {
+        match self {
+            Self::Plain(bytes) => (0, bytes.as_ptr() as usize),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native(guard) => (1, Arc::as_ptr(guard).cast::<()>() as usize),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Retained(guard) => guard.data.identity,
+        }
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl Data {
+    fn meter(&self) -> Option<&Arc<dyn NativeReadMeter>> {
+        match self {
+            Self::Plain(_) => None,
+            Self::Native(guard) => Some(guard.metadata.meter()),
+            Self::Retained(guard) => Some(guard.metadata.meter()),
+        }
+    }
 }
 #[cfg(not(target_arch = "wasm32"))]
 // Data and metadata retire before the original owner.
-struct GuardBundle<G: ?Sized> {
-    data: Vec<u8>,
+struct GuardBundle<G: ?Sized, B = Vec<u8>> {
+    data: B,
     metadata: ReadAllocation,
     _original_guard: G,
 }
@@ -102,11 +130,7 @@ impl OwnedBytesBacking {
     }
 
     fn identity(&self) -> (u8, usize) {
-        match &self.data {
-            Data::Plain(bytes) => (0, bytes.as_ptr() as usize),
-            #[cfg(not(target_arch = "wasm32"))]
-            Data::Native(guard) => (1, Arc::as_ptr(guard).cast::<()>() as usize),
-        }
+        self.data.identity()
     }
 }
 
@@ -176,6 +200,53 @@ impl OwnedBytes {
         result
     }
 
+    /// Retains existing immutable backing and its original allocation claim,
+    /// without copying payload bytes. Unique vectors use the native vector owner.
+    /// On admission failure, backing retires before its claim.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_guard<G: Send + Sync + 'static>(
+        self,
+        guard: G,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> io::Result<Self> {
+        let data = match self.try_into_ordinary_vec() {
+            Ok(data) => {
+                return Self::from_vec_with_guard(data, guard, meter).map_err(
+                    |failure| match failure.into_error() {
+                        PreparedOwnedBytesError::Admission(error) => error,
+                        PreparedOwnedBytesError::NotFullyInitialized => {
+                            io::ErrorKind::InvalidData.into()
+                        }
+                    },
+                );
+            }
+            Err(data) => data,
+        };
+        let metadata = match ReadAllocation::new(
+            &meter,
+            acyclic_native_runtime::arc_allocation_bytes::<GuardBundle<G, RetainedBytes>>(),
+        ) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                drop(data);
+                drop(guard);
+                return Err(error);
+            }
+        };
+        Ok(Self {
+            range: 0..data.len(),
+            retained_capacity: data.retained_capacity,
+            data: Data::Retained(Arc::new(GuardBundle {
+                data: RetainedBytes {
+                    identity: data.data.identity(),
+                    bytes: data,
+                },
+                metadata,
+                _original_guard: guard,
+            })),
+        })
+    }
+
     /// Ownership header bytes charged for a native vector guarded by `G`.
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
@@ -243,6 +314,8 @@ impl OwnedBytes {
             Data::Plain(bytes) => bytes.as_ref(),
             #[cfg(not(target_arch = "wasm32"))]
             Data::Native(guard) => guard.data.as_slice(),
+            #[cfg(not(target_arch = "wasm32"))]
+            Data::Retained(guard) => guard.data.bytes.as_slice(),
         };
         checked_range(bytes, self.range.clone())
     }
@@ -293,15 +366,14 @@ impl OwnedBytes {
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn matches_meter(&self, meter: &Arc<dyn NativeReadMeter>) -> bool {
-        match &self.data {
-            Data::Native(guard) => Arc::ptr_eq(
-                guard.metadata.meter(),
+        self.data.meter().is_some_and(|owner| {
+            Arc::ptr_eq(
+                owner,
                 &meter
                     .allocation_owner()
                     .unwrap_or_else(|| Arc::clone(meter)),
-            ),
-            Data::Plain(_) => false,
-        }
+            )
+        })
     }
     /// Shares a checked range with its original allocation owner.
     ///
