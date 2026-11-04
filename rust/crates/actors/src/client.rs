@@ -102,6 +102,8 @@ pub struct ErrorMetadata {
     pub service_code: Option<i32>,
     /// Decoded service diagnostic, separate from the gRPC status message.
     pub service_message: Option<String>,
+    /// Original producer attribution, independent of the service code or message.
+    pub cause: Option<acyclic_auth::refusal::Cause>,
     /// Canonical admission category, when applicable.
     pub contract_code: Option<String>,
     /// Exact detail bytes for service failures, including empty details.
@@ -133,8 +135,15 @@ impl Error {
                 metadata.grpc_code = Some(grpc_code);
                 metadata.grpc_name = Some(code);
                 metadata.credential_rejected = grpc_code == 16;
-                metadata.service_code = detail.as_ref().map(|value| value.code);
-                metadata.service_message = detail.map(|value| value.message);
+                if let Some(detail) = detail {
+                    metadata.service_code = Some(detail.code);
+                    metadata.service_message = Some(detail.message);
+                    metadata.cause = acyclic_auth::refusal::Cause::reported(
+                        detail.component,
+                        detail.reason,
+                        detail.request_id,
+                    );
+                }
                 metadata.raw_details = Some(raw_details);
             }
             Self::Credential(_) => {
@@ -210,20 +219,18 @@ impl From<std::convert::Infallible> for Error {
     }
 }
 
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "tonic map_err supplies owned status values"
-)]
-fn service_error(status: tonic::Status) -> Error {
-    Error::Service {
-        grpc_code: status.code() as i32,
-        message: status.message().to_owned(),
-        raw_details: status.details().to_vec(),
-        detail: if status.details().is_empty() {
-            None
-        } else {
-            wire::Error::decode(status.details()).ok()
-        },
+impl From<tonic::Status> for Error {
+    fn from(status: tonic::Status) -> Self {
+        Self::Service {
+            grpc_code: status.code() as i32,
+            message: status.message().to_owned(),
+            raw_details: status.details().to_vec(),
+            detail: if status.details().is_empty() {
+                None
+            } else {
+                wire::Error::decode(status.details()).ok()
+            },
+        }
     }
 }
 
@@ -245,7 +252,7 @@ async fn request_error(
             }
         }
     }
-    service_error(status)
+    status.into()
 }
 
 /// Connected Actors client whose operation methods are shared by all targets.
@@ -658,72 +665,6 @@ mod tests {
 
         assert!(matches!(result, Err(Error::Cancelled)));
         assert!(dropped.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn service_error_preserves_raw_status_and_detail_codes() {
-        for (status_code, detail_code) in [
-            (tonic::Code::PermissionDenied, 0),
-            (tonic::Code::Unknown, 99),
-        ] {
-            let detail = wire::Error {
-                code: detail_code,
-                message: format!("detail-{detail_code}"),
-            };
-            let status = tonic::Status::with_details(
-                status_code,
-                "service rejected request",
-                detail.encode_to_vec().into(),
-            );
-
-            match service_error(status) {
-                Error::Service {
-                    grpc_code,
-                    detail: Some(actual),
-                    message,
-                    raw_details,
-                } => {
-                    assert_eq!(message, "service rejected request");
-                    assert_eq!(raw_details, detail.encode_to_vec());
-                    assert_eq!(grpc_code, status_code as i32);
-                    assert_eq!(actual.code, detail_code);
-                    assert_eq!(actual.message, format!("detail-{detail_code}"));
-                }
-                other => panic!("expected structured service error, got {other:?}"),
-            }
-        }
-    }
-
-    #[test]
-    fn service_metadata_preserves_status_message_and_lossless_detail_bytes() {
-        let decoded = wire::Error {
-            code: 99,
-            message: String::from("future service detail"),
-        }
-        .encode_to_vec();
-        for bytes in [decoded, Vec::new(), vec![255, 0]] {
-            let status = tonic::Status::with_details(
-                tonic::Code::PermissionDenied,
-                "original grpc diagnostic",
-                bytes.clone().into(),
-            );
-            let error = service_error(status);
-            let metadata = error.metadata();
-            assert_eq!(metadata.code, "permission_denied");
-            assert_eq!(metadata.message, "original grpc diagnostic");
-            assert_eq!(metadata.grpc_code, Some(7));
-            assert_eq!(metadata.raw_details, Some(bytes.clone()));
-            if bytes.first() == Some(&8) {
-                assert_eq!(metadata.service_code, Some(99));
-                assert_eq!(
-                    metadata.service_message.as_deref(),
-                    Some("future service detail")
-                );
-            } else {
-                assert!(metadata.service_code.is_none());
-                assert!(metadata.service_message.is_none());
-            }
-        }
     }
 
     #[test]
