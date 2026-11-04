@@ -251,6 +251,8 @@ async fn a_rejected_caller_condition_leaves_no_forked_volume() -> Result<(), Box
 /// between preparation and submission must also reject the complete restore.
 #[tokio::test]
 async fn restoring_generation_and_context_cut_is_atomic() -> Result<(), Box<dyn Error>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::initialize_test_native_io();
     let stream = Arc::new(MemoryStream::default());
     let fs = placed(&stream)?;
     let original = parent(&fs, &stream).await?;
@@ -522,6 +524,9 @@ async fn one_composition_cannot_create_a_volume_twice() -> Result<(), Box<dyn Er
 }
 
 #[tokio::test]
+// `composition_unfunded.patch` restores unadmitted output backing in all three
+// production batch methods. Applying it must fail this unchanged control at
+// "batch output admission was not first" or the original backing assertion.
 async fn root_creation_creates_every_volume_in_the_caller_commit() -> Result<(), Box<dyn Error>> {
     #[cfg(not(target_arch = "wasm32"))]
     crate::initialize_test_native_io();

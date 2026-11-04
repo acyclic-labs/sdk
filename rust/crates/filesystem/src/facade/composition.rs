@@ -1,4 +1,10 @@
 //! Volume creations and forks contributed to one caller-built Streams commit.
+//!
+//! Every operation accepts the caller's work and cancellation. Batch preparation
+//! admits its ordered output backing before contributing any volume. With native
+//! work, the returned allocation belongs to that original ledger and must outlive
+//! the returned vector. Preparation errors roll back only this call's additions;
+//! an unresolved submitted commit retains the original proofs and holds.
 use super::*;
 use crate::distributed::{FilesystemCommit, FilesystemCommitOutcome, StreamAuthorityStore};
 
