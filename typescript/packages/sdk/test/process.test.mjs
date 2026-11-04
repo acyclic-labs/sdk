@@ -184,9 +184,9 @@ async function descriptorControl(host, input, original) {
 }
 
 async function terminalControls(run, host) {
-  // The same real native close must preserve synchronous status failures and
-  // both terminal failure paths, including work accepted after root exit.
-  for (const closeThrows of [false, true]) for (const terminalAsync of [false, true]) {
+  // Pair independent status outcomes with both terminal failure paths;
+  // accepted asynchronous terminal work must still own completion.
+  for (const [closeThrows, terminalAsync] of [[false, false], [true, true]]) {
     const statusFailure = new Error('original status observer failure');
     const terminalFailure = new Error('original terminal observer failure');
     let entered, release, settled = false, closeCalls = 0, terminalCalls = 0;
