@@ -254,12 +254,12 @@ pub(super) fn retire_name_bytes(
         }
     }
 }
-pub(super) fn standalone_live(
+pub(super) fn standalone_scratch(
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<Option<u64>, crate::FsError> {
     Ok(accounting
         .standalone_parts()
-        .map(|(allocations, ..)| allocations.live_bytes()))
+        .map(|(allocations, ..)| allocations.scratch_bytes()))
 }
 pub(super) fn cleanup_standalone(
     accounting: &mut KernelAccounting<'_>,
@@ -267,17 +267,10 @@ pub(super) fn cleanup_standalone(
     retained: u64,
 ) -> Result<(), crate::FsError> {
     if let Some(initial) = initial {
-        let live = match accounting {
-            KernelAccounting::Standalone { allocations, .. } => allocations.live_bytes(),
-            KernelAccounting::BorrowedStandalone { allocations, .. } => allocations.live_bytes(),
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelAccounting::NativeOriginal { .. } => return Ok(()),
-        };
-        let release = live
-            .checked_sub(initial)
-            .and_then(|bytes| bytes.checked_sub(retained))
-            .ok_or(WorkError::Overflow)?;
-        release_standalone(accounting, release)?;
+        let baseline = initial.checked_add(retained).ok_or(WorkError::Overflow)?;
+        if let Some((allocations, ..)) = accounting.standalone_parts() {
+            allocations.release_scratch_to(baseline)?;
+        }
     }
     Ok(())
 }

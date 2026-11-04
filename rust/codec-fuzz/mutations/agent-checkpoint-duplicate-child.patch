@@ -1,0 +1,11 @@
+diff --git a/rust/crates/harness-core/src/agent/checkpoint.rs b/rust/crates/harness-core/src/agent/checkpoint.rs
+--- a/rust/crates/harness-core/src/agent/checkpoint.rs
++++ b/rust/crates/harness-core/src/agent/checkpoint.rs
+@@ -176,6 +176,4 @@
+         }
+-        if !open_children.insert(child) {
+-            return Err(malformed());
+-        }
++        open_children.insert(child);
+     }
+     state.open_children = open_children;

@@ -5,7 +5,8 @@
 //! rather than JSON: each open child is its 16-byte id (its path, like the
 //! agent's parent, is derived from the agent's path), the children still to
 //! archive and the children awaited are bitmaps over them, and the turn
-//! driver's checkpoint is raw bytes. The rest of the state is JSON.
+//! driver's checkpoint is raw bytes. The rest uses the shared named MessagePack
+//! payload.
 //!
 //! Every part of every agent record is bounded at admission: paths by
 //! [`super::MAX_DEPTH`], file and volume references by the conversation
@@ -55,7 +56,7 @@ pub(crate) fn checkpoint_state(checkpoint: &Checkpoint) -> Result<AgentState, Er
 #[derive(Clone, PartialEq, prost::Message)]
 struct Encoded {
     // Tag 1 retired: Actors owns the committed inbox cursor.
-    /// The state as JSON, without the fields below.
+    /// The shared record payload, without the fields below.
     #[prost(bytes = "vec", tag = "2")]
     state: Vec<u8>,
     /// Each open child's id, in path order.
@@ -120,7 +121,7 @@ pub(crate) fn encode(state: &AgentState) -> Result<Vec<u8>, Error> {
         return Err(Error::Record("an awaited child is not open"));
     }
     Ok(Encoded {
-        state: serde_json::to_vec(&rest)
+        state: super::records::encode_payload(&rest)
             .map_err(|_| Error::Record("agent checkpoint does not encode"))?,
         open_children: ids,
         archive_pending: bitmap,
@@ -140,7 +141,8 @@ pub(crate) fn encode(state: &AgentState) -> Result<Vec<u8>, Error> {
 pub(crate) fn decode(bytes: &[u8]) -> Result<AgentState, Error> {
     let malformed = || Error::Record("agent checkpoint is malformed");
     let encoded = Encoded::decode(bytes).map_err(|_| malformed())?;
-    let mut state: AgentState = serde_json::from_slice(&encoded.state).map_err(|_| malformed())?;
+    let mut state: AgentState =
+        super::records::decode_payload(&encoded.state).map_err(|_| malformed())?;
     if !state.open_children.is_empty()
         || !state.archive_pending.is_empty()
         || !state.awaiting.is_empty()
@@ -185,6 +187,129 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<AgentState, Error> {
         _ => return Err(malformed()),
     };
     Ok(state)
+}
+
+/// Shared fuzz checks use the actual wire type to derive malformed inputs.
+#[cfg(any(test, feature = "test-support"))]
+pub(super) fn check_wire(bytes: &[u8]) {
+    let Ok(state) = decode(bytes) else { return };
+    let canonical = encode(&state).expect("admitted checkpoint encodes");
+    assert_eq!(decode(&canonical).expect("checkpoint decodes"), state);
+    let encoded = Encoded::decode(canonical.as_slice()).expect("checkpoint wire writer");
+    let refuses = |changed: Encoded, reason| {
+        assert!(
+            matches!(
+                decode(&changed.encode_to_vec()),
+                Err(Error::Record("agent checkpoint is malformed"))
+            ),
+            "{reason}"
+        );
+    };
+    let rest: AgentState = super::records::decode_payload(&encoded.state)
+        .unwrap_or_else(|_| panic!("checkpoint state writer"));
+    for field in 0..5 {
+        let mut changed = rest.clone();
+        let reason = match field {
+            0 => {
+                changed.parent = state.parent.clone();
+                "checkpoint admitted an embedded parent"
+            }
+            1 => {
+                changed.open_children = state.open_children.clone();
+                "checkpoint admitted embedded open children"
+            }
+            2 => {
+                changed.archive_pending = state.archive_pending.clone();
+                "checkpoint admitted embedded archive children"
+            }
+            3 => {
+                changed.awaiting = state.awaiting.clone();
+                "checkpoint admitted embedded awaited children"
+            }
+            _ => {
+                changed.turn = state.turn.clone();
+                "checkpoint admitted an embedded turn"
+            }
+        };
+        if changed != rest {
+            let mut wire = encoded.clone();
+            wire.state = super::records::encode_payload(&changed).expect("checkpoint state writer");
+            refuses(wire, reason);
+        }
+    }
+    for archive in [false, true] {
+        let mut changed = encoded.clone();
+        let bitmap = if archive {
+            &mut changed.archive_pending
+        } else {
+            &mut changed.awaiting
+        };
+        *bitmap = vec![0; encoded.open_children.len().div_ceil(8) + 1];
+        refuses(changed, "checkpoint admitted an invalid bitmap width");
+    }
+    let width = encoded.open_children.len().div_ceil(8);
+    if width > 0 {
+        let mut changed = encoded.clone();
+        changed.archive_pending.truncate(width - 1);
+        refuses(changed, "checkpoint admitted a short archive bitmap");
+    }
+    // Empty awaiting means no children are awaited; it remains valid.
+    if width > 1 {
+        let mut changed = encoded.clone();
+        changed.awaiting = vec![0; width - 1];
+        refuses(changed, "checkpoint admitted a short awaited bitmap");
+    }
+    if let Some(child) = encoded.open_children.first() {
+        // The payload path can be valid while reconstructing its children
+        // exceeds the same public path boundary. Keep that typed path error,
+        // distinct from malformed checkpoint ownership or bitmap fields.
+        let root = super::AgentPath::root(&state.path.id());
+        let nested = root.child(&state.path.id()).expect("one child path");
+        let segment = nested
+            .as_str()
+            .strip_prefix(root.as_str())
+            .expect("child path suffix");
+        let mut changed = rest.clone();
+        changed.path = super::AgentPath::try_from(format!(
+            "{}{}",
+            root.as_str(),
+            segment.repeat(super::MAX_DEPTH)
+        ))
+        .expect("path at the public depth boundary");
+        let mut wire = encoded.clone();
+        wire.state = super::records::encode_payload(&changed).expect("checkpoint state writer");
+        assert!(
+            matches!(
+                decode(&wire.encode_to_vec()),
+                Err(Error::Path("agent nesting exceeds MAX_DEPTH"))
+            ),
+            "checkpoint reconstructed a child beyond its path boundary"
+        );
+        for oversized in [false, true] {
+            let mut changed = encoded.clone();
+            let id = &mut changed.open_children[0];
+            if oversized {
+                id.push(0);
+            } else {
+                id.pop();
+            }
+            refuses(changed, "checkpoint admitted an invalid child id width");
+        }
+        let mut changed = encoded.clone();
+        changed.open_children.push(child.clone());
+        let bitmap = changed.open_children.len().div_ceil(8);
+        changed.archive_pending.resize(bitmap, 0);
+        if !changed.awaiting.is_empty() {
+            changed.awaiting.resize(bitmap, 0);
+        }
+        refuses(changed, "checkpoint admitted a duplicate child");
+    }
+    for retained_body in [false, true] {
+        let mut changed = encoded.clone();
+        changed.turn = retained_body.then(Vec::new);
+        changed.turn_inbox = (!retained_body).then_some(0);
+        refuses(changed, "checkpoint admitted an incomplete turn");
+    }
 }
 
 #[cfg(test)]
@@ -379,14 +504,17 @@ mod tests {
                 from: from.clone(),
                 id: intent(),
                 body: Box::new(file()),
-                attachments: None,
+                attachments: Some(Box::new(file())),
             }));
             records.push(InboxRecord::Spawn(SpawnRequest {
                 profile: crate::agent::CreationConfig {
                     context: crate::agent::SpawnContext::TopLevel,
-                    template: None,
+                    template: Some(file()),
                 },
-                history: None,
+                history: Some(crate::agent::HistorySelection {
+                    conversation: u64::MAX,
+                    checkpoint: Some(u64::MAX),
+                }),
                 by: from.clone(),
                 id: intent(),
                 brief: Box::new(file()),
@@ -397,6 +525,27 @@ mod tests {
                 },
                 crate::agent::ContextAction::Rewind,
                 crate::agent::ContextAction::Clear,
+                crate::agent::ContextAction::Restore {
+                    at: u64::MAX,
+                    mode: crate::agent::RestoreMode::Both,
+                    expected: (0..MAX_VOLUMES)
+                        .map(|index| crate::agent::HistoryVolume {
+                            binding: VolumeBinding {
+                                name: format!("{}{}", widest(MAX_INTENT_BYTES - 1), index),
+                                volume: volume(),
+                            },
+                            generation: acyclic_fs::GenerationId::from_root(acyclic_fs::ObjectId {
+                                kind: acyclic_fs::ObjectKind::GenerationRoot,
+                                digest: acyclic_fs::Digest::from_bytes([255; 32]),
+                                storage: Some(acyclic_fs::ObjectStorage {
+                                    locator: acyclic_fs::Digest::from_bytes([255; 32]),
+                                    root_file_id: acyclic_fs::FileId::from_bytes([255; 16]),
+                                    origin_generation: acyclic_fs::Digest::from_bytes([255; 32]),
+                                }),
+                            }),
+                        })
+                        .collect(),
+                },
             ] {
                 records.push(InboxRecord::Context(crate::agent::ContextRequest {
                     by: from.clone(),
@@ -581,7 +730,7 @@ mod tests {
 
     // Exercise the canonical encoder itself, before its size refusal. A refused
     // oversized record is a failure of this property, not a passing bound.
-    fn assert_record_bound<T: AgentRecord>(record: &T) -> usize {
+    fn assert_record_bound<T: AgentRecord + PartialEq + std::fmt::Debug>(record: &T) -> usize {
         record
             .check()
             .expect("generated record satisfies structural admission");
@@ -596,6 +745,7 @@ mod tests {
             record.encode().expect("bounded encoder accepts record"),
             raw
         );
+        assert_eq!(&T::decode(&raw).expect("writer's record decodes"), record);
         raw.len()
     }
 
@@ -680,52 +830,6 @@ mod tests {
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);
             }
         }
-    }
-
-    #[test]
-    fn checkpoint_codec_refusal_precedes_payload_decode() {
-        let adopted = adoption();
-        let path = adopted
-            .parent
-            .as_ref()
-            .unwrap()
-            .child(&adopted.agent)
-            .unwrap();
-        let bytes = encode(&AgentState::adopted(path, &adopted).unwrap()).unwrap();
-        let valid = Checkpoint {
-            codec: codec(),
-            bytes: bytes.into(),
-        };
-        assert!(checkpoint_state(&valid).is_ok());
-        for version in (0..crate::agent::records::RECORD_VERSION)
-            .map(|version| version.to_string())
-            .chain(std::iter::once("unknown".to_owned()))
-        {
-            for bytes in [valid.bytes.clone(), Vec::new().into()] {
-                let mut checkpoint = valid.clone();
-                checkpoint.codec.version.clone_from(&version);
-                checkpoint.bytes = bytes;
-                assert!(matches!(
-                    checkpoint_state(&checkpoint),
-                    Err(Error::IncompatibleCheckpointCodec)
-                ));
-            }
-        }
-        let mut another = valid.clone();
-        another.codec.name.push_str(".other");
-        another.bytes = Vec::new().into();
-        assert!(matches!(
-            checkpoint_state(&another),
-            Err(Error::IncompatibleCheckpointCodec)
-        ));
-        let malformed = Checkpoint {
-            codec: codec(),
-            bytes: Vec::new().into(),
-        };
-        assert!(matches!(
-            checkpoint_state(&malformed),
-            Err(Error::Record(_))
-        ));
     }
 
     #[test]

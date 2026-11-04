@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness/src/local/host_files.rs b/rust/crates/harness/src/local/host_files.rs
+--- a/rust/crates/harness/src/local/host_files.rs
++++ b/rust/crates/harness/src/local/host_files.rs
+@@ -1035,7 +1035,7 @@
+             drop(tracked.remove());
+             return Ok(());
+         }
+-        let bytes = match crate::client::encode_command_result(0, operation, &outcome, u64::MAX) {
++        let bytes = match crate::client::encode_command_result(0, operation, &outcome, 65_536) {
+             Ok(bytes) => bytes,
+             Err(error) => return Error::after_cleanup(outcome.map(drop), Err(error)),
+         };

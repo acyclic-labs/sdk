@@ -260,13 +260,13 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
             return Err(AuthorityStoreError::InvalidReplayLimit);
         }
         let mut scope = work.scope()?;
-        let work = &mut *scope;
-        async {
-            self.authority_require_live(authority, work).await?;
-            let value = self.read_records(authority, after, limit, work).await?;
-            work.finish(value)
-        }
-        .await
+        self.authority_require_live(authority, &mut scope).await?;
+        let value = self
+            .read_records(authority, after, limit, &mut scope)
+            .await?;
+        Ok(crate::async_storage::authority_parts(
+            scope.finish_owned(value).map_err(authority_error)?,
+        ))
     }
 
     async fn fence(

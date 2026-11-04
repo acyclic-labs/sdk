@@ -21,7 +21,7 @@ pub async fn answer(config: LocalHarnessConfig, operation: &str, prompt: &str) -
 }
 
 async fn receive(conversation: Arc<Conversation>, operation: &str, prompt: &str) -> Result<String> {
-    let mut events = conversation.observe(conversation.settled().await?).await?;
+    let mut events = conversation.observe(None).await?;
     let inbox = conversation.send(operation, prompt).await?;
     let mut status: Option<acyclic_harness::agent::StatusRecord> = None;
     loop {

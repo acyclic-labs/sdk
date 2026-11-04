@@ -397,10 +397,11 @@ where
             }),
             AgentCommand::Settlement { agent } => {
                 let agent = self.within_tree(agent)?;
+                let state = agents.state(agent).await?;
                 Ok(AgentReply::Settlement {
-                    settled: self.tail(agent.conversation()?).await?,
-                    statuses: self.tail(agent.status()?).await?,
-                    phase: agents.state(agent).await?.phase,
+                    settled: state.conversation_tail,
+                    statuses: state.status_tail,
+                    phase: state.phase,
                 })
             }
             AgentCommand::Diff { agent, page } => {

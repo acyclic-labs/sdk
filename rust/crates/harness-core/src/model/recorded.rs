@@ -15,8 +15,9 @@
 //! A turn goes live at its first divergent step and stays live; its agent's
 //! later turns carry the live answer, so they match only a request whose
 //! content the source also sent. Other agents keep replaying while
-//! their requests still match. A recorded call serves exactly one request;
-//! identical requests in the source are answered in source order. Adapters
+//! their requests still match. A recorded call serves exactly one accepted
+//! dispatch; retrying that dispatch retains its original answer. Identical
+//! requests in the source are answered in source order. Adapters
 //! share an immutable source through `Arc<Recording>`; each fresh adapter
 //! consumes independently, without rebuilding or copying source calls.
 //!
@@ -144,24 +145,35 @@ struct Cursor {
 }
 
 impl Cursor {
+    fn select<'s, T>(
+        &mut self,
+        source: &'s Recording,
+        key: [u8; 32],
+        work: &mut impl IndexWork<Error = Error, Allocation = crate::NativeCustody>,
+        admit: impl FnOnce(Option<(usize, &'s RecordedCall)>) -> Result<T>,
+    ) -> Result<T> {
+        let Some(calls) = source.calls.get(&key) else {
+            work.check()?;
+            return admit(None);
+        };
+        let next = self.next.get_or_try_insert_with(key, work, |_| Ok(0))?;
+        let Some(call) = calls.get(*next) else {
+            return admit(None);
+        };
+        let result = admit(Some((*next, call)))?;
+        *next += 1;
+        self.used += 1;
+        Ok(result)
+    }
+
+    #[cfg(test)]
     fn take<'s>(
         &mut self,
         source: &'s Recording,
         key: [u8; 32],
         work: &mut impl IndexWork<Error = Error, Allocation = crate::NativeCustody>,
     ) -> Result<Option<(usize, &'s RecordedCall)>> {
-        let Some(calls) = source.calls.get(&key) else {
-            work.check()?;
-            return Ok(None);
-        };
-        let next = self.next.get_or_try_insert_with(key, work, |_| Ok(0))?;
-        let Some(call) = calls.get(*next) else {
-            return Ok(None);
-        };
-        let index = *next;
-        *next += 1;
-        self.used += 1;
-        Ok(Some((index, call)))
+        self.select(source, key, work, Ok)
     }
 }
 
@@ -241,11 +253,80 @@ pub trait DivergenceSink: acyclic_stream::ProviderPlatform {
 #[derive(Default)]
 struct Replay {
     cursor: Cursor,
+    dispatches: FixedIndex<Option<ReplaySelection>, crate::NativeCustody, 52>,
     // Original source coordinates: copy the outcome only if it is requested.
     tools: HashMap<(OperationId, String), ([u8; 32], usize, usize)>,
     /// Turns that went live; each stays live.
     live: std::collections::HashSet<OperationId>,
     diverged: bool,
+}
+
+#[derive(Clone, Copy)]
+enum ReplaySelection {
+    Pending,
+    Recorded { key: [u8; 32], index: usize },
+    Live,
+}
+
+fn dispatch_key(dispatch: ModelDispatch) -> [u8; 52] {
+    let mut key = [0; 52];
+    key[..16].copy_from_slice(&dispatch.operation_id.into_bytes());
+    key[16..20].copy_from_slice(&dispatch.step.to_be_bytes());
+    key[20..].copy_from_slice(&dispatch.request_digest);
+    key
+}
+
+/// Owns only a not-yet-accepted live admission. Dropping a refused builder
+/// releases this original registration; accepted dispatches remain retained.
+struct ReplayAdmission<'a> {
+    owner: &'a RecordedModel,
+    dispatch: ModelDispatch,
+    key: [u8; 32],
+    accepted: bool,
+}
+
+impl ReplayAdmission<'_> {
+    fn accept(mut self) {
+        let mut replay = self.owner.lock();
+        let selection = replay
+            .dispatches
+            .get_retained_mut(
+                dispatch_key(self.dispatch),
+                |selection| matches!(selection, Some(ReplaySelection::Pending)),
+                |_| {},
+            )
+            .expect("original replay admission owns its registration");
+        *selection = Some(ReplaySelection::Live);
+        replay.live.insert(self.dispatch.operation_id);
+        let first = !std::mem::replace(&mut replay.diverged, true);
+        self.accepted = true;
+        drop(replay);
+        if first {
+            self.owner.sink.diverged(Divergence {
+                dispatch: self.dispatch,
+                key: self.key,
+            });
+        }
+    }
+}
+
+impl Drop for ReplayAdmission<'_> {
+    fn drop(&mut self) {
+        if !self.accepted {
+            if let Some(selection) = self.owner.lock().dispatches.get_retained_mut(
+                dispatch_key(self.dispatch),
+                |selection| matches!(selection, Some(ReplaySelection::Pending)),
+                |_| {},
+            ) {
+                *selection = None;
+            }
+        }
+    }
+}
+
+enum ReplayPreparation<'a, T> {
+    Recorded(T),
+    Live(ReplayAdmission<'a>),
 }
 
 /// Serves a [`Recording`] while requests match it, then the live provider.
@@ -290,39 +371,127 @@ impl RecordedModel {
         self.replay.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The recorded answer to this request, or `None` once it goes live.
-    fn take(
-        &self,
+    /// Accepts source consumption only after the complete returned object has
+    /// been admitted. The builder runs under the original selection lock and
+    /// must not invoke another provider or poll a future.
+    fn prepare<'a, T>(
+        &'a self,
         request: &PreparedModelRequest,
         dispatch: ModelDispatch,
         work: crate::NativeWork<'_>,
-    ) -> Result<Option<&RecordedCall>> {
+        build: impl FnOnce(&'a RecordedCall) -> Result<T>,
+    ) -> Result<ReplayPreparation<'a, T>> {
         let key = request.replay_key()?;
         let mut replay = self.lock();
-        if replay.live.contains(&dispatch.operation_id) {
-            return Ok(None);
-        }
-        let Some((index, call)) =
-            replay
-                .cursor
-                .take(&self.recording, key, &mut CursorWork(work))?
-        else {
-            replay.live.insert(dispatch.operation_id);
-            let first = !std::mem::replace(&mut replay.diverged, true);
-            drop(replay);
-            if first {
-                self.sink.diverged(Divergence { dispatch, key });
+        let Replay {
+            cursor,
+            dispatches,
+            tools,
+            live,
+            ..
+        } = &mut *replay;
+        let selection = dispatches.get_or_try_insert_with(
+            dispatch_key(dispatch),
+            &mut CursorWork(work),
+            |_| Ok(None),
+        )?;
+        match selection {
+            Some(ReplaySelection::Recorded { key, index }) => {
+                return build(&self.recording.calls[&*key][*index])
+                    .map(ReplayPreparation::Recorded);
             }
-            return Ok(None);
-        };
-        for (ordinal, (call_id, _)) in call.tools.iter().enumerate() {
-            replay.tools.insert(
-                (dispatch.operation_id, call_id.clone()),
-                (key, index, ordinal),
-            );
+            Some(ReplaySelection::Live) => {
+                return Err(Error::Conflict(
+                    "accepted live dispatch requires reconciliation".into(),
+                ));
+            }
+            Some(ReplaySelection::Pending) => {
+                return Err(Error::Conflict(
+                    "replay dispatch admission is pending".into(),
+                ));
+            }
+            None => {}
         }
-        Ok(Some(call))
+        let output = if live.contains(&dispatch.operation_id) {
+            None
+        } else {
+            cursor.select(&self.recording, key, &mut CursorWork(work), |candidate| {
+                let Some((index, call)) = candidate else {
+                    return Ok(None);
+                };
+                let output = build(call)?;
+                for (ordinal, (call_id, _)) in call.tools.iter().enumerate() {
+                    tools.insert(
+                        (dispatch.operation_id, call_id.clone()),
+                        (key, index, ordinal),
+                    );
+                }
+                *selection = Some(ReplaySelection::Recorded { key, index });
+                Ok(Some(output))
+            })?
+        };
+        match output {
+            Some(output) => Ok(ReplayPreparation::Recorded(output)),
+            None => {
+                *selection = Some(ReplaySelection::Pending);
+                Ok(ReplayPreparation::Live(ReplayAdmission {
+                    owner: self,
+                    dispatch,
+                    key,
+                    accepted: false,
+                }))
+            }
+        }
     }
+
+    fn selected_call(
+        &self,
+        dispatch: ModelDispatch,
+        work: crate::NativeWork<'_>,
+    ) -> Result<Option<&RecordedCall>> {
+        let replay = self.lock();
+        match replay
+            .dispatches
+            .get(dispatch_key(dispatch), &mut CursorWork(work))?
+            .copied()
+            .flatten()
+        {
+            Some(ReplaySelection::Recorded { key, index }) => {
+                Ok(Some(&self.recording.calls[&key][index]))
+            }
+            Some(ReplaySelection::Pending) => Err(Error::Conflict(
+                "replay dispatch admission is pending".into(),
+            )),
+            Some(ReplaySelection::Live) | None => Ok(None),
+        }
+    }
+}
+
+fn replay_suffix<C>(
+    call: &RecordedCall,
+    observed: &[ModelEvent],
+    mut decode: impl FnMut(&[u8]) -> Result<(ModelEvent, C)>,
+    mut retain: impl FnMut(ModelEvent, C) -> Result<()>,
+) -> Result<()> {
+    let conflict = || Error::Conflict("recorded dispatch observed a different event prefix".into());
+    if observed.len() > call.events.len() {
+        return Err(conflict());
+    }
+    for (index, bytes) in call.events.iter().enumerate() {
+        let (event, custody) = decode(bytes)?;
+        if let Some(expected) = observed.get(index) {
+            let matches = event == *expected;
+            // Destroy discarded storage before refunding its original owner.
+            drop(event);
+            drop(custody);
+            if !matches {
+                return Err(conflict());
+            }
+        } else {
+            retain(event, custody)?;
+        }
+    }
+    Ok(())
 }
 
 fn decode(bytes: &[u8]) -> Result<ModelEvent> {
@@ -600,6 +769,267 @@ mod tests {
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn refused_generation_funding_preserves_replay_and_tool_coordinates() -> Result<()> {
+        // Generated canonical SDK inputs, not a captured provider response.
+        let request = PreparedModelRequest::prepare(
+            ModelRequest {
+                summary: false,
+                compose_tools: false,
+                model: Model::new("recorded-control".into(), "admission".into(), "1".into())?,
+                messages: vec![ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("source".into()),
+                }],
+                tools: Vec::new(),
+                sampling: Default::default(),
+                max_output_tokens: None,
+            },
+            crate::conversation::Limits::default(),
+            None,
+        )?;
+        let dispatch = ModelDispatch {
+            operation_id: OperationId::new(),
+            step: 0,
+            request_digest: request.request_digest(),
+        };
+        let key = replay_key(request.bytes())?;
+        let events = [0, 1].map(|occurrence| ModelEvent::Completed {
+            metadata: serde_json::json!({"occurrence": occurrence}),
+        });
+        let mut source = Recording::default();
+        for (ordinal, event) in events.iter().enumerate() {
+            source.insert(
+                key,
+                RecordedCall {
+                    source: Some(ModelDispatch {
+                        step: ordinal as u32,
+                        ..dispatch
+                    }),
+                    events: vec![crate::contract::canonical_json_bytes(event)?],
+                    tools: vec![(
+                        format!("original-{ordinal}"),
+                        RecordedToolOutcome::Completed(crate::tool::ToolResult {
+                            value: Value::Null,
+                        }),
+                    )],
+                },
+            );
+        }
+        let source = Arc::new(source);
+        let trial = || {
+            RecordedModel::new(
+                Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+                Arc::clone(&source),
+                Arc::new(Quiet),
+            )
+        };
+        // Measure every returned-object allocation through the actual public entry.
+        // No event is decoded by this probe: per-event funding remains demand driven.
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let probe =
+            NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+                .map_err(|(error, _)| error)?;
+        let probe_trial = trial();
+        let stream = probe_trial
+            .generate_with_native_work(&request, dispatch, &probe)?
+            .await?;
+        let complete_allocations = probe.receipt().allocation_operations;
+        drop(stream);
+        assert!(complete_allocations > 1);
+        for allocations in 1..complete_allocations {
+            let mut budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+            budget.allocation_operations = allocations;
+            let refused = NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(error, _)| error)?;
+            let trial = trial();
+            assert!(
+                matches!(
+                    trial.generate_with_native_work(&request, dispatch, &refused),
+                    Err(Error::NativeWork { .. })
+                ),
+                "returned-object admission must refuse synchronously at allocation {allocations}",
+            );
+            assert_eq!(
+                trial.unused(),
+                2,
+                "refused funding consumed a source occurrence"
+            );
+            assert!(
+                trial.lock().tools.is_empty(),
+                "refused funding published tool coordinates"
+            );
+            assert!(
+                !trial.diverged(),
+                "refused replay admission entered the live provider"
+            );
+            let funded = NativeMaterializationWork::new(
+                acyclic_fs::performance::BOUNDARY_BUDGET,
+                &cancellation,
+            )
+            .map_err(|(error, _)| error)?;
+            let mut stream = trial
+                .generate_with_native_work(&request, dispatch, &funded)?
+                .await?;
+            assert_eq!(
+                stream.delivery(),
+                ModelDelivery::Recorded {
+                    source: Some(dispatch)
+                }
+            );
+            let (actual, custody) = futures::StreamExt::next(&mut stream).await.unwrap()?;
+            assert_eq!(
+                actual, events[0],
+                "retry skipped the original source occurrence"
+            );
+            drop(custody);
+            assert!(futures::StreamExt::next(&mut stream).await.is_none());
+            assert_eq!(trial.unused(), 1);
+            assert_eq!(trial.lock().tools.len(), 1);
+        }
+        // Cancellation after acceptance retains the selected original terminal.
+        let trial = trial();
+        let accepted_cancellation = acyclic_fs::CancellationToken::new();
+        let accepted = NativeMaterializationWork::new(
+            acyclic_fs::performance::BOUNDARY_BUDGET,
+            &accepted_cancellation,
+        )
+        .map_err(|(error, _)| error)?;
+        let mut interrupted = trial
+            .generate_with_native_work(&request, dispatch, &accepted)?
+            .await?;
+        accepted_cancellation.cancel();
+        assert!(matches!(
+            futures::StreamExt::next(&mut interrupted).await,
+            Some(Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+                ..
+            }))
+        ));
+        assert!(futures::StreamExt::next(&mut interrupted).await.is_none());
+        drop(interrupted);
+        let funded =
+            NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+                .map_err(|(error, _)| error)?;
+        let mut resumed = trial
+            .generate_with_native_work(&request, dispatch, &funded)?
+            .await?;
+        assert_eq!(
+            resumed.delivery(),
+            ModelDelivery::Recorded {
+                source: Some(dispatch)
+            }
+        );
+        let (actual, custody) = futures::StreamExt::next(&mut resumed).await.unwrap()?;
+        assert_eq!(
+            actual, events[0],
+            "accepted failure consumed a different recorded terminal"
+        );
+        drop(custody);
+        drop(resumed);
+        assert_eq!(trial.unused(), 1);
+        assert_eq!(trial.lock().tools.len(), 1);
+        let next = ModelDispatch {
+            step: 1,
+            ..dispatch
+        };
+        let mut stream = trial
+            .generate_with_native_work(&request, next, &funded)?
+            .await?;
+        assert_eq!(
+            stream.delivery(),
+            ModelDelivery::Recorded { source: Some(next) }
+        );
+        let (actual, custody) = futures::StreamExt::next(&mut stream).await.unwrap()?;
+        assert_eq!(actual, events[1]);
+        drop(custody);
+        assert_eq!(trial.unused(), 0);
+        assert_eq!(trial.lock().tools.len(), 2);
+        assert!(!trial.diverged());
+
+        // Reconciliation and the portable entrance retain this accepted
+        // source coordinate even after the recording is otherwise exhausted.
+        assert_eq!(
+            trial.reconcile(dispatch, &[]).await?,
+            Some(vec![events[0].clone()])
+        );
+        assert_eq!(trial.reconcile(dispatch, &events[..1]).await?, Some(vec![]));
+        let (reconciled, custody) = trial
+            .reconcile_with_native_work(dispatch, &[], &funded)?
+            .await?;
+        assert_eq!(reconciled, Some(vec![events[0].clone()]));
+        drop(custody);
+        let retained = funded.live_allocation_bytes();
+        let (reconciled, custody) = trial
+            .reconcile_with_native_work(dispatch, &events[..1], &funded)?
+            .await?;
+        assert_eq!(reconciled, Some(vec![]));
+        assert_eq!(
+            funded.live_allocation_bytes(),
+            retained,
+            "observed replay prefix retained discarded storage funding"
+        );
+        drop(reconciled);
+        drop(custody);
+        assert!(matches!(
+            trial.reconcile(dispatch, &events[1..]).await,
+            Err(Error::Conflict(_))
+        ));
+        let mut portable = trial.generate(&request, dispatch);
+        assert_eq!(
+            futures::StreamExt::next(&mut portable).await.unwrap()?,
+            events[0]
+        );
+        assert_eq!(trial.unused(), 0);
+
+        // The real trait's unsupported-native refusal must not pin live mode.
+        // The scripted producer is only the subsequent fallthrough observer.
+        let live = Arc::new(crate::test_support::ScriptedModelProvider::new([]));
+        let live_trial = RecordedModel::new(
+            live.clone(),
+            Arc::new(Recording::default()),
+            Arc::new(Quiet),
+        );
+        assert!(matches!(
+            live_trial.generate_with_native_work(&request, dispatch, &funded),
+            Err(Error::NativeBoundary { .. })
+        ));
+        assert!(!live_trial.diverged());
+        let ReplayPreparation::Live(pending) =
+            live_trial.prepare(&request, dispatch, None, |_| Ok(()))?
+        else {
+            return Err(Error::Invalid(
+                "empty recording unexpectedly selected an answer".into(),
+            ));
+        };
+        assert!(matches!(
+            live_trial.prepare(&request, dispatch, None, |_| Ok(())),
+            Err(Error::Conflict(_))
+        ));
+        drop(pending);
+        assert!(!live_trial.diverged());
+        let mut portable = live_trial.generate(&request, dispatch);
+        assert!(
+            futures::StreamExt::next(&mut portable)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert!(live_trial.diverged());
+        let mut retry = live_trial.generate(&request, dispatch);
+        assert!(matches!(
+            futures::StreamExt::next(&mut retry).await,
+            Some(Err(Error::Conflict(_)))
+        ));
+        assert_eq!(
+            live.dispatches().len(),
+            1,
+            "accepted live failure was dispatched again"
+        );
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
     fn tool_copy_uses_original_work_and_refusal_keeps_the_settlement() -> Result<()> {
         let live: Arc<dyn ModelProvider> =
@@ -824,14 +1254,20 @@ impl ModelProvider for RecordedModel {
         request: &'a PreparedModelRequest,
         dispatch: ModelDispatch,
     ) -> ModelStream<'a> {
-        match self.take(request, dispatch, None) {
-            Ok(Some(call)) => ModelStream::new(Box::pin(futures::stream::iter(
+        match self.prepare(request, dispatch, None, |call| {
+            Ok(ModelStream::new(Box::pin(futures::stream::iter(
                 call.events.iter().map(|bytes| decode(bytes)),
             )))
             .with_delivery(ModelDelivery::Recorded {
                 source: call.source,
-            }),
-            Ok(None) => self.live.generate(request, dispatch),
+            }))
+        }) {
+            Ok(ReplayPreparation::Recorded(stream)) => stream,
+            Ok(ReplayPreparation::Live(admission)) => {
+                let stream = self.live.generate(request, dispatch);
+                admission.accept();
+                stream
+            }
             Err(error) => ModelStream::new(Box::pin(futures::stream::iter([Err(error)]))),
         }
     }
@@ -840,7 +1276,23 @@ impl ModelProvider for RecordedModel {
         dispatch: ModelDispatch,
         observed: &'a [ModelEvent],
     ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        self.live.reconcile(dispatch, observed)
+        match self.selected_call(dispatch, None) {
+            Ok(Some(call)) => Box::pin(async move {
+                let mut events = Vec::new();
+                replay_suffix(
+                    call,
+                    observed,
+                    |bytes| decode(bytes).map(|event| (event, ())),
+                    |event, ()| {
+                        events.push(event);
+                        Ok(())
+                    },
+                )?;
+                Ok(Some(events))
+            }),
+            Ok(None) => self.live.reconcile(dispatch, observed),
+            Err(error) => Box::pin(async move { Err(error) }),
+        }
     }
     fn recorded_tool_result(
         &self,
@@ -907,25 +1359,31 @@ impl ModelProvider for RecordedModel {
         dispatch: ModelDispatch,
         work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, NativeModelStream<'a>>> {
-        let Some(call) = self.take(request, dispatch, Some(work))? else {
-            return self.live.generate_with_native_work(request, dispatch, work);
-        };
         // Each recorded event is admitted on the original ledger exactly as
-        // a provider's decoded bytes are.
-        crate::NativeFutureBundle::new(work, move || async move {
-            NativeModelStream::new(work, move || {
+        // a provider's decoded bytes are. The complete returned stream and
+        // future are funded before original source consumption is accepted.
+        match self.prepare(request, dispatch, Some(work), |call| {
+            let stream = NativeModelStream::new(work, move || {
                 futures::stream::iter(
                     call.events
                         .iter()
                         .map(move |bytes| ModelEvent::decode_with_native_work(bytes, work)),
                 )
-            })
-            .map(|stream| {
-                stream.with_delivery(ModelDelivery::Recorded {
-                    source: call.source,
-                })
-            })
-        })
+            })?
+            .with_delivery(ModelDelivery::Recorded {
+                source: call.source,
+            });
+            crate::NativeFutureBundle::new(work, || std::future::ready(Ok(stream)))
+        })? {
+            ReplayPreparation::Recorded(future) => Ok(future),
+            ReplayPreparation::Live(admission) => {
+                let future = self
+                    .live
+                    .generate_with_native_work(request, dispatch, work)?;
+                admission.accept();
+                Ok(future)
+            }
+        }
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn reconcile_with_native_work<'a>(
@@ -934,7 +1392,31 @@ impl ModelProvider for RecordedModel {
         observed: &'a [ModelEvent],
         work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Option<Vec<ModelEvent>>, NativeAllocation)>> {
-        self.live
-            .reconcile_with_native_work(dispatch, observed, work)
+        let Some(call) = self.selected_call(dispatch, Some(work))? else {
+            return self
+                .live
+                .reconcile_with_native_work(dispatch, observed, work);
+        };
+        crate::NativeFutureBundle::new(work, || async move {
+            let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+            let mut events = Vec::new();
+            crate::executor::stock_vec_reserve(
+                &mut events,
+                call.events.len().saturating_sub(observed.len()),
+                Some(&io),
+            )?;
+            replay_suffix(
+                call,
+                observed,
+                |bytes| ModelEvent::decode_with_native_work(bytes, work),
+                |event, custody| {
+                    io.absorb_native_custody(custody)?;
+                    events.push(event);
+                    Ok(())
+                },
+            )?;
+            let retained = io.owned_bytes()?;
+            Ok((Some(events), io.into_native_custody(retained)?))
+        })
     }
 }

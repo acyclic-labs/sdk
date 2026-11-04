@@ -1,0 +1,15 @@
+diff --git a/rust/crates/harness-core/src/executor/code_mode/interpreter.rs b/rust/crates/harness-core/src/executor/code_mode/interpreter.rs
+--- a/rust/crates/harness-core/src/executor/code_mode/interpreter.rs
++++ b/rust/crates/harness-core/src/executor/code_mode/interpreter.rs
+@@ -14,9 +14,9 @@ impl<'js> rquickjs::IntoJs<'js> for Reply {
+         let Some(bytes) = self.0 else {
+             return Ok(rquickjs::Value::new_undefined(ctx.clone()));
+         };
+-        let text = std::str::from_utf8(&bytes).map_err(|_| rquickjs::Error::Unknown)?;
++        let text = String::from_utf8_lossy(&bytes);
+         // The host credit remains live until the engine owns its copy.
+-        rquickjs::String::from_str(ctx.clone(), text).map(rquickjs::String::into_value)
++        rquickjs::String::from_str(ctx.clone(), &text).map(rquickjs::String::into_value)
+     }
+ }
+ 

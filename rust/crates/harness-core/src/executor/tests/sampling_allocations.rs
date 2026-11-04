@@ -54,6 +54,7 @@ async fn tool_free_sampling_allocations_are_independent_of_catalog_size() -> Res
                 // Request admission is complete. Response journaling serializes
                 // wall-clock latency, whose decimal width is nondeterministic.
                 *observed.lock().unwrap() = acyclic_test_support::current_allocations();
+                Box::pin(async { Ok(()) })
             }),
         );
         let scope = RuntimeScope::new(Capabilities::new(["model:generate"]), Limits::default())?;

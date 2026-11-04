@@ -163,10 +163,14 @@ pub fn seeds() -> Result<BTreeMap<&'static str, Vec<u8>>, Box<dyn std::error::Er
     seeds.insert("path-bad-id", invalid_path);
     // Mutate a current encoded record, so the negative fails on its field,
     // independently of record-header version changes.
-    let mut unknown: serde_json::Value = serde_json::from_slice(&seeds["cancel"][1..])?;
-    unknown["record"]["cancel"]["extra"] = serde_json::json!(1);
+    let mut unknown: serde_json::Value = decode_record(&seeds["cancel"][1..])?;
+    unknown["cancel"]["extra"] = serde_json::json!(1);
     let mut bytes = vec![0];
-    bytes.extend(serde_json::to_vec(&unknown)?);
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[serde(transparent)]
+    struct UnknownField(serde_json::Value);
+    impl AgentRecord for UnknownField {}
+    bytes.extend(UnknownField(unknown).encode()?);
     seeds.insert("unknown-field", bytes);
     Ok(seeds)
 }

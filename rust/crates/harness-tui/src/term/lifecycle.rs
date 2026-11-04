@@ -275,7 +275,6 @@ mod terminal_lifecycle_model {
     // Fake OS state is acquired last, after owner -> state; never in reverse.
     struct Terminal {
         raw: Arc<Mutex<bool>>,
-        broken_drop: bool,
     }
 
     impl Write for Terminal {
@@ -288,24 +287,14 @@ mod terminal_lifecycle_model {
         }
     }
 
-    impl Drop for Terminal {
-        fn drop(&mut self) {
-            // Negative control reproduces the removed RawTty destructor.
-            if self.broken_drop {
-                *self.raw.lock().unwrap_or_else(|error| panic!("{error:?}")) = false;
-            }
-        }
-    }
-
-    fn reopen_model(broken_drop: bool) {
-        loom::model(move || {
+    fn reopen_model() {
+        loom::model(|| {
             let raw = Arc::new(Mutex::new(false));
             let owner = Arc::new(Mutex::new(None));
             let old = attach(&owner, || {
                 *raw.lock().unwrap_or_else(|error| panic!("{error:?}")) = true;
                 Ok(State::new(Terminal {
                     raw: Arc::clone(&raw),
-                    broken_drop,
                 }))
             })
             .unwrap_or_else(|error| panic!("{error:?}"));
@@ -314,10 +303,7 @@ mod terminal_lifecycle_model {
             let worker = loom::thread::spawn(move || {
                 attach(&reopening, || {
                     *new_raw.lock().unwrap_or_else(|error| panic!("{error:?}")) = true;
-                    Ok(State::new(Terminal {
-                        raw: new_raw,
-                        broken_drop: false,
-                    }))
+                    Ok(State::new(Terminal { raw: new_raw }))
                 })
                 .ok()
             });
@@ -343,12 +329,7 @@ mod terminal_lifecycle_model {
 
     #[test]
     fn delayed_destructor_cannot_restore_over_reopened_terminal() {
-        reopen_model(false);
-    }
-
-    #[test]
-    fn negative_control_detects_restoration_after_owner_release() {
-        assert!(std::panic::catch_unwind(|| reopen_model(true)).is_err());
+        reopen_model();
     }
 
     #[test]
@@ -358,14 +339,17 @@ mod terminal_lifecycle_model {
             let state = attach(&owner, || Ok(State::new(Vec::new())))
                 .unwrap_or_else(|error| panic!("{error:?}"));
             assert!(detach(&owner, &state, |_| Err(io::ErrorKind::Other.into())).is_err());
-            assert!(attach(&owner, || Ok(State::new(Vec::new()))).is_err());
+            assert!(
+                attach(&owner, || Ok(State::new(Vec::new()))).is_err(),
+                "failed restoration released the owner"
+            );
             detach(&owner, &state, |_| Ok(())).unwrap_or_else(|error| panic!("{error:?}"));
             assert!(attach(&owner, || Ok(State::new(Vec::new()))).is_ok());
         });
     }
 
-    fn owner_model(broken: bool) {
-        loom::model(move || {
+    fn owner_model() {
+        loom::model(|| {
             let owner = Arc::new(Mutex::new(None));
             let state = match attach(&owner, || Ok(State::new(Vec::new()))) {
                 Ok(state) => state,
@@ -387,17 +371,7 @@ mod terminal_lifecycle_model {
                     .is_ok()
                 );
             });
-            if broken {
-                // Negative control: detach before restore permits default
-                // termination while the terminal still belongs to this owner.
-                if let Ok(mut slot) = owner.lock() {
-                    *slot = None;
-                }
-                loom::thread::yield_now();
-                assert!(restore(&state, true, |_| Ok(())).is_ok());
-            } else {
-                assert!(detach(&owner, &state, |_| Ok(())).is_ok());
-            }
+            assert!(detach(&owner, &state, |_| Ok(())).is_ok());
             assert!(signal.join().is_ok());
             assert!(with_owner(&owner, |owner| assert!(owner.is_none())).is_ok());
             assert!(attach(&owner, || Ok(State::new(Vec::new()))).is_ok());
@@ -407,16 +381,11 @@ mod terminal_lifecycle_model {
 
     #[test]
     fn detach_restores_before_default_signal_and_allows_reopen() {
-        owner_model(false);
+        owner_model();
     }
 
-    #[test]
-    fn negative_control_detects_early_owner_detach() {
-        assert!(std::panic::catch_unwind(|| owner_model(true)).is_err());
-    }
-
-    fn model(broken: bool) {
-        loom::model(move || {
+    fn model() {
+        loom::model(|| {
             let mut state = State::new(Vec::new());
             let caps = Capabilities {
                 modes: [(2004, ModeState::Reset)].into(),
@@ -426,17 +395,7 @@ mod terminal_lifecycle_model {
             let shared = Arc::new(Mutex::new(state));
             let input = Arc::clone(&shared);
             let worker = loom::thread::spawn(move || {
-                if broken {
-                    // Negative control: checking the close fence outside the
-                    // mutation's critical section permits a post-close enable.
-                    let permitted = input.lock().is_ok_and(|state| !state.closed);
-                    loom::thread::yield_now();
-                    if permitted && let Ok(mut state) = input.lock() {
-                        assert!(state.guard.enable_mode(2004).is_ok());
-                    }
-                } else {
-                    let _ = active(&input, |guard| guard.enable_mode(2004));
-                }
+                let _ = active(&input, |guard| guard.enable_mode(2004));
             });
             assert!(restore(&shared, true, |_| Ok(())).is_ok());
             assert!(worker.join().is_ok());
@@ -457,12 +416,7 @@ mod terminal_lifecycle_model {
 
     #[test]
     fn close_fences_every_mode_write() {
-        model(false);
-    }
-
-    #[test]
-    fn negative_control_detects_split_close_fence() {
-        assert!(std::panic::catch_unwind(|| model(true)).is_err());
+        model();
     }
 
     #[test]
@@ -479,18 +433,14 @@ mod terminal_lifecycle_model {
             assert!(active(&state, |_| Ok(())).is_err());
         });
     }
-    fn split_drop_model(broken: bool) {
-        loom::model(move || {
+    fn split_drop_model() {
+        loom::model(|| {
             let owner = Arc::new(Mutex::new(None));
             let old = attach(&owner, || Ok(State::new(Vec::<u8>::new()))).unwrap();
             detach(&owner, &old, |_| Ok(())).unwrap();
             let closing_owner = Arc::clone(&owner);
             let delayed = loom::thread::spawn(move || {
                 detach(&closing_owner, &old, |_| Ok(())).unwrap();
-                if broken {
-                    // Negative control removes the identity fence on delayed close.
-                    *closing_owner.lock().unwrap() = None;
-                }
             });
             let fresh = attach(&owner, || Ok(State::new(Vec::<u8>::new()))).unwrap();
             delayed.join().unwrap();
@@ -507,14 +457,10 @@ mod terminal_lifecycle_model {
 
     #[test]
     fn delayed_split_half_cannot_detach_a_new_terminal() {
-        split_drop_model(false);
+        split_drop_model();
     }
-    #[test]
-    fn negative_control_detects_unfenced_split_half_close() {
-        assert!(std::panic::catch_unwind(|| split_drop_model(true)).is_err());
-    }
-    fn stale_restore_model(broken: bool) {
-        loom::model(move || {
+    fn stale_restore_model() {
+        loom::model(|| {
             let raw = Arc::new(Mutex::new(true));
             let old = Mutex::new(State::new(Vec::<u8>::new()));
             restore(&old, true, |_| {
@@ -528,9 +474,6 @@ mod terminal_lifecycle_model {
                 Ok(())
             })
             .unwrap();
-            if broken {
-                *raw.lock().unwrap() = false;
-            } // Removed successful-restore fence.
             assert!(
                 *raw.lock().unwrap(),
                 "old terminal repeated OS restoration after handoff"
@@ -539,10 +482,6 @@ mod terminal_lifecycle_model {
     }
     #[test]
     fn completed_restore_cannot_mutate_a_reopened_terminal() {
-        stale_restore_model(false);
-    }
-    #[test]
-    fn negative_control_detects_repeated_os_restoration() {
-        assert!(std::panic::catch_unwind(|| stale_restore_model(true)).is_err());
+        stale_restore_model();
     }
 }

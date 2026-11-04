@@ -114,14 +114,42 @@ the serializer's JSON through the same production engine without a tool reply,
 then compares its completion to the value delivered through the original reply
 channel. This retains JavaScript number and Unicode semantics without another
 decoder or a Rust model of coercion. Both executions retire their native credit.
+The reference evaluates the same success envelope under the same output allowance
+as the RPC completion. Both must return the same value or the exact output-limit
+refusal; other reference errors fail the property. This covers number formatting
+that expands valid JSON beyond its admission without raising the allowance.
+The generated `corpus/code_mode/number-expansion.json` seed retains 400 copies of
+`1e20`, whose JavaScript array encoding is 8801 bytes before the reply envelope.
+Its provenance is recorded separately from captured inputs in `SOURCES.tsv`.
 
 Apply `mutations/code_mode_nonstring_reply_null.patch` to preserve strings but
 replace other successful reply values with null. The earlier string-only oracle
 passes this mutation; the value-complete differential must reject it at
 `the original host reply must preserve its value and refusal`. Restore the patch
-before collecting original coverage. Arbitrary malformed UTF-8/JSON frames still
-exercise retirement, but complete malformed-JSON semantics and embedded engine
-source coverage remain separate qualification obligations.
+before collecting original coverage.
+
+Arbitrary raw reply frames also ask the original engine whether their text has
+valid JSON syntax, within the same guest execution as the tool call. Invalid
+UTF-8 and malformed JSON must make that call refuse, while its original frame
+and engine credit still retire. This adds no parser, runtime or RPC. Valid JSON
+that is not a reply envelope has a separate semantic obligation; this syntax
+relation does not model JavaScript truthiness or property access. An admitted
+output refusal remains distinct from an accepted malformed frame.
+
+Apply `mutations/code_mode_accept_malformed_json.patch` to swallow the production
+reply parse exception and return a successful null reply. The earlier cleanup
+oracle does not reject valid UTF-8 malformed JSON; the syntax relation must fail
+at `malformed host JSON must retain its parse refusal`. Restore the mutation
+before collecting original coverage. Complete reply-envelope semantics and
+embedded engine source coverage remain separate qualification obligations.
+
+The generated `corpus/code_mode/invalid-utf8.json` frame contains one byte `FF`
+inside the success envelope's JSON string. Replacing that byte with U+FFFD makes
+valid JSON, so `mutations/code_mode_lossy_reply_utf8.patch` deliberately changes
+the production reply bridge from UTF-8 rejection to lossy conversion. On this
+seed the unchanged raw-frame oracle must fail at `malformed host JSON must
+retain its parse refusal`. The seed is generated hostile input, not a captured
+provider response. Restore the patch before collecting original coverage.
 
 The same property checks bridge copies with the production engine allocator and
 its original ledger. The input varies the actual guest string. It measures the
@@ -139,3 +167,37 @@ credit before returning its live buffer. The unchanged property must reject it a
 `bridge bytes must retain the original credit after the engine view retires`.
 This mutation changes the production copy boundary and adds no allocator or
 parallel accounting model. Restore it before collecting original coverage.
+
+The target also checks the owned-Value argument decoder through the same private
+`PreparationIo::decode` entry used by stock tool calls. The reference calls the
+production typed decoder with the same Root schema and record depth; its successful
+value supplies the existing reply property, replacing that property's separate
+unbounded JSON parse. The native adapter must preserve the value or the typed
+syntax/admission refusal. Successful values retain enough original credit for
+their owned storage, syntax diagnostics retain their original custody, and both
+release that credit on destruction. This checks the native decode component;
+stock journal, authorization and tool admission remain distinct obligations.
+
+Apply `mutations/code_mode_omit_argument_credit.patch` to remove the decoded
+value's bytes from the production adapter's reservation. The unchanged target
+must reject a valid JSON input at `decoded argument storage must retain its
+native admission`. The generated number-expansion seed exercises this case
+without a captured-host-fixture claim. Restore the patch before collecting
+original coverage. This uses the original reservation and ledger, with no
+additional decoder, charge callback model or public entry point.
+
+Apply `mutations/preparation_omit_diagnostic_credit.patch` to omit the original
+diagnostic reservation before typed admission. The same argument relation must
+reject a syntax refusal with zero custody at `native argument diagnostic must
+retain its owned storage`. The existing physical-storage property checks the
+closed diagnostic allowance against actual allocation; this relation checks
+that the native decoder retains that allowance through each fuzzed refusal.
+Restore the patch before collecting original coverage.
+
+The generated narrow and wide Unicode JSON seeds force temporary UTF-8 views
+through both production conversion branches. With no temporary-view credit,
+the shared QuickJS failure label must release its owned source reference.
+Apply `mutations/code_mode_leak_utf8_source.patch` to omit that release. The
+unchanged native-ledger equality after context and runtime destruction must
+reject the leak. This is a generated allocation-refusal regression, separate
+from the captured guest inputs, and uses the existing bridge property.

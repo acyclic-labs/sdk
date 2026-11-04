@@ -1,0 +1,9 @@
+--- a/rust/crates/harness-core/src/tool/registry/lookup.rs
++++ b/rust/crates/harness-core/src/tool/registry/lookup.rs
+@@ -58,5 +58,5 @@
+     name: &str,
+     revision: &str,
+ ) -> Option<&'a T> {
+-    map.get(&(name, revision) as &dyn Key)
++    map.get(&(name.to_owned(), revision.to_owned()))
+ }

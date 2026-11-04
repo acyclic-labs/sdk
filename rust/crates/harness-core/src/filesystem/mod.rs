@@ -50,7 +50,7 @@ mod history;
 pub use history::read as history_checkpoint;
 pub mod hosting;
 mod spawn_volumes;
-pub use spawn_volumes::{FilesystemSpawnVolumes, ForkCuts, spawned_binding};
+pub use spawn_volumes::{FilesystemSpawnVolumes, ForkCutError, ForkCuts, spawned_binding};
 mod fs_tools;
 pub use fs_tools::FilesystemTools;
 mod templates;

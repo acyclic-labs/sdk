@@ -93,12 +93,7 @@ export async function commandProcess(program, args, {host, signal, input, env, c
     });
     const readCompletion = async hostStatus => {
       try {
-        const completion = decodeCompletion(await readFile(receipt, 'utf8'), invocation);
-        if (hostStatus.signal !== null || hostStatus.code === null
-          || (hostStatus.code >>> 0) !== completion.host_exit_code) {
-          throw Object.assign(new Error('step=process-host-close; recovery=retain the original host exit and completion receipt'),
-            {code: 'PROCESS_HOST_STATUS_MISMATCH', hostStatus, completion});
-        }
+        const completion = decodeCompletion(await readFile(receipt, 'utf8'), invocation, hostStatus);
         result = {code: completion.root_status?.code ?? null,
           signal: signalNames.get(completion.root_status?.signal) ?? null, completion};
         if (!completion.process_tree_retired || completion.failure) fail('retirement', Object.assign(

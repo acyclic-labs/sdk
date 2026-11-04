@@ -17,6 +17,14 @@ export function fuzz(data, decode = decodeCompletion) {
       assert.equal(result.invocation, identity);
       assert.ok(result.failure !== null || result.process_tree_retired);
       if (result.process_tree_retired) assert.ok(result.root_status);
+      const hostStatus = {code: result.host_exit_code, signal: null};
+      assert.deepEqual(decode(bytes, identity, hostStatus), result);
+      for (const status of [{code: null, signal: null},
+        {code: result.host_exit_code, signal: 'SIGKILL'},
+        {code: (result.host_exit_code + 1) >>> 0, signal: null}]) {
+        assert.throws(() => decode(bytes, identity, status),
+          {code: 'PROCESS_HOST_STATUS_MISMATCH'}, 'retain the original host exit binding');
+      }
     } catch (error) {
       if (error.code !== 'PROCESS_COMPLETION_INVALID') throw error;
     }

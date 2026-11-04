@@ -40,3 +40,23 @@ The replay now removes eighteen production admission guards independently,
 including the failure phase, error kind and OS-error guards, and rejects a
 nineteenth defect that refuses valid original receipts. Broader platform and
 state-machine qualification remains separate from this bounded byte campaign.
+
+`windows-v3.json` is the exact terminal written during the real Windows x86_64
+`selected Windows owner requires its original bound physical completion`
+control on 2026-11-04. The original Node root exits with status 17. Its bytes
+were retained before the invocation/custody corruption controls; no field or
+line ending was rewritten. This is a new v3 capture, separate from prior v2
+records. Producer executable SHA-256:
+`290ffd46a5d062449a6396e8462891a09062976cbeea90d2b6b1b146666be430`.
+Its original compilation receipt binds `external_host/receipt.rs` to
+`e0a1ee0441115dda2c173e43798e9ecefd5325fab35c48369f1aa034b960b6a9`
+and `external_host/arguments.rs` to
+`0ad316c18685d7d3a5fca3be22f6d4ec41f5527d0a049133fa78ea851fe60f08`;
+both match the captured producer source. Sample SHA-256:
+`5c7e337a7e423117e8c846621c8796a04c8fa410e661ee05e91f0eb29ca59735`.
+
+The shared decoder also compares the original host close when supplied. The
+retained oracle detects omission of this comparison using every original
+receipt, while the real Windows consumer control checks both launch paths,
+unsigned native status, missing/wrong/incomplete completion and root refusal.
+These are component controls, not qualification of installed host journeys.

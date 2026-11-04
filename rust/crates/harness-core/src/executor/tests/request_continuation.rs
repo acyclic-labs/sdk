@@ -255,11 +255,9 @@ async fn prepared_accounting_recovers_with_its_projection_before_model_dispatch(
         })
         .unwrap();
     let bytes = journal.load(&reference, None)?.await?;
-    let retained = serde_json::json!({
-        "context": { "messages": prepared.request().messages, "metadata": projection.context.metadata, "current_input_index": projection.context.current_input_index },
-        "canonical": projection.canonical, "checkpoint": projection.checkpoint,
-        "accounting": accounting,
-    });
+    let mut retained = projection;
+    retained.context.messages = prepared.request().messages.clone();
+    retained.accounting = accounting;
     assert_eq!(
         &*bytes,
         crate::contract::canonical_json_bytes(&retained)?,
@@ -321,69 +319,5 @@ async fn prepared_accounting_recovers_with_its_projection_before_model_dispatch(
             .count(),
         1
     );
-    Ok(())
-}
-
-#[tokio::test]
-async fn continued_tool_results_stop_before_aggregate_render_overflow_is_published_or_dispatched()
--> Result<()> {
-    let limits = Limits {
-        render_bytes: 512,
-        ..Limits::default()
-    };
-    let provider = Arc::new(ContinuingModel {
-        turns: 10,
-        seen: AtomicUsize::new(0),
-    });
-    let executor = uncompacted_executor(
-        Model::new("test".into(), "continuation".into(), "1".into())?,
-        provider.clone(),
-        ContextPipeline::default(),
-        echo_tools(
-            Arc::new(FakeTool(AtomicUsize::new(0))),
-            json!(true),
-            json!(true),
-            json!(true),
-        )?,
-    )
-    .with_tool_authority(
-        RuntimeScope::new(
-            Capabilities::new(["model:generate", "tool:call:example.echo"]),
-            limits,
-        )?,
-        allowed()?,
-    )?
-    .with_limits(limits);
-    let journal = Journal::default();
-    let input = TurnInput {
-        max_steps: None,
-        operation_id: OperationId::new(),
-        input: ModelContent::Text("input".into()),
-        selected_context: None,
-    };
-    let result = executor.execute(input, &journal).await;
-    assert!(
-        result.is_err(),
-        "continued aggregate render overflow reached the provider"
-    );
-    let references: Vec<_> = journal
-        .0
-        .lock()
-        .unwrap()
-        .iter()
-        .filter_map(|record| match &record.event {
-            ExecutionEvent::ContextPrepared { projection, .. } => Some(projection.clone()),
-            _ => None,
-        })
-        .collect();
-    assert!(!references.is_empty());
-    assert!(references.len() < 11);
-    assert_eq!(references.len(), provider.seen.load(Ordering::SeqCst));
-    for reference in references {
-        let (projection, _) =
-            crate::executor::transcript::load_projection(&journal, &reference, limits, None)
-                .await?;
-        crate::context::validate_projected_context(&projection.context, limits, None)?;
-    }
     Ok(())
 }

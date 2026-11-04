@@ -59,61 +59,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let result = async {
             accounting.check()?;
             let proven_at = self.inner.objects.collection_sweeps();
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = accounting.native_work() {
-                let (closure, _allocation) = crate::kernel::closure::ProofContext::new(
+            let (closure, allocation) = {
+                let mut frame = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
+                let meter =
+                    crate::kernel::closure::ProofMeter::from_accounting(frame.accounting())?;
+                crate::kernel::closure::ProofContext::new(
                     &self.inner.objects,
                     closure_limits(config),
-                    crate::kernel::closure::ProofMeter::Native {
-                        original,
-                        cancellation,
-                    },
+                    meter,
                 )
                 .prove_record_closure(records)
-                .await?;
-                return self
-                    .flush_publication(
-                        crate::PublicationScope {
-                            objects: &closure,
-                            proven_at,
-                        },
-                        &mut accounting,
-                        cancellation,
-                    )
-                    .await;
-            }
-            let meter = match crate::kernel::closure::ProofMeter::standalone(
-                accounting.remaining()?,
-                cancellation,
-            ) {
-                Ok(meter) => meter,
-                Err(error) => {
-                    merge_creation_backend_work(&mut accounting, WorkCounters::UNCHARGED)?;
-                    return Err(FsError::from(crate::kernel::closure::closure_error(error)));
-                }
+                .await?
             };
-            let proof = crate::kernel::closure::ProofContext::new(
-                &self.inner.objects,
-                closure_limits(config),
-                meter.clone(),
-            )
-            .prove_record_closure(records)
-            .await;
-            let spent = meter.work();
-            drop(meter);
-            merge_creation_backend_work(&mut accounting, spent)?;
-            let (closure, guard) = proof
-                .map_err(|error| FsError::from(crate::kernel::closure::closure_error(error)))?;
-            drop(guard);
-            self.flush_publication(
-                crate::PublicationScope {
-                    objects: &closure,
-                    proven_at,
-                },
-                &mut accounting,
-                cancellation,
-            )
-            .await
+            let result = self
+                .flush_publication(
+                    crate::PublicationScope {
+                        objects: &closure,
+                        proven_at,
+                    },
+                    &mut accounting,
+                    cancellation,
+                )
+                .await;
+            drop(closure);
+            drop(allocation);
+            result
         }
         .await;
         budget.finish(result, &accounting)
@@ -137,20 +107,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     volume,
                     generation.object_id(),
                     &mut accounting,
-                    cancellation,
                 )
                 .await?;
             let result = self
                 .flush_publication(
                     crate::PublicationScope {
-                        objects: &publication.value.objects,
-                        proven_at: publication.value.proven_at,
+                        objects: &publication.objects,
+                        proven_at: publication.proven_at,
                     },
                     &mut accounting,
                     cancellation,
                 )
                 .await;
-            publication.retire(&mut accounting)?;
+            drop(publication);
             result.map_err(Into::into)
         }
         .await;

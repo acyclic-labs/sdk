@@ -1,0 +1,22 @@
+diff --git b/rust/crates/harness-core/src/filesystem/history.rs a/rust/crates/harness-core/src/filesystem/history.rs
+index 823d3b230c..73458962e4 100644
+--- b/rust/crates/harness-core/src/filesystem/history.rs
++++ a/rust/crates/harness-core/src/filesystem/history.rs
+@@ -325,15 +325,10 @@ where
+             hash.update(parent.path.as_str().as_bytes());
+             hash.update(&sequence.to_be_bytes());
+             hash.update(binding.name.as_bytes());
+-            // A refused publication can retry this turn at a newer project
+-            // head. Both the companion cut and fork operation belong to the
+-            // complete selected generation, not just the conversation slot.
+-            hash.update(head.id().to_bytes().as_slice());
+-            let identity = hash.finalize();
+             let mut key = [0; 16];
+-            key.copy_from_slice(&identity.as_bytes()[..16]);
++            hash.finalize_xof().fill(&mut key);
+             let destination = WorkspaceName::new(
+-                format!("history-{}", identity.to_hex()),
++                format!("history-{}-{sequence}-{}", parent.path.id(), binding.name),
+                 &WorkBudget::UNBOUNDED,
+                 &cancel,
+             )

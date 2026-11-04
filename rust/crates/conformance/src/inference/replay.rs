@@ -59,6 +59,8 @@ pub struct Manifest {
     pub source: String,
     /// Original capture time in UTC.
     pub captured_at: String,
+    /// Original source of the rate-limit response, which may differ from the model server.
+    pub rate_source: String,
     /// Wire dialect of the actual captured response.
     pub adapter: Adapter,
     /// Registry identity used when the endpoint was captured.
@@ -75,6 +77,22 @@ pub struct Manifest {
     pub context_input: String,
     captures: BTreeMap<String, FileCapture>,
 }
+
+impl Manifest {
+    /// Decodes the recorded format and requires provenance before opening any response body.
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let manifest: Self =
+            serde_json::from_slice(bytes).map_err(|cause| Error::Invalid(cause.to_string()))?;
+        require(
+            !manifest.source.trim().is_empty()
+                && !manifest.captured_at.trim().is_empty()
+                && !manifest.rate_source.trim().is_empty(),
+            "capture provenance absent",
+        )?;
+        Ok(manifest)
+    }
+}
+
 struct Replay {
     responses: Mutex<VecDeque<Capture>>,
     active: Arc<AtomicUsize>,
@@ -289,12 +307,7 @@ struct Captured {
 
 fn load(path: &Path) -> Result<Captured> {
     let bytes = std::fs::read(path).map_err(|cause| Error::Storage(cause.to_string()))?;
-    let manifest: Manifest =
-        serde_json::from_slice(&bytes).map_err(|cause| Error::Invalid(cause.to_string()))?;
-    require(
-        !manifest.source.trim().is_empty() && !manifest.captured_at.is_empty(),
-        "capture provenance absent",
-    )?;
+    let manifest = Manifest::decode(&bytes)?;
     let root = path
         .parent()
         .ok_or_else(|| Error::Invalid("manifest parent absent".into()))?;

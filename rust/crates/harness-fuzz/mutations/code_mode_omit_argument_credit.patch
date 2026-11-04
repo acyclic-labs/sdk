@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/filesystem/bounded_io/codec.rs b/rust/crates/harness-core/src/filesystem/bounded_io/codec.rs
+--- a/rust/crates/harness-core/src/filesystem/bounded_io/codec.rs
++++ b/rust/crates/harness-core/src/filesystem/bounded_io/codec.rs
+@@ -213,7 +213,7 @@ impl PreparationIo {
+                     .transpose()?
+                     .unwrap_or(0)
+                     .max(initial_diagnostics);
+-                let bytes = maximum_owned_bytes
++                let bytes = 0_u64
+                     .checked_add(diagnostics)
+                     .ok_or_else(|| {
+                         decode_allowance_error("typed diagnostic reservation overflow", code)

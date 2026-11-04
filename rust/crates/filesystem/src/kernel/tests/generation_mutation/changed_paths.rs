@@ -120,16 +120,10 @@ async fn verify(
             root,
         })
     });
-    let (rows, allocation) =
+    let rows =
         crate::workspace::complete_changed_paths(views, u32::MAX, &mut work, &cancel).await?;
-    assert_eq!(rows, expected.values().cloned().collect::<Vec<_>>());
-    let bytes = rows.capacity() * std::mem::size_of::<ChangedPath>();
-    let bytes = bytes as u64
-        + rows
-            .iter()
-            .map(|row| row.path.retained_bytes())
-            .sum::<u64>();
-    KernelOwned::new(rows, allocation, bytes).retire(&mut work)?;
+    assert_eq!(rows.value, expected.values().cloned().collect::<Vec<_>>());
+    rows.retire(&mut work)?;
     work.standalone_parts()
         .unwrap()
         .0

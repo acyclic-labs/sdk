@@ -1,0 +1,7 @@
+--- a/rust/crates/harness-tui/src/term/console_owner.rs
++++ b/rust/crates/harness-tui/src/term/console_owner.rs
+@@ -93,3 +93,3 @@
+         let Some(guard) = state.guard.as_mut() else {
+-            return Ok(None);
++            return Ok(expected);
+         };

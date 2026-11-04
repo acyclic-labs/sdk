@@ -350,32 +350,27 @@ fn large_paste_is_compact_in_layout_and_expands_in_queued_submission()
 }
 
 #[test]
-fn composed_prompt_restores_each_item_draft_and_shared_history_from_files()
+fn composed_prompt_restores_each_item_draft_and_shared_history_from_snapshots()
 -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_harness_tui::{
+        format_history,
         key_event::{KeyCode, KeyEvent, KeyModifiers as M},
-        load_draft, load_history, save_draft, save_history,
+        parse_history,
     };
-    let directory = tempfile::tempdir()?;
-    let first = directory.path().join("first-draft");
-    let second = directory.path().join("second-draft");
-    let history = directory.path().join("history.json");
-    save_draft(&first, &Editor::new("first item draft"))?;
-    save_draft(&second, &Editor::new("second item draft"))?;
     let mut input = PromptInput::new(Editor::new("earlier prompt"));
     input.key(KeyEvent::new(KeyCode::Enter, M::NONE), 1, 38);
-    save_history(&history, input.history())?;
+    let history = format_history(input.history())?;
     let mut terminal = Terminal::new(TestBackend::new(40, 12))?;
     let mut viewport = Viewport::default();
-    for (path, expected) in [(&first, "first item draft"), (&second, "second item draft")] {
-        let input = PromptInput::new(load_draft(path)?);
+    for expected in ["first item draft", "second item draft"] {
+        let input = PromptInput::new(Editor::new(expected));
         terminal.draw(|frame| {
             Screen::default().render(frame, &input, &mut viewport, 0, 1000);
         })?;
         assert!(visible(&terminal).contains(expected));
     }
     let mut restored = PromptInput::default();
-    restored.replace_history(load_history(&history)?);
+    restored.replace_history(parse_history(&history)?);
     restored.key(KeyEvent::new(KeyCode::Up, M::NONE), 1001, 38);
     terminal.draw(|frame| {
         Screen::default().render(frame, &restored, &mut viewport, 0, 1002);

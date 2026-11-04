@@ -88,7 +88,7 @@ fn anthropic_calls_map_to_canonical_inputs() -> Result<()> {
     assert_eq!(decodes::<WriteFileInput>(&write).path, "a.txt");
     let shell = adapt(
         anthropic,
-        "Bash",
+        "shell",
         json!({"command":"ls","timeout":5000,"description":"list"}),
     )?;
     assert_eq!(shell, json!({"command":"ls","timeout_ms":5000}));
@@ -131,7 +131,7 @@ fn google_calls_map_to_canonical_inputs() -> Result<()> {
             json!({"path":"a.txt","content":"hi"}),
         ),
         (
-            "run_shell_command",
+            "shell",
             json!({"command":"ls","description":"list","dir_path":"src","is_background":false}),
             json!({"command":"ls","cwd":"src"}),
         ),
@@ -156,12 +156,12 @@ fn refused_and_unmapped_arguments_never_reach_the_capability() -> Result<()> {
     for (profile, variant, call) in [
         (
             NativeToolProfile::Anthropic,
-            "Bash",
+            "shell",
             json!({"command":"sleep 9","run_in_background":true}),
         ),
         (
             NativeToolProfile::Anthropic,
-            "Bash",
+            "shell",
             json!({"command":"ls","dangerouslyDisableSandbox":true}),
         ),
         (
@@ -171,7 +171,7 @@ fn refused_and_unmapped_arguments_never_reach_the_capability() -> Result<()> {
         ),
         (
             NativeToolProfile::Google,
-            "run_shell_command",
+            "shell",
             json!({"command":"ls","is_background":true}),
         ),
         (
@@ -185,6 +185,8 @@ fn refused_and_unmapped_arguments_never_reach_the_capability() -> Result<()> {
     // Declarations the layer does not map, and the whole Codex family until
     // its engine lands, stay unexposed.
     for (profile, variant) in [
+        (NativeToolProfile::Anthropic, "Bash"),
+        (NativeToolProfile::Google, "run_shell_command"),
         (NativeToolProfile::Anthropic, "Glob"),
         (NativeToolProfile::Anthropic, "Grep"),
         (NativeToolProfile::Google, "grep_search"),

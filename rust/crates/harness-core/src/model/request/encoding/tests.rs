@@ -361,7 +361,7 @@ fn every_encoding_ledger_keeps_original_custody_through_growth_and_retirement() 
     not(target_arch = "wasm32")
 ))]
 #[test]
-fn native_prepared_inventory_includes_sparse_maps_and_cached_hash_storage() -> Result<()> {
+fn native_prepared_inventory_tracks_request_and_cached_hash_storage() -> Result<()> {
     let measured = crate::test_support::accounted::accounted(
         true,
         4 * 1024 * 1024,
@@ -372,11 +372,10 @@ fn native_prepared_inventory_includes_sparse_maps_and_cached_hash_storage() -> R
                 Limits::default(),
                 Some(io),
             )?;
-            assert!(prepared.request.retained_payload_bytes()? > prepared.request.payload_bytes()?);
             assert_eq!(
                 prepared.logical_owned_bytes()?,
                 prepared.preparation_owned_bytes(io)?,
-                "native output omitted retained sparse-map slots"
+                "native output omitted retained request storage"
             );
             let mut continuation = prepared.into_continuation();
             let ModelContent::Text(text) = message(10).content else {

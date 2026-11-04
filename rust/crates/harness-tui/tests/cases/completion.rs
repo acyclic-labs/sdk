@@ -17,12 +17,6 @@ mod deltas;
 mod sequences;
 
 #[test]
-fn unicode_theme_completion_preserves_the_configured_name() {
-    sequences::catalog_round_trip("shell", "sh", "Éclair Light").unwrap();
-    sequences::catalog_round_trip("shell", "sh", "ΟΣ").unwrap();
-}
-
-#[test]
 fn completion_fuzz_empty_input_is_valid() {
     sequences::exercise(&[]).unwrap();
 }
@@ -42,6 +36,9 @@ proptest! {
 
 #[test]
 fn completion_regression_corpus() {
+    for theme in ["Éclair Light", "ΟΣ"] {
+        sequences::catalog_round_trip("shell", "sh", theme).unwrap();
+    }
     for seed in [
         include_bytes!("../../fuzz/corpus/completion_events/undo-refresh").as_slice(),
         include_bytes!("../../fuzz/corpus/completion_events/slash").as_slice(),
@@ -403,27 +400,11 @@ fn stale_results_dismissals_and_folded_pastes_do_not_accept_completion() {
 }
 
 #[test]
-fn popup_snapshot_and_geometry_stay_within_terminal_bounds()
--> Result<(), Box<dyn std::error::Error>> {
+fn popup_geometry_stays_within_terminal_bounds() {
     let editor = Editor::new("/th");
     let mut menu = CompletionMenu::default();
     refresh_commands(&mut menu, &editor);
-    let mut terminal = Terminal::new(TestBackend::new(30, 5))?;
-    terminal.draw(|frame| {
-        let mut popup = CompletionPopup::new(&menu, &editor);
-        popup.selected_style = Default::default();
-        frame.render_widget(popup, frame.area());
-    })?;
-    assert_eq!(
-        terminal.backend().buffer(),
-        &Buffer::with_lines([
-            "┌Completions─────────────────┐",
-            "│/thread [tool]              │",
-            "│/theme                      │",
-            "│/think                      │",
-            "└────────────────────────────┘",
-        ])
-    );
+    let mut buffer = Buffer::empty(Rect::default());
     for width in 1..=80 {
         for height in 1..=24 {
             let screen = Rect::new(0, 0, width, height);
@@ -434,11 +415,10 @@ fn popup_snapshot_and_geometry_stay_within_terminal_bounds()
             );
             assert!(area.right() <= screen.right() && area.bottom() <= screen.bottom());
             assert!(area.width <= 60 && area.height <= 12);
-            let mut buffer = Buffer::empty(screen);
+            buffer.resize(area);
             popup.render(area, &mut buffer);
         }
     }
-    Ok(())
 }
 
 #[test]

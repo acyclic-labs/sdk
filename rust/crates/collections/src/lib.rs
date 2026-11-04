@@ -537,6 +537,19 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         }
         unreachable!("lookup follows a leaf already found or inserted")
     }
+    /// Extracts an exact owner after original admission, without allocating.
+    /// Refusal leaves every original link and owner unchanged. Both traversals
+    /// and the complete key comparison are charged before unlinking; at most
+    /// 16N branches, one leaf and N key bytes are examined.
+    pub fn remove<W: IndexReadWork>(
+        &mut self,
+        key: [u8; N],
+        accounting: &mut W,
+    ) -> Result<Option<Entry<V, A, N>>, W::Error> {
+        accounting.validate()?;
+        self.remove_with(key, |_| true, |items| accounting.examine(items))
+    }
+
     /// Extracts an exact matching owner and its original node funding.
     /// This allocation-free cleanup cannot refuse admission after cancellation.
     /// The predicate prevents an old owner from removing its replacement.
@@ -546,9 +559,25 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         key: [u8; N],
         matches: impl FnOnce(&V) -> bool,
     ) -> Option<Entry<V, A, N>> {
+        match self.remove_with(key, matches, |_| Ok::<(), std::convert::Infallible>(())) {
+            Ok(entry) => entry,
+            Err(impossible) => match impossible {},
+        }
+    }
+
+    fn remove_with<E>(
+        &mut self,
+        key: [u8; N],
+        matches: impl FnOnce(&V) -> bool,
+        mut charge: impl FnMut(u64) -> Result<(), E>,
+    ) -> Result<Option<Entry<V, A, N>>, E> {
         let mut cursor = self.root.as_ref();
         let mut parent = None;
+        let mut ancestors = 0;
         loop {
+            if cursor.is_some() {
+                charge(1)?;
+            }
             match cursor.map(|node| node.kind.as_ref()) {
                 Some(Kind::Branch {
                     bit,
@@ -556,19 +585,26 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
                     high: upper,
                 }) => {
                     parent = Some(*bit);
+                    ancestors += 1;
                     cursor = if high(&key, *bit) { upper } else { low }.as_ref();
                 }
                 Some(Kind::Leaf {
                     key: observed,
                     value,
-                }) if *observed == key => {
-                    if !matches(value) {
-                        return None;
+                }) => {
+                    charge(N as u64)?;
+                    if *observed != key || !matches(value) {
+                        return Ok(None);
                     }
                     break;
                 }
-                _ => return None,
+                None => return Ok(None),
             }
+        }
+        // The immutable descent identified this exact parent. Pay its second
+        // traversal before changing a link or retiring its original funding.
+        if ancestors != 0 {
+            charge(ancestors)?;
         }
         let mut extracted = self
             .extract_at(parent, |bit| high(&key, bit), |_| {})
@@ -577,7 +613,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
             .root
             .take()
             .unwrap_or_else(|| unreachable!("verified registration"));
-        Some(Entry::from_leaf(retired))
+        Ok(Some(Entry::from_leaf(retired)))
     }
 
     /// Retires one exact owner, destroying its value before its original token.

@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-tui/src/term/frame.rs
++++ b/rust/crates/harness-tui/src/term/frame.rs
+@@ -462,7 +462,7 @@
+             backend.output.reset_margins();
+         }
+         backend.output.frame.extend_from_slice(b"\x1b[2J");
+-        let encoded = encode_diff(&self.staging, &self.shown, &mut backend.output.frame);
++        let encoded = Ok(());
+         backend.shown = Shown {
+             attributes: true,
+             ..Shown::default()

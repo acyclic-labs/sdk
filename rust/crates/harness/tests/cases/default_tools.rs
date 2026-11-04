@@ -11,8 +11,6 @@ use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-#[path = "../default_tools/catalog.rs"]
-mod catalog;
 #[path = "../default_tools/command.rs"]
 mod command;
 #[path = "../default_tools/registry.rs"]

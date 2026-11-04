@@ -8,7 +8,6 @@ pub(super) struct PreparedCreationCommit {
     pub(super) commit: ProposedCommit,
     pub(super) changes: Option<crate::PublicationChanges>,
     pub(super) hold: crate::PublicationHold,
-    pub(super) capacity: u64,
 }
 
 /// Immutable semantics and optional policy published in the first generation.
@@ -204,14 +203,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .await?;
         let operation_id = creation.map(|creation| creation.operation_id);
         let proof = self
-            .publication_proof(
-                generation_root,
-                proven_at,
-                volume_id,
-                config,
-                accounting,
-                cancellation,
-            )
+            .publication_proof(generation_root, proven_at, volume_id, config, accounting)
             .await?;
         let result = self
             .publish_creation(
@@ -221,14 +213,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     initial_generation_root: generation_root,
                 },
                 operation_id,
-                &proof.value.objects,
+                &proof.objects,
                 proven_at,
                 accounting,
                 cancellation,
                 guard,
             )
             .await;
-        proof.retire(accounting)?;
+        drop(proof);
         result.map(|volume| (volume, generation_root))
     }
     pub(super) async fn publish_creation<E, G>(
@@ -272,7 +264,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             )
             .await;
         let recorded = finish_authority_work(authority);
-        Self::retire_creation_commit(prepared.changes, prepared.capacity, accounting)?;
+        if let Some(changes) = prepared.changes {
+            changes.retire(accounting)?;
+        }
         recorded?;
         drop(prepared.hold);
         let created = result.map_err(|error| match error {
@@ -316,7 +310,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
                 crate::kernel::encode_volume_created(creation, observe, allocation_error)
             })?;
-        let capacity = encoded.0.capacity() as u64;
         let mut commit = creation_commit(operation_id, encoded, accounting)?;
         commit.publication = Some(
             crate::PublicationChanges::initial(
@@ -342,22 +335,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             commit,
             changes,
             hold,
-            capacity,
         })
-    }
-
-    pub(super) fn retire_creation_commit(
-        changes: Option<crate::PublicationChanges>,
-        capacity: u64,
-        accounting: &mut KernelAccounting<'_>,
-    ) -> Result<(), FsError> {
-        if let Some(changes) = changes {
-            changes.retire(accounting)?;
-        }
-        if readonly_standalone_live(accounting).is_some() {
-            accounting.release_owned(&mut KernelOwnedAllocation::Standalone, capacity)?;
-        }
-        Ok(())
     }
     pub(crate) async fn read_creation_record<W: FsWork>(
         &self,
@@ -740,46 +718,12 @@ pub(super) fn creation_commit(
     accounting.admit(hashing)?;
     let fingerprint = creation_fingerprint(&encoded.0);
     accounting.record_completed(hashing)?;
-    #[cfg(not(target_arch = "wasm32"))]
-    if let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) = &encoded.1
-    {
-        if allocation.bytes() != encoded.0.capacity() as u64
-            || !accounting
-                .native_work()
-                .is_some_and(|original| allocation.work().shares_ledger(original))
-        {
-            return Err(FsError::HandleAllocationFailed);
-        }
-        let control_bytes = acyclic_auth::operation::bytes_owner_allocation_bytes::<
-            crate::kernel::Owned<Vec<u8>>,
-        >() as u64;
-        let mut control = allocation.work().claim(
-            control_bytes,
-            u64::from((control_bytes) != 0),
-            crate::WorkCounters::UNCHARGED,
-        )?;
-        let bytes = encoded.0.capacity() as u64;
-        let mut payload = crate::kernel::Owned::new(encoded.0, encoded.1, bytes);
-        let KernelOwnedAllocation::NativeOriginal(allocation) = &mut payload.allocation else {
-            unreachable!("native encoded allocation was matched before moving");
-        };
-        allocation.absorb(&mut control)?;
-        payload.bytes = allocation.bytes();
-        let payload = Bytes::from_owner(payload);
-        return Ok(ProposedCommit {
-            publication: None,
-            operation_id,
-            fingerprint,
-            payload,
-        });
-    }
-    let owner = WorkCounters {
-        allocation_operations: u64::from(encoded.0.capacity() != encoded.0.len()),
-        ..WorkCounters::default()
-    };
-    accounting.admit(owner)?;
-    let payload = Bytes::from(encoded.0);
-    accounting.record_completed(owner)?;
+    let bytes = encoded.0.capacity() as u64;
+    let payload = crate::kernel::allocation::retained::Retained::from_owned(
+        crate::kernel::Owned::new(encoded.0, encoded.1, bytes),
+        accounting,
+    )?
+    .into_bytes((), accounting)?;
     Ok(ProposedCommit {
         publication: None,
         operation_id,

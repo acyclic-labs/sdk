@@ -21,13 +21,36 @@ impl WorkspaceInput {
         let status = directory.join("status");
         std::fs::create_dir(&status).map_err(storage)?;
         let status = acyclic_fs::hold_root(&status).map_err(native_file_error)?;
-        Ok(Self {
+        let input = Self {
             workspace,
             directory,
             requests,
             status,
             _checkout: checkout,
-        })
+        };
+        // An untrusted sparse file must be refused before its claimed length
+        // can fund an allocation, then withdrawn without dispatching work.
+        let operation = OperationId::from_bytes([0; 16]);
+        let leaf = OsString::from(format!("{operation}.json"));
+        let path = input.requests.join(&leaf);
+        std::fs::File::create(&path)
+            .and_then(|file| file.set_len(MAXIMUM_REQUEST_BYTES + 1))
+            .map_err(storage)?;
+        assert!(
+            matches!(
+                regular_bytes(&path, MAXIMUM_REQUEST_BYTES),
+                Err(Error::Invalid(_))
+            ),
+            "oversized input must be refused before reading"
+        );
+        let mut served = Served::default();
+        served.observe(&input.requests, uuid::Uuid::nil(), &leaf)?;
+        assert!(served.start().is_empty(), "oversized input dispatched");
+        assert!(
+            !path.try_exists().map_err(storage)?,
+            "oversized input was not withdrawn"
+        );
+        Ok(input)
     }
 
     /// Checks original writer bytes and arbitrary bytes at deployed admission.
@@ -73,10 +96,7 @@ impl WorkspaceInput {
         if let Ok(value) = serde_json::from_slice::<Value>(input) {
             let canonical = serde_json::to_vec(&value).map_err(storage)?;
             // Value removes duplicate members. Only compare lossless parses.
-            if input.len() as u64 <= MAXIMUM_BYTES
-                && canonical.len() as u64 <= MAXIMUM_BYTES
-                && serde_json::from_slice::<Endpoint>(input).is_ok()
-            {
+            if serde_json::from_slice::<Endpoint>(input).is_ok() {
                 assert_eq!(raw.is_ok(), self.admit(&canonical).is_ok());
             }
         }
@@ -111,6 +131,7 @@ impl WorkspaceInput {
         let schedule = input.first().copied().unwrap_or_default();
         for (index, bytes) in [
             original.as_slice(),
+            original.as_slice(),
             foreign_session.as_slice(),
             foreign_operation.as_slice(),
             input,
@@ -118,6 +139,9 @@ impl WorkspaceInput {
         .into_iter()
         .enumerate()
         {
+            // Keep the original happy path for every payload as well as the
+            // input-selected withdrawal schedule in the second iteration.
+            let schedule = if index == 0 { 0 } else { schedule };
             let mut served = Served::default();
             std::fs::write(&path, bytes).map_err(storage)?;
             for _ in 0..2 {
@@ -129,8 +153,8 @@ impl WorkspaceInput {
                 assert_eq!(admitted.operation, operation);
             }
             match index {
-                0 => assert_eq!(served.ready.len(), 1, "original request must be admitted"),
-                1 | 2 => assert!(served.ready.is_empty(), "foreign identity dispatched"),
+                0 | 1 => assert_eq!(served.ready.len(), 1, "original request must be admitted"),
+                2 | 3 => assert!(served.ready.is_empty(), "foreign identity dispatched"),
                 _ => {}
             }
             if schedule & 1 != 0 {
@@ -154,12 +178,25 @@ impl WorkspaceInput {
                         remove_projection(&path)?;
                         served.observe(&self.requests, session, &leaf)?;
                     }
-                    served.answer(&self.status, operation, Ok(Value::Null))?;
+                    // The file carrier must preserve the entire reply through
+                    // the same encoder, opened-file reader and strict decoder.
+                    let outcome = Value::String(String::from_utf8_lossy(input).into_owned());
+                    served.answer(&self.status, operation, Ok(outcome.clone()))?;
                     assert_eq!(
                         reply.try_exists().map_err(storage)?,
                         schedule & 2 == 0,
                         "only an unwithdrawn dispatch may publish its reply"
                     );
+                    if schedule & 2 == 0 {
+                        assert_eq!(
+                            crate::client::decode_command_result(
+                                operation,
+                                0,
+                                &regular_bytes(&reply, u64::MAX)?,
+                            )?,
+                            outcome,
+                        );
+                    }
                 }
                 remove_projection(&path)?;
                 served.observe(&self.requests, session, &leaf)?;

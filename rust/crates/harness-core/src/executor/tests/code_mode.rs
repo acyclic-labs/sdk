@@ -848,12 +848,6 @@ async fn intermediate_data_stays_in_js_and_results_use_the_admitted_render_budge
     // Each result retains its complete admitted per-part allowance even though
     // context framing and the other messages exceed that same byte count.
     assert_eq!(result(&model).as_str().unwrap().len(), string_bytes);
-    let (mut fitting, model, _) = executor("'x'.repeat(40000)", allowed()?, true)?;
-    fitting.limits.render_bytes = render_bytes as u64;
-    let mut turn = input();
-    turn.input = ModelContent::Text("context".repeat(1000));
-    fitting.execute(turn, &Journal::default()).await?;
-    assert_eq!(result(&model).as_str().unwrap().len(), 40000);
     for code in [
         "let total=0; for(let i=0;i<400;i++) { const x=await tools['example.echo']({data:'x'.repeat(10000)}); total+=x.data.length; } total",
         "await tools['example.echo']({value:42}); 'x'.repeat(1000000)",

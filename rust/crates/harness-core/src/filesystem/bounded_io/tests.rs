@@ -7,7 +7,7 @@ use acyclic_fs::Fs;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn access_records_share_the_native_budget_and_cover_physical_storage() -> Result<()> {
+fn preparation_records_share_the_native_budget_and_cover_physical_storage() -> Result<()> {
     use acyclic_fs::access::{Capability, Policy};
     let capability =
         crate::filesystem::access::whole_volume_payload(acyclic_fs::access::ActionSet::MountWrite)?;
@@ -65,6 +65,65 @@ fn access_records_share_the_native_budget_and_cover_physical_storage() -> Result
         drop((capability_custody, policy_custody));
         drop(io);
         assert_eq!(native.live_allocation_bytes(), baseline);
+
+        // Every strict prefix of this real policy record is incomplete. The
+        // same native Value entrance used by tool arguments must own the
+        // original syntax diagnostic until that refusal is dropped.
+        for length in 0..bytes.len() {
+            let cancellation = CancellationToken::new();
+            let native = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+                &cancellation,
+            )
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let baseline = native.live_allocation_bytes();
+            let io = PreparationIo::from_native_work(&native)?;
+            let mut refused = None;
+            let physical = acyclic_test_support::measure(|| {
+                refused = Some(
+                    io.decode(
+                        std::marker::PhantomData::<serde_json::Value>,
+                        &bytes[..length],
+                        crate::wire::ErrorCode::Invalid,
+                    )
+                    .err()
+                    .expect("a strict policy prefix must refuse"),
+                );
+            });
+            let refusal = refused.expect("decoder ran");
+            let retained = match &refusal {
+                Error::NativeJson {
+                    code,
+                    custody: Some(custody),
+                    ..
+                } => {
+                    assert_eq!(*code, crate::wire::ErrorCode::Invalid);
+                    assert!(physical.count_total > 0, "allocation observer is active");
+                    custody.bytes()
+                }
+                Error::NativeJsonAdmission {
+                    code: crate::wire::ErrorCode::Invalid,
+                    kind: crate::executor::json::JsonInputError::Incomplete,
+                } => 0,
+                _ => {
+                    panic!("incomplete policy prefix {length} lost its original native refusal")
+                }
+            };
+            assert!(
+                physical.bytes_current.cast_unsigned() <= retained,
+                "native diagnostic must retain its physical storage: prefix={length}; physical={physical:?}; custody={retained}"
+            );
+            assert!(
+                physical.bytes_max <= native.receipt().peak_allocation_bytes - baseline,
+                "prefix={length}; physical={physical:?}; receipt={:?}",
+                native.receipt()
+            );
+            drop(io);
+            assert_eq!(native.live_allocation_bytes(), baseline + retained);
+            cancellation.cancel();
+            drop(refusal);
+            assert_eq!(native.live_allocation_bytes(), baseline);
+        }
     }
     Ok(())
 }

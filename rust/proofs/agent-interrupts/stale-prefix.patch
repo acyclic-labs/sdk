@@ -1,0 +1,27 @@
+--- a/rust/crates/harness-core/src/agent/handler.rs
++++ b/rust/crates/harness-core/src/agent/handler.rs
+@@ -58,14 +58,16 @@
+                 code: CodeSha256::try_from(digest.as_bytes().to_vec()).map_err(guest)?,
+                 codec: codec(),
+                 subscriptions: vec![INBOX.into()],
+-                interrupts: super::records::interrupt_prefixes()
+-                    .map_err(guest)?
+-                    .into_iter()
+-                    .map(|prefix| acyclic_actors::guest::Interrupt {
+-                        subscription: INBOX.into(),
+-                        value_prefix: bytes::Bytes::from(prefix),
+-                    })
+-                    .collect(),
++                interrupts: [
++                    b"{\"record\":{\"cancel\":".as_slice(),
++                    b"{\"record\":{\"archive\":".as_slice(),
++                ]
++                .into_iter()
++                .map(|prefix| acyclic_actors::guest::Interrupt {
++                    subscription: INBOX.into(),
++                    value_prefix: bytes::Bytes::copy_from_slice(prefix),
++                })
++                .collect(),
+                 bindings: Vec::new(),
+                 limits,
+             },

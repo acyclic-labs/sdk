@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/agent/handler.rs b/rust/crates/harness-core/src/agent/handler.rs
+--- a/rust/crates/harness-core/src/agent/handler.rs
++++ b/rust/crates/harness-core/src/agent/handler.rs
+@@ -388,7 +388,7 @@
+             checkpoint: prepared.into_checkpoint(),
+             alarm: match alarm {
+                 Alarm::Clear => AlarmChange::Clear,
+-                Alarm::At(deadline_unix_ms) => AlarmChange::Set { deadline_unix_ms },
++                Alarm::At(_) => AlarmChange::Clear,
+             },
+             effects,
+         })

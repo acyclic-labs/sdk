@@ -1,0 +1,11 @@
+diff --git a/rust/vendor/rquickjs-sys-0.14.0/quickjs/quickjs.c b/rust/vendor/rquickjs-sys-0.14.0/quickjs/quickjs.c
+--- a/rust/vendor/rquickjs-sys-0.14.0/quickjs/quickjs.c
++++ b/rust/vendor/rquickjs-sys-0.14.0/quickjs/quickjs.c
+@@ -4940,7 +4940,6 @@ const char *JS_ToCStringLen2(JSContext *ctx, size_t *plen, JSValueConst val1,
+         *plen = str_new->len;
+     return (const char *)str8(str_new);
+ fail:
+-    JS_FreeValue(ctx, val);
+     if (plen)
+         *plen = 0;
+     return NULL;

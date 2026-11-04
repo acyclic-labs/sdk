@@ -96,29 +96,45 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
     assert_eq!(published(scratch, "/data").await?, b"acknowledged");
 
     let (started, began) = tokio::sync::oneshot::channel();
+    let (retired, retirement) = tokio::sync::oneshot::channel();
     let (release, released) = std::sync::mpsc::channel();
     let cleaned = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let worker_cleaned = Arc::clone(&cleaned);
     let destination = scratch.destination.clone();
-    let mut cancelled = Box::pin(native_scope(mounts, async |claims| {
+    let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::seeded(71);
+    // The existing native admission was issued on the real clock before this
+    // scope; keep that clock origin while controlling cleanup submission.
+    schedule.set_unix_millis(acyclic_stream::UnixMillisClock::now_unix_millis(
+        &acyclic_stream::SystemUnixMillisClock,
+    ));
+    let mut cancelled = Box::pin(schedule.scope(native_scope(mounts, async |claims| {
         tokio::task::spawn_blocking(move || {
             write_projected(&destination.join("data"), b"unverified").unwrap();
             started.send(()).unwrap();
             released.recv().unwrap();
             worker_cleaned.store(true, std::sync::atomic::Ordering::Release);
-            claims
+            drop(claims);
+            retired.send(()).unwrap();
         })
         .await
         .map_err(storage)?;
         // No verification and no successful return: losing the capture waiter
         // leaves claims in the worker until its physical cleanup completes.
         Err::<((), Claims), _>(Error::Conflict("unverified worker".into()))
-    }));
-    tokio::select! {
-        started = began => started.map_err(storage)?,
-        result = &mut cancelled => panic!("worker did not remain active: {result:?}"),
+    })));
+    let mut began = std::pin::pin!(began);
+    loop {
+        tokio::select! {
+            started = &mut began => {
+                started.map_err(storage)?;
+                break;
+            },
+            result = &mut cancelled => panic!("worker did not remain active: {result:?}"),
+            boundary = boundaries.recv() => boundary.unwrap().release(),
+        }
     }
     drop(cancelled);
+    let before_cleanup = schedule.trace().len();
     let mut preflight = Box::pin(sync(mounts));
     assert!(
         futures::poll!(&mut preflight).is_pending(),
@@ -144,7 +160,28 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
         "next command entered before physical cleanup"
     );
     release.send(()).map_err(storage)?;
-    next.await?;
+    // The same physical worker admits retirement before this event. Drive its
+    // accepted cleanup concurrently with the command waiting for its guard.
+    retirement.await.map_err(storage)?;
+    let mut completed = Box::pin(async {
+        let (result, ()) = futures::join!(next, schedule.drained());
+        result
+    });
+    loop {
+        tokio::select! {
+            result = &mut completed => {
+                result?;
+                break;
+            },
+            boundary = boundaries.recv() => boundary.unwrap().release(),
+        }
+    }
+    assert!(
+        schedule.trace()[before_cleanup..]
+            .iter()
+            .any(|event| event == "task:dispatch"),
+        "physical cleanup escaped its original task scope"
+    );
     assert_eq!(published(scratch, "/data").await?, b"next verified");
     assert!(scratch.native().await.is_none());
     assert!(!scratch.destination.exists());

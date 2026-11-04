@@ -263,7 +263,7 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
         let observed = async {
             let connection = checked(phase, "connect", Connection::connect(&options).await)?;
             let conversation = checked(phase, "conversation", Conversation::open(connection))?;
-            let mut observer = checked(phase, "observe", conversation.observe(0).await)?;
+            let mut observer = checked(phase, "observe", conversation.observe(Some(0)).await)?;
             let inbox = checked(
                 phase,
                 "send",

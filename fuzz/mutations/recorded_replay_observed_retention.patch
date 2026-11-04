@@ -1,0 +1,19 @@
+diff --git a/rust/crates/harness-core/src/model/recorded.rs b/rust/crates/harness-core/src/model/recorded.rs
+index 332fd6258a..d6d317b14a 100644
+--- a/rust/crates/harness-core/src/model/recorded.rs
++++ b/rust/crates/harness-core/src/model/recorded.rs
+@@ -1408,9 +1408,12 @@ impl ModelProvider for RecordedModel {
+             replay_suffix(
+                 call,
+                 observed,
+-                |bytes| ModelEvent::decode_with_native_work(bytes, work),
+-                |event, custody| {
++                |bytes| {
++                    let (event, custody) = ModelEvent::decode_with_native_work(bytes, work)?;
+                     io.absorb_native_custody(custody)?;
++                    Ok((event, ()))
++                },
++                |event, ()| {
+                     events.push(event);
+                     Ok(())
+                 },

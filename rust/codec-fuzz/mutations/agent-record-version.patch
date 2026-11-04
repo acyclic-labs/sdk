@@ -1,0 +1,14 @@
+diff --git a/rust/crates/harness-core/src/agent/records.rs b/rust/crates/harness-core/src/agent/records.rs
+--- a/rust/crates/harness-core/src/agent/records.rs
++++ b/rust/crates/harness-core/src/agent/records.rs
+@@ -98,10 +98,4 @@
+     let (version, payload) = bytes.split_at_checked(4).ok_or(Unopened::Malformed)?;
+     let found = u32::from_be_bytes(version.try_into().map_err(|_| Unopened::Malformed)?);
+-    if found != RECORD_VERSION {
+-        return Err(Unopened::Version(UnsupportedRecordVersion {
+-            found,
+-            expected: RECORD_VERSION,
+-        }));
+-    }
+     decode_payload(payload)
+ }

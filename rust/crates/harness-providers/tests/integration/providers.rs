@@ -225,7 +225,8 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
     let temporary = local_workspace::temporary()?;
     let directory = temporary.path().join("filesystem");
     std::fs::create_dir(&directory)?;
-    let (host, volume, workspace, reader) = local_workspace::seed(&directory, &case.seed).await?;
+    let (host, volume, workspace, reader, _authority) =
+        local_workspace::seed(&directory, &case.seed).await?;
     let provider = Arc::new(resolve(case, transport.clone())?);
     let config = local_harness_config(&directory, (provider.model().clone(), provider))?
         .state_directory(temporary.path().join("state"))

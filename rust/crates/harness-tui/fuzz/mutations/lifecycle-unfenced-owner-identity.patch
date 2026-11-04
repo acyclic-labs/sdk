@@ -1,0 +1,12 @@
+--- a/rust/crates/harness-tui/src/term/lifecycle.rs
++++ b/rust/crates/harness-tui/src/term/lifecycle.rs
+@@ -45,3 +45,3 @@
+         .as_ref()
+-        .is_none_or(|current| !Arc::ptr_eq(current, state))
++        .is_none()
+     {
+@@ -55,3 +55,3 @@
+             .as_ref()
+-            .is_some_and(|current| Arc::ptr_eq(current, state))
++            .is_some()
+     {

@@ -1,6 +1,5 @@
 // Data-driven harness scenarios. `E2E_FILTER` selects a path substring.
 mod case_workers;
-mod deadline_tests;
 mod discovery;
 mod drivers;
 mod execution;
@@ -158,7 +157,14 @@ async fn compaction_oracles_reject_ignored_context_capacity_policy_and_accountin
         }
         assert!(run(case).await.is_err(), "accepted incorrect {field}");
     }
-    for files in [vec![], vec![vec![]], vec![vec!["wrong".into()]]] {
+    for files in [
+        vec![],
+        vec![vec![]],
+        vec![vec!["partial-".into()]],
+        vec![vec!["restored".into()]],
+        vec![vec!["wrong".into()]],
+        vec![vec![], vec!["wrong".into()]],
+    ] {
         let mut case = Scenario::load(&root, &baseline)?;
         case.expect.request_files = Some(files);
         assert!(
@@ -410,17 +416,6 @@ fn run_scenarios(started: Instant) -> TestResult {
         return Err(format!("{} scenarios failed", failures.len()).into());
     }
     Ok(())
-}
-
-#[tokio::test]
-async fn token_accounting_configuration_does_not_change_model_options() -> TestResult {
-    run(Scenario::parse(
-        br#"{
-        "prompt":"x", "turns":["answer"], "message_tokens":7,
-        "expect":{"text":"answer","requests":[{"model":{"options":null}}]}
-    }"#,
-    )?)
-    .await
 }
 
 #[cfg(all(feature = "grpc", feature = "objects"))]

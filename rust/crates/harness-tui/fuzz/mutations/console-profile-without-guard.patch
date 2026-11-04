@@ -1,0 +1,7 @@
+--- a/rust/crates/harness-tui/src/term/console_owner.rs
++++ b/rust/crates/harness-tui/src/term/console_owner.rs
+@@ -73,3 +73,3 @@
+             .as_ref()
+-            .is_some_and(super::Present::supports_scroll_regions)
++            .is_none_or(super::Present::supports_scroll_regions)
+     }

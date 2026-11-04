@@ -200,7 +200,7 @@ async fn conflicting_sampling_is_rejected_before_a_profile_bound_session_opens()
 
     let capacity = super::capacity();
     let model = ModelProfile::parse(
-        "---\nversion: 1\ntools: []\nreasoning: {mode: disabled}\nsampling: {temperature: 0.25}\ncache: automatic\nbudget_tokens: 8192\nwatermark_tokens: 4096\n---\n",
+        "---\nversion: 1\ntools: []\nreasoning: {mode: disabled}\nsampling: {temperature: 0.25}\ncache: automatic\nwatermark_tokens: 4096\n---\n",
         "---\nversion: 1\nkey: scripted/test\n---\n",
         capacity,
         "test-renderer",

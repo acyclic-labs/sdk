@@ -1,0 +1,13 @@
+--- a/rust/crates/harness-tui/src/term/lifecycle.rs
++++ b/rust/crates/harness-tui/src/term/lifecycle.rs
+@@ -112,3 +112,4 @@
+ ) -> io::Result<T> {
+-    let mut state = state.lock().map_err(|_| io::ErrorKind::Other)?;
++    let shared = state;
++    let state = shared.lock().map_err(|_| io::ErrorKind::Other)?;
+     if !state.is_active()? {
+@@ -116,2 +117,4 @@
+     }
++    drop(state);
++    let mut state = shared.lock().map_err(|_| io::ErrorKind::Other)?;
+     action(&mut state.guard)

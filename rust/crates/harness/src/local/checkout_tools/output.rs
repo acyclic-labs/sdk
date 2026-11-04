@@ -22,7 +22,7 @@ pub(super) struct Output {
     ready: Arc<Notify>,
     stop: Option<oneshot::Sender<()>>,
     timer: Option<acyclic_native_runtime::TaskHandle<()>>,
-    runtime: tokio::runtime::Handle,
+    tasks: acyclic_native_runtime::TaskSpawner,
     finished: bool,
     pub(super) health: Health,
 }
@@ -88,7 +88,8 @@ impl Output {
         let ready = Arc::new(Notify::new());
         let health = Health::default();
         let (stop, stopped) = oneshot::channel();
-        let timer = acyclic_native_runtime::spawn(flush_ready(
+        let tasks = acyclic_native_runtime::TaskSpawner::current();
+        let timer = tasks.spawn(flush_ready(
             writer.clone(),
             ready.clone(),
             health.clone(),
@@ -99,7 +100,7 @@ impl Output {
             ready,
             stop: Some(stop),
             timer: Some(timer),
-            runtime: tokio::runtime::Handle::current(),
+            tasks,
             finished: false,
             health,
         })
@@ -151,7 +152,7 @@ impl Drop for Output {
         // Capture owns Output until the physical worker has drained and reaped
         // its process tree. If the awaiting caller disappears, that worker's
         // final drop still stages the accepted bytes.
-        self.runtime.spawn(async move {
+        self.tasks.spawn(async move {
             if let Some(timer) = timer
                 && let Err(cause) = timer.await
             {

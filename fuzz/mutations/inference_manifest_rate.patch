@@ -1,0 +1,12 @@
+diff --git a/rust/crates/conformance/src/inference/replay.rs b/rust/crates/conformance/src/inference/replay.rs
+--- a/rust/crates/conformance/src/inference/replay.rs
++++ b/rust/crates/conformance/src/inference/replay.rs
+@@ -87,7 +87,6 @@ impl Manifest {
+         require(
+             !manifest.source.trim().is_empty()
+-                && !manifest.captured_at.trim().is_empty()
+-                && !manifest.rate_source.trim().is_empty(),
++                && !manifest.captured_at.trim().is_empty(),
+             "capture provenance absent",
+         )?;
+         Ok(manifest)

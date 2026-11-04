@@ -22,7 +22,7 @@ pub struct Source {
 
 /// A live value must not turn a missing source, gap or refused read into zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum Error {
+pub enum Error<'a> {
     /// The original Reader has no source custody.
     #[error("live source is unreadable; recovery: restore the original reader's source admission")]
     Unreadable,
@@ -30,7 +30,7 @@ pub enum Error {
     #[error(
         "live source changed: {0:?}; recovery: restore admission or reopen at the original source's retained cut"
     )]
-    Source(super::ReadIssue),
+    Source(&'a super::ReadIssue),
     /// Drive the already planned Reader request or its original follow event.
     #[error("live source is not loaded; recovery: drive the shared Reader for this file's want")]
     Pending,
@@ -60,7 +60,7 @@ impl Source {
     }
 
     /// Plan exactly the caller's JSONL window; there is no hidden page size.
-    pub fn want_page(&self, from: u64, count: NonZeroU32) -> Result<Want, Error> {
+    pub fn want_page(&self, from: u64, count: NonZeroU32) -> Result<Want, Error<'static>> {
         Ok(Want::Range {
             stream: self.stream.clone(),
             from,
@@ -72,7 +72,7 @@ impl Source {
 
     /// Borrow the observed latest original record without IO, a payload copy
     /// or a second encoding. Decode using the original producer's format.
-    pub fn latest<'a>(&self, reader: &'a Reader) -> Result<&'a RecordBytes, Error> {
+    pub fn latest<'a>(&self, reader: &'a Reader) -> Result<&'a RecordBytes, Error<'a>> {
         let tail = self.observed_tail(reader)?.ok_or(Error::Pending)?;
         let sequence = tail.checked_sub(1).ok_or(Error::Empty)?;
         reader
@@ -90,7 +90,7 @@ impl Source {
         reader: &'a Reader,
         from: u64,
         count: NonZeroU32,
-    ) -> Result<Page<impl Iterator<Item = (u64, Option<&'a RecordBytes>)>>, Error> {
+    ) -> Result<Page<impl Iterator<Item = (u64, Option<&'a RecordBytes>)>>, Error<'a>> {
         let tail = self.observed_tail(reader)?;
         if tail.is_some_and(|tail| from > tail) {
             return Err(Error::Range);
@@ -105,12 +105,12 @@ impl Source {
         })
     }
 
-    fn observed_tail(&self, reader: &Reader) -> Result<Option<u64>, Error> {
+    fn observed_tail<'a>(&self, reader: &'a Reader) -> Result<Option<u64>, Error<'a>> {
         if !reader.readable() {
             return Err(Error::Unreadable);
         }
-        if let Some(issue) = reader.issues.get(&self.stream) {
-            return Err(Error::Source(*issue));
+        if let Some(issue) = reader.issue(&self.stream) {
+            return Err(Error::Source(issue));
         }
         Ok(reader.cache().tail(&self.stream))
     }
@@ -125,7 +125,7 @@ pub struct Page<I> {
 }
 
 impl<'a, I: Iterator<Item = (u64, Option<&'a RecordBytes>)>> Iterator for Page<I> {
-    type Item = (u64, Result<&'a RecordBytes, Error>);
+    type Item = (u64, Result<&'a RecordBytes, Error<'a>>);
 
     fn next(&mut self) -> Option<Self::Item> {
         self.records

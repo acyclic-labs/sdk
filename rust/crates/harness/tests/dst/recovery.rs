@@ -26,6 +26,7 @@ fn local_turn<'a>(
             ScriptedModelProvider::new([ScriptedTurn::Text("done".into())]).with_dispatch_observer(
                 move |_| {
                     dispatch_write.store(dispatch_schedule.durable_write_count(), Ordering::SeqCst);
+                    Box::pin(async { Ok(()) })
                 },
             ),
         );

@@ -26,7 +26,8 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let directory = temporary.path().join("filesystem");
     std::fs::create_dir(&directory)?;
     let state = temporary.path().join("state");
-    let (host, volume, workspace, reader) = local_workspace::seed(&directory, &case.seed).await?;
+    let (host, volume, workspace, reader, _authority) =
+        local_workspace::seed(&directory, &case.seed).await?;
     let provider = Arc::new(ScriptedModelProvider::new([]));
     let home = temporary.path().join("home");
     seed_home(&home, &case.home)?;
@@ -38,12 +39,13 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let references = seed_references(&case, &volume, &base)?;
     let turns = crate::local_case::bind_seed_files(case.turns, &references)?;
     provider.extend(turns);
-    let outcome = prompt_settled(&harness, "scenario", &case.prompt).await?;
+    let outcome = prompt_settled(&harness, "scenario", &case.prompt).await;
+    let committed_failure = matches!(&outcome, Ok(PromptOutcome::Failed(_)));
     let entry = verify_outcome(&case.expect, outcome)?;
-    if entry.is_none() {
+    if committed_failure {
         // Replay after failure is committed: the first reply is already Dropped,
         // but the original failure must remain visible without model redispatch.
-        let replay = prompt_settled(&harness, "scenario", &case.prompt).await?;
+        let replay = prompt_settled(&harness, "scenario", &case.prompt).await;
         verify_outcome(&case.expect, replay)?;
     }
     if provider.remaining() != 0 {
@@ -339,10 +341,10 @@ async fn verify_cold_files(
 
 fn verify_outcome(
     expect: &crate::local_case::Expectations,
-    outcome: PromptOutcome,
+    outcome: acyclic_harness::Result<PromptOutcome>,
 ) -> TestResult<Option<ConversationEntry>> {
     match (expect.outcome, outcome) {
-        (ExpectedOutcome::Succeeded, PromptOutcome::Settled(entry, output))
+        (ExpectedOutcome::Succeeded, Ok(PromptOutcome::Settled(entry, output)))
             if Some(&output.text) == expect.text.as_ref() =>
         {
             Ok(Some(entry))
@@ -350,11 +352,22 @@ fn verify_outcome(
         // A failed or uncertain turn ends the agent with its cause.
         (
             ExpectedOutcome::Failed | ExpectedOutcome::Indeterminate,
-            PromptOutcome::Failed(message),
+            Ok(PromptOutcome::Failed(message)),
         ) if expect
             .error
             .as_deref()
             .is_none_or(|expected| message.contains(expected)) =>
+        {
+            Ok(None)
+        }
+        (expected, Err(error))
+            if ((expected == ExpectedOutcome::Indeterminate
+                && error.leaves_outcome_uncertain())
+                || (expected == ExpectedOutcome::Failed && !error.leaves_outcome_uncertain()))
+                && expect
+                    .error
+                    .as_deref()
+                    .is_none_or(|reason| error.to_string().contains(reason)) =>
         {
             Ok(None)
         }

@@ -58,16 +58,14 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 code: CodeSha256::try_from(digest.as_bytes().to_vec()).map_err(guest)?,
                 codec: codec(),
                 subscriptions: vec![INBOX.into()],
-                interrupts: [
-                    b"{\"record\":{\"cancel\":".as_slice(),
-                    b"{\"record\":{\"archive\":".as_slice(),
-                ]
-                .into_iter()
-                .map(|prefix| acyclic_actors::guest::Interrupt {
-                    subscription: INBOX.into(),
-                    value_prefix: bytes::Bytes::copy_from_slice(prefix),
-                })
-                .collect(),
+                interrupts: super::records::interrupt_prefixes()
+                    .map_err(guest)?
+                    .into_iter()
+                    .map(|prefix| acyclic_actors::guest::Interrupt {
+                        subscription: INBOX.into(),
+                        value_prefix: bytes::Bytes::from(prefix),
+                    })
+                    .collect(),
                 bindings: Vec::new(),
                 limits,
             },

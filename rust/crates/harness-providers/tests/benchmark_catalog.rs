@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, process::Command};
 #[test]
 fn generated_benchmark_catalog_loads_and_old_incomplete_features_fail()
 -> Result<(), Box<dyn std::error::Error>> {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let root = acyclic_test_support::source_path("");
     let output = Command::new("python3")
         .args([
             "-c",

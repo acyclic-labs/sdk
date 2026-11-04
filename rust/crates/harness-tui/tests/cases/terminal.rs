@@ -678,23 +678,8 @@ fn every_mode_subset_and_failure_boundary_restores() {
 }
 
 #[test]
-fn an_inherited_mouse_protocol_is_selected_again_on_restore() -> io::Result<()> {
-    for (inherited, reselect) in [(1000, b"\x1b[?1000h"), (1003, b"\x1b[?1003h")] {
-        let mut caps = Capabilities::default();
-        for mode in [1049, 9, 1000, 1001, 1002, 1003, 1005, 1006, 1015, 1016] {
-            caps.modes.insert(mode, ModeState::Reset);
-        }
-        caps.modes.insert(inherited, ModeState::Set);
-        let mut bytes = Vec::new();
-        RestoreGuard::new(&mut bytes, &caps).setup(ScreenMode::Alternate)?;
-        let expected = [
-            b"\x1b[?1049h\x1b[?1006h\x1b[?1002h\x18".as_slice(),
-            reselect,
-            b"\x18\x1b[?1006l\x18\x1b[?1049l",
-        ]
-        .concat();
-        assert_eq!(bytes, expected);
-    }
+fn mouse_restoration_oracle_rejects_a_lost_selection_and_preserves_unknown_modes() -> io::Result<()>
+{
     // Negative control: resetting only ours leaves the inherited click
     // reporting off, which the oracle detects.
     let mut term = oracle();

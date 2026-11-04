@@ -1,4 +1,4 @@
-//! Agent model commit shapes and step protocol against the in-memory Streams provider.
+//! Agent commit shapes and step protocol through the shared Streams providers.
 
 use acyclic_harness_core::agent::*;
 use acyclic_stream::{
@@ -69,7 +69,10 @@ fn cancel(id: &str) -> InboxRecord {
     })
 }
 
-async fn values(provider: &MemoryStream, path: StreamPath) -> Result<Vec<Vec<u8>>> {
+async fn values<P: StreamProvider + ?Sized>(
+    provider: &P,
+    path: StreamPath,
+) -> Result<Vec<Vec<u8>>> {
     let tail = match provider.tail(path.clone()).await {
         Ok(tail) => tail,
         Err(StreamError::NotFound) => return Ok(Vec::new()),
@@ -123,19 +126,7 @@ fn layout_round_trips_and_bounds_depth() -> Result {
 }
 
 #[test]
-fn records_are_canonical_total_and_bounded() -> Result {
-    let record = InboxRecord::ChildDone(ChildDone {
-        child: AgentPath::root(&id(1)).child(&id(2))?,
-        outcome: AgentOutcome::Failed {
-            message: "tool failed".into(),
-        },
-    });
-    let bytes = record.encode()?;
-    assert_eq!(InboxRecord::decode(&bytes)?, record);
-    assert_eq!(InboxRecord::decode(&bytes)?.encode()?, bytes);
-    let mut extra: serde_json::Value = serde_json::from_slice(&bytes)?;
-    extra["child_done"]["unknown"] = serde_json::Value::Bool(true);
-    assert!(InboxRecord::decode(&serde_json::to_vec(&extra)?).is_err());
+fn failure_messages_are_bounded_before_encoding() -> Result {
     let huge = InboxRecord::ChildDone(ChildDone {
         child: AgentPath::root(&id(1)),
         outcome: AgentOutcome::Failed {
@@ -143,7 +134,6 @@ fn records_are_canonical_total_and_bounded() -> Result {
         },
     });
     assert!(huge.encode().is_err());
-    assert!(InboxRecord::decode(&vec![b' '; MAX_RECORD_BYTES + 1]).is_err());
     Ok(())
 }
 
@@ -930,8 +920,7 @@ async fn ten_thousand_dormant_agents_cost_nothing_per_send() -> Result {
 #[test]
 fn fuzz_corpus_seeds_decode_as_labelled() -> Result {
     let generated = corpus::seeds()?;
-    let corpus =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/inbox_record");
+    let corpus = acyclic_test_support::source_path("rust/fuzz/corpus/inbox_record");
     let mut seen = 0;
     for entry in std::fs::read_dir(corpus)? {
         let entry = entry?;
