@@ -52,46 +52,6 @@ mod tests {
     }
 
     #[test]
-    fn the_mount_point_is_excluded_once_without_touching_user_ignores() {
-        let directory = tempfile::tempdir().unwrap();
-        let repository = directory.path().join("repo");
-        std::fs::create_dir(&repository).unwrap();
-        git(&repository, &["init", "-q"]);
-        let exclude = repository.join(".git/info/exclude");
-        std::fs::write(&exclude, "user-pattern").unwrap();
-        let nested = repository.join("sub dir");
-        for root in [&repository, &nested] {
-            std::fs::create_dir_all(root.join(".volumes/scratch")).unwrap();
-            std::fs::write(root.join(".volumes/scratch/note"), "x").unwrap();
-            exclude_mount_paths(root, &[root.join(".volumes/scratch")]).unwrap();
-            exclude_mount_paths(root, &[root.join(".volumes/scratch")]).unwrap();
-        }
-        std::fs::write(nested.join("tracked"), "x").unwrap();
-        let text = std::fs::read_to_string(&exclude).unwrap();
-        assert_eq!(
-            text,
-            concat!(
-                "user-pattern\n",
-                "# acyclic harness checkout incarnation\n/.volumes/scratch\n",
-                "# acyclic harness checkout incarnation\n/sub\\ dir/.volumes/scratch\n",
-            )
-        );
-        assert!(!repository.join(".gitignore").exists());
-        let status = git(
-            &repository,
-            &["status", "--porcelain", "--untracked-files=all"],
-        );
-        assert_eq!(status, "?? \"sub dir/tracked\"\n");
-        // Negative control: without the exclusion both mount points show.
-        std::fs::write(&exclude, "user-pattern\n").unwrap();
-        let status = git(
-            &repository,
-            &["status", "--porcelain", "--untracked-files=all"],
-        );
-        assert!(status.contains(".volumes/scratch/note"), "{status}");
-    }
-
-    #[test]
     fn a_directory_outside_git_is_left_alone() {
         let directory = tempfile::tempdir().unwrap();
         // The temporary root may sit inside a repository on a developer box;
@@ -197,6 +157,7 @@ mod tests {
             }
             exclude_mount_paths(repository, &[mount]).unwrap();
             prop_assert_eq!(std::fs::read(&exclude).unwrap(), updated);
+            prop_assert!(!repository.join(".gitignore").exists());
         }
 
         #[test]
