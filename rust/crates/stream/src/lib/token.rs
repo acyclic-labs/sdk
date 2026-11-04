@@ -78,7 +78,7 @@ operations! {
     /// Paged child discovery.
     List => "list", StreamMethod::ChildrenPage.authorization().admitted, &[];
     /// Bounded Session Follow together with tail observation.
-    Read => "read", StreamMethod::Tail.authorization().admitted, &[];
+    Read => "read", StreamMethod::Read.authorization().admitted, StreamMethod::Tail.authorization().admitted;
     /// Live Session Follow together with tail observation.
     Follow => "follow", StreamMethod::Follow.authorization().admitted, StreamMethod::Tail.authorization().admitted;
     /// Record publication.
