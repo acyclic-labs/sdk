@@ -225,7 +225,7 @@ where
                 &super::fork::ForkPublication {
                     source,
                     destination_id,
-                    fork_root: &fork_root.value,
+                    fork_root: &fork_root,
                     source_root,
                     filtered,
                     idempotency_key: fork.idempotency_key,
@@ -249,8 +249,8 @@ where
         recorded?;
         commit.hold(prepared.hold.with_proof(pending));
         result.map_err(|error| WorkspaceError::from(FsError::from(error)))?;
-        let generation = GenerationId::from_root(fork_root.value.generation_root);
-        fork_root.retire(accounting)?;
+        let generation = GenerationId::from_root(fork_root.generation_root);
+        drop(fork_root);
         Ok(ForkedGeneration {
             workspace: destination_id,
             generation,
@@ -313,14 +313,7 @@ where
             )
             .await?;
         let proof = self
-            .publication_proof(
-                generation_root,
-                proven_at,
-                volume_id,
-                config,
-                accounting,
-                cancellation,
-            )
+            .publication_proof(generation_root, proven_at, volume_id, config, accounting)
             .await?;
         let prepared = self
             .prepare_creation_commit(
@@ -330,13 +323,13 @@ where
                     initial_generation_root: generation_root,
                 },
                 Some(spec.creation.operation_id),
-                &proof.value.objects,
+                &proof.objects,
                 proven_at,
                 accounting,
                 cancellation,
             )
             .await;
-        proof.retire(accounting)?;
+        drop(proof);
         let prepared = prepared?;
         accounting.check()?;
         let mut authority = crate::async_storage::AuthorityFrame::borrow(accounting)?;

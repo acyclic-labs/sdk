@@ -137,20 +137,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     volume,
                     generation.object_id(),
                     &mut accounting,
-                    cancellation,
                 )
                 .await?;
             let result = self
                 .flush_publication(
                     crate::PublicationScope {
-                        objects: &publication.value.objects,
-                        proven_at: publication.value.proven_at,
+                        objects: &publication.objects,
+                        proven_at: publication.proven_at,
                     },
                     &mut accounting,
                     cancellation,
                 )
                 .await;
-            publication.retire(&mut accounting)?;
+            drop(publication);
             result.map_err(Into::into)
         }
         .await;

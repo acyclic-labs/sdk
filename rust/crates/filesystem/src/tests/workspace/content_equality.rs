@@ -195,6 +195,16 @@ struct RetiringRead<'a, S> {
 }
 
 impl<S: crate::AsyncObjectStore> crate::AsyncObjectStore for RetiringRead<'_, S> {
+    async fn read_many(
+        &self,
+        requests: &[crate::storage::ObjectReadRequest],
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        let retired = self.retired.lock().unwrap().take();
+        drop(retired);
+        self.inner.read_many(requests, work).await
+    }
+
     async fn read(
         &self,
         id: crate::ObjectId,
