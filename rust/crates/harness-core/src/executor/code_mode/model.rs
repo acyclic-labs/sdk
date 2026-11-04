@@ -94,6 +94,10 @@ fn check_arguments(input: &[u8]) -> Option<serde_json::Value> {
             let custody = custody
                 .as_ref()
                 .expect("native argument diagnostic must retain its admission");
+            assert!(
+                custody.bytes() >= crate::executor::json::sdk_json_diagnostic_bytes(),
+                "native argument diagnostic must retain its owned storage"
+            );
             assert_eq!(work.live_allocation_bytes(), baseline + custody.bytes());
         }
         (
