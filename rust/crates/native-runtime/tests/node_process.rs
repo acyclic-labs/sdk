@@ -21,8 +21,9 @@ fn node_process_bridge_owns_real_input_output_and_descendant_cancellation() {
             ),
             (vec!["--inherit-input".into(), "/bin/false".into()], 1),
         ] {
-            let mut command =
-                std::process::Command::new(env!("CARGO_BIN_EXE_acyclic-process-host"));
+            let mut command = std::process::Command::new(acyclic_test_support::binary_path!(
+                "acyclic-process-host"
+            ));
             command.args(arguments);
             let mut argv = Vec::new();
             for argument in command.get_args() {
@@ -52,11 +53,10 @@ fn node_process_bridge_owns_real_input_output_and_descendant_cancellation() {
             serde_json::to_string(&records).expect(recovery)
         );
     }
-    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../typescript/packages/sdk/test/process.test.mjs");
+    let script = acyclic_test_support::source_path("typescript/packages/sdk/test/process.test.mjs");
     let status = std::process::Command::new("node")
         .arg(script)
-        .env("ACYCLIC_PROCESS_HOST", env!("CARGO_BIN_EXE_acyclic-process-host"))
+        .env("ACYCLIC_PROCESS_HOST", acyclic_test_support::binary_path!("acyclic-process-host"))
         .status()
         .expect("step=node-process-control; recovery=install Node.js and rerun cargo test --locked -p acyclic-native-runtime --test node_process");
     assert!(

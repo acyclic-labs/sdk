@@ -930,8 +930,7 @@ async fn ten_thousand_dormant_agents_cost_nothing_per_send() -> Result {
 #[test]
 fn fuzz_corpus_seeds_decode_as_labelled() -> Result {
     let generated = corpus::seeds()?;
-    let corpus =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/inbox_record");
+    let corpus = acyclic_test_support::source_path("rust/fuzz/corpus/inbox_record");
     let mut seen = 0;
     for entry in std::fs::read_dir(corpus)? {
         let entry = entry?;

@@ -62,8 +62,7 @@ fn resources_and_actions_use_the_shared_grammar() {
 fn rendered_contract_compiles_and_preserves_presence() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     render(root.path())?;
-    let checked_in =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("proto/auth/v1/auth.proto");
+    let checked_in = acyclic_test_support::crate_path!("proto/auth/v1/auth.proto");
     assert_eq!(
         std::fs::read(root.path().join("auth/v1/auth.proto"))?,
         std::fs::read(checked_in)?

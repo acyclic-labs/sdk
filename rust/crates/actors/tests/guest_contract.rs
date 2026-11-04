@@ -305,8 +305,7 @@ fn native_fetch_supports_lazy_chunks_and_buffered_adaptation()
 
 #[test]
 fn fuzz_seed_corpus_round_trips_accepted_inputs() -> Result<(), Box<dyn std::error::Error>> {
-    let root =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../fuzz/corpus/guest_json");
+    let root = acyclic_test_support::source_path("fuzz/corpus/guest_json");
     for entry in std::fs::read_dir(root)? {
         let input = std::fs::read(entry?.path())?;
         if let Ok(event) = serde_json::from_slice::<GuestEvent>(&input) {
@@ -404,8 +403,7 @@ fn every_event_round_trips_with_a_single_discriminant() -> Result<(), Box<dyn st
 
 #[test]
 fn generated_authoring_contract_has_no_drift() -> Result<(), Box<dyn std::error::Error>> {
-    let path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/authoring/guest.ts");
+    let path = acyclic_test_support::crate_path!("tests/fixtures/authoring/guest.ts");
     let generated = typescript();
     assert_eq!(std::fs::read_to_string(path)?, generated);
     Ok(())

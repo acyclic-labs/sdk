@@ -136,9 +136,9 @@ fn malformed_records_and_checked_corpus() -> Result<(), Box<dyn std::error::Erro
     assert!(TimerRecord::decode(&vec![b' '; MAX_TIMER_RECORD_BYTES + 1]).is_err());
     let mut valid = 0;
     let mut invalid = 0;
-    for entry in std::fs::read_dir(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/timer_record"),
-    )? {
+    for entry in std::fs::read_dir(acyclic_test_support::crate_path!(
+        "fuzz/corpus/timer_record"
+    ))? {
         let entry = entry?;
         let name = entry.file_name();
         let expected = match name.to_str() {
@@ -162,8 +162,7 @@ fn malformed_records_and_checked_corpus() -> Result<(), Box<dyn std::error::Erro
 
 #[test]
 fn generated_timer_authoring_has_no_drift() -> Result<(), Box<dyn std::error::Error>> {
-    let path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/authoring/timers.ts");
+    let path = acyclic_test_support::crate_path!("tests/fixtures/authoring/timers.ts");
     assert_eq!(std::fs::read_to_string(path)?, timers::typescript());
     Ok(())
 }

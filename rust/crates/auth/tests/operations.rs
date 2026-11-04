@@ -1,6 +1,6 @@
 //! Descriptor coverage and compiler-linked authorization option checks.
 use prost_reflect::DescriptorPool;
-use std::{path::Path, process::Command};
+use std::process::Command;
 
 #[acyclic_contract_derive::message(error = acyclic_auth::Error, file = OptionsFile)]
 struct Paths {
@@ -41,9 +41,7 @@ fn derived_options_preserve_repeated_resources_and_streaming()
         .arg(format!("--proto_path={}", root.path().display()))
         .arg(format!(
             "--proto_path={}",
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../compatibility/proto")
-                .display()
+            acyclic_test_support::source_path("compatibility/proto").display()
         ))
         .arg(format!(
             "--proto_path={}",
@@ -80,7 +78,7 @@ fn derived_options_preserve_repeated_resources_and_streaming()
 }
 
 fn product_descriptors() -> Result<DescriptorPool, Box<dyn std::error::Error>> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let root = acyclic_test_support::source_path("");
     let temp = tempfile::tempdir()?;
     let output = temp.path().join("products.bin");
     let sources = [
