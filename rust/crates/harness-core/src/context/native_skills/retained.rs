@@ -51,16 +51,7 @@ impl RecordCache {
                     Err(error) => return Err(storage(error)),
                 };
                 decoded();
-                let batch = match serde_json::from_slice(&bytes).map_err(storage)? {
-                    RetainedSource::Batch(batch) => batch,
-                    record => HashMap::from([(digest.clone(), record)]),
-                };
-                if !batch.contains_key(&digest) {
-                    return Err(Error::Conflict("retained skill source is absent".into()));
-                }
-                for (key, record) in &batch {
-                    validate_record(record, key)?;
-                }
+                let batch = decode_records(&bytes, &digest)?;
                 records.extend(
                     batch
                         .into_iter()
@@ -164,16 +155,21 @@ impl RetainedBatch {
     }
 }
 
-#[cfg(test)]
-pub(super) fn read_record(bytes: &[u8], digest: &str) -> Result<RetainedSource> {
-    let record = match serde_json::from_slice(bytes).map_err(storage)? {
-        RetainedSource::Batch(mut records) => records
-            .remove(digest)
-            .ok_or_else(|| Error::Conflict("retained skill source is absent".into()))?,
-        record => record,
+pub(super) fn decode_records(
+    bytes: &[u8],
+    digest: &str,
+) -> Result<HashMap<String, RetainedSource>> {
+    let batch = match serde_json::from_slice(bytes).map_err(storage)? {
+        RetainedSource::Batch(batch) => batch,
+        record => HashMap::from([(digest.to_owned(), record)]),
     };
-    validate_record(&record, digest)?;
-    Ok(record)
+    if !batch.contains_key(digest) {
+        return Err(Error::Conflict("retained skill source is absent".into()));
+    }
+    for (key, record) in &batch {
+        validate_record(record, key)?;
+    }
+    Ok(batch)
 }
 
 fn validate_record(record: &RetainedSource, digest: &str) -> Result<()> {

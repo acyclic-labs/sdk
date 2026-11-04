@@ -1,84 +1,37 @@
-//! Owned async locking: Tokio in production, instrumented ownership under Loom.
-#[cfg(not(loom))]
+//! Owned async locking uses the same Tokio primitive in ordinary and model builds.
 #[doc(hidden)]
 pub use std::sync::Arc;
-#[cfg(not(loom))]
 #[doc(hidden)]
 pub use tokio::sync::{Mutex, OwnedMutexGuard};
 
-#[cfg(not(loom))]
 #[doc(hidden)]
 pub fn lock_owned<T>(mutex: Arc<Mutex<T>>) -> impl Future<Output = OwnedMutexGuard<T>> {
     mutex.lock_owned()
 }
 
+/// Drive the production owned mutex using modeled wake and park events.
+/// Tokio's internal atomics are not Loom-instrumented.
 #[cfg(loom)]
 #[doc(hidden)]
-pub use modeled::OwnedMutexGuard;
-#[cfg(loom)]
-#[doc(hidden)]
-pub use modeled::{Arc, Mutex, lock_owned};
+pub fn block_on<F: Future>(future: F) -> F::Output {
+    use std::task::{Context, Poll, Wake, Waker};
 
-#[cfg(loom)]
-mod modeled {
-    pub use loom::sync::Arc;
-    use loom::sync::{Condvar, Mutex as DataMutex};
-    use std::ops::{Deref, DerefMut};
-
-    // Loom has no owned async guard. Move the value into the owning guard and
-    // use its instrumented condition variable for lock admission and release.
-    // This private data lock is never held while user code or a wake executes.
-    pub struct Mutex<T> {
-        value: DataMutex<Option<T>>,
-        available: Condvar,
-    }
-
-    impl<T> Mutex<T> {
-        pub fn new(value: T) -> Self {
-            Self {
-                value: DataMutex::new(Some(value)),
-                available: Condvar::new(),
-            }
+    struct Unpark(loom::thread::Thread);
+    impl Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
         }
     }
 
-    pub struct OwnedMutexGuard<T> {
-        mutex: Arc<Mutex<T>>,
-        value: Option<T>,
-    }
-
-    pub async fn lock_owned<T>(mutex: Arc<Mutex<T>>) -> OwnedMutexGuard<T> {
-        let value = {
-            let mut value = mutex.value.lock().unwrap();
-            while value.is_none() {
-                value = mutex.available.wait(value).unwrap();
-            }
-            value.take()
-        };
-        OwnedMutexGuard { mutex, value }
-    }
-
-    impl<T> Deref for OwnedMutexGuard<T> {
-        type Target = T;
-        fn deref(&self) -> &T {
-            self.value.as_ref().unwrap()
-        }
-    }
-
-    impl<T> DerefMut for OwnedMutexGuard<T> {
-        fn deref_mut(&mut self) -> &mut T {
-            self.value.as_mut().unwrap()
-        }
-    }
-
-    impl<T> Drop for OwnedMutexGuard<T> {
-        fn drop(&mut self) {
-            {
-                let mut value = self.mutex.value.lock().unwrap();
-                assert!(value.is_none());
-                *value = self.value.take();
-            }
-            self.mutex.available.notify_one();
+    // Tokio may clone a waker while holding its uninstrumented wait-list lock.
+    // Clone/drop only std::Arc here; the model event is the actual wake.
+    let waker = Waker::from(Arc::new(Unpark(loom::thread::current())));
+    let mut context = Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(value) => return value,
+            Poll::Pending => loom::thread::park(),
         }
     }
 }

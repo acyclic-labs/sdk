@@ -29,14 +29,6 @@ pub fn control_error(cause: impl Into<Box<dyn std::error::Error + Send + Sync>>)
     std::io::Error::new(std::io::ErrorKind::Interrupted, cause)
 }
 
-/// Retains ownership in the worker through cleanup when its waiter is cancelled.
-/// The facade's checkout model exercises this same production boundary.
-#[doc(hidden)]
-pub fn with_custody<T, R>(mut custody: T, operation: impl FnOnce(&mut T) -> R) -> (R, T) {
-    let result = operation(&mut custody);
-    (result, custody)
-}
-
 /// The owner callbacks of one spawned capture, moved between its turns.
 struct Handler<T, O, C> {
     custody: T,

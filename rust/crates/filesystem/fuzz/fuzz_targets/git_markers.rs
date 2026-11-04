@@ -2,19 +2,22 @@
 #![no_main]
 #[path = "../../src/git_compat/merge_markers.rs"]
 mod markers;
-
-fn contains(text: &str) -> bool {
-    let mut scanner = markers::Scanner::new();
-    scanner.push(text.as_bytes()) || scanner.finish()
-}
+#[path = "../../tests/support/git_markers_oracle.rs"]
+mod oracle;
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
-    let text = String::from_utf8_lossy(bytes);
-    let mut scanner = markers::Scanner::new();
-    let chunk = bytes.first().map_or(1, |byte| usize::from(*byte % 31) + 1);
-    for part in bytes.chunks(chunk) {
-        scanner.push(part);
+    let expected = oracle::contains(bytes);
+    let selected = bytes.first().map_or(1, |byte| usize::from(*byte) + 1);
+    for chunk in [1, selected, bytes.len().max(1)] {
+        let mut scanner = markers::Scanner::new();
+        for part in bytes.chunks(chunk) {
+            let found = scanner.push(part);
+            assert!(!found || expected, "marker grammar: premature recognition");
+        }
+        assert_eq!(
+            scanner.finish(),
+            expected,
+            "marker grammar: final recognition"
+        );
     }
-    assert_eq!(scanner.finish(), contains(&text));
-    assert_eq!(contains(&text), contains(&text.replace("\r\n", "\n")));
 });

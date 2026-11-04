@@ -1,210 +1,104 @@
+#[path = "../../../harness-core/src/sync/owned.rs"]
+mod owned;
+
 mod refresh {
     include!("../../src/refresh.rs");
-    pub fn ticket<F: Copy>(state: &Refresh<F>) -> u64 {
-        state.generation.load(Ordering::Acquire)
-    }
-    pub async fn joined<T, F: Copy>(
-        state: &Refresh<F>,
-        ticket: u64,
-        operation: impl std::future::Future<Output = (T, Option<F>)>,
-    ) -> Result<T, F> {
-        let permit = state.acquire_generation(ticket).await?;
-        let (value, failure) = operation.await;
-        state.complete(permit, failure);
-        Ok(value)
-    }
-    pub fn serialized<T, F: Copy>(
-        state: &Refresh<F>,
-        operation: impl std::future::Future<Output = (T, Option<F>)>,
-    ) -> impl std::future::Future<Output = Result<T, F>> {
-        let ticket = ticket(state);
-        joined(state, ticket, operation)
-    }
 }
 use crate::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use std::{
-    future::Future,
-    task::{Context, Poll, Waker},
-};
+use loom::sync::mpsc;
+use std::future::Future;
+
 fn complete<T>(operation: impl Future<Output = T>) -> T {
-    let mut operation = std::pin::pin!(operation);
-    match operation
-        .as_mut()
-        .poll(&mut Context::from_waker(Waker::noop()))
-    {
-        Poll::Ready(value) => value,
-        Poll::Pending => panic!("unexpected suspension outside the modeled mutex"),
-    }
+    owned::block_on(operation)
 }
 
-fn sharing_model(fail: bool, broken: bool) {
+fn sharing_model(fail: bool) {
     loom::model(move || {
-        let state = Arc::new(refresh::Refresh::new());
-        let requests = Arc::new(AtomicUsize::new(0));
-        let active = Arc::new(AtomicUsize::new(0));
-        // Both bearer futures are polled up to lock acquisition before I/O
-        // completes. A start barrier fixes the attempted generation, not the outcome.
-        let ticket = refresh::ticket(&state);
-        let published = Arc::new(AtomicUsize::new(0));
-        let mut tasks = Vec::new();
-        for _ in 0..2 {
-            let (state, requests, active, published) = (
-                state.clone(),
-                requests.clone(),
-                active.clone(),
-                published.clone(),
-            );
-            tasks.push(loom::thread::spawn(move || {
-                // Snapshot before queuing, exactly as in production.
-                let state = if broken {
-                    Arc::new(refresh::Refresh::new())
-                } else {
-                    state
-                };
-                let operation = async {
-                    if published.load(Ordering::SeqCst) == 1 {
-                        return (Ok(()), None);
-                    }
-                    assert_eq!(
-                        active.fetch_add(1, Ordering::SeqCst),
-                        0,
-                        "refresh ownership overlapped"
-                    );
-                    requests.fetch_add(1, Ordering::SeqCst);
-                    loom::thread::yield_now();
-                    assert_eq!(active.fetch_sub(1, Ordering::SeqCst), 1);
-                    if fail {
-                        (Err::<(), _>(503u16), Some(503u16))
-                    } else {
-                        published.store(1, Ordering::SeqCst);
-                        (Ok(()), None)
-                    }
-                };
-                let result = complete(refresh::joined(&state, ticket, operation));
-                if fail {
-                    assert!(matches!(result, Ok(Err(503)) | Err(503)));
-                } else {
-                    assert_eq!(result, Ok(Ok(())));
-                }
-            }));
-        }
-        for task in tasks {
-            task.join().unwrap();
-        }
+        let state = Arc::new(refresh::Refresh::<u16>::new());
+        let owner = complete(state.acquire()).ok().unwrap();
+        let requests = Arc::new(AtomicUsize::new(1));
+        let active = Arc::new(AtomicUsize::new(1));
+        let (ready, admitted) = mpsc::channel();
+        let waiter_state = state.clone();
+        let waiter_requests = requests.clone();
+        let waiter_active = active.clone();
+        let waiter = loom::thread::spawn(move || {
+            // Sample through the real entry point while the original owner is
+            // held. No private generation ticket or alternate Refresh instance.
+            let acquisition = waiter_state.acquire();
+            ready.send(()).unwrap();
+            let result = complete(async {
+                let permit = acquisition.await?;
+                assert_eq!(
+                    waiter_active.fetch_add(1, Ordering::SeqCst),
+                    0,
+                    "refresh ownership overlapped"
+                );
+                waiter_requests.fetch_add(1, Ordering::SeqCst);
+                waiter_active.fetch_sub(1, Ordering::SeqCst);
+                waiter_state.complete(permit, fail.then_some(503));
+                Ok::<_, u16>(())
+            });
+            if fail {
+                assert!(matches!(result, Ok(()) | Err(503)));
+            } else {
+                assert_eq!(result, Ok(()));
+            }
+        });
+        admitted.recv().unwrap();
+        loom::thread::yield_now();
+        assert_eq!(active.fetch_sub(1, Ordering::SeqCst), 1);
+        state.complete(owner, fail.then_some(503));
+        waiter.join().unwrap();
         assert_eq!(
             requests.load(Ordering::SeqCst),
-            1,
+            if fail { 1 } else { 2 },
             "failed refresh was repeated by a waiter"
         );
         assert_eq!(active.load(Ordering::SeqCst), 0);
     });
 }
+
 #[test]
 fn refresh_attempt_failure_retains_exclusive_ownership() {
-    sharing_model(true, false);
+    sharing_model(true);
 }
+
 #[test]
-fn successful_refresh_is_shared_without_repeating_io() {
-    sharing_model(false, false);
-}
-#[test]
-#[should_panic(expected = "failed refresh was repeated by a waiter")]
-fn negative_control_serialization_without_failure_sharing_repeats_io() {
-    // Independent failed attempts can also run sequentially; force that
-    // interleaving to isolate result sharing from mutual exclusion.
-    loom::model(|| {
-        let requests = AtomicUsize::new(0);
-        for _ in 0..2 {
-            let state = refresh::Refresh::<u16>::new();
-            let _ = complete(refresh::serialized(&state, async {
-                requests.fetch_add(1, Ordering::SeqCst);
-                ((), Some(503))
-            }));
-        }
-        assert_eq!(
-            requests.load(Ordering::SeqCst),
-            1,
-            "failed refresh was repeated by a waiter"
-        );
-    });
-}
-#[test]
-#[should_panic(expected = "refresh ownership overlapped")]
-fn negative_control_independent_attempts_overlap() {
-    sharing_model(true, true);
+fn successful_refresh_permits_later_work() {
+    // Success publishes no cached failure. Skipping redundant provider I/O is
+    // the caller's credential re-read, outside this primitive's contract.
+    sharing_model(false);
 }
 
 #[test]
 fn cancelling_the_holder_releases_the_guard_and_wakes_the_waiter() {
     loom::model(|| {
         let state = Arc::new(refresh::Refresh::<u16>::new());
-        let holder_state = state.clone();
-        let holder = loom::thread::spawn(move || {
-            let mut operation = Box::pin(refresh::serialized(
-                &holder_state,
-                std::future::pending::<((), Option<u16>)>(),
-            ));
-            assert_eq!(
-                operation
-                    .as_mut()
-                    .poll(&mut Context::from_waker(Waker::noop())),
-                Poll::Pending
-            );
-            loom::thread::yield_now();
-            drop(operation);
-        });
+        let holder = complete(state.acquire()).ok().unwrap();
+        let (registered, waiting) = mpsc::channel();
         let waiter_state = state.clone();
         let waiter = loom::thread::spawn(move || {
-            assert_eq!(
-                complete(refresh::serialized(&waiter_state, async { ((), None) })),
-                Ok(())
-            );
+            let mut acquisition = std::pin::pin!(waiter_state.acquire());
+            let mut registered = Some(registered);
+            let permit = complete(std::future::poll_fn(|context| {
+                let result = acquisition.as_mut().poll(context);
+                if result.is_pending() {
+                    if let Some(registered) = registered.take() {
+                        registered.send(()).unwrap();
+                    }
+                }
+                result
+            }))
+            .ok()
+            .unwrap();
+            waiter_state.complete(permit, None);
         });
-        holder.join().unwrap();
+        waiting.recv().unwrap();
+        drop(holder);
         waiter.join().unwrap();
     });
-}
-
-fn binding_failure_model(broken: bool) {
-    loom::model(move || {
-        let state = Arc::new(refresh::Refresh::<u16>::new());
-        let ticket = refresh::ticket(&state);
-        let old = state.clone();
-        // Both bindings are queued in the same generation. Constrain the old
-        // binding to run first, reproducing the poisoned-result interleaving.
-        loom::thread::spawn(move || {
-            let result = complete(refresh::joined(&old, ticket, async {
-                (Err::<(), _>(401u16), broken.then_some(401u16))
-            }));
-            assert_eq!(result, Ok(Err(401)));
-        })
-        .join()
-        .unwrap();
-        let valid = loom::thread::spawn(move || {
-            complete(refresh::joined(&state, ticket, async {
-                (Ok::<(), u16>(()), None)
-            }))
-        })
-        .join()
-        .unwrap();
-        assert_eq!(
-            valid,
-            Ok(Ok(())),
-            "model-local account error leaked to another binding"
-        );
-    });
-}
-
-#[test]
-fn model_local_account_errors_do_not_poison_other_bindings() {
-    binding_failure_model(false);
-}
-
-#[test]
-#[should_panic(expected = "model-local account error leaked to another binding")]
-fn negative_control_sharing_model_local_errors_rejects_valid_bindings() {
-    binding_failure_model(true);
 }

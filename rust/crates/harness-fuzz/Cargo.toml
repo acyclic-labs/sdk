@@ -48,6 +48,14 @@ doc = false
 bench = false
 
 [[bin]]
+name = "retained_skill_records"
+path = "fuzz_targets/retained_skill_records.rs"
+required-features = ["native-skill-records"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "config_evaluation"
 path = "fuzz_targets/config_evaluation.rs"
 required-features = ["core"]
@@ -70,6 +78,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(fuzzing)", 'c
 default = ["runtime"]
 core = ["dep:acyclic-harness-core", "dep:futures"]
 code-mode = ["core", "acyclic-harness-core/filesystem", "dep:tokio"]
+native-skill-records = ["core", "acyclic-harness-core/filesystem-local", "acyclic-harness-core/native-execution"]
 runtime = ["core", "filesystem-local", "native-execution", "dep:acyclic-harness", "dep:acyclic-native-runtime", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:tempfile", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
 # Harness sources included by `#[path]` gate native helpers on these features;
 # the fuzz runtime compiles them as the native harness it depends on does.

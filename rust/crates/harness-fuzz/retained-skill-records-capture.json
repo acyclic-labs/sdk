@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "producer": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "acyclic-harness-core",
+    "--lib",
+    "--features",
+    "filesystem-local,native-execution,test-support",
+    "context::native_skills::tests::retained_records_share_one_sync_on_the_native_io_service",
+    "--",
+    "--exact"
+  ],
+  "source": "c127f0f221c3b91bd3f1ecba7788a282f9df4b7f",
+  "configuration": "native skill roots relative to the contributor working directory",
+  "captures": [
+    {
+      "path": "native-batch.json",
+      "bytes": 2128,
+      "sha256": "4fea65052f861cec4eca7b5d97078b1039700cab7bba2e545fbb54aacb874961"
+    },
+    {
+      "path": "materialized.json",
+      "bytes": 240,
+      "sha256": "4f8cb44942fcd6d50d360c01e9eff4c4f42263b5193fb49f57154aed4232d178"
+    }
+  ]
+}
