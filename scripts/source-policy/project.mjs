@@ -133,6 +133,7 @@ export function projectPollingSites(sources, {historical = false} = {}) {
  }
  if (errors.length === 1) throw errors[0];
  if (errors.length) throw new AggregateError(errors, errors.map(error => error.message).join('\n'));
+ if (!units.size) return sites;
  const scripts = [...units.keys()].map(file => '/' + file);
  const options = {
   allowJs: true, noLib: true, noResolve: false, noEmit: true,
@@ -329,10 +330,12 @@ export function projectPollingSites(sources, {historical = false} = {}) {
 /** @param {Map<string, string>} before @param {Map<string, string>} after */
 export function newProjectPollingSites(before, after, dispositions = [], policy = {}) {
  validateDispositions(dispositions, policy);
+ const candidates = projectPollingSites(after);
+ if (!candidates.length) return candidates;
  const retained = new Map();
  for (const site of projectPollingSites(before, {historical: true})) retained.set(site.file + ':' + site.fingerprint, (retained.get(site.file + ':' + site.fingerprint) ?? 0) + 1);
  for (const item of dispositions) retained.set(item.file + ':' + item.fingerprint, Math.max(1, retained.get(item.file + ':' + item.fingerprint) ?? 0));
- return projectPollingSites(after).filter(site => {
+ return candidates.filter(site => {
   const key = site.file + ':' + site.fingerprint;
   const count = retained.get(key) ?? 0;
   if (count) { retained.set(key, count - 1); return false; }

@@ -29,6 +29,8 @@ type declaration files are syntax checked but cannot replace executable dependen
 it never loads a consumer's filesystem. Missing current dependencies and malformed
 current source fail closed. A malformed predecessor authorizes no current site.
 Malformed source and package manifests report the shared `SourceSyntaxError`.
+Snapshots without executable scripts return their validated local candidates
+without constructing a TypeScript program.
 `projectPollingSites(sources)` inventories candidates;
 `pollingUnit(file, source)` exposes tokens and sites for additional repository
 policy. Supported inputs include JavaScript, TypeScript, Rust, C/C++, C#,
@@ -45,6 +47,9 @@ The existing source controls and byte-oriented fuzz target invoke these same
 exports. Classification reads source once per unit; dependency closure visits
 each graph edge a fixed number of times, independent of runtime history. No
 timer, wait, worker or readiness request is introduced.
+Delta analysis validates current source and dispositions first. When no current
+candidates remain, it returns without analyzing the predecessor; retired source
+cannot authorize a current candidate that does not exist.
 
 Run `node --test scripts/no-polling-fuzz.test.mjs` from the checkout to replay
 the recorded host corpus, byte mutations and dependency properties. The same
@@ -57,6 +62,15 @@ the unchanged source check all use that module, including its `SourceSyntaxError
 `fuzzProject(bytes, {source, graph})` takes the matching source and project module
 exports; dependency deltas, disposition admission and typed refusals all use that
 pair. Its authored `projectCorpus` seeds are shared with installed-module checks.
+The finite runner distributes invalid disposition types across those seeds and
+uses byte boundaries instead of replaying every overlapping byte prefix.
+The same target also consumes `projectSnapshots`: original committed SDK Actors
+modules captured with Git, with the repository, revision and source identities
+retained in the fixture. It checks snapshot order and unchanged deltas, plants a
+new wait in the real activation constructor, and removes its producer. The
+unchanged durable adapter must reopen in both cases. A production mutation that
+drops constructor references must fail this same oracle. These finite checks
+do not establish coverage-guided campaign completion or event liveness.
 
 `@acyclic-labs/source-policy/git` exports `gitBatchSources(files, buffer)` for
 callers that already read `git cat-file --batch`. Supply the unique file keys in
