@@ -226,7 +226,7 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
         #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
-        acyclic_differential::record(("execution-replay-requested", u64::from(maximum)));
+        acyclic_differential::record(ExecutionReplayObservation::Requested);
         if io.is_none() {
             return crate::conversation::BoundedContentFuture::new(None, || async move {
                 let span = obs_span!(

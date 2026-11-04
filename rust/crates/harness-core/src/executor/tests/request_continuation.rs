@@ -71,11 +71,12 @@ impl ModelProvider for ContinuingModel {
 
 #[test]
 fn one_stock_turn_preserves_admitted_continuations_across_step_limits() -> Result<()> {
-    use acyclic_test_support::differential::{Operation, observe};
+    use crate::filesystem::ExecutionReplayObservation as ReplayObservation;
+    use acyclic_test_support::differential::observe;
 
     #[cfg(not(target_arch = "wasm32"))]
     let visits =
-        |trace: &[Operation], event: &str| trace.iter().filter(|(kind, _)| *kind == event).count();
+        |trace: &[ReplayObservation], event| trace.iter().filter(|kind| **kind == event).count();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -122,13 +123,13 @@ fn one_stock_turn_preserves_admitted_continuations_across_step_limits() -> Resul
             };
             // Capture the shipped ordinary entry point, including the real
             // authenticated journal. No fixture substitutes its indexed reads.
-            let (result, _trace) = observe::<_, _, Operation>(
+            let (result, _trace) = observe::<_, _, ReplayObservation>(
                 || (),
                 |()| runtime.block_on(executor.execute_progress(input.clone(), journal)),
             );
             #[cfg(not(target_arch = "wasm32"))]
             assert_eq!(
-                visits(&_trace, "execution-replay-requested"),
+                visits(&_trace, ReplayObservation::Requested),
                 0,
                 "ordinary continuation requested journal replay at {turns} steps ({max_steps:?})"
             );
@@ -176,14 +177,14 @@ fn one_stock_turn_preserves_admitted_continuations_across_step_limits() -> Resul
                     .expect("original terminal usage");
                 assert_eq!(cut.sequence, terminal.sequence);
             }
-            let (replayed, _trace) = observe::<_, _, Operation>(
+            let (replayed, _trace) = observe::<_, _, ReplayObservation>(
                 || (),
                 |()| runtime.block_on(executor.execute(input.clone(), journal)),
             );
             let replayed = replayed?;
             #[cfg(not(target_arch = "wasm32"))]
             assert_eq!(
-                visits(&_trace, "execution-replay-requested"),
+                visits(&_trace, ReplayObservation::Requested),
                 0,
                 "restored continuation requested journal replay at {turns} steps ({max_steps:?})"
             );
@@ -199,7 +200,7 @@ fn one_stock_turn_preserves_admitted_continuations_across_step_limits() -> Resul
             // control keeps both observations connected to the real journal.
             #[cfg(not(target_arch = "wasm32"))]
             if turns == 32 {
-                let (record, _trace) = observe::<_, _, Operation>(
+                let (record, _trace) = observe::<_, _, ReplayObservation>(
                     || (),
                     |()| {
                         runtime.block_on(async {
@@ -208,8 +209,8 @@ fn one_stock_turn_preserves_admitted_continuations_across_step_limits() -> Resul
                     },
                 );
                 assert_eq!(record?.len(), 1);
-                assert_eq!(visits(&_trace, "execution-replay-requested"), 1);
-                assert_eq!(visits(&_trace, "execution-record-decoded"), 1);
+                assert_eq!(visits(&_trace, ReplayObservation::Requested), 1);
+                assert_eq!(visits(&_trace, ReplayObservation::Decoded), 1);
             }
         }
     }
