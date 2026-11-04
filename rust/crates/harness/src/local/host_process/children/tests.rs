@@ -432,7 +432,7 @@ fn exercise(host: &str, cwd: &Path) -> Result {
     running.process.queue_stdin(b"exit\n".to_vec())?;
     wait_exit(&mut running)?;
     assert!(
-        !running.process.drain_stderr()?,
+        !running.process.drain_stderr()?.closed,
         "negative input must withhold stderr EOF"
     );
     let completed = sessions

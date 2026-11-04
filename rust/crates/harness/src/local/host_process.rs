@@ -6,7 +6,7 @@
 use super::*;
 use crate::agent::AgentPath;
 use acyclic_native_runtime::{
-    FileLock, FileLockMode, ProcessCommand, ProcessCustody, ProcessTreeStorage,
+    FileLock, FileLockMode, ProcessCommand, ProcessCustody, ProcessDrain, ProcessTreeStorage,
 };
 
 pub mod children;
@@ -358,12 +358,12 @@ impl HostSessionProcess {
     }
 
     /// Drains bounded stderr through shared process capture, retaining its tail.
-    pub fn drain_stderr(&mut self) -> Result<bool> {
+    pub fn drain_stderr(&mut self) -> Result<ProcessDrain> {
         self.require_live()?;
         let meter = self.polling_meter()?;
         let drained = self.tree.drain_stderr(&meter).map_err(storage)?;
         self.output_progress |= drained.read_bytes > 0;
-        Ok(drained.closed)
+        Ok(drained)
     }
 
     /// Arms one wait for this child's next pipe data, writable stdin or exit,
