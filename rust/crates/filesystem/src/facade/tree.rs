@@ -103,7 +103,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         maximum_entries: u32,
         budget: W,
         cancellation: &CancellationToken,
-    ) -> W::OwnedOutput<DirectoryPage> {
+    ) -> W::OwnedOutput<DirectoryPage, crate::FsError> {
         let mut accounting = budget.accounting(cancellation);
         let result = self
             .list_directory_with_accounting(
@@ -119,7 +119,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             page.work = work;
             (page, allocation)
         });
-        budget.finish_owned(result, &accounting)
+        budget.finish_owned::<_, crate::FsError>(result, &accounting)
     }
 
     pub(crate) async fn list_directory_with_accounting(

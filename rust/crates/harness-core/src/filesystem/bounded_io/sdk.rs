@@ -8,15 +8,12 @@ impl acyclic_fs::facade::FsWork for &PreparationIo {
         std::result::Result<T, E>,
         std::result::Result<(), acyclic_fs::FsError>,
     );
-    type OwnedOutput<T> = Self::Output<T, acyclic_fs::FsError>;
-    fn finish_owned<T>(
+    type OwnedOutput<T, E> = Self::Output<T, E>;
+    fn finish_owned<T, E: From<acyclic_fs::FsError>>(
         &self,
-        result: std::result::Result<
-            (T, acyclic_fs::kernel::KernelOwnedAllocation),
-            acyclic_fs::FsError,
-        >,
+        result: std::result::Result<(T, acyclic_fs::kernel::KernelOwnedAllocation), E>,
         accounting: &acyclic_fs::kernel::KernelAccounting<'_>,
-    ) -> Self::OwnedOutput<T> {
+    ) -> Self::OwnedOutput<T, E> {
         let result = result.and_then(|(value, allocation)| {
             #[cfg(target_arch = "wasm32")]
             let _ = allocation;
@@ -26,9 +23,9 @@ impl acyclic_fs::facade::FsWork for &PreparationIo {
             {
                 let PreparationIo::Native { custody, .. } = self else {
                     drop(value);
-                    return Err(acyclic_fs::FsError::NativeKernel(
+                    return Err(E::from(acyclic_fs::FsError::NativeKernel(
                         acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
-                    ));
+                    )));
                 };
                 if let Err(cause) = custody
                     .lock()
@@ -36,7 +33,7 @@ impl acyclic_fs::facade::FsWork for &PreparationIo {
                     .absorb(&mut allocation)
                 {
                     drop(value);
-                    return Err(cause.into());
+                    return Err(E::from(acyclic_fs::FsError::from(cause)));
                 }
             }
             Ok(value)
