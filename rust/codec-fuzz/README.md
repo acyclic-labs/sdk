@@ -90,6 +90,21 @@ These finite MemoryStream publications cover the persisted codec and Store
 transition path; physical restart, membership and runtime scheduling remain
 separate obligations.
 
+The existing `stream_persistence` target also checks typed refusal before a
+fixed header is complete. Its corpus contains actual retained-fact encoder
+output captured by `acyclic_stream::codec_fuzz::seeds`; the persisted-version
+control derives every foreign version byte and its truncated header from
+those same production encoders, for observations and envelopes. Run it with:
+
+```sh
+cargo nextest run --locked -p acyclic-stream --features local,test-support --lib -E 'test(=persistence::tests::old_and_unknown_fact_versions_refuse_before_payload)'
+```
+
+Apply `rust/codec-fuzz/negative-controls/stream-header-truncated-foreign.patch`
+from the repository root to restore the original production guard. The same
+control must fail at `persisted fuzz oracle`; this checks the actual oracle
+used by the fuzz target. Reverse the patch before running the intact source.
+
 Refresh only the current agent record and checkpoint writers with:
 
 ```sh

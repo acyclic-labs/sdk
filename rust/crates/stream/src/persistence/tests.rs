@@ -309,6 +309,11 @@ fn old_and_unknown_fact_versions_refuse_before_payload() -> Result<(), Box<dyn s
         for version in (u8::MIN..=u8::MAX).filter(|version| *version != b'1') {
             let mut refused = current[..magic.len()].to_vec();
             refused[magic.len() - 2] = version;
+            #[cfg(feature = "test-support")]
+            assert!(
+                crate::codec_fuzz::check(&refused[..magic.len() - 1]),
+                "persisted fuzz oracle: incomplete foreign version {version}"
+            );
             assert_eq!(
                 decode(&refused[..magic.len() - 1], BOUND),
                 Err(StreamError::InvalidArgument),
