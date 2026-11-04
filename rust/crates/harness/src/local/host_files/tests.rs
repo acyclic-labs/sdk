@@ -1123,16 +1123,28 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         );
         let claim: crate::local::host_owner::TurnClaim =
             serde_json::from_value(turn["claim"].clone()).map_err(storage)?;
+        let outcome = crate::Outcome::Succeeded(crate::executor::TurnOutput::new(
+            "saved outcome ".repeat(3_000),
+            serde_json::json!({"source": "native", "details": "\\\"\n".repeat(256)}),
+            1,
+        ));
+        let expected = serde_json::to_value(&outcome).map_err(storage)?;
         let complete = |claim| {
             session(SessionAction::Complete {
                 claim,
-                outcome: crate::Outcome::Succeeded(crate::executor::TurnOutput::new("done".into(), Value::Null, 1)),
+                outcome: outcome.clone(),
             })
         };
         let settled = complete(claim.clone())?;
         assert_eq!(settled["status"]["settled"], true);
         assert_eq!(settled["pending"], 0);
-        assert!(settled["results"][0].to_string().contains("done"));
+        assert_eq!(settled["results"][0]["outcome"], expected);
+        let reply = session(SessionAction::Reply {
+            id: serde_json::from_value(turn["id"].clone()).map_err(storage)?,
+            inbox: turn["inbox"].as_u64().unwrap(),
+        })?;
+        assert_eq!(reply["reply"]["outcome"], expected);
+        assert_eq!(reply["results"][0]["outcome"], expected);
         // A replayed completion of the settled turn is idempotent.
         assert_eq!(complete(claim)?["status"]["turn"], 1);
         assert!(session(SessionAction::Next)?.is_null());
