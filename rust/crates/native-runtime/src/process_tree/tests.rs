@@ -309,20 +309,25 @@ fn tree_exited(tree: &mut ProcessTree) -> bool {
     tree.try_wait(None).map_or(true, |status| status.is_some())
 }
 
-/// The original grandchild owns this lock until process exit. One conflicting
-/// acquisition observes its lifetime without a probe, timer or reused PID.
-fn descendant_retirement(root: &std::path::Path) -> io::Result<crate::FileLock> {
-    crate::FileLock::try_acquire(
+/// The original grandchild owns this lock until process exit. Its kernel
+/// release event observes that lifetime without a probe, timer or reused PID.
+fn descendant_lifetime(root: &std::path::Path) -> io::Result<crate::FileLock> {
+    Ok(crate::FileLock::new(
         fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(root.join("descendant.lock"))?,
-        crate::FileLockMode::Exclusive,
-    )
+    ))
 }
 
 pub(super) fn assert_descendant_retired(root: &std::path::Path) {
-    descendant_retirement(root).expect("original descendant outlived tree cleanup");
+    // Unix containment sends the group its signal and reaps the leader. The
+    // original descendant's exit releases this lock, including when its parent
+    // exits first. Wait for that kernel event rather than sampling too early.
+    descendant_lifetime(root)
+        .expect("original descendant lifetime file")
+        .lock(crate::FileLockMode::Exclusive)
+        .expect("original descendant retirement event");
 }
 
 #[test]
@@ -540,7 +545,9 @@ fn cleanup_is_idempotent_and_drop_contains_descendants() {
             ProcessTree::spawn(&mut command("child", temporary.path())).expect("spawn tree");
         ready(temporary.path(), "tree-ready", || tree_exited(&mut tree));
         assert_eq!(
-            descendant_retirement(temporary.path())
+            descendant_lifetime(temporary.path())
+                .expect("original descendant lifetime file")
+                .try_lock(crate::FileLockMode::Exclusive)
                 .expect_err("live original descendant reported retirement")
                 .kind(),
             io::ErrorKind::WouldBlock

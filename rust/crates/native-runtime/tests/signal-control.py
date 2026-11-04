@@ -112,11 +112,21 @@ def main():
             "graceful_cleanup_handles_an_exited_leader_and_its_descendants",
             "capture_timeout_and_output_overflow_reap_owned_tree",
             "exited_parent_does_not_leave_descendant_holding_output_open",
+            "queued_stdin_backpressure_keeps_cancellation_and_exclusive_custody",
         )
+        tests = [f"process_tree::tests::{test}" for test in tests] + [
+            f"process_tree::external_host::tests::{test}" for test in (
+                "serial_admission_rejects_failed_stale_recovery_before_launch",
+                "failed_control_admission_retires_through_the_original_process_owner",
+                "failed_control_admission_retains_recovery_when_retirement_fails",
+                "failed_external_retirement_keeps_the_canonical_recovery_owner",
+                "failed_observation_retains_recovery_authority_against_actual_former_order",
+            )
+        ]
         command = [
             "cargo", "nextest", "run", "--locked", "-p", "acyclic-native-runtime",
             "--lib", "--all-features", "-E",
-            " | ".join(f"test(=process_tree::tests::{test})" for test in tests),
+            " | ".join(f"test(={test})" for test in tests),
         ]
     report = {"inputs": {str(path.relative_to(root)): digest(data) for path, data in originals.items()}, "steps": []}
 
@@ -381,10 +391,10 @@ qualificationMain([process.argv[1]], (command, args, options) => spawnSync(comma
         ]
     elif mode == "--descendant-retirement":
         mutations = [
-            ("observation-before-retirement", oracle,
-             b"        drop(tree);\n        assert_descendant_retired(temporary.path());",
-             b"        assert_descendant_retired(temporary.path());\n        drop(tree);",
-             "original descendant outlived tree cleanup"),
+            ("premature-lifetime-release", oracle,
+             b'            .expect("original descendant lifetime lock");',
+             b'            .expect("original descendant lifetime lock");\n            drop(_lifetime);',
+             "live original descendant reported retirement"),
         ]
     elif mode == "--drain-conformance":
         mutations = [
