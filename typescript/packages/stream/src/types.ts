@@ -172,6 +172,19 @@ export type StreamFailureCode = RustStreamErrorCode
   | "stream_not_found" | "commit_not_found" | "destination_exists" | "capacity_exhausted"
   | "configuration" | "invalid_cursor" | "invalid_page" | "invalid_response"
   | "provider_mismatch" | "response_too_large" | "transport";
+/** A member's original status behind an `unavailable` failure, verbatim. A diagnostic only; recovery follows `code`. */
+export interface StreamRefusal {
+  readonly status: number;
+  readonly message: string;
+  readonly details: Uint8Array;
+  readonly metadata: ReadonlyArray<readonly [string, Uint8Array]>;
+}
+
 export class StreamError extends Error {
-  constructor(readonly code: StreamFailureCode, message: string, readonly status?: number) { super(message); }
+  constructor(
+    readonly code: StreamFailureCode,
+    message: string,
+    readonly status?: number,
+    readonly refusal?: StreamRefusal,
+  ) { super(message); }
 }

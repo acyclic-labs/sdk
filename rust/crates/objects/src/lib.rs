@@ -121,8 +121,11 @@ const MAX_PEM_BYTES: usize = 64 * 1024;
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 
 /// Semantic service failure or the original local operation stop.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("Objects operation failed ({code:?})")]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error(
+    "Objects operation failed ({code:?}){}",
+    .refusal.as_ref().map_or_else(String::new, ToString::to_string)
+)]
 pub struct Error {
     /// Public semantic category, suitable for programmatic handling.
     pub code: wire::ErrorCode,
@@ -130,12 +133,16 @@ pub struct Error {
     /// cancellation nor expiry proves that a remote mutation did not commit.
     #[source]
     pub stopped: Option<acyclic_auth::operation::Stopped>,
+    /// The member's original status, when it said more than `code`'s
+    /// canonical status. A diagnostic only; recovery follows `code`.
+    pub refusal: Option<acyclic_auth::refusal::Refusal>,
 }
 impl From<wire::ErrorCode> for Error {
     fn from(code: wire::ErrorCode) -> Self {
         Self {
             code,
             stopped: None,
+            refusal: None,
         }
     }
 }
@@ -147,6 +154,7 @@ impl From<acyclic_auth::operation::Stopped> for Error {
                 acyclic_auth::operation::Stopped::Cancelled => wire::ErrorCode::OutcomeUnknown,
             },
             stopped: Some(stopped),
+            refusal: None,
         }
     }
 }

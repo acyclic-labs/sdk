@@ -1,10 +1,11 @@
 import { is_stream_error_code, type StreamErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
-import { StreamError, type StreamFailureCode } from "./types.js";
+import { StreamError, type StreamFailureCode, type StreamRefusal } from "./types.js";
 
 export function streamError(error: unknown, operation: string): Error {
   if (error instanceof StreamError) return error;
   let message: string;
   let rawCode: unknown;
+  let refusal: StreamRefusal | undefined;
   try {
     message = error instanceof Error ? error.message : String(error);
   } catch {
@@ -15,6 +16,12 @@ export function streamError(error: unknown, operation: string): Error {
   } catch {
     rawCode = undefined;
   }
+  try {
+    const raw = typeof error === "object" && error !== null ? (error as { readonly refusal?: unknown }).refusal : undefined;
+    refusal = typeof raw === "object" && raw !== null ? (raw as StreamRefusal) : undefined;
+  } catch {
+    refusal = undefined;
+  }
   if (typeof rawCode !== "string" || !is_stream_error_code(rawCode)) {
     return error instanceof Error ? error : new Error(message);
   }
@@ -23,5 +30,5 @@ export function streamError(error: unknown, operation: string): Error {
   else if (rawCode === "already_exists") code = "destination_exists";
   else if (rawCode === "capacity" && operation === "session") code = "capacity_exhausted";
   else if (rawCode === "prefix_not_retained" && operation === "commit") code = "invalid_argument";
-  return new StreamError(code, message);
+  return new StreamError(code, message, undefined, refusal);
 }

@@ -279,7 +279,9 @@ impl Undecided {
     async fn retry(&mut self, executor: &dyn Executor, error: Error) -> Result<(), Error> {
         if !matches!(
             error,
-            Error::Stream(StreamError::Unavailable | StreamError::InvalidResponse)
+            Error::Stream(
+                StreamError::Unavailable | StreamError::Refused(_) | StreamError::InvalidResponse
+            )
         ) {
             return Err(error);
         }

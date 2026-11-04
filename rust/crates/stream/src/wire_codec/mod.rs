@@ -45,6 +45,6 @@ pub use revision::{
 };
 
 #[cfg(any(feature = "grpc", all(feature = "wasm", target_arch = "wasm32")))]
-mod status;
+pub(crate) mod status;
 #[cfg(any(feature = "grpc", all(feature = "wasm", target_arch = "wasm32")))]
 pub(crate) use status::{error_status, status};

@@ -271,7 +271,9 @@ impl PostgresStream {
                 let result = replica.execute(command, deadline, PAGE).await;
                 if matches!(
                     result,
-                    Err(StreamError::Unavailable | StreamError::InvalidResponse)
+                    Err(StreamError::Unavailable
+                        | StreamError::Refused(_)
+                        | StreamError::InvalidResponse)
                 ) {
                     provider.fail();
                 }

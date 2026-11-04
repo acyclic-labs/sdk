@@ -62,7 +62,8 @@ async fn session_error(
     } else {
         match grpc::status(&error) {
             // Unknown peer statuses are terminal; only the transport
-            // classifier above may request another physical connection.
+            // classifier above may request another physical connection. A
+            // member's refusal stays terminal with its original diagnostics.
             StreamError::Unavailable => StreamError::InvalidResponse,
             error => error,
         }

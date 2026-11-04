@@ -1,7 +1,32 @@
 use crate::StreamError;
-use tonic::{Code, Status};
+use acyclic_auth::refusal::{Canonical, Refusal};
+use tonic::{Code, Status, metadata::MetadataMap};
 
+const UNAVAILABLE: Canonical<'static> = Canonical {
+    code: Code::Unavailable as i32,
+    message: "stream unavailable",
+    details: b"",
+    owned: &[],
+};
+
+/// Decodes a member's status. Unavailable keeps the member's original status
+/// (code, message, details and product metadata) as its refusal.
 pub(crate) fn status(error: &Status) -> StreamError {
+    match category(error) {
+        StreamError::Unavailable => Refusal::capture(
+            error.code() as i32,
+            error.message(),
+            error.details(),
+            error.metadata().as_ref(),
+            UNAVAILABLE,
+        )
+        .map_or(StreamError::Unavailable, StreamError::Refused),
+        category => category,
+    }
+}
+
+/// The category alone, without retaining diagnostics.
+pub(crate) fn category(error: &Status) -> StreamError {
     match (error.code(), error.message()) {
         (Code::DataLoss, _) => StreamError::InvalidResponse,
         (Code::DeadlineExceeded, _) => StreamError::DeadlineElapsed,
@@ -38,7 +63,16 @@ pub(crate) fn error_status(error: &StreamError) -> Status {
         StreamError::Capacity => Status::resource_exhausted(error.to_string()),
         StreamError::IdempotencyMismatch => Status::failed_precondition("idempotency_mismatch"),
         StreamError::PrefixNotRetained => Status::failed_precondition("prefix_not_retained"),
-        StreamError::Unavailable => Status::unavailable(error.to_string()),
+        StreamError::Unavailable => Status::unavailable(UNAVAILABLE.message),
+        StreamError::Refused(refusal) => {
+            let parts = Refusal::encode(Some(refusal), UNAVAILABLE);
+            Status::with_details_and_metadata(
+                Code::from_i32(parts.code),
+                parts.message,
+                parts.details,
+                MetadataMap::from_headers(parts.metadata),
+            )
+        }
         StreamError::DeadlineElapsed => Status::failed_precondition("deadline_elapsed"),
         StreamError::Unsupported => Status::unimplemented("unsupported_capability"),
         StreamError::RevisionForeign => Status::failed_precondition("revision_foreign"),

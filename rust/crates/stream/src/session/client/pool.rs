@@ -209,9 +209,9 @@ impl Pool {
                 // A received frame that fails structural validation is terminal.
                 // Transport I/O failures use the reconnect path in `run`.
                 let error = match error {
-                    StreamError::Unavailable | StreamError::InvalidArgument => {
-                        StreamError::InvalidResponse
-                    }
+                    StreamError::Unavailable
+                    | StreamError::Refused(_)
+                    | StreamError::InvalidArgument => StreamError::InvalidResponse,
                     other => other,
                 };
                 self.fail_link(node, &error);
@@ -869,7 +869,7 @@ impl Pool {
         if node == self.home
             && matches!(
                 error,
-                StreamError::Unavailable | StreamError::InvalidArgument
+                StreamError::Unavailable | StreamError::Refused(_) | StreamError::InvalidArgument
             )
         {
             self.reset_home();
