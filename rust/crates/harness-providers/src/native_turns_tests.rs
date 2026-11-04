@@ -93,13 +93,8 @@ fn settle(adapter: Adapter, provider: &ResolvedModel) -> TurnOutput {
             _ => {}
         }
     }
-    let output = TurnOutput {
-        text,
-        attachments: Vec::new(),
-        metadata: Value::Null,
-        steps: 1,
-        transcript: parts,
-    };
+    let mut output = TurnOutput::new(text, Value::Null, 1);
+    output.transcript = parts;
     let staged: TurnOutput = serde_json::from_slice(&serde_json::to_vec(&output).unwrap()).unwrap();
     assert_eq!(staged, output, "{adapter:?} staged output changed");
     staged

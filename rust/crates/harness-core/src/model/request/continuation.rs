@@ -30,6 +30,11 @@ impl RequestContinuation {
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<Option<u64>> {
+        if self.prepared.request.summary && !self.suffix.is_empty() {
+            return Err(Error::Invalid(
+                "a summary instruction cannot become conversation history".into(),
+            ));
+        }
         let count = self
             .prepared
             .request
@@ -114,6 +119,7 @@ impl RequestContinuation {
         let same_limits = self.prepared.admitted_limits == limits;
         let bytes = std::mem::take(&mut self.prepared.bytes);
         let encoding = std::mem::take(&mut self.prepared.encoding);
+        let input = std::mem::take(&mut self.prepared.input);
         let content_admission = self.prepared.content_admission.take();
         let (request, remaining) = self.validate(limits, io)?;
         if !same_limits {
@@ -147,14 +153,17 @@ impl RequestContinuation {
             io,
             &mut projection_nodes,
         )?;
+        let input = input.extend(&request.messages[old_count..], io)?;
         Ok(PreparedModelRequest {
             request,
             bytes,
             request_digest,
+            replay_key: std::sync::OnceLock::new(),
             projection_nodes: AtomicUsize::new(projection_nodes),
             admitted_limits: limits,
             instruction_remaining: remaining,
             encoding,
+            input,
             content_admission,
             #[cfg(feature = "filesystem")]
             resident_payload,

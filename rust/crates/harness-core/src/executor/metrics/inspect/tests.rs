@@ -50,6 +50,7 @@ fn source() -> Source<'static> {
 
 fn request(text: String) -> ModelRequest {
     ModelRequest {
+        summary: false,
         model: Model {
             provider: "generated-binding".into(),
             name: "generated-model".into(),

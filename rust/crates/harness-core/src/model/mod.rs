@@ -75,7 +75,7 @@ pub use profile::ModelProfileBinding;
 pub use provider::NativeModelStream;
 pub use provider::{ModelDelivery, ModelDispatch, ModelEvent, ModelProvider, ModelStream};
 pub use reasoning::{NativePart, ReasoningBlock, ReasoningKind, ReasoningOrigin, ReasoningOutcome};
-pub use request::{ModelRequest, PreparedModelRequest};
+pub use request::{InputAnchor, ModelRequest, PreparedModelRequest};
 pub use tool_call::ToolCall;
 
 use crate::store::HistoryIo;

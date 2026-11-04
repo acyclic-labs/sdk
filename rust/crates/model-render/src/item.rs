@@ -90,7 +90,14 @@ pub enum ItemKind {
 /// conversation, agent count or number of models in an alloy.
 #[derive(Clone, Debug, Serialize)]
 #[serde(transparent)]
-pub struct WireItem(Record, #[serde(skip)] [Option<bool>; 2]);
+pub struct WireItem(Record, #[serde(skip)] [Option<GeminiTurn>; 2]);
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GeminiTurn {
+    pub model: bool,
+    pub parts_end: usize,
+    pub empty: bool,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -163,17 +170,36 @@ impl WireItem {
         // Derive this fixed semantic fact once at ingress, never by decoding
         // the selected history during rendering.
         #[derive(Deserialize)]
-        struct Role<'a> {
+        #[serde(rename_all = "lowercase")]
+        enum Role {
+            User,
+            Model,
+            #[serde(other)]
+            Other,
+        }
+        #[derive(Deserialize)]
+        struct Turn<'a> {
+            role: Option<Role>,
             #[serde(borrow)]
-            role: Option<&'a str>,
+            parts: Option<&'a RawValue>,
         }
         let role = |wire: Option<&RawValue>| {
-            wire.and_then(|wire| serde_json::from_str::<Role<'_>>(wire.get()).ok())
-                .and_then(|role| match role.role {
-                    Some("model") => Some(true),
-                    Some("user") => Some(false),
-                    _ => None,
-                })
+            let wire = wire?;
+            let turn = serde_json::from_str::<Turn<'_>>(wire.get()).ok()?;
+            let model = match turn.role? {
+                Role::Model => true,
+                Role::User => false,
+                _ => return None,
+            };
+            let parts = turn.parts?.get();
+            if !parts.starts_with('[') || !parts.ends_with(']') {
+                return None;
+            }
+            Some(GeminiTurn {
+                model,
+                parts_end: parts.as_ptr() as usize - wire.get().as_ptr() as usize + parts.len() - 1,
+                empty: parts[1..parts.len() - 1].trim().is_empty(),
+            })
         };
         let native =
             role((record.provenance.family == Family::Gemini).then_some(record.wire.as_ref()));
@@ -203,7 +229,7 @@ impl WireItem {
             .map(|(family, wire)| (*family, wire.as_ref()))
     }
 
-    pub(crate) fn gemini_model_turn(&self, selected: &RawValue) -> Option<bool> {
+    pub(crate) fn gemini_turn(&self, selected: &RawValue) -> Option<GeminiTurn> {
         self.1[usize::from(!std::ptr::eq(selected, self.wire()))]
     }
 

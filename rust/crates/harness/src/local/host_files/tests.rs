@@ -992,15 +992,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         let complete = |claim| {
             session(SessionAction::Complete {
                 claim,
-                outcome: crate::Outcome::Succeeded(crate::executor::TurnOutput {
-                    #[cfg(feature = "research")]
-                    journal_cut: None,
-                    text: "done".into(),
-                    metadata: Value::Null,
-                    steps: 1,
-                    transcript: Vec::new(),
-                    attachments: Vec::new(),
-                }),
+                outcome: crate::Outcome::Succeeded(crate::executor::TurnOutput::new("done".into(), Value::Null, 1)),
             })
         };
         let settled = complete(claim.clone())?;

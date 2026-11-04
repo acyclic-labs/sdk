@@ -51,16 +51,31 @@ pub(super) struct Chat<'a> {
 }
 
 impl acyclic_model_render::Segment for Message<'_> {
+    fn selected(
+        &self,
+        _: &acyclic_model_render::Provenance,
+    ) -> Result<bool, acyclic_model_render::RenderError> {
+        Ok(true)
+    }
     fn write(
         &self,
         _: &acyclic_model_render::Provenance,
+        instruction: Option<&str>,
         writer: &mut impl std::io::Write,
-    ) -> Result<Option<bool>, acyclic_model_render::RenderError> {
+    ) -> Result<bool, acyclic_model_render::RenderError> {
+        if let (
+            Self::Gemini {
+                role: "user",
+                parts,
+            },
+            Some(instruction),
+        ) = (self, instruction)
+        {
+            acyclic_model_render::gemini_summary(parts, instruction, writer)?;
+            return Ok(true);
+        }
         serde_json::to_writer(writer, self).map_err(acyclic_model_render::json_error)?;
-        Ok(match self {
-            Self::Gemini { role, .. } => Some(*role == "model"),
-            _ => None,
-        })
+        Ok(false)
     }
 }
 
@@ -68,6 +83,7 @@ impl acyclic_model_render::Segment for Message<'_> {
 /// tools, the conversation, then the per-call trailer.
 pub(crate) struct Request<'a> {
     pub(super) target: acyclic_model_render::Provenance,
+    pub(super) summary: Option<std::borrow::Cow<'a, str>>,
     pub(super) fields: Fields,
     pub(super) messages: Vec<Message<'a>>,
 }
@@ -84,15 +100,35 @@ impl Request<'_> {
     }
 
     pub(crate) fn tail(&self) -> acyclic_harness_core::Result<acyclic_model_render::Tail> {
-        acyclic_model_render::Tail::new(&self.fields).map_err(rendered)
+        match self.summary {
+            Some(_) => acyclic_model_render::Tail::summary(&self.fields, self.target.family),
+            None => acyclic_model_render::Tail::new(&self.fields),
+        }
+        .map_err(rendered)
     }
 
     pub(crate) fn render(
         &self,
         writer: &mut impl std::io::Write,
     ) -> acyclic_harness_core::Result<()> {
-        acyclic_model_render::render(&self.header()?, &self.messages, &self.tail()?, writer)
-            .map_err(rendered)
+        self.render_segments(&self.messages, writer)
+    }
+
+    /// The same dispatch for ordinary segments and observed cache segments.
+    pub(crate) fn render_segments<S: acyclic_model_render::Segment>(
+        &self,
+        messages: impl IntoIterator<Item = S>,
+        writer: &mut impl std::io::Write,
+    ) -> acyclic_harness_core::Result<()> {
+        let header = self.header()?;
+        let tail = self.tail()?;
+        match &self.summary {
+            Some(instruction) => {
+                acyclic_model_render::render_summary(&header, messages, instruction, &tail, writer)
+            }
+            None => acyclic_model_render::render(&header, messages, &tail, writer),
+        }
+        .map_err(rendered)
     }
 
     pub(crate) fn encode(&self) -> acyclic_harness_core::Result<Vec<u8>> {
@@ -159,6 +195,7 @@ impl<'a> Request<'a> {
                 endpoint: "https://generated.invalid".into(),
                 credential_scope: None,
             },
+            summary: None,
             fields,
             messages,
         }
@@ -241,7 +278,7 @@ pub(super) fn replay_turns_with(
         };
         super::sequence::push(adapter, &mut projected, next).unwrap();
     }
-    super::sequence::finish_with(adapter, &mut projected, rules).ok()?;
+    super::sequence::finish_with(adapter, &mut projected, rules, false).ok()?;
     match crate::json(&serde_json::to_vec(&projected).unwrap()).unwrap() {
         Value::Array(output) => Some(output),
         _ => unreachable!("a message list encodes as an array"),

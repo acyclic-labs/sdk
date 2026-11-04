@@ -2,6 +2,154 @@
 //! Only a validated new suffix can extend that cut.
 use super::*;
 
+/// Exact immutable input observed by a consumer. Only its prepared owner can
+/// issue this anchor; continuations retain the original configuration and cut.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InputAnchor {
+    digest: [u8; 32],
+    messages: usize,
+    bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct InputStats {
+    extra: u64,
+    native: bool,
+    expanding: bool,
+}
+
+impl InputStats {
+    fn extend(&mut self, messages: &[ModelMessage], io: Option<&PreparationIo>) -> Result<()> {
+        for message in messages {
+            charge_items(io, 1)?;
+            #[cfg(any(test, feature = "test-support"))]
+            acyclic_differential::record(("input footprint messages", 1u64));
+            self.expanding |=
+                matches!(&message.content, ModelContent::Text(text) if text.trim().is_empty());
+            for part in message.content.parts() {
+                charge_items(io, 1)?;
+                self.expanding |= match part {
+                    ModelContentPart::Notices { .. } | ModelContentPart::File { .. } => true,
+                    ModelContentPart::Text { text, .. } => text.trim().is_empty(),
+                    _ => false,
+                };
+            }
+            for (file, policy) in message.content.file_parts() {
+                charge_items(io, 1)?;
+                policy.validate_projection(file, u64::MAX)?;
+                self.native |= matches!(policy, FileProjectionPolicy::Native(_));
+                if !matches!(policy, FileProjectionPolicy::Reference) {
+                    self.extra = policy
+                        .projected_bytes(file)?
+                        .checked_mul(6)
+                        .and_then(|bytes| self.extra.checked_add(bytes))
+                        .ok_or_else(|| invalid(io, "input footprint size overflows"))?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Fixed-size facts about the same immutable cut as the canonical encoding.
+/// Cold readers may compute independently; publication never waits on them.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Input {
+    stats: std::sync::OnceLock<InputStats>,
+    observed: std::sync::OnceLock<InputAnchor>,
+    inherited: Option<InputAnchor>,
+}
+
+impl Input {
+    fn stats(&self, request: &ModelRequest) -> Result<InputStats> {
+        if let Some(stats) = self.stats.get() {
+            return Ok(*stats);
+        }
+        let mut stats = InputStats::default();
+        stats.extend(&request.messages, None)?;
+        let _ = self.stats.set(stats);
+        Ok(stats)
+    }
+
+    pub(super) fn extend(
+        self,
+        suffix: &[ModelMessage],
+        io: Option<&PreparationIo>,
+    ) -> Result<Self> {
+        let inherited = self.observed.get().copied().or(self.inherited);
+        let stats = std::sync::OnceLock::new();
+        if let Some(mut prior) = self.stats.into_inner() {
+            prior.extend(suffix, io)?;
+            let _ = stats.set(prior);
+        }
+        Ok(Self {
+            stats,
+            observed: Default::default(),
+            inherited,
+        })
+    }
+}
+
+impl PreparedModelRequest {
+    /// Canonical input plus a conservative JSON expansion of pinned bodies.
+    /// Reads no files and never serializes or hashes admitted messages.
+    pub fn input_bytes(&self) -> Result<u64> {
+        (self.bytes.len() as u64)
+            .checked_add(self.input.stats(&self.request)?.extra)
+            .ok_or_else(|| invalid(None, "input footprint size overflows"))
+    }
+
+    /// Whether compressed native media prevents a byte-based token bound.
+    pub fn input_has_native_media(&self) -> Result<bool> {
+        Ok(self.input.stats(&self.request)?.native)
+    }
+
+    /// Whether an appended byte bound can omit provider rendering work.
+    /// Blank runs and expandable boundary items require actual rendering.
+    pub fn input_has_byte_bound(&self) -> Result<bool> {
+        let stats = self.input.stats(&self.request)?;
+        Ok(!stats.native && !stats.expanding)
+    }
+
+    /// Retains this exact input as an observation for future continuations.
+    /// Provider token totals remain owned by the observing provider.
+    pub fn observe_input(&self) -> Result<InputAnchor> {
+        let anchor = InputAnchor {
+            digest: self.request_digest,
+            messages: self.request.messages.len(),
+            bytes: self.input_bytes()?,
+        };
+        let _ = self.input.observed.set(anchor);
+        Ok(anchor)
+    }
+
+    /// Added bytes after an exact observed prefix. A retained continuation
+    /// checks fixed-size custody; independently prepared input verifies its
+    /// cold prefix once per query using the complete canonical configuration.
+    pub fn input_since(&self, anchor: InputAnchor) -> Result<Option<u64>> {
+        let matches =
+            if self.request_digest == anchor.digest || self.input.inherited == Some(anchor) {
+                true
+            } else {
+                let Some(messages) = self.request.messages.get(..anchor.messages) else {
+                    return Ok(None);
+                };
+                #[cfg(any(test, feature = "test-support"))]
+                acyclic_differential::record(("input prefix rebuilds", 1u64));
+                crate::executor::json::canonical_json_digest(
+                    &Envelope::new(&self.request, messages),
+                    u64::MAX,
+                    &mut None,
+                )? == anchor.digest
+            };
+        Ok(if matches {
+            self.input_bytes()?.checked_sub(anchor.bytes)
+        } else {
+            None
+        })
+    }
+}
+
 pub(super) type MessageDigests = ([u8; 32], Option<[u8; 32]>);
 type Encoded = (acyclic_stream::OwnedBytes, [u8; 32], Vec<EncodingPrefix>);
 
@@ -26,7 +174,22 @@ struct Envelope<'a> {
     model: &'a Model,
     #[serde(skip_serializing_if = "crate::model::ModelSampling::is_default")]
     sampling: crate::model::ModelSampling,
+    summary: bool,
     tools: &'a [crate::tool::ToolDefinition],
+}
+
+impl<'a> Envelope<'a> {
+    fn new(request: &'a ModelRequest, messages: &'a [ModelMessage]) -> Self {
+        Self {
+            summary: request.summary,
+            compose_tools: request.compose_tools,
+            sampling: request.sampling,
+            max_output_tokens: request.max_output_tokens,
+            messages,
+            model: &request.model,
+            tools: &request.tools,
+        }
+    }
 }
 
 fn encode<T: Serialize>(
@@ -63,17 +226,7 @@ fn envelope(
     request: &ModelRequest,
     io: Option<&PreparationIo>,
 ) -> Result<(acyclic_stream::OwnedBytes, usize)> {
-    let bytes = encode(
-        &Envelope {
-            compose_tools: request.compose_tools,
-            sampling: request.sampling,
-            max_output_tokens: request.max_output_tokens,
-            messages: &[],
-            model: &request.model,
-            tools: &request.tools,
-        },
-        io,
-    )?;
+    let bytes = encode(&Envelope::new(request, &[]), io)?;
     // The fixed top-level delimiter precedes model and tool strings.
     let marker = b"\"messages\":[]";
     let open = bytes

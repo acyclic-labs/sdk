@@ -40,12 +40,45 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
                 },
             ]),
         );
+        let tools = echo_tools(
+            Arc::new(FakeTool(AtomicUsize::new(0))),
+            json!(true),
+            json!(true),
+            json!(true),
+        )?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let tools = {
+            let mut tools = tools;
+            tools.register(
+                (
+                    crate::tools::catalog()
+                        .find(|spec| spec.name == "code")
+                        .unwrap()
+                        .bind()?,
+                    None,
+                ),
+                &mut None,
+                None,
+            )?;
+            tools
+        };
         let executor = uncompacted_executor(
             Model::new("test".into(), "summary".into(), "1".into())?,
             provider.clone(),
             ContextPipeline::default(),
-            ToolRegistry::default(),
+            tools,
         )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new([
+                    "tool:call:code",
+                    "tool:call:example.echo",
+                    capability::INTERACTION_ROUTE,
+                ]),
+                Limits::default(),
+            )?,
+            allowed()?,
+        )?
         .with_max_output_tokens(1024)?;
         let journal = Journal::default();
         let operation = OperationId::new();
@@ -76,7 +109,17 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
                 .await?,
             summary
         );
-        assert_eq!(provider.requests().len(), 1);
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].summary);
+        assert_eq!(requests[0].compose_tools, !cfg!(target_arch = "wasm32"));
+        assert!(!requests[0].tools.is_empty());
+        let (context, summary_instruction) = requests[0].split_summary_instruction()?;
+        assert_eq!(context.len(), 1);
+        assert_eq!(
+            summary_instruction,
+            Some(&ModelContent::Text("Summarize this context".into()))
+        );
         assert_eq!(provider.reconciliations().len(), 2);
     }
     Ok(())
