@@ -143,9 +143,8 @@ test("observed producer frame asserts captured content with one screen projectio
   try {
     const raw = queryCapture.stdout.slice(-32);
     for (const [rejects, assertion] of [
-      [false, { contains: ["workspace diff query is u"] }],
+      [false, { contains: ["workspace diff query is u"], raw: [raw] }],
       [true, { contains: ["INTENTIONALLY_ABSENT_DIFF_CONTENT"] }],
-      [false, { raw: [raw] }],
       [true, { raw: [raw + "\0"] }],
     ]) {
       const processes = new TerminalProcess();
