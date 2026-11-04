@@ -973,9 +973,17 @@ mod tests {
             NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                 .map_err(|(error, _)| error)?;
         let probe_trial = trial();
-        let stream = probe_trial
-            .generate_with_native_work(&request, dispatch, &probe)?
-            .await?;
+        let before = probe.receipt();
+        let mut prepared = None;
+        let physical = acyclic_test_support::measure(|| {
+            prepared = Some(probe_trial.generate_with_native_work(&request, dispatch, &probe));
+        });
+        let admitted = probe.receipt().allocation_operations - before.allocation_operations;
+        assert!(
+            physical.count_total <= admitted,
+            "replay admission allocated without original funding: physical={physical:?}, admitted={admitted}"
+        );
+        let stream = prepared.unwrap()?.await?;
         let complete_allocations = probe.receipt().allocation_operations;
         drop(stream);
         assert!(complete_allocations > 1);
