@@ -58,7 +58,7 @@ async fn dropping_the_last_customer_owner_retires_the_native_namespace()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "mounts a live native session; requires the host's native mount capability"]
+#[ignore = "job=stress-native-mount"]
 async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
 -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(windows)]

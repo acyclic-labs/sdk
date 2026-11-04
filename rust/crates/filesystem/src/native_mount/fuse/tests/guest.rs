@@ -13,7 +13,7 @@ use std::num::{NonZeroU16, NonZeroU32};
 use std::os::unix::net::{UnixListener, UnixStream};
 
 #[test]
-#[ignore = "requires prepared Linux guest artifacts, KVM, QEMU and cloud-hypervisor"]
+#[ignore = "job=stress-guest-filesystem"]
 fn standard_qemu_and_cloud_hypervisor_guests_read_write_and_delete()
 -> Result<(), Box<dyn std::error::Error>> {
     let artifacts = std::env::var_os("ACYCLIC_FS_GUEST_ARTIFACTS").ok_or(

@@ -535,7 +535,7 @@ async fn generated_clients_match_cloud_filesystem_roundtrip() -> TestResult {
 /// and a locally minted Filesystem bearer in
 /// `ACYCLIC_LOCAL_CLOUD`.
 #[tokio::test]
-#[ignore = "needs a local cloud: node scripts/local-cloud.mjs --topology full"]
+#[ignore = "job=stress-cloud-contracts"]
 async fn generated_roundtrip_matches_cloud_handlers_on_a_local_cloud() -> TestResult {
     let file = std::env::var("ACYCLIC_LOCAL_CLOUD")
         .map_err(|_| "ACYCLIC_LOCAL_CLOUD names the local cloud's endpoints file")?;

@@ -548,7 +548,7 @@ async fn delete_all_and_check_absence(actors: &mut grpc::Client) -> TestResult {
 }
 
 #[tokio::test]
-#[ignore = "needs node scripts/local-cloud.mjs --topology full"]
+#[ignore = "job=stress-cloud-contracts"]
 async fn supported_actor_lifecycle_matches_the_counter_oracle() -> TestResult {
     let endpoints = endpoints()?;
     let phase = std::time::Instant::now();
@@ -633,7 +633,7 @@ async fn supported_actor_lifecycle_matches_the_counter_oracle() -> TestResult {
 }
 
 #[tokio::test]
-#[ignore = "needs node scripts/local-cloud.mjs --topology full (Cloud bf5d555a0e)"]
+#[ignore = "job=stress-cloud-contracts"]
 async fn subscription_delivery_advances_cursors_and_preserves_event_order() -> TestResult {
     let endpoints = endpoints()?;
     let mut actors = published_actor(&endpoints).await?;
@@ -727,7 +727,7 @@ async fn subscription_delivery_advances_cursors_and_preserves_event_order() -> T
 }
 
 #[tokio::test]
-#[ignore = "needs node scripts/local-cloud.mjs --topology full (Cloud bf5d555a0e)"]
+#[ignore = "job=stress-cloud-contracts"]
 async fn paused_subscription_resumes_with_exact_cursor_preservation() -> TestResult {
     paused::qualify().await
 }

@@ -385,7 +385,7 @@ pub(in crate::native_mount) fn trace_kernel_packets<T, E>(
 }
 
 #[test]
-#[ignore = "captures requests from a real Linux FUSE mount"]
+#[ignore = "job=stress-native-mount"]
 fn kernel_packets_replay_through_the_mount_free_entry() -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Write as _;
 

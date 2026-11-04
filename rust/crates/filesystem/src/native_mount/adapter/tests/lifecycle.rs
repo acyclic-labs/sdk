@@ -432,7 +432,7 @@ fn sparse_seek_and_special_nodes_preserve_canonical_native_semantics()
 
 #[cfg(target_os = "windows")]
 #[test]
-#[ignore = "requires the live Windows ProjFS optional feature"]
+#[ignore = "job=stress-native-mount"]
 fn writable_projfs_captures_closes_renames_links_and_deletes()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = Arc::new(source(FilesystemProfile::Windows)?);

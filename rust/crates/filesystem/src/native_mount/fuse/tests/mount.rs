@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
+#[ignore = "job=stress-native-mount"]
 pub(super) fn linux_changes_around_the_mount_reach_every_kernel_cache()
 -> Result<(), Box<dyn std::error::Error>> {
     let (mounted_source, around) = shared_sources(posix_config())?;
@@ -51,7 +51,7 @@ pub(super) fn linux_changes_around_the_mount_reach_every_kernel_cache()
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
+#[ignore = "job=stress-native-mount"]
 pub(super) fn linux_an_open_reader_sees_a_write_through_another_handle()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{Read as _, Seek as _, Write as _};
@@ -87,7 +87,7 @@ pub(super) fn linux_an_open_reader_sees_a_write_through_another_handle()
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
+#[ignore = "job=stress-native-mount"]
 pub(super) fn linux_writes_keep_node_facts_exact() -> Result<(), Box<dyn std::error::Error>> {
     let (inner, _) = shared_sources(posix_config())?;
     let volume_id = inner.volume_id()?;
@@ -122,7 +122,7 @@ pub(super) fn linux_writes_keep_node_facts_exact() -> Result<(), Box<dyn std::er
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
+#[ignore = "job=stress-native-mount"]
 pub(super) fn linux_listings_resume_across_pages_and_readers()
 -> Result<(), Box<dyn std::error::Error>> {
     let (inner, around) = shared_sources(posix_config())?;
@@ -191,7 +191,7 @@ pub(super) fn linux_listings_resume_across_pages_and_readers()
 /// neither lose nor repeat a name, and every name of the file reports its
 /// current facts.
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
+#[ignore = "job=stress-native-mount"]
 pub(super) fn linux_listings_that_name_one_file_repeatedly_split_without_loss()
 -> Result<(), Box<dyn std::error::Error>> {
     let (inner, around) = shared_sources(posix_config())?;
@@ -269,7 +269,7 @@ pub(super) fn only_folding_volumes_with_case_variants_fold_names()
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
+#[ignore = "job=stress-native-mount"]
 pub(super) fn linux_folded_names_stay_exact_through_the_mount()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::MetadataExt as _;
@@ -314,7 +314,7 @@ pub(super) fn linux_folded_names_stay_exact_through_the_mount()
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
+#[ignore = "job=stress-native-mount"]
 pub(super) fn linux_rebind_reaches_every_kernel_cache() -> Result<(), Box<dyn std::error::Error>> {
     let (reader, writer) = tracking_sources()?;
     let reader = Arc::new(reader);
@@ -503,7 +503,7 @@ pub(super) fn finishes_within(limit: Duration, operation: impl FnOnce() + Send +
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
+#[ignore = "job=stress-native-mount"]
 pub(super) fn linux_callbacks_proceed_while_others_block_in_the_source()
 -> Result<(), Box<dyn std::error::Error>> {
     let (inner, _) = shared_sources(posix_config())?;

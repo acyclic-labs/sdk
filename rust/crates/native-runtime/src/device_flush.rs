@@ -468,7 +468,7 @@ mod apple {
         }
 
         #[test]
-        #[ignore = "subprocess of a_waiting_process_recovers_when_the_drain_holder_exits"]
+        #[ignore = "job=stress-native-drain; fixture=a_waiting_process_recovers_when_the_drain_holder_exits,processes_share_a_drain_that_started_after_their_ticket"]
         fn child_holds_or_waits_for_drain() -> io::Result<()> {
             let arguments = std::env::var(LOCK_CHILD).map_err(io::Error::other)?;
             let (id, mode) = arguments
@@ -570,7 +570,7 @@ mod apple {
 
         /// Run only as the child of the test below, in its own process.
         #[test]
-        #[ignore = "a child process of processes_with_their_own_tmpdir_share_one_drain"]
+        #[ignore = "job=stress-native-drain; fixture=processes_with_their_own_tmpdir_share_one_drain"]
         fn child_settles_one_drain() -> io::Result<()> {
             let id = std::env::var(CHILD).map_err(io::Error::other)?;
             let shared = shared(u64::from_str_radix(&id, 16).map_err(io::Error::other)?)?;

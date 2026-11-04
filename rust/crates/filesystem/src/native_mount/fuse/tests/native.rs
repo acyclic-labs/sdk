@@ -427,7 +427,7 @@ pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
+#[ignore = "job=stress-native-mount"]
 pub(super) fn linux_installed_callbacks_observe_original_finite_mount_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     crate::native_mount::initialize_native_mount_services()?;

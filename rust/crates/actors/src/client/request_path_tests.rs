@@ -221,7 +221,7 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
 }
 
 #[test]
-#[ignore = "opt-in debug-profile request-path measurement: npm run bench:clients"]
+#[ignore = "job=bench-client-conversion"]
 fn request_path_measure_admitted_request_conversion() -> Result<(), Error> {
     for consume in [false, true] {
         let requests: Result<Vec<_>, _> = (0..256)

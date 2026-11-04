@@ -709,7 +709,7 @@ fn disabled_operation_allocates_nothing_with_enabled_negative_control()
 }
 
 #[test]
-#[ignore = "on-demand trace cost measurement"]
+#[ignore = "job=bench-operation-tracing"]
 fn trace_on_off_cost() -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_observability::Export;
     use std::{sync::Arc, time::Instant};
@@ -917,7 +917,7 @@ fn slo_file_refuses_empty_and_ambiguous_evidence() -> Result<(), Box<dyn std::er
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "requires strace; run explicitly to count actual kernel crossings"]
+#[ignore = "job=stress-operation-syscalls"]
 fn disabled_operation_has_zero_syscalls_with_real_io_negative_control()
 -> Result<(), Box<dyn std::error::Error>> {
     for negative in [false, true] {

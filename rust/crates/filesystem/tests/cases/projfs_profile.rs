@@ -11,7 +11,7 @@ use std::time::Instant;
 mod native_access;
 
 #[tokio::test]
-#[ignore = "requires a writable ProjFS host; run alone for profiling"]
+#[ignore = "job=stress-filesystem-profile"]
 async fn profile_enumeration_hydration_write_capture() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var_os("ACYCLIC_PROJFS_PROFILE_TRACING").is_some() {
         tracing::subscriber::set_global_default(
@@ -154,7 +154,7 @@ fn phase(name: &str) -> std::io::Result<()> {
 }
 
 #[test]
-#[ignore = "contained external client for the ProjFS workload"]
+#[ignore = "job=stress-filesystem-profile; fixture=profile_enumeration_hydration_write_capture"]
 fn profile_external_client() -> Result<(), Box<dyn std::error::Error>> {
     let Some(root) = std::env::var_os("ACYCLIC_PROJFS_PROFILE_ROOT") else {
         return Ok(());

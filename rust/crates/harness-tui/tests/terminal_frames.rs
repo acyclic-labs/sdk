@@ -451,7 +451,7 @@ fn scrolled(offset: usize) -> impl FnOnce(&mut Frame<'_>) {
 /// Real terminal cost per page-scroll frame (every row repainted): `cargo test --release -p acyclic-harness-tui
 /// --features tui --test terminal_frames -- --exact real_terminal_frame_cost --ignored --nocapture`.
 #[test]
-#[ignore = "real terminal measurement, not an assertion"]
+#[ignore = "job=bench-terminal-rendering"]
 fn real_terminal_frame_cost() -> io::Result<()> {
     const FRAMES: usize = 200;
     let mut report = Vec::new();
@@ -509,7 +509,7 @@ fn real_terminal_frame_cost() -> io::Result<()> {
 /// of 4 MiB measured 110 ms against the 100 ms deadline and timed out.
 #[cfg(windows)]
 #[test]
-#[ignore = "needs an attached console: run with --ignored"]
+#[ignore = "job=bench-terminal-rendering"]
 fn very_large_frames_reach_the_real_console() -> io::Result<()> {
     let (mut output, _guard) = real_terminal()?;
     for mib in [1usize, 4, 16] {

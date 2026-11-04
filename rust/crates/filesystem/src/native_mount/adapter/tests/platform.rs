@@ -1,6 +1,6 @@
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-#[ignore = "requires two live Unix mounts"]
+#[ignore = "job=stress-native-mount"]
 fn independent_mount_start_cases() -> Result<(), Box<dyn std::error::Error>> {
     for (parallel, a_bytes, b_bytes) in [
         (false, b"from-a".as_slice(), b"from-b".as_slice()),
@@ -43,7 +43,7 @@ fn independent_mount_start_cases() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-#[ignore = "mounts a live Unix session; requires the host's native mount capability"]
+#[ignore = "job=stress-native-mount"]
 fn exclusive_create_on_a_unix_mount_creates_once_with_real_timestamps()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = Arc::new(source(FilesystemProfile::Posix)?);
@@ -91,7 +91,7 @@ fn exclusive_create_on_a_unix_mount_creates_once_with_real_timestamps()
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
+#[ignore = "job=stress-native-mount"]
 fn linux_mount_behaviour_cases() -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
     use std::os::unix::fs::MetadataExt as _;
@@ -369,7 +369,7 @@ fn run_unix_mount_cross_process_worker() -> Result<(), Box<dyn std::error::Error
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-#[ignore = "starts two real mount-owning processes; requires the host's native mount capability"]
+#[ignore = "job=stress-native-mount"]
 fn unix_mounts_in_distinct_processes_remain_independent() -> Result<(), Box<dyn std::error::Error>>
 {
     if std::env::var_os("ACYCLIC_FS_UNIX_CHILD_MOUNT").is_some() {

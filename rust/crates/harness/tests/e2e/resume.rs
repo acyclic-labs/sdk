@@ -282,7 +282,7 @@ impl ModelProvider for PausedPrefix {
 
 /// The child process: run the turn until the parent kills it.
 #[tokio::test]
-#[ignore = "the child of resume::killed_turn_resumes_from_a_loopback_journal"]
+#[ignore = "job=stress-harness-resume; fixture=killed_turn_resumes_from_a_loopback_journal"]
 async fn child() -> TestResult {
     let Some(config) = acyclic_harness::test_support::environment(CHILD) else {
         return Ok(());

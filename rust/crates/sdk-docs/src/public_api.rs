@@ -7,7 +7,7 @@
 
 use crate::Error;
 use public_api::tokens::Token;
-use rustdoc_types::{Crate, Id, ItemEnum, FORMAT_VERSION};
+use rustdoc_types::{Crate, FORMAT_VERSION, Id, ItemEnum};
 use serde_json::Value;
 use std::{io::Write, path::Path};
 
@@ -336,7 +336,7 @@ fn remove_known_fields(
 mod tests {
     use super::{adapt, exported_path, exported_path_for_item, remove_known_fields};
     use public_api::tokens::Token;
-    use rustdoc_types::{Crate, ItemEnum, FORMAT_VERSION};
+    use rustdoc_types::{Crate, FORMAT_VERSION, ItemEnum};
     use serde_json::json;
     use std::env;
     use std::fs;
@@ -363,9 +363,11 @@ mod tests {
     fn adapter_removes_only_typed_nullable_metadata() {
         let mut value = base();
         remove_known_fields(&mut value, [(7, "function")]).expect("nullable metadata is supported");
-        assert!(value["index"]["7"]["inner"]["function"]
-            .get("default_unstable")
-            .is_none());
+        assert!(
+            value["index"]["7"]["inner"]["function"]
+                .get("default_unstable")
+                .is_none()
+        );
         assert_eq!(value["default_unstable"]["user_defined"], true);
         assert_eq!(
             value["index"]["7"]["inner"]["function"]["user_defined"]["default_unstable"],
@@ -616,9 +618,11 @@ mod tests {
         ] {
             let mut tokens = vec![Token::Keyword("impl".into()), Token::Whitespace];
             tokens.extend(target);
-            assert!(exported_path_for_item(tokens.iter(), true)
-                .expect("compound impl should be retained without an exported path")
-                .is_empty());
+            assert!(
+                exported_path_for_item(tokens.iter(), true)
+                    .expect("compound impl should be retained without an exported path")
+                    .is_empty()
+            );
         }
     }
 
@@ -641,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires SDK_DOCS_RUSTDOC_CORPUS to point at the bounded warm corpus"]
+    #[ignore = "job=stress-rustdoc-corpus"]
     fn warm_rustdoc_corpus_reports_all_unsupported_exported_paths() {
         const FILES: [&str; 11] = [
             "acyclic_actors.json",

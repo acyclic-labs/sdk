@@ -45,7 +45,7 @@ async fn has_record(
 }
 
 #[tokio::test]
-#[ignore = "local-only APFS watcher to canonical checkout rename diagnostic"]
+#[ignore = "job=stress-filesystem-profile"]
 async fn report_macos_directory_rename_capture() -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_fs::model::{
         AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
@@ -143,7 +143,7 @@ async fn report_macos_directory_rename_capture() -> Result<(), Box<dyn std::erro
 }
 
 #[tokio::test]
-#[ignore = "local-only 10k-path APFS working-set qualification"]
+#[ignore = "job=stress-filesystem-profile"]
 #[allow(
     clippy::too_many_lines,
     reason = "one measured scenario shares a single fixture"

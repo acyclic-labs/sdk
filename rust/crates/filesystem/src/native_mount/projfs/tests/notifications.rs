@@ -7,7 +7,7 @@ use super::{
     open_notifications, setup_work, windows_checkout_source, windows_path,
 };
 #[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+#[ignore = "job=stress-native-mount"]
 async fn created_and_renamed_files_stay_observed_after_capture()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
@@ -56,7 +56,7 @@ async fn created_and_renamed_files_stay_observed_after_capture()
 }
 
 #[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+#[ignore = "job=stress-native-mount"]
 async fn native_watcher_observes_both_projected_rename_paths()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
@@ -153,7 +153,7 @@ async fn native_watcher_observes_both_projected_rename_paths()
 }
 
 #[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+#[ignore = "job=stress-native-mount"]
 async fn nested_new_directory_hardlink_and_rename_publish() -> Result<(), Box<dyn std::error::Error>>
 {
     let work = setup_work()?;
@@ -212,7 +212,7 @@ async fn native_access_projfs_preoperations_use_the_shared_decision()
 }
 
 #[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+#[ignore = "job=stress-native-mount"]
 async fn native_access_projfs_vetoes_host_rename_delete_and_hardlink()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::access::Action;

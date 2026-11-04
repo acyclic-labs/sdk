@@ -18,7 +18,7 @@ fn request(
 }
 
 #[test]
-#[ignore = "subprocess fixture for the live macOS crash recovery test"]
+#[ignore = "job=stress-native-mount; fixture=startup_reclaims_crashed_sdk_mounts_and_preserves_live_and_foreign_mounts,permission_denied_startup_preserves_live_and_foreign_mounts,negative_control_direct_only_startup_cannot_retire_after_eperm"]
 fn crashed_owner() -> TestResult {
     let Some(root) = std::env::var_os("ACYCLIC_RECLAIM_TEST_ROOT") else {
         return Ok(());
@@ -83,19 +83,19 @@ impl Drop for CrashRoots {
 }
 
 #[test]
-#[ignore = "requires live macOS NFS mounts and SIGKILL"]
+#[ignore = "job=stress-native-mount"]
 fn startup_reclaims_crashed_sdk_mounts_and_preserves_live_and_foreign_mounts() -> TestResult {
     check_startup_recovery(false, crate::initialize_native_mount_services)
 }
 
 #[test]
-#[ignore = "requires live macOS NFS mounts and SIGKILL"]
+#[ignore = "job=stress-native-mount"]
 fn permission_denied_startup_preserves_live_and_foreign_mounts() -> TestResult {
     check_startup_recovery(true, crate::initialize_native_mount_services)
 }
 
 #[test]
-#[ignore = "requires live macOS NFS mounts and SIGKILL"]
+#[ignore = "job=stress-native-mount"]
 fn negative_control_direct_only_startup_cannot_retire_after_eperm() -> TestResult {
     let attempted = std::cell::Cell::new(false);
     let result = check_startup_recovery(true, || {

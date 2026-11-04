@@ -32,7 +32,7 @@ fn scene(offset: usize) -> impl FnOnce(&mut Frame<'_>) {
 /// Native kernel/device cost, paired with the independently initialized old
 /// terminal. Run in ConPTY on Windows and a drained kernel PTY on Unix.
 #[test]
-#[ignore = "physical terminal measurement: run via the platform host"]
+#[ignore = "job=bench-terminal-rendering"]
 fn real_terminal_region_cost() -> io::Result<()> {
     let size = Size::new(100, 40);
     let area = Rect::new(0, 0, size.width, size.height);

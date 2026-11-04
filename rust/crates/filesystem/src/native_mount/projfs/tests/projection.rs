@@ -151,7 +151,7 @@ fn projfs_name_order_differs_from_sdk_cursor_order() {
 }
 
 #[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+#[ignore = "job=stress-native-mount"]
 async fn listing_follows_source_and_mount_changes() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let source = windows_checkout_source().await?;
@@ -184,7 +184,7 @@ async fn listing_follows_source_and_mount_changes() -> Result<(), Box<dyn std::e
 }
 
 #[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+#[ignore = "job=stress-native-mount"]
 async fn a_projected_link_follows_its_source_target() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let source = windows_checkout_source().await?;
@@ -222,7 +222,7 @@ async fn a_projected_link_follows_its_source_target() -> Result<(), Box<dyn std:
 }
 
 #[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+#[ignore = "job=stress-native-mount"]
 async fn a_projected_directory_link_leads_into_its_directory()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
@@ -253,7 +253,7 @@ async fn a_projected_directory_link_leads_into_its_directory()
 }
 
 #[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+#[ignore = "job=stress-native-mount"]
 async fn a_held_link_is_removed_or_replaced_after_close() -> Result<(), Box<dyn std::error::Error>>
 {
     use std::os::windows::fs::OpenOptionsExt as _;
@@ -348,7 +348,7 @@ async fn a_held_link_is_removed_or_replaced_after_close() -> Result<(), Box<dyn 
 }
 
 #[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+#[ignore = "job=stress-native-mount"]
 async fn paths_the_source_gains_appear_once_revalidated() -> Result<(), Box<dyn std::error::Error>>
 {
     let work = setup_work()?;
@@ -397,7 +397,7 @@ async fn paths_the_source_gains_appear_once_revalidated() -> Result<(), Box<dyn 
 }
 
 #[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+#[ignore = "job=stress-native-mount"]
 async fn advanced_view_reveals_a_path_absent_before() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let root = tempfile::tempdir()?;
@@ -422,7 +422,7 @@ async fn advanced_view_reveals_a_path_absent_before() -> Result<(), Box<dyn std:
 }
 
 #[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+#[ignore = "job=stress-native-mount"]
 async fn a_file_holds_only_the_content_its_listing_named() -> Result<(), Box<dyn std::error::Error>>
 {
     for listed_first in [false, true] {
@@ -432,7 +432,7 @@ async fn a_file_holds_only_the_content_its_listing_named() -> Result<(), Box<dyn
 }
 
 #[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+#[ignore = "job=stress-native-mount"]
 async fn a_lazy_workspace_lists_through_the_projection() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
 
@@ -498,7 +498,7 @@ fn source_failures_keep_distinct_statuses() {
 }
 
 #[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+#[ignore = "job=stress-native-mount"]
 async fn rustc_links_object_files_created_inside_projection()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
