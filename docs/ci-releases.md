@@ -1,7 +1,7 @@
 # CI and SDK releases
 
-Every PR and main push runs `SDK Static`, one required job on standard
-GitHub-hosted Ubuntu. It runs `cargo update --workspace --locked` to check
+Every PR and main push runs `SDK Static`, one required job on
+`kaizen-linux`. It runs `cargo update --workspace --locked` to check
 manifest/lockfile consistency without compiling. The job has a one-minute timeout;
 the initial GitHub run completed in seven seconds. Documentation changes receive
 the same required check. Superseded static runs are cancelled.
