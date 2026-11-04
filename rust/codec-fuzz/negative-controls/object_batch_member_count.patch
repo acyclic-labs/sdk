@@ -10,4 +10,4 @@ diff --git a/rust/crates/objects/src/convert.rs b/rust/crates/objects/src/conver
 -    }
      value
          .results
-         .iter()
+         .into_iter()
