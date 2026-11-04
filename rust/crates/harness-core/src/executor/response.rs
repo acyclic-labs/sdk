@@ -1,3 +1,4 @@
+use super::compaction::CompactionSource;
 use super::*;
 
 mod compaction_source;
@@ -350,17 +351,22 @@ impl StockExecution<'_> {
                     projection.context.messages =
                         crate::model::clone_messages(&prepared.request().messages, self.io)?;
                 }
-                let (source, pre_stage) = self
+                let source = self
                     .response_compaction_source(journal, turn, &projection, &accounting, policy)
                     .await?;
+                let source_context = match &source {
+                    CompactionSource::Projected => &projection.context,
+                    CompactionSource::Base { context, .. } => context,
+                };
                 let stage_messages = projection
                     .context
                     .messages
                     .len()
-                    .saturating_sub(source.messages.len());
+                    .saturating_sub(source_context.messages.len());
                 let message_pressure = selected_base
-                    && source.messages.len() > 1
-                    && source.messages.len() > self.compaction_message_limit(true, stage_messages);
+                    && source_context.messages.len() > 1
+                    && source_context.messages.len()
+                        > self.compaction_message_limit(true, stage_messages);
                 if !message_pressure && !token_pressure {
                     return Ok(prepared);
                 }
@@ -368,7 +374,7 @@ impl StockExecution<'_> {
                     journal,
                     (input, step, prior_messages.len()),
                     (projection, accounting),
-                    (source, pre_stage),
+                    source,
                     policy,
                 )
                 .await

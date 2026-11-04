@@ -1,4 +1,5 @@
 use super::*;
+use crate::executor::compaction::CompactionSource;
 
 // Original preparation factories from 3d2f72e2a. Both sides use the current
 // persistence codec, while context transformation and admission stay independent.
@@ -285,12 +286,19 @@ impl StockExecution<'_> {
                 if !message_pressure && !token_pressure {
                     return Ok(prepared);
                 }
-                let pre_stage = projection.canonical.is_some();
+                let source = if projection.canonical.is_some() {
+                    CompactionSource::Base {
+                        context: source,
+                        count: None,
+                    }
+                } else {
+                    CompactionSource::Projected
+                };
                 self.compact_response(
                     journal,
                     (input, step, 0),
                     (projection, accounting),
-                    (source, pre_stage),
+                    source,
                     policy,
                 )
                 .await
