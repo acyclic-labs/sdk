@@ -145,10 +145,16 @@ fn decoder_custody(
                 _ => {}
             }
             let cancel = CancellationToken::new();
-            let original = crate::NativeMaterializationWork::new(budget, &cancel)
-                .map_err(|(error, _)| error)?;
-            let mut work = if native {
-                AuthorityWork::native(&original, &cancel)
+            let original = if native {
+                Some(
+                    crate::NativeMaterializationWork::new(budget, &cancel)
+                        .map_err(|(error, _)| error)?,
+                )
+            } else {
+                None
+            };
+            let mut work = if let Some(original) = &original {
+                AuthorityWork::native(original, &cancel)
             } else {
                 AuthorityWork::new(budget, &cancel)
             };
@@ -156,7 +162,7 @@ fn decoder_custody(
                 crate::kernel::Owned::<Vec<u8>>::allocate(73, &mut work.accounting())?;
             independent.value.resize(73, 0xa5);
             let live = |work: &AuthorityWork<'_>| {
-                if native {
+                if let Some(original) = &original {
                     original.live_allocation_bytes()
                 } else {
                     work.allocations.live_bytes()
