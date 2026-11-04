@@ -272,9 +272,7 @@ fn dropping_cancelled_original_owner_stops_and_reaps_before_releasing_credit() {
         Some(&custody),
     )
     .unwrap();
-    super::super::tests::ready(root.path(), "tree-ready", || {
-        slot.try_wait().unwrap().is_some()
-    });
+    super::super::tests::tree_ready(slot.slot_mut().unwrap().as_mut().unwrap());
     let pid = slot
         .slot_mut()
         .unwrap()

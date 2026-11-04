@@ -516,9 +516,7 @@ fn denied_job_cleanup_retains_child_and_reports_failure() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let mut tree = super::ProcessTree::spawn(&mut super::tests::command("child", temporary.path()))
         .expect("spawn tree");
-    super::tests::ready(temporary.path(), "tree-ready", || {
-        tree.try_wait(None).map_or(true, |status| status.is_some())
-    });
+    super::tests::tree_ready(&mut tree);
     let mut restricted = std::ptr::null_mut();
     // SAFETY: both source and target are this process; the duplicate has
     // zero access rights. Keep the original handle for mandatory cleanup.
@@ -627,7 +625,6 @@ fn denied_admission_still_observes_unassigned_child_exit() {
             .is_some()
     );
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-    assert!(!temporary.path().join("tree-ready").exists());
 }
 
 #[cfg(test)]

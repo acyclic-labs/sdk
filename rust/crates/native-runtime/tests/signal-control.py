@@ -126,6 +126,9 @@ def main():
                 "failed_observation_retains_recovery_authority_against_actual_former_order",
             )
         ]
+        tests.append("process_tree::storage::tests::dropping_cancelled_original_owner_stops_and_reaps_before_releasing_credit")
+        if sys.platform == "win32":
+            tests.append("process_tree::platform::denied_job_cleanup_retains_child_and_reports_failure")
         command = [
             "cargo", "nextest", "run", "--locked", "-p", "acyclic-native-runtime",
             "--lib", "--all-features", "-E",
@@ -398,6 +401,10 @@ qualificationMain([process.argv[1]], (command, args, options) => spawnSync(comma
              b'            .expect("original descendant lifetime lock");',
              b'            .expect("original descendant lifetime lock");\n            drop(_lifetime);',
              "live original descendant reported retirement"),
+            ("closed-readiness", oracle,
+             b'            std::io::stderr()\n                .write_all(b"R")\n                .expect("original descendant readiness write");',
+             b'            return;',
+             "original tree readiness"),
         ]
     elif mode == "--storage-ready":
         mutations = [
