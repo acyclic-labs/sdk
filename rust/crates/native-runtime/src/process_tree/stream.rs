@@ -100,6 +100,34 @@ impl<H: CaptureHandler> ProcessCaptureStream<H> {
     }
 }
 
+/// Replays a scoped simulation's answer through the same credit channel:
+/// its output as one batch, then its terminal outcome.
+#[cfg(feature = "test-support")]
+impl<H: CaptureHandler> ProcessCaptureStream<H> {
+    pub(super) fn answered(spawner: &crate::TaskSpawner, mut outcome: CaptureOutcome<H>) -> Self {
+        let (sender, receiver) = mpsc::channel(1);
+        let (stdout, stderr) = match &mut outcome.result {
+            Ok(output) => (&mut output.stdout, &mut output.stderr),
+            Err(failure) => (&mut failure.stdout, &mut failure.stderr),
+        };
+        let chunk = ProcessChunk {
+            stdout: std::mem::take(stdout),
+            stderr: std::mem::take(stderr),
+        };
+        let completion = spawner.spawn(async move {
+            if !(chunk.stdout.is_empty() && chunk.stderr.is_empty()) {
+                // A closed receiver discards output, as for a live capture.
+                drop(sender.send(chunk).await);
+            }
+            Ok(outcome)
+        });
+        Self {
+            receiver,
+            completion,
+        }
+    }
+}
+
 impl ProcessTree {
     /// Streams from the existing capture pump with one queued output batch.
     /// A slow reader holds no worker and admits no more pipe reads. Owner

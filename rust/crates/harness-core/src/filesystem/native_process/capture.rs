@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_native_runtime::{ProcessCommand, ProcessStdio};
+use acyclic_native_runtime::{CaptureStop, ProcessCommand};
 
 /// Observes borrowed output without copying it or changing the captured result.
 pub type NativeProcessObserver =
@@ -163,45 +163,48 @@ pub async fn start_capture_with_custody<T: Send + 'static>(
 #[doc(hidden)]
 pub async fn start_capture<H: acyclic_native_runtime::CaptureHandler>(
     invocation: Invocation,
-    mut handler: H,
+    handler: H,
     retention: OutputRetention,
 ) -> Result<impl std::future::Future<Output = Result<(NativeProcessOutcome, H)>> + Send + 'static> {
-    // Native capture callbacks may await durable publication on Tokio's
-    // blocking pool, so they run on main's independent native host service.
-    // Spawning runs there too; the running child then holds no worker: the
-    // capture awaits readiness between its turns.
-    let spawner = acyclic_native_runtime::TaskSpawner::current();
-    let started =
-        acyclic_native_runtime::run_blocking_io(
-            move || {
-                let schedule = invocation.schedule;
-                let maximum_output_bytes = invocation.maximum_output_bytes;
-                match start(invocation, &mut handler) {
-                    Ok(Ok((tree, input))) => {
-                        // Transfer physical custody before returning from the
-                        // worker. Losing the waiter cannot drop an unsubmitted tree.
-                        match retention {
-                            OutputRetention::Collect => Started::Running(spawner.spawn(
-                                tree.capture(schedule, maximum_output_bytes, input, handler),
-                            )),
-                            OutputRetention::Observe => Started::Streaming(tree.stream_capture(
-                                &spawner,
-                                schedule,
-                                maximum_output_bytes,
-                                input,
-                                handler,
-                            )),
-                        }
-                    }
-                    Ok(Err(output)) => Started::Finished(Ok(output), handler),
-                    Err(error) => Started::Finished(Err(error), handler),
-                }
-            },
-            None,
-        )
-        .map_err(|error| Error::Storage(format!("native process capture admission: {error}")))?
-        .await
-        .map_err(|error| Error::Storage(format!("native process observer interrupted: {error}")))?;
+    let mut command = ProcessCommand::new(&invocation.executable);
+    if !invocation.inherit_environment {
+        command.env_clear();
+    }
+    command
+        .args(&invocation.argv)
+        .current_dir(&invocation.cwd)
+        .envs(&invocation.environment);
+    let request = acyclic_native_runtime::CaptureRequest {
+        command,
+        custody: invocation.process_custody,
+        execution_grant: invocation.execution_grant,
+        input: invocation.standard_input,
+        schedule: invocation.schedule,
+        maximum_output_bytes: invocation.maximum_output_bytes,
+    };
+    let started = match retention {
+        OutputRetention::Collect => request.capture(handler).await.map(Started::Running),
+        OutputRetention::Observe => request.stream(handler).await.map(Started::Streaming),
+    };
+    let started = match started {
+        Ok(started) => started,
+        Err(acyclic_native_runtime::LaunchFailure::Refused { failure, handler }) => {
+            Started::Finished(Ok(Err(failure)), handler)
+        }
+        Err(acyclic_native_runtime::LaunchFailure::Control { error, handler }) => {
+            Started::Finished(Err(error), handler)
+        }
+        Err(acyclic_native_runtime::LaunchFailure::Indeterminate {
+            error,
+            handler: Some(handler),
+        }) => Started::Finished(Err(error), handler),
+        Err(acyclic_native_runtime::LaunchFailure::Indeterminate {
+            error,
+            handler: None,
+        }) => {
+            return Err(Error::process_io(error));
+        }
+    };
     Ok(async move {
         let (output, handler) = match started {
             Started::Finished(output, handler) => (output, handler),
@@ -225,70 +228,6 @@ pub async fn start_capture<H: acyclic_native_runtime::CaptureHandler>(
     })
 }
 
-/// A spawned tree and its owned input, or the output an installed test
-/// provider answered with instead of a process.
-type Spawned = std::result::Result<
-    (
-        acyclic_native_runtime::ProcessTree,
-        Option<acyclic_native_runtime::OwnedCaptureInput>,
-    ),
-    std::result::Result<std::process::Output, acyclic_native_runtime::ProcessCaptureFailure>,
->;
-
-/// Checks intent and spawns the tree.
-fn start(
-    invocation: Invocation,
-    handler: &mut impl acyclic_native_runtime::CaptureHandler,
-) -> std::io::Result<Spawned> {
-    let mut command = ProcessCommand::new(&invocation.executable);
-    if !invocation.inherit_environment {
-        command.env_clear();
-    }
-    command
-        .args(&invocation.argv)
-        .current_dir(&invocation.cwd)
-        .envs(&invocation.environment)
-        .stdin(if invocation.standard_input.is_some() {
-            ProcessStdio::piped()
-        } else {
-            ProcessStdio::null()
-        })
-        .stdout(ProcessStdio::piped())
-        .stderr(ProcessStdio::piped());
-    handler.check()?;
-    #[cfg(feature = "test-support")]
-    if invocation.execution_grant.is_none() {
-        // Output substitution cannot establish kernel enforcement. A granted
-        // invocation must reach the original native launch owner below.
-        // The installed provider calls these sequentially on this worker.
-        // Borrow the same handler for each callback without another owner.
-        let handler = std::cell::RefCell::new(&mut *handler);
-        if let Some(output) = acyclic_native_runtime::testing::capture_process(
-            acyclic_native_runtime::testing::ProcessCapture {
-                command: &command,
-                schedule: invocation.schedule,
-                maximum: invocation.maximum_output_bytes,
-                input: invocation.standard_input.as_ref(),
-            },
-            &mut || handler.borrow_mut().check(),
-            &mut |chunk| handler.borrow_mut().observe(chunk),
-        ) {
-            return Ok(Err(output));
-        }
-    }
-    let input = invocation.standard_input;
-    let tree = match (&invocation.execution_grant, &invocation.process_custody) {
-        (Some(grant), custody) => {
-            acyclic_native_runtime::ProcessTree::spawn_granted(command, grant, custody.as_deref())?
-        }
-        (None, Some(custody)) => {
-            acyclic_native_runtime::ProcessTree::spawn_in_custody(&mut command, custody)?
-        }
-        (None, None) => acyclic_native_runtime::ProcessTree::spawn(&mut command)?,
-    };
-    Ok(Ok((tree, input)))
-}
-
 fn result(
     output: std::io::Result<
         std::result::Result<std::process::Output, acyclic_native_runtime::ProcessCaptureFailure>,
@@ -302,22 +241,25 @@ fn result(
             stderr: output.stderr,
             stop: None,
         },
-        Ok(Err(failure)) => NativeProcessResult {
-            success: false,
-            exit_code: failure.status.and_then(|status| status.code()),
-            stdout: failure.stdout,
-            stderr: failure.stderr,
-            stop: Some(NativeProcessStop {
-                kind: match failure.error.kind() {
-                    std::io::ErrorKind::TimedOut => NativeProcessStopKind::Timeout,
-                    std::io::ErrorKind::FileTooLarge => NativeProcessStopKind::OutputLimit,
-                    std::io::ErrorKind::Interrupted => NativeProcessStopKind::ControlStopped,
-                    _ => NativeProcessStopKind::CaptureFailed,
-                },
-                message: failure.error.to_string().chars().take(128).collect(),
-                cleanup_completed: failure.cleanup_completed,
-            }),
-        },
+        Ok(Err(failure)) => {
+            let stop = failure.stop();
+            NativeProcessResult {
+                success: false,
+                exit_code: failure.status.and_then(|status| status.code()),
+                stdout: failure.stdout,
+                stderr: failure.stderr,
+                stop: Some(NativeProcessStop {
+                    kind: match stop {
+                        CaptureStop::Timeout => NativeProcessStopKind::Timeout,
+                        CaptureStop::OutputLimit => NativeProcessStopKind::OutputLimit,
+                        CaptureStop::ControlStopped => NativeProcessStopKind::ControlStopped,
+                        CaptureStop::Failed => NativeProcessStopKind::CaptureFailed,
+                    },
+                    message: failure.error.to_string().chars().take(128).collect(),
+                    cleanup_completed: failure.cleanup_completed,
+                }),
+            }
+        }
         Err(error) if error.kind() == std::io::ErrorKind::Interrupted => return Ok(None),
         Err(error) => return Err(Error::process_io(error)),
     };
