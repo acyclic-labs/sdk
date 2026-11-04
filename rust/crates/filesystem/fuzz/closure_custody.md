@@ -81,11 +81,18 @@ Native stream requests retain the existing stream `OwnedBytes` adapter. No
 provider read, wait, syscall or durability barrier is added. This payload owner
 does not supply the separate public accounting page or record-vector contract.
 
+Creation, retention, fork and deletion commits use this same owner. Their
+encoded capacity stays on its original ledger until the last payload alias
+retires. The former manual capacity totals and post-append releases are removed;
+the native path still allocates one shared header, and the ordinary path now
+admits that exact header before allocation. No payload copy or hash is added.
+
 The minimal-generation relation also creates canonical objects through the
 public logical store over `LocalObjects::open` with its real default settings.
 The existing observer delegates to that store; the read must report nonzero
 owned backing, keep it funded outside the adapter scope and retire exactly
-that backing while the independent allocation remains live.
+that backing while the independent allocation remains live. The same relation
+then checks batch and whole-closure custody against that local provider.
 `mutations/single_owned_read_retirement.patch` removes the actual single-read
 output transfer. Shared-memory reads still pass; the local owned read must fail
 `single owned output funding retired at scope exit`. This closes the shared-only

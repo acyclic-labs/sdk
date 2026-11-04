@@ -243,7 +243,9 @@ where
             .contribute_fork(commit, &prepared.fork, &mut authority)
             .await;
         let recorded = finish_authority_work(authority);
-        Self::retire_fork_commit(prepared.changes, prepared.payload_bytes, accounting)?;
+        if let Some(changes) = prepared.changes {
+            changes.retire(accounting)?;
+        }
         recorded?;
         commit.hold(prepared.hold.with_proof(pending));
         result.map_err(|error| WorkspaceError::from(FsError::from(error)))?;
@@ -349,7 +351,9 @@ where
             )
             .await;
         let recorded = finish_authority_work(authority);
-        Self::retire_creation_commit(prepared.changes, prepared.capacity, accounting)?;
+        if let Some(changes) = prepared.changes {
+            changes.retire(accounting)?;
+        }
         recorded?;
         commit.hold(prepared.hold);
         result.map_err(|error| WorkspaceError::from(FsError::from(error)))?;
