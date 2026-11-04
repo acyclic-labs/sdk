@@ -1,5 +1,9 @@
 //! The same in-flight interrupt vector for every public AgentHost backend.
-use super::{Backend, Result, fixtures, observe::Observed, vectors};
+use super::{
+    Backend, Result, fixtures,
+    observe::{Fault, Observed},
+    vectors,
+};
 use acyclic_actors::guest::CancellationToken;
 use acyclic_harness_core::agent::*;
 use futures::channel::oneshot;
@@ -53,6 +57,21 @@ impl TurnDriver for Waiting {
 }
 
 pub(crate) async fn verify(backend: &dyn Backend) -> Result {
+    let error = interrupted(backend, Some(Fault::Before))
+        .await
+        .expect_err("pre-turn provider loss did not terminate the interrupt vector");
+    if !matches!(
+        error.downcast_ref::<acyclic_actors::local::Error>(),
+        Some(acyclic_actors::local::Error::Stream(
+            acyclic_stream::StreamError::Unavailable
+        ))
+    ) {
+        return Err(format!("pre-turn provider loss changed its original cause: {error}").into());
+    }
+    interrupted(backend, None).await
+}
+
+async fn interrupted(backend: &dyn Backend, fault: Option<Fault>) -> Result {
     let storage = backend.fresh().await?;
     let provider = Arc::new(Observed::new(storage.open().await?));
     let (started, running) = oneshot::channel();
@@ -69,6 +88,9 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     let send = |id: &str| -> Result<InboxRecord> { fixtures::request(id) };
     host.send(&agent, &fixtures::sender(), &send("running")?)
         .await?;
+    if let Some(fault) = fault {
+        provider.crash_at(provider.calls(), fault);
+    }
     let controls = async {
         running.await?;
         host.send(&agent, &fixtures::sender(), &send("queued")?)
