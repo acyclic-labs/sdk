@@ -344,40 +344,26 @@ async fn compaction_resolves_once_with_original_work() -> Result<()> {
             });
             assert_eq!(repeated, Default::default(), "{case}");
             assert_eq!(work.receipt(), resolved, "{case}");
+            if writer {
+                // Restoring separate policy, entry and summary lookups must
+                // trip the same allocation and original-work detectors.
+                let repeated = acyclic_test_support::measure(|| {
+                    for _ in 0..3 {
+                        std::hint::black_box(execution.compaction_policy().unwrap());
+                        assert!(
+                            std::hint::black_box(
+                                execution.context.unwrap().0.private_summaries(Some(&io))
+                            )
+                            .is_ok()
+                        );
+                    }
+                });
+                assert!(
+                    repeated.count_total > 0 && work.receipt() != resolved,
+                    "{case}: repeats went undetected ({repeated:?})"
+                );
+            }
         }
     }
-    Ok(())
-}
-
-// Negative control: restoring the pre-resolution repeats (policy, entry check
-// and summary each re-resolving the writer) trips both detectors above. A
-// writerless resolution fails with a static native error and charges nothing,
-// so only the writer-backed resolution has repeats to detect.
-#[tokio::test]
-async fn repeated_resolution_negative_control_is_detected() -> Result<()> {
-    let context = admitted(true).await?;
-    let operation = OperationId::new();
-    let executor = executor(&context, operation, Some(CompactionPolicy::default()))?;
-    let work = native_work()?;
-    let io = crate::executor::PreparationIo::from_native_work(&work)?;
-    let execution = StockExecution {
-        io: Some(&io),
-        ..StockExecution::ordinary(&executor)
-    };
-    std::hint::black_box(execution.compaction().unwrap());
-    let resolved = work.receipt();
-    let repeated = acyclic_test_support::measure(|| {
-        for _ in 0..3 {
-            std::hint::black_box(execution.compaction_policy().unwrap());
-            assert!(
-                std::hint::black_box(execution.context.unwrap().0.private_summaries(Some(&io)))
-                    .is_ok()
-            );
-        }
-    });
-    assert!(
-        repeated.count_total > 0 && work.receipt() != resolved,
-        "repeats went undetected ({repeated:?})"
-    );
     Ok(())
 }
