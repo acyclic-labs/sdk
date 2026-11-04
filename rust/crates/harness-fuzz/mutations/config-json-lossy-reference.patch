@@ -1,0 +1,31 @@
+diff --git a/rust/crates/harness-core/src/config/evaluate/model.rs b/rust/crates/harness-core/src/config/evaluate/model.rs
+index 232cc30335..cd0c5439c9 100644
+--- a/rust/crates/harness-core/src/config/evaluate/model.rs
++++ b/rust/crates/harness-core/src/config/evaluate/model.rs
+@@ -3,3 +3,2 @@ use super::*;
+ use serde_json::json;
+-use std::borrow::Cow;
+ use std::cell::Cell;
+@@ -89,4 +88,3 @@ fn json_equivalent(left: &Value, right: &Value) -> bool {
+ async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
+-    let utf8 = std::str::from_utf8(bytes).ok();
+-    let text = utf8.map_or_else(|| String::from_utf8_lossy(bytes), Cow::Borrowed);
++    let text = String::from_utf8_lossy(bytes);
+     let specifier = serde_json::to_string(&text).map_err(|error| error.to_string())?;
+@@ -181,4 +179,4 @@ async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
+     }
+-    let expected = match utf8.map(serde_json::from_str::<Value>) {
+-        Some(Ok(value)) => Some(value),
++    let expected = match serde_json::from_slice::<Value>(bytes) {
++        Ok(value) => Some(value),
+         // IgnoredAny admits numbers outside serde's finite Value domain. A
+@@ -187,3 +185,3 @@ async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
+         // the fixed program contains only an encoded data string.
+-        Some(Err(_)) if serde_json::from_str::<serde::de::IgnoredAny>(&text).is_ok() => {
++        Err(_) if serde_json::from_slice::<serde::de::IgnoredAny>(bytes).is_ok() => {
+             let source = format!("export default JSON.parse({specifier});");
+@@ -201,3 +199,3 @@ async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
+         }
+-        _ => None,
++        Err(_) => None,
+     };

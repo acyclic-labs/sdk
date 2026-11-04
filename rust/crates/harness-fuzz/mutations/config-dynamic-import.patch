@@ -1,0 +1,14 @@
+--- a/rust/crates/harness-core/src/config/evaluate.rs
++++ b/rust/crates/harness-core/src/config/evaluate.rs
+@@ -243,11 +243,6 @@
+     let allocator = oxc_allocator::Allocator::default();
+     let parsed = oxc_parser::Parser::new(&allocator, text, source_type).parse();
+     refuse_errors!(parsed.diagnostics);
+-    if !parsed.module_record.dynamic_imports.is_empty() {
+-        return Err(format!(
+-            "{path}: settings modules import statically; import() is unavailable"
+-        ));
+-    }
+     let mut program = parsed.program;
+     let scoping = oxc_semantic::SemanticBuilder::new()
+         .build(&program)

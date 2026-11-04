@@ -5,9 +5,10 @@ use crate::model::{
     MutationMode, VolumeConfig, VolumeLimits,
 };
 use crate::{ByteRange, CancellationToken, Fs, VolumeId, WatchBatch, WatchChange, WorkBudget};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub(in crate::native_mount) use super::fixture_access;
+pub(super) use super::recovery::wait_for_retirement as await_recovery_worker;
 
 pub(super) async fn memory_volume(
     id: VolumeId,
@@ -59,26 +60,6 @@ pub(super) fn portable_path(
             .collect::<Result<Vec<_>, _>>()?,
         limits,
     )?)
-}
-
-pub(super) fn await_recovery_worker(
-    owner: NativeMountRecoveryOwner,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let shared = owner.shared.clone();
-    drop(owner);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while shared
-        .state
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .is_some()
-    {
-        if Instant::now() >= deadline {
-            return Err("actual administrative state did not retire".into());
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    Ok(())
 }
 
 pub(super) const RECLAIM_CHILD_READY: &str = "acyclic-reclaim-ready";

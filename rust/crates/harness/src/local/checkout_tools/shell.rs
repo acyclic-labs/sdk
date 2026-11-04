@@ -33,7 +33,6 @@ impl CheckoutTools {
             inherit_environment: false,
             execution_grant,
             schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
-            control_timeout_ms: output::CONTROL_TIMEOUT_MS,
             // Presentation is bounded below; streaming output is not a reason to stop a command.
             maximum_output_bytes: usize::MAX,
             standard_input: None,

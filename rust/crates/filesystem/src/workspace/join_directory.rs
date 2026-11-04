@@ -149,7 +149,7 @@ fn parse_resolution(bytes: &[u8]) -> Result<ResolutionFile, WorkspaceError> {
 
 /// Exercises the shipped resolution decoder and admission against arbitrary
 /// domain conflicts and raw user documents, including malformed JSON bytes.
-#[cfg(all(not(loom), any(test, feature = "fuzzing")))]
+#[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub fn check_merge_directory_resolution(data: &[u8]) {
     // Every raw input reaches the shipped syntax boundary, even when it is not
@@ -171,7 +171,7 @@ pub fn check_merge_directory_resolution(data: &[u8]) {
     }
 }
 
-#[cfg(all(not(loom), any(test, feature = "fuzzing")))]
+#[cfg(any(test, feature = "fuzzing"))]
 fn check_merge_file_roundtrip<T: serde::de::DeserializeOwned + Serialize>(bytes: &[u8]) {
     if let Ok(decoded) = serde_json::from_slice::<T>(bytes) {
         let canonical = serde_json::to_vec(&decoded).expect("serializable merge file");
@@ -200,7 +200,7 @@ fn check_merge_file_roundtrip<T: serde::de::DeserializeOwned + Serialize>(bytes:
     }
 }
 
-#[cfg(all(not(loom), any(test, feature = "fuzzing")))]
+#[cfg(any(test, feature = "fuzzing"))]
 fn check_resolution_roundtrip(bytes: &[u8]) {
     if let Ok(decoded) = parse_resolution(bytes) {
         let canonical = serde_json::to_vec(&decoded).expect("serializable resolution");

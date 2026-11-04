@@ -1,0 +1,2 @@
+{"type":"message_end","message":{"role":"assistant","content":[],"api":"openai-responses","provider":"fixture","model":"tiny","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","errorMessage":"No API key for provider: fixture","timestamp":1793272961639,"durationMs":1,"thinkingLevel":"off"}}
+{"type":"agent_settled","aborted":false}

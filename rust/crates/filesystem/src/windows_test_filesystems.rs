@@ -1,10 +1,13 @@
 //! Explicit NTFS fixtures for Windows features whose contract requires NTFS.
 use std::io;
 use std::os::windows::fs::OpenOptionsExt as _;
+#[cfg(test)]
 use std::os::windows::io::AsRawHandle as _;
+#[cfg(test)]
 use windows::Win32::{Foundation::HANDLE, Storage::FileSystem::GetVolumeInformationByHandleW};
 
 /// Retains compression and exact-notification coverage when general TEMP is ReFS.
+#[cfg(test)]
 pub(crate) fn ntfs_tempdir() -> io::Result<tempfile::TempDir> {
     let directory = match std::env::var_os("ACYCLIC_TEST_NTFS_ROOT").filter(|root| !root.is_empty())
     {
@@ -28,6 +31,7 @@ pub(crate) fn ntfs_tempdir() -> io::Result<tempfile::TempDir> {
     Ok(directory)
 }
 
+#[cfg(test)]
 #[allow(
     unsafe_code,
     reason = "queries the filesystem type through an owned directory handle"
@@ -48,7 +52,7 @@ fn query_filesystem(handle: &std::fs::File, name: &mut [u16; 64]) -> io::Result<
 }
 
 /// Creates an actual directory junction without a command interpreter or child.
-pub(crate) fn junction(alias: &std::path::Path, target: &std::path::Path) -> io::Result<()> {
+pub fn junction(alias: &std::path::Path, target: &std::path::Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt as _;
     use windows::Win32::Storage::FileSystem::{
         FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,

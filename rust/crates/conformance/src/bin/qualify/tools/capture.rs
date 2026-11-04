@@ -53,27 +53,14 @@ pub(super) fn bench(args: &[String]) -> Result<(), Failure> {
     let store_dir = work.join("store");
     fs::create_dir_all(&store_dir)?;
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async move {
-        tokio::spawn(async move {
-            bench_inner(&source, &store_dir, rounds)
-                .await
-                .map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|error| -> Failure { error.into() })?
-        .map_err(Into::into)
-    })
+    runtime.block_on(bench_inner(&source, &store_dir, rounds))
 }
 
 #[allow(
     clippy::too_many_lines,
     reason = "the benchmark's setup, rounds, and report are one straight-line procedure"
 )]
-pub(super) async fn bench_inner(
-    source: &Path,
-    store_dir: &Path,
-    rounds: usize,
-) -> Result<(), Failure> {
+async fn bench_inner(source: &Path, store_dir: &Path, rounds: usize) -> Result<(), Failure> {
     use acyclic_fs::model::VolumeLimits;
     use acyclic_fs::{NativeWatch, NativeWatchOptions, WatchBatch};
 

@@ -3,7 +3,6 @@
 use super::*;
 use crate::local::{LocalHarness, LocalHarnessConfig};
 use acyclic_native_runtime::ProcessStdio;
-use notify::Watcher;
 use std::io::Write as _;
 use std::{fs, sync::Arc};
 
@@ -180,42 +179,42 @@ async fn served(host: &str, body: fn(&str, &Path) -> Result) -> Result {
         LocalHarness::open(LocalHarnessConfig::native_host(&cwd).state_directory(state.path()))
             .await?,
     );
-    let owner_directory = cwd.join(".acyclic-sdk/host-files");
-    fs::create_dir_all(&owner_directory)?;
-    let (changed, mut changes) = tokio::sync::mpsc::channel(1);
-    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        if !matches!(&event, Ok(event) if event.kind.is_access()
-            || !event.paths.iter().any(|path| path.file_name().is_some_and(|name| name == "owner.json")))
-        {
-            let _ = changed.try_send(event);
-        }
-    })?;
-    watcher.watch(&owner_directory, notify::RecursiveMode::NonRecursive)?;
-    let server_local = Arc::clone(&local);
-    let mut server = tokio::spawn(async move { host_files::serve(server_local).await });
-    let result = async {
-        while !owner_directory.join("owner.json").is_file() {
-            tokio::select! {
-                result = &mut server => return Err(failed(
-                    "start native child workspace", format!("owner ended: {result:?}")
-                )),
-                event = changes.recv() => match event {
-                    Some(event) => { event.map_err(|cause| failed("watch native child workspace", cause))?; }
-                    None => return Err(failed("start native child workspace", "notification producer closed")),
-                },
-            }
-        }
-        drop(watcher);
-        body(host, &cwd)
-    }.await;
-    server.abort();
-    if !server.is_finished() {
-        let _ = server.await;
-    }
-    Arc::try_unwrap(local)
-        .map_err(|_| "fixture retained host server")?
-        .disconnect()
-        .await?;
+    let (ready, readiness) = tokio::sync::oneshot::channel();
+    let (shutdown, stopped) = tokio::sync::oneshot::channel();
+    let mut server = tokio::spawn(async move {
+        host_files::serve_until(
+            local,
+            move || {
+                ready.send(()).map_err(|()| {
+                    crate::Error::Storage("native child workspace readiness receiver closed".into())
+                })
+            },
+            async move {
+                stopped.await.map_err(|cause| {
+                    crate::Error::Storage(format!("native child workspace shutdown: {cause}"))
+                })
+            },
+        )
+        .await
+    });
+    let readiness = tokio::select! {
+        biased;
+        result = &mut server => return Err(failed(
+            "start native child workspace", format!("owner ended: {result:?}")
+        )),
+        ready = readiness => ready.map_err(|cause| failed("start native child workspace", cause)),
+    };
+    let result = readiness.and_then(|()| body(host, &cwd));
+    let _ = shutdown.send(());
+    let retirement = server.await;
+    assert!(
+        matches!(retirement, Ok(Ok(()))),
+        "{}",
+        failed(
+            "retire native child workspace",
+            format!("owner={retirement:?}; fixture={result:?}")
+        )
+    );
     result
 }
 

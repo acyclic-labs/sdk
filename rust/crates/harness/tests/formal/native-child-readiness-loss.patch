@@ -1,0 +1,15 @@
+diff --git a/rust/crates/harness/src/local/host_process/children/tests.rs b/rust/crates/harness/src/local/host_process/children/tests.rs
+--- a/rust/crates/harness/src/local/host_process/children/tests.rs
++++ b/rust/crates/harness/src/local/host_process/children/tests.rs
+@@ -171,9 +171,8 @@ async fn served(host: &str, body: fn(&str, &Path) -> Result) -> Result {
+         host_files::serve_until(
+             local,
+             move || {
+-                ready.send(()).map_err(|()| {
+-                    crate::Error::Storage("native child workspace readiness receiver closed".into())
+-                })
++                drop(ready);
++                Ok(())
+             },
+             async move {
+                 stopped.await.map_err(|cause| {

@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness/src/local/host_process/children/tests.rs b/rust/crates/harness/src/local/host_process/children/tests.rs
+--- a/rust/crates/harness/src/local/host_process/children/tests.rs
++++ b/rust/crates/harness/src/local/host_process/children/tests.rs
+@@ -194,7 +194,7 @@ async fn served(host: &str, body: fn(&str, &Path) -> Result) -> Result {
+         ready = readiness => ready.map_err(|cause| failed("start native child workspace", cause)),
+     };
+     let result = readiness.and_then(|()| body(host, &cwd));
+-    let _ = shutdown.send(());
++    drop(shutdown);
+     let retirement = server.await;
+     assert!(
+         matches!(retirement, Ok(Ok(()))),

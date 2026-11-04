@@ -84,7 +84,6 @@ async fn evaluate_cached(
     let base = crate::contract::canonical_json_bytes(base)?;
     let mut key = blake3::Hasher::new_derive_key(VERSION);
     key.update(&digest);
-    key.update(blake3::hash(super::typescript().as_bytes()).as_bytes());
     key.update(&[u8::from(surface == Surface::Data)]);
     key.update(&base);
     let key: [u8; 32] = key.finalize().into();
@@ -166,41 +165,46 @@ async fn closure(
 ) -> Result<std::result::Result<Vec<(String, Module)>, String>> {
     let mut modules = BTreeMap::new();
     match strip(path, source) {
-        Ok(module) => modules.insert(path.to_owned(), module),
+        Ok(module) => modules.insert(path.to_owned(), (module, true)),
         Err(error) => return Ok(Err(error)),
     };
-    // Depth-first, so an import of a module still on the path is a cycle.
+    // The retained module records whether its dependency walk is still active.
+    // A completed shared dependency is reused without scanning the active path.
     let mut stack = vec![(path.to_owned(), 0_usize)];
     let mut order = Vec::new();
-    while let Some((current, index)) = stack.last().cloned() {
-        let Some(next) = modules[&current].imports.get(index).cloned() else {
+    while let Some((current, index)) = stack.last_mut() {
+        let Some(next) = modules[current.as_str()].0.imports.get(*index) else {
+            if let Some((_, active)) = modules.get_mut(current.as_str()) {
+                *active = false;
+            }
+            order.push(std::mem::take(current));
             stack.pop();
-            order.push(current);
             continue;
         };
-        if let Some(top) = stack.last_mut() {
-            top.1 += 1;
-        }
-        if stack.iter().any(|(name, _)| *name == next) {
-            return Ok(Err(format!("import cycle through {next}")));
-        }
-        if modules.contains_key(&next) {
+        *index += 1;
+        #[cfg(any(test, feature = "test-support"))]
+        model::dependency_checked();
+        if let Some((_, active)) = modules.get(next) {
+            if *active {
+                return Ok(Err(format!("import cycle through {next}")));
+            }
             continue;
         }
+        let next = next.clone();
         let Some(bytes) = tree.read(&next).await? else {
             return Ok(Err(format!(
                 "{current} imports {next}, which no layer holds"
             )));
         };
         match strip(&next, &bytes) {
-            Ok(module) => modules.insert(next.clone(), module),
+            Ok(module) => modules.insert(next.clone(), (module, true)),
             Err(error) => return Ok(Err(error)),
         };
         stack.push((next, 0));
     }
     Ok(Ok(order
         .into_iter()
-        .filter_map(|name| modules.remove(&name).map(|module| (name, module)))
+        .filter_map(|name| modules.remove(&name).map(|(module, _)| (name, module)))
         .collect()))
 }
 
@@ -424,15 +428,16 @@ fn run(
             // Settings are pure: no clock or randomness, and no host
             // function, loader, tool or I/O is installed.
             let finish: Function = ctx.eval(FINISH)?;
-            // Dependencies come first, so each import resolves to a
-            // declared module; the root is last.
-            let mut declared = modules
-                .iter()
-                .map(|(name, module)| {
-                    rquickjs::Module::declare(ctx.clone(), name.as_str(), module.script.as_str())
-                })
-                .collect::<rquickjs::Result<Vec<_>>>()?;
-            let (module, promise) = declared.pop().ok_or(rquickjs::Error::Unknown)?.eval()?;
+            // The context owns declared dependencies; only the root needs
+            // a Rust handle for evaluation.
+            let (root, dependencies) = modules.split_last().ok_or(rquickjs::Error::Unknown)?;
+            for (name, module) in dependencies {
+                rquickjs::Module::declare(ctx.clone(), name.as_str(), module.script.as_str())?;
+            }
+            let (name, module) = root;
+            let (module, promise) =
+                rquickjs::Module::declare(ctx.clone(), name.as_str(), module.script.as_str())?
+                    .eval()?;
             promise.finish::<()>()?;
             let result: Object =
                 finish.call((module.namespace()?, base, surface == Surface::Data))?;
