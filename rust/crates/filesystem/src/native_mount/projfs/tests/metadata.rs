@@ -1,4 +1,4 @@
-use super::*;
+use super::{Bytes, MetadataField, metadata};
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires a host that permits mounting a writable ProjFS provider"]

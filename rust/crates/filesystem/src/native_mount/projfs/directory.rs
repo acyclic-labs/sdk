@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    DIRECTORY_PAGE_SIZE, EntryFacts, FILE_ATTRIBUTE_DIRECTORY, MetadataField, MountContentPin,
+    MountLookup, MountNodeKind, MountPath, MountSourceError, PCWSTR, PRJ_FILE_BASIC_INFO,
+    PrjFileNameCompare, Projection, basic, decode_utf16_name, reserve, size_of,
+};
 
 pub(super) struct ProjectedEntry {
     pub(super) name: Vec<u16>,

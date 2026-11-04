@@ -1,4 +1,9 @@
-use super::*;
+#[cfg(test)]
+use super::HostChange;
+use super::{
+    Arc, AtomicBool, Delivery, DemandError, DemandWork, HostChangeWide, NativeSourceWatch,
+    Ordering, size_of,
+};
 use crate::source_watch::HostChangeSink;
 use std::os::windows::io::AsHandle;
 use std::sync::atomic::AtomicUsize;

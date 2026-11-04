@@ -161,7 +161,11 @@ fn query_journal(root: &HostRoot) -> Result<JournalSnapshot, WindowsUsnError> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        JournalSnapshot, NativeRootIdentity, Path, WindowsUsnCheckpoint, WindowsUsnContinuity,
+        WindowsUsnDiscontinuity, capture_windows_usn_checkpoint, classify_continuity,
+        validate_windows_usn_checkpoint,
+    };
     use proptest::prelude::*;
 
     #[test]

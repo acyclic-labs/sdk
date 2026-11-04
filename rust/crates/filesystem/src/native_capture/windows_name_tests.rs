@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    CaptureError, FilesystemProfile, LogicalName, NameEncoding, NamespacePath,
+    host_path_to_namespace, namespace_to_host_path,
+};
 
 #[test]
 fn posix_profile_names_round_trip_through_utf8_on_windows() -> Result<(), Box<dyn std::error::Error>>

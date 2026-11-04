@@ -1,4 +1,10 @@
-use super::*;
+#[cfg(windows)]
+use super::dense_attributes;
+use super::{
+    CancellationToken, CaptureError, CaptureOptions, CapturePolicy, CaptureReceipt, NamespacePath,
+    NativeMaterializationWork, OperationFailure, OperationReceipt, Path, WorkBudget, WorkCounters,
+    capture_root_identity, capture_subtrees_with_native_work,
+};
 use proptest::prelude::*;
 
 #[derive(Default)]

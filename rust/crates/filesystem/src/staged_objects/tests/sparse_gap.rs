@@ -1,5 +1,6 @@
 //! Synthetic spill gaps retain the platform's real sparse-file semantics.
-use super::*;
+#[cfg(windows)]
+use super::create_spill;
 
 pub(super) fn prepare(file: &std::fs::File) -> std::io::Result<()> {
     acyclic_native_runtime::device_control_in_place(

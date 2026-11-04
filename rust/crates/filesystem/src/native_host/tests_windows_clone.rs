@@ -1,4 +1,24 @@
-use super::*;
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos", windows),
+    any(feature = "native-mount", test)
+))]
+use super::NativeMetadataError;
+#[cfg(any(windows, test, feature = "native-watch"))]
+use super::allocated_data_ranges;
+#[cfg(any(test, all(windows, feature = "native-watch")))]
+use super::ordinary_error;
+use super::{
+    DemandError, HostRoot, NativeMaterializationWork, clone_directory, directory_identity,
+    directory_path, io, metadata,
+};
+#[cfg(windows)]
+use super::{UNIX_EPOCH_FILETIME, fs, same_windows_attributes, windows_time, with_wide_path};
+#[cfg(any(test, feature = "local", feature = "native-watch"))]
+use super::{WorkBudget, ordinary_work};
+#[cfg(all(windows, any(feature = "native-mount", test)))]
+use super::{apply_metadata, filetime_to_unix_nanoseconds, unix_nanoseconds_to_filetime};
+#[cfg(test)]
+use super::{test_path, test_root};
 use acyclic_native_runtime::{Durability, NativeFile, OwnedWrite};
 use proptest::prelude::*;
 proptest! {

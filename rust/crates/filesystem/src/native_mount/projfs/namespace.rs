@@ -1,4 +1,4 @@
-use super::*;
+use super::{Arc, GUID, Mutex, PostOperationFailures, ProjectorState};
 
 #[derive(Clone, Copy)]
 pub(in crate::native_mount) struct ProjFsNamespaceQualification {

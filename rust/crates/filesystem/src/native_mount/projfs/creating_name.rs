@@ -1,4 +1,4 @@
-use super::*;
+use super::{MountPath, RwLock, TryLockError};
 
 struct RestoreName<'a, B: Copy> {
     slot: &'a RwLock<(MountPath, Option<B>)>,

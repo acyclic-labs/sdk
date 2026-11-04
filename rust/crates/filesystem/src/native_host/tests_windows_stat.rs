@@ -1,4 +1,15 @@
-use super::*;
+#[cfg(any(feature = "native-watch", feature = "native-mount", test))]
+use super::query_windows_stat;
+#[cfg(test)]
+use super::test_root;
+use super::{
+    DemandError, DemandWork, HostStat, NativeMaterializationWork, READ, WorkCounters, io,
+    open_windows_named, stat_windows_file, stat_windows_name, windows_open_name,
+};
+#[cfg(any(test, feature = "local", feature = "native-watch"))]
+use super::{WorkBudget, ordinary_work};
+#[cfg(windows)]
+use super::{fs, nt};
 use proptest::prelude::*;
 
 fn fields(stat: &HostStat) -> (u32, [i64; 7], [u32; 4]) {

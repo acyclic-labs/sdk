@@ -1,4 +1,10 @@
-use super::*;
+#[cfg(any(windows, test))]
+use super::sparse_scan;
+use super::{
+    CaptureError, DemandError, HostDataRange, HostStat, NativeMaterializationWork, WorkCounters,
+    WorkError, allocated_data_ranges, capture_charge, capture_demand_error, capture_reserve,
+    vector_bytes,
+};
 
 pub(super) fn dense_attributes(attributes: u32) -> bool {
     use windows::Win32::Storage::FileSystem::{

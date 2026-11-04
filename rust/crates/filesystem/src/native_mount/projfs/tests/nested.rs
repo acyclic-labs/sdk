@@ -1,5 +1,7 @@
 //! ProjFS cannot start a virtualization root inside another active one.
-use super::*;
+use super::{
+    Arc, MountFilesystem, NativeMountError, reject_nested_projection, reparse_tag, sorted_names,
+};
 
 // A child view mounted inside a parent's active projection is rejected before
 // any physical state exists, as its own typed cause; neither failure cleanup

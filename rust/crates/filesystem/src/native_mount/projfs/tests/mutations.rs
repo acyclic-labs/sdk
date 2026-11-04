@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Arc, Bytes, FileMetadata, Fs, Lifecycle, LocalOptions, PostOperationFailures, VolumeConfig,
+    metadata, powershell, reparse_tag, setup_chunk, sorted_names, succeeded, windows_demand_source,
+};
 use crate::kernel::KernelAccounting;
 #[tokio::test]
 #[ignore = "requires a host that permits mounting a writable ProjFS provider"]

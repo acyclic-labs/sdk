@@ -5,10 +5,15 @@
 //! completion or a wake, owns one strong count of that state, taken before
 //! the read or wake was issued. The state therefore outlives every packet
 //! that names it, and the thread never touches a packet's `OVERLAPPED`.
-use super::*;
+use super::Shared;
+use crate::demand::DemandError;
 use std::collections::HashSet;
-use std::sync::{LazyLock, MutexGuard, OnceLock};
-use windows::Win32::Foundation::{ERROR_NOT_ENOUGH_MEMORY, INVALID_HANDLE_VALUE};
+use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock, PoisonError};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_NOT_ENOUGH_MEMORY, HANDLE, INVALID_HANDLE_VALUE,
+};
 use windows::Win32::System::IO::{
     CreateIoCompletionPort, GetQueuedCompletionStatusEx, OVERLAPPED_ENTRY,
     PostQueuedCompletionStatus,

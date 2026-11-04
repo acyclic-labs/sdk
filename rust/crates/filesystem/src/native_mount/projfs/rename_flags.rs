@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    FILE_RENAME_IGNORE_READONLY_ATTRIBUTE, FILE_RENAME_POSIX_SEMANTICS,
+    FILE_RENAME_REPLACE_IF_EXISTS,
+};
 
 pub(super) fn replacement_flags(read_only: bool) -> u32 {
     FILE_RENAME_REPLACE_IF_EXISTS

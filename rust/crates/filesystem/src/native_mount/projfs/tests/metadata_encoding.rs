@@ -1,4 +1,4 @@
-use super::*;
+use super::{MountPath, callback_path, host_relative_path};
 use proptest::prelude::*;
 
 proptest! {

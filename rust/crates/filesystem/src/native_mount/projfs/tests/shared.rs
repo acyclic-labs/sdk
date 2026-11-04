@@ -1,4 +1,4 @@
-use super::*;
+use super::{Arc, MountFilesystem, NativeMountError, powershell, shared, sorted_names, succeeded};
 
 /// A shared instance whose start fails returns the failure: the failed
 /// instance is dropped under the registry lock that serializes starts, so

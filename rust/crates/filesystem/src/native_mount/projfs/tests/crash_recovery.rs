@@ -1,4 +1,4 @@
-use super::*;
+use super::{CancellationToken, HSTRING, NativeMountError, WorkBudget};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
 use windows::Win32::System::Threading::{

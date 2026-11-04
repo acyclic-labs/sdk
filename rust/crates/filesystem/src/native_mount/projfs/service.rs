@@ -5,7 +5,10 @@
 //! schedules its view again. Detaching a view waits for its running pass, after which
 //! the service holds nothing of it.
 
-use super::*;
+use super::{
+    Arc, Condvar, HashMap, Mutex, NativeMountError, PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
+    Readiness, Runtime, SendContext, lock_recover, service,
+};
 use std::collections::VecDeque;
 use std::sync::Weak;
 

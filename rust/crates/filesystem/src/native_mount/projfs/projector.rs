@@ -1,4 +1,12 @@
-use super::*;
+use super::{
+    Arc, Carried, Condvar, EntryFacts, HELD_SETTLE_LIMIT, HashMap, KeyedLocks, MATERIALIZE_WORKERS,
+    MaterializeHelpers, MaterializeQueue, Materialized, MountFilesystem, MountPath,
+    MountSourceError, Mutex, MutexGuard, NativeMountError, Owned,
+    PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, Placed, Projection, Projector, ProjectorLifecycle,
+    ProjectorState, ReadBasis, Readiness, Release, Runtime, WrittenEntry, lock_recover,
+    projfs_path_suffix, rebased, release, remove_vacated, replace_written, source_listing,
+    with_creating_name, write_entry,
+};
 
 impl Projector {
     /// The existing projector owns the initial listing, just as it owns

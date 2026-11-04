@@ -26,7 +26,18 @@
 use super::super::shared::instances::{Instance, Instances};
 use super::super::shared::view_table::ViewLease;
 use super::super::shared::views::{NamedView, NamedViews};
-use super::*;
+use super::{
+    Arc, FILE_NOTIFICATIONS, GUID, HR_ACCESS_DENIED, HR_FILE_NOT_FOUND, HR_NOT_SAME_DEVICE, HR_OK,
+    HR_UNEXPECTED, HRESULT, HSTRING, HashSet, HostRoot, Mutex, NOTIFICATION_ROOT, NativeMountError,
+    PCWSTR, PRJ_CALLBACK_DATA, PRJ_CALLBACKS, PRJ_DIR_ENTRY_BUFFER_HANDLE,
+    PRJ_FLAG_USE_NEGATIVE_PATH_CACHE, PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, PRJ_NOTIFICATION,
+    PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED, PRJ_NOTIFICATION_FILE_RENAMED,
+    PRJ_NOTIFICATION_MAPPING, PRJ_NOTIFICATION_PARAMETERS, PRJ_NOTIFICATION_PRE_RENAME,
+    PRJ_NOTIFICATION_PRE_SET_HARDLINK, PRJ_STARTVIRTUALIZING_OPTIONS, PRJ_UPDATE_ALLOW_TOMBSTONE,
+    PathBuf, PrjDeleteFile, PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing,
+    PrjStopVirtualizing, Runtime, c_void, driver_error, guid_from_key, keep_file_notifications,
+    lock_recover, shared_views, staging, staging_path,
+};
 use std::path::Path;
 
 const SEPARATOR: u16 = 92;

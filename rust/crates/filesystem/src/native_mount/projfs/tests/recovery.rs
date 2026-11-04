@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    Bytes, FileMetadata, GUID, HSTRING, PCWSTR, PrjMarkDirectoryAsPlaceholder,
+    reject_stale_projection, remove_empty_recovery_destination, reparse_tag, reparse_tag_held,
+    staging_directory,
+};
 
 #[tokio::test]
 async fn detach_removes_projection_and_preserves_non_provider_content()

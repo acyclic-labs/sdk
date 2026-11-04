@@ -1,4 +1,24 @@
-use super::*;
+#[cfg(test)]
+use super::tests;
+use super::{
+    Arc, CallbackGate, EntryFacts, FILE_ATTRIBUTE_NORMAL, FileId, FileLocks, FileMetadata, GUID,
+    HR_ACCESS_DENIED, HR_FILE_INVALID, HR_FILE_NOT_FOUND, HR_OK, HR_UNEXPECTED, HRESULT, HSTRING,
+    HashMap, HashSet, HostRoot, MaterializeQueue, MetadataField, MountFilesystem, MountPath,
+    MountSourceError, Mutex, NativeMountError, Owned, PCWSTR, PRJ_CALLBACK_DATA, PRJ_CALLBACKS,
+    PRJ_DIR_ENTRY_BUFFER_HANDLE, PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, PRJ_NOTIFICATION,
+    PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED,
+    PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED,
+    PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION, PRJ_NOTIFICATION_FILE_OPENED,
+    PRJ_NOTIFICATION_PARAMETERS, PRJ_NOTIFICATION_PRE_DELETE, PRJ_NOTIFICATION_PRE_RENAME,
+    PRJ_NOTIFICATION_PRE_SET_HARDLINK, PRJ_NOTIFY_FILE_OPENED, PostOperationFailures,
+    PrjMarkDirectoryAsPlaceholder, Projection, Projector, ReadBasis, Runtime, RwLock,
+    WriteOperations, authorize_open, authorize_pre_operation, compare_projfs_name,
+    decode_utf16_name, defer_host_capture, file_id, flush_callback_gate, has_pending_capture,
+    host_windows_metadata, lock_recover, notification, open_notifications, owned_component,
+    probe_host_windows_metadata, projected_entry, query_name, record_post_operation_failure,
+    reject_nested_projection, reject_stale_projection, remove_empty_recovery_destination,
+    reparse_tag, reparse_tag_held, runtime, source_hresult, staging_directory, with_creating_name,
+};
 use crate::model::{Lifecycle, VolumeConfig};
 use crate::{CancellationToken, Fs, IdempotencyKey, LocalOptions, WorkBudget};
 use bytes::Bytes;

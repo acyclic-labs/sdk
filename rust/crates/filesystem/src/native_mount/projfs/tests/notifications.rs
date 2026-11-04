@@ -1,4 +1,10 @@
-use super::*;
+#[cfg(test)]
+use super::tests;
+use super::{
+    Bytes, CancellationToken, FileMetadata, MountSourceError, PRJ_NOTIFICATION_PRE_DELETE,
+    PRJ_NOTIFICATION_PRE_RENAME, PRJ_NOTIFICATION_PRE_SET_HARDLINK, PRJ_NOTIFY_FILE_OPENED,
+    WorkBudget, authorize_open, authorize_pre_operation, open_notifications,
+};
 #[tokio::test]
 #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn created_and_renamed_files_stay_observed_after_capture()

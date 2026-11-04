@@ -1,4 +1,10 @@
-use super::*;
+use super::{
+    HR_DIRECTORY_NOT_EMPTY, HR_FILE_NOT_FOUND, HR_PATH_NOT_FOUND, HR_SHARING_VIOLATION,
+    HR_VIRTUALIZATION_INVALID_OPERATION, MountNodeKind, MountPath, MountSourceError, Owned,
+    PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, PRJ_UPDATE_ALLOW_READ_ONLY, Placed, PrjDeleteFile,
+    Projection, ReadBasis, Release, WrittenEntry, driver_error, host_relative_path,
+    owned_component, projected_entry, release, write_entry, write_ordinary,
+};
 
 pub(super) fn replace_written(
     projection: Projection<'_>,
