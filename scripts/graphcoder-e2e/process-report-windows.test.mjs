@@ -1,9 +1,85 @@
 import assert from "node:assert/strict";
 import { connect } from "node:net";
-import { isAbsolute } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join } from "node:path";
 import test from "node:test";
 import { Processes, Spool } from "./process.mjs";
 import { requireReportCapability } from "./assertions.mjs";
+
+test("selected Windows owner requires its original bound physical completion", {
+  skip: process.platform !== "win32",
+}, async t => {
+  const host = process.env.E2E_PROCESS_HOST;
+  assert.ok(host && isAbsolute(host),
+    "step=admit-native-completion-producer; recovery=set E2E_PROCESS_HOST to the absolute installed acyclic-process-host executable");
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "process-completion-"));
+  try {
+    for (const mode of ["plain", "reported-input", "wrong-invocation", "missing", "incomplete", "refused"]) {
+      let running, original, failure, captured;
+      const exitCode = mode === "reported-input" ? 0xc0000005 : 17;
+      const directory = join(root, mode);
+      mkdirSync(directory);
+      const scope = new Processes({ transcripts: directory, onProgress(event) {
+        if (event.phase !== "node-close") return;
+        const index = running.child.spawnargs.indexOf("--completion");
+        if (index < 0) return;
+        const receipt = running.child.spawnargs[index + 1];
+        original = readFileSync(receipt);
+        if (mode === "missing") rmSync(receipt);
+        else if (mode === "wrong-invocation" || mode === "incomplete") {
+          const mutated = JSON.parse(original);
+          if (mode === "wrong-invocation") mutated.invocation += "-foreign";
+          else mutated.process_tree_retired = false;
+          writeFileSync(receipt, JSON.stringify(mutated));
+        }
+      } });
+      const options = { env: { ...process.env, E2E_PROCESS_HOST: host }, scopeCapture: result => { captured = result; },
+        scopeInheritInput: mode === "reported-input" };
+      // No native report producer is substituted for the selected executable.
+      try {
+        running = mode === "reported-input"
+          ? await scope.startReportedOwned(process.execPath, ["-e", `process.exit(${exitCode})`], options)
+          : scope.startOwned(mode === "refused" ? join(directory, "missing.exe") : process.execPath,
+            ["-e", `process.exit(${exitCode})`], options);
+        if (["wrong-invocation", "missing", "incomplete"].includes(mode)) {
+          await assert.rejects(running.closed, error => {
+            failure = error;
+            assert.equal(error.code, "PROCESS_COMPLETION_INVALID");
+            return true;
+          });
+        } else if (mode === "refused") {
+          await assert.rejects(running.closed, error => {
+            failure = error;
+            assert.equal(error.code, "PROCESS_HOST_FAILED");
+            assert.equal(error.completion.root_status, null);
+            assert.equal(error.completion.process_tree_retired, false);
+            assert.equal(error.completion.failure.phase, "root-admission");
+            return true;
+          });
+        } else {
+          const result = await running.closed;
+          assert.equal(captured, result, "the original observer receives the validated selected process result");
+          assert.equal(typeof result.completion, "object", "root exit requires the original bound physical completion");
+          assert.deepEqual(result.completion, JSON.parse(original));
+          assert.equal(result.code, exitCode);
+          assert.equal(result.signal, null);
+          assert.equal(result.completion.platform, "windows");
+          assert.equal(result.completion.process_tree_retired, true);
+          assert.equal(result.completion.failure, null);
+          assert.equal(result.hostStatus.code >>> 0, exitCode);
+          assert.equal(result.hostStatus.signal, null);
+          if (mode === "plain") t.diagnostic(JSON.stringify({completion_base64: original.toString("base64")}));
+        }
+        if (failure) assert.equal(captured, undefined, "invalid completion cannot reach the terminal observer");
+        assert.equal(scope.children.size, 0);
+      } finally {
+        if (failure) await assert.rejects(scope.close(), error => error === failure);
+        else await scope.close();
+      }
+    }
+  } finally { rmSync(root, {recursive: true}); }
+});
 
 test("selected Windows native producer acknowledges through the original decoder and physical close", {
   skip: process.platform !== "win32",
