@@ -338,6 +338,63 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
         }
         index.mark_spilled(&[(second, second_bytes.clone())], offset);
     }
+    // Unrelated staged objects must not turn a durable provider batch into
+    // scalar reads. Exercise both representations on the actual local medium.
+    let durable = [
+        blob(OwnedBytes::from_static(b"first durable batch member")),
+        blob(OwnedBytes::from_static(b"second durable batch member")),
+    ];
+    for (id, bytes) in &durable {
+        store
+            .inner()
+            .put(
+                *id,
+                bytes.clone(),
+                &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
+            )
+            .await?;
+    }
+    let durable_requests = durable.each_ref().map(|(id, bytes)| ObjectReadRequest {
+        object_id: *id,
+        maximum_bytes: bytes.len() as u64,
+    });
+    for native in [false, true] {
+        for stored in [false, true] {
+            let original = NativeMaterializationWork::new(native_read_budget(), &token)
+                .map_err(|(cause, _)| cause)?;
+            let baseline = original.live_allocation_bytes();
+            let mut work = if native {
+                AuthorityWork::native(&original, &token)
+            } else {
+                AuthorityWork::new(native_read_budget(), &token)
+            };
+            let (values, allocation) = if stored {
+                store.read_many_stored(&durable_requests, &mut work).await?
+            } else {
+                store.read_many(&durable_requests, &mut work).await?
+            };
+            assert_eq!(values.len(), durable.len());
+            for (read, (_, bytes)) in values.iter().zip(&durable) {
+                assert_eq!(&read.bytes, bytes);
+            }
+            assert_eq!(work.spent().object_probes, 2);
+            if !native {
+                assert_eq!(
+                    work.spent().backend_read_operations,
+                    1,
+                    "durable reads must preserve the provider batch"
+                );
+            }
+            let alias = values[0].bytes.clone();
+            drop(values);
+            drop(allocation);
+            if native {
+                assert!(original.live_allocation_bytes() > baseline);
+            }
+            drop(alias);
+            assert_eq!(original.live_allocation_bytes(), baseline);
+        }
+    }
     let work =
         NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
     let requests = [
