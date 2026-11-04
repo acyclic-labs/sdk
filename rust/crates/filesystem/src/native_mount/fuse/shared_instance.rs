@@ -36,7 +36,7 @@ pub(in crate::native_mount) struct SharedFuseInstance {
 struct SharedFuseRoot {
     views: Arc<SharedViews>,
     root: PathBuf,
-    path: Vec<u8>,
+    path: std::ffi::CString,
     state: InstanceState,
     // The instance's own meter: it outlives the view that started it.
     work: NativeMaterializationWork,
@@ -126,8 +126,8 @@ impl SharedFuseInstance {
             detach_native_mount_destination_after_crash(root)?;
         }
         let metadata = std::fs::metadata(root)?;
-        let mut path = root.as_os_str().as_bytes().to_vec();
-        path.push(0);
+        let path = std::ffi::CString::new(root.as_os_str().as_bytes())
+            .map_err(|_| NativeMountError::InvalidDestination)?;
         let mut instance = SharedFuseRoot {
             views: SharedViews::new(
                 std::os::unix::fs::MetadataExt::uid(&metadata),
@@ -227,10 +227,7 @@ impl SharedFuseRoot {
             .set(std::thread::current().id());
         self.views.close();
         let state = &mut self.state;
-        let Ok(path) = std::ffi::CStr::from_bytes_with_nul(&self.path) else {
-            return;
-        };
-        let detached = state.detach(path, &self.root);
+        let detached = state.detach(&self.path, &self.root);
         state.join_worker();
         state.device.take();
         if let Some(mut guard) = state.guard.take() {

@@ -5,7 +5,7 @@
 //! see the same set of live views. Once an instance closes it lists no new
 //! view, so nothing is admitted to an instance that is tearing down.
 
-use super::view_table::{ViewLease, ViewOwner, ViewTable};
+use super::view_table::{RetiringView, ViewLease, ViewOwner, ViewTable};
 use crate::native_mount::NativeMountError;
 use std::borrow::Borrow;
 use std::collections::{BTreeMap, HashMap};
@@ -121,10 +121,9 @@ pub(crate) struct NamedView<K: Clone + Eq + Hash, C> {
 }
 
 impl<K: Clone + Eq + Hash, C> NamedView<K, C> {
-    /// Unlists the view, so no new callback is admitted, runs `stop`, then
-    /// waits for every admitted callback and returns the name and core.
-    /// `None` once retired.
-    pub(crate) fn retire_after(&mut self, stop: impl FnOnce()) -> Option<(K, C)> {
+    /// Unlists the name and serial, runs `stop`, then transfers the original
+    /// callback drain. `None` once retirement has already begun.
+    pub(crate) fn begin_retirement(&mut self, stop: impl FnOnce()) -> Option<(K, RetiringView<C>)> {
         let owner = self.owner.take()?;
         let serial = owner.serial().get();
         let name = {
@@ -139,7 +138,13 @@ impl<K: Clone + Eq + Hash, C> NamedView<K, C> {
             names.by_name.remove(&name);
             name
         };
-        Some((name, owner.retire_after(stop)))
+        Some((name, owner.begin_retirement(stop)))
+    }
+
+    /// Unlists the view, stops its adapter, then drains admitted callbacks.
+    pub(crate) fn retire_after(&mut self, stop: impl FnOnce()) -> Option<(K, C)> {
+        self.begin_retirement(stop)
+            .map(|(name, retiring)| (name, retiring.finish()))
     }
 }
 
@@ -168,20 +173,21 @@ mod tests {
         let (serial, lease) = views.enter_name(b"a".as_slice()).expect("listed");
         assert_eq!(*lease, 1);
         let mut stopped = false;
-        assert_eq!(
-            first.retire_after(|| {
+        let (name, retiring) = first
+            .begin_retirement(|| {
                 assert!(views.enter_name(b"a".as_slice()).is_none());
                 assert!(
                     views.enter(serial).is_none(),
                     "stop must close serial admission"
                 );
                 assert_eq!(*lease, 1, "an admitted callback retains its view");
-                drop(lease);
                 stopped = true;
-            }),
-            Some((b"a".to_vec(), 1))
-        );
+            })
+            .expect("the listed view transfers its drain");
         assert!(stopped);
+        assert_eq!(*lease, 1, "transfer retains the admitted callback");
+        drop(lease);
+        assert_eq!((name, retiring.finish()), (b"a".to_vec(), 1));
         assert_eq!(first.retire_after(|| unreachable!()), None);
         assert!(views.enter_name(b"a".as_slice()).is_none());
         assert!(views.enter(serial).is_none(), "a retired serial is stale");
