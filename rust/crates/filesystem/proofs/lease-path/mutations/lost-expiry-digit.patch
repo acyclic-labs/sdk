@@ -1,0 +1,12 @@
+diff --git a/rust/crates/filesystem/src/operation_window/lease_path/encoding.rs b/rust/crates/filesystem/src/operation_window/lease_path/encoding.rs
+--- a/rust/crates/filesystem/src/operation_window/lease_path/encoding.rs
++++ b/rust/crates/filesystem/src/operation_window/lease_path/encoding.rs
+@@ -56,7 +56,7 @@
+     );
+     cursor += lease.len() * 2;
+     text[cursor] = b'/';
+-    let mut number = expires_at_millis;
++    let mut number = expires_at_millis / 10;
+     for position in (cursor + 1..length).rev() {
+         text[position] = b'0' + (number % 10) as u8;
+         number /= 10;

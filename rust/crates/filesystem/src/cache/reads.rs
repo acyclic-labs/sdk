@@ -8,15 +8,14 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
         &self,
         object_id: ObjectId,
         maximum: u64,
-        flight: RetainedArc<Flight>,
+        guard: ActiveFlightGuard<'_, S>,
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<ObjectRead, ObjectStoreError> {
-        let epoch = flight.epoch;
-        let guard = ActiveFlightGuard {
-            store: self,
-            object_id,
-            flight: Some(flight),
-        };
+        let epoch = guard
+            .flight
+            .as_ref()
+            .ok_or(ObjectStoreError::Corrupt)?
+            .epoch;
         let mut read = match self.inner.read(object_id, maximum, work).await {
             Ok(read) => read,
             Err(error) => {
@@ -71,12 +70,12 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
         for request in requests {
             let slot = match self.read_plan(request.object_id, &mut work.accounting())? {
                 ReadPlan::Hit(bytes) => BatchSlot::Hit(bytes),
-                ReadPlan::Leader(flight) => {
+                ReadPlan::Leader(mut guard) => {
                     let index = prepared.leaders.value.len();
                     prepared.leaders.value.push(BatchLeader {
                         object_id: request.object_id,
                         maximum_bytes: request.maximum_bytes,
-                        flight,
+                        flight: guard.flight.take().ok_or(ObjectStoreError::Corrupt)?,
                     });
                     local_leaders
                         .get_or_try_insert_with(

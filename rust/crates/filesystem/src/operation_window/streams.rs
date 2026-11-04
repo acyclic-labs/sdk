@@ -5,6 +5,9 @@ use acyclic_stream::StreamProviderExt as _;
 #[cfg(test)]
 mod tests;
 
+#[cfg(all(feature = "fuzzing", feature = "memory", not(loom)))]
+pub(super) mod fuzzing;
+
 /// Operation-window state stored beside generation authority in one Stream
 /// provider. Each lease owns an immutable gate stream: opening creates tail 1,
 /// while close/expiry atomically advances it to tail 2 with the window CAS.

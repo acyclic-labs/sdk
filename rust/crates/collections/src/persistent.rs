@@ -265,7 +265,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         if self.root.is_none() {
             return Ok(None);
         }
-        work.examine(1 + N as u64)?;
+        work.examine(1 + self.before.map_or(0, |_| N as u64))?;
         Ok(self
             .body()
             .filter(|body| self.before.is_none_or(|before| body.minimum < before)))
@@ -314,6 +314,54 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
             (_, None) => Ok(low),
             (Some(low_body), Some(_)) => {
                 Self::node(low_body.minimum, Kind::Branch { bit, low, high }, work)
+            }
+        }
+    }
+
+    pub(crate) fn exact_position<W: IndexReadWork>(
+        &self,
+        key: [u8; N],
+        work: &mut W,
+    ) -> Result<Option<Position<'_, V, N, C>>, W::Error> {
+        work.validate()?;
+        let mut cursor = self;
+        let mut before = None;
+        let mut value_before = None;
+        loop {
+            if let Some(cut) = cursor.before {
+                work.examine(N as u64)?;
+                if key >= cut {
+                    return Ok(None);
+                }
+                if before.is_some() {
+                    work.examine(N as u64)?;
+                }
+                before = Some(before.map_or(cut, |prior: [u8; N]| prior.min(cut)));
+            }
+            if let Some(cut) = cursor.value_before {
+                value_before = Some(value_before.map_or(cut, |prior: C| prior.min(cut)));
+            }
+            let Some(body) = cursor.body() else {
+                return Ok(None);
+            };
+            work.examine(1)?;
+            match &body.kind {
+                Kind::Leaf(value) => {
+                    work.examine(N as u64)?;
+                    return Ok((body.minimum == key).then_some(Position {
+                        key: &body.minimum,
+                        value,
+                        before,
+                        value_before,
+                    }));
+                }
+                Kind::Branch {
+                    bit,
+                    low,
+                    high: upper,
+                } => {
+                    cursor = if high(&key, *bit) { upper } else { low };
+                }
             }
         }
     }

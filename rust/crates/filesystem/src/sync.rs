@@ -32,12 +32,3 @@ pub(crate) mod native {
 const _: fn(Mutex<()>) -> std::sync::Mutex<()> = |mutex| mutex;
 #[cfg(loom)]
 const _: fn(Mutex<()>) -> loom::sync::Mutex<()> = |mutex| mutex;
-
-#[cfg(not(loom))]
-#[test]
-fn ordinary_build_keeps_standard_synchronization() {
-    assert!(
-        !cfg!(loom),
-        "ordinary builds must not enable the dedicated model cfg"
-    );
-}

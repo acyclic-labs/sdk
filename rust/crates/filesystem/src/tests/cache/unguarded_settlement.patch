@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/cache.rs
++++ b/rust/crates/filesystem/src/cache.rs
+@@ -368,7 +368,7 @@
+             ReadPlan::Leader(ActiveFlightGuard {
+                 store: self,
+                 object_id: object_id.1,
+-                flight: Some(flight),
++                flight: None,
+             })
+         } else {
+             ReadPlan::Follower(flight)

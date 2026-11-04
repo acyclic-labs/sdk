@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/operation_window.rs
++++ b/rust/crates/filesystem/src/operation_window.rs
+@@ -106,7 +106,7 @@
+ fn snapshot_shape_is_valid(snapshot: &OperationWindowSnapshot) -> bool {
+     match &snapshot.phase {
+         OperationWindowPhase::Idle => true,
+-        OperationWindowPhase::Reconciling { ticket, .. } => ticket.into_bytes() != [0; 16],
++        OperationWindowPhase::Reconciling { .. } => true,
+         OperationWindowPhase::Active { leases, .. } => {
+             !leases.is_empty()
+                 && leases.iter().all(|(lease_id, lease)| {

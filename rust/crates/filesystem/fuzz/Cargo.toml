@@ -17,6 +17,7 @@ acyclic-stream = { path = "../../stream" }
 acyclic-auth = { path = "../../auth" }
 prost.workspace = true
 acyclic-fs = { path = "..", features = ["model-checking", "fuzzing", "session"] }
+acyclic-fs-lease-path-proof = { path = "../proofs/lease-path" }
 libfuzzer-sys = { version = "0.4", optional = true }
 serde.workspace = true
 serde_json.workspace = true
@@ -34,6 +35,10 @@ loom = "0.7"
 name = "model"
 path = "tests/model.rs"
 required-features = ["model-checking"]
+
+[[test]]
+name = "window_state"
+path = "tests/window_state.rs"
 
 [[bin]]
 name = "access"
@@ -71,6 +76,14 @@ bench = false
 name = "paths"
 required-features = ["fuzz-targets"]
 path = "fuzz_targets/paths.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "window_state"
+required-features = ["fuzz-targets"]
+path = "fuzz_targets/window_state.rs"
 test = false
 doc = false
 bench = false

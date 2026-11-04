@@ -353,5 +353,8 @@ impl OperationWindowStore for MemoryOperationWindowStore {
 }
 
 mod coordinator;
+#[cfg(all(feature = "fuzzing", feature = "memory", not(loom)))]
+#[doc(hidden)]
+pub use streams::fuzzing::check_persisted_window;
 #[cfg(test)]
 mod tests;

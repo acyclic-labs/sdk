@@ -1,7 +1,7 @@
 //! Original index admission before acquiring a funding-reentrant owner lock.
 use super::*;
 
-/// A single synchronous traversal's prepaid work and optional insertion backing.
+/// A single synchronous traversal's reserved work and optional insertion backing.
 /// This owns original tokens, never a copied remaining caller allowance.
 pub(crate) struct PreparedIndexWork {
     items: u64,
@@ -10,34 +10,78 @@ pub(crate) struct PreparedIndexWork {
 }
 
 impl PreparedIndexWork {
-    pub(crate) fn read<const N: usize>(
+    pub(crate) fn read<const N: usize, T>(
         accounting: &mut KernelAccounting<'_>,
-    ) -> Result<Self, FsError> {
+        operation: impl FnOnce(&mut Self, &mut KernelAccounting<'_>) -> T,
+    ) -> Result<T, FsError> {
         // A lookup visits at most 8N branches, one leaf and N exact key bytes.
         let items = (N as u64)
             .checked_mul(9)
             .and_then(|n| n.checked_add(1))
             .ok_or(crate::WorkError::Overflow)?;
-        accounting.charge_items(items)?;
-        Ok(Self {
-            items,
-            allocation: None,
-            claims: 0,
-        })
+        Self::run(items, None, accounting, operation)
     }
 
-    pub(crate) fn insert<V, const N: usize>(
+    pub(crate) fn insert<V, const N: usize, T>(
         accounting: &mut KernelAccounting<'_>,
-    ) -> Result<Self, FsError> {
+        operation: impl FnOnce(&mut Self, &mut KernelAccounting<'_>) -> T,
+    ) -> Result<T, FsError> {
         let bound = acyclic_collections::FixedIndex::<V, RetainedAllocation, N>::insertion_bound(1)
             .ok_or(crate::WorkError::Overflow)?;
-        accounting.charge_items(bound.examined_items)?;
-        let allocation = RetainedAllocation::claim(bound.allocation_bytes, 2, accounting)?;
-        Ok(Self {
-            items: bound.examined_items,
-            allocation: Some(allocation),
-            claims: 2,
-        })
+        Self::run(
+            bound.examined_items,
+            Some(bound.allocation_bytes),
+            accounting,
+            operation,
+        )
+    }
+
+    fn run<T>(
+        items: u64,
+        backing: Option<u64>,
+        accounting: &mut KernelAccounting<'_>,
+        operation: impl FnOnce(&mut Self, &mut KernelAccounting<'_>) -> T,
+    ) -> Result<T, FsError> {
+        let bound = crate::WorkCounters {
+            items_examined: items,
+            ..crate::WorkCounters::UNCHARGED
+        };
+        // Reserve before the owner lock, then settle after its guard has left
+        // the synchronous closure. Native callers share the original atomic
+        // credit; an ordinary caller is exclusively borrowed for this scope.
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut credit = super::super::effects::EffectCredit::for_accounting(accounting);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(credit) = &mut credit {
+            credit.reserve(bound, false)?;
+        } else {
+            accounting.admit(bound)?;
+        }
+        #[cfg(target_arch = "wasm32")]
+        accounting.admit(bound)?;
+        let allocation = backing
+            .map(|bytes| RetainedAllocation::claim(bytes, 2, accounting))
+            .transpose()?;
+        let mut work = Self {
+            items,
+            claims: if allocation.is_some() { 2 } else { 0 },
+            allocation,
+        };
+        let output = operation(&mut work, accounting);
+        let actual = crate::WorkCounters {
+            items_examined: items - work.items,
+            ..crate::WorkCounters::UNCHARGED
+        };
+        drop(work);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(credit) = &mut credit {
+            credit.complete(actual)?;
+        } else {
+            accounting.record_completed(actual)?;
+        }
+        #[cfg(target_arch = "wasm32")]
+        accounting.record_completed(actual)?;
+        Ok(output)
     }
 }
 

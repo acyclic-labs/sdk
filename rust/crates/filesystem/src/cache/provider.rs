@@ -123,8 +123,8 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
                 .map_err(crate::async_storage::object_error)?;
             match self.read_plan(object_id, &mut work.accounting())? {
                 ReadPlan::Hit(bytes) => shared_read(bytes, maximum_bytes),
-                ReadPlan::Leader(flight) => {
-                    self.load_leader(object_id, maximum_bytes, flight, &mut work)
+                ReadPlan::Leader(guard) => {
+                    self.load_leader(object_id, maximum_bytes, guard, &mut work)
                         .await
                 }
                 ReadPlan::Follower(flight) => {

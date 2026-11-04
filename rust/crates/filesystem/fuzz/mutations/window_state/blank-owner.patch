@@ -1,0 +1,10 @@
+--- a/rust/crates/filesystem/src/operation_window.rs
++++ b/rust/crates/filesystem/src/operation_window.rs
+@@ -112,7 +112,6 @@
+                 && leases.iter().all(|(lease_id, lease)| {
+                     *lease_id == lease.id
+                         && lease_id.into_bytes() != [0; 16]
+-                        && !lease.owner.trim().is_empty()
+                         && lease.expires_at_millis > 0
+                 })
+         }

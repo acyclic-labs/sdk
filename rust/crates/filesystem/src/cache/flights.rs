@@ -50,7 +50,7 @@ impl Flights {
             Error = crate::FsError,
             Allocation = RetainedAllocation,
         >,
-    ) -> Result<ReadPlan, ObjectStoreError> {
+    ) -> Result<(bool, RetainedArc<Flight>), ObjectStoreError> {
         let next = self.len.checked_add(1).ok_or(crate::WorkError::Overflow)?;
         let mut inserted = false;
         let flight = self
@@ -63,10 +63,8 @@ impl Flights {
             .clone();
         if inserted {
             self.len = next;
-            Ok(ReadPlan::Leader(flight))
-        } else {
-            Ok(ReadPlan::Follower(flight))
         }
+        Ok((inserted, flight))
     }
 
     // Serialized retained cleanup cannot admit work, refund backing, or lose a
@@ -108,17 +106,26 @@ pub(super) fn remove(
     Ok(())
 }
 
-pub(super) fn read_work(
+pub(super) fn read_work<T>(
     accounting: &mut crate::kernel::KernelAccounting<'_>,
-) -> Result<PreparedIndexWork, ObjectStoreError> {
-    PreparedIndexWork::read::<KEY_BYTES>(accounting).map_err(crate::async_storage::object_error)
+    operation: impl FnOnce(
+        &mut PreparedIndexWork,
+        &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<T, ObjectStoreError>,
+) -> Result<T, ObjectStoreError> {
+    PreparedIndexWork::read::<KEY_BYTES, _>(accounting, operation)
+        .map_err(crate::async_storage::object_error)?
 }
 
-pub(super) fn insertion_work(
+pub(super) fn insertion_work<T>(
     accounting: &mut crate::kernel::KernelAccounting<'_>,
-) -> Result<PreparedIndexWork, ObjectStoreError> {
-    PreparedIndexWork::insert::<RetainedArc<Flight>, KEY_BYTES>(accounting)
-        .map_err(crate::async_storage::object_error)
+    operation: impl FnOnce(
+        &mut PreparedIndexWork,
+        &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<T, ObjectStoreError>,
+) -> Result<T, ObjectStoreError> {
+    PreparedIndexWork::insert::<RetainedArc<Flight>, KEY_BYTES, _>(accounting, operation)
+        .map_err(crate::async_storage::object_error)?
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -185,26 +192,46 @@ pub(crate) fn verify_original_flight_admission_and_retirement()
         let mut accounting = KernelAccounting::native(&original, &cancel);
         let owner = RetainedArc::new(Flight::new(0), &mut accounting)?;
         let mut index = Flights::default();
+        let before_empty = original.receipt().items_examined;
+        assert!(
+            read_work(&mut accounting, |work, _| {
+                index.get((u64::MAX, object), work)
+            })?
+            .is_none()
+        );
+        assert_eq!(original.receipt().items_examined, before_empty);
         // Actual input construction is separate from the fixed-output probe.
         for namespace in (0..population).rev().chain(std::iter::once(u64::MAX)) {
-            let mut work = insertion_work(&mut accounting)?;
-            assert!(matches!(
-                index.install((namespace, object), &owner, &mut work)?,
-                ReadPlan::Leader(_)
-            ));
+            let before = original.receipt().items_examined;
+            let visits = insertion_work(&mut accounting, |work, _| {
+                let mut measured = Counted {
+                    original: work,
+                    visits: 0,
+                };
+                assert!(matches!(
+                    index.install((namespace, object), &owner, &mut measured)?,
+                    (true, _)
+                ));
+                Ok(measured.visits)
+            })?;
+            assert_eq!(original.receipt().items_examined - before, visits);
         }
-        let mut lookup = read_work(&mut accounting)?;
-        let mut measured = Counted {
-            original: &mut lookup,
-            visits: 0,
-        };
-        assert!(same_flight(
-            &index
-                .get((u64::MAX, object), &mut measured)?
-                .ok_or("missing own flight")?,
-            &owner
-        ));
-        counts.push(measured.visits);
+        let before = original.receipt().items_examined;
+        let visits = read_work(&mut accounting, |work, _| {
+            let mut measured = Counted {
+                original: work,
+                visits: 0,
+            };
+            assert!(same_flight(
+                &index
+                    .get((u64::MAX, object), &mut measured)?
+                    .ok_or(ObjectStoreError::Corrupt)?,
+                &owner
+            ));
+            Ok(measured.visits)
+        })?;
+        assert_eq!(original.receipt().items_examined - before, visits);
+        counts.push(visits);
         let mut old = BTreeMap::new();
         for namespace in 0..population {
             old.insert(Ordered(namespace), ());
@@ -243,23 +270,32 @@ pub(crate) fn verify_original_flight_admission_and_retirement()
         ..object
     };
     for id in [object, sealed] {
-        let mut work = insertion_work(&mut accounting)?;
         assert!(matches!(
-            index.install((7, id), &owner, &mut work)?,
-            ReadPlan::Leader(_)
+            insertion_work(&mut accounting, |work, _| {
+                index.install((7, id), &owner, work)
+            })?,
+            (true, _)
         ));
     }
     let retired = index
         .detach((7, object), &owner)
         .ok_or("missing original retirement")?;
-    let mut work = insertion_work(&mut accounting)?;
     assert!(matches!(
-        index.install((7, object), &replacement, &mut work)?,
-        ReadPlan::Leader(_)
+        insertion_work(&mut accounting, |work, _| {
+            index.install((7, object), &replacement, work)
+        })?,
+        (true, _)
     ));
-    drop(work);
     cancel.cancel();
-    assert!(read_work(&mut accounting).is_err());
+    let mut entered = false;
+    assert!(
+        read_work(&mut accounting, |_, _| {
+            entered = true;
+            Ok(())
+        })
+        .is_err()
+    );
+    assert!(!entered);
     assert!(index.detach((7, object), &owner).is_none());
     assert!(index.detach((7, sealed), &replacement).is_none());
     assert_eq!(index.len(), 2);
@@ -316,12 +352,24 @@ pub(crate) fn verify_original_flight_admission_and_retirement()
         .live_bytes();
     let owner = RetainedArc::new(Flight::new(0), &mut ordinary)?;
     let mut index = Flights::default();
-    let mut admission = insertion_work(&mut ordinary)?;
+    let mut visits = 0;
+    let before = ordinary.standalone_parts().unwrap().1.items_examined;
     assert!(matches!(
-        index.install((0, object), &owner, &mut admission)?,
-        ReadPlan::Leader(_)
+        insertion_work(&mut ordinary, |work, _| {
+            let mut measured = Counted {
+                original: work,
+                visits: 0,
+            };
+            let result = index.install((0, object), &owner, &mut measured);
+            visits = measured.visits;
+            result
+        })?,
+        (true, _)
     ));
-    drop(admission);
+    assert_eq!(
+        ordinary.standalone_parts().unwrap().1.items_examined - before,
+        visits
+    );
     drop(index);
     drop(owner);
     assert_eq!(
@@ -343,7 +391,15 @@ pub(crate) fn verify_original_flight_admission_and_retirement()
     let original =
         crate::NativeMaterializationWork::new(denied, &cancel).map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes();
-    assert!(insertion_work(&mut KernelAccounting::native(&original, &cancel)).is_err());
+    let mut entered = false;
+    assert!(
+        insertion_work(&mut KernelAccounting::native(&original, &cancel), |_, _| {
+            entered = true;
+            Ok(())
+        })
+        .is_err()
+    );
+    assert!(!entered);
     assert_eq!(original.live_allocation_bytes(), baseline);
     Ok(())
 }
