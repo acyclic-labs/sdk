@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness/src/local/host_files.rs b/rust/crates/harness/src/local/host_files.rs
+index ee02b75cb8..08ae4c9eb7 100644
+--- a/rust/crates/harness/src/local/host_files.rs
++++ b/rust/crates/harness/src/local/host_files.rs
+@@ -915,7 +915,7 @@ impl Served {
+         // must not terminate the trusted owner or dispatch another action.
+         let request = regular_bytes(&path).and_then(|bytes| {
+             let request: Request = serde_json::from_slice(&bytes).map_err(storage)?;
+-            if request.session != session || request.operation != operation {
++            if request.session != session {
+                 return Err(Error::Unauthorized(
+                     "native request identity changed".into(),
+                 ));

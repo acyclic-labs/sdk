@@ -1,0 +1,11 @@
+diff --git a/rust/crates/harness/src/host_hooks.rs b/rust/crates/harness/src/host_hooks.rs
+index b21cd8867d..609c1fbdf1 100644
+--- a/rust/crates/harness/src/host_hooks.rs
++++ b/rust/crates/harness/src/host_hooks.rs
+@@ -27,5 +27,5 @@ pub fn check_codex_version(output: &str) -> crate::Result<()> {
+             "Codex {version} is unsupported; requires Codex >= {MINIMUM_CODEX_VERSION}; upgrade Codex before installing or using Acyclic"
+         )));
+     }
+-    Ok(())
++    Err(crate::Error::Unsupported("planted version refusal".into()))
+ }

@@ -6,6 +6,7 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+acyclic-auth = { path = "../auth", version = "=0.2.0" }
 axum.workspace = true
 futures.workspace = true
 http-body-util = "0.1.5"

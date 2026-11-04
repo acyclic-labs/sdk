@@ -31,6 +31,10 @@ use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError, Weak, mpsc};
 #[cfg(all(test, not(loom)))]
 mod tests;
 
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod validation;
+
 /// Reserved inside the host's existing writable workspace; never a state path.
 pub const DIRECTORY: &str = ".acyclic-sdk/host-files";
 const MAXIMUM_BYTES: u64 = 65_536;

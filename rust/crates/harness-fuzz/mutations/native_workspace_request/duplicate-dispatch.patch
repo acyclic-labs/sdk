@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness/src/local/host_files.rs b/rust/crates/harness/src/local/host_files.rs
+index ee02b75cb8..b95e4c43ef 100644
+--- a/rust/crates/harness/src/local/host_files.rs
++++ b/rust/crates/harness/src/local/host_files.rs
+@@ -904,7 +904,7 @@ impl Served {
+             let _ = remove_projection(&path);
+             return Ok(());
+         };
+-        if self.known.contains_key(&operation) {
++        if false && self.known.contains_key(&operation) {
+             // A known request changes only by its withdrawal.
+             if std::fs::symlink_metadata(&path).is_err() {
+                 self.withdraw(requests, operation)?;
