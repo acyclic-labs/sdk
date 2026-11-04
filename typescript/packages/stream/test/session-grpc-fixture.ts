@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSecureServer } from "node:http2";
+import { createSecureServer, type ServerHttp2Session } from "node:http2";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import type { ConnectError } from "@connectrpc/connect";
 import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
@@ -17,6 +17,7 @@ export async function grpcFixture(identity: { key: string; cert: string }, failu
   const { key, cert } = identity;
   const node = new SessionNode();
   const counts = { connections: 0, sessions: 0, legacyFollows: 0 };
+  const connections = new Set<ServerHttp2Session>();
   const server = createSecureServer({ key, cert }, connectNodeAdapter({ routes(router) {
     router.service(StreamService, {
       tail(_request, context) {
@@ -42,12 +43,17 @@ export async function grpcFixture(identity: { key: string; cert: string }, failu
     } });
   } }));
   server.on("connection", socket => socket.setNoDelay(true));
-  server.on("session", () => { counts.connections += 1; });
+  server.on("session", session => {
+    counts.connections += 1;
+    connections.add(session);
+    session.once("close", () => connections.delete(session));
+  });
   const close = ownFixtureServer(server);
   await new Promise<void>(resolve => server.listen(0, "localhost", resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("missing HTTP/2 address");
-  return { node, counts, close, options: { endpoint: `https://localhost:${address.port}`, token: "fixture", caCertificate: cert } };
+  return { node, counts, close, disconnect() { for (const session of connections) session.destroy(); },
+    options: { endpoint: `https://localhost:${address.port}`, token: "fixture", caCertificate: cert } };
 }
 
 

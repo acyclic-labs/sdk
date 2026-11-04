@@ -12,7 +12,7 @@ plugin({ name: "session-error-vocabulary", setup(build) {
     const needle = "throw sessionTransportError(error);";
     assert(source.includes(needle), "canonical error probe no longer matches");
     const expression = broken ? 'providerError(error, "session")' : "sessionTransportError(error)";
-    return { contents: source.replace(needle, `const failure = ${expression}; Reflect.get(globalThis, "captureSessionError")(failure); throw failure;`), loader: "ts" };
+    return { contents: source.replace(needle, `const failure = ${expression}; Reflect.get(globalThis, "captureSessionError")(failure); if (Reflect.get(globalThis, "capturePhysicalError")) Reflect.get(globalThis, "capturePhysicalError")(error); throw failure;`), loader: "ts" };
   });
 } });
 const { GrpcStreamProvider } = await import("../src/grpc.js");
@@ -64,5 +64,34 @@ try {
   }
   assert.equal(fixture.counts.legacyFollows, 0);
   assert.equal(fixture.counts.connections, 1);
-  console.log(JSON.stringify({ codes: codes.length, sessions: fixture.counts.sessions, connections: fixture.counts.connections }));
+  const peerSessions = fixture.counts.sessions;
+  failure = undefined;
+  const follows = ["recovery/a", "recovery/b"].map(path => provider.follow(path, { from: 0n })[Symbol.asyncIterator]());
+  try {
+    const first = Promise.all(follows.map(follow => follow.next()));
+    await Promise.race([fixture.node.until(() => fixture.node.active === 2), first]);
+    fixture.node.append("recovery/a");
+    fixture.node.append("recovery/b");
+    assert((await first).every(item => item.value?.sequence === 0n));
+    const next = Promise.all(follows.map(follow => follow.next()));
+    // Capture only actual transport output, before the public error projection.
+    Reflect.set(globalThis, "capturePhysicalError", (error: Error) => {
+      console.error("physical HTTP/2 loss", error);
+    });
+    fixture.disconnect();
+    await Promise.race([
+      fixture.node.until(() => fixture.node.connections.length === 2 && fixture.node.active === 2),
+      next.then(() => { throw new Error("lost connection fabricated a record"); }, error => {
+        throw new Error("physical connection loss ended the original follows", { cause: error });
+      }),
+    ]);
+    assert.deepEqual(fixture.node.resumes.slice(-2).map(resume => resume.next), [1n, 1n]);
+    fixture.node.append("recovery/a");
+    fixture.node.append("recovery/b");
+    assert((await next).every(item => item.value?.sequence === 1n));
+    assert.equal(fixture.counts.sessions, peerSessions + 2);
+    assert.equal(fixture.counts.connections, 2);
+    assert.equal(fixture.counts.legacyFollows, 0);
+  } finally { await Promise.all(follows.map(follow => follow.return?.())); }
+  console.log(JSON.stringify({ codes: codes.length, sessions: peerSessions, connections: 1, recoveredConnections: fixture.counts.connections }));
 } finally { await fixture.close(); identity.dispose(); }

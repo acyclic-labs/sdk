@@ -17,6 +17,7 @@ for (const broken of [false, true]) {
       const result = JSON.parse(child.stdout);
       expect(result.connections).toBe(1);
       expect(result.sessions).toBe(result.codes);
+      expect(result.recoveredConnections).toBe(2);
     }
   });
 }
