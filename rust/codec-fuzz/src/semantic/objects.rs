@@ -90,14 +90,12 @@ fn compare<W: Message + Default, T: Debug + PartialEq>(
         });
         let result = call(&client);
         if !lost {
-            assert_eq!(
-                result.as_ref().map(|_| ()).map_err(|error| *error),
-                verified
-                    .lock()
-                    .expect("response admission custody")
-                    .take()
-                    .expect("the transport verified the original request and response"),
-            );
+            let verified = verified
+                .lock()
+                .expect("response admission custody")
+                .take()
+                .expect("the transport verified the original request and response");
+            assert_eq!(result.as_ref().map(|_| ()), verified.as_ref().map(|_| ()));
         }
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         ready(client.flush(None)).expect("the original producer acknowledges puts durably");
