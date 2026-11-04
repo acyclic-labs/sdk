@@ -9,10 +9,12 @@ use crate::{
 };
 
 #[cfg(feature = "hooks")]
-async fn open(directory: &std::path::Path) -> Result<LocalHarness> {
-    let project = volume(directory).await?;
+async fn open(
+    directory: &std::path::Path,
+    project: &crate::conversation::VolumeRef,
+) -> Result<LocalHarness> {
     LocalHarness::open(
-        volume_config(directory, project, text())?
+        volume_config(directory, project.clone(), text())?
             .compaction(crate::context::CompactionPolicy::Disabled),
     )
     .await
@@ -252,12 +254,13 @@ async fn conflicting_sampling_is_rejected_before_a_profile_bound_session_opens()
 #[tokio::test]
 async fn each_settings_manifest_retains_its_own_admission_on_reopen() -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let harness = open(directory.path()).await?;
+    let project = volume(directory.path()).await?;
+    let harness = open(directory.path(), &project).await?;
     let source = "export default (base) => base;";
     write(&harness, "agent.ts", source).await?;
     let version = write(&harness, "plugins.ts", source).await?;
     drop(harness);
-    let harness = open(directory.path()).await?;
+    let harness = open(directory.path(), &project).await?;
     // Both reads select the same current home generation.
     for path in ["agent.ts", "plugins.ts"] {
         let record = admission(&harness, path, &version).await?;
@@ -271,10 +274,11 @@ async fn each_settings_manifest_retains_its_own_admission_on_reopen() -> Result<
 #[tokio::test]
 async fn a_directory_at_the_selected_plugins_entry_retains_seed_settings() -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let harness = open(directory.path()).await?;
+    let project = volume(directory.path()).await?;
+    let harness = open(directory.path(), &project).await?;
     write(&harness, "plugins.ts/child.ts", "export default {}; ").await?;
     drop(harness);
-    let harness = open(directory.path()).await?;
+    let harness = open(directory.path(), &project).await?;
     assert!(harness.plugin_hooks.is_empty());
     Ok(())
 }
@@ -283,7 +287,8 @@ async fn a_directory_at_the_selected_plugins_entry_retains_seed_settings() -> Re
 #[tokio::test]
 async fn an_enabled_guard_file_read_refusal_cannot_remove_the_guard() -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let harness = open(directory.path()).await?;
+    let project = volume(directory.path()).await?;
+    let harness = open(directory.path(), &project).await?;
     for (path, source) in [
         (
             "plugins/guard/plugin.ts",
@@ -298,7 +303,7 @@ async fn an_enabled_guard_file_read_refusal_cannot_remove_the_guard() -> Result<
         write(&harness, path, source).await?;
     }
     drop(harness);
-    match open(directory.path()).await {
+    match open(directory.path(), &project).await {
         Err(Error::ToolRejected {
             code: crate::wire::ErrorCode::Invalid,
             ..
