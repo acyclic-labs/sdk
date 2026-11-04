@@ -1635,17 +1635,13 @@ async fn a_prompt_carries_a_thousand_mentions_as_one_reference() -> Result<()> {
         })
         .collect::<Vec<_>>();
     let (_directory, harness, provider) = checkout_with(&files).await?;
-    let (agents, root) = harness.agents().await?;
-    let (agents, root) = (Arc::clone(agents), root.clone());
-    let client = conversation(&harness).await?;
+    let mut client = ObservedConversation::open(&harness).await?;
     let prompt = files
         .iter()
         .map(|(path, _)| format!("@{path}"))
         .collect::<Vec<_>>()
         .join(" ");
-    client.send("many", &prompt).await?;
-    let entries = settled(&agents, &root).await?;
-    let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
+    let entry = client.send("many", &prompt).await?;
     let TurnInput::Message {
         attachments: Some(manifest),
         body,
@@ -1666,6 +1662,8 @@ async fn a_prompt_carries_a_thousand_mentions_as_one_reference() -> Result<()> {
         inline.len()
     );
     // The records stay one reference: as small as a one-file prompt's.
+    let (agents, root) = harness.agents().await?;
+    let entries = records(&**agents.provider(), root.conversation().map_err(agent)?).await?;
     let inbox = records(&**agents.provider(), root.inbox().map_err(agent)?).await?;
     for record in inbox.iter().chain(&entries) {
         assert!(record.len() < 4096, "{} record bytes", record.len());
