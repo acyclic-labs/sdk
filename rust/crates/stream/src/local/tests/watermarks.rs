@@ -8,9 +8,9 @@ async fn qualify(
     operations: &[u8],
     early_durable: bool,
 ) -> Result {
-    // Each generated trace starts on fresh paths behind a completed cut,
-    // while retaining the same physical journal and its accepted prefix.
-    provider.flush()?;
+    // Fresh paths have no accepted or durable records. Earlier traces may
+    // leave pending frames in the same journal; only an explicit trace flush
+    // can make this trace's new records durable. No setup barrier is needed.
     let paths = ["a", "b", "c"].map(|path| StreamPath::new(format!("{namespace}/{path}")).unwrap());
     let mut accepted = [0; 3];
     let mut durable = [0; 3];
