@@ -1,6 +1,6 @@
 //! Contract scenarios and opt-in models share one test entrypoint.
 // Ordinary async tests retain std synchronization; the model runner selects the
-// two Loom modules with the explicit workspace wrapper and model-checking feature.
+// guest Loom module with the explicit workspace wrapper and model-checking feature.
 
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
 acyclic_test_support::counting_allocator!();
@@ -29,17 +29,9 @@ mod guest_metadata;
 #[path = "protoc_path.rs"]
 mod protoc_path;
 
-#[cfg(not(loom))]
-#[path = "timer_contract.rs"]
-mod timer_contract;
-
 #[cfg(all(loom, feature = "model-checking", not(target_arch = "wasm32")))]
 #[path = "guest_loom.rs"]
 mod guest_loom;
-
-#[cfg(all(loom, feature = "model-checking", not(target_arch = "wasm32")))]
-#[path = "timer_loom.rs"]
-mod timer_loom;
 
 #[cfg(all(loom, not(feature = "model-checking")))]
 compile_error!(
