@@ -358,41 +358,64 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
         object_id: *id,
         maximum_bytes: bytes.len() as u64,
     });
+    let resident = blob(OwnedBytes::from_static(b"resident between durable misses"));
+    store
+        .put(
+            resident.0,
+            resident.1.clone(),
+            &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
+        )
+        .await?;
+    let mixed_requests = [
+        durable_requests[0],
+        ObjectReadRequest {
+            object_id: resident.0,
+            maximum_bytes: resident.1.len() as u64,
+        },
+        durable_requests[1],
+    ];
+    let durable_values = durable.each_ref().map(|(_, bytes)| bytes);
+    let mixed_values = [&durable[0].1, &resident.1, &durable[1].1];
     for native in [false, true] {
         for stored in [false, true] {
-            let original = NativeMaterializationWork::new(native_read_budget(), &token)
-                .map_err(|(cause, _)| cause)?;
-            let baseline = original.live_allocation_bytes();
-            let mut work = if native {
-                AuthorityWork::native(&original, &token)
-            } else {
-                AuthorityWork::new(native_read_budget(), &token)
-            };
-            let (values, allocation) = if stored {
-                store.read_many_stored(&durable_requests, &mut work).await?
-            } else {
-                store.read_many(&durable_requests, &mut work).await?
-            };
-            assert_eq!(values.len(), durable.len());
-            for (read, (_, bytes)) in values.iter().zip(&durable) {
-                assert_eq!(&read.bytes, bytes);
+            for (requests, expected) in [
+                (durable_requests.as_slice(), durable_values.as_slice()),
+                (mixed_requests.as_slice(), mixed_values.as_slice()),
+            ] {
+                let original = NativeMaterializationWork::new(native_read_budget(), &token)
+                    .map_err(|(cause, _)| cause)?;
+                let baseline = original.live_allocation_bytes();
+                let mut work = if native {
+                    AuthorityWork::native(&original, &token)
+                } else {
+                    AuthorityWork::new(native_read_budget(), &token)
+                };
+                let (values, allocation) = if stored {
+                    store.read_many_stored(requests, &mut work).await?
+                } else {
+                    store.read_many(requests, &mut work).await?
+                };
+                assert_eq!(values.len(), expected.len());
+                for (read, bytes) in values.iter().zip(expected) {
+                    assert_eq!(&read.bytes, *bytes);
+                }
+                assert_eq!(work.spent().object_probes, 2);
+                if !native {
+                    assert_eq!(
+                        work.spent().backend_read_operations,
+                        1,
+                        "durable reads must preserve the provider batch"
+                    );
+                }
+                let alias = values[0].bytes.clone();
+                drop(values);
+                drop(allocation);
+                if native {
+                    assert!(original.live_allocation_bytes() > baseline);
+                }
+                drop(alias);
+                assert_eq!(original.live_allocation_bytes(), baseline);
             }
-            assert_eq!(work.spent().object_probes, 2);
-            if !native {
-                assert_eq!(
-                    work.spent().backend_read_operations,
-                    1,
-                    "durable reads must preserve the provider batch"
-                );
-            }
-            let alias = values[0].bytes.clone();
-            drop(values);
-            drop(allocation);
-            if native {
-                assert!(original.live_allocation_bytes() > baseline);
-            }
-            drop(alias);
-            assert_eq!(original.live_allocation_bytes(), baseline);
         }
     }
     let work =
