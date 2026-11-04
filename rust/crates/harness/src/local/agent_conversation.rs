@@ -33,10 +33,7 @@ use acyclic_harness_client::{
 };
 pub use events::ExecutionQuery;
 pub use history::HistoryPage;
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::sync::Arc;
 pub use usage_query::UsageQuery;
 
 fn failed(error: impl std::fmt::Display) -> Error {
@@ -92,10 +89,6 @@ fn sent(exchange: super::endpoint::Exchange) -> Result<Sent> {
 /// One agent tree's root conversation, driven by its connection's principal.
 pub struct Conversation {
     connection: Connection,
-    /// The binding each decision was sent with: a retried decision, its
-    /// reply lost after the agent resumed, is sent again exactly, though the
-    /// request is no longer pending.
-    decided: Mutex<HashMap<IntentId, ApprovalBinding>>,
 }
 
 impl Conversation {
@@ -120,14 +113,9 @@ impl Conversation {
     }
 
     /// The conversation of `connection`'s root.
-    ///
-    /// # Errors
-    /// Never today; kept fallible for the endpoint handshake.
-    pub fn open(connection: Connection) -> Result<Arc<Self>> {
-        Ok(Arc::new(Self {
-            connection,
-            decided: Mutex::new(HashMap::new()),
-        }))
+    #[must_use]
+    pub fn open(connection: Connection) -> Arc<Self> {
+        Arc::new(Self { connection })
     }
 
     fn agent(&self) -> &AgentPath {
@@ -283,21 +271,6 @@ impl Conversation {
         self.committed(&command).await.map(drop)
     }
 
-    /// Answer the agent's pending approval request `request`, bound to the
-    /// exact action it shows, as this connection's principal.
-    ///
-    /// # Errors
-    /// When `request` is not pending, or session, host or decoding failures.
-    pub async fn decide(&self, request: &IntentId, approved: bool) -> Result<()> {
-        let sent = self.decided().get(request).cloned();
-        let binding = match sent {
-            Some(binding) => binding,
-            None => self.pending_binding(request).await?,
-        };
-        self.decided().insert(request.clone(), binding.clone());
-        self.decide_with_binding(request, binding, approved).await
-    }
-
     /// Decides the exact immutable action already shown to the caller. The
     /// caller retains this binding for retries; no pending-request listing or
     /// client history cache is needed. The original host validates the binding.
@@ -319,12 +292,6 @@ impl Conversation {
         })
         .await
         .map(drop)
-    }
-
-    fn decided(&self) -> std::sync::MutexGuard<'_, HashMap<IntentId, ApprovalBinding>> {
-        self.decided
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Original pending binding and waiting-status sequence. The request bytes
@@ -371,13 +338,6 @@ impl Conversation {
             )),
             None => Err(Error::Invalid("approval request has no explanation".into())),
         }
-    }
-
-    /// The binding of `request`, which `agent` waits on.
-    async fn pending_binding(&self, request: &IntentId) -> Result<ApprovalBinding> {
-        self.approval_binding(request)
-            .await?
-            .ok_or_else(|| Error::Conflict("no such approval is pending".into()))
     }
 
     /// The exact action binding approval `request` shows its approver, or
