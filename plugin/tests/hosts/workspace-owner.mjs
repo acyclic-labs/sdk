@@ -7,7 +7,7 @@ import {withOwnedCase} from '../../../scripts/graphcoder-e2e/suite.mjs';
 // Only this launched owner's announcement admits clients. Its immutable
 // endpoint can outlive the previous owner, including across a restart.
 export async function startWorkspaceOwner({scope,binary,workspace,state,env,root,args=[],capture=()=>{}}) {
- const owner=scope.startOwned(binary,['--workspace',workspace,'--host-workspace','--host-state-directory',state,...args],
+ const owner=await scope.startReportedOwned(binary,['--workspace',workspace,'--host-workspace','--host-state-directory',state,...args],
    {cwd:workspace,env,scopeCapture:capture,scopeMountRoot:root,...(process.platform!=='win32'?{scopeReportSignal:'SIGTERM'}:{})});
  const events=new Spool(owner.child.stdout,owner.closed,
   {key:event=>event?.type==='workspace-owner-ready'?['ready']:[],unique:true});

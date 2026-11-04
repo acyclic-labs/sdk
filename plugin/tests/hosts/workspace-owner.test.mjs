@@ -26,7 +26,7 @@ test('workspace startup requires its original process readiness and retains canc
    launched(events);
    return child;
   };
-  const owner={startOwned(_binary,_args,options){
+  const owner={startReportedOwned(_binary,_args,options){
    return retained(scope.start(process.execPath,['-e',program],options));}};
   try{
    if(mode==='cancel-before')cancellation.abort(failure);
