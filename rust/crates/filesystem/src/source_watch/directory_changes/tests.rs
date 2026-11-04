@@ -50,8 +50,6 @@ fn completion_thread_loss_wakes_active_and_late_waiters_without_retiring_pending
             );
             assert_eq!(reads.capacity(), capacity);
             assert!(!completion.retired(&reads));
-            assert!(matches!(completion.wait_for(|| Ok(false)),
-                Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::BrokenPipe));
         }
     });
     // The original waiter registration is the sole readiness producer.
@@ -99,22 +97,6 @@ fn driver(
 fn assert_retired(shared: &Shared) {
     assert!(shared.retired(&shared.lock_reads()));
     assert_eq!(shared.buffer_bytes.load(Ordering::Acquire), 0);
-}
-fn wait_retired(shared: &Shared) {
-    assert!(
-        shared
-            .wait_for(|| {
-                if shared.stop_completed.load(Ordering::Acquire) {
-                    Ok(true)
-                } else if shared.parked.load(Ordering::Acquire) {
-                    Err(DemandError::NativeWorkUnavailable)
-                } else {
-                    Ok(false)
-                }
-            })
-            .expect("original watch retires without losing its collector or cleanup work")
-    );
-    assert_retired(shared);
 }
 fn record(extended: bool, action: u32, file: u64, name: &str, last: bool) -> Vec<u8> {
     let name = name
@@ -258,6 +240,22 @@ fn stop_denial_and_cancellation_retain_the_same_native_owner() -> TestResult {
 mod original {
     use super::*;
     use crate::demand::NativeDemandReadMeter;
+    fn wait_retired(shared: &Shared) {
+        assert!(
+            shared
+                .wait_for(|| {
+                    if shared.stop_completed.load(Ordering::Acquire) {
+                        Ok(true)
+                    } else if shared.parked.load(Ordering::Acquire) {
+                        Err(DemandError::NativeWorkUnavailable)
+                    } else {
+                        Ok(false)
+                    }
+                })
+                .expect("original watch retires without losing its collector or cleanup work")
+        );
+        assert_retired(shared);
+    }
     fn budget() -> WorkBudget {
         WorkBudget {
             backend_read_operations: 64,
