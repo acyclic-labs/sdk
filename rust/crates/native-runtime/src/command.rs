@@ -202,7 +202,7 @@ mod tests {
                 .unwrap(),
             second.join("codex")
         );
-        fixture_executable(&first.join("codex.exe"));
+        std::fs::rename(second.join("codex"), first.join("codex.exe")).unwrap();
         assert_eq!(search.resolve("codex").unwrap(), first.join("codex.exe"));
         assert_eq!(
             search.resolve(first.join("codex.exe")).unwrap(),
@@ -256,9 +256,8 @@ mod tests {
         assert!(search.resolve(first.join("shell.js")).is_err());
         assert!(search.resolve(first.join("shell.exe")).is_err());
 
-        std::fs::remove_file(second.join("shell.exe")).unwrap();
+        std::fs::rename(second.join("shell.exe"), second.join("shell.native")).unwrap();
         std::fs::write(second.join("shell.cmd"), []).unwrap();
-        fixture_executable(&second.join("shell.native"));
         assert_eq!(search.resolve("shell").unwrap(), second.join("shell.cmd"));
         assert_eq!(
             search.resolve_native("shell").unwrap(),
