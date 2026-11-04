@@ -14,11 +14,11 @@ const quoted = args.includes("--quoted");
 const metadata = args.includes("--metadata");
 const array = args.includes("--array");
 const number = args.includes("--number");
-const revoked = args.includes("--revoked");
-const prototype = args.includes("--prototype");
+const intrinsicArgument = args.find(arg => arg.startsWith("--intrinsic="))?.slice("--intrinsic=".length);
+const intrinsics = intrinsicArgument === undefined ? ["keys"] : intrinsicArgument.split(",");
 const selectedControl = retirement || bytes || metadata || array || number;
 const reuse = args.find(arg => arg.startsWith("--reuse="))?.slice("--reuse=".length);
-const recovery = `node scripts/qualify-js-json.mjs${retirement ? " --retirement" : bytes ? " --bytes" : metadata ? " --metadata" : array ? " --array" : number ? " --number" : ""}${red ? " --red" : ""}${quoted ? " --quoted" : ""}${revoked ? " --revoked" : ""}${prototype ? " --prototype" : ""}${reuse ? ` --reuse=${JSON.stringify(reuse)}` : ""}`;
+const recovery = `node scripts/qualify-js-json.mjs${retirement ? " --retirement" : bytes ? " --bytes" : metadata ? " --metadata" : array ? " --array" : number ? " --number" : ""}${red ? " --red" : ""}${quoted ? " --quoted" : ""}${intrinsicArgument === undefined ? "" : ` --intrinsic=${intrinsicArgument}`}${reuse ? ` --reuse=${JSON.stringify(reuse)}` : ""}`;
 const test = bytes ? "external JSON bytes preserve engine tokens or refuse before rounding"
   : retirement ? "canonical admission releases JavaScript references after intrinsic failures"
   : "canonical admission selects entries before evaluating their values";
@@ -32,187 +32,200 @@ const run = (step, command, parameters, options = {}) => {
   if (result.error) fail(step, result.error.message);
   return result;
 };
-if (args.some(arg => !["--red", "--retirement", "--bytes", "--quoted", "--metadata", "--array", "--number", "--revoked", "--prototype"].includes(arg) && !arg.startsWith("--reuse="))
+if (args.some(arg => !["--red", "--retirement", "--bytes", "--quoted", "--metadata", "--array", "--number"].includes(arg) && !arg.startsWith("--reuse=") && !arg.startsWith("--intrinsic="))
   || new Set(args).size !== args.length || Number(retirement) + Number(bytes) + Number(metadata) + Number(array) + Number(number) > 1 || quoted && !(bytes && red)
-  || args.filter(arg => arg.startsWith("--reuse=")).length > 1 || args.includes("--reuse=") || reuse && red || revoked && !(retirement && red)
-  || prototype && (!(retirement && red) || revoked)
+  || args.filter(arg => arg.startsWith("--reuse=")).length > 1 || args.includes("--reuse=") || reuse && red
+  || args.filter(arg => arg.startsWith("--intrinsic=")).length > 1 || intrinsicArgument !== undefined && !(retirement && red)
+  || new Set(intrinsics).size !== intrinsics.length || intrinsics.some(name => !/^(?:keys|array|prototype|iterator|callback|getter)$/u.test(name))
   || red && !selectedControl) {
-  fail("arguments", "expected at most one control (--retirement, --bytes, --metadata, --array or --number); --red requires a control, --quoted requires --bytes --red, --revoked or --prototype requires --retirement --red and excludes the other, and --reuse=<receipt> excludes --red",
+  fail("arguments", "expected at most one control (--retirement, --bytes, --metadata, --array or --number); --red requires a control, --quoted requires --bytes --red, --intrinsic=<keys,array,prototype,iterator,callback,getter> selects distinct sources and requires --retirement --red, and --reuse=<receipt> excludes --red",
     "node scripts/qualify-js-json.mjs --array --red");
 }
 
 const production = new URL("../rust/crates/harness/src/wasm/json.rs", import.meta.url);
 const generated = "typescript/packages/harness/generated/wasm";
-let original;
-let mutation;
-let artifactsCustody;
-let reused;
-try {
-  if (red) {
-    try { original = readFileSync(production, "utf8"); }
-    catch (error) { fail("read production admission source", String(error)); }
-    const entrance = retirement ? prototype ? "        let prototype: JsValue = js_sys::Reflect::get_prototype_of(value)?.into();"
-      : revoked ? "    let array = is_array(value)?;"
-      : "        for key in object_keys(value)?.iter() {"
-      : number ? "        if !crate::conversation::is_exact_js_number(number) {"
-      : array ? "        let items = js_sys::Array::from_iterable(value.unchecked_ref::<js_sys::Array>())?;"
-      : metadata ? "        let mut entries = Vec::new();"
-      : quoted ? "        if quoted {" : "    reject_out_of_range_integer_tokens(bytes)?;";
-    if (original.split(entrance).length !== 2) fail("admission mutation", "expected exactly one production entrance");
-    const replacement = retirement ? prototype ? "        let prototype: JsValue = js_sys::Object::get_prototype_of(value).into();"
-      : revoked ? "    let array = js_sys::Array::is_array(value);"
-      : "        for key in js_sys::Object::keys(value.unchecked_ref::<js_sys::Object>()).iter() {"
-      : number ? "        if false && !crate::conversation::is_exact_js_number(number) {"
-      : array ? "        let items = value.unchecked_ref::<js_sys::Array>();"
-      : metadata ? `        let size = js_sys::Reflect::get(value, &JsValue::from_str("size"))?
+function qualify(intrinsic) {
+  let original;
+  let mutation;
+  let artifactsCustody;
+  let reused;
+  try {
+    if (red) {
+      try { original = readFileSync(production, "utf8"); }
+      catch (error) { fail("read production admission source", String(error)); }
+      const selected = retirement ? {
+        keys: ["        for key in object_keys(value)?.iter() {",
+          "        for key in js_sys::Object::keys(value.unchecked_ref::<js_sys::Object>()).iter() {"],
+        array: ["    let array = is_array(value)?;", "    let array = js_sys::Array::is_array(value);"],
+        prototype: ["        let prototype: JsValue = js_sys::Reflect::get_prototype_of(value)?.into();",
+          "        let prototype: JsValue = js_sys::Object::get_prototype_of(value).into();"],
+        iterator: ["        let items = js_sys::Array::from_iterable(value.unchecked_ref::<js_sys::Array>())?;",
+          "        let items = js_sys::Array::from_iterable(value.unchecked_ref::<js_sys::Array>()).unwrap_or_else(|error| wasm_bindgen::throw_val(error));"],
+        callback: ["        map.try_for_each(&mut |child, key| {\n            entries.push((key, child));\n            Ok(())\n        })?;",
+          "        map.try_for_each(&mut |child, key| {\n            entries.push((key, child));\n            Ok(())\n        }).unwrap_or_else(|error| wasm_bindgen::throw_val(error));"],
+        getter: ["            let child = js_sys::Reflect::get(value, &key)?;",
+          "            let child = js_sys::Reflect::get(value, &key).unwrap_or_else(|error| wasm_bindgen::throw_val(error));"],
+      }[intrinsic] : undefined;
+      const entrance = retirement ? selected[0]
+        : number ? "        if !crate::conversation::is_exact_js_number(number) {"
+        : array ? "        let items = js_sys::Array::from_iterable(value.unchecked_ref::<js_sys::Array>())?;"
+        : metadata ? "        let mut entries = Vec::new();"
+        : quoted ? "        if quoted {" : "    reject_out_of_range_integer_tokens(bytes)?;";
+      if (original.split(entrance).length !== 2) fail("admission mutation", "expected exactly one production entrance");
+      const replacement = retirement ? selected[1]
+        : number ? "        if false && !crate::conversation::is_exact_js_number(number) {"
+        : array ? "        let items = value.unchecked_ref::<js_sys::Array>();"
+        : metadata ? `        let size = js_sys::Reflect::get(value, &JsValue::from_str("size"))?
             .as_f64()
             .filter(|size| (0.0..=f64::from(u32::MAX)).contains(size) && size.fract() == 0.0)
             .ok_or_else(|| JsValue::from_str("Map size must be an unsigned 32-bit integer"))?;
         let mut entries = Vec::with_capacity(size as usize);`
-      : quoted ? "        if false && quoted {" : "";
-    const planted = original.replace(entrance, replacement);
-    mutation = {
-      removed: entrance.trim(),
-      replacement,
-      original_sha256: createHash("sha256").update(original).digest("hex"),
-      planted_sha256: createHash("sha256").update(planted).digest("hex"),
-    };
-    artifactsCustody = preserveWasmArtifacts(fileURLToPath(new URL(`../${generated}`, import.meta.url)),
-      "node scripts/build-wasm.mjs harness");
-    try { writeFileSync(join(artifactsCustody.directory, "json.rs"), planted); }
-    catch (error) { fail("retain planted admission source", String(error)); }
-    try { writeFileSync(production, planted); }
-    catch (error) { fail("plant production admission defect", String(error)); }
-  }
+        : quoted ? "        if false && quoted {" : "";
+      const planted = original.replace(entrance, replacement);
+      mutation = {
+        removed: entrance.trim(),
+        replacement,
+        original_sha256: createHash("sha256").update(original).digest("hex"),
+        planted_sha256: createHash("sha256").update(planted).digest("hex"),
+      };
+      artifactsCustody = preserveWasmArtifacts(fileURLToPath(new URL(`../${generated}`, import.meta.url)),
+        "node scripts/build-wasm.mjs harness");
+      try { writeFileSync(join(artifactsCustody.directory, "json.rs"), planted); }
+      catch (error) { fail("retain planted admission source", String(error)); }
+      try { writeFileSync(production, planted); }
+      catch (error) { fail("plant production admission defect", String(error)); }
+    }
 
-  // The full shipping Rust export graph, scoped to its one package. This check
-  // imports only its generated module and initialization, so other frontend
-  // packages and their artifacts are not prerequisites.
-  const build = ["scripts/build-wasm.mjs", "harness"];
-  if (reuse) {
-    try {
-      // A retained receipt's artifact paths are relative to its directory. Reuse
-      // proves the selected control against that exact module, not a fresh build.
-      const receiptPath = resolve(root, reuse);
-      const directory = dirname(receiptPath);
-      const receiptBytes = readFileSync(receiptPath);
-      const receipt = JSON.parse(receiptBytes);
-      if (receipt.result !== "pass" || !Array.isArray(receipt.artifacts)) fail("reuse receipt", "expected an original passing qualification");
-      const hashes = new Map();
-      const modules = new Map();
-      for (const artifact of receipt.artifacts) {
-        const path = resolve(directory, artifact.path);
-        const offset = relative(directory, path);
-        if (isAbsolute(offset) || offset === ".." || offset.startsWith(`..${sep}`)) fail("reuse artifact", "path leaves the receipt directory");
-        const sha256 = createHash("sha256").update(readFileSync(path)).digest("hex");
-        if (sha256 !== artifact.sha256 || hashes.has(artifact.path)) fail("reuse artifact", `hash or uniqueness differs: ${artifact.path}`);
-        hashes.set(artifact.path, sha256);
-        // Live artifacts name their module entry directly. Retained artifacts
-        // keep that identity separately from their saved physical location.
-        const modulePath = artifact.module_path ?? (artifact.path.startsWith(`${generated}/`)
-          ? artifact.path.slice(generated.length + 1) : undefined);
-        if (modulePath !== undefined) {
-          const destination = relative(join(root, generated), resolve(root, generated, modulePath));
-          if (!isWasmArtifactPath(modulePath) || isAbsolute(destination) || destination === ".."
-            || destination.startsWith(`..${sep}`) || modules.has(modulePath)) fail("reuse module", `unsafe or duplicate module entry: ${modulePath}`);
-          modules.set(modulePath, path);
-        }
-      }
-      for (const path of ["acyclic_harness_wasm.js", "acyclic_harness_wasm_bg.wasm"]) {
-        if (!modules.has(path)) fail("reuse module", `missing artifact: ${path}`);
-      }
-      const sourceHash = createHash("sha256").update(readFileSync(production)).digest("hex");
-      if (sourceHash !== hashes.get("rust/crates/harness/src/wasm/json.rs")) fail("reuse source", "defining admission source differs");
-      reused = { source: receipt.source, tree: receipt.tree,
-        receipt_sha256: createHash("sha256").update(receiptBytes).digest("hex"),
-        qualification: "retained shipping module; no current-tree build or complete dependency parity inferred" };
-      artifactsCustody = preserveWasmArtifacts(join(root, generated), "node scripts/build-wasm.mjs harness");
-      for (const [modulePath, path] of modules) {
-        const destination = join(root, generated, modulePath);
-        mkdirSync(dirname(destination), { recursive: true });
-        cpSync(artifactsCustody.source(path), destination);
-      }
-    } catch (error) { fail("reuse retained module", String(error)); }
-  } else {
-    const built = run("generated harness", process.execPath, build, {
-      env: { ...process.env, ACYCLIC_WASM_GROUPS_PREPARED: "1" }, stdio: "inherit",
-    });
-    if (built.status !== 0) fail("generated harness", `exit ${built.status}; signal ${built.signal}`);
-  }
-  const retirementFile = "typescript/packages/harness/test/json-retirement.test.ts";
-  const restoredBoundary = (metadata || array) && !red;
-  const parameters = ["test", `./${testFile}`, ...(restoredBoundary ? [`./${retirementFile}`] : []),
-    "--test-name-pattern", restoredBoundary
-      ? `^(?:${test}|canonical admission releases JavaScript references after intrinsic failures)$` : `^${test}$`];
-  const result = run("JSON admission", "bun", parameters);
-  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-  process.stdout.write(output);
-  const expected = red
-    ? result.status !== 0 && result.signal === null && output.includes(bytes
-      ? quoted ? "external JSON input was refused despite engine token admission"
-        : "external JSON input admission disagrees with engine token oracle" : retirement
-        ? "JavaScript refusal retained original input" : number
-          ? "canonical admission accepted an unsafe JavaScript Number" : array
-          ? "canonical admission did not retain selected Array entries"
-          : "canonical Map admission evaluated unrelated size metadata")
-      && /0 pass\b/u.test(output) && /1 fail\b/u.test(output)
-    : result.status === 0 && new RegExp(`\\b${restoredBoundary ? 2 : 1} pass\\b`, "u").test(output) && /0 fail\b/u.test(output);
-  if (!expected) fail("JSON admission", "the exact unchanged semantic control did not produce the required result");
-  const hash = path => {
-    try { return createHash("sha256").update(readFileSync(new URL(`../${path}`, import.meta.url))).digest("hex"); }
-    catch (error) { fail(`artifact ${path}`, String(error)); }
-  };
-  const git = field => {
-    const result = run(`source ${field}`, "git", ["rev-parse", field]);
-    if (result.status !== 0) fail(`source ${field}`, `exit ${result.status}`);
-    return result.stdout.trim();
-  };
-  const artifacts = [testFile, "rust/crates/harness/src/wasm/json.rs",
-    "typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js",
-    "typescript/packages/harness/generated/wasm/acyclic_harness_wasm_bg.wasm"];
-  if (restoredBoundary) artifacts.push(retirementFile);
-  if (bytes) artifacts.push("rust/crates/harness-fuzz/corpus/retained_skill_records/materialized.json");
-  const snippets = "typescript/packages/harness/generated/wasm/snippets";
-  try {
-    for (const path of readdirSync(new URL(`../${snippets}`, import.meta.url), { recursive: true, withFileTypes: true })) {
-      if (path.isFile()) artifacts.push(`${path.parentPath}/${path.name}`.slice(root.length).replaceAll("\\", "/"));
-    }
-  } catch (error) { fail("generated module dependencies", String(error)); }
-  const retainedPath = path => {
-    if (!artifactsCustody) return path;
-    const retained = path === "rust/crates/harness/src/wasm/json.rs" && !reused
-      ? join(artifactsCustody.directory, "json.rs")
-      : path.startsWith(`${generated}/`) ? artifactsCustody.retained(join(root, path)) : undefined;
-    return retained === undefined ? path : relative(root, retained).replaceAll("\\", "/");
-  };
-  const receipt = `${JSON.stringify({
-    source: git("HEAD"), tree: git("HEAD^{tree}"), build: reused ? undefined : build, reused, test: ["bun", ...parameters],
-    result: red ? "expected semantic red" : "pass", mutation,
-    artifacts: artifacts.map(path => ({
-      path: retainedPath(path),
-      module_path: path.startsWith(`${generated}/`) ? path.slice(generated.length + 1) : undefined,
-      sha256: hash(path),
-    })),
-  }, null, 2)}\n`;
-  const receiptName = number ? `javascript-json-number-${red ? "red" : "fixed"}.json`
-    : array ? `javascript-json-array-${red ? "red" : "fixed"}.json`
-    : metadata ? `javascript-json-metadata-${red ? "red" : "fixed"}.json`
-    : bytes ? `javascript-json-bytes-${quoted ? "quoted-" : ""}${red ? "red" : "fixed"}.json`
-    : retirement ? `javascript-json-retirement-${prototype ? "prototype-" : revoked ? "revoked-" : ""}${red ? "red" : "fixed"}.json`
-    : red ? "javascript-json-qualification.json" : "javascript-json-fixed-qualification.json";
-  try { writeFileSync(new URL(`../${receiptName}`, import.meta.url), receipt); }
-  catch (error) { fail("qualification receipt", String(error)); }
-  console.log(red ? "PASS: original JSON admission defect reached the unchanged semantic assertion."
-    : "PASS: generated JSON admission control passed.");
-} finally {
-  try {
-    if (original !== undefined) {
+    // The full shipping Rust export graph, scoped to its one package. This check
+    // imports only its generated module and initialization, so other frontend
+    // packages and their artifacts are not prerequisites.
+    const build = ["scripts/build-wasm.mjs", "harness"];
+    if (reuse) {
       try {
-        writeFileSync(production, original);
-        if (readFileSync(production, "utf8") !== original) fail("restore original admission source", "restored bytes differ");
-        console.log("PASS: original admission source restored byte-exact.");
-      }
-      catch (error) { fail("restore original admission source", String(error)); }
+        // A retained receipt's artifact paths are relative to its directory. Reuse
+        // proves the selected control against that exact module, not a fresh build.
+        const receiptPath = resolve(root, reuse);
+        const directory = dirname(receiptPath);
+        const receiptBytes = readFileSync(receiptPath);
+        const receipt = JSON.parse(receiptBytes);
+        if (receipt.result !== "pass" || !Array.isArray(receipt.artifacts)) fail("reuse receipt", "expected an original passing qualification");
+        const hashes = new Map();
+        const modules = new Map();
+        for (const artifact of receipt.artifacts) {
+          const path = resolve(directory, artifact.path);
+          const offset = relative(directory, path);
+          if (isAbsolute(offset) || offset === ".." || offset.startsWith(`..${sep}`)) fail("reuse artifact", "path leaves the receipt directory");
+          const sha256 = createHash("sha256").update(readFileSync(path)).digest("hex");
+          if (sha256 !== artifact.sha256 || hashes.has(artifact.path)) fail("reuse artifact", `hash or uniqueness differs: ${artifact.path}`);
+          hashes.set(artifact.path, sha256);
+          // Live artifacts name their module entry directly. Retained artifacts
+          // keep that identity separately from their saved physical location.
+          const modulePath = artifact.module_path ?? (artifact.path.startsWith(`${generated}/`)
+            ? artifact.path.slice(generated.length + 1) : undefined);
+          if (modulePath !== undefined) {
+            const destination = relative(join(root, generated), resolve(root, generated, modulePath));
+            if (!isWasmArtifactPath(modulePath) || isAbsolute(destination) || destination === ".."
+              || destination.startsWith(`..${sep}`) || modules.has(modulePath)) fail("reuse module", `unsafe or duplicate module entry: ${modulePath}`);
+            modules.set(modulePath, path);
+          }
+        }
+        for (const path of ["acyclic_harness_wasm.js", "acyclic_harness_wasm_bg.wasm"]) {
+          if (!modules.has(path)) fail("reuse module", `missing artifact: ${path}`);
+        }
+        const sourceHash = createHash("sha256").update(readFileSync(production)).digest("hex");
+        if (sourceHash !== hashes.get("rust/crates/harness/src/wasm/json.rs")) fail("reuse source", "defining admission source differs");
+        reused = { source: receipt.source, tree: receipt.tree,
+          receipt_sha256: createHash("sha256").update(receiptBytes).digest("hex"),
+          qualification: "retained shipping module; no current-tree build or complete dependency parity inferred" };
+        artifactsCustody = preserveWasmArtifacts(join(root, generated), "node scripts/build-wasm.mjs harness");
+        for (const [modulePath, path] of modules) {
+          const destination = join(root, generated, modulePath);
+          mkdirSync(dirname(destination), { recursive: true });
+          cpSync(artifactsCustody.source(path), destination);
+        }
+      } catch (error) { fail("reuse retained module", String(error)); }
+    } else {
+      const built = run("generated harness", process.execPath, build, {
+        env: { ...process.env, ACYCLIC_WASM_GROUPS_PREPARED: "1" }, stdio: "inherit",
+      });
+      if (built.status !== 0) fail("generated harness", `exit ${built.status}; signal ${built.signal}`);
     }
-  } finally { artifactsCustody?.restore(); }
+    const retirementFile = "typescript/packages/harness/test/json-retirement.test.ts";
+    const restoredBoundary = (metadata || array) && !red;
+    const parameters = ["test", `./${testFile}`, ...(restoredBoundary ? [`./${retirementFile}`] : []),
+      "--test-name-pattern", restoredBoundary
+        ? `^(?:${test}|canonical admission releases JavaScript references after intrinsic failures)$` : `^${test}$`];
+    const result = run("JSON admission", "bun", parameters);
+    const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    process.stdout.write(output);
+    const expected = red
+      ? result.status !== 0 && result.signal === null && output.includes(bytes
+        ? quoted ? "external JSON input was refused despite engine token admission"
+          : "external JSON input admission disagrees with engine token oracle" : retirement
+          ? "JavaScript refusal retained original input" : number
+            ? "canonical admission accepted an unsafe JavaScript Number" : array
+            ? "canonical admission did not retain selected Array entries"
+            : "canonical Map admission evaluated unrelated size metadata")
+        && /0 pass\b/u.test(output) && /1 fail\b/u.test(output)
+      : result.status === 0 && new RegExp(`\\b${restoredBoundary ? 2 : 1} pass\\b`, "u").test(output) && /0 fail\b/u.test(output);
+    if (!expected) fail("JSON admission", "the exact unchanged semantic control did not produce the required result");
+    const hash = path => {
+      try { return createHash("sha256").update(readFileSync(new URL(`../${path}`, import.meta.url))).digest("hex"); }
+      catch (error) { fail(`artifact ${path}`, String(error)); }
+    };
+    const git = field => {
+      const result = run(`source ${field}`, "git", ["rev-parse", field]);
+      if (result.status !== 0) fail(`source ${field}`, `exit ${result.status}`);
+      return result.stdout.trim();
+    };
+    const artifacts = [testFile, "rust/crates/harness/src/wasm/json.rs",
+      "typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js",
+      "typescript/packages/harness/generated/wasm/acyclic_harness_wasm_bg.wasm"];
+    if (restoredBoundary) artifacts.push(retirementFile);
+    if (bytes) artifacts.push("rust/crates/harness-fuzz/corpus/retained_skill_records/materialized.json");
+    const snippets = "typescript/packages/harness/generated/wasm/snippets";
+    try {
+      for (const path of readdirSync(new URL(`../${snippets}`, import.meta.url), { recursive: true, withFileTypes: true })) {
+        if (path.isFile()) artifacts.push(`${path.parentPath}/${path.name}`.slice(root.length).replaceAll("\\", "/"));
+      }
+    } catch (error) { fail("generated module dependencies", String(error)); }
+    const retainedPath = path => {
+      if (!artifactsCustody) return path;
+      const retained = path === "rust/crates/harness/src/wasm/json.rs" && !reused
+        ? join(artifactsCustody.directory, "json.rs")
+        : path.startsWith(`${generated}/`) ? artifactsCustody.retained(join(root, path)) : undefined;
+      return retained === undefined ? path : relative(root, retained).replaceAll("\\", "/");
+    };
+    const receipt = `${JSON.stringify({
+      source: git("HEAD"), tree: git("HEAD^{tree}"), build: reused ? undefined : build, reused, test: ["bun", ...parameters],
+      result: red ? "expected semantic red" : "pass", mutation,
+      artifacts: artifacts.map(path => ({
+        path: retainedPath(path),
+        module_path: path.startsWith(`${generated}/`) ? path.slice(generated.length + 1) : undefined,
+        sha256: hash(path),
+      })),
+    }, null, 2)}\n`;
+    const receiptName = number ? `javascript-json-number-${red ? "red" : "fixed"}.json`
+      : array ? `javascript-json-array-${red ? "red" : "fixed"}.json`
+      : metadata ? `javascript-json-metadata-${red ? "red" : "fixed"}.json`
+      : bytes ? `javascript-json-bytes-${quoted ? "quoted-" : ""}${red ? "red" : "fixed"}.json`
+      : retirement ? `javascript-json-retirement-${red ? `${intrinsic}-red` : "fixed"}.json`
+      : red ? "javascript-json-qualification.json" : "javascript-json-fixed-qualification.json";
+    try { writeFileSync(new URL(`../${receiptName}`, import.meta.url), receipt); }
+    catch (error) { fail("qualification receipt", String(error)); }
+    console.log(red ? "PASS: original JSON admission defect reached the unchanged semantic assertion."
+      : "PASS: generated JSON admission control passed.");
+  } finally {
+    try {
+      if (original !== undefined) {
+        try {
+          writeFileSync(production, original);
+          if (readFileSync(production, "utf8") !== original) fail("restore original admission source", "restored bytes differ");
+          console.log("PASS: original admission source restored byte-exact.");
+        }
+        catch (error) { fail("restore original admission source", String(error)); }
+      }
+    } finally { artifactsCustody?.restore(); }
+  }
 }
+for (const intrinsic of intrinsics) qualify(intrinsic);
