@@ -101,7 +101,7 @@ async fn local_owner_bound_produces_the_public_mount_free_packet_entry() -> Resu
 }
 
 #[test]
-#[ignore = "job=stress-guest-filesystem"]
+#[ignore = "job=stress-guest-filesystem; requires prepared Linux guest artifacts, KVM, QEMU and cloud-hypervisor"]
 fn standalone_daemon_qemu_and_cloud_hypervisor_read_write_delete() -> Result {
     let artifacts = PathBuf::from(std::env::var_os("ACYCLIC_FS_GUEST_ARTIFACTS").ok_or("step=select guest artifacts; recovery: python3 scripts/prepare-virtiofs-guest.py --output /tmp/acyclic-guest; ACYCLIC_FS_GUEST_ARTIFACTS=/tmp/acyclic-guest cargo test --locked -p acyclic-harness --features filesystem-local,native-execution,test-support --test main -- virtiofs:: --include-ignored --nocapture")?);
     let runtime = tokio::runtime::Builder::new_current_thread()

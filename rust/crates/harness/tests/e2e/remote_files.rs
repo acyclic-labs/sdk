@@ -123,7 +123,7 @@ struct Endpoints {
 }
 
 #[tokio::test]
-#[ignore = "job=stress-cloud-contracts"]
+#[ignore = "job=stress-cloud-contracts; requires configured local-cloud Streams and Objects endpoints"]
 async fn executor_files_and_journal_match_on_the_local_cloud() -> TestResult {
     let file = acyclic_harness::test_support::environment("ACYCLIC_LOCAL_CLOUD")
         .ok_or("ACYCLIC_LOCAL_CLOUD must name the endpoints file")?;

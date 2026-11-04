@@ -515,7 +515,7 @@ fn identical_profile_outputs_keep_each_physical_span_mapping() {
 }
 
 #[test]
-#[ignore = "job=stress-rustdoc-corpus"]
+#[ignore = "job=stress-rustdoc-corpus; requires SDK_GENERATION_CORPUS_ROOT and SDK_GENERATION_CORPUS_RUSTDOC"]
 fn real_rustdoc_corpus_projects_every_receipt_source_span() {
     let root = PathBuf::from(env::var("SDK_GENERATION_CORPUS_ROOT").unwrap())
         .canonicalize()

@@ -645,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "job=stress-rustdoc-corpus"]
+    #[ignore = "job=stress-rustdoc-corpus; requires SDK_DOCS_RUSTDOC_CORPUS to point at the bounded warm corpus"]
     fn warm_rustdoc_corpus_reports_all_unsupported_exported_paths() {
         const FILES: [&str; 11] = [
             "acyclic_actors.json",

@@ -1,5 +1,5 @@
 #[tokio::test]
-#[ignore = "job=stress-native-mount"]
+#[ignore = "job=stress-native-mount; requires a host that permits mounting a writable ProjFS provider"]
 async fn enumeration_survives_concurrent_projected_writes() -> Result<(), Box<dyn std::error::Error>>
 {
     let work = setup_work()?;

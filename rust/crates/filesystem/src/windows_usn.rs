@@ -246,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "job=stress-native-mount"]
+    #[ignore = "job=stress-native-mount; requires a live local Windows volume with a readable USN journal"]
     fn live_journal_proves_unchanged_restart_and_fences_a_write()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;

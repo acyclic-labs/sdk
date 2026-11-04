@@ -28,7 +28,7 @@ async fn sql_case(replica: &Replicated<PgJournal>, case: &str) -> Result<(), Str
 }
 
 #[tokio::test]
-#[ignore = "job=stress-postgres-conformance"]
+#[ignore = "job=stress-postgres-conformance; requires a disposable PostgreSQL database through STORAGE_POSTGRES_URL"]
 async fn publication_uses_only_required_sql_observations()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let database = std::env::var("STORAGE_POSTGRES_URL")?;
@@ -468,7 +468,7 @@ impl ReplayObserver for AppendDuringReplay<'_> {
 }
 
 #[tokio::test]
-#[ignore = "job=stress-postgres-conformance"]
+#[ignore = "job=stress-postgres-conformance; requires a disposable PostgreSQL database through STORAGE_POSTGRES_URL"]
 async fn paged_refresh_retains_observed_head_after_consuming_its_wake()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let database = std::env::var("STORAGE_POSTGRES_URL")?;
@@ -553,7 +553,7 @@ impl ReplayObserver for CompetingPublication<'_> {
 }
 
 #[tokio::test]
-#[ignore = "job=stress-postgres-conformance"]
+#[ignore = "job=stress-postgres-conformance; requires a disposable PostgreSQL database through STORAGE_POSTGRES_URL"]
 async fn stale_publication_returns_without_retaining_the_losing_identity()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let database = std::env::var("STORAGE_POSTGRES_URL")?;
@@ -612,7 +612,7 @@ async fn stale_publication_returns_without_retaining_the_losing_identity()
 }
 
 #[tokio::test]
-#[ignore = "job=stress-postgres-conformance"]
+#[ignore = "job=stress-postgres-conformance; requires a disposable PostgreSQL database through STORAGE_POSTGRES_URL"]
 async fn cancelled_acknowledgement_replays_the_committed_identity()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let database = std::env::var("STORAGE_POSTGRES_URL")?;

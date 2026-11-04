@@ -27,7 +27,7 @@ unsafe extern "C" {
 }
 
 #[test]
-#[ignore = "job=stress-native-mount"]
+#[ignore = "job=stress-native-mount; requires a live macOS NFS mount"]
 fn readiness_callback_can_issue_synchronous_nfs_io() -> TestResult {
     let root = tempfile::tempdir()?;
     let root = CString::new(root.path().canonicalize()?.as_os_str().as_bytes())?;
@@ -549,7 +549,7 @@ fn mount_socket(destination: &Path) -> Result<PathBuf, Box<dyn std::error::Error
 }
 
 #[test]
-#[ignore = "job=stress-native-mount"]
+#[ignore = "job=stress-native-mount; requires a live macOS NFS mount"]
 fn macos_revalidation_shows_changes_made_around_the_mount() -> TestResult {
     let (temporary, source, mut mount, work) = live_mount()?;
     let (changed, created) = (
@@ -594,7 +594,7 @@ fn macos_revalidation_shows_changes_made_around_the_mount() -> TestResult {
 }
 
 #[test]
-#[ignore = "job=stress-native-mount"]
+#[ignore = "job=stress-native-mount; requires a live macOS NFS mount"]
 fn macos_server_answers_only_the_kernel() -> TestResult {
     use std::io::{Read as _, Write as _};
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
@@ -626,7 +626,7 @@ fn macos_server_answers_only_the_kernel() -> TestResult {
 }
 
 #[test]
-#[ignore = "job=stress-native-mount"]
+#[ignore = "job=stress-native-mount; requires a live macOS NFS mount"]
 fn macos_locks_exclude_other_processes() -> TestResult {
     use std::os::fd::AsRawFd as _;
 
@@ -675,7 +675,7 @@ fn macos_locks_exclude_other_processes() -> TestResult {
 }
 
 #[test]
-#[ignore = "job=stress-native-mount"]
+#[ignore = "job=stress-native-mount; requires a live macOS NFS mount"]
 fn macos_mode_bits_deny_access() -> TestResult {
     use std::os::unix::fs::PermissionsExt as _;
 

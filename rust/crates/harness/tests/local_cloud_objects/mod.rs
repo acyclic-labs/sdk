@@ -48,7 +48,7 @@ proptest::proptest! {
 }
 
 #[tokio::test]
-#[ignore = "job=stress-cloud-contracts"]
+#[ignore = "job=stress-cloud-contracts; needs a local cloud: node scripts/local-cloud.mjs"]
 async fn objects_and_harness_content_match_the_local_cloud() -> TestResult {
     let file = acyclic_harness::test_support::environment("ACYCLIC_LOCAL_CLOUD")
         .ok_or("ACYCLIC_LOCAL_CLOUD must name the local cloud endpoints file")?;

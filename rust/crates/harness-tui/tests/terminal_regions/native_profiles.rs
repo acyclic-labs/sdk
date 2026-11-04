@@ -53,7 +53,7 @@ fn fixtures() -> Vec<(Vec<u8>, Vec<String>)> {
 /// Linux terminal oracles. This exports fixtures only; it makes no OS claim.
 /// Without the script's directory it exports into, and removes, its own.
 #[test]
-#[ignore = "job=stress-terminal-screen; fixture=script:scripts/test-terminal-region-screen.ps1"]
+#[ignore = "job=stress-terminal-screen; fixture=script:scripts/test-terminal-region-screen.ps1; invoked by scripts/test-terminal-region-screen.ps1"]
 fn export_windows_screen_fixtures() {
     let requested = std::env::var_os("ACYCLIC_REGION_SCREEN_FIXTURES");
     let owned = requested

@@ -179,7 +179,7 @@ fn check_open_hardlinks(view: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "job=stress-filesystem-profile"]
+#[ignore = "job=stress-filesystem-profile; local-only Linux FUSE source promotion and dirty checkout regression"]
 async fn qualify_linux_lazy_source_promotion() -> Result<(), Box<dyn std::error::Error>> {
     let state = tempfile::tempdir()?;
     let fs = Fs::local(LocalOptions::new(state.path())).await?;
@@ -282,7 +282,7 @@ async fn qualify_linux_lazy_source_promotion() -> Result<(), Box<dyn std::error:
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "job=stress-filesystem-profile"]
+#[ignore = "job=stress-filesystem-profile; local-only Linux FUSE write, unlink, and lookup visibility regression"]
 async fn qualify_linux_write_unlink_visibility() -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{Read as _, Seek as _, Write as _};
     use std::os::unix::fs::MetadataExt as _;
@@ -374,7 +374,7 @@ async fn qualify_linux_write_unlink_visibility() -> Result<(), Box<dyn std::erro
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "job=stress-filesystem-profile"]
+#[ignore = "job=stress-filesystem-profile; local-only Linux FUSE open hard-link alias after unlink"]
 async fn qualify_linux_open_hardlink_unlink() -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{Seek as _, Write as _};
     use std::os::unix::fs::MetadataExt as _;
@@ -450,7 +450,7 @@ async fn qualify_linux_open_hardlink_unlink() -> Result<(), Box<dyn std::error::
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "job=stress-filesystem-profile"]
+#[ignore = "job=stress-filesystem-profile; local-only Linux FUSE retained directory after ancestor tombstone"]
 async fn qualify_linux_ancestor_whiteout() -> Result<(), Box<dyn std::error::Error>> {
     let state = tempfile::tempdir()?;
     let fs = Fs::local(LocalOptions::new(state.path())).await?;
@@ -503,7 +503,7 @@ async fn qualify_linux_ancestor_whiteout() -> Result<(), Box<dyn std::error::Err
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "job=stress-filesystem-profile"]
+#[ignore = "job=stress-filesystem-profile; local-only Linux FUSE source rename and replacement visibility regression"]
 async fn qualify_linux_source_rename_visibility() -> Result<(), Box<dyn std::error::Error>> {
     let state = tempfile::tempdir()?;
     let fs = Fs::local(LocalOptions::new(state.path())).await?;
@@ -566,7 +566,7 @@ async fn qualify_linux_source_rename_visibility() -> Result<(), Box<dyn std::err
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "job=stress-filesystem-profile"]
+#[ignore = "job=stress-filesystem-profile; local-only real Cargo and Lake workflows through a Linux FUSE mount"]
 async fn report_linux_compiler_workflow_costs() -> Result<(), Box<dyn std::error::Error>> {
     let state = tempfile::tempdir()?;
     let fs = Fs::local(LocalOptions::new(state.path())).await?;
@@ -627,7 +627,7 @@ async fn report_linux_compiler_workflow_costs() -> Result<(), Box<dyn std::error
 }
 
 #[tokio::test]
-#[ignore = "job=stress-filesystem-profile"]
+#[ignore = "job=stress-filesystem-profile; local-only live Linux FUSE source-backed mount profile"]
 #[allow(
     clippy::too_many_lines,
     reason = "one local-only source-view comparison"
@@ -834,7 +834,7 @@ async fn report_linux_lazy_mount_read_costs() -> Result<(), Box<dyn std::error::
 }
 
 #[tokio::test]
-#[ignore = "job=stress-filesystem-profile"]
+#[ignore = "job=stress-filesystem-profile; local-only Linux native working-set performance qualification"]
 async fn report_linux_working_set_costs() -> Result<(), Box<dyn std::error::Error>> {
     const DIRECTORIES: usize = 10;
     const CHANGES: usize = 100;
@@ -957,7 +957,7 @@ fn write_changed_working_set_files(
 }
 
 #[tokio::test]
-#[ignore = "job=stress-filesystem-profile"]
+#[ignore = "job=stress-filesystem-profile; local-only small exact-generation materializer profile"]
 #[allow(
     clippy::too_many_lines,
     reason = "keep one local-only profiling sample self-contained"

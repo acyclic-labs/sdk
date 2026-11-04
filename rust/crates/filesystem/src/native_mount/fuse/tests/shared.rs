@@ -97,7 +97,7 @@ fn child(test: &str, root: &Path) -> Command {
 }
 
 #[test]
-#[ignore = "job=stress-native-mount"]
+#[ignore = "job=stress-native-mount; requires a live Linux FUSE mount"]
 pub(super) fn linux_shared_views_are_independent_namespaces_of_one_mount()
 -> Result<(), Box<dyn std::error::Error>> {
     let temporary = tempfile::tempdir()?;
@@ -150,7 +150,7 @@ pub(super) fn linux_shared_views_are_independent_namespaces_of_one_mount()
 }
 
 #[test]
-#[ignore = "job=stress-native-mount"]
+#[ignore = "job=stress-native-mount; requires a live Linux FUSE mount"]
 pub(super) fn linux_changes_around_a_shared_view_reach_the_kernel()
 -> Result<(), Box<dyn std::error::Error>> {
     let (mounted, around) = shared_sources(posix_config())?;
@@ -182,7 +182,7 @@ pub(super) fn linux_changes_around_a_shared_view_reach_the_kernel()
 }
 
 #[test]
-#[ignore = "job=stress-native-mount"]
+#[ignore = "job=stress-native-mount; requires a live Linux FUSE mount"]
 pub(super) fn linux_shared_views_cost_no_thread_descriptor_or_mount()
 -> Result<(), Box<dyn std::error::Error>> {
     for unshared in [false, true] {
@@ -212,7 +212,7 @@ pub(super) fn linux_shared_views_cost_no_thread_descriptor_or_mount()
 
 /// Child half of `linux_shared_views_cost_no_thread_descriptor_or_mount`.
 #[test]
-#[ignore = "job=stress-native-mount; fixture=linux_shared_views_cost_no_thread_descriptor_or_mount"]
+#[ignore = "job=stress-native-mount; fixture=linux_shared_views_cost_no_thread_descriptor_or_mount; runs only as the child of its parent test"]
 pub(super) fn shared_view_costs_in_this_process() -> Result<(), Box<dyn std::error::Error>> {
     let Some(base) = std::env::var_os(CHILD) else {
         return Ok(());
@@ -300,7 +300,7 @@ pub(super) fn shared_view_costs_in_this_process() -> Result<(), Box<dyn std::err
 }
 
 #[test]
-#[ignore = "job=stress-native-mount"]
+#[ignore = "job=stress-native-mount; requires a live Linux FUSE mount"]
 pub(super) fn linux_a_crashed_owner_leaves_a_root_the_next_start_reaps()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{BufRead as _, BufReader};
@@ -358,7 +358,7 @@ pub(super) fn linux_a_crashed_owner_leaves_a_root_the_next_start_reaps()
 /// Child half of `linux_a_crashed_owner_leaves_a_root_the_next_start_reaps`:
 /// holds a view until its parent kills it.
 #[test]
-#[ignore = "job=stress-native-mount; fixture=linux_a_crashed_owner_leaves_a_root_the_next_start_reaps"]
+#[ignore = "job=stress-native-mount; fixture=linux_a_crashed_owner_leaves_a_root_the_next_start_reaps; runs only as the child of its parent test"]
 pub(super) fn shared_view_owner_until_killed() -> Result<(), Box<dyn std::error::Error>> {
     let Some(base) = std::env::var_os(CHILD) else {
         return Ok(());

@@ -1,6 +1,6 @@
 use super::*;
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "job=stress-native-mount"]
+#[ignore = "job=stress-native-mount; mounts a live native session; requires the host's native mount capability"]
 async fn live_mount_shows_changes_made_to_its_source() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let (source, mount) = (root.path().join("source"), root.path().join("mount"));
@@ -55,7 +55,7 @@ async fn live_mount_shows_changes_made_to_its_source() -> Result<(), Box<dyn std
 }
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "job=stress-native-mount"]
+#[ignore = "job=stress-native-mount; mounts a live native session; requires the host's native mount capability"]
 async fn live_mount_keeps_a_reused_identity_apart() -> Result<(), Box<dyn std::error::Error>> {
     for watched in [true, false] {
         keeps_a_reused_identity_apart(watched).await?;
@@ -64,7 +64,7 @@ async fn live_mount_keeps_a_reused_identity_apart() -> Result<(), Box<dyn std::e
 }
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "job=stress-native-mount"]
+#[ignore = "job=stress-native-mount; mounts a live native session; requires the host's native mount capability"]
 async fn live_mount_keeps_hard_links_one_file() -> Result<(), Box<dyn std::error::Error>> {
     for watched in [true, false] {
         keeps_hard_links_one_file(watched).await?;
@@ -73,7 +73,7 @@ async fn live_mount_keeps_hard_links_one_file() -> Result<(), Box<dyn std::error
 }
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "job=stress-native-mount"]
+#[ignore = "job=stress-native-mount; mounts a live native session; requires the host's native mount capability"]
 async fn live_mount_shows_writes_through_a_name_outside_its_source()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
@@ -108,7 +108,7 @@ async fn live_mount_shows_writes_through_a_name_outside_its_source()
 }
 #[cfg(not(target_os = "macos"))]
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "job=stress-native-mount"]
+#[ignore = "job=stress-native-mount; mounts a live native session; requires the host's native mount capability"]
 async fn live_mount_follows_concurrent_changes_to_its_source()
 -> Result<(), Box<dyn std::error::Error>> {
     const FILES: usize = 24;
