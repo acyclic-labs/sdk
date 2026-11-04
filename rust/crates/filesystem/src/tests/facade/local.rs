@@ -538,7 +538,7 @@ async fn local_commit_flushes(files: u8) -> Result<(usize, usize), Box<dyn std::
                     )
                     .await?;
             }
-            let before = schedule.durable_writes().len();
+            let before = schedule.durable_write_count();
             checkout
                 .commit(
                     OperationId::from_bytes([51; 16]),

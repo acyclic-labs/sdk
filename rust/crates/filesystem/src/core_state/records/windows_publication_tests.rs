@@ -252,7 +252,7 @@ fn ordinary_record_faults_recover_and_retry() -> TestResult {
             schedule
                 .scope(async { with_lock(&mut paths, |paths| write_journaled(paths, &42_u64)) }),
         )?;
-        let count = schedule.durable_writes().len();
+        let count = schedule.durable_write_count();
         assert!(
             count >= 4,
             "write, file flush, rename and directory flush must be traced"
