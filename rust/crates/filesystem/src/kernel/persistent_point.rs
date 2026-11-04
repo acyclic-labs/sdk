@@ -110,7 +110,8 @@ impl<T> Owned<Vec<T>> {
         if self.value.len() < self.value.capacity() {
             return Ok(());
         }
-        let next = self.value.capacity().saturating_mul(2).max(1).min(maximum);
+        let old_capacity = self.value.capacity();
+        let next = old_capacity.saturating_mul(2).max(1).min(maximum);
         #[cfg(not(target_arch = "wasm32"))]
         let native = accounting.native_work().is_some();
         let result = super::allocation::reserve_vec_with_accounting(
@@ -127,8 +128,18 @@ impl<T> Owned<Vec<T>> {
                 super::CanonicalDecodeError::AllocationFailed.into()
             },
         );
-        self.bytes =
-            crate::foundation::usize_to_u64(self.value.capacity() * std::mem::size_of::<T>());
+        // Payload buffers already joined this owner. Add only actual backing
+        // growth, including when the allocator succeeds before a late refusal.
+        let growth = self
+            .value
+            .capacity()
+            .checked_sub(old_capacity)
+            .and_then(|count| count.checked_mul(std::mem::size_of::<T>()))
+            .ok_or(crate::WorkError::Overflow)?;
+        self.bytes = self
+            .bytes
+            .checked_add(crate::foundation::usize_to_u64(growth))
+            .ok_or(crate::WorkError::Overflow)?;
         result
     }
 }
