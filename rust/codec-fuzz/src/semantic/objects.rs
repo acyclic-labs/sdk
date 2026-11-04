@@ -202,8 +202,28 @@ fn batch(bytes: &[u8]) {
                 (Digest::of(BATCH_BODY), BATCH_BODY.len() as u64),
             ]) {
                 match (item.outcome, result) {
-                    (Some(wire::put_result::Outcome::Error(code)), Err(error)) => {
-                        assert_eq!(error.code as i32, code, "member refusal remains typed");
+                    (Some(wire::put_result::Outcome::Error(detail)), Err(error)) => {
+                        assert_eq!(
+                            error.code as i32, detail.code,
+                            "member refusal remains typed"
+                        );
+                        if detail.component.is_empty()
+                            && detail.reason.is_empty()
+                            && detail.request_id.is_empty()
+                        {
+                            assert!(error.cause().is_none(), "no member cause is invented");
+                        } else {
+                            let cause = error.cause().expect("original member cause");
+                            assert_eq!(
+                                cause.component, detail.component,
+                                "original member component"
+                            );
+                            assert_eq!(cause.reason, detail.reason, "original member reason");
+                            assert_eq!(
+                                cause.request_id, detail.request_id,
+                                "original member request ID"
+                            );
+                        }
                     }
                     (Some(wire::put_result::Outcome::Put(reply)), Ok(put)) => {
                         publication(put, &reply, expected);
@@ -558,7 +578,18 @@ impl Transport for Capture {
                 _ => panic!("the memory producer settles a durable put"),
             },
             "blobs/put-manifest" => messages!("PutManifestRequest", "PutResponse", "manifest"),
-            "blobs/put-batch" => messages!("PutBlobsRequest", "PutBlobsResponse", "batch"),
+            "blobs/put-batch" => {
+                let reply = wire::PutBlobsResponse::decode(body.as_slice())
+                    .expect("production batch writer output");
+                let variant = if reply.results.iter().any(|result| {
+                    matches!(result.outcome, Some(wire::put_result::Outcome::Error(_)))
+                }) {
+                    "batch-refusal"
+                } else {
+                    "batch"
+                };
+                messages!("PutBlobsRequest", "PutBlobsResponse", variant)
+            }
             "blobs/get" => messages!("GetBlobRequest", "GetBlobResponse", "selected"),
             "blobs/head" => messages!("HeadBlobRequest", "BlobInfo", "selected"),
             "blobs/list" => messages!("ListBlobsRequest", "ListBlobsResponse", "ordered"),
@@ -643,6 +674,18 @@ fn writer_seeds() -> Result<(Vec<Seed>, AvailabilityCursor), Box<dyn std::error:
             let verified = put.verified().expect("original batch writer");
             assert_eq!((verified.digest, verified.length), expected);
         }
+        let batch = client
+            .put_batch(vec![
+                (body(), vec![Digest::of(b"original absent batch reference")]),
+                (OwnedBytes::from_static(other), Vec::new()),
+            ])
+            .await;
+        assert_eq!(batch.len(), 2);
+        assert_eq!(
+            batch[0].as_ref().unwrap_err().code,
+            wire::ErrorCode::MissingReference
+        );
+        assert!(batch[1].is_ok(), "the independent member still commits");
         Ok::<_, Error>(initial)
     })?;
     let seeds = std::mem::take(&mut *outputs.lock().expect("capture output custody"));
@@ -715,6 +758,30 @@ mod tests {
             "acyclic.objects.v1.PutBlobsResponse",
             &extra.encode_to_vec(),
         );
+        let captured = acyclic_proto_build::golden::frame(
+            "corpus/protobuf/acyclic.objects.v1.PutBlobsResponse-batch-refusal",
+        )
+        .expect("retained original service batch refusal writer");
+        let original = super::wire::PutBlobsResponse::decode(&captured[8..])
+            .expect("original service batch refusal wire");
+        super::check("acyclic.objects.v1.PutBlobsResponse", &captured[8..]);
+        // Derived adversarial detail operands, never claimed as captures of
+        // a provider failure or an externally issued request identifier.
+        for reason in ["failed", "future-provider-reason"] {
+            let mut reply = original.clone();
+            let Some(super::wire::put_result::Outcome::Error(detail)) =
+                reply.results[0].outcome.as_mut()
+            else {
+                panic!("original failed member has a detail");
+            };
+            detail.component = "objects.medium".into();
+            detail.reason = reason.into();
+            detail.request_id = "derived-request-identity".into();
+            super::check(
+                "acyclic.objects.v1.PutBlobsResponse",
+                &reply.encode_to_vec(),
+            );
+        }
         let captured = acyclic_proto_build::golden::frame(
             "corpus/protobuf/acyclic.objects.v1.BlobInfo-selected",
         )
