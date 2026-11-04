@@ -99,6 +99,21 @@ struct Endpoint {
 }
 
 impl Endpoint {
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        #[derive(Deserialize)]
+        struct Version {
+            version: u32,
+        }
+        let version: Version = serde_json::from_slice(bytes).map_err(storage)?;
+        if version.version != 4 {
+            return Err(Error::Unsupported(format!(
+                "step=admit native workspace protocol: version {}; requires 4; recovery=run graphcoder --host-workspace in a fresh workspace with its matching plugin",
+                version.version
+            )));
+        }
+        serde_json::from_slice(bytes).map_err(storage)
+    }
+
     fn new(
         session: uuid::Uuid,
         workspace: PathBuf,
@@ -709,13 +724,7 @@ fn discover(cwd: &Path) -> Result<(acyclic_fs::HeldRoot, Endpoint)> {
         })();
         match candidate {
             Ok((directory, bytes)) => {
-                let endpoint: Endpoint = serde_json::from_slice(&bytes).map_err(storage)?;
-                if endpoint.version != 4 {
-                    return Err(Error::Unsupported(format!(
-                        "step=admit native workspace protocol: version {}; requires 4; recovery=run graphcoder --host-workspace in a fresh workspace with its matching plugin",
-                        endpoint.version
-                    )));
-                }
+                let endpoint = Endpoint::decode(&bytes)?;
                 if endpoint.workspace != ancestor
                     || std::fs::canonicalize(directory.path()).map_err(storage)? != directory.path()
                 {

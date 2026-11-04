@@ -1,10 +1,10 @@
 diff --git a/rust/crates/harness/src/local/host_files.rs b/rust/crates/harness/src/local/host_files.rs
 --- a/rust/crates/harness/src/local/host_files.rs
 +++ b/rust/crates/harness/src/local/host_files.rs
-@@ -716,7 +716,7 @@
-                         endpoint.version
-                     )));
-                 }
+@@ -726,7 +726,7 @@
+         match candidate {
+             Ok((directory, bytes)) => {
+                 let endpoint = Endpoint::decode(&bytes)?;
 -                if endpoint.workspace != ancestor
 +                if endpoint.workspace == Path::new("")
                      || std::fs::canonicalize(directory.path()).map_err(storage)? != directory.path()

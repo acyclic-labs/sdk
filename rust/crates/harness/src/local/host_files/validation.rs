@@ -86,6 +86,19 @@ impl WorkspaceInput {
             Err(Error::Unsupported(_)) => assert_ne!(endpoint.version, 4),
             Err(error) => panic!("descriptor version admission changed: {error:?}"),
         }
+        if endpoint.version != 4 {
+            let mut preceding: Value = serde_json::from_slice(&versioned).map_err(storage)?;
+            let fields = preceding.as_object_mut().expect("writer emits an object");
+            fields.remove("requests");
+            fields.remove("status");
+            assert!(
+                matches!(
+                    self.admit(&serde_json::to_vec(&preceding).map_err(storage)?),
+                    Err(Error::Unsupported(_))
+                ),
+                "foreign protocol must be refused before decoding current directory fields"
+            );
+        }
 
         for request_root in [true, false] {
             let mut foreign = Endpoint::new(

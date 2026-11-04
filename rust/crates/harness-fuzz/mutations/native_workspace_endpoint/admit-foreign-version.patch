@@ -1,12 +1,12 @@
 diff --git a/rust/crates/harness/src/local/host_files.rs b/rust/crates/harness/src/local/host_files.rs
 --- a/rust/crates/harness/src/local/host_files.rs
 +++ b/rust/crates/harness/src/local/host_files.rs
-@@ -710,7 +710,7 @@
-         match candidate {
-             Ok((directory, bytes)) => {
-                 let endpoint: Endpoint = serde_json::from_slice(&bytes).map_err(storage)?;
--                if endpoint.version != 4 {
-+                if endpoint.version == u32::MAX {
-                     return Err(Error::Unsupported(format!(
-                         "step=admit native workspace protocol: version {}; requires 4; recovery=run graphcoder --host-workspace in a fresh workspace with its matching plugin",
-                         endpoint.version
+@@ -106,7 +106,7 @@
+             version: u32,
+         }
+         let version: Version = serde_json::from_slice(bytes).map_err(storage)?;
+-        if version.version != 4 {
++        if version.version == u32::MAX {
+             return Err(Error::Unsupported(format!(
+                 "step=admit native workspace protocol: version {}; requires 4; recovery=run graphcoder --host-workspace in a fresh workspace with its matching plugin",
+                 version.version
