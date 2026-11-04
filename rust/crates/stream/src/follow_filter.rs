@@ -194,10 +194,20 @@ impl FollowFilter {
         if self.clauses().is_empty() {
             return Ok(Some(record));
         }
-        if !self.matches_format(&record.headers, format) {
-            return Ok(None);
-        }
         if format.is_some() {
+            // Validation binds this index to every body entry. Uniform
+            // selection needs neither decoded ownership nor a new payload.
+            let mut selected = record
+                .headers
+                .keys()
+                .iter()
+                .map(|key| self.matches_entry(key, &record.headers));
+            let Some(first) = selected.next() else {
+                return Ok(None);
+            };
+            if selected.all(|selected| selected == first) {
+                return Ok(first.then_some(record));
+            }
             let body = crate::AppendRecord {
                 value: record.value,
                 headers: record.headers,
@@ -206,6 +216,8 @@ impl FollowFilter {
             .ok_or(StreamError::InvalidArgument)?;
             record.value = body.value;
             record.headers = body.headers;
+        } else if !self.matches_format(&record.headers, format) {
+            return Ok(None);
         }
         Ok(Some(record))
     }
