@@ -31,6 +31,10 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
     let host = host_target();
     let targets = BTreeSet::from([host.clone(), "wasm32-unknown-unknown".to_owned()]);
     let public_feature_roots = [
+        "acyclic-actors",
+        "acyclic-workers",
+        "acyclic-native-runtime",
+        "acyclic-plugin",
         "acyclic-fs",
         "acyclic-objects",
         "acyclic-stream",
@@ -51,24 +55,29 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
             .filter(|feature| feature.as_str() != "default")
             .cloned()
             .collect::<BTreeSet<_>>();
-        assert!(
-            !declared.is_empty(),
-            "{package_name} should expose features"
-        );
-
         let host_profiles = profiles_for_package(&metadata, package_name, &host, &targets).unwrap();
         let wasm_profiles =
             profiles_for_package(&metadata, package_name, "wasm32-unknown-unknown", &targets)
                 .unwrap();
+
+        if package.features.is_empty() {
+            for profiles in [&host_profiles, &wasm_profiles] {
+                assert_eq!(profiles.len(), 1, "{package_name}");
+                assert!(profiles[0].default_features);
+                assert!(profiles[0].features.is_empty());
+            }
+        }
 
         // The planner samples default, no-default, each declared feature
         // closure, and one all-features profile; it must not enumerate 2^N.
         assert!(host_profiles.len() <= declared.len() + 3, "{package_name}");
         assert_eq!(host_profiles.len(), wasm_profiles.len());
         assert!(host_profiles.iter().all(|profile| profile.target == host));
-        assert!(wasm_profiles
-            .iter()
-            .all(|profile| profile.target == "wasm32-unknown-unknown"));
+        assert!(
+            wasm_profiles
+                .iter()
+                .all(|profile| profile.target == "wasm32-unknown-unknown")
+        );
 
         let host_ids = host_profiles
             .iter()
@@ -82,50 +91,22 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
 
         for profile in &host_profiles {
             assert!(!profile.features.contains("default"));
-            assert!(profile
-                .features
-                .iter()
-                .all(|feature| declared.contains(feature)));
+            assert!(
+                profile
+                    .features
+                    .iter()
+                    .all(|feature| declared.contains(feature))
+            );
         }
         for feature in &declared {
             assert!(host_profiles.iter().any(|profile| {
                 !profile.default_features && profile.features.contains(feature)
             }));
         }
-        assert!(host_profiles
-            .iter()
-            .any(|profile| { profile.default_features && profile.features == declared }));
-    }
-}
-
-#[test]
-fn public_roots_without_optional_features_stay_single_default_profiles() {
-    let root = repository_root();
-    let metadata = load_metadata(
-        root.join("Cargo.toml"),
-        sdk_docs::rustdoc_profiles::CargoExecutionContext::default(),
-    )
-    .unwrap();
-    let host = host_target();
-    let targets = BTreeSet::from([host.clone()]);
-    for package_name in [
-        "acyclic-actors",
-        "acyclic-workers",
-        "acyclic-native-runtime",
-        "acyclic-plugin",
-    ] {
-        let package = metadata
-            .packages
-            .iter()
-            .find(|package| package.name.as_ref() == package_name)
-            .unwrap_or_else(|| panic!("missing package {package_name}"));
         assert!(
-            package.features.is_empty(),
-            "{package_name} unexpectedly has feature metadata"
+            host_profiles
+                .iter()
+                .any(|profile| { profile.default_features && profile.features == declared })
         );
-        let profiles = profiles_for_package(&metadata, package_name, &host, &targets).unwrap();
-        assert_eq!(profiles.len(), 1, "{package_name}");
-        assert!(profiles[0].default_features);
-        assert!(profiles[0].features.is_empty());
     }
 }

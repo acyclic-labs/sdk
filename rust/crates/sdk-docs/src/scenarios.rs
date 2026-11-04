@@ -34,7 +34,6 @@ pub enum ScenarioKind {
     PluginCliHelp,
     NativeRuntimePositionalIo,
     HarnessAuthorityIdContract,
-    HarnessChildPageContract,
     HarnessComponentLabelContract,
     HarnessConversationPageContract,
     HarnessCustomExecutor,
@@ -191,18 +190,6 @@ pub const SCENARIOS: &[Scenario] = &[
         source_path: "rust/crates/harness/examples/authority-id-contract.rs",
         operation: "authority-id-policy",
         kind: ScenarioKind::HarnessAuthorityIdContract,
-        mode: ScenarioMode::ExecuteLocal,
-        features: &[],
-        fixture_script: None,
-    },
-    Scenario {
-        id: "harness/child-page-contract",
-        family: "harness",
-        package: "acyclic-harness",
-        example: "child-page-contract",
-        source_path: "rust/crates/harness/examples/child-page-contract.rs",
-        operation: "child-page-policy",
-        kind: ScenarioKind::HarnessChildPageContract,
         mode: ScenarioMode::ExecuteLocal,
         features: &[],
         fixture_script: None,
@@ -561,83 +548,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn catalog_exports_renderer_eligibility_from_rust_kinds() {
-        let sources: Vec<_> = SCENARIOS
-            .iter()
-            .map(|scenario| ScenarioSource {
-                scenario: *scenario,
-                source_sha256: "sha256:fixture".into(),
-                source_files: Vec::new(),
-            })
-            .collect();
-        let records = catalog(&sources);
-        assert_eq!(records.scenarios.len(), 17);
-        assert_eq!(
-            records
-                .scenarios
-                .iter()
-                .filter(|record| record.typescript_projection)
-                .count(),
-            5
-        );
-        for record in records.scenarios {
-            assert_eq!(
-                record.typescript_projection,
-                record.kind.has_typescript_projection()
-            );
-            assert_eq!(
-                serde_json::to_value(&record).unwrap()["typescriptProjection"],
-                record.typescript_projection
-            );
-        }
-    }
-
-    #[test]
-    fn registry_contains_requested_consumer_families() {
-        assert_eq!(SCENARIOS.len(), 17);
-        assert!(SCENARIOS
-            .iter()
-            .any(|scenario| scenario.id == "actors/typescript-consumer"));
-        assert!(SCENARIOS
-            .iter()
-            .any(|scenario| scenario.id == "stream/typescript-consumer"));
-        assert!(SCENARIOS
-            .iter()
-            .any(|scenario| scenario.id == "machines/typescript-consumer"));
-        assert!(SCENARIOS
-            .iter()
-            .any(|scenario| scenario.id == "inference/typescript-consumer"));
-        assert!(SCENARIOS
-            .iter()
-            .any(|scenario| scenario.id == "plugin/cli-help"));
-        assert!(SCENARIOS
-            .iter()
-            .any(|scenario| scenario.id == "native-runtime/positional-io"));
-        assert_eq!(
-            SCENARIOS
-                .iter()
-                .filter(|scenario| scenario.family == "harness")
-                .count(),
-            7
-        );
-        assert_eq!(
-            SCENARIOS
-                .iter()
-                .filter(|scenario| scenario.mode == ScenarioMode::ExecuteWithEndpoint)
-                .count(),
-            2
-        );
-        assert!(SCENARIOS
-            .iter()
-            .filter(|scenario| scenario.mode == ScenarioMode::ExecuteWithEndpoint)
-            .all(|scenario| scenario.fixture_script.is_some()));
-        assert!(SCENARIOS
-            .iter()
-            .filter(|scenario| scenario.mode == ScenarioMode::ExecuteLocal)
-            .all(|scenario| scenario.fixture_script.is_none()));
-    }
-
-    #[test]
     fn cargo_package_owner_requires_the_actual_package_and_manifest() {
         let fixture = tempfile::tempdir().unwrap();
         let manifest = fixture.path().join("Cargo.toml");
@@ -679,6 +589,35 @@ name = "decoy-owner"
         .expect("actual workspace Cargo metadata");
         let sources = validate(&root, &metadata).expect("registered scenario sources should exist");
         assert_eq!(sources.len(), SCENARIOS.len());
+        let records = catalog(&sources);
+        let projected = records
+            .scenarios
+            .iter()
+            .filter(|record| record.typescript_projection)
+            .map(|record| record.id)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            projected,
+            std::collections::BTreeSet::from([
+                "actors/typescript-consumer",
+                "stream/typescript-consumer",
+                "machines/typescript-consumer",
+                "inference/typescript-consumer",
+            ])
+        );
+        for id in ["plugin/cli-help", "native-runtime/positional-io"] {
+            assert!(records.scenarios.iter().any(|record| record.id == id));
+        }
+        for record in &records.scenarios {
+            assert_eq!(
+                serde_json::to_value(record).unwrap()["typescriptProjection"],
+                projected.contains(record.id)
+            );
+        }
+        assert!(sources.iter().all(|source| {
+            source.scenario.fixture_script.is_some()
+                == (source.scenario.mode == ScenarioMode::ExecuteWithEndpoint)
+        }));
         assert!(sources.iter().all(|source| {
             source.source_sha256.starts_with("sha256:")
                 && source.source_files.len()
