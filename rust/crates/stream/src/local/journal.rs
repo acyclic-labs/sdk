@@ -53,6 +53,9 @@ impl Journal {
             true,
             true,
         )?;
+        // A whole header cannot prove the previous open flushed this name.
+        // Publish the directory entry before exposing recovered or new frames.
+        sync_directory(root, LocalDurability::FullFlush)?;
         let mut journal = Self {
             #[cfg(test)]
             append_admissions: 0,
@@ -104,8 +107,6 @@ impl Journal {
                     return Ok(journal);
                 }
                 journal.restart(epoch, None)?;
-                // The journal's name is durable before its first frame.
-                sync_directory(root, LocalDurability::FullFlush)?;
                 return Ok(journal);
             }
             Some(found) if found == epoch => {}
