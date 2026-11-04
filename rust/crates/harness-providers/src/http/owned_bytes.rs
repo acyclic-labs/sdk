@@ -37,10 +37,56 @@ pub(crate) fn owned<T: AsRef<[u8]> + Send + 'static>(
 mod tests {
     use super::*;
     use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+    use proptest::prelude::*;
     use std::sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
     };
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn body_credit_covers_the_actual_owner_allocation_and_last_slice(
+            length in 1usize..4096,
+        ) {
+            for complete_control in [true, false] {
+                let work = NativeMaterializationWork::new(
+                    acyclic_fs::performance::work_budget(100_000, 4_000_000),
+                    &CancellationToken::new(),
+                ).unwrap();
+                let baseline = work.live_allocation_bytes();
+                let bytes = vec![b'c'; length];
+                let capacity = bytes.capacity() as u64;
+                let control = acyclic_auth::operation::bytes_owner_allocation_bytes::<Owned<Vec<u8>>>() as u64;
+                let custody = work.claim(
+                    capacity + if complete_control { 0 } else { std::mem::size_of::<Owned<Vec<u8>>>() as u64 },
+                    1,
+                    WorkCounters::UNCHARGED,
+                ).unwrap();
+                let mut body = None;
+                let allocated = acyclic_test_support::measure(|| {
+                    body = Some(if complete_control {
+                        owned(bytes, custody).unwrap()
+                    } else {
+                        // Restore the payload-plus-owner claim without Bytes' refcount.
+                        Bytes::from_owner(Owned { bytes, _custody: custody })
+                    });
+                });
+                prop_assert_eq!(allocated.count_total, 1);
+                prop_assert_eq!(allocated.bytes_total, control);
+                let credited = work.live_allocation_bytes() - baseline;
+                prop_assert_eq!(credited == capacity + allocated.bytes_total, complete_control);
+                let body = body.unwrap();
+                let retained = body.slice(length - 1..);
+                drop(body);
+                prop_assert_eq!(retained.as_ref(), b"c");
+                prop_assert_eq!(work.live_allocation_bytes() - baseline, credited);
+                drop(retained);
+                prop_assert_eq!(work.live_allocation_bytes(), baseline);
+            }
+        }
+    }
 
     struct Observed {
         bytes: Option<acyclic_auth::operation::ProtectedBytes>,
