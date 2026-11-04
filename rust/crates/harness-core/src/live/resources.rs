@@ -1,7 +1,8 @@
 //! Borrowed resource files under `live/agents/<p>/resources/`.
 //!
-//! The existing authorized reader supplies the original committed record and
-//! its decoded value once. Projection never discovers a machine, re-reads a
+//! The existing authorized reader supplies the original committed record.
+//! Producer values are decoded once at their shared admission; projection
+//! never discovers a machine, re-reads a
 //! source, polls a provider, walks descendants or publishes another record.
 //! Subtree counters require the original indexed aggregate at its admitted cut;
 //! inherited history and shared physical allocations are not added as new work.
@@ -279,7 +280,7 @@ pub struct Placement<'a> {
     /// Original settled binding's publication, not the current configuration.
     pub source: Source<'a>,
     /// Original provider-scoped machine, target and fork identity.
-    pub binding: &'a crate::machines::MachineBinding,
+    pub binding: crate::machines::MachineBinding,
     /// Original physical host identity; absent from a logical binding alone.
     pub host: Option<&'a str>,
     /// Original admitted region, unknown without its placement producer.
@@ -294,22 +295,20 @@ pub struct Placement<'a> {
 
 #[cfg(feature = "machines")]
 impl<'a> Placement<'a> {
-    /// Retain a current-layout logical binding without a provider discovery
-    /// read. Its opaque reference cannot authorize physical placement claims.
-    /// The original authorized reader must first admit the settled record at
-    /// position one and its selected agent/target through the shared Machine
-    /// binding decoder. This borrowed projection does not decode or certify
-    /// that source association again.
+    /// Decode the original settled record once through the shared Machine
+    /// admission, retaining its source before the reader drops metadata. The
+    /// caller supplies the already-authorized account and selected agent path.
+    /// No discovery read is added; physical placement remains unknown.
     pub fn project(
-        source: Source<'a>,
-        binding: &'a crate::machines::MachineBinding,
-    ) -> Result<Self, Error> {
-        if binding.version != crate::machines::MACHINE_BINDING_VERSION {
-            return Err(Error::Version);
-        }
+        agent: &crate::agent::AgentPath,
+        account: &'a AccountId,
+        selected: &'a StreamPath,
+        record: &'a Record,
+    ) -> crate::Result<Self> {
+        let binding = crate::machines::MachineBinding::decode_selected(agent, selected, record)?;
         Ok(Self {
             version: VERSION,
-            source,
+            source: Source::project(account, selected, record),
             binding,
             host: None,
             region: None,
