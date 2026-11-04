@@ -37,3 +37,12 @@ request an actor retry`. The regression writes the actual project between
 source selection and the native cut, and keeps the generation guard enabled.
 Reverse the patch afterward; restored production must pass both this early
 refusal and the later commit-conflict retry in the same regression.
+
+Run `python3 rust/proofs/conversation-observation/run.py` from the repository
+root to qualify conversation observation startup. It restores the original
+two-settlement default path in the production client and requires the existing
+native parent-and-child scenario to reach `default observation repeated its
+settlement query`. After exact source restoration, the same scenario must pass.
+The scenario counts actual native stream head reads, checks the root observer's
+settled cursor, and retains the original parent/child volume, context and
+authority assertions. Explicit replay cursors keep their original semantics.

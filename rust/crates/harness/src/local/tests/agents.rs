@@ -397,7 +397,7 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         ).await?);
         let connection = harness.connect().await?;
         let client = Conversation::open(connection.clone())?;
-        let mut events = client.observe(0).await?;
+        let mut events = client.observe(Some(0)).await?;
         let inbox = client.send("lost-producer", "hello").await?;
         entering.await.map_err(agent)?;
         let mut usage = client.usage_query();
@@ -669,7 +669,7 @@ async fn follow_tool_output(
     let reader = structured(&[Action::List, Action::Read], &["tools", "tools/**"]).await?;
     observation(harness, &reader, path).await?;
     // From after the settled turn: its output stays the newest call's.
-    let mut observer = conversation(harness).await?.observe(1).await?;
+    let mut observer = conversation(harness).await?.observe(Some(1)).await?;
     let wait = std::time::Duration::from_secs(10);
     tokio::time::timeout(wait, async {
         loop {
@@ -1441,7 +1441,9 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
             .await
             .is_err()
     );
-    for owner in [&root, &child] {
+    // Open the root observer after both command-cost checks, so registering its
+    // follows cannot contribute to the child's provider count.
+    for owner in [&child, &root] {
         let before = head_reads.load(Ordering::Relaxed);
         connection.execute(&AgentCommand::Root {}).await?;
         let admission_heads = head_reads.load(Ordering::Relaxed) - before;
@@ -1480,6 +1482,21 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
             (state.conversation_tail, state.status_tail, state.phase),
             "settlement mixed committed actor cuts"
         );
+        if owner == &root {
+            let conversation = Conversation::open(connection.clone())?;
+            let before = head_reads.load(Ordering::Relaxed);
+            let observer = conversation.observe(None).await?;
+            assert_eq!(
+                head_reads.load(Ordering::Relaxed) - before,
+                observed_heads,
+                "default observation repeated its settlement query"
+            );
+            assert_eq!(
+                observer.seen(),
+                settled,
+                "observation missed the settled cut"
+            );
+        }
     }
     Ok(())
 }
@@ -1965,7 +1982,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     let (agents, root) = (Arc::clone(agents), root.clone());
     let connection = harness.connect().await?;
     let client = Conversation::open(connection.clone())?;
-    let mut observed = ObservedConversation::observe(Arc::clone(&client), 0).await?;
+    let mut observed = ObservedConversation::observe(Arc::clone(&client), Some(0)).await?;
     let runtime = &harness
         .agents
         .get()

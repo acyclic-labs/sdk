@@ -525,7 +525,7 @@ pub(super) async fn prompt(
     prompt: &str,
     output: &mut Output,
 ) -> Result<u8, Failure> {
-    let mut events = conversation.observe(conversation.settled().await?).await?;
+    let mut events = conversation.observe(None).await?;
     let inbox = conversation.send(operation, prompt).await?;
     // Stdin is read only once an approval asks for an answer.
     let mut answers = None;
@@ -916,7 +916,7 @@ pub(super) async fn jsonl(
     let output = &mut framed;
     let mut events = match &projection {
         Some(projection) => conversation.replay(&projection.state)?,
-        None => conversation.observe(conversation.settled().await?).await?,
+        None => conversation.observe(None).await?,
     };
     // The original bounded query admits the saved position before any prompt
     // is dispatched. Retain its page for export rather than validating twice.
