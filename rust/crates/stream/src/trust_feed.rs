@@ -6,7 +6,7 @@
 //! never delays another's revocations. Any follow ending fences everything;
 //! a refused account record fences that account, whose reads refuse as
 //! `VerifyError::Refused`, and pauses its original follow until an
-//! environment record lets it apply.
+//! environment record or bootstrap key publication lets it apply.
 use crate::{FollowFilter, Record, Stream, StreamError, StreamProvider, UnixMillisClock};
 use acyclic_auth::crypto::BlockId;
 use acyclic_auth::trust::{
@@ -195,7 +195,7 @@ impl<S: Source> TrustFeed<S> {
 
     /// Watch the authenticated owner's bootstrap key set. The current value
     /// applies before opening any follow; later publications retry the retained
-    /// environment record. Losing this producer ends the run as unavailable.
+    /// environment record and blocked accounts. Losing this producer ends the run as unavailable.
     #[must_use]
     pub fn watch_anchor(mut self, anchor: tokio::sync::watch::Receiver<Arc<[BlockId]>>) -> Self {
         self.anchor = Some(anchor);
@@ -271,7 +271,35 @@ impl<S: Source> TrustFeed<S> {
         }
         let mut tails = HashMap::new();
         let mut blocked: HashMap<String, Option<(Record, Records)>> = HashMap::new();
+        let mut retry_blocked = None;
         loop {
+            if let Some(now) = retry_blocked.take() {
+                // Both authenticated key publications and environment records
+                // retry this one retained record/follow per blocked account.
+                for (account, pending) in std::mem::take(&mut blocked) {
+                    if let Some((record, records)) = pending {
+                        if follower.apply_queued(&account, &record.value, now).is_ok() {
+                            let key = Some(account.clone());
+                            advance(follower, next, &mut tails, key.clone(), record.sequence);
+                            follower.release(&account);
+                            follows.push(read(key, records));
+                        } else {
+                            follower.refuse(&account);
+                            blocked.insert(account, Some((record, records)));
+                        }
+                    } else {
+                        let from = next.get(&Some(account.clone())).copied().unwrap_or(0);
+                        follows.push(open(
+                            &*source,
+                            follower,
+                            &**clock,
+                            &environment,
+                            Some(account),
+                            from,
+                        ));
+                    }
+                }
+            }
             let account = async {
                 match added {
                     Some(added) => added.next().await,
@@ -294,6 +322,10 @@ impl<S: Source> TrustFeed<S> {
                         follower
                             .reanchor(keys?)
                             .map_err(|_| StreamError::Unavailable)?;
+                        if !blocked.is_empty() {
+                            retry_blocked =
+                                Some(follower.protected_now(clock.now_unix_millis() / 1000));
+                        }
                         continue;
                     }
                     Either::Right((event, _)) => event,
@@ -323,37 +355,7 @@ impl<S: Source> TrustFeed<S> {
                     advance(follower, next, &mut tails, None, record.sequence);
                     follows.push(read(None, records));
                     if applied == Applied::Changed {
-                        // One retained record and original follow per refused
-                        // account. Only an actual environment event retries it.
-                        for (account, pending) in std::mem::take(&mut blocked) {
-                            if let Some((record, records)) = pending {
-                                if follower.apply_queued(&account, &record.value, now).is_ok() {
-                                    let key = Some(account.clone());
-                                    advance(
-                                        follower,
-                                        next,
-                                        &mut tails,
-                                        key.clone(),
-                                        record.sequence,
-                                    );
-                                    follower.release(&account);
-                                    follows.push(read(key, records));
-                                } else {
-                                    follower.refuse(&account);
-                                    blocked.insert(account, Some((record, records)));
-                                }
-                            } else {
-                                let from = next.get(&Some(account.clone())).copied().unwrap_or(0);
-                                follows.push(open(
-                                    &*source,
-                                    follower,
-                                    &**clock,
-                                    &environment,
-                                    Some(account),
-                                    from,
-                                ));
-                            }
-                        }
+                        retry_blocked = Some(now);
                     }
                 }
                 Either::Left(Some(((Some(account), Event::Record(record)), records))) => {
