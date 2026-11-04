@@ -13,8 +13,9 @@
 //! ([`crate::hooks`]): a plugin's `hooks/before-tool.{sh,ps1}` becomes a
 //! before-tool hook judged by the rewrite-safe chain, pinned by its bytes and
 //! its settings. A hook this host cannot run yet makes `plugins.ts` invalid,
-//! so the last admitted set stays and the admission names the hook; an
-//! enabled hook is never silently skipped. The authoring types are generated
+//! so the host retains the last admitted set or refuses the session. The
+//! admission names the hook; an enabled hook is never silently skipped.
+//! The authoring types are generated
 //! from these decode shapes by [`crate::config::typescript`].
 use crate::{
     Error, Result,
