@@ -48,7 +48,8 @@ fn selects(selected: Option<&str>, name: &str) -> bool {
         if selected.contains('/') {
             name.starts_with(selected)
         } else {
-            name.split_once('/').is_some_and(|(target, _)| target == selected)
+            name.split_once('/')
+                .is_some_and(|(target, _)| target == selected)
         }
     })
 }
