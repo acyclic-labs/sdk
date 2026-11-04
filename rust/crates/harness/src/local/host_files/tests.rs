@@ -847,7 +847,8 @@ async fn saved_command_result_follows_its_original_request_directory() -> Result
     );
     let directory = checkout.path().join(DIRECTORY);
     let requests = acyclic_fs::hold_root(&files.requests).map_err(native_file_error)?;
-    let owner = HostWorkspaceOwner::new(Arc::clone(&local))?.with_requests(directory.clone());
+    let owner = HostWorkspaceOwner::new(Arc::clone(&local))?
+        .with_requests(requests.try_clone().map_err(native_file_error)?);
     let opened = owner
         .dispatch(
             OperationId::new(),
@@ -914,6 +915,20 @@ async fn saved_command_result_follows_its_original_request_directory() -> Result
         committed
     );
     assert_eq!(owner.dispatch(operation, action).await?, committed);
+    // An invalid leaf cannot prove that the client withdrew its request.
+    let parked = retained.join("pending.json");
+    std::fs::rename(retained.join(&leaf), &parked).map_err(storage)?;
+    std::fs::create_dir(retained.join(&leaf)).map_err(storage)?;
+    owner
+        .dispatch(OperationId::new(), command("tag uncertain"))
+        .await?;
+    assert_eq!(
+        serde_json::to_value(repository.load().await.map_err(storage)?.request(identity))
+            .map_err(storage)?,
+        committed
+    );
+    std::fs::remove_dir(retained.join(&leaf)).map_err(storage)?;
+    std::fs::rename(&parked, retained.join(&leaf)).map_err(storage)?;
     // Only removal in the original held directory proves withdrawal.
     requests
         .remove_file(Path::new(&leaf), acyclic_fs::NativeDurability::Durable)

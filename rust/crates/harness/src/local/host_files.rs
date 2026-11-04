@@ -726,7 +726,7 @@ pub async fn serve_until(
         )
         .map_err(storage)?,
     );
-    directory
+    let request_root = directory
         .create_directories(Path::new("requests"), acyclic_fs::NativeDurability::Durable)
         .map_err(storage)?;
     let status = directory
@@ -747,8 +747,7 @@ pub async fn serve_until(
     let bytes = serde_json::to_vec(&endpoint).map_err(storage)?;
     let descriptor = directory.path().join("owner.json");
     immutable(&descriptor, &bytes)?;
-    let owner =
-        HostWorkspaceOwner::new(Arc::clone(&local))?.with_requests(directory.path().to_path_buf());
+    let owner = HostWorkspaceOwner::new(Arc::clone(&local))?.with_requests(request_root);
     // Notifications name the canonical paths; a non-canonical root would
     // turn every one into an overflow rescan.
     let requests = std::fs::canonicalize(directory.path().join("requests")).map_err(storage)?;

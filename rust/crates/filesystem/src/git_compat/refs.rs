@@ -83,10 +83,9 @@ pub struct GitCompatState {
     /// The results of state-changing requests, each keyed by the request
     /// that started the command and committed with the command's own effect,
     /// so a replayed request returns its saved result instead of running
-    /// again. A result is kept only until its request is answered: once the
-    /// reply is durable it is the request's record, so this holds only the
-    /// results of requests still awaiting their reply (at most the requests
-    /// in flight when an owner stopped), never a history.
+    /// again. A result is kept until its client withdraws the original
+    /// request after reading its reply. An uncertain observation retains
+    /// custody, so this stores outstanding requests rather than history.
     /// Records written before it existed hold none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub requests: BTreeMap<OperationId, GitCommandOutput>,
@@ -134,8 +133,8 @@ impl GitCompatState {
 
     /// Saves `output` as the result of `operation`, the request that started
     /// the command, in the commit that carries its effect, dropping the
-    /// results of requests `unanswered` reports answered. Only unanswered
-    /// results are ever kept, so the sweep visits only those.
+    /// results whose original withdrawal `unanswered` proves. The sweep
+    /// visits only results still in custody, including uncertain outcomes.
     pub(super) fn record_request(
         &mut self,
         operation: Option<OperationId>,
