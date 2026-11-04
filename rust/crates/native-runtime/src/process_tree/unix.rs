@@ -78,11 +78,16 @@ pub(super) fn observe_exit_id(
     id: libc::id_t,
     meter: Option<&dyn crate::NativeReadMeter>,
 ) -> io::Result<Option<ExitStatus>> {
-    exit_status_id(id, meter, libc::WEXITED | libc::WNOWAIT | libc::WNOHANG)
+    exit_status_id(
+        id,
+        meter,
+        libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
+        &mut None,
+    )
 }
 
 pub(super) fn wait_without_reaping(child: &Child) -> io::Result<()> {
-    exit_status_id(child.id(), None, libc::WEXITED | libc::WNOWAIT)?
+    exit_status_id(child.id(), None, libc::WEXITED | libc::WNOWAIT, &mut None)?
         .map(|_| ())
         .ok_or_else(|| io::ErrorKind::WouldBlock.into())
 }
@@ -91,8 +96,9 @@ pub(super) fn wait_without_reaping(child: &Child) -> io::Result<()> {
 pub(super) fn await_exiting_id(
     id: libc::id_t,
     meter: Option<&dyn crate::NativeReadMeter>,
+    retained: &mut Option<ExitStatus>,
 ) -> io::Result<ExitStatus> {
-    exit_status_id(id, meter, libc::WEXITED | libc::WNOWAIT)?
+    exit_status_id(id, meter, libc::WEXITED | libc::WNOWAIT, retained)?
         .ok_or_else(|| io::Error::other("exiting child has no terminal status"))
 }
 
@@ -100,6 +106,7 @@ fn exit_status_id(
     id: libc::id_t,
     meter: Option<&dyn crate::NativeReadMeter>,
     flags: libc::c_int,
+    retained: &mut Option<ExitStatus>,
 ) -> io::Result<Option<ExitStatus>> {
     #[cfg(test)]
     super::exit_wait::observed();
@@ -116,32 +123,36 @@ fn exit_status_id(
                 // SAFETY: `info` is writable storage owned by this frame and
                 // `id` names the exclusively owned child.
                 if unsafe { libc::waitid(libc::P_PID, id, &raw mut info, flags) } == 0 {
-                    Ok(())
+                    // Preserve the kernel's result in the capture owner before
+                    // a completion-recording error can end this operation.
+                    // SAFETY: WEXITED waitid initialized these status fields.
+                    let observed = if unsafe { info.si_pid() } == 0 {
+                        None
+                    } else {
+                        // SAFETY: the same successful WEXITED observation.
+                        let status = unsafe { info.si_status() };
+                        let raw = match info.si_code {
+                            libc::CLD_EXITED => status << 8,
+                            libc::CLD_KILLED => status,
+                            libc::CLD_DUMPED => status | 0x80,
+                            _ => return Err(io::ErrorKind::Other.into()),
+                        };
+                        Some(ExitStatus::from_raw(raw))
+                    };
+                    *retained = observed;
+                    Ok(observed)
                 } else {
                     Err(io::Error::last_os_error())
                 }
             })?;
         recorded?;
         match waited {
-            Ok(()) => break,
+            Ok(status) => return Ok(status),
             Err(error)
                 if flags & libc::WNOHANG == 0 && error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) => return Err(error),
         }
     }
-    // SAFETY: WEXITED waitid initialized the child-status union.
-    if unsafe { info.si_pid() } == 0 {
-        return Ok(None);
-    }
-    // SAFETY: the same WEXITED observation initialized the status field.
-    let status = unsafe { info.si_status() };
-    let raw = match info.si_code {
-        libc::CLD_EXITED => status << 8,
-        libc::CLD_KILLED => status,
-        libc::CLD_DUMPED => status | 0x80,
-        _ => return Err(io::ErrorKind::Other.into()),
-    };
-    Ok(Some(ExitStatus::from_raw(raw)))
 }
 
 /// Reaps a child whose exit was already observed.

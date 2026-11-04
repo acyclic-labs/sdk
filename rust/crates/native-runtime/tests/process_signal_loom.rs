@@ -24,16 +24,22 @@ fn settlement_cannot_pass_waker_registration() {
         if signal.poll(&mut context).is_pending() {
             wake.wait(None);
         }
-        assert!(matches!(
-            signal.poll(&mut context),
-            Poll::Ready(ProcessWaitOutcome::Ready)
-        ));
+        assert!(
+            matches!(
+                signal.poll(&mut context),
+                Poll::Ready(ProcessWaitOutcome::Ready)
+            ),
+            "first terminal event changed"
+        );
         thread.join().unwrap();
         signal.settle(ProcessWaitOutcome::Cancelled);
-        assert!(matches!(
-            signal.poll(&mut context),
-            Poll::Ready(ProcessWaitOutcome::Ready)
-        ));
+        assert!(
+            matches!(
+                signal.poll(&mut context),
+                Poll::Ready(ProcessWaitOutcome::Ready)
+            ),
+            "first terminal event changed"
+        );
         let deadline = Signal::default();
         deadline.settle(ProcessWaitOutcome::Deadline);
         assert!(matches!(
@@ -49,12 +55,14 @@ fn failure_and_cancellation_settle_once_at_every_interleaving() {
         let signal = Arc::new(Signal::default());
         let cancelled = Arc::clone(&signal);
         let failed = Arc::clone(&signal);
+        let failure = std::sync::Arc::new(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "native readiness source lost",
+        ));
+        let cause = std::sync::Arc::clone(&failure);
         let cancel = loom::thread::spawn(move || cancelled.settle(ProcessWaitOutcome::Cancelled));
-        let fail = loom::thread::spawn(move || {
-            failed.settle(ProcessWaitOutcome::ServiceFailed(std::sync::Arc::new(
-                std::io::Error::other("producer dropped"),
-            )))
-        });
+        let fail =
+            loom::thread::spawn(move || failed.settle(ProcessWaitOutcome::ServiceFailed(cause)));
         let wake = std::sync::Arc::new(wake::NativeWake::default());
         let waker = Waker::from(std::sync::Arc::clone(&wake));
         let mut context = Context::from_waker(&waker);
@@ -71,38 +79,26 @@ fn failure_and_cancellation_settle_once_at_every_interleaving() {
         };
         assert_eq!(
             std::mem::discriminant(&first),
-            std::mem::discriminant(&second)
+            std::mem::discriminant(&second),
+            "first terminal event changed"
         );
-        // Both failure variants map to an error at the public boundary.
-        assert!(second.into_result().is_err());
-    });
-}
-
-#[test]
-#[should_panic(expected = "lost terminal wake")]
-fn separated_pending_check_and_registration_fails_the_oracle() {
-    loom::model(|| {
-        use loom::sync::atomic::{AtomicBool, Ordering};
-        let done = Arc::new(loom::sync::Mutex::new(false));
-        let registered = Arc::new(AtomicBool::new(false));
-        let woken = Arc::new(AtomicBool::new(false));
-        let producer = (
-            Arc::clone(&done),
-            Arc::clone(&registered),
-            Arc::clone(&woken),
-        );
-        let thread = loom::thread::spawn(move || {
-            *producer.0.lock().unwrap() = true;
-            if producer.1.load(Ordering::SeqCst) {
-                producer.2.store(true, Ordering::SeqCst);
-            }
-        });
-        let pending = !*done.lock().unwrap();
-        registered.store(true, Ordering::SeqCst);
-        thread.join().unwrap();
-        assert!(
-            !pending || woken.load(Ordering::SeqCst),
-            "lost terminal wake"
-        );
+        let returned = second.into_result().unwrap_err();
+        if let ProcessWaitOutcome::ServiceFailed(first) = first {
+            assert!(std::sync::Arc::ptr_eq(&first, &failure));
+            assert_eq!(
+                returned.kind(),
+                failure.kind(),
+                "service failure kind changed"
+            );
+            assert!(
+                returned
+                    .get_ref()
+                    .and_then(|error| error.downcast_ref::<std::sync::Arc<std::io::Error>>())
+                    .is_some_and(|cause| std::sync::Arc::ptr_eq(cause, &failure)),
+                "service failure cause changed"
+            );
+        } else {
+            assert_eq!(returned.kind(), std::io::ErrorKind::Interrupted);
+        }
     });
 }

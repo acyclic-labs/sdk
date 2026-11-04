@@ -192,7 +192,7 @@ fn register(_watch: &ExitWatch<'_>, _id: libc::id_t) -> io::Result<()> {
 fn register(watch: &ExitWatch<'_>, id: libc::id_t) -> io::Result<()> {
     complete_registration(
         register_event(watch, id, libc::NOTE_EXIT | libc::NOTE_EXITSTATUS)?,
-        || platform::await_exiting_id(id, watch.meter).map(|_| ()),
+        || platform::await_exiting_id(id, watch.meter, &mut None).map(|_| ()),
     )
 }
 

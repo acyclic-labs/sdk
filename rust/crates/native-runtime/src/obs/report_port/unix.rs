@@ -34,12 +34,12 @@ pub(super) fn open() -> io::Result<Option<ReportAdmission>> {
             "inherited report endpoint already taken",
         ));
     }
-    // The launch contract transfers this descriptor exactly once. Make it
-    // close-on-exec so later children cannot retain the selected owner's port.
     #[expect(
         unsafe_code,
         reason = "takes the original inherited report socket and fences child inheritance"
     )]
+    // SAFETY: the launch contract transfers this descriptor exactly once.
+    // Validate the inherited socket before taking ownership, then fence exec.
     let stream = unsafe {
         let flags = libc::fcntl(descriptor, libc::F_GETFD);
         if flags < 0 {
@@ -52,7 +52,8 @@ pub(super) fn open() -> io::Result<Option<ReportAdmission>> {
             ));
         }
         let mut kind: libc::c_int = 0;
-        let mut length = std::mem::size_of_val(&kind) as libc::socklen_t;
+        let mut length = libc::socklen_t::try_from(std::mem::size_of_val(&kind))
+            .map_err(|_| io::ErrorKind::InvalidInput)?;
         if libc::getsockopt(
             descriptor,
             libc::SOL_SOCKET,

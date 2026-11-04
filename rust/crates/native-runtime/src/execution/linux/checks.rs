@@ -173,7 +173,7 @@ fn syscall_dispatch_preserves_classification_with_bounded_work() {
         let (result, steps) = evaluate_work(&CODE, ARCH, call, [0; 6]);
         assert_eq!(
             result,
-            if allowed_syscalls().contains(&libc::c_long::from(call)) {
+            if ALLOWED_SYSCALLS.contains(&libc::c_long::from(call)) {
                 ALLOW
             } else {
                 DENY
@@ -185,9 +185,9 @@ fn syscall_dispatch_preserves_classification_with_bounded_work() {
     }
     // The former linear dispatcher is a cost negative control, using the
     // original declaration and encoding rather than a fabricated receipt.
-    let mut linear = Filter::<{ 2 * allowed_syscalls().len() + 2 }>::new();
+    let mut linear = Filter::<{ 2 * ALLOWED_SYSCALLS.len() + 2 }>::new();
     linear.push(instruction(LOAD, 0, 0, 0));
-    for call in allowed_syscalls() {
+    for call in ALLOWED_SYSCALLS {
         verdict(&mut linear, *call, ALLOW);
     }
     linear.push(instruction(RETURN, 0, 0, DENY));
@@ -197,7 +197,7 @@ fn syscall_dispatch_preserves_classification_with_bounded_work() {
         "syscall dispatch: instructions {} -> {}, maximum steps {} -> {maximum}, bound={bound}",
         linear.len,
         CODE.len(),
-        allowed_syscalls().len() + 2
+        ALLOWED_SYSCALLS.len() + 2
     );
 }
 
@@ -208,7 +208,7 @@ proptest! {
         arguments in any::<[u64; 6]>(),
     ) {
         let code = filter(&ExecutionNetwork::On).unwrap();
-        if !allowed_syscalls().iter().any(|call| *call as u32 == syscall)
+        if !ALLOWED_SYSCALLS.iter().any(|call| *call as u32 == syscall)
             && ![libc::SYS_read, libc::SYS_write, libc::SYS_fcntl,
                 libc::SYS_prlimit64, libc::SYS_getpgid, libc::SYS_getsid,
                 libc::SYS_clone3].contains(&(i64::from(syscall))) {

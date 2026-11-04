@@ -14,14 +14,6 @@ const ANSWER: &str = "data: {\"type\":\"response.output_text.delta\",\"delta\":\
 #[path = "../examples/embedded.rs"]
 mod embedded;
 
-mod build_metadata {
-    #[expect(
-        clippy::disallowed_macros,
-        reason = "Cargo-provided executable metadata for this integration crate"
-    )]
-    pub(super) const EXECUTABLE: &str = env!("CARGO_BIN_EXE_graphcoder");
-}
-
 /// A loopback Responses endpoint; it records every generation request body.
 struct Model {
     catalog: PathBuf,
@@ -120,10 +112,7 @@ fn fixture() -> Fixture {
 /// Runs the binary through the shared native capture, exit and physical-close
 /// owner, retaining the original outer deadline without readiness polling.
 async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &str) -> Output {
-    let mut command = Command::new(acyclic_test_support::binary_target(
-        "CARGO_BIN_EXE_graphcoder",
-        build_metadata::EXECUTABLE,
-    ));
+    let mut command = Command::new(acyclic_test_support::cargo_binary!("graphcoder"));
     fixture.custody.configure(|key, value| {
         command.env(key, value);
     });

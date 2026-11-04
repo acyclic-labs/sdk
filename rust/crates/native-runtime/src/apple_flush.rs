@@ -82,21 +82,26 @@ fn syscall_once(descriptor: BorrowedFd<'_>, command: i32, requested: Durability)
         libc::F_BARRIERFSYNC => "F_BARRIERFSYNC",
         _ => "fsync",
     };
-    crate::held_sync::observe_sync(requested, syscall, descriptor.as_raw_fd() as u64, || {
-        // SAFETY: each flush operation acts only on the held live descriptor.
-        let result = unsafe {
-            if command == 0 {
-                libc::fsync(descriptor.as_raw_fd())
+    crate::held_sync::observe_sync(
+        requested,
+        syscall,
+        u64::from(descriptor.as_raw_fd().cast_unsigned()),
+        || {
+            // SAFETY: each flush operation acts only on the held live descriptor.
+            let result = unsafe {
+                if command == 0 {
+                    libc::fsync(descriptor.as_raw_fd())
+                } else {
+                    libc::fcntl(descriptor.as_raw_fd(), command)
+                }
+            };
+            if result == 0 {
+                Ok(())
             } else {
-                libc::fcntl(descriptor.as_raw_fd(), command)
+                Err(io::Error::last_os_error())
             }
-        };
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
-    })
+        },
+    )
 }
 
 #[cfg(test)]

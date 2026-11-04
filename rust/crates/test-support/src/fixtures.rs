@@ -1,5 +1,36 @@
 use std::path::{Path, PathBuf};
 
+/// Locates the original named Cargo executable after runtime relocation.
+///
+/// Runtime Cargo metadata wins over the compiled path. Nextest's portable
+/// executable variable is used when Cargo metadata is absent. An optional
+/// explicitly selected executable takes precedence over both.
+///
+/// # Panics
+///
+/// If the selected executable path is not absolute.
+#[macro_export]
+macro_rules! cargo_binary {
+    ($name:literal) => {
+        $crate::cargo_binary!($name, None::<::std::ffi::OsString>)
+    };
+    ($name:literal, $selected:expr) => {{
+        let selected = ($selected)
+            .or_else(|| ::std::env::var_os(concat!("CARGO_BIN_EXE_", $name)))
+            .or_else(|| ::std::env::var_os(concat!("NEXTEST_BIN_EXE_", $name).replace('-', "_")));
+        let path = selected.map_or_else(
+            || ::std::path::PathBuf::from(env!(concat!("CARGO_BIN_EXE_", $name))),
+            ::std::path::PathBuf::from,
+        );
+        assert!(
+            path.is_absolute(),
+            "test binary path must be absolute: {}",
+            path.display()
+        );
+        path
+    }};
+}
+
 /// Locates a checked-in fixture relative to the SDK repository.
 ///
 /// Cross-built test executables run against an explicitly supplied source

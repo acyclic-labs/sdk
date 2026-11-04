@@ -6,12 +6,6 @@ pub(crate) struct CompletionState<T> {
     pub(crate) panic: Option<Box<dyn std::any::Any + Send>>,
     pub(crate) waker: Option<Waker>,
     pub(crate) _allocation: Option<ReadAllocation>,
-    #[cfg(all(test, loom))]
-    pub(crate) broken_wake: bool,
-    #[cfg(all(test, loom))]
-    pub(crate) broken_accounting: bool,
-    #[cfg(all(test, loom))]
-    pub(crate) broken_charge: bool,
 }
 
 impl<T> Default for CompletionState<T> {
@@ -22,12 +16,6 @@ impl<T> Default for CompletionState<T> {
             panic: None,
             waker: None,
             _allocation: None,
-            #[cfg(all(test, loom))]
-            broken_wake: false,
-            #[cfg(all(test, loom))]
-            broken_accounting: false,
-            #[cfg(all(test, loom))]
-            broken_charge: false,
         }
     }
 }
@@ -37,12 +25,6 @@ impl<T> CompletionState<T> {
         if !self.task_pending
             && let Some(result) = self.result.take()
         {
-            #[cfg(all(test, loom))]
-            if self.broken_charge {
-                // Negative control: the old observer-side refund left live
-                // shared state without its original allocation owner.
-                self._allocation.take();
-            }
             return Poll::Ready(result);
         }
         if !self
@@ -100,15 +82,7 @@ impl<T: Send> TaskTerminal for CompletionMutex<CompletionState<T>> {
             };
             (result, panicked)
         });
-        #[cfg(all(test, loom))]
-        if state.broken_accounting {
-            return state.waker.take();
-        }
         state.task_pending = false;
-        #[cfg(all(test, loom))]
-        if state.broken_wake {
-            state.waker = None;
-        }
         let waker = state.waker.take();
         drop(state);
         // Subscriber callbacks and arbitrary output wakes run outside both

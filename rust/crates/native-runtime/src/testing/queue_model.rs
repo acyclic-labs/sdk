@@ -1,16 +1,10 @@
 //! The real admission, owned job, terminal poll and observer-drop paths.
+//! `tests/signal-control.py` plants capacity, terminal and funding defects in
+//! those production operations; the assertions below stay unchanged.
 use super::*;
 use crate::{AdmissionState, NativeWorkers, TaskTerminal, run_blocking_io, wake_capacity_waiter};
 use loom::{sync::atomic::AtomicUsize, thread};
 use std::{pin::Pin, sync::atomic::Ordering, task::Wake};
-
-#[derive(Clone, Copy)]
-enum Fault {
-    None,
-    Wake,
-    Accounting,
-    Cause,
-}
 
 struct Woken(AtomicUsize);
 
@@ -83,7 +77,7 @@ impl Wake for Woken {
     }
 }
 
-fn capacity(fault: Fault) {
+fn capacity() {
     // Outside-model counters audit the explored schedule set; they never
     // participate in queue synchronization or determine a modeled outcome.
     let schedules = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -94,10 +88,7 @@ fn capacity(fault: Fault) {
         explored.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver) = crate::sync::mpsc::sync_channel(1);
         let receiver = Arc::new(Mutex::new(receiver));
-        let mut admission = AdmissionState::new();
-        admission.broken_wake = matches!(fault, Fault::Wake);
-        admission.broken_accounting = matches!(fault, Fault::Accounting);
-        let workers = NativeWorkers::single(sender, admission);
+        let workers = NativeWorkers::single(sender, AdmissionState::new());
         let mut filler = run_blocking_io(|| (), None).unwrap();
         assert!(
             workers
@@ -170,7 +161,7 @@ fn capacity(fault: Fault) {
     eprintln!("capacity schedules: {}", schedules.load(Ordering::Relaxed));
 }
 
-fn terminal(drop_observer: bool, disposition: Disposition, fault: Fault) {
+fn terminal(drop_observer: bool, disposition: Disposition) {
     let schedules = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let orders = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let explored = schedules.clone();
@@ -191,11 +182,6 @@ fn terminal(drop_observer: bool, disposition: Disposition, fault: Fault) {
         )
         .unwrap();
         let state = task.state.clone().unwrap();
-        {
-            let mut state = state.lock().unwrap();
-            state.broken_wake = matches!(fault, Fault::Wake);
-            state.broken_accounting = matches!(fault, Fault::Accounting);
-        }
         let job = task.pending.take().unwrap();
         let worker = thread::spawn(move || wake_capacity_waiter(job.run()));
         let flag = Arc::new(Woken(AtomicUsize::new(0)));
@@ -223,13 +209,6 @@ fn terminal(drop_observer: bool, disposition: Disposition, fault: Fault) {
         assert!(state.test_poll_completion(&waker).is_ready());
         if pending && !drop_observer {
             assert_ne!(flag.0.load(Ordering::SeqCst), 0, "terminal wake lost");
-        }
-        if matches!(fault, Fault::Cause) {
-            // Erase only the original retained cause, keeping its kind and
-            // message. The worker, terminal and observer ownership stay real.
-            let mut state = state.lock().unwrap();
-            let error = state.result.take().unwrap().unwrap_err();
-            state.result = Some(Err(std::io::Error::new(error.kind(), error.to_string())));
         }
         let outcome = match observer.as_mut() {
             Some(task) => poll_task(task, &mut cx),
@@ -262,78 +241,27 @@ fn terminal(drop_observer: bool, disposition: Disposition, fault: Fault) {
 
 #[test]
 fn capacity_release_races_registration_on_the_real_queue() {
-    capacity(Fault::None);
+    capacity();
 }
 
 #[test]
+// The source control --native-terminal stringifies task_completion's actual
+// retained error. This same oracle must reject the lost typed cause; the model
+// does not manufacture a replacement result or prove OS producer retirement.
 fn physical_completion_races_observer_drop_on_the_real_terminal() {
     for disposition in [
         Disposition::Returned,
         Disposition::Failed,
         Disposition::Panicked,
     ] {
-        terminal(false, disposition, Fault::None);
-        terminal(true, disposition, Fault::None);
+        terminal(false, disposition);
+        terminal(true, disposition);
     }
-}
-
-#[test]
-#[should_panic(expected = "capacity wake lost")]
-fn broken_capacity_wake_is_detected() {
-    capacity(Fault::Wake);
-}
-
-#[test]
-#[should_panic(expected = "queue accounting lost")]
-fn broken_capacity_accounting_is_detected() {
-    capacity(Fault::Accounting);
-}
-
-#[test]
-#[should_panic(expected = "terminal wake lost")]
-fn broken_terminal_wake_is_detected() {
-    terminal(false, Disposition::Returned, Fault::Wake);
-}
-
-#[test]
-#[should_panic(expected = "terminal wake lost")]
-fn broken_panicked_terminal_wake_is_detected() {
-    terminal(false, Disposition::Panicked, Fault::Wake);
-}
-
-#[test]
-#[should_panic(expected = "terminal wake lost")]
-fn broken_failed_terminal_wake_is_detected() {
-    terminal(false, Disposition::Failed, Fault::Wake);
-}
-
-#[test]
-#[should_panic(expected = "terminal accounting lost")]
-fn broken_terminal_accounting_is_detected() {
-    terminal(true, Disposition::Returned, Fault::Accounting);
-}
-
-#[test]
-#[should_panic(expected = "terminal accounting lost")]
-fn broken_panicked_terminal_accounting_is_detected() {
-    terminal(true, Disposition::Panicked, Fault::Accounting);
-}
-
-#[test]
-#[should_panic(expected = "terminal accounting lost")]
-fn broken_failed_terminal_accounting_is_detected() {
-    terminal(true, Disposition::Failed, Fault::Accounting);
-}
-
-#[test]
-#[should_panic(expected = "original worker failure cause replaced")]
-fn replaced_worker_failure_cause_is_detected() {
-    terminal(false, Disposition::Failed, Fault::Cause);
 }
 
 /// Result observation and abandonment race the worker's final shared release.
 /// Every remaining state owner must retain the original physical funding.
-fn charge(drop_observer: bool, disposition: Disposition, broken: bool) {
+fn charge(drop_observer: bool, disposition: Disposition) {
     let schedules = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let early = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let explored = schedules.clone();
@@ -352,17 +280,11 @@ fn charge(drop_observer: bool, disposition: Disposition, broken: bool) {
         .unwrap();
         let state = task.state.as_ref().unwrap().clone();
         let funded = {
-            let mut state = state.lock().unwrap();
-            state.broken_charge = broken;
+            let state = state.lock().unwrap();
             state._allocation.as_ref().unwrap().bytes()
         };
         assert_ne!(meter.memory.load(Ordering::SeqCst), 0);
         let job = task.pending.take().unwrap();
-        if matches!(disposition, Disposition::Panicked) && broken {
-            // Sever only the original shared state's funding. The panic,
-            // terminal publication and worker lifetime remain unchanged.
-            state.lock().unwrap()._allocation.take();
-        }
         let worker = thread::spawn(move || wake_capacity_waiter(job.run()));
         if drop_observer {
             drop(task);
@@ -424,42 +346,22 @@ fn shared_state_funding_survives_observation_and_worker_release() {
         Disposition::Failed,
         Disposition::Panicked,
     ] {
-        charge(false, disposition, false);
-        charge(true, disposition, false);
+        charge(false, disposition);
+        charge(true, disposition);
     }
-}
-
-#[test]
-#[should_panic(expected = "live shared state lost its funding")]
-fn premature_shared_state_refund_is_detected() {
-    charge(false, Disposition::Returned, true);
-}
-
-#[test]
-#[should_panic(expected = "live shared state lost its funding")]
-fn premature_panicked_shared_state_refund_is_detected() {
-    charge(false, Disposition::Panicked, true);
-}
-
-#[test]
-#[should_panic(expected = "abandoned shared state lost its funding")]
-fn premature_abandoned_panicked_state_refund_is_detected() {
-    charge(true, Disposition::Panicked, true);
 }
 
 /// A metered submission waits for capacity while the worker's release
 /// notifier holds its waiter node. Admission and cancellation unlink the node
 /// without refunding memory still owned by that notifier.
-fn waiter_charge(cancel: bool, broken: bool) {
+fn waiter_charge(cancel: bool) {
     let schedules = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let explored = schedules.clone();
     loom::model(move || {
         explored.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver) = crate::sync::mpsc::sync_channel(1);
         let receiver = Arc::new(Mutex::new(receiver));
-        let mut admission = AdmissionState::new();
-        admission.broken_charge = broken;
-        let workers = NativeWorkers::single(sender, admission);
+        let workers = NativeWorkers::single(sender, AdmissionState::new());
         let mut filler = run_blocking_io(|| (), None).unwrap();
         assert!(
             workers
@@ -551,23 +453,11 @@ fn waiter_charge(cancel: bool, broken: bool) {
 
 #[test]
 fn shared_waiter_funding_survives_admission_and_cancellation() {
-    waiter_charge(false, false);
-    waiter_charge(true, false);
+    waiter_charge(false);
+    waiter_charge(true);
 }
 
-#[test]
-#[should_panic(expected = "live shared waiter lost its funding")]
-fn premature_admitted_waiter_refund_is_detected() {
-    waiter_charge(false, true);
-}
-
-#[test]
-#[should_panic(expected = "live shared waiter lost its funding")]
-fn premature_cancelled_waiter_refund_is_detected() {
-    waiter_charge(true, true);
-}
-
-fn release_broadcast(head_only: bool) {
+fn release_broadcast() {
     // Prove broadcast without cancellation's independent successor wake too.
     // Otherwise a negative control can accidentally borrow that second path.
     for cancel in [None, Some(0), Some(1), Some(2)] {
@@ -583,7 +473,6 @@ fn release_broadcast(head_only: bool) {
                     .register(&Waker::from(flag.clone()), None)
             });
             workers.admission.lock().unwrap().queued_jobs = 1;
-            workers.admission.lock().unwrap().broken_broadcast = head_only;
             let admission = workers.admission.clone();
             let notifier = thread::spawn(move || crate::notify_capacity_released(&admission));
             if let Some(cancel) = cancel {
@@ -613,11 +502,5 @@ fn release_broadcast(head_only: bool) {
 
 #[test]
 fn release_broadcast_reaches_every_waiter_across_concurrent_cancellation() {
-    release_broadcast(false);
-}
-
-#[test]
-#[should_panic(expected = "capacity broadcast lost a live waiter")]
-fn head_only_capacity_wake_is_detected() {
-    release_broadcast(true);
+    release_broadcast();
 }

@@ -704,7 +704,7 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
     let mut shapes = Vec::new();
     // The seams' server: the same entry point with this package's own
     // verifier injected.
-    let seams = acyclic_test_support::binary_path!("graphcoder-seams");
+    let seams = acyclic_test_support::cargo_binary!("graphcoder-seams");
     for name in ["local", "endpoint", "seams"] {
         let model = model(&directory.path().join(name)).await;
         let home = Home::new(directory.path(), name);

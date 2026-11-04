@@ -140,6 +140,11 @@ fn kernel_backpressure_preserves_report_identity_and_unrelated_physical_completi
                 let received = if !reject_startup {
                     let mut bytes = serde_json::to_vec(&request).unwrap();
                     bytes.push(b'\n');
+                    if frame == "ack" && terminal == "drain"
+                        && let Some(path) = std::env::var_os("ACYCLIC_REPORT_REQUEST_CAPTURE")
+                    {
+                        std::fs::write(path, &bytes).unwrap();
+                    }
                     owner.get_mut().write_all(&bytes).await.unwrap();
                     Some(port.request().await.unwrap().unwrap())
                 } else {

@@ -15,7 +15,7 @@ fn open(path: &Path) -> io::Result<File> {
 fn is_free(path: &Path) -> io::Result<bool> {
     match FileLock::try_acquire(open(path)?, FileLockMode::Exclusive) {
         Ok(_probe) => Ok(true),
-        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(false),
+        Err(error) if crate::is_exclusive_lock_contention(&error) => Ok(false),
         Err(error) => Err(error),
     }
 }
@@ -50,27 +50,8 @@ fn modes_exclude_exactly_their_conflicts() -> io::Result<()> {
     assert!(is_free(&path)?);
     exclusive.lock(FileLockMode::Exclusive)?;
     assert!(!is_free(&path)?);
-    Ok(())
-}
-
-/// What a single-owner root relies on: a second exclusive acquisition fails
-/// as recognized contention while the first is held, and succeeds once the
-/// first is dropped.
-#[test]
-fn a_dropped_exclusive_lock_admits_the_next_exclusive_owner() -> io::Result<()> {
-    let directory = tempfile::tempdir()?;
-    let path = directory.path().join("lock");
-    let first = FileLock::try_acquire(open(&path)?, FileLockMode::Exclusive)?;
-    let contended = FileLock::try_acquire(open(&path)?, FileLockMode::Exclusive)
-        .map(|_| ())
-        .unwrap_err();
-    assert!(
-        crate::is_exclusive_lock_contention(&contended),
-        "{contended:?}"
-    );
-    drop(first);
-    let next = FileLock::try_acquire(open(&path)?, FileLockMode::Exclusive)?;
-    assert!(next.is_held());
+    drop(exclusive);
+    assert!(is_free(&path)?);
     Ok(())
 }
 

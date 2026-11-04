@@ -247,7 +247,7 @@ impl BoundPath {
                     crate::NativeOperationKind::Read,
                     || requested.verify(&child),
                 )?;
-                return Ok(true);
+                Ok(true)
             }
         }
         #[cfg(not(target_os = "linux"))]
@@ -467,10 +467,10 @@ impl ExecutionGrant {
             // An already granted root needs only its original object proof.
             // An overlapping ancestor may require an unavailable subtree proof.
             let roots = self.policy.read_roots(&path.path, meter)?;
-            if let Some(root) = roots.exact {
-                if root.contains(path, meter)? {
-                    continue;
-                }
+            if let Some(root) = roots.exact
+                && root.contains(path, meter)?
+            {
+                continue;
             }
             if self.policy.workspace.contains(path, meter)? {
                 continue;

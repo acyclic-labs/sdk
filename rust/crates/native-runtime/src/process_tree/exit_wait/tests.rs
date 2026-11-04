@@ -84,7 +84,10 @@ fn a_missing_exit_registration_settles_the_owned_child_before_returning() -> io:
         use std::io::Write as _;
         input.write_all(&[1])?;
         input.flush()?;
-        assert_eq!(platform::await_exiting_id(id, None)?.code(), Some(37));
+        assert_eq!(
+            platform::await_exiting_id(id, None, &mut None)?.code(),
+            Some(37)
+        );
         Ok(())
     })?;
     let status = platform::observe_exit_id(id, None)?
@@ -218,6 +221,13 @@ fn quiet_wait_observes_exit_without_periodic_wakeups_or_reaping() -> io::Result<
         !tree.is_reaped(),
         "exit observation must retain tree custody"
     );
+    assert!(
+        matches!(
+            platform::observe_exit(tree.child.as_ref().ok_or(io::ErrorKind::NotFound)?),
+            Ok(Some(retained)) if retained == status
+        ),
+        "exit observation must leave the original leader waitable"
+    );
     assert_eq!(tree.wait(Duration::ZERO)?, status);
     tree.terminate(None)?;
     assert!(tree.is_reaped());
@@ -248,16 +258,20 @@ fn exit_deadline_preserves_the_same_live_child_for_a_later_wait() -> io::Result<
 #[test]
 fn exit_notifications_retain_nonzero_and_signal_status() -> io::Result<()> {
     use std::os::unix::process::ExitStatusExt;
-    for kind in ["37", "signal"] {
-        let mut tree = child(kind)?;
+    for kind in ["37", "signal", "killed"] {
+        let mut tree = child(if kind == "killed" { "gated" } else { kind })?;
+        if kind == "killed" {
+            tree.terminate_descendants()?;
+        }
         let status = tree.wait_exit(None)?;
-        if kind == "37" {
-            assert_eq!(status.code(), Some(37));
-        } else {
-            assert_eq!(status.signal(), Some(libc::SIGTERM));
+        match kind {
+            "37" => assert_eq!(status.code(), Some(37)),
+            "signal" => assert_eq!(status.signal(), Some(libc::SIGTERM)),
+            _ => assert_eq!(status.signal(), Some(libc::SIGKILL)),
         }
         assert_eq!(tree.try_wait(None)?, Some(status));
         tree.terminate(None)?;
+        assert!(tree.is_reaped());
     }
     Ok(())
 }

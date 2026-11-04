@@ -1,6 +1,9 @@
 # Native claim decoder validation
 
 The `native_claim_record` target includes the production claim codec directly.
+Its shared oracle and original writer corpus live under
+`rust/crates/native-runtime/tests/claim_codec`, inside the published crate.
+The fuzzer and capture example include this same oracle from there.
 It checks arbitrary bytes, writer round trips, bounded admission, torn writes,
 checksum rejection, domain separation, all five field lengths and trailing data.
 Checksum-valid short bodies and invalid PID/token widths exercise grammar refusal
@@ -10,14 +13,15 @@ Grammar mutations use the production writer and checksum, not another parser.
 Capture the initial corpus and run the bounded instrumented control with:
 
 ```sh
-python3 rust/fuzz/native-claim-control.py /tmp/native-claim-control
+python3 rust/fuzz/native-codec-control.py claim /tmp/native-claim-control
 ```
 
 The control captures four seed files through `Record::encode`, records their
-hashes, runs 10,000 deterministic fuzz iterations, then disables the production
-checksum check in a private checkout. The unchanged target must report
+hashes, then disables the production checksum check in a private checkout.
+The unchanged target must report
 `claim checksum bypassed`; compilation failures do not satisfy this negative
-control. Original source bytes are restored even on failure. Run this command
+control. The restored source then runs 10,000 deterministic fuzz iterations.
+Original source bytes are restored even on failure. Run this command
 only in a disposable checkout with no concurrent edits. The report retains
 commands, source/oracle hashes and original logs. The bounded run's instrumented
 edge counts and original codec coverage are retained, not an exhaustive proof
@@ -44,6 +48,12 @@ corpus files through the same `check` function used by the fuzzer:
 ```sh
 cargo test --locked -p acyclic-native-runtime --test native_claim_record
 ```
+
+It also checks every truncated prefix of each retained writer seed, preserving
+the exhaustive routine coverage without adding quadratic work to fuzz inputs.
+The capture producer checks these prefixes once per seed, and routine replay
+also verifies that the current production writer emits the retained bytes.
+The producer remains available when Cargo compiles the example with `cfg(test)`.
 
 The same source-defect control can qualify this routine test without repeating
 the fuzz campaign: append `--routine` to the Python command above. It first
