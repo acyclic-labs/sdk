@@ -1,0 +1,1 @@
+[{"name":"new","aliases":["chat"],"description":"Create a root conversation","arguments":"required_text","action":{"kind":"request","request":{"kind":"new"},"confirmation":false}}]

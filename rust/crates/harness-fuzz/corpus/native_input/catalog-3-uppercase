@@ -1,0 +1,1 @@
+[{"name":"DIFF","aliases":["VIEW"],"description":"Cycle the captured workspace diff view","arguments":"none","action":{"kind":"builtin","command":"diff"}}]

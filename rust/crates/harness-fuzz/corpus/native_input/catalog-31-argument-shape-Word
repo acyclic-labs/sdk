@@ -1,0 +1,1 @@
+[{"name":"fetch","aliases":["get","curl"],"description":"Fetch a URL","arguments":"word","action":{"kind":"tool","tool":"url_fetch"}}]

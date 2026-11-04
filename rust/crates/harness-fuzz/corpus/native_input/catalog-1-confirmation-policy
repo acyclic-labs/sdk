@@ -1,0 +1,1 @@
+[{"name":"rewind","description":"Restore the selected context checkpoint","arguments":"none","action":{"kind":"request","request":{"kind":"rewind"},"confirmation":true}}]

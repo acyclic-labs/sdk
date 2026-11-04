@@ -1,0 +1,1 @@
+[{"name":"SHORTCUTS","aliases":["HELP","KEYS"],"description":"Show shortcuts","arguments":"none","action":{"kind":"select","query":"shortcuts"}}]

@@ -1,0 +1,1 @@
+[{"name":"tree","aliases":["agents"],"description":"Toggle the agent tree","arguments":"text","action":{"kind":"select","query":"tree"}}]

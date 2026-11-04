@@ -1,0 +1,1 @@
+[{"name":"feedback","aliases":["report","bug"],"description":"Open feedback","arguments":"required_text","action":{"kind":"select","query":"feedback"}}]

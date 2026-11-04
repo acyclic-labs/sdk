@@ -1,0 +1,1 @@
+[{"name":"DELETE","aliases":["DEL"],"description":"Delete the current agent after confirmation","arguments":"none","action":{"kind":"request","request":{"kind":"delete"},"confirmation":true}}]

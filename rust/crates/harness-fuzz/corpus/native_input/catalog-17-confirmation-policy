@@ -1,0 +1,1 @@
+[{"name":"pause","aliases":["p"],"description":"Toggle pause for the selected subtree","arguments":"none","action":{"kind":"request","request":{"kind":"toggle_pause"},"confirmation":true}}]
