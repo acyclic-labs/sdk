@@ -3,27 +3,33 @@
 The seven current request seeds below are exact bytes emitted by the production
 `contract::canonical_json_bytes` writer, captured from
 `model::tests::projection_reuse::request_writer_corpus_preserves_admission_and_refuses_obsolete_fields`
-at commit `7ffc209e2732cb54130c1afedf58c0cb9b6a9f3b`.
-The writer control passed in this scoped invocation; its independent custody
-control failed and was corrected separately:
+at commit `d85c6706f79569158a0bf2be9112931fcb53517d`.
+The selected Linux invocation captured every writer output before the old corpus
+comparison rejected its missing required `summary` field:
 
 ```sh
-cargo test --locked -p acyclic-harness-core --all-features --lib -- --exact model::instruction_review_tests::read_projection_has_exact_linear_index_work_and_quadratic_negative model::request::encoding::tests::native_prepared_inventory_tracks_request_and_cached_hash_storage model::tests::projection_reuse::request_writer_corpus_preserves_admission_and_refuses_obsolete_fields --nocapture
+cargo nextest run --locked -p acyclic-harness-core --all-features --lib -E 'test(=executor::tests::target_replay::filesystem_calls_record_the_provider_binding_and_refuse_retargeted_recovery) | test(=filesystem::host::seed::tests::seed_receipt_preserves_edits_deletions_and_all_preexisting_files) | test(=filesystem::tests::staged_content_is_version_pinned_and_requires_exact_grants) | test(=model::tests::projection_reuse::request_writer_corpus_preserves_admission_and_refuses_obsolete_fields)' --profile ci --no-fail-fast --retries 0
 ```
 
 These are library writer captures, not provider response recordings or end-to-end
 execution evidence. The control records valid pinned, error and instruction
 exchanges plus malformed control text and unpaired result refusals. Historical
-`obsolete-*` seeds retain the original removed `model.options` field byte for byte
-as invalid-input corpus; the reader must reject it rather than migrate it.
+`obsolete-*` seeds retain historical writer bytes as invalid-input corpus; the
+reader must reject them rather than migrate them. The existing seeds with
+`model.options` retain that removed field. `obsolete-no-summary` is the unchanged
+704-byte `pinned` capture from commit
+`7ffc209e2732cb54130c1afedf58c0cb9b6a9f3b`, SHA-256
+`3c09904be00d35d35affc528d24351441ec1c31d19eb18ce678f66421f6132d6`.
+The writer control checks current admission and rejection of both historical
+shapes; the same files remain inputs to the model-request fuzz target.
 `captured-instructions` remains the existing separate ContextManifest seed.
 
 | Seed | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `pinned` | 704 | `3c09904be00d35d35affc528d24351441ec1c31d19eb18ce678f66421f6132d6` |
-| `error-bound` | 708 | `492743f4fed2239c6d39aa5ccba1379c39a953f541f79a20e6f3818cbefff50f` |
-| `error-refused` | 714 | `8afd6dfb51e14745c54c08c8458b6b4f89e06daaf9e2dcd97aee639fe7ab829a` |
-| `error-control` | 699 | `c604d747aa7c1166f3da9fe335ff20eb3aa8c293dbe975e7fd2134612a6305ad` |
-| `error-unpaired` | 710 | `b115a2c54b5498cfd0d455e7d83c5064385a2fd755aefd16ac810c1f9a5188e6` |
-| `refused` | 574 | `541a728bff2454929caa0b26695c417a137bc03607eca506eefad804b55e613c` |
-| `project-instructions` | 804 | `b6faa4b9d9cee2ce5561fe933b9878f97ca8495e924b53ad5ec8431ade604b23` |
+| `pinned` | 720 | `0f3f600dd318784a0fe17275d7a70228a03a717e423c85b0aeea336a3a413027` |
+| `error-bound` | 724 | `fe7679e971d0fec3573856d58a45e4ba83736afd6c0a79d8e078e72d15320398` |
+| `error-refused` | 730 | `6ed220fbd8824f8a6b5e3246f7a12e8b623a14639d15e50d2fb35fc9b98ed821` |
+| `error-control` | 715 | `9ef345f6b4493d4891e04e3b0c35420573d8b9750275a04e782928cae2df9360` |
+| `error-unpaired` | 726 | `09d6a21ff4006cc2da60ff6d15c1947babb6d1b16124951bc478e6da265ff03f` |
+| `refused` | 590 | `2058aee92e81cfa9cccc81eaa313d28cd54463d304caf49b1f5835f102cdf477` |
+| `project-instructions` | 820 | `4a1bbcbcffabd4853577bae42d8eb7261d6848e8d4bfd1de87ebf85c87408f6a` |

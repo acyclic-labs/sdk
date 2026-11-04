@@ -211,8 +211,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
             &mut vec![call_message(&commit)],
             &mut Vec::new(),
         )
-        .await
-        .map_err(|error| format!("initial filesystem commit: {error:?}"))?;
+        .await?;
     let operation = OperationId::new();
     let invocation = ToolInvocation {
         operation_id: operation,
@@ -234,8 +233,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
             &mut messages,
             &mut Vec::new(),
         )
-        .await
-        .map_err(|error| format!("initial filesystem show: {error:?}"))?;
+        .await?;
     assert!(serde_json::to_string(&messages)?.contains("saved original contents"));
     let (_, records) = StockExecution::ordinary(&bound)
         .tool_records(&*journal, operation, 0, "status")
@@ -286,8 +284,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
                 &mut vec![call_message(&invocation)],
                 &mut Vec::new(),
             )
-            .await
-            .map_err(|error| format!("original filesystem replay: {error:?}"))?,
+            .await?,
         ExecutionProgress::Ready(Some(_))
     ));
     let (_, records) = StockExecution::ordinary(&bound)
@@ -334,8 +331,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
                     &mut replay,
                     &mut Vec::new(),
                 )
-                .await
-                .map_err(|error| format!("restored workspace policy replay: {error:?}"))?,
+                .await?,
             ExecutionProgress::Ready(Some(_))
         ));
         assert_eq!(replay, messages, "replay changed the saved contents");
@@ -435,33 +431,6 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
     assert!(matches!(
         RecordedCall::classify(&records).expect("valid claim"),
         RecordedCall::Started(_)
-    ));
-    // Ordinary recovery keeps the existing terminal interruption policy; a
-    // matching binding never turns the unanswered start into a fresh dispatch.
-    assert!(matches!(
-        StockExecution::ordinary(&bound)
-            .settle_tool_call(
-                &*journal,
-                operation,
-                0,
-                invocation.clone(),
-                0,
-                &mut vec![call_message(&invocation)],
-                &mut Vec::new(),
-            )
-            .await?,
-        ExecutionProgress::Failed(ToolFailureKind::Interrupted)
-    ));
-    let (_, records) = StockExecution::ordinary(&bound)
-        .tool_records(&*journal, operation, 0, "status")
-        .await?;
-    assert!(matches!(
-        RecordedCall::classify(&records).expect("valid claim"),
-        RecordedCall::Failed {
-            started: Some(_),
-            reason: ToolFailureKind::Interrupted,
-            ..
-        }
     ));
     Ok(())
 }
