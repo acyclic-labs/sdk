@@ -115,3 +115,17 @@ then restore the patch and run the same test. The writer's restoration event let
 the model release the writer and join it even when the close publication is lost;
 it does not supply the missing input-close event. No model flag changes the
 notification, and the production close transition and assertion stay unchanged.
+
+## Native fixture directory ownership
+
+`native-profile-reused-directory.patch` restores the exporter's predictable
+temporary directory and unconditional recursive cleanup. Build the existing
+exporter with `cargo test -p acyclic-harness-tui --features tui --test main
+--no-run`, then invoke
+`terminal_regions::native_profiles::export_windows_screen_fixtures --exact
+--ignored` in that test binary. With `ACYCLIC_REGION_SCREEN_FIXTURES` unset,
+place a sentinel in `TMPDIR/acyclic-region-screen-<child-pid>` before the child
+executes. Require the sentinel to survive and the exporter's own directory to
+be removed. The mutation must fail this same ownership assertion; restore the
+patch and repeat. The bytes come from the production renderer. This control
+qualifies temporary-directory ownership, not a native terminal's display.

@@ -56,13 +56,17 @@ fn fixtures() -> Vec<(Vec<u8>, Vec<String>)> {
 #[ignore = "invoked by scripts/test-terminal-region-screen.ps1"]
 fn export_windows_screen_fixtures() {
     let requested = std::env::var_os("ACYCLIC_REGION_SCREEN_FIXTURES");
-    let owned = requested.is_none().then(|| {
-        std::env::temp_dir().join(format!("acyclic-region-screen-{}", std::process::id()))
-    });
+    let owned = requested
+        .is_none()
+        .then(tempfile::tempdir)
+        .transpose()
+        .unwrap();
     let root = requested
         .as_deref()
-        .map_or_else(|| owned.as_deref().unwrap(), Path::new);
-    std::fs::create_dir_all(root).unwrap();
+        .map_or_else(|| owned.as_ref().unwrap().path(), Path::new);
+    if requested.is_some() {
+        std::fs::create_dir_all(root).unwrap();
+    }
     for (index, (bytes, expected)) in fixtures().into_iter().enumerate() {
         std::fs::write(root.join(format!("{index}.bin")), &bytes).unwrap();
         std::fs::write(
@@ -75,9 +79,6 @@ fn export_windows_screen_fixtures() {
             serde_json::to_vec(&expected).unwrap(),
         )
         .unwrap();
-    }
-    if let Some(owned) = owned {
-        std::fs::remove_dir_all(owned).unwrap();
     }
 }
 
