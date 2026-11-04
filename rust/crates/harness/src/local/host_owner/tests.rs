@@ -270,6 +270,77 @@ not json naming a session_id
             .await?
             .is_null()
     );
+    fixture
+        .session(
+            "child",
+            SessionAction::Send {
+                prompt: "complete output".into(),
+            },
+        )
+        .await?;
+    let final_turn = fixture.session("child", SessionAction::Next).await?;
+    let final_claim = claim(&final_turn)?;
+    // Use the original staged event log as an attachment, not a fabricated file.
+    let mut output = crate::executor::TurnOutput::new(String::new(), json!({"native": host}), 1);
+    output.attachments.push(crate::conversation::Attachment {
+        file: serde_json::from_value(failed["events"].clone()).map_err(storage)?,
+        label: Some("original native log".into()),
+    });
+    let overhead = serde_json::to_vec(&agents::Event::Complete {
+        operation: final_claim.operation,
+        outcome: crate::Outcome::Succeeded(output.clone()),
+        events: None,
+    })
+    .map_err(storage)?
+    .len();
+    output.text = "s".repeat(agents::MAXIMUM_BYTES as usize - overhead);
+    assert_eq!(
+        serde_json::to_vec(&agents::Event::Complete {
+            operation: final_claim.operation,
+            outcome: crate::Outcome::Succeeded(output.clone()),
+            events: None,
+        })
+        .map_err(storage)?
+        .len(),
+        agents::MAXIMUM_BYTES as usize
+    );
+    let mut oversized = output.clone();
+    oversized.text.push('x');
+    assert!(matches!(
+        fixture
+            .session(
+                "child",
+                SessionAction::Complete {
+                    claim: final_claim.clone(),
+                    outcome: crate::Outcome::Succeeded(oversized),
+                }
+            )
+            .await,
+        Err(Error::Invalid(_))
+    ));
+    let outcome = crate::Outcome::Succeeded(output);
+    let expected = serde_json::to_value(&outcome).map_err(storage)?;
+    let completed = fixture
+        .session(
+            "child",
+            SessionAction::Complete {
+                claim: final_claim,
+                outcome,
+            },
+        )
+        .await?;
+    assert_eq!(completed.pointer("/results/0/outcome"), Some(&expected));
+    let local = Arc::clone(&fixture.owner.local);
+    let previous = std::mem::replace(&mut fixture.owner, HostWorkspaceOwner::new(local)?);
+    drop(previous);
+    assert_eq!(
+        fixture
+            .owner
+            .session_value(&child)
+            .await?
+            .pointer("/results/0/outcome"),
+        Some(&expected)
+    );
     fixture.merge("child").await?;
     assert_eq!(
         std::fs::read(fixture.checkout.path().join("child.txt")).map_err(storage)?,
