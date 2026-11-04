@@ -9,7 +9,10 @@ impl Projector {
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         let mut state = lock_recover(&self.state);
-        if state.stopping || state.startup.is_some() {
+        if state.stopping {
+            return Err(std::io::Error::from(std::io::ErrorKind::NotConnected).into());
+        }
+        if state.startup.is_some() {
             return Err(NativeMountError::ControlPending);
         }
         state.startup = Some(work.clone());
@@ -720,7 +723,7 @@ impl Projector {
             return Err(NativeMountError::Driver(failure));
         }
         if state.stopping {
-            return Err(NativeMountError::ControlPending);
+            return Err(std::io::Error::from(std::io::ErrorKind::NotConnected).into());
         }
         Ok(())
     }
