@@ -562,6 +562,60 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
         assert!(file.patch.is_empty());
     }
 
+    // Exactly fund a four-byte scalar at the start of a seven-byte tail.
+    // Halving raw bytes must not reject the fitting scalar with a three-byte
+    // retry. Derive credit and the cursor from the real projected wire row.
+    let scalar_base = expensive_current.clone();
+    fixture.put("scalar.txt", "🙂ab\nnext\n", "scalar").await?;
+    let scalar_current = fixture.source("scalar.txt").await?.generation;
+    let publication = fixture
+        .files
+        .diff_publication(volume, &scalar_base, &scalar_current)
+        .await?;
+    let mut view = DiffView::new(volume.clone(), scalar_base.clone())?;
+    view.apply(&publication, fixture.files.as_ref(), limits())
+        .await?;
+    let mut expected = view.page(None, 128, 4096)?.expect("scalar file");
+    let start = expected.patch.find('🙂').expect("Unicode patch");
+    assert_eq!(
+        expected.patch[start..]
+            .split_inclusive('\n')
+            .next()
+            .expect("line")
+            .len(),
+        7
+    );
+    let position = acyclic_harness::client::DiffCursor {
+        publication: expected.publication,
+        path: expected.path.clone(),
+        offset: Some(start),
+    };
+    expected.continued = true;
+    expected.patch = "🙂".into();
+    expected.next = Some(acyclic_harness::client::DiffCursor {
+        offset: Some(start + '🙂'.len_utf8()),
+        ..position.clone()
+    });
+    let encoded = serde_json::to_vec(&AgentReply::Diff {
+        items: vec![expected.clone()],
+    })
+    .expect("scalar envelope");
+    let bytes = u32::try_from(
+        acyclic_harness_client::encoded_agent_reply_size(encoded.len() as u64)
+            .expect("scalar wire credit"),
+    )
+    .expect("page credit");
+    let request = AgentPageRequest::new(
+        1,
+        bytes,
+        Some(serde_json::to_string(&position).expect("scalar cursor")),
+    )
+    .expect("scalar page");
+    let actual = view
+        .agent_page(Some(&position), &request)
+        .expect("a fitting four-byte scalar must survive page shrinking");
+    assert_eq!(actual, vec![expected]);
+
     // Negative control: authority over another volume discloses no path.
     let other = VolumeRef::new(
         volume.provider().clone(),

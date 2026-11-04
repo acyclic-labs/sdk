@@ -749,7 +749,12 @@ pub async fn run(
                                     }
                                     Ok(Some(CommandResolution::Select { query: selected @ (CommandQuery::Shortcuts | CommandQuery::Diff | CommandQuery::History) })) => {
                                         match ui.select(&conversation, Some(&selected)).await {
-                                            Ok(()) => selection_changed = true,
+                                            Ok(()) => {
+                                                selection_changed = true;
+                                                apply_open_view(ui.open_view(), &mut overlay, &mut queries,
+                                                    query_future.as_mut(), &catalog, &input)?;
+                                                overlay_top = 0;
+                                            }
                                             Err(error) => view.notice = Some(error.to_string()),
                                         }
                                         continue;
@@ -806,7 +811,12 @@ pub async fn run(
                             }
                             InputEffect::Host(Action::Escape) if overlay.is_some() || queries.source().is_some() => {
                                 match ui.select(&conversation, None).await {
-                                    Ok(()) => selection_changed = true,
+                                    Ok(()) => {
+                                        selection_changed = true;
+                                        apply_open_view(ui.open_view(), &mut overlay, &mut queries,
+                                            query_future.as_mut(), &catalog, &input)?;
+                                        overlay_top = 0;
+                                    }
                                     Err(error) => view.notice = Some(error.to_string()),
                                 }
                             }
@@ -868,9 +878,6 @@ pub async fn run(
                 if selection_changed {
                     ui.config.apply(&mut input, &profile)
                         .map_err(|errors| format!("UI configuration: {errors:?}"))?;
-                    apply_open_view(ui.open_view(), &mut overlay, &mut queries,
-                        query_future.as_mut(), &catalog, &input)?;
-                    overlay_top = 0;
                     // Retire the older in-flight projection before following
                     // the cut that supplied this batch's conditional sources.
                     files_future.set(session::follow(Arc::clone(&conversation), ui.snapshot.generation.clone()));

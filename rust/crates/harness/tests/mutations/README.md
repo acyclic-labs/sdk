@@ -58,3 +58,9 @@ cargo nextest run --locked -p acyclic-harness --features hosting,test-support --
 The unchanged test must fail at `retained diff pages require the requesting
 reader's authority`. A compilation failure does not qualify the mutation.
 Reverse the production patch and require the same test to pass.
+
+The same command with `diff-utf8-midpoint.patch` must fail at `a fitting
+four-byte scalar must survive page shrinking`. This plants the former raw
+byte midpoint in the actual collector, while leaving the projected filesystem
+input, cursor and exact canonical wire-credit oracle unchanged. Reverse it
+and require the same test to pass.

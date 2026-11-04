@@ -829,9 +829,8 @@ mod tests {
             AgentPath::try_from("harness/agents/00000000000000000000000000000001".to_owned())?;
         // Escapes expand text up to sixfold, and multibyte characters must
         // never split: each part is cut on the encoded, escaped length.
-        let text =
-            "line \"quoted\" \u{1} ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸Ãƒâ€šÃ‚Â¦ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬\n"
-                .repeat(400_000);
+        let sample = "line \"quoted\" \u{1} é 🦀\n";
+        let text = sample.repeat(MAX_COMMAND_BYTES / sample.len() + 1);
         let command = AgentCommand::Prompt {
             agent: agent.clone(),
             id: IntentId::try_from("prompt-1")?,
@@ -864,14 +863,16 @@ mod tests {
         assert_eq!(parts as usize, frames.len() - 1);
         assert_eq!(bytes as usize, assembled.len());
         assert_eq!(digest, blake3::hash(assembled.as_bytes()).to_hex().as_str());
-        let AgentCommand::Prompt { body, .. } =
+        let AgentCommand::Prompt { id, body, .. } =
             PreparedCommand::decode_whole(assembled.as_bytes())?
         else {
             return Err("expected the prompt".into());
         };
+        assert_eq!(id.as_str(), "prompt-1");
         assert_eq!(body, ModelContent::Text(text.clone()));
         assert!(
-            matches!(prepared.decoded()?, AgentCommand::Prompt { body, .. } if body == ModelContent::Text(text))
+            matches!(prepared.decoded()?, AgentCommand::Prompt { id, body, .. }
+                if id.as_str() == "prompt-1" && body == ModelContent::Text(text))
         );
         // Negative controls: one frame stays bounded, and a command that fits
         // one frame is sent as itself.
@@ -881,24 +882,6 @@ mod tests {
         ));
         let small = PreparedCommand::new(&AgentCommand::Settlement { agent })?;
         assert!(small.frames().eq([small.command()]));
-        Ok(())
-    }
-
-    #[test]
-    fn prepared_prompt_preserves_the_intent_and_body() -> Result<(), Box<dyn std::error::Error>> {
-        let command = AgentCommand::Prompt {
-            agent: AgentPath::try_from(
-                "harness/agents/00000000000000000000000000000001".to_owned(),
-            )?,
-            id: IntentId::try_from("prompt-1")?,
-            body: ModelContent::Text("exact input".into()),
-        };
-        let prepared = PreparedCommand::new(&command)?;
-        let AgentCommand::Prompt { id, body, .. } = prepared.decoded()? else {
-            return Err("expected prompt command".into());
-        };
-        assert_eq!(id.as_str(), "prompt-1");
-        assert_eq!(body, ModelContent::Text("exact input".into()));
         Ok(())
     }
 }

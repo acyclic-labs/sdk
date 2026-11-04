@@ -1,7 +1,7 @@
 --- a/rust/crates/harness/src/hosting/diff.rs
 +++ b/rust/crates/harness/src/hosting/diff.rs
 @@ -87,9 +87,3 @@
-             let items = fill(&projection.view, cursor.as_ref(), page)?;
+             let items = projection.view.agent_page(cursor.as_ref(), page)?;
 -            let paths = items.iter().map(|item| (item.path.as_str(), item.kind));
 -            if reader
 -                .diff_disclosure(volume, (base, current), paths)
