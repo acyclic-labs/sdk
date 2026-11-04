@@ -1,7 +1,7 @@
 //! One credential entry owns a signing seed; persisted host metadata contains
 //! only its public opaque reference. Production selects native custody unless
 //! the owner explicitly requests private-file custody. Test and fixture
-//! builds use process-local custody for the configured policy.
+//! builds replace only the native store, with process-local custody.
 //!
 //! A freshly generated seed needs no shared lock namespace: its identity is
 //! new entropy that no other process can name before publication. Only an
@@ -223,10 +223,9 @@ impl SigningKeyReference {
     }
 }
 
-/// One explicit process custody policy, shared by every native consumer.
-/// Linux selects Secret Service with a session bus, otherwise the kernel store.
-/// Private files require an explicit owner choice; failures never change policy.
-#[cfg(not(any(test, feature = "test-support")))]
+/// One explicit process custody policy, shared by every native consumer and
+/// every build. Private files require an explicit owner choice; failures
+/// never change policy.
 fn store(name: &str) -> io::Result<keyring::Entry> {
     match std::env::var_os("ACYCLIC_SIGNING_CUSTODY").as_deref() {
         None => {}
@@ -237,6 +236,12 @@ fn store(name: &str) -> io::Result<keyring::Entry> {
     if std::env::var_os("ACYCLIC_SIGNING_CUSTODY_DIRECTORY").is_some() {
         return Err(failure("select", CustodyCause::InvalidPolicy));
     }
+    native(name)
+}
+
+/// Linux selects Secret Service with a session bus, otherwise the kernel store.
+#[cfg(not(any(test, feature = "test-support")))]
+fn native(name: &str) -> io::Result<keyring::Entry> {
     #[cfg(target_os = "linux")]
     {
         if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some() {
@@ -256,8 +261,10 @@ fn store(name: &str) -> io::Result<keyring::Entry> {
     }
 }
 
+/// Test and fixture builds stand the in-memory fixture store in for the OS
+/// store only; an explicit private-file selection reopens across processes.
 #[cfg(any(test, feature = "test-support"))]
-fn store(name: &str) -> io::Result<keyring::Entry> {
+fn native(name: &str) -> io::Result<keyring::Entry> {
     Ok(fixture::entry(name))
 }
 

@@ -10,7 +10,6 @@ struct Credential {
     name: String,
 }
 
-#[cfg(not(any(test, feature = "test-support")))]
 pub(super) fn entry(name: &str) -> io::Result<keyring::Entry> {
     let config = std::env::var_os("ACYCLIC_SIGNING_CUSTODY_DIRECTORY").map(PathBuf::from)
         .or_else(dirs::config_dir).filter(|path| path.is_absolute()).ok_or_else(|| {

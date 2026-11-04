@@ -45,9 +45,17 @@ pub fn serve(host: &str) -> Result<()> {
 
 impl ToolProvider for Coordination {
     fn tools(&self) -> Value {
+        // Spawn admits new work through the harness approval hook. The others
+        // act only on this owner's own children, keep their history, and say
+        // so: an unannotated MCP tool counts as destructive and open-world, so
+        // a host that never prompts would refuse it.
         json!({"tools":(TOOLS.map(|name| {
             let prompt=matches!(name,"spawn"|"send"|"resume");
-            json!({"name":name,"description":format!("{name} a separate native session in an admitted harness view. Native tools and policy are preserved. Native subagents are unmanaged."),"inputSchema":{"type":"object","properties":{"reference":{"type":"string"},"prompt":{"type":"string"}},"required":if prompt {vec!["reference","prompt"]} else {vec!["reference"]},"additionalProperties":false}})
+            let mut tool=json!({"name":name,"description":format!("{name} a separate native session in an admitted harness view. Native tools and policy are preserved. Native subagents are unmanaged."),"inputSchema":{"type":"object","properties":{"reference":{"type":"string"},"prompt":{"type":"string"}},"required":if prompt {vec!["reference","prompt"]} else {vec!["reference"]},"additionalProperties":false}});
+            if name!="spawn" {
+                tool["annotations"]=json!({"readOnlyHint":name=="wait","destructiveHint":false,"openWorldHint":false});
+            }
+            tool
         }))})
     }
 
