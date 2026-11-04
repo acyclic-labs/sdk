@@ -7,7 +7,7 @@
 //! that names it, and the thread never touches a packet's `OVERLAPPED`.
 use super::*;
 use std::collections::HashSet;
-use std::sync::{LazyLock, OnceLock};
+use std::sync::{LazyLock, MutexGuard, OnceLock};
 use windows::Win32::Foundation::{ERROR_NOT_ENOUGH_MEMORY, INVALID_HANDLE_VALUE};
 use windows::Win32::System::IO::{
     CreateIoCompletionPort, GetQueuedCompletionStatusEx, OVERLAPPED_ENTRY,
