@@ -189,7 +189,11 @@ fn batch(bytes: &[u8]) {
                 .as_ref()
                 .is_some_and(Result::is_err)
         {
-            assert!(results.iter().all(|result| result == &Err(unavailable.clone())));
+            assert!(
+                results
+                    .iter()
+                    .all(|result| result.as_ref().err() == Some(&unavailable))
+            );
         } else {
             let reply = wire::PutBlobsResponse::decode(packet).expect("admitted batch wire");
             assert_eq!(
