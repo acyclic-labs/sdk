@@ -27,12 +27,13 @@ cursor. Model rows reconstruct one original admitted request for its replay key;
 the page does not load conversation history or tool payloads.
 `inbox`, `conversation` and `status` project one original agent record each.
 
-Schema v2 has six tables. `metrics::VERSION`, the row `version` and Arrow
+Schema v4 has six tables. `metrics::VERSION`, the row `version` and Arrow
 `acyclic.metrics.version` metadata identify this layout independently of the
-usage JSONL and cache-observation formats. Version 2 includes scope ownership
-and nullable agent ownership. Union shards only when their version and table
+usage JSONL and cache-observation formats. Version 4 retains scope ownership,
+nullable agent ownership and creation provenance, and requires original call
+terminals. Union shards only when their version and table
 match. Earlier saved layouts must be reprojected from original sources before
-combining them with v2; the library does not migrate shards or fill missing
+combining them with v4; the library does not migrate shards or fill missing
 ownership fields with null. Arrow, Parquet and PROV writers refuse a foreign
 layout before emitting bytes.
 
