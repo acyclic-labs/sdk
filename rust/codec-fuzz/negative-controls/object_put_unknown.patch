@@ -1,6 +1,6 @@
 --- a/rust/crates/objects/src/convert.rs
 +++ b/rust/crates/objects/src/convert.rs
-@@ -104,7 +104,7 @@
+@@ -104,6 +104,6 @@
              verified: verified(value)?,
          }),
          Outcome::Unknown(true) => Ok(Put::Unknown),
@@ -8,4 +8,3 @@
 +        Outcome::Unknown(false) => Ok(Put::Unknown),
      }
  }
- 
