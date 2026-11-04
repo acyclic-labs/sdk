@@ -259,8 +259,7 @@ struct Watching {
 }
 
 impl Bridge {
-    fn open(directory: &Path, endpoint: Endpoint) -> Result<Self> {
-        let root = acyclic_fs::hold_root(directory).map_err(native_file_error)?;
+    fn open(root: acyclic_fs::HeldRoot, endpoint: Endpoint) -> Result<Self> {
         let open = || {
             root.open_file(Path::new("owner.lock"), false)
                 .map_err(native_file_error)
@@ -494,12 +493,13 @@ impl Registry {
     fn bridge(
         registry: &Arc<Mutex<Self>>,
         cwd: &Path,
-        open: impl FnOnce(&Path, Endpoint) -> Result<Bridge>,
+        open: impl FnOnce(acyclic_fs::HeldRoot, Endpoint) -> Result<Bridge>,
     ) -> Result<Arc<Bridge>> {
         if let Some(bridge) = Self::live(registry, cwd) {
             return Ok(bridge);
         }
-        let (directory, endpoint) = discover(cwd)?;
+        let (root, endpoint) = discover(cwd)?;
+        let directory = root.path().to_path_buf();
         let connection = Arc::clone(lock(registry).bridges.entry(directory.clone()).or_default());
         // Only callers connecting to this owner wait behind its native opens.
         // Discovery, watcher registration and owner-exit observation never hold
@@ -512,7 +512,7 @@ impl Registry {
             Some(bridge) if bridge.live() => Arc::clone(bridge),
             Some(_) => return Err(Error::NotFound(NO_OWNER.into())),
             None => {
-                let bridge = match open(&directory, endpoint) {
+                let bridge = match open(root, endpoint) {
                     Ok(bridge) => Arc::new(bridge),
                     Err(error) => {
                         connected.retired = true;
@@ -620,10 +620,6 @@ fn request_operation(
     result.map_err(|error: Error| error.for_request(operation))
 }
 
-fn reply_path(status: &Path, operation: OperationId) -> PathBuf {
-    status.join(format!("{operation}.json"))
-}
-
 fn operation_leaf(name: &std::ffi::OsStr) -> Option<OperationId> {
     let path = Path::new(name);
     if path.extension()? != "json" {
@@ -667,11 +663,18 @@ fn notified_operations(
     Some(replies)
 }
 
-fn discover(cwd: &Path) -> Result<(PathBuf, Endpoint)> {
+fn discover(cwd: &Path) -> Result<(acyclic_fs::HeldRoot, Endpoint)> {
     for ancestor in cwd.ancestors() {
-        let directory = ancestor.join(DIRECTORY);
-        match regular_bytes(&directory.join("owner.json"), MAXIMUM_REQUEST_BYTES) {
-            Ok(bytes) => {
+        let candidate = (|| {
+            let workspace = acyclic_fs::hold_root(ancestor).map_err(native_file_error)?;
+            let directory = workspace
+                .open_directory(Path::new(DIRECTORY))
+                .map_err(native_file_error)?;
+            let bytes = held_bytes(&directory, Path::new("owner.json"), MAXIMUM_REQUEST_BYTES)?;
+            Ok((directory, bytes))
+        })();
+        match candidate {
+            Ok((directory, bytes)) => {
                 let endpoint: Endpoint = serde_json::from_slice(&bytes).map_err(storage)?;
                 if endpoint.version != 3 {
                     return Err(Error::Unsupported(format!(
@@ -680,7 +683,7 @@ fn discover(cwd: &Path) -> Result<(PathBuf, Endpoint)> {
                     )));
                 }
                 if endpoint.workspace != ancestor
-                    || std::fs::canonicalize(&directory).map_err(storage)? != directory
+                    || std::fs::canonicalize(directory.path()).map_err(storage)? != directory.path()
                 {
                     return Err(Error::Unauthorized(
                         "native host endpoint is outside its admitted workspace".into(),
@@ -750,8 +753,18 @@ pub async fn serve_until(
         workspace,
     };
     let bytes = serde_json::to_vec(&endpoint).map_err(storage)?;
-    let descriptor = directory.path().join("owner.json");
-    immutable(&descriptor, &bytes)?;
+    if bytes.len() as u64 > MAXIMUM_REQUEST_BYTES {
+        return Err(Error::Invalid(
+            "native file projection exceeds its bound".into(),
+        ));
+    }
+    directory
+        .publish_immutable(
+            Path::new("owner.json"),
+            &bytes,
+            acyclic_fs::NativeDurability::Durable,
+        )
+        .map_err(native_file_error)?;
     let owner =
         HostWorkspaceOwner::new(Arc::clone(&local))?.with_requests(Arc::clone(&request_root));
     // Notifications name the canonical paths; a non-canonical root would
@@ -1123,11 +1136,6 @@ fn remove_held_projection(parent: &acyclic_fs::HeldRoot, leaf: &Path) -> Result<
     }
 }
 
-fn regular_bytes(path: &Path, maximum: u64) -> Result<Vec<u8>> {
-    let (parent, leaf) = projection_parent(path)?;
-    held_bytes(&parent, &leaf, maximum)
-}
-
 fn held_bytes(parent: &acyclic_fs::HeldRoot, leaf: &Path, maximum: u64) -> Result<Vec<u8>> {
     let file = parent.open_file(leaf, false).map_err(native_file_error)?;
     let metadata = file.metadata().map_err(storage)?;
@@ -1159,13 +1167,6 @@ fn held_bytes(parent: &acyclic_fs::HeldRoot, leaf: &Path, maximum: u64) -> Resul
     Ok(bytes)
 }
 
-fn immutable(path: &Path, bytes: &[u8]) -> Result<()> {
-    let (parent, leaf) = projection_parent(path)?;
-    parent
-        .publish_immutable(&leaf, bytes, acyclic_fs::NativeDurability::Durable)
-        .map_err(native_file_error)
-}
-
 fn native_file_error(error: acyclic_fs::demand::DemandError) -> Error {
     match error {
         acyclic_fs::demand::DemandError::Absent => {
@@ -1178,27 +1179,4 @@ fn native_file_error(error: acyclic_fs::demand::DemandError) -> Error {
         }
         error => storage(error),
     }
-}
-
-fn projection_parent(path: &Path) -> Result<(acyclic_fs::HeldRoot, PathBuf)> {
-    let endpoint = path
-        .ancestors()
-        .find(|ancestor| ancestor.ends_with(DIRECTORY))
-        .ok_or_else(|| Error::Invalid("native projection is outside its workspace".into()))?;
-    let workspace = endpoint
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| Error::Invalid("native projection workspace absent".into()))?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| Error::Invalid("native projection parent absent".into()))?;
-    let leaf = PathBuf::from(
-        path.file_name()
-            .ok_or_else(|| Error::Invalid("native projection leaf absent".into()))?,
-    );
-    let root = acyclic_fs::hold_root(workspace).map_err(native_file_error)?;
-    let parent = root
-        .open_directory(parent.strip_prefix(workspace).map_err(storage)?)
-        .map_err(native_file_error)?;
-    Ok((parent, leaf))
 }

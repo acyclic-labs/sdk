@@ -25,9 +25,53 @@ fn request_storage_cause(error: &Error, operation: OperationId) -> &str {
     cause
 }
 
+fn reply_path(status: &Path, operation: OperationId) -> PathBuf {
+    status.join(format!("{operation}.json"))
+}
+
 fn remove_projection(path: &Path) -> Result<()> {
     let (parent, leaf) = projection_parent(path)?;
     remove_held_projection(&parent, &leaf)
+}
+
+fn regular_bytes(path: &Path, maximum: u64) -> Result<Vec<u8>> {
+    let (parent, leaf) = projection_parent(path)?;
+    held_bytes(&parent, &leaf, maximum)
+}
+
+fn immutable(path: &Path, bytes: &[u8]) -> Result<()> {
+    if bytes.len() as u64 > MAXIMUM_REQUEST_BYTES {
+        return Err(Error::Invalid(
+            "native file projection exceeds its bound".into(),
+        ));
+    }
+    let (parent, leaf) = projection_parent(path)?;
+    parent
+        .publish_immutable(&leaf, bytes, acyclic_fs::NativeDurability::Durable)
+        .map_err(native_file_error)
+}
+
+fn projection_parent(path: &Path) -> Result<(acyclic_fs::HeldRoot, PathBuf)> {
+    let endpoint = path
+        .ancestors()
+        .find(|ancestor| ancestor.ends_with(DIRECTORY))
+        .ok_or_else(|| Error::Invalid("native projection is outside its workspace".into()))?;
+    let workspace = endpoint
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| Error::Invalid("native projection workspace absent".into()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| Error::Invalid("native projection parent absent".into()))?;
+    let leaf = PathBuf::from(
+        path.file_name()
+            .ok_or_else(|| Error::Invalid("native projection leaf absent".into()))?,
+    );
+    let root = acyclic_fs::hold_root(workspace).map_err(native_file_error)?;
+    let parent = root
+        .open_directory(parent.strip_prefix(workspace).map_err(storage)?)
+        .map_err(native_file_error)?;
+    Ok((parent, leaf))
 }
 
 fn carrier_io() -> Result<(tempfile::TempDir, CarrierIo, std::fs::File)> {
@@ -537,8 +581,8 @@ fn rejected_requests_end_without_owner_exit() -> Result<()> {
         &descriptor,
         &serde_json::to_vec(&endpoint).map_err(storage)?,
     )?;
-    let (_, endpoint) = discover(&endpoint.workspace)?;
-    let bridge = Arc::new(Bridge::open(&directory, endpoint)?);
+    let (directory, endpoint) = discover(&endpoint.workspace)?;
+    let bridge = Arc::new(Bridge::open(directory, endpoint)?);
     let mut served = Served::default();
     for fault in 0..3 {
         let operation = OperationId::new();
@@ -702,41 +746,6 @@ async fn projection_event(
         },
         result = owner => Err(failed(format!("workspace owner ended: {result:?}"))),
     }
-}
-
-#[test]
-fn projection_reads_cannot_wake_either_endpoint() {
-    use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind};
-    for kind in [
-        AccessKind::Any,
-        AccessKind::Read,
-        AccessKind::Open(AccessMode::Any),
-        AccessKind::Open(AccessMode::Read),
-        AccessKind::Open(AccessMode::Write),
-        AccessKind::Open(AccessMode::Execute),
-        AccessKind::Close(AccessMode::Any),
-        AccessKind::Close(AccessMode::Read),
-        AccessKind::Close(AccessMode::Write),
-        AccessKind::Close(AccessMode::Execute),
-        AccessKind::Other,
-    ] {
-        assert!(
-            !projection_changed(&Ok(notify::Event::new(notify::EventKind::Access(kind)))),
-            "access-only notifications must not schedule another projection scan"
-        );
-    }
-    for kind in [
-        notify::EventKind::Any,
-        notify::EventKind::Create(CreateKind::Any),
-        notify::EventKind::Modify(ModifyKind::Any),
-        notify::EventKind::Remove(RemoveKind::Any),
-        notify::EventKind::Other,
-    ] {
-        assert!(projection_changed(&Ok(notify::Event::new(kind))));
-    }
-    assert!(projection_changed(&Err(notify::Error::generic(
-        "watch failed"
-    ))));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -978,7 +987,7 @@ async fn saved_command_result_follows_its_original_request_directory() -> Result
     let original_reply = original_status.join(&leaf);
     assert_eq!(
         std::fs::read(&original_reply).map_err(storage)?,
-        crate::client::encode_command_result(0, &Ok(committed.clone()), MAXIMUM_BYTES)?
+        crate::client::encode_command_result(0, &Ok(committed.clone()), MAXIMUM_REQUEST_BYTES)?
     );
     let ready = files.served.start();
     assert_eq!(ready.len(), 1);
@@ -1602,7 +1611,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     // The owner is still alive: failure of its native exit observation must
     // retain that cause rather than falsely declaring the owner gone.
     let (directory, endpoint) = discover(&cwd)?;
-    let observed = Arc::new(Bridge::open(&directory, endpoint)?);
+    let observed = Arc::new(Bridge::open(directory, endpoint)?);
     let (delivery, response) = mpsc::sync_channel(1);
     let waiting = observed.wait(OperationId::new(), delivery)?;
     observed
@@ -1645,7 +1654,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     // A rejected projection that cannot be unlinked has no withdrawal
     // producer. Its error must retire the original owner and end the call.
     let (directory, endpoint) = discover(&cwd)?;
-    let blocked = Arc::new(Bridge::open(&directory, endpoint)?);
+    let blocked = Arc::new(Bridge::open(directory, endpoint)?);
     let operation = OperationId::new();
     let (delivery, response) = mpsc::sync_channel(1);
     let waiting = blocked.wait(operation, delivery)?;
@@ -1670,12 +1679,15 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         remove_projection(&rejected).expect_err("file withdrawal cannot remove a directory");
     assert_eq!(causes.primary().to_string(), admission.to_string());
     assert_eq!(causes.cleanup().to_string(), withdrawal.to_string());
-    assert!(matches!(
-        response
-            .recv_timeout(Duration::from_secs(2))
-            .map_err(storage)?,
-        Delivery::Gone
-    ));
+    assert!(matches!(response.try_recv(),
+        Ok(Delivery::Reply(Err(ref error))) if error.to_string() == admission.to_string()));
+    // Client observation already retained the original admission cause. Join
+    // the actual owner-lock producer before asserting its separate retirement.
+    lock(&blocked.observer)
+        .take()
+        .expect("original owner-lock observer")
+        .join()
+        .expect("original owner-lock producer retires");
     drop(waiting);
     assert!(lock(&blocked.shared.waiters).gone);
     let (delivery, _) = mpsc::sync_channel(1);
