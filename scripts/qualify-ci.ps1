@@ -208,10 +208,14 @@ cargo install --path rust/crates/native-runtime --bin acyclic-process-host --loc
 $env:E2E_PROCESS_HOST = Join-Path $GraphcoderInstall 'bin/acyclic-process-host.exe'
 $env:E2E_CONPTY_HOST = Join-Path $GraphcoderInstall 'bin/graphcoder-conpty.exe'
 $csc = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+$ConptySource = [IO.Path]::GetFullPath('scripts/graphcoder-conpty.cs')
 if (-not (Test-Path -LiteralPath $csc)) {
-    throw "STEP_FAILED terminal-compiler; recovery: install .NET Framework 4, then run `"$csc`" /nologo /target:exe /out:`"$env:E2E_CONPTY_HOST`" scripts/graphcoder-conpty.cs"
+    throw "STEP_FAILED terminal-compiler; recovery: install .NET Framework 4, then & `"$csc`" /nologo /target:exe /out:`"$env:E2E_CONPTY_HOST`" `"$ConptySource`""
 }
-& $csc /nologo /target:exe "/out:$env:E2E_CONPTY_HOST" scripts/graphcoder-conpty.cs
+& $csc /nologo /target:exe "/out:$env:E2E_CONPTY_HOST" $ConptySource
+if ($LASTEXITCODE -ne 0) {
+    throw "STEP_FAILED terminal-compiler; recovery: & `"$csc`" /nologo /target:exe /out:`"$env:E2E_CONPTY_HOST`" `"$ConptySource`""
+}
 $env:E2E_SCRATCH_ROOT = [IO.Path]::GetFullPath((Join-Path $env:SDK_TEMP_DIR 'graphcoder-e2e'))
 bun install --cwd scripts/graphcoder-pty --frozen-lockfile --ignore-scripts
 node --test scripts/graphcoder-pty/screen.test.mjs
