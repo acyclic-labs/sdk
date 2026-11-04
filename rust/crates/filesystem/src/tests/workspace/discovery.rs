@@ -126,12 +126,10 @@ async fn bounded_direct_paths_retain_all_admitted_aliases() -> Result<(), Box<dy
         matches!(
             refused,
             Err(crate::OperationFailure {
-                error: WorkspaceError::Filesystem(FsError::Work(
-                    crate::WorkError::BudgetExceeded {
-                        counter: "backend_read_operations",
-                        ..
-                    }
-                )),
+                error: WorkspaceError::Work(crate::WorkError::BudgetExceeded {
+                    counter: "backend_read_operations",
+                    ..
+                }),
                 ..
             })
         ),
@@ -177,6 +175,29 @@ async fn bounded_direct_paths_retain_all_admitted_aliases() -> Result<(), Box<dy
                 "reverse paths returned without original backing"
             );
         }
+    }
+    {
+        let mut original = crate::AuthorityWork::new(budget, &cancellation);
+        let mut accounting = original.accounting();
+        let independent = crate::kernel::Owned::<Vec<u8>>::allocate(73, &mut accounting)?;
+        let independent = crate::kernel::allocation::retained::Retained::from_owned(
+            independent,
+            &mut accounting,
+        )?;
+        let baseline = accounting.standalone_parts().unwrap().0.live_bytes();
+        let returned = generation
+            .paths_for_file_ids_with_accounting([id], 16, &mut accounting, &cancellation)
+            .await?;
+        assert_eq!(returned.entries(), complete.entries());
+        assert!(accounting.standalone_parts().unwrap().0.live_bytes() > baseline);
+        drop(returned);
+        assert_eq!(
+            accounting.standalone_parts().unwrap().0.live_bytes(),
+            baseline,
+            "ordinary paths did not retire exactly their own backing"
+        );
+        drop(independent);
+        accounting.spent().verify(budget)?;
     }
     let cancelled = CancellationToken::new();
     cancelled.cancel();
