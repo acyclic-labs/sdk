@@ -80,3 +80,71 @@ fn child_lifecycle(arguments: &[String]) -> bool {
         _ => false,
     }
 }
+
+#[cfg(all(test, not(loom)))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn child_lifecycle_admission_preserves_selected_volume_authority() -> Result<()> {
+        let directory = tempfile::tempdir().map_err(storage)?;
+        let state = tempfile::tempdir().map_err(storage)?;
+        let model =
+            crate::model::Model::new("scripted".into(), "child-lifecycle".into(), "1".into())?;
+        let provider = Arc::new(crate::test_support::ScriptedModelProvider::new([]));
+        let harness = LocalHarness::open(
+            crate::test_support::local_harness_config(directory.path(), (model, provider))?
+                .state_directory(state.path()),
+        )
+        .await?;
+        let tools = CheckoutTools::new(
+            harness
+                .workspace()
+                .ok_or_else(|| Error::NotFound("checkout".into()))?
+                .clone(),
+            &harness.project,
+            Arc::new(acyclic_stream::SystemUnixMillisClock),
+            &harness.signed,
+            &harness.verifier,
+            None,
+        )
+        .await?;
+        let granted = RuntimeScope::new(harness.signed.capabilities().clone(), Default::default())?;
+        let denied = RuntimeScope::new(Default::default(), Default::default())?;
+        let mut refused = Vec::new();
+        for target in ["", "--volume home "] {
+            for command in [
+                "diff agents/child",
+                "merge agents/child",
+                "discard agents/child",
+                "add resolved.txt",
+                "merge --continue",
+                "merge --abort",
+            ] {
+                let command = format!("{target}{command}");
+                if let Err(error) = tools.fs_arguments(&command, &granted) {
+                    refused.push((command.clone(), error));
+                }
+                assert!(
+                    matches!(
+                        tools.fs_arguments(&command, &denied),
+                        Err(Error::Unauthorized(_))
+                    ),
+                    "child command bypassed volume authority: {command}"
+                );
+            }
+            for command in ["merge main", "diff agents/", "add --all", "status"] {
+                let command = format!("{target}{command}");
+                assert!(
+                    tools.fs_arguments(&command, &granted).is_err(),
+                    "unrelated command entered the child lifecycle: {command}"
+                );
+            }
+        }
+        assert!(
+            refused.is_empty(),
+            "authorized child commands refused: {refused:?}"
+        );
+        Ok(())
+    }
+}
