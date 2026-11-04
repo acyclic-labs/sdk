@@ -138,6 +138,14 @@ fn measure(replies: [ScriptedTurn; 6]) -> Result<()> {
             reopen: window(7, 8),
             reopened_first: window(8, 9),
         };
+        // Startup WAL commits can share their physical drain. Bound the work
+        // when they flush separately, without requiring redundant drains when
+        // they coalesce. Every subsequent settled reply has an exact budget.
+        assert!(
+            observed.first.1 <= 18,
+            "root startup exceeded its drain budget: {observed:?}; trace: {:?}",
+            &writes[cuts[1]..cuts[2]]
+        );
         assert_eq!(
             observed,
             // The project volume already has a journal before this open.
@@ -147,7 +155,7 @@ fn measure(replies: [ScriptedTurn; 6]) -> Result<()> {
                 open: (7, 12),
                 // Includes root policy, creation, placement and runtime startup
                 // through its first committed reply, not just policy staging.
-                first: (12, 18),
+                first: (12, observed.first.1),
                 // Equal streamed text in 2 or 32 parts adds ordering barriers,
                 // while the independent final commit adds one device drain.
                 replies: [(8, 11), (8, 11), (9, 11), (39, 11), (0, 1)],
