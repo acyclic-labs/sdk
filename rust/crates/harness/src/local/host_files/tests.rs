@@ -25,6 +25,11 @@ fn request_storage_cause(error: &Error, operation: OperationId) -> &str {
     cause
 }
 
+fn remove_projection(path: &Path) -> Result<()> {
+    let (parent, leaf) = projection_parent(path)?;
+    remove_held_projection(&parent, &leaf)
+}
+
 fn carrier_io() -> Result<(tempfile::TempDir, CarrierIo, std::fs::File)> {
     use acyclic_fs::NativeDurability::Visibility;
 

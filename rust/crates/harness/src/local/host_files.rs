@@ -160,8 +160,8 @@ impl Waiters {
 /// The waiters of one running owner, shared by its watcher callback and its
 /// liveness thread. Each lock is held only to change or read the index.
 struct Shared {
-    status: PathBuf,
-    requests: PathBuf,
+    status: acyclic_fs::HeldRoot,
+    requests: acyclic_fs::HeldRoot,
     waiters: Mutex<Waiters>,
 }
 
@@ -174,7 +174,7 @@ impl Shared {
         if !projection_changed(&event) {
             return;
         }
-        let replies = match notified_operations(&event, &self.status, &self.requests) {
+        let replies = match notified_operations(&event, self.status.path(), self.requests.path()) {
             Some(replies) => replies,
             // Overflow: revisit only active replies, never a directory listing.
             None => lock(&self.waiters).waiting.keys().copied().collect(),
@@ -202,14 +202,15 @@ impl Shared {
             return;
         }
         let leaf = format!("{operation}.json");
-        let reply = match regular_bytes(&self.status.join(&leaf), u64::MAX) {
+        let leaf = Path::new(&leaf);
+        let reply = match held_bytes(&self.status, leaf, u64::MAX) {
             Ok(bytes) => crate::client::decode_command_result(operation, 0, &bytes),
-            Err(Error::NotFound(_)) => match std::fs::symlink_metadata(self.requests.join(&leaf)) {
+            Err(Error::NotFound(_)) => match self.requests.open_file(leaf, false).map_err(native_file_error) {
                 Ok(_) => return,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Err(Error::NotFound(_)) => {
                     Err(Error::Indeterminate(operation))
                 }
-                Err(error) => Err(Error::reply_unavailable(operation, storage(error))),
+                Err(error) => Err(Error::reply_unavailable(operation, error)),
             },
             Err(error) => Err(Error::reply_unavailable(operation, error)),
         };
@@ -243,7 +244,6 @@ impl Shared {
 /// the request and reply directories, retired when none waits, and one thread that observes the owner's
 /// lock release. Requests wait concurrently; none waits behind another.
 struct Bridge {
-    directory: PathBuf,
     session: uuid::Uuid,
     workspace: PathBuf,
     shared: Arc<Shared>,
@@ -281,8 +281,12 @@ impl Bridge {
             }
         }
         let shared = Arc::new(Shared {
-            status: directory.join("status"),
-            requests: directory.join("requests"),
+            status: root
+                .open_directory(Path::new("status"))
+                .map_err(native_file_error)?,
+            requests: root
+                .open_directory(Path::new("requests"))
+                .map_err(native_file_error)?,
             waiters: Mutex::default(),
         });
         let notified = Arc::clone(&shared);
@@ -304,7 +308,6 @@ impl Bridge {
         #[cfg(not(test))]
         drop(observer);
         Ok(Self {
-            directory: directory.to_path_buf(),
             session: endpoint.session,
             workspace: endpoint.workspace,
             shared,
@@ -366,20 +369,20 @@ impl Bridge {
         if wanted && !watching.watched {
             watching
                 .watcher
-                .watch(&self.shared.status, RecursiveMode::NonRecursive)
+                .watch(self.shared.status.path(), RecursiveMode::NonRecursive)
                 .map_err(storage)?;
             if let Err(error) = watching
                 .watcher
-                .watch(&self.shared.requests, RecursiveMode::NonRecursive)
+                .watch(self.shared.requests.path(), RecursiveMode::NonRecursive)
             {
-                let _ = watching.watcher.unwatch(&self.shared.status);
+                let _ = watching.watcher.unwatch(self.shared.status.path());
                 return Err(storage(error));
             }
             watching.watched = true;
         } else if !wanted && watching.watched {
             // A directory the watcher already lost needs no unwatch.
-            let _ = watching.watcher.unwatch(&self.shared.status);
-            let _ = watching.watcher.unwatch(&self.shared.requests);
+            let _ = watching.watcher.unwatch(self.shared.status.path());
+            let _ = watching.watcher.unwatch(self.shared.requests.path());
             watching.watched = false;
         }
         Ok(())
@@ -585,11 +588,11 @@ fn request_operation(
         let bytes = serde_json::to_vec(&request).map_err(storage)?;
         let (waiter, delivery) = mpsc::sync_channel(1);
         let waiting = bridge.wait(operation, waiter)?;
-        let request_path = bridge
-            .directory
-            .join("requests")
-            .join(format!("{operation}.json"));
-        immutable(&request_path, &bytes)?;
+        let leaf = format!("{operation}.json");
+        let leaf = Path::new(&leaf);
+        bridge.shared.requests
+            .publish_immutable(leaf, &bytes, acyclic_fs::NativeDurability::Durable)
+            .map_err(native_file_error)?;
         // A writable reply may predate registration. Watching before this read
         // covers both that case and publication concurrent with the read.
         bridge.shared.published(operation);
@@ -605,14 +608,14 @@ fn request_operation(
                 // Whatever the exited owner committed stays keyed by `operation`.
                 return Error::after_cleanup(
                     Err(Error::Indeterminate(operation)),
-                    remove_projection(&request_path),
+                    remove_held_projection(&bridge.shared.requests, leaf),
                 );
             }
         };
         drop(waiting);
         // Withdrawing the request retires its reply and any saved result. Every
         // effect is an agent commit keyed by this operation.
-        Error::after_cleanup(result, remove_projection(&request_path))
+        Error::after_cleanup(result, remove_held_projection(&bridge.shared.requests, leaf))
     })();
     result.map_err(|error: Error| error.for_request(operation))
 }
@@ -1108,11 +1111,6 @@ async fn serve_requests(
             }
         }
     }
-}
-
-fn remove_projection(path: &Path) -> Result<()> {
-    let (parent, leaf) = projection_parent(path)?;
-    remove_held_projection(&parent, &leaf)
 }
 
 fn remove_held_projection(parent: &acyclic_fs::HeldRoot, leaf: &Path) -> Result<()> {
