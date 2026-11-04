@@ -130,3 +130,16 @@ requires the original completed codec work at each delegated proof read.
 the relation must fail `closure read replaced its original frame`. Both patches
 select their omissions independently in one compiled producer. Restore both
 before running the positive relations against the unmodified source.
+
+The shared sequential batch producer transfers its admitted vector and owned
+payloads before its scope retires. It accumulates payload sizes while reading,
+without another scan, allocation or copy. The existing changed-path relation
+exercises this helper through the operation cache; the original-publication
+relation exercises it through the staged local provider. Both must reject
+`mutations/sequential_batch_output.patch` at the retained-output invariant.
+Restore the source before requiring both relations to pass.
+
+Kernel publication and record durability also borrow the original proof frame.
+Combined publication moves that proof guard unchanged; record durability keeps
+the closure guard until its flush completes. Neither path rebuilds proof funding
+from a receipt or releases the proof's backing before its physical output.
