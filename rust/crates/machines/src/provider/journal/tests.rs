@@ -272,6 +272,28 @@ async fn machines_call_held_read_keeps_admission_and_original_terminal_progress(
         journal.recover(later).await?,
         MutationOutcome::Woken(machine.id)
     );
+
+    // The original reader can stall before its successor follow is installed.
+    // Losing the retained producer must end that wait, without releasing IO.
+    let lost = IdempotencyKey::new();
+    let Admission::Original(Some(publication)) = journal
+        .begin(lost, [11; 32], Some(&machine), || Ok(|| {}))
+        .await?
+    else {
+        panic!("original held-read acceptance");
+    };
+    let (release, released) = tokio::sync::oneshot::channel();
+    *streams.release_read.lock().unwrap() = Some(released);
+    let mut opening = Box::pin(journal.watch(OperationId(lost.0)));
+    assert!(futures::poll!(&mut opening).is_pending());
+    drop(publication);
+    assert!(
+        matches!(futures::poll!(&mut opening), std::task::Poll::Ready(Err(ProviderError::Indeterminate(key))) if key == lost),
+        "a held original read must observe its producer loss"
+    );
+    drop(opening);
+    drop(release);
+    assert_eq!(streams.follows.load(Ordering::Relaxed), 1);
     Ok(())
 }
 

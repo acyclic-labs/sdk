@@ -372,3 +372,18 @@ manifest, delete, retain, release or collect routes. The same control ends an
 ahead-of-provider mutation through the original authority's close event. This
 qualifies server admission independently of the client's final-status check;
 it does not establish remote replica or full source-branch coverage.
+
+The retained `mutations/machines-call-opening-producer-loss.patch` restores the
+original unguarded finite read before an operation watch opens its follow:
+
+```sh
+cargo test --locked -p acyclic-machines --no-default-features --features local --lib provider::journal::tests::machines_call_held_read_keeps_admission_and_original_terminal_progress -- --exact --nocapture
+```
+
+The existing real-journal control holds its original MemoryStream read response,
+drops the actual Publication producer, and requires immediate typed uncertainty
+with the caller's original key before releasing IO. The plant must fail at
+`a held original read must observe its producer loss`. Reverse the patch and
+require the unchanged control to pass. Successful publication and later
+admission while a read is held remain covered; no timeout, polling or physical
+provider claim is involved.
