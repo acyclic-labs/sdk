@@ -92,6 +92,10 @@ async fn shared_views_serve_their_own_sources_and_retire_without_trace()
         retired_projector.settle(),
         Err(NativeMountError::ControlPending)
     ));
+    assert!(matches!(
+        retired_projector.initialize(&work),
+        Err(NativeMountError::ControlPending)
+    ));
     assert_eq!(
         std::fs::symlink_metadata(&one)
             .map_err(|error| error.kind())

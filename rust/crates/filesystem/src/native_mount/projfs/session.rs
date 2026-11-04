@@ -409,7 +409,13 @@ impl ProjFsSession {
                     drop(directory);
                     result.err()
                 });
-        let state = std::mem::take(&mut *lock_recover(&runtime.projector.state));
+        let state = std::mem::replace(
+            &mut *lock_recover(&runtime.projector.state),
+            ProjectorState {
+                stopping: true,
+                ..ProjectorState::default()
+            },
+        );
         self.namespace_outcome = Some(ProjFsNamespaceOutcome {
             failures: crate::native_mount::retirement::TerminalFailures {
                 producer: self.capture_failure.take(),
