@@ -46,7 +46,9 @@ async fn refused_endpoint_finishes_without_scheduling_a_retry() -> TestResult {
     futures::pin_mut!(request, backoff);
     match future::select(request, backoff).await {
         future::Either::Left((result, _)) => {
-            assert_eq!(result.err(), Some(StreamError::Unavailable))
+            let error = result.expect_err("a refused endpoint cannot return heads");
+            assert_eq!(error.code(), StreamError::Unavailable.code());
+            assert!(error.uncertain());
         }
         future::Either::Right((event, _)) => panic!(
             "a definite refused endpoint must finish without backoff: {:?}",
@@ -67,13 +69,26 @@ async fn refused_endpoint_finishes_without_scheduling_a_retry() -> TestResult {
         .await?;
     let connections = client.connections();
     let opened = connections.changed(0).await?;
-    fixture.controls.send(Err(Status::unavailable("refused")))?;
+    let mut refusal = Status::unavailable("refused");
+    refusal.metadata_mut().insert(
+        "acyclic-unserved-reason",
+        tonic::metadata::MetadataValue::from_static("original-reason"),
+    );
+    fixture.controls.send(Err(refusal.clone()))?;
     let terminal = records.next();
     let reconnected = connections.changed(opened);
     futures::pin_mut!(terminal, reconnected);
     match future::select(terminal, reconnected).await {
         future::Either::Left((result, _)) => {
-            assert_eq!(result, Some(Err(StreamError::Unavailable)));
+            let Some(Err(error @ StreamError::Refused(_))) = result else {
+                panic!("the original peer refusal must terminate its interest: {result:?}");
+            };
+            assert!(error.uncertain());
+            let encoded = crate::wire_codec::error_status(&error);
+            assert_eq!(encoded.code(), refusal.code());
+            assert_eq!(encoded.message(), refusal.message());
+            assert_eq!(encoded.details(), refusal.details());
+            assert_eq!(encoded.metadata().as_ref(), refusal.metadata().as_ref());
         }
         future::Either::Right(_) => panic!("a definite peer failure reopened the live interest"),
     }

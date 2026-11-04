@@ -81,12 +81,40 @@ fn expected(wire: &Status) -> &StreamError {
         .expect("every tonic code has a contract fallback")
 }
 
+fn check_decoded(wire: &Status, actual: &StreamError) -> Result<(), &'static str> {
+    let expected = expected(wire);
+    if actual.code() != expected.code() {
+        return Err("status contract classification");
+    }
+    if actual.uncertain() != expected.uncertain() {
+        return Err("status mutation uncertainty");
+    }
+    if *expected == StreamError::Unavailable {
+        let encoded = wire_codec::error_status(actual);
+        if encoded.code() != wire.code()
+            || encoded.message() != wire.message()
+            || encoded.details() != wire.details()
+            || !encoded
+                .metadata()
+                .as_ref()
+                .iter()
+                .filter(|(name, _)| name.as_str().starts_with("acyclic-"))
+                .eq(wire
+                    .metadata()
+                    .as_ref()
+                    .iter()
+                    .filter(|(name, _)| name.as_str().starts_with("acyclic-")))
+        {
+            return Err("original refusal diagnostics");
+        }
+    }
+    Ok(())
+}
+
 fn check_with(input: &[u8], decode: impl Fn(&Status) -> StreamError) -> Result<(), &'static str> {
     for (code, message, error) in CONTRACT {
         let wire = Status::new(*code, *message);
-        if decode(&wire) != *error {
-            return Err("status contract classification");
-        }
+        check_decoded(&wire, &decode(&wire))?;
         if decode(&wire_codec::error_status(error)) != *error {
             return Err("canonical status round trip");
         }
@@ -104,22 +132,13 @@ fn check_with(input: &[u8], decode: impl Fn(&Status) -> StreamError) -> Result<(
             .add_header(&mut headers)
             .map_err(|_| "tonic writer refused status")?;
         headers.insert("grpc-message", message.clone());
+        headers.append("acyclic-unserved-reason", message.clone());
         let wire = Status::from_header_map(&headers).ok_or("tonic lost original status")?;
         if wire.details() != input {
             return Err("tonic changed original status details");
         }
         let actual = decode(&wire);
-        if actual != *expected(&wire) {
-            return Err("trailer status classification");
-        }
-        if actual.uncertain()
-            != matches!(
-                expected(&wire),
-                StreamError::Unavailable | StreamError::DeadlineElapsed
-            )
-        {
-            return Err("status mutation uncertainty");
-        }
+        check_decoded(&wire, &actual)?;
         let encoded = wire_codec::error_status(&actual);
         if decode(&encoded) != actual {
             return Err("canonical status round trip");
@@ -173,6 +192,11 @@ mod tests {
                 } else { wire_codec::status(wire) };
                 proptest::prop_assert!(check_with(&input, broken).is_err());
             }
+            let stripped = |wire: &Status| match wire_codec::status(wire) {
+                StreamError::Refused(_) => StreamError::Unavailable,
+                other => other,
+            };
+            proptest::prop_assert_eq!(check_with(&input, stripped), Err("original refusal diagnostics"));
             // The removed round-trip-only property accepts this symmetric
             // path/limit swap. The independent contract must reject it.
             let swap = |error| match error {

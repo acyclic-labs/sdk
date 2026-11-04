@@ -628,7 +628,9 @@ mod tests {
                 .instrument(parent)
                 .await;
             server.await?;
-            assert_eq!(result, Err(StreamError::Unavailable));
+            let error = result.expect_err("the closed connection cannot return a tail");
+            assert_eq!(error.code(), StreamError::Unavailable.code());
+            assert!(error.uncertain());
             Ok(())
         }
         .with_subscriber(subscriber)

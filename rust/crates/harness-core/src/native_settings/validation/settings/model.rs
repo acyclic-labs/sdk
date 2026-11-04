@@ -1,8 +1,8 @@
 //! File admission through the public configured-model entrance.
 
+use super::super::selection;
+use super::harness;
 use super::{Files, SettingsConfig, write};
-#[path = "../../../harness-core/src/native_settings/model_selection.rs"]
-mod selection;
 
 fn config(files: &Files, maximum: u64) -> SettingsConfig {
     SettingsConfig::new(&files.workspace, &files.home)
