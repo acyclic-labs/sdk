@@ -31,7 +31,7 @@ fn root() -> PathBuf {
 }
 
 /// Every executor scenario of `FAMILIES`, in path order.
-fn scenarios() -> TestResult<Vec<(PathBuf, Value)>> {
+pub(super) fn scenarios() -> TestResult<Vec<(PathBuf, Value)>> {
     let root = root();
     let mut paths = Vec::new();
     for family in FAMILIES {
