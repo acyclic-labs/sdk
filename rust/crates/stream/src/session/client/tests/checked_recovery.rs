@@ -89,6 +89,7 @@ impl transport::Transport for Observed {
                 Ok(source) => source,
                 Err(error) => {
                     owner.cause = error.error.clone();
+                    drop(owner);
                     return Err(error);
                 }
             };

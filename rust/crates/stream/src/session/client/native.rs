@@ -204,6 +204,7 @@ impl Client {
         Self::connector(channel, authorization, credential, connect, revisions)
     }
 
+    #[cfg(test)]
     pub(super) fn with_connector(
         channel: TransportChannel,
         authorization: Option<MetadataValue<Ascii>>,

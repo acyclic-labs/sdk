@@ -195,7 +195,21 @@ fn every_local_and_global_credit_combination_matches_the_admission_contract() {
     let slots = testing::slots();
     for (binding, lookahead) in [
         (None, false),
-        (Some(testing::binding()), true),
+        (
+            Some(
+                authority
+                    .bind(
+                        &slots,
+                        0,
+                        &StreamPath::new("model").unwrap(),
+                        Default::default(),
+                        1,
+                    )
+                    .unwrap()
+                    .0,
+            ),
+            true,
+        ),
         (
             Some(authority.bind_list(&slots, 0, None, 1).unwrap().0),
             false,
