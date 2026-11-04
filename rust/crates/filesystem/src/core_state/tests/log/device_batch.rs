@@ -94,6 +94,11 @@ async fn checkpoint_batches_one_device_drain_after_all_record_writes()
     Ok(())
 }
 
+// Two leaves retain the cross-record staging/drain boundary. Larger batches
+// are covered by checkpoint_batches_one_device_drain_after_all_record_writes;
+// the fault matrix only needs the smallest batch that can partially stage.
+const CUT_RECORDS: u8 = 2;
+
 async fn checkpoint_cut_preserves_wal(
     native: bool,
     cut: Option<(usize, acyclic_native_runtime::testing::DurableFault)>,
@@ -115,7 +120,7 @@ async fn checkpoint_cut_preserves_wal(
     } else {
         Change::default()
     };
-    for index in 1..=4_u8 {
+    for index in 1..=CUT_RECORDS {
         change
             .put(
                 (
@@ -175,7 +180,7 @@ async fn checkpoint_cut_preserves_wal(
         // the empty WAL and installed leaves prove recovery consumed them.
         assert_eq!(reopened.length, 0);
         assert_eq!(std::fs::metadata(&wal).unwrap().len(), 0);
-        for index in 1..=4_u8 {
+        for index in 1..=CUT_RECORDS {
             let key = RecordKey::Lineage(WorkspaceId::from_bytes([index; 16]));
             assert_eq!(
                 std::fs::read(key.paths(&namespace).unwrap().current).unwrap(),
@@ -223,5 +228,9 @@ async fn every_checkpoint_stage_and_device_drain_cut_keeps_replay_authoritative(
                 checkpoint_cut_preserves_wal(native, Some((ordinal, fault))).await;
             }
         }
+        eprintln!(
+            "CHECKPOINT_CUT_COVERAGE native={native} records={CUT_RECORDS} boundaries={reset} fault_cases={}",
+            reset * 3
+        );
     }
 }
