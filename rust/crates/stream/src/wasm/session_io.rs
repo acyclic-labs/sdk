@@ -279,3 +279,96 @@ pub(super) fn client(connect: Function, scope: Option<crate::RevisionScope>) -> 
     };
     Client::tracking(home, moved, Arc::new(PlatformExecutor), revisions)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::transport::Transport as _;
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn javascript_transport_failures_preserve_interruption_disposition() {
+        for write in [false, true] {
+            for (error, transient) in [
+                (StreamError::Unavailable, true),
+                (StreamError::Unavailable, false),
+                (StreamError::AccessDenied, false),
+                (StreamError::InvalidResponse, false),
+            ] {
+                let original = js_sys::Error::new("original callback failure");
+                Reflect::set(&original, &"code".into(), &error.code().into()).unwrap();
+                Reflect::set(&original, &"transient".into(), &transient.into()).unwrap();
+                let io = Object::new();
+                let next = Closure::<dyn Fn() -> Promise>::new({
+                    let original = original.clone();
+                    move || {
+                        if write {
+                            Promise::new(&mut |_, _| {})
+                        } else {
+                            Promise::reject(&original)
+                        }
+                    }
+                });
+                let send = Closure::<dyn Fn() -> Promise>::new(move || Promise::reject(&original));
+                let close = Closure::<dyn Fn()>::new(|| {});
+                for (name, method) in [
+                    ("next", next.as_ref()),
+                    ("send", send.as_ref()),
+                    ("close", close.as_ref()),
+                ] {
+                    Reflect::set(&io, &name.into(), method).unwrap();
+                }
+                let connect = Closure::<dyn Fn() -> JsValue>::new(move || io.clone().into());
+                let endpoint = Endpoint {
+                    connect: connect.as_ref().unchecked_ref::<Function>().clone(),
+                    node: None,
+                    writing: Rc::new(RefCell::new(Weak::new())),
+                };
+                let source: transport::Requests = if write {
+                    Box::pin(
+                        futures::stream::once(async {
+                            wire::SessionFrame {
+                                body: Some(wire::session_frame::Body::Interest(
+                                    wire::SessionInterest {
+                                        upsert: vec![wire::SessionSubscription {
+                                            channel: Some(wire::SessionChannel {
+                                                channel_id: 1,
+                                                generation: 1,
+                                            }),
+                                            ..Default::default()
+                                        }],
+                                        ..Default::default()
+                                    },
+                                )),
+                                ..Default::default()
+                            }
+                        })
+                        .chain(futures::stream::pending()),
+                    )
+                } else {
+                    Box::pin(futures::stream::pending())
+                };
+                let mut responses = endpoint.session(source).await.unwrap();
+                match responses
+                    .next()
+                    .await
+                    .expect("original callback must complete")
+                {
+                    Err(failure) => {
+                        assert_eq!(failure.error, error);
+                        assert_eq!(failure.transient, transient);
+                    }
+                    Ok(frame) if write && !transient => {
+                        let Some(wire::session_frame::Body::Closed(closed)) =
+                            frame.wire().body.as_ref()
+                        else {
+                            panic!("a rejected interest must close its original channel")
+                        };
+                        assert_eq!(closed.code, error.code());
+                    }
+                    Ok(_) => panic!("an interrupted write must fail the physical connection"),
+                }
+                drop(responses);
+            }
+        }
+    }
+}
