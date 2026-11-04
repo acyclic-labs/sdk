@@ -45,7 +45,7 @@ elif choice.startswith("issuance-"):
 elif choice == "trust-target":
     target = "trust_record"
     source = root.parent / "src/trust/follower.rs"
-    oracle = root / "fuzz_targets/trust_record.rs"
+    oracle = root.parent / "tests/common/trust_record.rs"
 else:
     target = "credential"
     source = root.parent / "src/credential.rs"
@@ -174,7 +174,7 @@ try:
         ),
         "trust-target": (
             b"if !matches {", b"if false && !matches {",
-            "trust record targets must be disjoint", "foreign-keyring",
+            "account record must refuse environment scope", "foreign-keyring",
         ),
         "issuance-request": (
             b"if request.wire() != bytes {", b"if false && request.wire() != bytes {",

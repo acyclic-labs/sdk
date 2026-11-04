@@ -380,13 +380,21 @@ impl Follower {
     /// Inaccessible frontier storage. This does not serve trust:
     /// the refused record must still authenticate and catch up first.
     pub fn reanchor(&self, anchor: Arc<[BlockId]>) -> Result<(), VerifyError> {
-        let mut environment = self
-            .environment
-            .write()
-            .map_err(|_| VerifyError::Unavailable)?;
-        if environment.revision.sequence == 0 {
-            environment.revision.keys = anchor;
-        }
+        let retired = {
+            let mut environment = self
+                .environment
+                .write()
+                .map_err(|_| VerifyError::Unavailable)?;
+            if environment.revision.sequence != 0
+                || Arc::ptr_eq(&environment.revision.keys, &anchor)
+            {
+                return Ok(());
+            }
+            std::mem::replace(&mut environment.revision.keys, anchor)
+        };
+        drop(retired);
+        self.notify(None);
+        self.global.send_replace(());
         Ok(())
     }
 
@@ -611,8 +619,9 @@ impl Follower {
                         environment.revision.sequence,
                     )
                 };
-                prepare_keyring(&account, signed, &keys, now)
-                    .and_then(|prepared| self.publish_keyring(&mut account, revision, prepared))
+                prepare_keyring(&account, signed, &keys, now).and_then(|prepared| {
+                    self.publish_keyring(&mut account, revision, &keys, prepared)
+                })
             }
             _ => account.apply(id, record, &[], now),
         };
@@ -629,13 +638,16 @@ impl Follower {
         &self,
         account: &mut Account,
         revision: u64,
+        keys: &Arc<[BlockId]>,
         prepared: PreparedKeyring,
     ) -> Result<(Applied, u64), VerifyError> {
         let environment = self
             .environment
             .read()
             .map_err(|_| VerifyError::Unavailable)?;
-        if environment.revision.sequence != revision {
+        if environment.revision.sequence != revision
+            || !Arc::ptr_eq(&environment.revision.keys, keys)
+        {
             return Err(VerifyError::Unavailable);
         }
         let retired = prepared.next.and_then(|next| account.keyring.replace(next));

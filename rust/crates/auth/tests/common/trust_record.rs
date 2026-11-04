@@ -89,6 +89,19 @@ pub fn check(bytes: &[u8]) {
                 // and silently stop the subsequent served-floor assertions.
                 let decoded =
                     TrustRecord::try_from(TrustRecordProto::decode(record).unwrap()).unwrap();
+                // Exercise actual cross-scope admission on an independent
+                // follower: its refusal must not fence the live floor oracle.
+                let scoped = Follower::new("test", anchor.clone());
+                match &decoded.record {
+                    TrustRecordKind::Environment(_) => assert!(
+                        scoped.apply_account("account", record, 100).is_err(),
+                        "environment record must refuse account scope"
+                    ),
+                    _ => assert!(
+                        scoped.apply_environment(record, 100).is_err(),
+                        "account record must refuse environment scope"
+                    ),
+                }
                 let account = match decoded.record {
                     TrustRecordKind::Environment(_) => {
                         assert_eq!(
