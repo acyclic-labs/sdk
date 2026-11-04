@@ -203,6 +203,18 @@ async fn view_retirement(
         let driver = session.driver.as_mut().ok_or("missing native driver")?;
         driver.prepare_destination_cleanup(completed.path(), &work)?;
         assert!(completed.path().exists());
+        let mut publication = Box::pin(completed.sync());
+        assert!(
+            matches!(
+                publication
+                    .as_mut()
+                    .poll(&mut std::task::Context::from_waker(std::task::Waker::noop())),
+                std::task::Poll::Ready(Err(MountLifecycleError::Native(
+                    NativeMountError::ControlPending
+                )))
+            ),
+            "async publication blocked on another session owner"
+        );
     }
     retirement_scope(schedule, completed.complete_command(true)).await?;
     assert!(!completed.path().exists());

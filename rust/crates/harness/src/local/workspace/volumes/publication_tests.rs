@@ -207,6 +207,64 @@ async fn shared_projection_publication_cannot_isolate_an_unverified_writer() -> 
     Ok(())
 }
 
+#[tokio::test]
+async fn final_projection_owner_retires_with_and_without_an_async_runtime() -> Result<()> {
+    let root = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    let harness = open(root.path(), state.path()).await?;
+    let mounts = &harness.workspace().unwrap().mounts;
+    let scratch = mounts.named(Some("home"))?.1.view.source.as_ref().unwrap();
+    for asynchronous in [false, true] {
+        let root = projection_root(&scratch.destination, HOME_PATH)?;
+        let entered = scratch.enter(root, HOME_PATH, false).await?;
+        write_projected(&scratch.destination.join("data"), b"unverified")?;
+        drop(entered);
+        let native = scratch
+            .native()
+            .await
+            .take()
+            .expect("entered native projection");
+        assert!(scratch.destination.exists());
+        if asynchronous {
+            let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
+            let retirement = schedule.scope(async {
+                drop(native);
+                schedule.drained().await;
+            });
+            let driver = async {
+                while let Some(boundary) = boundaries.recv().await {
+                    boundary.release();
+                }
+            };
+            tokio::select! {
+                () = retirement => {},
+                () = driver => panic!("projection retirement lost its boundary producer"),
+            }
+        } else {
+            let (retired, completion) = tokio::sync::oneshot::channel();
+            let worker = std::thread::spawn(move || {
+                assert!(tokio::runtime::Handle::try_current().is_err());
+                drop(native);
+                let _ = retired.send(());
+            });
+            completion.await.map_err(storage)?;
+            worker
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        }
+        assert!(
+            !scratch.destination.exists(),
+            "retirement left its live alias"
+        );
+        assert!(scratch.native().await.is_none());
+        assert!(
+            published(scratch, "/data").await.is_err(),
+            "drop published unverified bytes"
+        );
+    }
+    Ok(())
+}
+
 #[cfg(any(target_os = "linux", windows))]
 #[tokio::test]
 async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers() -> Result<()> {
