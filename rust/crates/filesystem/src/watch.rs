@@ -2230,6 +2230,11 @@ impl NativeWatch {
 
     fn has_subtree_registration(&self) -> bool {
         match &self.watcher {
+            // The Windows root handle is physically recursive even when its
+            // delivery filter requires each logical directory registration.
+            #[cfg(windows)]
+            NativeWatchDriver::Source(_) => self.recursive,
+            #[cfg(not(windows))]
             NativeWatchDriver::Source(source) => source.has_subtree_registration(),
             NativeWatchDriver::StartupFailure(_) => false,
             #[cfg(not(windows))]
