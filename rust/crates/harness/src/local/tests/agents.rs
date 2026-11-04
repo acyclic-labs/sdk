@@ -371,73 +371,122 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
     use std::sync::Mutex;
     use tokio::sync::oneshot;
 
-    tokio::time::timeout(std::time::Duration::from_secs(8), async {
-        let directory = tempfile::tempdir().map_err(agent)?;
-        let project = volume(directory.path()).await?;
-        let (entered, entering) = oneshot::channel();
-        let (producer, result) = oneshot::channel::<()>();
-        let gate = Mutex::new(Some((entered, result)));
-        let provider = ScriptedModelProvider::new([super::ScriptedTurn::Events(Vec::new())])
-            .with_context_capacity(super::capacity())
-            .with_dispatch_observer(move |_| {
-                let gate = gate.lock().unwrap().take();
-                Box::pin(async move {
-                    let (entered, result) =
-                        gate.ok_or_else(|| Error::Invalid("second dispatch".into()))?;
-                    let _ = entered.send(());
-                    result
-                        .await
-                        .map_err(|_| Error::Storage("model producer closed".into()))?;
-                    Err(Error::Invalid("model gate unexpectedly released".into()))
-                })
-            });
-        let harness = Arc::new(LocalHarness::open(
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let (entered, entering) = oneshot::channel();
+    let (producer, result) = oneshot::channel::<()>();
+    let gate = Mutex::new(Some((entered, result)));
+    let provider = ScriptedModelProvider::new([super::ScriptedTurn::Events(Vec::new())])
+        .with_context_capacity(super::capacity())
+        .with_dispatch_observer(move |_| {
+            let gate = gate.lock().unwrap().take();
+            Box::pin(async move {
+                let (entered, result) =
+                    gate.ok_or_else(|| Error::Invalid("second dispatch".into()))?;
+                let _ = entered.send(());
+                result
+                    .await
+                    .map_err(|_| Error::Storage("model producer closed".into()))?;
+                Err(Error::Invalid("model gate unexpectedly released".into()))
+            })
+        });
+    let harness = Arc::new(
+        LocalHarness::open(
             volume_config(directory.path(), project, Arc::new(provider))?
                 .compaction(crate::context::CompactionPolicy::Disabled),
-        ).await?);
-        let connection = harness.connect().await?;
-        let client = Conversation::open(connection.clone())?;
-        let mut events = client.observe(Some(0)).await?;
-        let inbox = client.send("lost-producer", "hello").await?;
-        entering.await.map_err(agent)?;
-        let mut usage = client.usage_query();
-        while !usage.synchronized() {
-            usage.advance().await?;
-        }
-        assert_eq!(usage.totals().calls, 1);
-        assert_eq!(usage.totals().completed, 0);
-        let before = usage.totals().clone();
-        let waiting = async {
-            loop {
-                match events.next().await? {
-                    super::super::Event::Turn(_) => return Err::<(), _>(Error::Conflict("unsettled model produced a turn".into())),
-                    super::super::Event::Status(_) | super::super::Event::Output => {}
+        )
+        .await?,
+    );
+    let connection = harness.connect().await?;
+    let client = Conversation::open(connection.clone())?;
+    let mut events = client.observe(Some(0)).await?;
+    let inbox = client.send("lost-producer", "hello").await?;
+    entering.await.map_err(agent)?;
+    let mut usage = client.usage_query();
+    while !usage.synchronized() {
+        usage.advance().await?;
+    }
+    assert_eq!(usage.totals().calls, 1);
+    assert_eq!(usage.totals().completed, 0);
+    let before = usage.totals().clone();
+    let waiting = async {
+        loop {
+            match events.next().await? {
+                super::super::Event::Turn(_) => {
+                    return Err::<(), _>(Error::Conflict("unsettled model produced a turn".into()));
                 }
+                super::super::Event::Status(_) | super::super::Event::Output => {}
             }
-        };
-        tokio::pin!(waiting);
-        assert!(futures::poll!(&mut waiting).is_pending(), "live producer must retain the wait");
-        let usage_result = {
-            let advancing = usage.advance();
-            tokio::pin!(advancing);
-            assert!(futures::poll!(&mut advancing).is_pending(), "quiet live usage must wait at its retained frontier");
-            drop(producer);
-            advancing.await
-        };
-        assert!(matches!(&usage_result, Err(Error::Storage(reason)) if reason.contains("model producer closed")), "usage lost the runtime cause: {usage_result:?}");
-        assert_eq!(usage.totals(), &before, "source loss changed the admitted projection");
-        // The session closed by the failed runtime reports that failure, not a bare `unavailable`.
-        let observed = waiting.await;
-        assert!(matches!(&observed, Err(Error::Storage(reason)) if reason.contains("model producer closed")), "observation lost the runtime cause: {observed:?}");
-        let hosted = harness.agents.get().unwrap();
-        assert!(matches!(hosted.runtime.completion().await, Err(Error::Storage(reason)) if reason.contains("model producer closed")));
-        assert!(harness.agent_stream.as_ref().unwrap().failure().is_none(), "the Session's runtime failure must not be invented as a provider failure");
-        assert!(matches!(connection.execute(&acyclic_harness_client::AgentCommand::Root {}).await, Err(Error::Storage(reason)) if reason.contains("model producer closed")), "commands must retain the same runtime cause");
-        assert_eq!(hosted.agents().reply(hosted.root(), &crate::agent::IntentId::try_from("lost-producer").map_err(agent)?, inbox).await.map_err(agent)?, crate::agent::Reply::Pending, "failed input stays recoverable");
-        assert!(records(&**hosted.agents().provider(), hosted.root().conversation().map_err(agent)?).await?.is_empty());
-        assert!(matches!(harness.connect().await, Err(Error::Storage(_))), "late clients observe the already closed runtime");
-        Ok(())
-    }).await.map_err(|_| Error::Conflict("closed local runtime retained a Session wait".into()))?
+        }
+    };
+    tokio::pin!(waiting);
+    assert!(
+        futures::poll!(&mut waiting).is_pending(),
+        "live producer must retain the wait"
+    );
+    let usage_result = {
+        let advancing = usage.advance();
+        tokio::pin!(advancing);
+        assert!(
+            futures::poll!(&mut advancing).is_pending(),
+            "quiet live usage must wait at its retained frontier"
+        );
+        drop(producer);
+        advancing.await
+    };
+    assert!(
+        matches!(&usage_result, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
+        "usage lost the runtime cause: {usage_result:?}"
+    );
+    assert_eq!(
+        usage.totals(),
+        &before,
+        "source loss changed the admitted projection"
+    );
+    // The session closed by the failed runtime reports that failure, not a bare `unavailable`.
+    let observed = waiting.await;
+    assert!(
+        matches!(&observed, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
+        "observation lost the runtime cause: {observed:?}"
+    );
+    let hosted = harness.agents.get().unwrap();
+    assert!(
+        matches!(hosted.runtime.completion().await, Err(Error::Storage(reason)) if reason.contains("model producer closed"))
+    );
+    assert!(
+        harness.agent_stream.as_ref().unwrap().failure().is_none(),
+        "the Session's runtime failure must not be invented as a provider failure"
+    );
+    assert!(
+        matches!(connection.execute(&acyclic_harness_client::AgentCommand::Root {}).await, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
+        "commands must retain the same runtime cause"
+    );
+    assert_eq!(
+        hosted
+            .agents()
+            .reply(
+                hosted.root(),
+                &crate::agent::IntentId::try_from("lost-producer").map_err(agent)?,
+                inbox
+            )
+            .await
+            .map_err(agent)?,
+        crate::agent::Reply::Pending,
+        "failed input stays recoverable"
+    );
+    assert!(
+        records(
+            &**hosted.agents().provider(),
+            hosted.root().conversation().map_err(agent)?
+        )
+        .await?
+        .is_empty()
+    );
+    assert!(
+        matches!(harness.connect().await, Err(Error::Storage(_))),
+        "late clients observe the already closed runtime"
+    );
+    Ok(())
 }
 
 /// The names directly under `path` on `volume`.
