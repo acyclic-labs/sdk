@@ -412,9 +412,34 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
                     }
                 }));
                 assert!(futures::poll!(batch.as_mut()).is_pending());
+                let observers = schedule
+                    .trace()
+                    .iter()
+                    .filter(|phase| phase.as_str() == "task:dispatch")
+                    .count();
+                let mut held = Vec::new();
+                // Persistence submits its original completion through an owned
+                // observer. Let those observers reach native admission while
+                // retaining every physical execution boundary.
+                while schedule.pending_native_work() < observers {
+                    tokio::select! {
+                        boundary = events.recv() => {
+                            let boundary = boundary.ok_or("native admission producer lost")?;
+                            if boundary.name == "native:submitted" {
+                                held.push(boundary);
+                            } else {
+                                boundary.release();
+                            }
+                        }
+                        _ = batch.as_mut() => panic!("read ended before native admission"),
+                    }
+                }
                 // Both original LocalMedium persistence jobs must be accepted
                 // before the driver releases any native execution boundary.
                 let admitted = schedule.pending_native_work();
+                for boundary in held {
+                    boundary.release();
+                }
                 let driver = tokio::spawn(async move {
                     while let Some(boundary) = events.recv().await {
                         boundary.release();
