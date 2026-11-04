@@ -149,21 +149,12 @@ fn check(broken: bool) {
 
         // The observer creates the replacement while the physical owner
         // drains callbacks; a separate creator adds no ownership boundary.
-        let replacement = table
-            .insert(1, |_| {
-                Ok(Core {
-                    id: 2,
-                    dropped: Arc::new(AtomicBool::new(false)),
-                })
+        let replacement = table.insert(1, |_| {
+            Ok(Core {
+                id: 2,
+                dropped: Arc::new(AtomicBool::new(false)),
             })
-            .expect("retirement releases the original name");
-        let (replacement_serial, lease) = table.enter_name(&1).unwrap();
-        assert_ne!(
-            replacement_serial, serial,
-            "a reused name receives a fresh serial"
-        );
-        assert_eq!(lease.id, 2, "a lease reaches only its own view");
-        drop(lease);
+        });
 
         physical.join().unwrap();
         if !broken {
@@ -176,6 +167,16 @@ fn check(broken: bool) {
         assert!(table.enter(serial).is_none(), "a retired serial stays gone");
 
         callback.join().unwrap();
+        // Join the original owners before reporting a refused replacement;
+        // a broken admission removal must not strand their model state.
+        let replacement = replacement.expect("retirement releases the original name");
+        let (replacement_serial, lease) = table.enter_name(&1).unwrap();
+        assert_ne!(
+            replacement_serial, serial,
+            "a reused name receives a fresh serial"
+        );
+        assert_eq!(lease.id, 2, "a lease reaches only its own view");
+        drop(lease);
         assert!(table.enter(serial).is_none(), "a retired serial stays gone");
         assert_eq!(table.enter_name(&1).unwrap().1.id, 2);
         drop(replacement);
