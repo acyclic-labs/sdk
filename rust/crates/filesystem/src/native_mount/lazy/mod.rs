@@ -7,7 +7,7 @@ use super::{
     CheckoutMountSource, ContentSink, MountAttributePage, MountAttributeWriteMode, MountContentPin,
     MountDirectoryEntry, MountDirectoryPage, MountFilesystem, MountLookup, MountNode,
     MountNodeKind, MountOpenAccess, MountOpenFile, MountPath, MountRangeAllocation,
-    MountSeekTarget, MountSourceError, ViewObserver, capture_root_identity,
+    MountSeekTarget, MountSourceError, MountSourceRetirement, ViewObserver, capture_root_identity,
 };
 use super::{NativeMountError, adapter};
 use crate::demand::{
