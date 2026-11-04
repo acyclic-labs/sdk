@@ -176,6 +176,38 @@ async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
                 work.spent().backend_read_operations - before,
                 expected_page_reads
             );
+            if capacity == 3 {
+                // Decode the real cached page after all asynchronous frames
+                // retire. A live independent buffer makes this exact admission
+                // the operation's peak, without frame-size headroom.
+                let mut boundary = Retained::<Vec<u8>>::allocate(
+                    usize::try_from(work.spent().peak_allocation_bytes)?,
+                    &mut work.accounting(),
+                )?;
+                boundary.value.resize(boundary.value.capacity(), 0x6b);
+                let read = cache
+                    .probe(page, &mut work.accounting())?
+                    .ok_or("encoded page was not cached")?;
+                let (decoded, allocation) =
+                    crate::kernel::persistent_io::decode_read_with_accounting::<
+                        crate::kernel::tree_mutation::TreeFormat,
+                    >(
+                        &read,
+                        DecodeLimits::default(),
+                        &mut work.accounting(),
+                        owner,
+                    )?;
+                let retained = decoded.logical_bytes;
+                drop(decoded);
+                crate::kernel::file_read::release_read_allocation(
+                    retained,
+                    allocation,
+                    &mut work.accounting(),
+                )?;
+                assert!(boundary.value.iter().all(|byte| *byte == 0x6b));
+                drop(boundary);
+                assert_eq!(work.allocations.live_bytes(), baseline + resident);
+            }
             if observed && capacity == 3 {
                 // A different ledger still owes the simultaneously resident
                 // cache. Excluding every cache byte would make this succeed.
