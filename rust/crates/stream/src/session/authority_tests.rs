@@ -276,6 +276,34 @@ fn declared_method_credentials_match_session_admission() {
             ));
         }
     }
+    for operation in [crate::TokenOperation::Read, crate::TokenOperation::Follow] {
+        let actions: Vec<_> = operation.actions().collect();
+        for removed in std::iter::once(None).chain((0..actions.len()).map(Some)) {
+            let credential = testing::credential_with_grants(vec![ResourceGrant {
+                resource: ResourcePattern {
+                    name: "streams:/allowed".into(),
+                    prefix: false,
+                },
+                actions: actions
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| Some(*index) != removed)
+                    .map(|(_, action)| action.as_str().to_owned())
+                    .collect(),
+            }]);
+            let mut slots = Slots::default();
+            auth.register(&mut slots, 0, &credential, 1).unwrap();
+            let complete = admit(&auth, &slots, StreamMethod::Read, "allowed").is_ok()
+                && admit(&auth, &slots, StreamMethod::Tail, "allowed").is_ok();
+            assert_eq!(
+                complete,
+                removed.is_none(),
+                "{operation:?}, removed {removed:?}"
+            );
+            assert!(admit(&auth, &slots, StreamMethod::Read, "sibling").is_err());
+            assert!(admit(&auth, &slots, StreamMethod::Tail, "sibling").is_err());
+        }
+    }
 }
 
 #[test]
