@@ -45,13 +45,23 @@ impl AsyncAuthorityStore for OriginalPageAuthority<'_> {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn pages_retain_original_frame_and_fact_backing_until_retirement()
 -> Result<(), Box<dyn Error>> {
     use crate::kernel::allocation::retained::Retained;
     crate::initialize_test_native_io();
-    let (fs, authority, objects) = fixture();
+    let directory = tempfile::tempdir()?;
+    let provider =
+        acyclic_objects::local::LocalObjects::open(directory.path(), Default::default(), None)
+            .await?;
+    let objects = Arc::new(crate::LogicalObjectStore::new(Arc::new(provider)));
+    let authority = StreamAuthorityStore::new(Arc::new(acyclic_stream::MemoryStream::default()));
+    let fs = Fs::new(
+        authority.clone(),
+        Arc::clone(&objects),
+        crate::EmbeddedCapabilities::MEMORY,
+    );
     let cancel = CancellationToken::new();
     let workspace = fs
         .create_workspace("original-accounting", B, &cancel)
@@ -72,7 +82,8 @@ async fn pages_retain_original_frame_and_fact_backing_until_retirement()
             bytes_encoded: 7,
             ..crate::WorkCounters::UNCHARGED
         })?;
-        let independent = Retained::<Vec<u8>>::allocate(73, &mut work.accounting())?;
+        let mut independent = Retained::<Vec<u8>>::allocate(73, &mut work.accounting())?;
+        independent.value.resize(73, 0xa5);
         let live = |work: &AuthorityWork<'_>| {
             if native {
                 original.live_allocation_bytes()
@@ -137,6 +148,7 @@ async fn pages_retain_original_frame_and_fact_backing_until_retirement()
             "cancelled page lost original backing"
         );
         let independent_bytes = independent.value.capacity() as u64;
+        assert!(independent.value.iter().all(|byte| *byte == 0xa5));
         drop(independent);
         assert_eq!(live(&work), baseline - independent_bytes);
     }
