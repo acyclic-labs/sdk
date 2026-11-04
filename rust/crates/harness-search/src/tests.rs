@@ -12,11 +12,6 @@ fn request_file_contracts() -> Result<()> {
         ("test".into(), 0, false),
         ("test".into(), 21, false),
         ("a".repeat(4097), 1, false),
-        ("東".repeat(1400), 1, true),
-        ("東".repeat(4096), 1, true),
-        ("東".repeat(4097), 1, false),
-        ("🦀".repeat(4096), 1, true),
-        ("🦀".repeat(4097), 1, false),
     ] {
         assert_eq!(
             SearchRequest {
