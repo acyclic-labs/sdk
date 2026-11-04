@@ -102,7 +102,19 @@ impl Projector {
 
     pub(super) fn materialize_from(&self, projection: &Projection<'_>, queue: &MaterializeQueue) {
         while let Some(directory) = queue.next() {
-            let written = self.materialize_directory(*projection, directory);
+            // Complete the accepted queue item even if its source panics:
+            // other workers wait for this item's completion before retiring.
+            let written = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.materialize_directory(*projection, directory)
+            }))
+            .unwrap_or_else(|payload| {
+                let message = payload
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| payload.downcast_ref::<&str>().copied())
+                    .unwrap_or("non-string panic payload");
+                Err(format!("projection source panicked: {message}"))
+            });
             queue.done(written);
         }
     }
@@ -510,27 +522,15 @@ impl Projector {
         if let Some(work) = state.startup.take() {
             state.relisting = true;
             drop(state);
-            // A panicking source must complete the same startup wait instead
-            // of dropping its only producer and leaving the constructor hung.
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.materialize(
-                    Projection {
-                        runtime,
-                        work: &work,
-                        context,
-                        starting: true,
-                    },
-                    MountPath::root(),
-                )
-            }))
-            .unwrap_or_else(|payload| {
-                let message = payload
-                    .downcast_ref::<String>()
-                    .map(String::as_str)
-                    .or_else(|| payload.downcast_ref::<&str>().copied())
-                    .unwrap_or("non-string panic payload");
-                Err(format!("initial projection source panicked: {message}"))
-            });
+            let result = self.materialize(
+                Projection {
+                    runtime,
+                    work: &work,
+                    context,
+                    starting: true,
+                },
+                MountPath::root(),
+            );
             state = lock_recover(&self.state);
             state.relisting = false;
             if let Err(failure) = result {
@@ -705,6 +705,9 @@ impl Projector {
                 || !state.pending.is_empty()
                 || !state.vacated.is_empty())
         {
+            if let Some(failure) = state.failure.take() {
+                return Err(NativeMountError::Driver(failure));
+            }
             if state.startup.is_some()
                 || state.processed < target
                 || state.relisting
@@ -731,9 +734,12 @@ impl Projector {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .0;
         }
-        state
-            .failure
-            .take()
-            .map_or(Ok(()), |failure| Err(NativeMountError::Driver(failure)))
+        if let Some(failure) = state.failure.take() {
+            return Err(NativeMountError::Driver(failure));
+        }
+        if state.stopping {
+            return Err(NativeMountError::ControlPending);
+        }
+        Ok(())
     }
 }
