@@ -1,0 +1,15 @@
+diff --git a/rust/crates/harness-core/src/filesystem/bounded_io/codec.rs b/rust/crates/harness-core/src/filesystem/bounded_io/codec.rs
+--- a/rust/crates/harness-core/src/filesystem/bounded_io/codec.rs
++++ b/rust/crates/harness-core/src/filesystem/bounded_io/codec.rs
+@@ -185,10 +185,6 @@ impl PreparationIo {
+         decode: impl FnOnce(&mut dyn FnMut(Charge) -> Result<()>) -> Result<T>,
+     ) -> Result<(T, DecodeReservation<'_>)> {
+-        let initial_diagnostics = if code.is_some() {
+-            crate::executor::json::sdk_json_diagnostic_bytes()
+-        } else {
+-            0
+-        };
++        let initial_diagnostics = 0;
+         let mut held = code
+             .map(|_| self.reserve_decode(initial_diagnostics))
+             .transpose()?;

@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/executor/code_mode/interpreter.rs b/rust/crates/harness-core/src/executor/code_mode/interpreter.rs
+--- a/rust/crates/harness-core/src/executor/code_mode/interpreter.rs
++++ b/rust/crates/harness-core/src/executor/code_mode/interpreter.rs
+@@ -95,6 +95,7 @@ pub(super) async fn run(
+                             const response = await stable(rpc(name, stringify(args)));
+                             if (name === null) return;
+-                            const reply = parse(response);
++                            let reply;
++                            try { reply = parse(response); } catch { reply = {ok:true,value:null}; }
+                             if (!reply.ok) throw new ErrorType(reply.value);
+                             return reply.value;
+                         } finally {

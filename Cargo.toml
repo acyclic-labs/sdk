@@ -140,7 +140,7 @@ default-members = [
   "plugin",
   "plugin/identity",
 ]
-exclude = ["rust/vendor/tonic-web-wasm-client-0.9.2", "rust/vendor/napi-3.15.0", "rust/vendor/rquickjs-core-0.14.0"]
+exclude = ["rust/vendor/tonic-web-wasm-client-0.9.2", "rust/vendor/napi-3.15.0", "rust/vendor/rquickjs-core-0.14.0", "rust/vendor/rquickjs-sys-0.14.0"]
 resolver = "2"
 
 [workspace.package]
@@ -311,6 +311,7 @@ opt-level = 3
 [patch.crates-io]
 napi = { path = "rust/vendor/napi-3.15.0" }
 rquickjs-core = { path = "rust/vendor/rquickjs-core-0.14.0" }
+rquickjs-sys = { path = "rust/vendor/rquickjs-sys-0.14.0" }
 
 # Capability admission verifies Ed25519 chains throughout retained history. Keep
 # the scalar arithmetic optimized on native targets without x86 SIMD backends.

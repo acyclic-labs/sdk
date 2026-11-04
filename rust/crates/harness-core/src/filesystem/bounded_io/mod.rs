@@ -525,8 +525,20 @@ impl PreparationIo {
         })
     }
     pub(crate) fn reserve_decode(&self, bytes: u64) -> Result<DecodeReservation<'_>> {
-        self.retain_owned(bytes)?;
-        self.guard_owned(bytes)
+        match self.account(|accounting| accounting.claim_owned(bytes, 0))? {
+            KernelOwnedAllocation::Standalone => Ok(DecodeReservation {
+                io: self,
+                bytes,
+                #[cfg(not(target_arch = "wasm32"))]
+                custody: None,
+            }),
+            #[cfg(not(target_arch = "wasm32"))]
+            KernelOwnedAllocation::NativeOriginal(custody) => Ok(DecodeReservation {
+                io: self,
+                bytes: 0,
+                custody: Some(custody),
+            }),
+        }
     }
     pub(crate) fn guard_owned(&self, bytes: u64) -> Result<DecodeReservation<'_>> {
         if bytes > self.owned_bytes()? {
