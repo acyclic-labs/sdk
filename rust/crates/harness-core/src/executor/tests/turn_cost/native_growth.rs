@@ -2,11 +2,25 @@ use super::*;
 
 /// Keeps the independently validated replay fallback in the native custody
 /// tests even when the provider also supports direct persisted step queries.
-pub(super) struct ReplayOnly<'a>(pub(super) &'a dyn ExecutionJournal);
+pub(super) struct ReplayOnly<'a> {
+    journal: &'a dyn ExecutionJournal,
+    copied_after_page: std::sync::Mutex<Option<u64>>,
+    indexed_pages: std::sync::atomic::AtomicU64,
+}
+
+impl<'a> ReplayOnly<'a> {
+    pub(super) fn new(journal: &'a dyn ExecutionJournal) -> Self {
+        Self {
+            journal,
+            copied_after_page: std::sync::Mutex::new(None),
+            indexed_pages: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+}
 
 impl ExecutionJournal for ReplayOnly<'_> {
     fn cache_identity(&self) -> Option<ExecutionJournalCacheId> {
-        self.0.cache_identity()
+        self.journal.cache_identity()
     }
 
     fn acquire_execution<'a>(
@@ -14,7 +28,7 @@ impl ExecutionJournal for ReplayOnly<'_> {
         operation: OperationId,
         io: Option<&PreparationIo>,
     ) -> Result<crate::executor::ExecutionAttempt<'a>> {
-        self.0.acquire_execution(operation, io)
+        self.journal.acquire_execution(operation, io)
     }
     fn replay<'a>(
         &'a self,
@@ -23,7 +37,26 @@ impl ExecutionJournal for ReplayOnly<'_> {
         maximum: u32,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
-        self.0.replay(operation, after, maximum, io)
+        // Only indexing occurs between decoded page completion and the next
+        // replay request. Decoder and selected-output copies stay outside this
+        // interval; every growth crossing of the real retained index is inside.
+        let prior = self.copied_after_page.lock().unwrap().take();
+        if let (Some(prior), Some(io)) = (prior, io) {
+            assert_eq!(
+                io.receipt().bytes_copied,
+                prior,
+                "record insertion copied prior backing"
+            );
+            self.indexed_pages.fetch_add(1, Ordering::SeqCst);
+        }
+        let replay = self.journal.replay(operation, after, maximum, io)?;
+        Ok(Box::pin(async move {
+            let page = replay.await?;
+            if !page.is_empty() {
+                *self.copied_after_page.lock().unwrap() = io.map(|io| io.receipt().bytes_copied);
+            }
+            Ok(page)
+        }))
     }
     fn append<'a>(
         &'a self,
@@ -32,7 +65,7 @@ impl ExecutionJournal for ReplayOnly<'_> {
         event: &'a ExecutionEvent,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
-        self.0.append(operation, key, event, io)
+        self.journal.append(operation, key, event, io)
     }
     fn append_if_tail<'a>(
         &'a self,
@@ -42,7 +75,7 @@ impl ExecutionJournal for ReplayOnly<'_> {
         event: &'a ExecutionEvent,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
-        self.0.append_if_tail(operation, tail, key, event, io)
+        self.journal.append_if_tail(operation, tail, key, event, io)
     }
     fn stage<'a>(
         &'a self,
@@ -52,20 +85,20 @@ impl ExecutionJournal for ReplayOnly<'_> {
         media: &'static str,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
-        self.0.stage(operation, key, bytes, media, io)
+        self.journal.stage(operation, key, bytes, media, io)
     }
     fn load<'a>(
         &'a self,
         reference: &'a FileRef,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-        self.0.load(reference, io)
+        self.journal.load(reference, io)
     }
     fn supports_native_execution(
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<bool> {
-        self.0.supports_native_execution(work)
+        self.journal.supports_native_execution(work)
     }
     fn open_interaction<'a>(
         &'a self,
@@ -73,14 +106,14 @@ impl ExecutionJournal for ReplayOnly<'_> {
         interaction: &'a Interaction,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
-        self.0.open_interaction(id, interaction, io)
+        self.journal.open_interaction(id, interaction, io)
     }
     fn interaction_outcome<'a>(
         &'a self,
         id: InteractionId,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<InteractionOutcome>>> {
-        self.0.interaction_outcome(id, io)
+        self.journal.interaction_outcome(id, io)
     }
 }
 
@@ -88,7 +121,7 @@ impl ExecutionJournal for ReplayOnly<'_> {
 async fn a_thousand_records_retain_live_metadata_without_decoder_scratch() -> Result<()> {
     let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
     let journal = storage.journal();
-    let replay_only = ReplayOnly(journal.as_ref());
+    let replay_only = ReplayOnly::new(journal.as_ref());
     let journal: &dyn ExecutionJournal = &replay_only;
     let operation = OperationId::new();
     journal
@@ -144,6 +177,7 @@ async fn a_thousand_records_retain_live_metadata_without_decoder_scratch() -> Re
         );
     }
     assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(replay_only.indexed_pages.load(Ordering::SeqCst), 32);
     Ok(())
 }
 
