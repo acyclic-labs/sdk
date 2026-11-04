@@ -232,21 +232,36 @@ mod tests {
 
     #[test]
     fn service_metadata_preserves_original_message_unknown_code_and_bytes() {
+        let detail = wire::Error {
+            code: 99,
+            message: String::from("future detail"),
+            component: String::from("actors.authority"),
+            reason: String::from("future_refusal"),
+            request_id: String::from("original-request"),
+        };
+        let allocations = [
+            detail.component.as_ptr(),
+            detail.reason.as_ptr(),
+            detail.request_id.as_ptr(),
+        ];
         let metadata = client_error(client::Error::Service {
             grpc_code: 7,
             message: String::from("original grpc diagnostic"),
             raw_details: vec![255, 0],
-            detail: Some(wire::Error {
-                code: 99,
-                message: String::from("future detail"),
-                component: String::from("actors.authority"),
-                reason: String::from("future_refusal"),
-                request_id: String::from("original-request"),
-            }),
+            detail: Some(detail),
         });
         assert_eq!(metadata.message, "original grpc diagnostic");
         assert_eq!(metadata.service_code, Some(99));
         assert_eq!(metadata.service_message.as_deref(), Some("future detail"));
+        assert_eq!(
+            metadata.cause.as_ref().map(|cause| [
+                cause.component.as_ptr(),
+                cause.reason.as_ptr(),
+                cause.request_id.as_ptr(),
+            ]),
+            Some(allocations),
+            "native bridge moves the original attribution allocations",
+        );
         assert_eq!(
             metadata.raw_details.as_ref().map(AsRef::as_ref),
             Some([255, 0].as_slice())
