@@ -1,7 +1,7 @@
 // Native shells execute this same filesystem effect on every platform. It
 // supplies no host loop, tool response, process event or authentication input.
 import assert from 'node:assert/strict';
-import {execFileSync} from 'node:child_process';
+import {execFileSync,spawn} from 'node:child_process';
 import {openSync,closeSync} from 'node:fs';
 import {access,readFile,realpath,writeFile} from 'node:fs/promises';
 import {isAbsolute,join,relative,sep} from 'node:path';
@@ -63,8 +63,17 @@ try {
   try {
    step='read original native session';
    console.error('native effect: '+step);
-   execFileSync(binary,['__workspace'],{input:JSON.stringify({kind:'hook',host,event:'NativeSession',
-    input:{task:original.task}}),stdio:['pipe',descriptor,'inherit']});
+   await new Promise((resolve,reject)=>{
+    const query=spawn(binary,['__workspace'],{stdio:['pipe',descriptor,'inherit']});
+    let failure;
+    query.once('error',cause=>{failure??=cause;});
+    query.stdin?.once('error',cause=>{failure??=cause;query.kill();});
+    query.once('close',(code,signal)=>{
+     if(failure||code!==0)reject(new Error('native session query exited '+code+' '+signal,{cause:failure}));
+     else resolve();
+    });
+    query.stdin?.end(JSON.stringify({kind:'hook',host,event:'NativeSession',input:{task:original.task}}));
+   });
    console.error('native effect: original native session received');
   } finally {closeSync(descriptor);}
   const session=JSON.parse(await text(current));
