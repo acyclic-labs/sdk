@@ -51,7 +51,7 @@ Reflect.set(facade, "select", async () => {
 const records = scenario === "rejection" ? sessions.follow("events", { from: 0n, signal: controller.signal })
   : scenario === "followSelect" ? facade.follow("agents", { from: 0n, signal: controller.signal }) : undefined;
 if (scenario === "rejection") {
-  peer.append("events", 2);
+  peer.append("events");
   await records!.next();
 }
 let settled = false;
