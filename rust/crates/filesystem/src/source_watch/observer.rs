@@ -1,6 +1,5 @@
 //! Callback admission for an already held native directory.
 use super::*;
-use crate::native_host::NativeHostWork as _;
 use std::path::Path;
 
 /// A registration on the original directory, using the shared native driver.
