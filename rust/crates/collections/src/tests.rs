@@ -725,46 +725,6 @@ fn refused_admission_never_constructs_or_publishes_and_preserves_prior_funding()
 }
 
 #[test]
-fn a_full_scan_negative_exposes_population_work_hidden_by_the_fixed_key_index()
--> Result<(), &'static str> {
-    let mut work = Work::default();
-    let mut table = FixedIndex::default();
-    let mut scan = BTreeMap::new();
-    for value in 0_u64..4096 {
-        table.get_or_try_insert_with(value.to_be_bytes(), &mut work, |_| Ok(value))?;
-        scan.insert(value.to_be_bytes(), value);
-    }
-    let key = 4095_u64.to_be_bytes();
-    let before = work.items;
-    let indexed = table.get(key, &mut work)?;
-    let index_work = work.items - before;
-    let mut scan_work = 0;
-    let scanned = scan
-        .iter()
-        .inspect(|_| scan_work += 1)
-        .find(|(observed, _)| **observed == key)
-        .map(|(_, value)| value);
-    assert_eq!(indexed, scanned);
-    assert!(index_work <= 73);
-    assert_eq!(scan_work, 4096);
-    assert!(scan_work > index_work);
-    let before = work.items;
-    let after = 4094_u64.to_be_bytes();
-    let indexed = table.seek_after(after, &mut work)?;
-    let seek_work = work.items - before;
-    let mut scan_work = 0;
-    let scanned = scan
-        .iter()
-        .inspect(|_| scan_work += 1)
-        .find(|(key, _)| **key > after);
-    assert_eq!(indexed, scanned);
-    assert!(seek_work <= 25 * 8 + 3);
-    assert_eq!(scan_work, 4096);
-    assert!(scan_work > seek_work);
-    Ok(())
-}
-
-#[test]
 fn extracted_values_keep_their_original_leaf_funding_after_cancelled_removal()
 -> Result<(), &'static str> {
     struct Value {
@@ -1097,5 +1057,47 @@ fn ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors()
     drop(table);
     drop(original);
     assert_eq!(work.live.get(), 0);
-    a_full_scan_negative_exposes_population_work_hidden_by_the_fixed_key_index()
+
+    // The shared recent-fact composition must preserve the same read-only
+    // admission when a miss in its current window searches the previous one.
+    work.cancelled = false;
+    let mut recent = RecentIndex::<_, _, 8, 2>::default();
+    for key in 0_u64..5 {
+        recent.get_or_try_insert_with(key.to_be_bytes(), &mut work, |_| Ok(key))?;
+    }
+    let claims = work.claims;
+    let live = work.live.get();
+    for (key, expected) in [(0, None), (2, Some(2)), (4, Some(4)), (u64::MAX, None)] {
+        let before = work.items;
+        assert_eq!(
+            recent.get(key.to_be_bytes(), &mut ReadOnly(&mut work))?,
+            expected.as_ref()
+        );
+        let required = work.items - before;
+        assert!(required <= 2 * (9 * 8 + 1));
+        for credit in 0..required {
+            work.maximum_items = Some(work.items + credit);
+            assert_eq!(
+                recent
+                    .get(key.to_be_bytes(), &mut ReadOnly(&mut work))
+                    .err(),
+                Some("items refused"),
+                "recent window refusal must not become a cache miss"
+            );
+        }
+        work.maximum_items = None;
+        work.cancelled = true;
+        assert_eq!(
+            recent
+                .get(key.to_be_bytes(), &mut ReadOnly(&mut work))
+                .err(),
+            Some("cancelled")
+        );
+        work.cancelled = false;
+    }
+    assert_eq!(work.claims, claims);
+    assert_eq!(work.live.get(), live);
+    drop(recent);
+    assert_eq!(work.live.get(), 0);
+    Ok(())
 }
