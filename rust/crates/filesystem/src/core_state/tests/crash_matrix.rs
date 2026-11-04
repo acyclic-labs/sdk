@@ -61,7 +61,7 @@ fn run_cut(
         .env("ACYCLIC_CORE_STATE_CRASH_POINT", point.to_string())
         .env("ACYCLIC_CORE_STATE_CRASH_REPORT", &report)
         .stdout(acyclic_native_runtime::ProcessStdio::piped())
-        .stderr(acyclic_native_runtime::ProcessStdio::null());
+        .stderr(acyclic_native_runtime::ProcessStdio::piped());
     if owned {
         child.env("ACYCLIC_CORE_STATE_CRASH_OWNED", "1");
     }
@@ -93,8 +93,9 @@ fn run_cut(
         Ok(output) => {
             assert!(
                 output.status.success(),
-                "crash child failed before publishing point {point}: {}",
-                output.status
+                "crash child failed before publishing point {point}: {}; stderr: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
             );
             assert!(!cut_reached && !report.exists());
             false
@@ -104,7 +105,8 @@ fn run_cut(
                 cut_reached
                     && failure.error.kind() == std::io::ErrorKind::Interrupted
                     && failure.cleanup_completed,
-                "crash point {point} was not killed and reaped: {failure:?}"
+                "crash point {point} was not killed and reaped: {failure:?}; stderr: {}",
+                String::from_utf8_lossy(&failure.stderr)
             );
             true
         }
