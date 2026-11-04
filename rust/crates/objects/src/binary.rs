@@ -124,7 +124,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
         let (request, expected) = convert::put_blobs(requests);
         let replied = async {
             let (reply, revision) = self.call("blobs/put-batch", request).await?;
-            convert::verified_puts(&reply, &expected, revision.as_ref()).map_err(|_| unavailable())
+            convert::verified_puts(reply, &expected, revision.as_ref()).map_err(|_| unavailable())
         };
         replied
             .await

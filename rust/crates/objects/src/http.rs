@@ -25,10 +25,11 @@ fn credential_header(token: &str) -> Result<HeaderValue, Error> {
     Ok(value)
 }
 
-/// The canonical JSON acknowledgement of a batch put, bounded per member:
+/// The canonical JSON success acknowledgement of a batch put, bounded per member:
 /// `(single, step)` such that a reply answering `k >= 1` members is at most
-/// `single + (k - 1) * step` bytes, whatever each member's outcome. Computed
-/// once from the encoder itself over every outcome, with the widest length.
+/// `single + (k - 1) * step` bytes. Computed once from the encoder itself
+/// over every put outcome, with the widest length. Failure details have
+/// producer-owned lengths and are admitted against the actual response budget.
 fn put_batch_acknowledgement() -> Option<(usize, usize)> {
     use wire::{put_response::Outcome as Put, put_result::Outcome};
     static BOUND: std::sync::OnceLock<Option<(usize, usize)>> = std::sync::OnceLock::new();
@@ -37,7 +38,7 @@ fn put_batch_acknowledgement() -> Option<(usize, usize)> {
             digest: Some(Digest::of(b"").into()),
             length: u64::MAX,
         };
-        let mut outcomes = vec![
+        let outcomes = [
             Outcome::Put(wire::PutResponse {
                 outcome: Some(Put::Created(verified.clone())),
             }),
@@ -48,11 +49,6 @@ fn put_batch_acknowledgement() -> Option<(usize, usize)> {
                 outcome: Some(Put::Unknown(true)),
             }),
         ];
-        outcomes.extend(
-            (0..=i32::from(u8::MAX))
-                .filter(|code| wire::ErrorCode::try_from(*code).is_ok())
-                .map(Outcome::Error),
-        );
         let reply = |outcome: &Outcome, members: usize| {
             json::encode(
                 "PutBlobsResponse",
@@ -382,7 +378,7 @@ impl Blobs for HttpObjects {
     ) -> Vec<Result<Put, Error>> {
         // The client's one wire budget bounds every message it exchanges: a
         // call carries only as many members as both its request and its
-        // acknowledgement fit, and a member too large to share a call goes
+        // success acknowledgement fit, and a member too large to share a call goes
         // alone, exactly as its single put would. Chunks go in request order,
         // so a member's references in an earlier chunk have settled before
         // it is sent.
@@ -413,7 +409,7 @@ impl Blobs for HttpObjects {
                     let (request, expected) = convert::put_blobs(chunk);
                     let reply: wire::PutBlobsResponse =
                         self.call("blobs/put-batch", &request).await?;
-                    convert::verified_puts(&reply, &expected, None)
+                    convert::verified_puts(reply, &expected, None)
                 })
                 .await
                 .unwrap_or_else(|error| vec![Err(error); members]),

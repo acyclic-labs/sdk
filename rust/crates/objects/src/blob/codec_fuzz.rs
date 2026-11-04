@@ -3,7 +3,7 @@ use super::{
     BATCH_MAGIC, ENVELOPE_MAGIC, EPOCH_MAGIC, Envelope, INCARNATION_MAGIC, MANIFEST_MAGIC,
     decode_batch, decode_epoch, decode_incarnation, encode_batch, encode_epoch, encode_incarnation,
 };
-use crate::{Digest, Kind, Manifest, Part};
+use crate::{ByteRange, Digest, Kind, Manifest, Part};
 use crate::{Error, wire::ErrorCode};
 
 /// Prepare an obsolete value using the original local compaction chunk size.
@@ -58,6 +58,13 @@ fn check_codec<T: PartialEq>(
         ) {
             return false;
         }
+    }
+    // A complete valid body must not admit another format domain.
+    encoded[0] ^= 0x20;
+    let foreign_domain = refused(&encoded, ErrorCode::Unsupported);
+    encoded[0] ^= 0x20;
+    if !foreign_domain {
+        return false;
     }
     // Refuse another version before any body, using the admitted writer header.
     for version in [b'0', b'1', b'2', b'9'] {
@@ -114,6 +121,51 @@ pub fn check(bytes: &[u8]) -> bool {
     }
     let word =
         |start| u64::from_le_bytes(fields[start..start + 8].try_into().expect("generator word"));
+    // Sorted input-derived bounds give valid selections independently of the
+    // resolver. Fixed counterexamples cover empty, reversed and oversized ones.
+    let mut bounds = [word(0), word(8), word(16)];
+    bounds.sort_unstable();
+    let [start, end, length] = bounds;
+    if ![
+        (ByteRange::FULL, 0, Some(0..0)),
+        (ByteRange::FULL, length, Some(0..length)),
+        (
+            ByteRange {
+                start: length / 2,
+                end: None,
+            },
+            length,
+            Some(length / 2..length),
+        ),
+        (
+            ByteRange {
+                start: 1,
+                end: None,
+            },
+            0,
+            None,
+        ),
+        (
+            ByteRange::new(start, end),
+            length,
+            (start < end).then_some(start..end),
+        ),
+        (ByteRange::new(length, length), length, None),
+        (ByteRange::new(1, 0), length, None),
+        (ByteRange::new(0, u64::MAX), 0, None),
+    ]
+    .into_iter()
+    .all(
+        |(range, length, expected)| match (range.resolve(length), expected) {
+            (Ok(actual), Some(expected)) => actual == expected,
+            (Err(error), None) => {
+                error.code == ErrorCode::RangeNotSatisfiable && error.stopped.is_none()
+            }
+            _ => false,
+        },
+    ) {
+        return false;
+    }
     let references: Vec<_> = bytes
         .chunks_exact(32)
         .map(|chunk| Digest::from_bytes(chunk.try_into().expect("generator digest")))
@@ -130,7 +182,37 @@ pub fn check(bytes: &[u8]) -> bool {
             .collect(),
         edges: references.clone(),
     };
-    let envelope = Envelope {
+    // Wide arithmetic independently checks the public logical-length boundary.
+    let length: u128 = manifest
+        .parts
+        .iter()
+        .map(|part| u128::from(part.length))
+        .sum();
+    match (manifest.length(), u64::try_from(length)) {
+        (Ok(actual), Ok(expected)) if actual == expected => {}
+        (Err(error), Err(_))
+            if error.code == ErrorCode::QuotaExceeded && error.stopped.is_none() => {}
+        _ => return false,
+    }
+    // Part and edge custody is independent of their repeated wire positions.
+    let mut edge = *digest.as_bytes();
+    edge[0] ^= 1;
+    let edge = Digest::from_bytes(edge);
+    let part = Part {
+        digest,
+        length: bytes.len() as u64,
+    };
+    if (Manifest {
+        parts: vec![part, part],
+        edges: vec![edge, digest, edge],
+    })
+    .references()
+    .as_slice()
+        != [digest, edge].as_slice()
+    {
+        return false;
+    }
+    let mut envelope = Envelope {
         kind: if fields[56] & 1 == 0 {
             Kind::Blob
         } else {
@@ -143,6 +225,42 @@ pub fn check(bytes: &[u8]) -> bool {
         dying: (fields[57] & 1 != 0).then(|| fields[32..48].try_into().expect("generator deleter")),
         condemned: word(48),
     };
+    let mut encoded = envelope.encode();
+    let width = encoded.len();
+    envelope.dying = match envelope.dying {
+        Some(_) => None,
+        None => Some(fields[32..48].try_into().expect("generator deleter")),
+    };
+    envelope.condemned = !envelope.condemned;
+    let restamped = envelope.encode();
+    if restamped.len() != width
+        || !Envelope::decode(&restamped).is_ok_and(|decoded| decoded == envelope)
+    {
+        return false;
+    }
+    // Mutate the complete writer body: presence byte, 16-byte nonce, u64 epoch.
+    // Truncating it first would let a missing-byte refusal hide a bad tag.
+    let truncated = Envelope::decode(&encoded[..width - 8]);
+    let kind = encoded[ENVELOPE_MAGIC.len()];
+    encoded[ENVELOPE_MAGIC.len()] = 0;
+    let unknown_kind = Envelope::decode(&encoded);
+    encoded[ENVELOPE_MAGIC.len()] = kind;
+    encoded[width - 25] = 2;
+    let unknown_presence = Envelope::decode(&encoded);
+    encoded[width - 25] = 0;
+    encoded[width - 24] = 1;
+    if ![
+        truncated,
+        unknown_kind,
+        unknown_presence,
+        Envelope::decode(&encoded),
+    ]
+    .into_iter()
+    .all(|result| {
+        result.is_err_and(|error| error.code == ErrorCode::Corrupt && error.stopped.is_none())
+    }) {
+        return false;
+    }
     check_codec(
         bytes,
         MANIFEST_MAGIC,

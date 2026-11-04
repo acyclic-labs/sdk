@@ -1,0 +1,14 @@
+--- a/rust/crates/objects/src/blob.rs
++++ b/rust/crates/objects/src/blob.rs
+@@ -253,7 +253,10 @@
+         };
+         let version = nonce(&mut reader)?;
+         let dying = match reader.take(1)? {
+-            [0] if nonce(&mut reader)? == [0; 16] => None,
++            [0] => {
++                nonce(&mut reader)?;
++                None
++            },
+             [1] => Some(nonce(&mut reader)?),
+             _ => return Err(corrupt()),
+         };

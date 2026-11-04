@@ -1,0 +1,11 @@
+--- a/rust/crates/objects/src/convert.rs
++++ b/rust/crates/objects/src/convert.rs
+@@ -152,7 +152,7 @@
+         wire::DeleteStatus::Deleted => Delete::Deleted,
+         wire::DeleteStatus::Absent => Delete::Absent,
+         wire::DeleteStatus::Referenced => Delete::Referenced,
+-        wire::DeleteStatus::Unspecified => return Err(invalid()),
++        wire::DeleteStatus::Unspecified => Delete::Absent,
+     };
+     if outcome != Delete::Deleted && !value.references.is_empty() {
+         return Err(invalid());

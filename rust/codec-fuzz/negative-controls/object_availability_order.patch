@@ -1,0 +1,14 @@
+--- a/rust/crates/objects/src/availability.rs
++++ b/rust/crates/objects/src/availability.rs
+@@ -95,10 +95,7 @@
+     /// regressing and foreign-incarnation transport frames fail closed.
+     pub async fn changed(&mut self) -> Result<AvailabilityCursor, Error> {
+         let result = match self.changes.next().await {
+-            Some(Ok(next))
+-                if next.incarnation == self.cursor.incarnation
+-                    && next.sequence > self.cursor.sequence =>
+-            {
++            Some(Ok(next)) => {
+                 self.cursor = next;
+                 return Ok(next);
+             }

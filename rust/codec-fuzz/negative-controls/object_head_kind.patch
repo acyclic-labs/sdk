@@ -1,0 +1,11 @@
+--- a/rust/crates/objects/src/convert.rs
++++ b/rust/crates/objects/src/convert.rs
+@@ -124,7 +124,7 @@
+     Ok(Head {
+         digest: digest(value.digest.as_ref())?,
+         kind: match wire::Kind::try_from(value.kind).map_err(|_| invalid())? {
+-            wire::Kind::Blob => Kind::Blob,
++            wire::Kind::Blob => Kind::Manifest,
+             wire::Kind::Manifest => Kind::Manifest,
+             wire::Kind::Unspecified => return Err(invalid()),
+         },

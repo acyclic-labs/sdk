@@ -1,0 +1,11 @@
+--- a/rust/crates/objects/src/blob.rs
++++ b/rust/crates/objects/src/blob.rs
+@@ -97,7 +97,7 @@
+     /// Resolves against a content length, refusing an empty or out-of-bounds selection
+     /// of nonempty content. The full range of empty content is the empty selection.
+     pub fn resolve(self, length: u64) -> Result<std::ops::Range<u64>, Error> {
+-        let end = self.end.unwrap_or(length);
++        let end = self.end.unwrap_or(length.saturating_add(self.start));
+         if end > length || self.start > end || (self.start == end && self != Self::FULL) {
+             return Err(ErrorCode::RangeNotSatisfiable.into());
+         }
