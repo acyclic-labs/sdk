@@ -76,6 +76,49 @@ async fn conflicting_creation_config_is_rejected_without_changing_opened_config(
         fs.open_volume(id, B, &cancel).await?.value.config(),
         config()
     );
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::initialize_test_native_io();
+        for admitted in [0, 1] {
+            let caller = CancellationToken::new();
+            let original =
+                crate::NativeMaterializationWork::new(B, &caller).map_err(|(cause, _)| cause)?;
+            original.charge(WorkCounters {
+                items_examined: 7,
+                ..WorkCounters::UNCHARGED
+            })?;
+            let initial_live = original.live_allocation_bytes();
+            let held = crate::kernel::allocation::retained::Retained::<Vec<u8>>::allocate(
+                4096,
+                &mut crate::kernel::KernelAccounting::native(&original, &cancel),
+            )?;
+            let restricted = original.native_volume_work(WorkBudget {
+                authority_records_read: admitted,
+                ..B
+            })?;
+            let baseline = original.live_allocation_bytes();
+            let result = fs.open_volume(id, &restricted, &cancel).await;
+            if admitted == 0 {
+                assert!(result.is_err(), "opening ignored original read admission");
+            } else {
+                assert_eq!(result?.config(), config());
+            }
+            let spent = original.receipt();
+            assert_eq!(spent.authority_records_read, admitted);
+            assert!(spent.items_examined >= 7);
+            assert_eq!(spent.authority_records_appended, 0);
+            assert_eq!(spent.backend_write_operations, 0);
+            assert_eq!(original.live_allocation_bytes(), baseline);
+
+            caller.cancel();
+            assert!(fs.open_volume(id, &restricted, &cancel).await.is_err());
+            assert_eq!(original.receipt(), spent);
+            assert_eq!(original.live_allocation_bytes(), baseline);
+            drop(restricted);
+            drop(held);
+            assert_eq!(original.live_allocation_bytes(), initial_live);
+        }
+    }
     Ok(())
 }
 
