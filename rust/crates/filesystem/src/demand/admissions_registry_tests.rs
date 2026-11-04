@@ -10,7 +10,28 @@ fn logical_growth_reclaims_retired_gauges_before_admission() -> TestResult {
     let mut original = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
     let mut allocation = original.claim(0, 0, WorkCounters::UNCHARGED)?;
     let retired = NativeMountAllocationCustody::new(&mut original)?;
+    let (pointer, backing, copied) = {
+        let state = original.state.lock();
+        let registry = &state.roots.native_mount_admissions.0;
+        (
+            registry.as_ptr(),
+            registry.capacity() * std::mem::size_of::<(Arc<AtomicU64>, u64)>(),
+            state.work.bytes_copied,
+        )
+    };
     let survivor = NativeMountAllocationCustody::new(&mut original)?;
+    {
+        let state = original.state.lock();
+        assert_eq!(
+            state.work.bytes_copied - copied,
+            if state.roots.native_mount_admissions.0.as_ptr() == pointer {
+                0
+            } else {
+                backing as u64
+            },
+            "registry growth must charge actual relocation exactly once"
+        );
+    }
     original.charge(WorkCounters::UNCHARGED)?;
     drop(retired);
 
