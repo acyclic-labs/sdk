@@ -182,7 +182,7 @@ async fn carrier_io_publishes_without_blocking_its_coordinator() -> Result<()> {
     // Publishing a diagnostic does not retire its original allocation. Use a
     // real rejected directory read and keep that exact cause until withdrawal.
     let original =
-        regular_bytes(&files.requests, u64::MAX).expect_err("a directory is not a reply");
+        regular_bytes(files.requests.path(), u64::MAX).expect_err("a directory is not a reply");
     let diagnostic = |cause: &Error| match cause {
         Error::Invalid(message) | Error::Storage(message) => message.as_ptr(),
         cause => panic!("directory refusal must retain its diagnostic: {cause}"),
@@ -206,7 +206,7 @@ async fn carrier_io_publishes_without_blocking_its_coordinator() -> Result<()> {
     assert_eq!(diagnostic(cause), original_diagnostic);
     files = files
         .apply(failed, move |files| {
-            files.served.withdraw(&files.requests, failed)
+            files.served.withdraw(&files.status, failed)
         })
         .await?;
     assert!(!files.served.known.contains_key(&failed));
@@ -271,7 +271,7 @@ async fn carrier_io_producer_loss_keeps_its_failure_and_releases_its_files() -> 
     let (_checkout, mut files, probe) = carrier_io()?;
     let operation = OperationId::new();
     let original =
-        regular_bytes(&files.requests, u64::MAX).expect_err("a directory is not a reply");
+        regular_bytes(files.requests.path(), u64::MAX).expect_err("a directory is not a reply");
     let message = original.to_string();
     let code = original.code();
     files
@@ -292,7 +292,7 @@ async fn carrier_io_producer_loss_keeps_its_failure_and_releases_its_files() -> 
         .expect_err("a directory cannot be retired as a reply file");
     let result = files
         .apply(operation, move |files| {
-            files.served.withdraw(&files.requests, operation)
+            files.served.withdraw(&files.status, operation)
         })
         .await;
     let Err(Error::Cleanup(causes)) = result else {
