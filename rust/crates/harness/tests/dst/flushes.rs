@@ -148,6 +148,15 @@ fn measure(replies: [ScriptedTurn; 6]) -> Result<Windows> {
             &writes[cuts[0]..cuts[1]],
             &writes[cuts[7]..cuts[8]]
         );
+        // This window includes the first call to agents(), which creates and
+        // starts the root before its first reply is committed.
+        let steady = observed.replies[0];
+        assert_eq!(
+            observed.first.0,
+            steady.0 + 1,
+            "first-turn policy barrier changed: {observed:?}; trace: {:?}",
+            &writes[cuts[1]..cuts[2]]
+        );
         Ok(observed)
     })
 }
@@ -188,11 +197,6 @@ fn reply_publication_drains_follow_commits_and_not_history_or_event_count() -> R
     // Cold root creation adds its policy barrier and may share its one drain
     // with the first reply. A reopened root needs only the settled reply work.
     let steady = observed.replies[0];
-    assert_eq!(
-        observed.first.0,
-        steady.0 + 1,
-        "first-turn policy barrier changed"
-    );
     assert!(
         (steady.1..=steady.1 + 1).contains(&observed.first.1),
         "first-turn drains changed: {:?}",
