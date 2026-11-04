@@ -4,7 +4,7 @@ use super::*;
 #[tokio::test]
 async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
 -> Result<(), Box<dyn std::error::Error>> {
-    use crate::kernel::allocation::retained::RetainedAllocation;
+    use crate::kernel::allocation::retained::Retained;
     crate::initialize_test_native_io();
     let directory = tempfile::tempdir()?;
     let provider =
@@ -25,12 +25,59 @@ async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
         crate::test_support::put_tree_page(&store, &crate::kernel::TreePage::Leaf(Vec::new()), 8)
             .await?;
     let cancellation = CancellationToken::new();
-    for capacity in [0, 1, 2, 3] {
+    for (capacity, expected_owned, expected_page_reads) in
+        [(4096, 3, 2), (0, 3, 2), (1, 1, 2), (2, 0, 2), (3, 0, 1)]
+    {
         let store = crate::LogicalObjectStore::new(std::sync::Arc::clone(&provider));
         let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let independent = RetainedAllocation::claim(73, 1, &mut work.accounting())?;
+        let mut independent = Retained::<Vec<u8>>::allocate(73, &mut work.accounting())?;
+        independent.value.resize(73, 0xa5);
+        let independent_bytes = independent.value.capacity() as u64;
         let baseline = work.allocations.live_bytes();
         let cache = OperationReadCache::new(&store, capacity, &mut work.accounting(), None)?;
+        if capacity == 4096 {
+            // Persist distinct canonical chunks through the real provider, then
+            // fill the operation cache through its ordinary read entry point.
+            let objects: Vec<_> = (0..capacity as u64)
+                .map(|value| {
+                    crate::storage::HashedObject::new(
+                        crate::ObjectKind::BlobChunk,
+                        OwnedBytes::from(value.to_le_bytes().to_vec()),
+                    )
+                })
+                .collect();
+            store
+                .put_many_hashed(
+                    &objects,
+                    &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+                )
+                .await?;
+            let warm: Vec<_> = objects
+                .iter()
+                .map(|object| ObjectReadRequest {
+                    object_id: object.object_id(),
+                    maximum_bytes: object.bytes().len() as u64,
+                })
+                .collect();
+            let reads = crate::kernel::read_objects_with_accounting(
+                &cache,
+                &warm,
+                &mut work.accounting(),
+                &cancellation,
+            )
+            .await?;
+            assert_eq!(cache.lock_state().entry_count, capacity);
+            let retained = crate::kernel::file_read::retained_object_reads_bytes(
+                &reads.value,
+                reads.value.capacity(),
+            )?;
+            drop(reads.value);
+            crate::kernel::file_read::release_read_allocation(
+                retained,
+                reads.custody,
+                &mut work.accounting(),
+            )?;
+        }
         let reads = crate::kernel::read_objects_with_accounting(
             &cache,
             &requests,
@@ -47,7 +94,7 @@ async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
             .iter()
             .filter(|read| matches!(read.retention, ObjectReadRetention::Owned { .. }))
             .count();
-        assert_eq!(owned, [3, 1, 0, 0][capacity]);
+        assert_eq!(owned, expected_owned);
         let retained = crate::kernel::file_read::retained_object_reads_bytes(
             &reads.value,
             reads.value.capacity(),
@@ -100,12 +147,13 @@ async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
         }
         assert_eq!(
             work.spent().backend_read_operations - before,
-            [2, 2, 2, 1][capacity]
+            expected_page_reads
         );
         drop(cache);
         assert_eq!(work.allocations.live_bytes(), baseline);
+        assert!(independent.value.iter().all(|byte| *byte == 0xa5));
         drop(independent);
-        assert_eq!(work.allocations.live_bytes(), baseline - 73);
+        assert_eq!(work.allocations.live_bytes(), baseline - independent_bytes);
     }
     Ok(())
 }
