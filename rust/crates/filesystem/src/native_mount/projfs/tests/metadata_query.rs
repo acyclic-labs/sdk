@@ -238,7 +238,13 @@ fn name_query_reads_reparse_leaves_without_following_ancestors()
         state.0 & windows::Win32::Storage::ProjectedFileSystem::PRJ_FILE_STATE_PLACEHOLDER.0,
         0
     );
-    for path in ["junction", "projected"] {
+    use windows::Win32::System::SystemServices::{
+        IO_REPARSE_TAG_MOUNT_POINT, IO_REPARSE_TAG_PROJFS,
+    };
+    for (path, tag) in [
+        ("junction", IO_REPARSE_TAG_MOUNT_POINT),
+        ("projected", IO_REPARSE_TAG_PROJFS),
+    ] {
         let wide: Vec<_> = path.encode_utf16().collect();
         let limited = crate::NativeMaterializationWork::new(
             crate::WorkBudget {
@@ -251,14 +257,11 @@ fn name_query_reads_reparse_leaves_without_following_ancestors()
         .map_err(|(error, _)| error)?;
         let actual =
             query_metadata(&root, &wide, &mut &limited, || ())?.ok_or("tagged leaf fell back")?;
-        if path == "junction" {
-            assert_ne!(actual.raw.ReparseTag, 0);
-        }
+        assert_eq!(actual.raw.ReparseTag, tag);
         assert_eq!(limited.receipt().backend_read_operations, 1);
         assert_eq!(limited.receipt().items_examined, wide.len() as u64);
         let expected = root.stat(&wide, &mut &work)?;
         assert_eq!(actual.raw.FileId, expected.raw.FileId);
-        assert_eq!(actual.raw.ReparseTag, expected.raw.ReparseTag);
     }
     let wide: Vec<_> = "junction\\outside".encode_utf16().collect();
     let before = work.receipt();

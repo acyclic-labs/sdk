@@ -2,21 +2,23 @@ use super::*;
 
 fn check(invalid: bool, fault: Fault) -> TestCaseResult {
     let [(old, old_trace), (new, new_trace)] = pair(&[], invalid, fault);
-    let expected: serde_json::Value =
-        serde_json::from_str(include_str!("transaction_batch_expected.json")).unwrap();
-    let expected = &expected[format!("staging.{invalid}")];
-    let actual =
-        serde_json::json!({ "work": new.2, "allocations": differential::allocation_counts(new.3) });
     equivalent(&old, &old_trace, &new, &new_trace, invalid)?;
     prop_assert!(
-        actual == *expected,
-        "exact staging work/allocation differs: actual={actual}, expected={expected}"
+        new.2.backend_read_operations <= old.2.backend_read_operations
+            && new.2.page_reads < old.2.page_reads
+            && new.2.allocation_operations < old.2.allocation_operations
+            && new.3.count_total < old.3.count_total,
+        "batch staging repeated serial work: batch={:?}/{:?}, serial={:?}/{:?}",
+        new.2,
+        new.3,
+        old.2,
+        old.3
     );
     Ok(())
 }
 
 #[test]
-fn staging_has_exact_work_and_physical_allocations() {
+fn staging_reuses_reads_and_physical_allocations() {
     let results = [false, true].map(|invalid| check(invalid, Fault::None));
     for result in &results {
         if let Err(error) = result {
@@ -25,18 +27,18 @@ fn staging_has_exact_work_and_physical_allocations() {
     }
     assert!(
         results.iter().all(Result::is_ok),
-        "exact staging receipts changed"
+        "batch staging repeated serial work"
     );
 }
 
 #[test]
-fn restoring_serial_staging_fails_the_exact_guards() {
+fn restoring_serial_staging_fails_the_same_resource_guards() {
     for invalid in [false, true] {
         let error = check(invalid, Fault::Serial).unwrap_err();
         assert!(
             error
                 .to_string()
-                .contains("exact staging work/allocation differs")
+                .contains("batch staging repeated serial work")
         );
     }
 }

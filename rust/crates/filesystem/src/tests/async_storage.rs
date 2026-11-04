@@ -53,8 +53,11 @@ async fn owned_read_conformance_keeps_each_live_batch_buffer_funded()
             }
             assert_eq!(work.spent().peak_allocation_bytes, 31 + output_bytes);
             assert_eq!(work.spent().bytes_copied, 2 * bytes.len() as u64);
+            assert_eq!(work.allocations.live_bytes(), 31 + output_bytes);
+            assert!(allocation.is_none());
             drop(values);
             drop(allocation);
+            work.allocations.release_owned(output_bytes)?;
         } else {
             assert!(matches!(
                 result,

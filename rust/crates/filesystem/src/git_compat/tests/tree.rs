@@ -199,7 +199,12 @@ async fn independent_git_patches_share_one_append_and_recover_each_operation() {
         crate::LogicalObjectStore::new(Arc::new(objects)),
         crate::EmbeddedCapabilities::MEMORY,
     );
-    let workspace = unbounded!(fs, create_workspace("git-group")).expect("workspace");
+    let config = crate::VolumeConfig {
+        concurrency: crate::model::ConcurrencyMode::SerializedAuthority,
+        ..crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral)
+    };
+    let workspace =
+        unbounded!(fs, create_workspace_with_config("git-group", config)).expect("workspace");
     let mut seed = begin_fixture(&workspace, IdempotencyKey::new()).await;
     for name in ["/a.txt", "/b.txt"] {
         seed.write_text(name, "old\n").await.expect("seed file");

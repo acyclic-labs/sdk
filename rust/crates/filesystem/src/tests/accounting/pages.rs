@@ -253,10 +253,27 @@ async fn a_later_publication_changes_the_watermark_without_changing_consumed_fac
     assert!(!second.complete);
     let last = page(&authority, &objects, id, second.next, 1).await?;
     assert!(last.complete);
-    let bounded = page(&authority, &objects, id, AccountingCursor::genesis(), 8).await?;
+    let complete = page(&authority, &objects, id, AccountingCursor::genesis(), 8).await?;
+    assert!(complete.complete);
+    assert_eq!(complete.facts.len(), 4);
+    let bounded_budget = WorkBudget {
+        items_examined: complete.work.items_examined.checked_sub(1).unwrap(),
+        ..BUDGET
+    };
+    let bounded = accounting_page(
+        &authority,
+        &objects,
+        id,
+        AccountingCursor::genesis(),
+        8,
+        bounded_budget,
+        &cancel,
+    )
+    .await?;
     assert!(!bounded.facts.is_empty() && bounded.facts.len() < 4);
     assert!(!bounded.complete);
-    bounded.work.verify(BUDGET)?;
+    assert_eq!(bounded.facts, complete.facts[..bounded.facts.len()]);
+    bounded.work.verify(bounded_budget)?;
     assert_eq!(
         bounded.next.sequence,
         bounded.facts.last().unwrap().sequence
