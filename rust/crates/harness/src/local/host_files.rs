@@ -951,10 +951,8 @@ impl Served {
         };
         if self.known.contains_key(&operation) {
             // A known request changes only by its withdrawal.
-            match requests.open_file(path, false).map_err(native_file_error) {
-                Ok(_) => {}
-                Err(Error::NotFound(_)) => self.withdraw(status, operation)?,
-                Err(error) => return Err(error),
+            if requests.open_file(path, false).is_err() {
+                self.withdraw(status, operation)?;
             }
             return Ok(());
         }
