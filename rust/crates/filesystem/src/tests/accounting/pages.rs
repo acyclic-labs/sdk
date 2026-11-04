@@ -91,6 +91,11 @@ async fn pages_retain_original_frame_and_fact_backing_until_retirement()
                 work.allocations.live_bytes()
             }
         };
+        let before_read_context = live(&work);
+        if native {
+            // The original authority context stays cached in the work owner.
+            authority.head(id, &mut work).await?;
+        }
         let baseline = live(&work);
         let page = accounting_page(
             &OriginalPageAuthority(&authority),
@@ -149,8 +154,19 @@ async fn pages_retain_original_frame_and_fact_backing_until_retirement()
         );
         let independent_bytes = independent.value.capacity() as u64;
         assert!(independent.value.iter().all(|byte| *byte == 0xa5));
-        drop(independent);
-        assert_eq!(live(&work), baseline - independent_bytes);
+        if native {
+            drop(work);
+            assert_eq!(original.live_allocation_bytes(), before_read_context);
+            assert!(independent.value.iter().all(|byte| *byte == 0xa5));
+            drop(independent);
+            assert_eq!(
+                original.live_allocation_bytes(),
+                before_read_context - independent_bytes
+            );
+        } else {
+            drop(independent);
+            assert_eq!(live(&work), baseline - independent_bytes);
+        }
     }
     Ok(())
 }
