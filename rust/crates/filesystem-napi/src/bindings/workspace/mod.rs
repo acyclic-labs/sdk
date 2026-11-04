@@ -482,6 +482,7 @@ pub(in crate::bindings) fn native_workspace_rebase_result(
         WorkspaceRebase::Conflicted {
             conflicts,
             truncated,
+            allocation: _allocation,
         } => {
             return NativeWorkspaceRebaseResult {
                 status: "conflicted".to_owned(),

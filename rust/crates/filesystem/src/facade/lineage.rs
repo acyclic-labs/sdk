@@ -18,10 +18,10 @@ pub(crate) struct WorkspaceRebaseRequest<'a, A: 'static, O: 'static> {
 pub(super) struct RebaseLineage<A: 'static, O: 'static> {
     pub(super) target_object: ObjectId,
     pub(super) target_head: Head,
-    pub(super) target_root: GenerationRoot,
+    pub(super) target_root: Owned<GenerationRoot>,
     /// The parent generation that the fork is based on.
     pub(super) base_object: ObjectId,
-    pub(super) base_root: GenerationRoot,
+    pub(super) base_root: Owned<GenerationRoot>,
     /// The parent.
     pub(super) source: Volume<A, O>,
     /// The parent's head.
@@ -130,92 +130,128 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         target: &Volume<A, O>,
         maximum_generations: u32,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<RebaseLineage<A, O>, WorkspaceError> {
+        let mut scope = accounting.allocation_scope()?;
+        let accounting = &mut *scope;
+        accounting.check()?;
         let (target_object, target_head) = target
-            .resolve_head_generation(
-                &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation),
-                cancellation,
-            )
+            .resolve_head_generation(accounting, cancellation)
             .await
             .map_err(WorkspaceError::engine)?;
-        let (target_root, _) = read_generation_root(
-            &self.inner.objects,
-            target_object,
-            target.config,
-            WorkBudget::UNBOUNDED,
-            cancellation,
-        )
-        .await
-        .map_err(WorkspaceError::engine)?;
+        let target_root = self
+            .read_generation_owned_with_accounting(
+                target_object,
+                target.config,
+                accounting,
+                cancellation,
+            )
+            .await?;
+        if target_root.value.volume_id != target.id {
+            return Err(WorkspaceError::IncompatibleWorkspace);
+        }
 
         let mut cursor = target_object;
+        let mut cursor_root = None;
         let mut adopted = None;
         let mut filtered_baseline = None;
-        for _ in 0..maximum_generations {
-            let (root, _) = read_generation_root(
-                &self.inner.objects,
-                cursor,
-                target.config,
-                WorkBudget::UNBOUNDED,
-                cancellation,
-            )
-            .await
-            .map_err(WorkspaceError::engine)?;
-            if root.volume_id != target.id {
-                adopted = Some((cursor, root));
+        for depth in 0..maximum_generations {
+            if depth != 0 {
+                cursor_root = Some(
+                    self.read_generation_owned_with_accounting(
+                        cursor,
+                        target.config,
+                        accounting,
+                        cancellation,
+                    )
+                    .await?,
+                );
+            }
+            let root = cursor_root.as_ref().unwrap_or(&target_root);
+            if root.value.volume_id != target.id {
+                adopted = Some((
+                    cursor,
+                    cursor_root
+                        .take()
+                        .ok_or(WorkspaceError::IncompatibleWorkspace)?,
+                ));
                 break;
             }
             if filtered_baseline.is_none()
-                && root.required_features & GenerationRoot::FILTERED_FORK != 0
+                && root.value.required_features & GenerationRoot::FILTERED_FORK != 0
             {
-                filtered_baseline = Some(root.clone());
+                let (value, allocation) =
+                    crate::kernel::clone_generation_root_with_accounting(&root.value, accounting)?;
+                let bytes = root_parent_bytes(&value)?;
+                filtered_baseline = Some(Owned::new(value, allocation, bytes));
             }
-            let Some(parent) = root.parents.first() else {
+            let Some(parent) = root.value.parents.first() else {
                 return Err(WorkspaceError::NotFork);
             };
             cursor = parent.object_id();
+            if let Some(root) = cursor_root.take() {
+                root.retire(accounting)?;
+            }
         }
         let Some((base_object, base_root)) = adopted else {
             return Err(WorkspaceError::LineageLimit);
         };
         let source = self
-            .open_volume(base_root.volume_id, WorkBudget::UNBOUNDED, cancellation)
+            .open_volume_with_accounting(base_root.value.volume_id, accounting, cancellation)
             .await
-            .map_err(WorkspaceError::engine)?
-            .value;
-        if source.config != target.config || base_root.root_file_id != target_root.root_file_id {
+            .map_err(WorkspaceError::engine)?;
+        if source.config != target.config
+            || base_root.value.root_file_id != target_root.value.root_file_id
+        {
             return Err(WorkspaceError::IncompatibleWorkspace);
         }
         let (source_object, _) = source
-            .resolve_head_generation(
-                &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation),
-                cancellation,
-            )
+            .resolve_head_generation(accounting, cancellation)
             .await
             .map_err(WorkspaceError::engine)?;
-        Ok(RebaseLineage {
+        let base_root = if let Some(filtered) = filtered_baseline {
+            base_root.retire(accounting)?;
+            filtered
+        } else {
+            base_root
+        };
+        let bytes = target_root
+            .bytes
+            .checked_add(base_root.bytes)
+            .ok_or(WorkError::Overflow)?;
+        let lineage = RebaseLineage {
             target_object,
             target_head,
             target_root,
             base_object,
-            base_root: filtered_baseline.unwrap_or(base_root),
+            base_root,
             source,
             source_object,
-        })
+        };
+        scope.keep_bytes(bytes)?;
+        Ok(lineage)
     }
 
-    /// The parent head that a fork would rebase onto, or `None` when the fork
-    pub(crate) async fn parent_advance(
+    /// The parent head that a fork would rebase onto, under the supplied work.
+    pub(crate) async fn parent_advance<W: FsWork>(
         &self,
         target: &Volume<A, O>,
         maximum_generations: u32,
-    ) -> Result<Option<GenerationId>, WorkspaceError> {
-        let lineage = self
-            .rebase_lineage(target, maximum_generations, &CancellationToken::new())
-            .await?;
-        Ok((lineage.source_object != lineage.base_object)
-            .then(|| GenerationId::from_root(lineage.source_object)))
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<Option<GenerationId>, WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = async {
+            let mut scope = accounting.allocation_scope()?;
+            let lineage = self
+                .rebase_lineage(target, maximum_generations, &mut scope, cancellation)
+                .await?;
+            Ok((lineage.source_object != lineage.base_object)
+                .then(|| GenerationId::from_root(lineage.source_object)))
+        }
+        .await;
+        work.finish(result, &accounting)
     }
 }
 

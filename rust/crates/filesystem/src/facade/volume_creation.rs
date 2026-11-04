@@ -107,21 +107,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> W::Output<Volume<A, O>, FsError> {
         let mut accounting = work.accounting(cancellation);
-        let result = async {
-            let config = self
-                .read_creation(volume_id, &mut accounting, cancellation)
-                .await?
-                .0
-                .config;
-            validate_volume_capabilities(config, self.inner.capabilities)?;
-            Ok(Volume {
-                fs: self.clone(),
-                id: volume_id,
-                config,
-            })
-        }
-        .await;
+        let result = self
+            .open_volume_with_accounting(volume_id, &mut accounting, cancellation)
+            .await;
         work.finish(result, &accounting)
+    }
+
+    pub(super) async fn open_volume_with_accounting(
+        &self,
+        volume_id: VolumeId,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Volume<A, O>, FsError> {
+        let mut accounting = accounting.allocation_scope()?;
+        let config = self
+            .read_creation(volume_id, &mut accounting, cancellation)
+            .await?
+            .0
+            .config;
+        validate_volume_capabilities(config, self.inner.capabilities)?;
+        Ok(Volume {
+            fs: self.clone(),
+            id: volume_id,
+            config,
+        })
     }
     /// Restores a volume authority from a fully imported immutable generation.
     pub async fn restore_volume(

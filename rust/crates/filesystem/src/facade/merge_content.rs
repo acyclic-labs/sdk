@@ -33,7 +33,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let accounting = &mut *scope;
         accounting.check()?;
         let root = self
-            .read_join_root_with_accounting(
+            .read_generation_owned_with_accounting(
                 generation.object_id(),
                 workspace.config,
                 accounting,

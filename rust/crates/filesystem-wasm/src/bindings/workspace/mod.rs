@@ -509,6 +509,7 @@ pub(in crate::bindings) fn browser_workspace_rebase_result<A, O>(
         WorkspaceRebase::Conflicted {
             conflicts,
             truncated,
+            allocation: _allocation,
         } => {
             return BrowserWorkspaceRebaseResult {
                 status: "conflicted",
