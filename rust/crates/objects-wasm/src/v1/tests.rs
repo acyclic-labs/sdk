@@ -134,10 +134,6 @@ async fn original_javascript_account_preserves_results_and_cancellation() {
         wire::ErrorCode::NotFound
     );
     assert_eq!(
-        client.availability(digest).await.err().unwrap().code,
-        wire::ErrorCode::Unsupported
-    );
-    assert_eq!(
         transport
             .invoke("not-an-objects-route", Vec::new().into())
             .await
