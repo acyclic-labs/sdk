@@ -93,10 +93,10 @@ async fn check_cold_recovery(native: bool) -> Result<()> {
                 "recovery rebuilt the full in-memory journal"
             );
             assert_eq!(summary.tail, u64::from(count) + 2);
-            assert_eq!(summary.retries.entries().count(), 1);
-            assert_eq!(summary.tools.entries().count(), 1);
-            assert_eq!(summary.contexts.entries().count(), 0);
-            assert_eq!(summary.models.entries().count(), 0);
+            assert_eq!(summary.retries.entries(None).count(), 1);
+            assert_eq!(summary.tools.entries(None).count(), 1);
+            assert_eq!(summary.contexts.entries(None).count(), 0);
+            assert_eq!(summary.models.entries(None).count(), 0);
         }
         check_full_fold(&reopened, operation, count, &io).await?;
         drop(reopened);

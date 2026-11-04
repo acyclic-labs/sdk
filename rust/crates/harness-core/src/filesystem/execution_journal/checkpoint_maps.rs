@@ -183,7 +183,7 @@ async fn overlay<K: SummaryKey, V: Entry, P: crate::store::JournalProvider + ?Si
     map: &SummaryMap<K, V>,
     io: Option<&PreparationIo>,
 ) -> Result<Option<NodeRef>> {
-    for entry in map.entries() {
+    for entry in map.entries(io) {
         let (key, value) = entry?;
         crate::model::charge_items(io, 1)?;
         root = Some(store(writer, root, key, value, io).await?);
