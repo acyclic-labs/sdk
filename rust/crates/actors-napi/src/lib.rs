@@ -13,6 +13,21 @@ use tokio_util::sync::CancellationToken;
 
 const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Thin N-API projection of the canonical producer Cause. No classification
+/// or attribution is reconstructed at this boundary.
+#[napi(object)]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeActorsCause {
+    /// Original producer component.
+    pub component: String,
+    /// Original producer reason, including future tokens.
+    pub reason: String,
+    /// Original request identity.
+    #[napi(js_name = "requestId")]
+    pub request_id: String,
+}
+
 /// Structured Rust-owned error metadata.
 #[napi(object)]
 #[derive(Default, Serialize)]
@@ -41,6 +56,9 @@ pub struct NativeActorsErrorMetadata {
     #[serde(rename = "serviceMessage", skip_serializing_if = "Option::is_none")]
     /// Service detail message.
     pub service_message: Option<String>,
+    /// Original producer attribution.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cause: Option<NativeActorsCause>,
     #[napi(js_name = "contractCode")]
     #[serde(rename = "contractCode", skip_serializing_if = "Option::is_none")]
     /// Contract category.
@@ -185,6 +203,11 @@ fn client_error(error: client::Error) -> NativeActorsErrorMetadata {
         credential_rejected: metadata.credential_rejected,
         service_code: metadata.service_code,
         service_message: metadata.service_message,
+        cause: metadata.cause.map(|cause| NativeActorsCause {
+            component: cause.component,
+            reason: cause.reason,
+            request_id: cause.request_id,
+        }),
         contract_code: metadata.contract_code,
         raw_details: metadata.raw_details.map(Buffer::from),
     }
