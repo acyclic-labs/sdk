@@ -91,6 +91,7 @@ async fn interrupted(backend: &dyn Backend, fault: Option<Fault>) -> Result {
     if let Some(fault) = fault {
         provider.crash_at(provider.calls(), fault);
     }
+    let (drained, idle) = oneshot::channel();
     let controls = async {
         running.await?;
         host.send(&agent, &fixtures::sender(), &send("queued")?)
@@ -104,6 +105,7 @@ async fn interrupted(backend: &dyn Backend, fault: Option<Fault>) -> Result {
             }),
         )
         .await?;
+        idle.await?;
         host.send(&agent, &fixtures::sender(), &send("after")?)
             .await?;
         Result::Ok(())
@@ -117,6 +119,9 @@ async fn interrupted(backend: &dyn Backend, fault: Option<Fault>) -> Result {
         }
         futures::future::Either::Right((result, _)) => {
             result?;
+            drained
+                .send(())
+                .map_err(|_| "interrupt controls dropped before drain completion")?;
             return Err("runtime drain ended before interrupt controls completed".into());
         }
     }
