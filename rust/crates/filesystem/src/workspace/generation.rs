@@ -99,6 +99,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
     }
 
     /// Computes the plaintext digest of the source parent normalized to `target`.
+    /// Temporary decoded roots and encoding backing retire before completion,
+    /// including admission refusal and cancellation, on the supplied work source.
     pub async fn normalized_join_parent_for<W: crate::facade::FsWork>(
         &self,
         target: &Self,
