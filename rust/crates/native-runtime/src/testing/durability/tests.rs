@@ -7,12 +7,23 @@ fn runtime() -> tokio::runtime::Runtime {
         .unwrap()
 }
 
-fn write_pair(schedule: &Schedule) -> (Vec<u8>, Vec<io::Result<()>>) {
+fn write_pair(
+    schedule: &Schedule,
+    cut: Option<(usize, DurableFault)>,
+) -> (Vec<u8>, Vec<io::Result<()>>) {
     let mut file = tempfile::tempfile().unwrap();
     let results = runtime().block_on(schedule.scope(async {
         [b"first".as_slice(), b"second".as_slice()]
             .into_iter()
-            .map(|bytes| crate::write_file_all(&mut file, bytes))
+            .enumerate()
+            .map(|(ordinal, bytes)| {
+                if let Some((at, fault)) = cut
+                    && at == ordinal
+                {
+                    assert_eq!(schedule.cut_next(fault), at);
+                }
+                crate::write_file_all(&mut file, bytes)
+            })
             .collect()
     }));
     use std::io::{Read, Seek};
@@ -25,10 +36,10 @@ fn write_pair(schedule: &Schedule) -> (Vec<u8>, Vec<io::Result<()>>) {
 #[test]
 fn every_write_cut_preserves_its_exact_prefix_and_cause() {
     let (schedule, _) = Schedule::seeded(71);
-    let (bytes, results) = write_pair(&schedule);
+    let (bytes, results) = write_pair(&schedule, None);
     assert_eq!(bytes, b"firstsecond");
     assert!(results.into_iter().all(|result| result.is_ok()));
-    let count = schedule.durable_writes().len();
+    let count = schedule.durable_write_count();
     assert_eq!(count, 2, "an original file write escaped enumeration");
     for cut in 0..count {
         for fault in [
@@ -41,8 +52,7 @@ fn every_write_cut_preserves_its_exact_prefix_and_cause() {
             DurableFault::Torn(99),
         ] {
             let (schedule, _) = Schedule::seeded(71);
-            schedule.cut_at(cut, fault);
-            let (actual, results) = write_pair(&schedule);
+            let (actual, results) = write_pair(&schedule, Some((cut, fault)));
             let prefix = if cut == 0 {
                 b"".as_slice()
             } else {
@@ -59,7 +69,11 @@ fn every_write_cut_preserves_its_exact_prefix_and_cause() {
                 _ => 0,
             };
             let (retained, _) = offered.split_at(kept);
-            assert_eq!(actual, [prefix, retained].concat());
+            assert_eq!(
+                actual,
+                [prefix, retained].concat(),
+                "physical cut retained the wrong byte prefix"
+            );
             for (index, result) in results.into_iter().enumerate() {
                 if index < cut {
                     assert!(result.is_ok());
@@ -77,7 +91,7 @@ fn every_write_cut_preserves_its_exact_prefix_and_cause() {
                 }
             }
             assert_eq!(
-                schedule.durable_writes().len(),
+                schedule.durable_write_count(),
                 cut + 1,
                 "write dispatched after a crash"
             );
@@ -301,7 +315,7 @@ proptest::proptest! {
 fn negative_control_skipping_the_original_file_write_loses_acknowledged_bytes() {
     let (schedule, _) = Schedule::seeded(71);
     schedule.0.state().writes.skip_write = true;
-    let (bytes, results) = write_pair(&schedule);
+    let (bytes, results) = write_pair(&schedule, None);
     assert!(results.into_iter().all(|result| result.is_ok()));
     assert_eq!(bytes, b"firstsecond", "acknowledged bytes were lost");
 }

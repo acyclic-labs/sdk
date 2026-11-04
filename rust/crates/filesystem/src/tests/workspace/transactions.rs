@@ -59,14 +59,21 @@ async fn transaction_is_atomic_idempotent_and_visible_to_forks() -> Result<(), B
         OwnedBytes::from_static(b"ready")
     );
 
-    let mut exact_retry = unbounded!(workspace, begin_transaction(key))?;
-    unbounded!(exact_retry, create_dir_all("/output/nested"))?;
-    exact_retry
+    // Retry the original candidate and publication head, rather than rebuilding
+    // the same file bytes against a different authenticated base.
+    assert!(matches!(
+        commit(&mut transaction).await?,
+        TransactionCommit::AlreadyCommitted(retried) if retried.id() == generation.id()
+    ));
+
+    let mut changed_base = unbounded!(workspace, begin_transaction(key))?;
+    unbounded!(changed_base, create_dir_all("/output/nested"))?;
+    changed_base
         .write_text("/output/nested/status", "ready")
         .await?;
     assert!(matches!(
-        commit(&mut exact_retry).await?,
-        TransactionCommit::AlreadyCommitted(retried) if retried.id() == generation.id()
+        commit(&mut changed_base).await?,
+        TransactionCommit::IdempotencyConflict
     ));
 
     let mut conflicting_retry = unbounded!(workspace, begin_transaction(key))?;
@@ -93,6 +100,14 @@ async fn retained_transaction_rebases_disjoint_work_and_rejects_overlap()
     assert!(matches!(
         commit(&mut first).await?,
         TransactionCommit::Committed(_)
+    ));
+    assert!(matches!(
+        commit(&mut disjoint).await?,
+        TransactionCommit::Conflict { .. }
+    ));
+    assert!(matches!(
+        unbounded!(disjoint, rebase(16))?,
+        TransactionRebase::Rebased(_)
     ));
     assert!(matches!(
         commit(&mut disjoint).await?,
@@ -317,9 +332,18 @@ proptest::proptest! {
             Serial,
             #[cfg(not(target_arch = "wasm32"))]
             Batched,
+            #[cfg(not(target_arch = "wasm32"))]
+            PendingBatch,
         }
         let result: Result<(), Box<dyn Error>> = futures::executor::block_on(async {
             for mode in [
+                WriteMode::Serial,
+                #[cfg(not(target_arch = "wasm32"))]
+                WriteMode::Batched,
+                #[cfg(not(target_arch = "wasm32"))]
+                WriteMode::PendingBatch,
+            ] {
+            for winner_mode in [
                 WriteMode::Serial,
                 #[cfg(not(target_arch = "wasm32"))]
                 WriteMode::Batched,
@@ -338,11 +362,18 @@ proptest::proptest! {
                     };
                     let sibling = format!("{directory}/{name}");
                     let fs = Fs::memory();
-                    let workspace = unbounded!(fs, create_workspace("mkdir-dependencies"))?;
+                    let workspace = unbounded!(fs, create_workspace_with_config("mkdir-dependencies", VolumeConfig {
+                        concurrency: crate::model::ConcurrencyMode::SerializedAuthority,
+                        ..VolumeConfig::portable(Lifecycle::Ephemeral)
+                    }))?;
                     let mut seed = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
                     unbounded!(seed, create_dir_all("/shared/nested"))?;
                     commit(&mut seed).await?;
                     let mut pending = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if matches!(mode, WriteMode::PendingBatch) {
+                        pending.write_text("/staged", "pending").await?;
+                    }
                     if observe_directory {
                         let limits = pending.checkout.volume_config().limits;
                         let path = crate::kernel::NamespacePath::new(components.iter().map(|component| crate::kernel::LogicalName::new(
@@ -356,7 +387,7 @@ proptest::proptest! {
                             pending.write_text("/shared/nested/local", "local").await?;
                         }
                         #[cfg(not(target_arch = "wasm32"))]
-                        WriteMode::Batched => {
+                        WriteMode::Batched | WriteMode::PendingBatch => {
                             unbounded!(pending, write_batch(&["/shared/nested"], &[("/shared/nested/local", OwnedBytes::copy_from_slice(b"local"))]))?;
                         }
                     }
@@ -365,18 +396,31 @@ proptest::proptest! {
                         unbounded!(other, remove("/shared/nested"))?;
                         other.write_text("/shared/nested", "replacement").await?;
                     }
-                    unbounded!(other, write(&sibling, OwnedBytes::copy_from_slice(&payload)))?;
+                    match winner_mode {
+                        WriteMode::Serial => {
+                            unbounded!(other, write(&sibling, OwnedBytes::copy_from_slice(&payload)))?;
+                        }
+                        #[cfg(not(target_arch = "wasm32"))]
+                        WriteMode::Batched | WriteMode::PendingBatch => {
+                            unbounded!(other, write_batch(&[directory], &[(sibling.as_str(), OwnedBytes::copy_from_slice(&payload))]))?;
+                        }
+                    }
                     assert!(matches!(commit(&mut other).await?, TransactionCommit::Committed(_)));
                     let outcome = commit(&mut pending).await?;
                     if observe_directory || replace_prefix {
                         assert!(matches!(outcome, TransactionCommit::Conflict { .. }));
                         assert!(matches!(unbounded!(pending, rebase(1))?, TransactionRebase::Conflicted { .. }));
                     } else {
-                        assert!(matches!(outcome, TransactionCommit::Committed(_)), "mode={mode:?} inside={inside}");
+                        assert!(matches!(outcome, TransactionCommit::Committed(_)), "mode={mode:?} winner={winner_mode:?} inside={inside}");
                         assert_eq!(unbounded!(workspace, read("/shared/nested/local", 16))?.as_ref(), b"local");
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if matches!(mode, WriteMode::PendingBatch) {
+                            assert_eq!(unbounded!(workspace, read("/staged", 16))?.as_ref(), b"pending");
+                        }
                     }
                     assert_eq!(unbounded!(workspace, read(&sibling, 32))?.as_ref(), payload.as_slice());
                 }
+            }
             }
             }
             }
@@ -384,123 +428,6 @@ proptest::proptest! {
         });
         proptest::prop_assert!(result.is_ok(), "{result:?}");
     }
-}
-
-// Both writers stage against exactly the same generation, then publish in a
-// fixed order. No scheduler timing is needed to reproduce the host upload race.
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn shared_directory_writers_rebase_only_semantically_disjoint_batches()
--> Result<(), Box<dyn Error>> {
-    #[derive(Clone, Copy, Debug)]
-    enum WriteMode {
-        Serial,
-        Batched,
-        PendingBatch,
-    }
-    for mode in [
-        WriteMode::Serial,
-        WriteMode::Batched,
-        WriteMode::PendingBatch,
-    ] {
-        let batched = !matches!(mode, WriteMode::Serial);
-        for observe_directory in [false, true] {
-            for replace_prefix in [false, true] {
-                let fs = Fs::memory();
-                let workspace = unbounded!(fs, create_workspace("shared-directory-writers"))?;
-                let mut seed = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
-                unbounded!(seed, create_dir_all("/.system/harness-uploads"))?;
-                commit(&mut seed).await?;
-                let mut pending = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
-                let mut winner = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
-                if matches!(mode, WriteMode::PendingBatch) {
-                    // A prior mutation forces write_batch's serial fallback.
-                    pending.write_text("/staged", "pending").await?;
-                }
-                if observe_directory {
-                    let limits = pending.checkout.volume_config().limits;
-                    let path = crate::kernel::NamespacePath::new(
-                        [".system", "harness-uploads"]
-                            .into_iter()
-                            .map(|name| {
-                                crate::kernel::LogicalName::new(
-                                    crate::kernel::NameEncoding::Utf8,
-                                    name.as_bytes().to_vec(),
-                                    limits.maximum_component_bytes,
-                                )
-                            })
-                            .collect::<Result<Vec<_>, _>>()?,
-                        limits,
-                    )?;
-                    unbounded!(pending.checkout, lookup_no_follow(&path))?;
-                }
-                if batched {
-                    unbounded!(
-                        pending,
-                        write_batch(
-                            &["/.system/harness-uploads"],
-                            &[(
-                                "/.system/harness-uploads/local",
-                                OwnedBytes::from_static(b"local")
-                            )]
-                        )
-                    )?;
-                } else {
-                    unbounded!(pending, create_dir_all("/.system/harness-uploads"))?;
-                    pending
-                        .write_text("/.system/harness-uploads/local", "local")
-                        .await?;
-                }
-                if replace_prefix {
-                    unbounded!(winner, remove("/.system/harness-uploads"))?;
-                    winner
-                        .write_text("/.system/harness-uploads", "replacement")
-                        .await?;
-                } else {
-                    unbounded!(
-                        winner,
-                        write_batch(
-                            &["/.system/harness-uploads"],
-                            &[(
-                                "/.system/harness-uploads/remote",
-                                OwnedBytes::from_static(b"remote")
-                            )]
-                        )
-                    )?;
-                }
-                assert!(matches!(
-                    commit(&mut winner).await?,
-                    TransactionCommit::Committed(_)
-                ));
-                let outcome = commit(&mut pending).await?;
-                if observe_directory || replace_prefix {
-                    assert!(matches!(outcome, TransactionCommit::Conflict { .. }));
-                    assert!(
-                        matches!(
-                            unbounded!(pending, rebase(16))?,
-                            TransactionRebase::Conflicted { .. }
-                        ),
-                        "batched={batched}, observed={observe_directory}, replaced={replace_prefix}"
-                    );
-                } else {
-                    assert!(
-                        matches!(outcome, TransactionCommit::Committed(_)),
-                        "mode={mode:?} did not compose disjoint sibling writes"
-                    );
-                    assert_eq!(
-                        unbounded!(workspace, read("/.system/harness-uploads/local", 16))?.as_ref(),
-                        b"local"
-                    );
-                    assert_eq!(
-                        unbounded!(workspace, read("/.system/harness-uploads/remote", 16))?
-                            .as_ref(),
-                        b"remote"
-                    );
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]

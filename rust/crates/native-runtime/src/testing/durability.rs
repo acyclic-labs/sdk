@@ -101,9 +101,31 @@ impl Schedule {
         state.writes.cut = Some((ordinal, fault));
     }
 
+    /// Arms the next original physical call at an observed live event.
+    /// Returns its ordinal under the same lock that registers physical calls.
+    /// Calls already registered before this event are left unchanged.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this scope already has a cut or a retained storage fault.
+    pub fn cut_next(&self, fault: DurableFault) -> usize {
+        let mut state = self.0.state();
+        let writes = &mut state.writes;
+        assert!(writes.cut.is_none(), "scope already has a physical cut");
+        assert!(writes.failed.is_none(), "cannot arm a crashed scope");
+        let ordinal = writes.trace.len();
+        writes.cut = Some((ordinal, fault));
+        ordinal
+    }
+
     /// Complete ordered record of the original file calls in this scope.
     pub fn durable_writes(&self) -> Vec<DurableWrite> {
         self.0.state().writes.trace.clone()
+    }
+
+    /// Number of original physical calls, without copying the retained trace.
+    pub fn durable_write_count(&self) -> usize {
+        self.0.state().writes.trace.len()
     }
 
     /// Latched cause of the first cut, retained until this scope is discarded.

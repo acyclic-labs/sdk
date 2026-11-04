@@ -52,9 +52,8 @@ async fn complete_corpus_verdict_does_not_depend_on_elapsed_time() -> Result {
         .collect();
     assert!(
         report.success(),
-        "{} failures, first three: {:?}",
+        "{} failures: {failures:?}",
         failures.len(),
-        failures.iter().take(3).collect::<Vec<_>>()
     );
     Ok(())
 }
