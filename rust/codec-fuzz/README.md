@@ -875,3 +875,20 @@ original `captures/` provenance. `negative-controls/mcp_stdio_bound.patch` remov
 the reader's decoder bound; replaying the same captured input must then fail the
 fragmentation oracle. The retained codec controls additionally reject a dropped
 bound publication and an ignored notification hiding a buffered response.
+The existing Harness `bounded_json` target also calls the shared typed decoder
+with borrowed `RawValue`, retaining its original byte/value/canonical relations.
+It checks admission, scratch release and caller refusal at each charge frontier.
+Malformed arbitrary inputs reach the typed entrance; an admitted writer buffer
+with one trailing value additionally exercises diagnostic admission and its
+caller refusal. The five retained inputs are finite regression operands, not
+captured provider responses or evidence of a coverage-guided campaign.
+
+`../crates/harness-fuzz/negative-controls/typed-json-ignore-admission.patch` and
+`typed-json-ignore-release.patch` retain the original admission/release controls.
+`typed-json-ignore-syntax-admission.patch` drops the actual diagnostic admission
+error. Run `python3 rust/crates/harness-fuzz/typed-json-negative-control.py` from
+the repository root to require that last mutation to fail the unchanged semantic
+assertion, then restore production and run the same named corpus check. Syntax
+control qualification, owned typed-layout bounds, complete branches and platform
+composition remain separate obligations; this borrowed-document check establishes
+neither arbitrary schema completeness nor physical allocation bounds.
