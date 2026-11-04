@@ -80,19 +80,9 @@ pub(crate) struct LogicalVecCapacity {
     logical_bytes: u64,
 }
 
-enum LogicalVecAllocationStep {
-    Claim {
-        bytes: u64,
-    },
-    ReserveFailed {
-        bytes: u64,
-        error: std::collections::TryReserveError,
-    },
-    Capacity {
-        requested: u64,
-        actual: u64,
-    },
-}
+mod vector;
+pub(crate) use vector::reserve_vec_with_accounting;
+use vector::{VecAllocationStep, reserve_vec_using};
 
 impl LogicalVecCapacity {
     #[cfg(any(test, not(target_arch = "wasm32")))]
@@ -110,15 +100,33 @@ impl LogicalVecCapacity {
             maximum_elements,
             |error| error,
             |step| match step {
-                LogicalVecAllocationStep::Claim { bytes } => {
+                VecAllocationStep::CopyAdmission { bytes } => {
+                    work.admit(
+                        &WorkCounters {
+                            bytes_copied: bytes,
+                            ..WorkCounters::UNCHARGED
+                        },
+                        &budget,
+                    )?;
+                    Ok(())
+                }
+                VecAllocationStep::Claim { bytes } => {
                     ledger.claim_bytes(bytes, u64::from(bytes != 0), work, budget)
                 }
-                LogicalVecAllocationStep::ReserveFailed { bytes, .. } => {
+                VecAllocationStep::ReserveFailed { bytes, .. } => {
                     ledger.release(bytes)?;
                     Err(AllocationError::AllocationFailed)
                 }
-                LogicalVecAllocationStep::Capacity { requested, actual } => {
+                VecAllocationStep::Capacity { requested, actual } => {
                     ledger.record_owned_bytes(actual - requested, work)?;
+                    work.verify(budget)?;
+                    Ok(())
+                }
+                VecAllocationStep::CopyComplete { bytes } => {
+                    work.try_add_assign(&WorkCounters {
+                        bytes_copied: bytes,
+                        ..WorkCounters::UNCHARGED
+                    })?;
                     work.verify(budget)?;
                     Ok(())
                 }
@@ -138,36 +146,23 @@ impl LogicalVecCapacity {
         }
         #[cfg(not(target_arch = "wasm32"))]
         let original = matches!(&*field_guard, KernelOwnedAllocation::NativeOriginal(_));
-        self.ensure_for_push_using(
-            values,
-            maximum_elements,
-            |error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed),
-            |step| match step {
-                LogicalVecAllocationStep::Claim { bytes } => {
-                    let mut claim = accounting.claim_owned(bytes, u64::from(bytes != 0))?;
-                    if let Err(error) = field_guard.absorb(&mut claim) {
-                        accounting.release_owned(&mut claim, bytes)?;
-                        return Err(error);
-                    }
-                    Ok(())
-                }
-                LogicalVecAllocationStep::ReserveFailed { bytes, error } => {
-                    // This admission never became physical; the old vector is unchanged.
-                    accounting.release_owned(field_guard, bytes)?;
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if original {
-                        return Err(
-                            crate::NativeTreeMaterializationError::AllocationFailed(error).into(),
-                        );
-                    }
-                    let _ = error;
-                    Err(crate::FsError::PendingMutationAllocationFailed)
-                }
-                LogicalVecAllocationStep::Capacity { requested, actual } => {
-                    accounting.reconcile_owned(field_guard, requested, actual)
-                }
-            },
-        )
+        let next = self
+            .next_capacity(values.len(), maximum_elements)
+            .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))?;
+        let result = reserve_vec_with_accounting(values, next, field_guard, accounting, |error| {
+            #[cfg(not(target_arch = "wasm32"))]
+            if original {
+                return crate::NativeTreeMaterializationError::AllocationFailed(error).into();
+            }
+            let _ = error;
+            crate::FsError::PendingMutationAllocationFailed
+        });
+        // Actual backing survives late quota or cancellation errors.
+        if values.capacity() >= next {
+            self.elements = next;
+            self.logical_bytes = usize_to_u64(values.capacity() * size_of::<T>());
+        }
+        result
     }
 
     fn ensure_for_push_using<T, E>(
@@ -175,53 +170,27 @@ impl LogicalVecCapacity {
         values: &mut Vec<T>,
         maximum_elements: usize,
         map_error: impl Fn(AllocationError) -> E,
-        mut allocation: impl FnMut(LogicalVecAllocationStep) -> Result<(), E>,
+        mut allocation: impl FnMut(VecAllocationStep) -> Result<(), E>,
     ) -> Result<(), E> {
-        if values.len() < self.elements {
-            return Ok(());
-        }
-        if self.elements >= maximum_elements {
-            return Err(map_error(AllocationError::CapacityExceeded));
-        }
-        let next = if self.elements == 0 {
-            1
-        } else {
-            self.elements.saturating_mul(2).min(maximum_elements)
-        };
+        let next = self
+            .next_capacity(values.len(), maximum_elements)
+            .map_err(&map_error)?;
+        let result = reserve_vec_using(values, next, map_error, &mut allocation);
         if values.capacity() >= next {
             self.elements = next;
-            return Ok(());
+            self.logical_bytes = usize_to_u64(values.capacity() * size_of::<T>());
         }
-        let requested_bytes = next
-            .checked_mul(size_of::<T>())
-            .map(usize_to_u64)
-            .ok_or_else(|| map_error(AllocationError::Overflow))?;
-        let old_bytes = self.logical_bytes;
-        let requested = requested_bytes
-            .checked_sub(old_bytes)
-            .ok_or_else(|| map_error(AllocationError::Overflow))?;
-        let additional = next
-            .checked_sub(values.len())
-            .ok_or_else(|| map_error(AllocationError::InvalidCapacity))?;
-        allocation(LogicalVecAllocationStep::Claim { bytes: requested })?;
-        if let Err(error) = values.try_reserve_exact(additional) {
-            return allocation(LogicalVecAllocationStep::ReserveFailed {
-                bytes: requested,
-                error,
-            });
+        result
+    }
+
+    fn next_capacity(self, len: usize, maximum: usize) -> Result<usize, AllocationError> {
+        if len < self.elements {
+            return Ok(self.elements);
         }
-        let actual_bytes = values
-            .capacity()
-            .checked_mul(size_of::<T>())
-            .map(usize_to_u64)
-            .ok_or_else(|| map_error(AllocationError::Overflow))?;
-        let actual = actual_bytes
-            .checked_sub(old_bytes)
-            .ok_or_else(|| map_error(AllocationError::Overflow))?;
-        // Completed backing and logical growth survive a late quota/cancellation error.
-        self.elements = next;
-        self.logical_bytes = actual_bytes;
-        allocation(LogicalVecAllocationStep::Capacity { requested, actual })
+        if self.elements >= maximum {
+            return Err(AllocationError::CapacityExceeded);
+        }
+        Ok(self.elements.saturating_mul(2).max(1).min(maximum))
     }
 
     pub(crate) const fn logical_bytes(self) -> u64 {
