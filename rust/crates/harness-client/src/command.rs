@@ -121,7 +121,7 @@ impl<'de> Deserialize<'de> for AgentPageRequest {
 pub enum AgentCommand {
     // Empty struct variants enforce deny_unknown_fields for fieldless commands too.
     /// Discover the binding of the tree this endpoint serves the session's
-    /// credential, sent with [`crate::AgentBinding::discovery`].
+    /// credential, retaining the host's selected binding when one is known.
     Bind {
         /// Optional descendant selected within the authenticated tree.
         #[serde(default)]

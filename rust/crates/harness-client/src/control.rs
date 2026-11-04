@@ -200,6 +200,7 @@ impl AgentBinding {
     /// binding's route by its path and query alone, and `body` is one frame
     /// of the caller's prepared command, kept byte for byte: the result is
     /// the envelope a session ActorCall carries here for the same frame.
+    /// Both URLs retain this binding's complete selection and metadata.
     ///
     /// # Errors
     /// [`CommandError::Invalid`] for another URL or a body that is not a
@@ -207,9 +208,7 @@ impl AgentBinding {
     pub fn routed(&self, url: &str, body: Vec<u8>) -> Result<Bytes, CommandError> {
         PreparedCommand::decode(&body)?;
         let route = route_path(url);
-        if route == route_path(DISCOVERY_URL) {
-            with_body(&Self::discovery().0, &body)
-        } else if route == route_path(&self.0.url) {
+        if route == route_path(DISCOVERY_URL) || route == route_path(&self.0.url) {
             with_body(&self.0, &body)
         } else {
             Err(CommandError::Invalid)
@@ -249,7 +248,19 @@ impl AgentControls {
         client: Client,
         credential: u32,
     ) -> Result<(Self, String), AgentExchangeError> {
-        Self::discover_selected(client, credential, None).await
+        Self::discover_at(client, credential, AgentBinding::discovery()).await
+    }
+
+    /// Discover within the host's published selection, using the existing
+    /// session and credential. Routing metadata never grants authority.
+    pub async fn discover_at(
+        client: Client,
+        credential: u32,
+        binding: AgentBinding,
+    ) -> Result<(Self, String), AgentExchangeError> {
+        Self::new(client, credential, binding)
+            .discover_selected(None)
+            .await
     }
 
     /// Select a descendant without creating another session or credential slot.
@@ -257,18 +268,19 @@ impl AgentControls {
         &self,
         agent: acyclic_harness_core::agent::AgentPath,
     ) -> Result<(Self, String), AgentExchangeError> {
-        Self::discover_selected(self.client.clone(), self.credential, Some(agent)).await
+        self.discover_selected(Some(agent)).await
     }
 
     async fn discover_selected(
-        client: Client,
-        credential: u32,
+        &self,
         agent: Option<acyclic_harness_core::agent::AgentPath>,
     ) -> Result<(Self, String), AgentExchangeError> {
-        let discovery = Self::new(client.clone(), credential, AgentBinding::discovery());
-        let invocation = discovery.prepare(PreparedCommand::new(&AgentCommand::Bind { agent })?)?;
-        let (binding, tools) = AgentBinding::from_reply(&discovery.execute(&invocation).await?)?;
-        Ok((Self::new(client, credential, binding), tools))
+        let invocation = self.prepare(PreparedCommand::new(&AgentCommand::Bind { agent })?)?;
+        let (binding, tools) = AgentBinding::from_reply(&self.execute(&invocation).await?)?;
+        Ok((
+            Self::new(self.client.clone(), self.credential, binding),
+            tools,
+        ))
     }
 
     /// Canonical host-published routing, without a command body or ordering.
@@ -518,11 +530,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let binding = AgentBinding::new(&invocation(Vec::new()).encode_to_vec())?;
         for (route, url, kind) in [
-            (
-                AgentBinding::discovery(),
-                "https://actor.invalid/agents/bind",
-                "bind",
-            ),
+            (binding.clone(), "https://actor.invalid/agents/bind", "bind"),
             (
                 AgentBinding::new(&invocation(Vec::new()).encode_to_vec())?,
                 "https://fixture.invalid/command",

@@ -156,6 +156,14 @@ fn composition(
     model: Arc<dyn ModelProvider>,
     owner: Owner,
 ) -> Outcome<Actors<MemoryStream, LogicalObjectStore<acyclic_objects::MemoryObjects>>> {
+    composition_at(model, owner, b"root")
+}
+
+fn composition_at(
+    model: Arc<dyn ModelProvider>,
+    owner: Owner,
+    member: &[u8],
+) -> Outcome<Actors<MemoryStream, LogicalObjectStore<acyclic_objects::MemoryObjects>>> {
     let root = AgentId::from_bytes([91; 16]);
     let audience = Authority {
         kind: AggregateKind::Conversation,
@@ -192,7 +200,7 @@ fn composition(
                 EmbeddedCapabilities::MEMORY,
             ),
             provider,
-            within: ActorReference::new(b"test", b"agents", b"root")?,
+            within: ActorReference::new(b"test", b"agents", member)?,
         },
         (
             IntentId::try_from("root")?,
@@ -227,6 +235,105 @@ fn composition(
         },
         Arc::new(owner),
     ))
+}
+
+#[tokio::test]
+async fn selected_discovery_preserves_the_published_member() -> Outcome {
+    use acyclic_harness_client::{
+        AgentBinding, AgentControls, AgentExchangeError, PreparedCommand,
+    };
+    use prost::Message as _;
+
+    let mut hosts = Vec::new();
+    let mut stops = Vec::new();
+    let mut clients = Vec::new();
+    for member in [b"first".as_slice(), b"second".as_slice()] {
+        let (ready, announced) = oneshot::channel();
+        let (stop, stopped) = oneshot::channel();
+        let host = tokio::spawn(server::serve(
+            listener().await?,
+            ServerConfig::new(composition_at(
+                Arc::new(ModelGate {
+                    entered: Mutex::new(None),
+                    output: Mutex::new(None),
+                }),
+                Owner(None),
+                member,
+            )?),
+            |endpoint| {
+                let _ = ready.send((
+                    endpoint.endpoint.clone(),
+                    endpoint.observation.as_ref().unwrap().credential.clone(),
+                ));
+            },
+            async {
+                let _ = stopped.await;
+            },
+        ));
+        let abort = Abort(host.abort_handle());
+        let (url, credential) = announced.await?;
+        let options = acyclic_harness_client::resolve_connection_options(
+            Some(&url),
+            Some(&credential),
+            None,
+            None,
+        )?;
+        clients.push(endpoint::connect(&options).await?);
+        stops.push(stop);
+        hosts.push((host, abort));
+    }
+
+    // Both credentials legitimately discover their own member. Routing must
+    // still retain the caller's selected member rather than rediscover another.
+    let (selected, _) = AgentControls::discover(clients[0].clone(), 0).await?;
+    let binding = AgentBinding::new(&selected.binding_bytes())?;
+    let root = acyclic_harness_client::AgentPath::root(&AgentId::from_bytes([91; 16]));
+    let foreign = AgentControls::new(clients[1].clone(), 0, binding);
+    assert!(matches!(
+        foreign.select(root.clone()).await,
+        Err(AgentExchangeError::Session(StreamError::AccessDenied))
+    ));
+    let encoded = selected.binding_bytes();
+    let published = acyclic_actors::wire::InvokeActorRequest::decode(encoded.as_slice())?;
+    let binding = AgentBinding::new(&encoded)?;
+    let command = PreparedCommand::new(&AgentCommand::Bind { agent: None })?;
+    let routed = binding.routed("/agents/bind", command.command().to_vec())?;
+    // Fetch and session ingress attach the same command to the actual wire
+    // publication, including every selected routing and deployment field.
+    assert_eq!(binding.prepare(&command)?.invocations(), [routed.clone()]);
+    clients[0].actor_call(&routed, 0, 1 << 20).await?;
+    assert!(matches!(
+        clients[1].actor_call(&routed, 0, 1 << 20).await,
+        Err(StreamError::AccessDenied)
+    ));
+    for field in ["account", "namespace"] {
+        let mut other = published.clone();
+        match field {
+            "account" => other.account_id.push(b'x'),
+            _ => other.namespace.as_mut().unwrap().push('x'),
+        }
+        assert!(matches!(
+            AgentControls::discover_at(
+                clients[0].clone(),
+                0,
+                AgentBinding::new(&other.encode_to_vec())?,
+            )
+            .await,
+            Err(AgentExchangeError::Session(StreamError::AccessDenied))
+        ));
+    }
+    let (bootstrapped, _) = AgentControls::discover_at(clients[0].clone(), 0, binding).await?;
+    assert_eq!(bootstrapped.binding_bytes(), encoded);
+    let (same, _) = bootstrapped.select(root).await?;
+    assert_eq!(same.binding_bytes(), selected.binding_bytes());
+
+    for stop in stops {
+        let _ = stop.send(());
+    }
+    for (host, _abort) in hosts {
+        host.await??;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug)]

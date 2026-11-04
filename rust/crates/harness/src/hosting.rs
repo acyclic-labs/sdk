@@ -339,7 +339,7 @@ where
                 Err(StreamError::AccessDenied)
             };
         }
-        if matches!(call.command(), AgentCommand::Bind { .. })
+        if routed.actor_id != within.id()
             || routed.namespace.as_deref() != Some(within.namespace().as_str())
             || routed.account_id.as_slice() != within.account().as_bytes()
         {
