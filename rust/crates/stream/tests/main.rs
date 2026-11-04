@@ -50,3 +50,6 @@ mod credential_javascript;
 
 #[cfg(not(loom))]
 mod session_framing;
+
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
+mod trust_anchor;
