@@ -755,6 +755,14 @@ reason operands are derived mutations, not captured provider failures.
 `original_service_writers_satisfy_the_semantic_oracle` must fail at
 `original member cause`. Restore the patch before the positive check.
 
+The same batch oracle consumes admitted member diagnostics through the public
+owned `ErrorDetail` conversion. A held shared owner must preserve every field;
+once unique, all three string pointers must move into the wire detail.
+`negative-controls/object_batch_diagnostic_copy.patch` restores the borrowed
+conversion and must fail at `unique member projection moves all original
+diagnostic allocations`. These checks reuse the retained mixed-batch writer
+and its derived known/unknown attribution operands; they add no captured wire.
+
 The Objects writer admission also opens the real account's availability feed
 through its public binary client and the shared production cursor writer. It
 requires that original opening cursor to decode, and refuses a zero incarnation
