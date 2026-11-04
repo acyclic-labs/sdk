@@ -7,6 +7,8 @@ use super::*;
 /// path carries that owner, rather than dropping counters or copying the error.
 pub(super) enum PacketFailure {
     Local(NativeMountError),
+    // Session state is terminal even though an ordinary source ENODEV is not.
+    TransportClosed,
     Source {
         _core: Arc<ProjectionCore>,
         errno: i32,
@@ -62,6 +64,7 @@ impl PacketFailure {
     pub(super) fn errno(&self) -> i32 {
         match self {
             Self::Local(error) => callback_errno(error),
+            Self::TransportClosed => libc::ENODEV,
             Self::Source { errno, .. } => *errno,
         }
     }
@@ -69,7 +72,7 @@ impl PacketFailure {
     pub(super) fn is_terminal(&self) -> bool {
         match self {
             Self::Local(error) => crate::native_mount::shared::outcome::stops_mount(error),
-            Self::Source { .. } => true,
+            Self::TransportClosed | Self::Source { .. } => true,
         }
     }
 

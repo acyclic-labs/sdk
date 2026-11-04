@@ -182,15 +182,19 @@ impl PacketSession {
         let (completion, next_phase) = if request.opcode == 26 {
             self.phase
                 .compare_exchange(COLD, NEGOTIATING, Ordering::AcqRel, Ordering::Acquire)
-                .map_err(|_| libc::EPROTO)?;
+                .map_err(|phase| {
+                    if phase == CLOSED {
+                        PacketFailure::TransportClosed
+                    } else {
+                        libc::EPROTO.into()
+                    }
+                })?;
             self.initialize(request, response)?
         } else {
-            if !self.ready() {
-                return Err(if self.phase.load(Ordering::Acquire) == CLOSED {
-                    libc::ENODEV.into()
-                } else {
-                    libc::EPROTO.into()
-                });
+            match self.phase.load(Ordering::Acquire) {
+                READY => {}
+                CLOSED => return Err(PacketFailure::TransportClosed),
+                _ => return Err(libc::EPROTO.into()),
             }
             if request.opcode == 38 {
                 PacketInput::new(request.body).end()?;
