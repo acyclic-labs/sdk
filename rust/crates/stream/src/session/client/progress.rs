@@ -77,8 +77,18 @@ impl Progress {
         self.ownership.fetch_or(CANCELLED, Ordering::AcqRel);
     }
     pub(super) fn cancel_and_remove(&self, removed: &super::signal::Signal<u64>, id: u64) {
-        self.cancel();
-        let _ = removed.send(id);
+        // Once cancellation is visible, the pool's next queue drain must see
+        // this removal before admitting another route to the retiring dial.
+        if removed
+            .send_with(|| {
+                self.cancel();
+                id
+            })
+            .is_err()
+        {
+            // A poisoned signal terminates the pool; still fence the cursor.
+            self.cancel();
+        }
     }
     pub(super) fn cancelled(&self) -> bool {
         self.ownership.load(Ordering::Acquire) & CANCELLED != 0

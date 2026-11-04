@@ -892,7 +892,8 @@ impl Cursor {
 }
 impl Drop for Cursor {
     fn drop(&mut self) {
-        self.receiver.close();
+        // Receiver field destruction follows publication of the removal. An
+        // early close would expose retirement before the queue could drain it.
         if let Some(input) = &self.input {
             if !self.progress.ended() {
                 input.close(StreamError::Unavailable);
