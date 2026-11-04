@@ -65,6 +65,11 @@ All signing keys are public deterministic test keys. The records cover a foreign
 account keyring/checkpoint, an advanced selected-account floor and consecutive
 environment rotations. A record is tried intact before separator-based sequences,
 since signed wire bytes may contain the sequence separator.
+The signed `environment-bootstrap` record starts and retains key9 at sequence1;
+it covers an already-authenticated environment whose external bootstrap input
+subsequently changes. `python3 negative-control.py trust-reanchor` removes the
+production bootstrap-only replacement guard, requires the original frontier
+preservation oracle to fail, then restores the source and replays the same input.
 
 Replay keeps only records admitted by the original selected-account scope and
 compares custody with the actual follower, rather than with a local writer that
@@ -72,8 +77,11 @@ may lag accepted external records. The maximum observed served floor survives
 unavailable intervals. Environment changes still exclude the fixed-anchor
 account replay assertion; this target does not qualify rotation catchup or live
 source-loss topology. `python3 negative-control.py trust-target` removes the
-production follower scope guard and requires the unchanged target's disjointness
-assertion to fail. It restores the source and never counts a build error as
+production follower scope guard and requires the unchanged shared oracle's
+`account record must refuse environment scope` assertion to fail. Cross-scope
+checks use an independent follower, so a refusal cannot fence the live floor
+oracle. The complete oracle also runs against the captured corpus in default
+unit builds. It restores the source and never counts a build error as
 mutation detection.
 The capability target also reaches the original issuance request and reply
 admission wrappers. `examples/issuance_corpus.rs` captures the actual request

@@ -27,6 +27,8 @@ fn capture() -> Result<(), Box<dyn Error>> {
     )?;
     let next = Issuer::new("test", next_key);
     let rotation_next = next.environment_keyring(&mut environment, &issuer.anchor(), 100)?;
+    let mut bootstrap = EnvironmentFrontier::genesis("test", next.anchor());
+    let bootstrap = next.environment_keyring(&mut bootstrap, &next.anchor(), 100)?;
     let records = [
         (
             "foreign-keyring",
@@ -52,6 +54,11 @@ fn capture() -> Result<(), Box<dyn Error>> {
             "environment-successor",
             rotation_next,
             "Issuer::environment_keyring; key[9;32] -> original key[1;32]".into(),
+        ),
+        (
+            "environment-bootstrap",
+            bootstrap,
+            "Issuer::environment_keyring; genesis key[9;32] -> key[9;32]".into(),
         ),
     ];
     corpus::write(
