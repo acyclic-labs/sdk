@@ -95,11 +95,17 @@ fn disjoint(reads: &CheckoutDependencies, writes: &GenerationDiff) -> bool {
         reads: Some(reads),
         writes: &empty(),
     }
-    .independent(
-        CommitFootprint {
-            reads: None,
-            writes,
-        },
+    .independent_all(
+        [
+            CommitFootprint {
+                reads: None,
+                writes: &empty(),
+            },
+            CommitFootprint {
+                reads: None,
+                writes,
+            },
+        ],
         u64::MAX,
     )
     .independent
@@ -312,7 +318,7 @@ fn footprint_query_charges_the_exact_bounded_prefix() -> Proof {
         )
     };
     let total = query(u64::MAX).items_examined;
-    assert_eq!(total, 3);
+    assert_eq!(total, 4);
     for maximum in 0..=total {
         let observed = query(maximum);
         assert_eq!(observed.items_examined, maximum);
@@ -329,19 +335,66 @@ fn footprint_query_charges_the_exact_bounded_prefix() -> Proof {
             );
         }
     }
-    Ok(())
-}
-
-#[test]
-fn footprint_query_cost_is_independent_of_unrelated_reads() -> Proof {
-    let changes = GenerationDiff {
-        files: vec![FileRecordChange {
-            file_id: id(3),
-            before: Some(file(3, 0)?),
-            after: Some(file(3, 1)?),
-        }],
+    let proposal = GenerationDiff {
+        files: (64..96)
+            .map(|key| -> Proof<_> {
+                Ok(FileRecordChange {
+                    file_id: id(key),
+                    before: Some(file(key, 0)?),
+                    after: Some(file(key, 1)?),
+                })
+            })
+            .collect::<Proof<Vec<_>>>()?,
         ..empty()
     };
+    let unchanged = empty();
+    let mut curve = [0; 3];
+    for (cost, count) in curve.iter_mut().zip([1, 8, 64]) {
+        let observed = CommitFootprint {
+            reads: None,
+            writes: &proposal,
+        }
+        .independent_all(
+            std::iter::repeat_n(
+                CommitFootprint {
+                    reads: None,
+                    writes: &unchanged,
+                },
+                count,
+            ),
+            u64::MAX,
+        );
+        assert_eq!(observed.independent, Ok(true));
+        *cost = observed.items_examined;
+        let refused = CommitFootprint {
+            reads: None,
+            writes: &proposal,
+        }
+        .independent_all(
+            std::iter::repeat_n(
+                CommitFootprint {
+                    reads: None,
+                    writes: &unchanged,
+                },
+                count,
+            ),
+            observed.items_examined - 1,
+        );
+        assert_eq!(refused.items_examined, observed.items_examined - 1);
+        assert_eq!(
+            refused.independent,
+            Err(WorkError::BudgetExceeded {
+                counter: "items_examined",
+                observed: observed.items_examined,
+                maximum: observed.items_examined - 1,
+            })
+        );
+    }
+    assert_eq!(
+        curve,
+        [32, 39, 95],
+        "fixed proposal ordering must be validated once per cohort"
+    );
     let sparse = reads([DependencyRegion::FileLength(id(3))])?;
     let dense = reads((1..96).map(|value| {
         if value == 3 {
@@ -363,7 +416,7 @@ fn footprint_query_cost_is_independent_of_unrelated_reads() -> Proof {
             u64::MAX,
         );
         assert_eq!(observed.independent, Ok(false));
-        assert_eq!(observed.items_examined, 2);
+        assert_eq!(observed.items_examined, 3);
     }
     Ok(())
 }
@@ -386,6 +439,24 @@ fn incomplete_or_unordered_footprints_cannot_certify_independence() -> Proof {
             (&reads([])?, &writes),
             (&reads([])?, &empty())
         ));
+        let unchanged = empty();
+        let proposal = CommitFootprint {
+            reads: None,
+            writes: &unchanged,
+        };
+        let invalid = CommitFootprint {
+            reads: None,
+            writes: &writes,
+        };
+        for cohort in [[invalid, proposal], [proposal, invalid]] {
+            assert_eq!(
+                proposal.independent_all(cohort, u64::MAX).independent,
+                Ok(false)
+            );
+        }
+        let vacant = invalid.independent_all([], 0);
+        assert_eq!(vacant.independent, Ok(true));
+        assert_eq!(vacant.items_examined, 0);
     }
     Ok(())
 }

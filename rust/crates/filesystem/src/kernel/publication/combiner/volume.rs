@@ -156,22 +156,20 @@ impl Volume {
         {
             return Ok(None);
         }
-        for member in &recent.members.value {
-            let query = CommitFootprint {
-                reads: Some(&proposal.preconditions.reads),
-                writes: &proposal.delta.value,
-            }
-            .independent(
-                CommitFootprint {
-                    reads: None,
-                    writes: &member.delta.value,
-                },
-                accounting.remaining()?.items_examined,
-            );
-            accounting.charge_items(query.items_examined)?;
-            if !query.independent? {
-                return Ok(None);
-            }
+        let query = CommitFootprint {
+            reads: Some(&proposal.preconditions.reads),
+            writes: &proposal.delta.value,
+        }
+        .independent_all(
+            recent.members.value.iter().map(|member| CommitFootprint {
+                reads: None,
+                writes: &member.delta.value,
+            }),
+            accounting.remaining()?.items_examined,
+        );
+        accounting.charge_items(query.items_examined)?;
+        if !query.independent? {
+            return Ok(None);
         }
         Ok(Some(recent.through))
     }

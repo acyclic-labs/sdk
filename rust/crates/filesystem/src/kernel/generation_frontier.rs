@@ -23,20 +23,18 @@ impl GenerationFrontier {
         proposal: CommitFootprint<'_>,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<bool, FsError> {
-        for changes in &self.changes.value {
-            let query = proposal.independent(
-                CommitFootprint {
-                    reads: None,
-                    writes: &changes.value,
-                },
-                accounting.remaining()?.items_examined,
-            );
-            accounting.charge_items(query.items_examined)?;
-            if !query.independent? {
-                return Ok(false);
-            }
+        if self.changes.value.is_empty() {
+            return Ok(true);
         }
-        Ok(true)
+        let query = proposal.independent_all(
+            self.changes.value.iter().map(|changes| CommitFootprint {
+                reads: None,
+                writes: &changes.value,
+            }),
+            accounting.remaining()?.items_examined,
+        );
+        accounting.charge_items(query.items_examined)?;
+        Ok(query.independent?)
     }
 
     pub(crate) fn retire(mut self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
