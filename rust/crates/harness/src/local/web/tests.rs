@@ -56,7 +56,7 @@ fn published_web_contract(name: &str) -> Result<impl Fn(&Value)> {
         );
         assert!(!projection.is_valid(&json!({"kind":"json","value":bad})));
     }
-    Ok(move |value| {
+    Ok(move |value: &Value| {
         assert!(
             output.is_valid(value),
             "actual web result violates its advertised output contract"
