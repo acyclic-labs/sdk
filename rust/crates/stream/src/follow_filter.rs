@@ -566,6 +566,10 @@ mod tests {
         current_record.value = current.value.clone();
         current_record.headers = current.headers.clone();
         assert!(projection_contract(&current_record));
+        #[cfg(feature = "test-support")]
+        for (name, bytes) in futures::executor::block_on(crate::codec_fuzz::seeds())? {
+            assert!(crate::codec_fuzz::check(&bytes), "writer seed {name}");
+        }
         let filters = [
             FollowFilter::default(),
             FollowFilter::new(wire::SessionFilter {
