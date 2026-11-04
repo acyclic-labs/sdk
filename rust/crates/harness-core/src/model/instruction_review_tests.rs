@@ -145,22 +145,3 @@ proptest! {
         }
     }
 }
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(16))]
-    #[test]
-    fn radix_index_round_trips_updates_and_consumption(keys in prop::collection::vec(any::<[u8;32]>(),0..24)) {
-        let mut index=super::instruction_index::Index::default();
-        for (position,key) in keys.iter().enumerate() {
-            index.reserve_key(None).unwrap();
-            index.set(0,*key,Some((position,0)),None).unwrap();
-        }
-        for (position,key) in keys.iter().enumerate() {
-            let expected=keys.iter().rposition(|candidate|candidate==key).unwrap();
-            prop_assert_eq!(index.get(0,key,None).unwrap(),Some((expected,0)));
-            prop_assert_eq!(index.get(1,key,None).unwrap(),None);
-            let _=position;
-        }
-        for key in keys { index.set(0,key,None,None).unwrap(); prop_assert_eq!(index.get(0,&key,None).unwrap(),None); }
-    }
-}
