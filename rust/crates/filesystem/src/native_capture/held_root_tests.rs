@@ -11,6 +11,40 @@ fn immutable_publication_cannot_follow_a_replaced_directory_or_leaf() -> Result<
     std::fs::create_dir(&outside)?;
     let held = hold_root(&path)?;
     std::fs::rename(&path, &moved)?;
+    std::fs::create_dir(&path)?;
+    held.publish_immutable(
+        std::path::Path::new("request"),
+        b"retained",
+        crate::NativeDurability::Durable,
+    )?;
+    assert_eq!(std::fs::read(moved.join("request"))?, b"retained");
+    assert!(!path.join("request").exists());
+    let target = outside.join("target");
+    std::fs::write(&target, b"unchanged")?;
+    std::fs::hard_link(&target, moved.join("link"))?;
+    assert!(
+        held.publish_immutable(
+            std::path::Path::new("link"),
+            b"replaced",
+            crate::NativeDurability::Durable,
+        )
+        .is_err()
+    );
+    assert_eq!(std::fs::read(&target)?, b"unchanged");
+    for leaf in ["request", "link"] {
+        held.remove_file(std::path::Path::new(leaf), crate::NativeDurability::Durable)?;
+        assert!(!moved.join(leaf).exists());
+    }
+    assert!(!path.join("request").exists());
+    assert_eq!(std::fs::read(&target)?, b"unchanged");
+    assert!(
+        held.remove_file(
+            std::path::Path::new("../outside/target"),
+            crate::NativeDurability::Durable,
+        )
+        .is_err()
+    );
+    std::fs::remove_dir(&path)?;
     std::os::unix::fs::symlink(&outside, &path)?;
     held.publish_immutable(
         std::path::Path::new("request"),
