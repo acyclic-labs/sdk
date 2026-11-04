@@ -514,9 +514,12 @@ async fn run(producer: Producer) -> Outcome {
             Outcome::Ok(())
         } => {
             if let Err(error) = pending {
+                let cause = tokio::select! {
+                    result = &mut qualification => format!("endpoint: {result:?}"),
+                    result = &mut hosted => format!("server: {result:?}"),
+                };
                 return Err(format!(
-                    "producer gate closed before it was reached ({error}); server: {:?}",
-                    (&mut hosted).await
+                    "producer gate closed before it was reached ({error}); {cause}"
                 )
                 .into());
             }
