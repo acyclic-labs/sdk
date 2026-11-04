@@ -21,6 +21,12 @@ an oracle that rejects a population-dependent implementation.
 
 ## Current closure work
 
+The [Objects empty-range dispatch control](objects-empty-dispatch/README.md)
+retains a production mutation that disables the index-only presence path. The
+existing real-log oracle must reject the resulting extra native submission;
+its nonempty read separately checks counter sensitivity. This establishes
+dispatch counts, without inferring unobserved physical work or index complexity.
+
 The [admission rebind control](admission-rebind/README.md) measures actual
 pending-membership home rebinding and retains a mutation of the production
 method. Its zero-allocation oracle replaces a hand-written former-mechanism

@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch"])
 claim = parser.parse_args().claim
 if claim == "retained-credit":
     source = "rust/crates/filesystem/src/kernel/allocation.rs"
@@ -28,12 +28,18 @@ elif claim == "settlement-terminal":
     test = "local::tests::agents::lost_model_producer_closes_local_session_without_settling_input"
     diagnostic = "settlement bypassed the original runtime terminal event"
     features = ["--features", "filesystem-local,native-execution,test-support,grpc,search-http"]
-else:
+elif claim == "admission-rebind":
     source = "rust/crates/stream/src/session/client/admissions.rs"
     crate = "acyclic-stream"
     test = "session::client::admissions::tests::home_rebinding_preserves_pending_memberships_without_allocating"
     diagnostic = "home rebinding allocated per pending membership"
     features = ["--no-default-features", "--features", "session"]
+else:
+    source = "rust/crates/objects/src/local.rs"
+    crate = "acyclic-objects"
+    test = "local::outcome_tests::empty_ranges_preserve_native_presence_without_dispatch"
+    diagnostic = "empty range dispatched a physical job for key"
+    features = ["--no-default-features", "--features", "local,test-support"]
 SOURCE = ROOT / source
 COMMAND = ["cargo", "test", "--locked", "-p", crate, *features, "--lib", test,
            "--", "--exact", "--nocapture"]
