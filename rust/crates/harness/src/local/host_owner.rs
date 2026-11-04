@@ -494,7 +494,7 @@ impl HostWorkspaceOwner {
     }
 
     fn location(&self, task: &AgentPath) -> Result<Value> {
-        Ok(json!({"task":task,"cwd":self.view(task)?.path()}))
+        Ok(json!({"task":task,"cwd":self.view(task)?.host_cwd()}))
     }
 }
 

@@ -99,10 +99,18 @@ impl HostWorkspace {
         Ok(result)
     }
 
-    /// Cwd to give the native host before it starts executing this agent.
+    /// The view's canonical path: the identity cwd discovery matches against.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.workspace.path
+    }
+
+    /// Cwd to give the native host before it starts executing this agent: the
+    /// canonical path as a user would type it, without a Windows verbatim
+    /// prefix. Hosts resolve it back to [`Self::path`] when they report a cwd.
+    #[must_use]
+    pub fn host_cwd(&self) -> std::borrow::Cow<'_, Path> {
+        acyclic_host_platform::paths::strip_verbatim(&self.workspace.path)
     }
 
     /// The agent this view belongs to.
