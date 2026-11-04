@@ -18,7 +18,7 @@ use super::{
     projected_entry, query_name, record_post_operation_failure, reject_nested_projection,
     reject_stale_projection, release, remove_empty_recovery_destination, reparse_tag,
     reparse_tag_held, replacement, require_dead_process_owner, runtime, session, source_hresult,
-    staging_directory, staging_path, tests, with_creating_name,
+    staging_directory, staging_path, with_creating_name,
 };
 use crate::model::{Lifecycle, VolumeConfig};
 use crate::{CancellationToken, Fs, IdempotencyKey, LocalOptions, WorkBudget};

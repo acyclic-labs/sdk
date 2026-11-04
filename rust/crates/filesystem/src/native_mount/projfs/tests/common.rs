@@ -1,7 +1,6 @@
 use super::{
-    CallbackGate, CancellationToken, FileLocks, Fs, HashMap, HostRoot, Lifecycle, MemorySource,
-    MountPath, Mutex, PostOperationFailures, Projector, Runtime, RwLock, VolumeConfig, WorkBudget,
-    manual_mount_options, setup_work,
+    CallbackGate, CancellationToken, FileLocks, Fs, HashMap, HostRoot, Lifecycle, MountPath, Mutex,
+    PostOperationFailures, Projector, Runtime, RwLock, VolumeConfig, WorkBudget,
 };
 use crate::kernel::KernelAccounting;
 use std::sync::Arc;

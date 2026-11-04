@@ -1,6 +1,5 @@
 use super::{
-    CancellationToken, HSTRING, NativeMountError, WorkBudget, recovery, replacement, setup_work,
-    windows_checkout_source,
+    CancellationToken, HSTRING, NativeMountError, WorkBudget, setup_work, windows_checkout_source,
 };
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};

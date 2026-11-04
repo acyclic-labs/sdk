@@ -1,11 +1,11 @@
 use super::{
     Arc, Bytes, CallbackGate, EntryFacts, FileMetadata, GUID, HR_FILE_NOT_FOUND, HR_OK, HRESULT,
-    HSTRING, MountSourceError, Mutex, Owned, PCWSTR, PRJ_CALLBACK_DATA, PRJ_NOTIFICATION,
-    PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED,
+    HSTRING, MountFilesystem, MountSourceError, Mutex, Owned, PCWSTR, PRJ_CALLBACK_DATA,
+    PRJ_NOTIFICATION, PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED,
     PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED,
     PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION, PRJ_NOTIFICATION_FILE_OPENED,
     PRJ_NOTIFICATION_PRE_DELETE, PostOperationFailures, ReadBasis, Runtime, callback_runtime,
-    callbacks, defer_host_capture, flush_callback_gate, has_pending_capture, host_windows_metadata,
+    defer_host_capture, flush_callback_gate, has_pending_capture, host_windows_metadata,
     lock_recover, notification, record_post_operation_failure, setup_work, windows_checkout_source,
     windows_path,
 };

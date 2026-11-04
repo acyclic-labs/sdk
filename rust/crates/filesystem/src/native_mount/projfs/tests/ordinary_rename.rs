@@ -1,6 +1,4 @@
-use super::{
-    HostRoot, create_ordinary_file, handle_state, held_while, publish_ordinary_file, staging,
-};
+use super::{HostRoot, create_ordinary_file, handle_state, held_while, publish_ordinary_file};
 use std::io::{Read as _, Write as _};
 
 #[test]

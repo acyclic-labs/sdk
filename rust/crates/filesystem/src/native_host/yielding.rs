@@ -1,6 +1,6 @@
 use super::{
-    DemandError, File, HostRoot, NativeHostWork, READ, SourceDemandReadWork, WorkCounters, fs, io,
-    leaf, nt, open_windows_at, wide_parent_leaf,
+    DemandError, File, HostRoot, READ, SourceDemandReadWork, WorkCounters, fs, io, nt,
+    open_windows_at, wide_parent_leaf,
 };
 use std::os::windows::io::AsRawHandle as _;
 use std::sync::{Arc, Mutex};

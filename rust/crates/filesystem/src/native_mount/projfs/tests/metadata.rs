@@ -1,5 +1,5 @@
 use super::{
-    Bytes, local_workspace, manual_mount_options, mount_source, session, setup_work,
+    Bytes, MountFilesystem, local_workspace, manual_mount_options, mount_source, setup_work,
     windows_checkout_source, windows_checkout_source_with_files, windows_path,
 };
 

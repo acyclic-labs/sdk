@@ -1,6 +1,6 @@
 use super::{
     Arc, FileId, FileLocks, HSTRING, HashMap, HostRoot, MountFilesystem, MountPath,
-    MountSourceError, Mutex, NativeMountError, OpenMetadataState, OsStringExt, PCWSTR, PathBuf,
+    MountSourceError, Mutex, NativeMountError, OpenMetadataState, PCWSTR, PathBuf,
     PrjFileNameCompare, Projector, ReadBasis, ReadOnlyBinding, RwLock, decode_utf16_name,
     lock_recover,
 };

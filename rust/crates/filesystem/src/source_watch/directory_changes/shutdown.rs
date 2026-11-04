@@ -1,7 +1,8 @@
 use super::{
-    CancelIoEx, DemandError, DemandWork, ERROR_NOTIFY_ENUM_DIR, ERROR_OPERATION_ABORTED,
-    GetOverlappedResult, HANDLE, NativeSourceWatch, Ordering, PoisonError, READ, Reads, ReadsGuard,
-    Shared, SourceDemandReadWork, WRITE, WorkCounters, close, hub, io, io_work, is_open,
+    CancelIoEx, DemandError, DemandWork, ERROR_NOT_FOUND, ERROR_NOTIFY_ENUM_DIR,
+    ERROR_OPERATION_ABORTED, GetOverlappedResult, HANDLE, NativeSourceWatch, Ordering, PoisonError,
+    READ, Reads, ReadsGuard, Shared, SourceDemandReadWork, WRITE, WorkCounters, close, hub, io,
+    io_work, is_open,
 };
 
 impl NativeSourceWatch {

@@ -1,4 +1,4 @@
-use super::{MountSourceError, NativeHostWork, NativeMountError, Runtime, lock_recover, size_of};
+use super::{MountSourceError, NativeMountError, Runtime, lock_recover, size_of};
 
 pub use crate::native_mount::shared::metering::NativeMountWorkScope;
 

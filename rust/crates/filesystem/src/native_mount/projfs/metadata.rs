@@ -4,7 +4,7 @@ use super::{
     FileMetadata, GUID, HR_OK, HRESULT, HSTRING, HashMap, HostRoot, MetadataField, MountFilesystem,
     MountNode, MountNodeKind, MountPath, MountSourceError, Mutex, NativeHostWork, OsStringExt,
     PCWSTR, PRJ_CALLBACK_DATA, PRJ_FILE_BASIC_INFO, PathBuf, PrjMarkDirectoryAsPlaceholder,
-    ReadBasis, Runtime, callback_path, directory, lock_recover, metadata,
+    ReadBasis, Runtime, lock_recover, metadata,
 };
 
 pub(super) fn path_from(pointer: PCWSTR) -> Option<MountPath> {

@@ -1,7 +1,7 @@
 use super::{
-    Bytes, FileMetadata, GUID, HSTRING, PCWSTR, PrjMarkDirectoryAsPlaceholder, directory,
-    mount_source, reject_stale_projection, session, setup_work, windows_checkout_source,
-    windows_name, windows_path,
+    Bytes, FileMetadata, GUID, HSTRING, MountFilesystem, PCWSTR, PrjMarkDirectoryAsPlaceholder,
+    mount_source, reject_stale_projection, setup_work, windows_checkout_source, windows_name,
+    windows_path,
 };
 
 #[tokio::test]

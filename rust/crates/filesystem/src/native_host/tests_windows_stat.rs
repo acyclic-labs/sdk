@@ -1,6 +1,6 @@
 use super::{
     DemandError, DemandWork, HostStat, NativeMaterializationWork, READ, WorkBudget, WorkCounters,
-    fs, io, nt, open_windows_named, ordinary_work, query_windows_stat, stat, stat_windows_file,
+    fs, io, nt, open_windows_named, ordinary_work, query_windows_stat, stat_windows_file,
     stat_windows_name, test_root, windows_open_name,
 };
 use proptest::prelude::*;

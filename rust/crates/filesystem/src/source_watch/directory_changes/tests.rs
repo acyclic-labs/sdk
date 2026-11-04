@@ -245,9 +245,10 @@ mod original {
     use super::{
         Arc, CancellationToken, Delivery, DemandError, DemandWork, HANDLE, INITIAL_BUFFER_BYTES,
         NativeSourceWatch, Ordering, PoisonError, Quiet, Shared, TestResult, WorkBudget,
-        WorkCounters, assert_retired, driver, held, io, is_open, wait_retired,
+        WorkCounters, assert_retired, driver, held, io, is_open,
     };
     use crate::demand::NativeDemandReadMeter;
+    use std::os::windows::io::AsHandle;
     fn wait_retired(shared: &Shared) {
         assert!(
             shared
@@ -264,6 +265,7 @@ mod original {
         );
         assert_retired(shared);
     }
+
     fn budget() -> WorkBudget {
         WorkBudget {
             backend_read_operations: 64,

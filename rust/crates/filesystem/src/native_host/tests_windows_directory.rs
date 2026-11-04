@@ -1,6 +1,6 @@
 use super::{
     DemandError, Dir, NativeDurability, NativeMaterializationWork, NativeOpenOptions, Path,
-    WorkBudget, create_directories, directory_identity, directory_path, identity, io, open_leaf,
+    WorkBudget, create_directories, directory_identity, directory_path, io, open_leaf,
     open_windows_directory, ordinary_work, stat_probe, sync_directory_held, test_path, test_root,
     with_wide_path,
 };

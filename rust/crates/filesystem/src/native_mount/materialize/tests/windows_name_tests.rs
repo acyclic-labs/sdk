@@ -1,7 +1,7 @@
 use super::{
     CancellationToken, GenerationReceipt, HostRoot, LogicalName, MaterializeError, NameEncoding,
     NamespacePath, NativeMaterializationActionPhase, Path, create_file, mark_sparse,
-    materialize_host_path, sync_generation_file, work, write_generation_bytes,
+    materialize_host_path, sync_generation_file, write_generation_bytes,
 };
 
 #[tokio::test]
