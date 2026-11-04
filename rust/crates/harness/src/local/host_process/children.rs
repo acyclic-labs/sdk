@@ -663,16 +663,16 @@ impl NativeChildren {
 /// Reads one bounded pass of the child's native event stream into its
 /// custodied event log, keeping its latest answer. The settlement derives the
 /// native resume reference from that log, so a running turn sends nothing.
-/// Returns true when the full pass was used and another pass is required.
+/// Returns true when output consumed credit and requires another bounded pass.
 fn output(running: &mut Running, buffer: &mut [u8]) -> Result<bool> {
-    running.process.drain_stderr()?;
+    let stderr = running.process.drain_stderr()?;
     // Bound each pass so a busy child cannot starve cancellation or peers.
     for _ in 0..16 {
         let Some(count) = running.process.read_stdout(buffer)? else {
-            return Ok(false);
+            return Ok(stderr.read_bytes > 0);
         };
         if count == 0 {
-            return Ok(false);
+            return Ok(stderr.read_bytes > 0);
         }
         let bytes = buffer
             .get(..count)
