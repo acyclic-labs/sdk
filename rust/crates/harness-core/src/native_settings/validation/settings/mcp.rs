@@ -1,10 +1,11 @@
 //! MCP declaration admission through the original native file loader.
 
+use super::harness;
 use super::{Files, NativeSettings, write};
-use acyclic_harness_core::mcp::McpTransport;
+use harness::mcp::McpTransport;
 use serde_json::{Value, json};
 
-fn load(declarations: Value, codex: bool) -> acyclic_harness_core::Result<NativeSettings> {
+fn load(declarations: Value, codex: bool) -> harness::Result<NativeSettings> {
     let files = Files::new();
     let (path, bytes) = if codex {
         (

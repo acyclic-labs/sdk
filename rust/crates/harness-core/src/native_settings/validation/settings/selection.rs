@@ -1,14 +1,15 @@
 //! Whole-entry source selection, before declaration validation.
 
+use super::harness;
 use super::{Files, NativeSettings, SettingsConfig, write};
-use acyclic_harness_core::mcp::McpTransport;
+use harness::mcp::McpTransport;
 use serde_json::{Value, json};
 
 fn workspace(
     files: &Files,
     configured: &std::path::Path,
     trusted: bool,
-) -> acyclic_harness_core::Result<NativeSettings> {
+) -> harness::Result<NativeSettings> {
     futures::executor::block_on(NativeSettings::load(
         SettingsConfig::new(configured, &files.home)
             .codex_home(&files.codex)
@@ -16,7 +17,7 @@ fn workspace(
     ))
 }
 
-fn selected(snapshot: &acyclic_harness_core::mcp::McpConfig, expected: &str) {
+fn selected(snapshot: &harness::mcp::McpConfig, expected: &str) {
     let mut servers = snapshot.servers();
     let (name, server) = servers
         .next()
