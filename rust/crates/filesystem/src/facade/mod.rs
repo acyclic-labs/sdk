@@ -19,8 +19,8 @@ use crate::kernel::{
     list_attributes_async_with_accounting, lookup_file_record_async_with_accounting,
     lookup_path_async_with_accounting, lookup_paths_with_accounting,
     merge_generation_with_borrowed_map_resolutions_with_accounting,
-    plan_extent_range_with_accounting, read_blob_range_with_accounting,
-    read_generation_root_with_accounting, retire_allocation, types,
+    read_blob_range_with_accounting, read_generation_root_with_accounting, retire_allocation,
+    types,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -57,10 +57,10 @@ use crate::kernel::{
     MergeConflictResolution, MergeConflictSide, MergeGenerationError, MergeGenerationOutcome,
     MergeGenerationRequest, MetadataField, Mutation, NameEncoding, NamespacePath, PathBatchLookup,
     PathLookup, PathLookupError, ProbeLimits, PublicationError, PublicationIntent,
-    PublicationReceipt, PublishGenerationRequest, RebaseConflict, RebaseDecision, RebaseError,
-    RegularMutation, RegularMutationError, RetentionCreated, RetentionCreatedError, RetentionKind,
-    TransferCursor, TreeMutationError, TreePage, VolumeCreated, VolumeCreatedError,
-    apply_regular_mutation_async, authenticate_generation_export_manifest_async, build_blob,
+    PublishGenerationRequest, RebaseConflict, RebaseDecision, RebaseError, RegularMutation,
+    RegularMutationError, RetentionCreated, RetentionCreatedError, RetentionKind, TransferCursor,
+    TreeMutationError, TreePage, VolumeCreated, VolumeCreatedError, apply_regular_mutation_async,
+    authenticate_generation_export_manifest_async, build_blob,
     build_generation_export_manifest_async, contextual_publication_fingerprint,
     decode_workspace_deleted, export_generation_batch_async, import_generation_batch_async,
     merge_generation_async, prove_generation_closure, publish_generation, retention_authority_id,
@@ -252,7 +252,6 @@ use generation::generation_from_record;
 pub(crate) use generation::read_generation_root;
 use generation::record_logical_bytes;
 use join_publication::checkout_commit_outcome;
-use join_request::WORKSPACE_JOIN_OPERATION_DOMAIN;
 pub(crate) use join_request::WorkspaceJoinOutcome;
 pub(crate) use join_request::WorkspaceJoinRequest;
 pub(crate) use join_request::WorkspaceJoinResolutions;

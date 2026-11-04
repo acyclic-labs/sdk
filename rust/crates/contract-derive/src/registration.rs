@@ -49,14 +49,8 @@ pub fn file(args: TokenStream, input: &ItemStruct) -> syn::Result<TokenStream> {
 }
 
 impl File {
-    fn expand(self, input: &ItemStruct) -> syn::Result<TokenStream> {
-        if !input.generics.params.is_empty() || !matches!(input.fields, syn::Fields::Unit) {
-            return Err(syn::Error::new_spanned(
-                input,
-                "contract file requires a nongeneric unit struct",
-            ));
-        }
-        let family = self.family.ok_or_else(|| {
+    fn family_name(&self, input: &ItemStruct) -> syn::Result<String> {
+        let family = self.family.as_ref().ok_or_else(|| {
             syn::Error::new_spanned(&input.ident, "first-party family is required")
         })?;
         let family_name = family.value();
@@ -70,10 +64,22 @@ impl File {
                 "first-party family must be a lowercase identifier",
             ));
         }
+        Ok(family_name)
+    }
+
+    fn expand(self, input: &ItemStruct) -> syn::Result<TokenStream> {
+        if !input.generics.params.is_empty() || !matches!(input.fields, syn::Fields::Unit) {
+            return Err(syn::Error::new_spanned(
+                input,
+                "contract file requires a nongeneric unit struct",
+            ));
+        }
+        let family_name = self.family_name(input)?;
         let package = format!("acyclic.{family_name}.v1");
         let path = format!("{family_name}/v1/{family_name}.proto");
         let go_package =
             format!("github.com/acyclic-labs/sdk/go/gen/{family_name}/v1;{family_name}v1");
+        let renderer = self.renderer(&path, &go_package);
         let name = &input.ident;
         let messages = self.messages;
         let enums = self.enums;
@@ -105,38 +111,47 @@ impl File {
                 pub const fn require_member<T: #members::Member>() {}
                 #[doc = "Canonical protobuf package shared by wire names and rendering."]
                 pub const PACKAGE: &'static str = #package;
-                #[doc = "Render this file from its compiler-linked semantic type inventory."]
-                #[doc = "An authorized service imports `validation/v1/options.proto`, whose one source is `acyclic_proto_build::shared_protocols()`."]
-                pub fn render(root: &::std::path::Path) -> ::std::io::Result<()> {
-                    let mut names = ::std::collections::BTreeSet::new();
-                    let mut text = format!("syntax = \"proto3\";\n\npackage {};\n\noption go_package = \"{}\";\n\n", Self::PACKAGE, #go_package);
-                    for mut group in [
-                        vec![#((#enums::PROTO_NAME, #enums::schema())),*],
-                        vec![#((<#messages as ::prost::Name>::NAME, #messages::schema())),*],
-                        vec![#((#services::PROTO_NAME, #services::schema())),*],
-                    ] {
-                        group.sort_by(|left, right| left.0.cmp(right.0));
-                        for (name, declaration) in group {
-                            if !names.insert(name) { return Err(::std::io::Error::new(::std::io::ErrorKind::InvalidData, "duplicate protobuf declaration name")); }
-                            text.push_str(&declaration);
-                            text.push('\n');
-                        }
-                    }
-                    let shared: &[&[&'static str]] = &[#(<#messages>::IMPORTS),*];
-                    let mut imports = shared.iter().flat_map(|list| list.iter().copied()).collect::<::std::collections::BTreeSet<_>>();
-                    if text.contains("(acyclic.validation.v1.auth)") {
-                        imports.insert("validation/v1/options.proto");
-                    }
-                    if !imports.is_empty() {
-                        let block = imports.iter().map(|import| format!("import \"{import}\";\n")).collect::<String>();
-                        text = text.replacen("\n\noption go_package", &format!("\n\n{block}\noption go_package"), 1);
-                    }
-                    let path = root.join(#path);
-                    if let Some(parent) = path.parent() { ::std::fs::create_dir_all(parent)?; }
-                    ::std::fs::write(path, text)
-                }
+                #renderer
             }
         })
+    }
+
+    fn renderer(&self, path: &str, go_package: &str) -> TokenStream {
+        let messages = &self.messages;
+        let enums = &self.enums;
+        let services = &self.services;
+        quote! {
+        #[doc = "Render this file from its compiler-linked semantic type inventory."]
+        #[doc = "An authorized service imports `validation/v1/options.proto`, whose one source is `acyclic_proto_build::shared_protocols()`."]
+        pub fn render(root: &::std::path::Path) -> ::std::io::Result<()> {
+            let mut names = ::std::collections::BTreeSet::new();
+            let mut text = format!("syntax = \"proto3\";\n\npackage {};\n\noption go_package = \"{}\";\n\n", Self::PACKAGE, #go_package);
+            for mut group in [
+                vec![#((#enums::PROTO_NAME, #enums::schema())),*],
+                vec![#((<#messages as ::prost::Name>::NAME, #messages::schema())),*],
+                vec![#((#services::PROTO_NAME, #services::schema())),*],
+            ] {
+                group.sort_by(|left, right| left.0.cmp(right.0));
+                for (name, declaration) in group {
+                    if !names.insert(name) { return Err(::std::io::Error::new(::std::io::ErrorKind::InvalidData, "duplicate protobuf declaration name")); }
+                    text.push_str(&declaration);
+                    text.push('\n');
+                }
+            }
+            let shared: &[&[&'static str]] = &[#(<#messages>::IMPORTS),*];
+            let mut imports = shared.iter().flat_map(|list| list.iter().copied()).collect::<::std::collections::BTreeSet<_>>();
+            if text.contains("(acyclic.validation.v1.auth)") {
+                imports.insert("validation/v1/options.proto");
+            }
+            if !imports.is_empty() {
+                let block = imports.iter().map(|import| format!("import \"{import}\";\n")).collect::<String>();
+                text = text.replacen("\n\noption go_package", &format!("\n\n{block}\noption go_package"), 1);
+            }
+            let path = root.join(#path);
+            if let Some(parent) = path.parent() { ::std::fs::create_dir_all(parent)?; }
+            ::std::fs::write(path, text)
+        }
+        }
     }
 }
 

@@ -262,10 +262,6 @@ impl HostRoot {
         mut candidate: impl FnMut() -> Result<[u8; N], DemandError>,
         work: &mut W,
     ) -> Result<[u8; N], DemandError> {
-        #[cfg(any(test, feature = "test-support"))]
-        if publish_probe::eager_candidates() {
-            candidate()?;
-        }
         loop {
             match read_record(&self.directory, leaf, work) {
                 Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::NotFound) => {}
@@ -424,18 +420,8 @@ pub(crate) mod publish_probe {
         static SKIP_PARENT_SYNC: Cell<bool> = const { Cell::new(false) };
         static SKIP_READER_SYNC: Cell<bool> = const { Cell::new(false) };
         static DUPLICATE_PARENTS: Cell<bool> = const { Cell::new(false) };
-        static EAGER_CANDIDATES: Cell<bool> = const { Cell::new(false) };
         static AFTER_RENAME: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
             const { std::cell::RefCell::new(None) };
-    }
-
-    #[cfg(target_os = "linux")]
-    pub(crate) fn generate_candidates_eagerly(eager: bool) {
-        EAGER_CANDIDATES.set(eager);
-    }
-
-    pub(super) fn eager_candidates() -> bool {
-        EAGER_CANDIDATES.get()
     }
 
     #[cfg(target_os = "linux")]
@@ -514,7 +500,6 @@ pub(crate) mod publish_probe {
             skip_parent_sync: bool,
             skip_reader_sync: bool,
             duplicate_parents: bool,
-            eager_candidates: bool,
             after_rename: Option<Box<dyn FnOnce()>>,
         }
         impl Drop for Restore {
@@ -524,7 +509,6 @@ pub(crate) mod publish_probe {
                 SKIP_PARENT_SYNC.set(self.skip_parent_sync);
                 SKIP_READER_SYNC.set(self.skip_reader_sync);
                 DUPLICATE_PARENTS.set(self.duplicate_parents);
-                EAGER_CANDIDATES.set(self.eager_candidates);
                 AFTER_RENAME.set(self.after_rename.take());
             }
         }
@@ -534,7 +518,6 @@ pub(crate) mod publish_probe {
             skip_parent_sync: SKIP_PARENT_SYNC.replace(config.omit_parent_sync),
             skip_reader_sync: SKIP_READER_SYNC.replace(config.omit_reader_sync),
             duplicate_parents: DUPLICATE_PARENTS.replace(config.duplicate_parent_handles),
-            eager_candidates: EAGER_CANDIDATES.replace(config.generate_candidates_eagerly),
             after_rename: AFTER_RENAME.replace(after_rename),
         };
         operation()
@@ -592,8 +575,6 @@ pub mod publication_test_support {
         pub omit_reader_sync: bool,
         /// Duplicate each original parent handle before directory admission.
         pub duplicate_parent_handles: bool,
-        /// Generate an unnecessary candidate before checking the existing record.
-        pub generate_candidates_eagerly: bool,
     }
 
     /// Run on this thread; restore every original setting on return or unwind.

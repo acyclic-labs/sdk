@@ -28,7 +28,7 @@ impl FilePathSelection {
     /// Authored path producers encode the generation key as lowercase hex in
     /// the complete descriptor's version. This compares identity only; the
     /// original content reader still authenticates its bytes and descriptor.
-    pub(crate) fn matches_content(&self, file: &FileRef) -> bool {
+    pub fn matches_content(&self, file: &FileRef) -> bool {
         let key = self.generation.as_resource().key();
         const HEX: &[u8; 16] = b"0123456789abcdef";
         self.volume == *file.volume()

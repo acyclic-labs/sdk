@@ -114,38 +114,44 @@ fn original_intervals_preserve_overlap_and_terminal_disposition()
 }
 
 #[test]
-fn interval_projection_refuses_foreign_origins_without_allocating() {
+fn interval_projection_refuses_foreign_origins_without_allocating()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut captured = None;
     let setup = acyclic_test_support::measure(|| {
-        captured = Some(IntervalOrigin::capture_unix([2; 16]).unwrap());
+        captured = Some(IntervalOrigin::capture_unix([2; 16]));
     });
     assert_eq!((setup.count_total, setup.bytes_total), (0, 0));
-    let (origin, anchor) = captured.unwrap();
+    let (origin, anchor) = captured.ok_or("capture not invoked")??;
     let instant = origin.instant;
     // Internally generated coordinates, not fabricated external observations.
     let interval = OperationInterval {
         started: instant + Duration::from_nanos(1),
         finished: instant + Duration::from_nanos(3),
     };
+    let mut result = Ok(());
     let measured = acyclic_test_support::measure(|| {
-        let coordinates = origin.project(interval).unwrap();
-        assert_eq!((coordinates.started_ns, coordinates.finished_ns), (1, 3));
-        assert_eq!(
-            IntervalOrigin {
-                instant: interval.finished,
-                ..origin
-            }
-            .project(interval),
-            Err(IntervalError::BeforeOrigin)
-        );
-        assert_eq!(
-            origin.project(OperationInterval {
-                started: interval.finished,
-                finished: interval.started
-            }),
-            Err(IntervalError::Reversed)
-        );
+        result = (|| -> Result<(), IntervalError> {
+            let coordinates = origin.project(interval)?;
+            assert_eq!((coordinates.started_ns, coordinates.finished_ns), (1, 3));
+            assert_eq!(
+                IntervalOrigin {
+                    instant: interval.finished,
+                    ..origin
+                }
+                .project(interval),
+                Err(IntervalError::BeforeOrigin)
+            );
+            assert_eq!(
+                origin.project(OperationInterval {
+                    started: interval.finished,
+                    finished: interval.started
+                }),
+                Err(IntervalError::Reversed)
+            );
+            Ok(())
+        })();
     });
+    result?;
     assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
     let allocated =
         acyclic_test_support::measure(|| drop(std::hint::black_box(Box::new(interval))));
@@ -160,33 +166,47 @@ fn interval_projection_refuses_foreign_origins_without_allocating() {
         interval.finished - interval.started,
         shifted.finished - shifted.started
     );
-    let first = origin.project(interval).unwrap();
-    let second = origin.project(shifted).unwrap();
+    let first = origin.project(interval)?;
+    let second = origin.project(shifted)?;
     assert!(first.finished_ns < second.started_ns);
     for count in [1, 100, 1000] {
         let measured = acyclic_test_support::measure(|| {
-            for _ in 0..count {
-                let unix = anchor.project(first).unwrap();
-                assert_eq!(unix.finished_unix_ns - unix.started_unix_ns, 2);
-                assert_eq!(
-                    anchor.project(acyclic_observability::IntervalCoordinates {
-                        domain: [3; 16],
-                        ..first
-                    }),
-                    Err(IntervalError::ForeignDomain)
-                );
-                assert_eq!(
-                    anchor.project(acyclic_observability::IntervalCoordinates {
-                        started_ns: first.finished_ns,
-                        finished_ns: first.started_ns,
-                        ..first
-                    }),
-                    Err(IntervalError::Reversed)
-                );
-            }
+            result = (|| -> Result<(), IntervalError> {
+                for _ in 0..count {
+                    let unix = anchor.project(first)?;
+                    assert_eq!(unix.finished_unix_ns - unix.started_unix_ns, 2);
+                    assert_eq!(
+                        anchor.project(acyclic_observability::IntervalCoordinates {
+                            domain: [3; 16],
+                            ..first
+                        }),
+                        Err(IntervalError::ForeignDomain)
+                    );
+                    assert_eq!(
+                        anchor.project(acyclic_observability::IntervalCoordinates {
+                            started_ns: first.finished_ns,
+                            finished_ns: first.started_ns,
+                            ..first
+                        }),
+                        Err(IntervalError::Reversed)
+                    );
+                }
+                Ok(())
+            })();
         });
+        result?;
         assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
     }
+    assert_unix_projection_boundaries(origin, anchor, interval, first)?;
+    Ok(())
+}
+
+fn assert_unix_projection_boundaries(
+    origin: IntervalOrigin,
+    anchor: acyclic_observability::UnixClockAnchor,
+    interval: OperationInterval,
+    first: acyclic_observability::IntervalCoordinates,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Mutated original observations are refusal controls, not clock fixtures.
     let zero = acyclic_observability::IntervalCoordinates {
         started_ns: 0,
@@ -214,8 +234,7 @@ fn interval_projection_refuses_foreign_origins_without_allocating() {
                 started_ns: 1,
                 finished_ns: 1,
                 ..first
-            })
-            .unwrap()
+            })?
             .started_unix_ns,
         u128::MAX
     );
@@ -230,13 +249,13 @@ fn interval_projection_refuses_foreign_origins_without_allocating() {
     // A clock domain remains an original producer fact; projection never
     // silently replaces it with another process's identity.
     assert_ne!(
-        origin.project(interval).unwrap().domain,
+        origin.project(interval)?.domain,
         IntervalOrigin {
             domain: [3; 16],
             ..origin
         }
-        .project(interval)
-        .unwrap()
+        .project(interval)?
         .domain
     );
+    Ok(())
 }

@@ -1413,9 +1413,10 @@ impl TransactionState {
                     if binding.kind != record.kind || binding.kind == FileKind::Directory {
                         return Err(GenerationMutationError::InconsistentState.into());
                     }
-                    let link_count = self.record(leaf, *file_id)?.working.link_count;
+                    let current = self.record(leaf, *file_id)?.working;
                     self.record_mut(leaf, *file_id)?.working = FileRecord {
-                        link_count,
+                        link_count: current.link_count,
+                        bindings: current.bindings,
                         ..*record
                     };
                 }

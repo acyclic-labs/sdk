@@ -11,6 +11,40 @@ fn immutable_publication_cannot_follow_a_replaced_directory_or_leaf() -> Result<
     std::fs::create_dir(&outside)?;
     let held = hold_root(&path)?;
     std::fs::rename(&path, &moved)?;
+    std::fs::create_dir(&path)?;
+    held.publish_immutable(
+        std::path::Path::new("request"),
+        b"retained",
+        crate::NativeDurability::Durable,
+    )?;
+    assert_eq!(std::fs::read(moved.join("request"))?, b"retained");
+    assert!(!path.join("request").exists());
+    let target = outside.join("target");
+    std::fs::write(&target, b"unchanged")?;
+    std::fs::hard_link(&target, moved.join("link"))?;
+    assert!(
+        held.publish_immutable(
+            std::path::Path::new("link"),
+            b"replaced",
+            crate::NativeDurability::Durable,
+        )
+        .is_err()
+    );
+    assert_eq!(std::fs::read(&target)?, b"unchanged");
+    for leaf in ["request", "link"] {
+        held.remove_file(std::path::Path::new(leaf), crate::NativeDurability::Durable)?;
+        assert!(!moved.join(leaf).exists());
+    }
+    assert!(!path.join("request").exists());
+    assert_eq!(std::fs::read(&target)?, b"unchanged");
+    assert!(
+        held.remove_file(
+            std::path::Path::new("../outside/target"),
+            crate::NativeDurability::Durable,
+        )
+        .is_err()
+    );
+    std::fs::remove_dir(&path)?;
     std::os::unix::fs::symlink(&outside, &path)?;
     held.publish_immutable(
         std::path::Path::new("request"),
@@ -67,11 +101,10 @@ enum Expected {
 }
 
 fn expected(query: &str, errno: i32) -> Expected {
-    // An interrupted query is retried, and an `EPERM` open is retried without
-    // `O_NOATIME`; both name the same incarnation. A kernel without file
-    // handles is a filesystem without stable ids. Every other failure keeps
-    // its cause.
-    if errno == libc::EINTR || (query == "openat" && errno == libc::EPERM) {
+    // An `EPERM` open is retried without `O_NOATIME`, naming the same
+    // incarnation. A kernel without file handles has no stable ids. Other
+    // failures, including interruption, retain their original cause.
+    if query == "openat" && errno == libc::EPERM {
         Expected::Same
     } else if query == "handle" && errno == libc::ENOSYS {
         Expected::Unstable
@@ -84,18 +117,21 @@ fn expected(query: &str, errno: i32) -> Expected {
 /// transient or capability errno, names the unchanged incarnation, classifies
 /// a kernel without file handles, or fails with the injected cause: never a
 /// different incarnation.
-fn every_fault_keeps_one_incarnation(fold: bool) -> Result<(), String> {
+#[test]
+fn every_identity_query_fault_keeps_one_incarnation_or_its_cause() -> Result<(), String> {
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let baseline = capture(directory.path()).map_err(|error| error.to_string())?;
     for query in ["openat", "fstat", "handle", "fsid"] {
         for errno in [libc::EINTR, libc::ENOSYS, libc::EPERM] {
+            let _probe = Probe::rescan(false);
             let fault = Fault::inject(query, errno);
-            if fold {
-                fault.fold_errors();
-            }
             let held = capture(directory.path());
             if !fault.fired() {
                 return Err(format!("{query} was never queried"));
+            }
+            if errno == libc::EINTR && events().iter().filter(|event| **event == query).count() != 1
+            {
+                return Err(format!("{query} retried its interrupted native call"));
             }
             match (expected(query, errno), held) {
                 (Expected::Same, Ok(held)) if held == baseline => {}
@@ -112,42 +148,21 @@ fn every_fault_keeps_one_incarnation(fold: bool) -> Result<(), String> {
 }
 
 #[test]
-fn every_identity_query_fault_keeps_one_incarnation_or_its_cause() {
-    every_fault_keeps_one_incarnation(false).unwrap();
-}
-
-#[test]
-fn negative_control_a_folded_handle_error_changes_the_incarnation() {
-    assert!(every_fault_keeps_one_incarnation(true).is_err());
-}
-
-/// The physical native queries of one held-root capture.
-fn capture_queries(duplicate: bool) -> Result<Vec<&'static str>, DemandError> {
-    let directory = tempfile::tempdir()?;
-    let probe = Probe::rescan(false);
-    if duplicate {
-        probe.duplicate_queries();
-    }
-    capture(directory.path())?;
-    Ok(events())
-}
-
-#[test]
 fn a_held_root_capture_makes_exactly_one_open_identity_handle_and_volume_query()
 -> Result<(), DemandError> {
-    assert_eq!(
-        capture_queries(false)?,
-        ["openat", "fstat", "handle", "fsid"]
-    );
-    Ok(())
-}
-
-#[test]
-fn negative_control_a_repeated_identity_query_is_counted() -> Result<(), DemandError> {
-    assert_ne!(
-        capture_queries(true)?,
-        ["openat", "fstat", "handle", "fsid"]
-    );
+    let directory = tempfile::tempdir()?;
+    for duplicate in [false, true] {
+        let probe = Probe::rescan(false);
+        if duplicate {
+            probe.duplicate_queries();
+        }
+        capture(directory.path())?;
+        assert_eq!(
+            events() == ["openat", "fstat", "handle", "fsid"],
+            !duplicate,
+            "the physical-query oracle must distinguish repeated native work"
+        );
+    }
     Ok(())
 }
 
@@ -179,12 +194,15 @@ fn a_held_root_names_its_volume_by_the_filesystem_id_not_the_device() {
 }
 
 /// A kill after a step of a record publication, then a later publication
-/// with another candidate, in a fresh held directory.
-fn killed_then_published(step: usize, torn: bool) -> Result<[u8; 16], DemandError> {
+/// with another candidate, at a fresh name in the held directory.
+fn killed_then_published(
+    held: &HeldRoot,
+    step: usize,
+    torn: bool,
+) -> Result<[u8; 16], DemandError> {
     use crate::native_host::publish_probe;
-    let directory = tempfile::tempdir()?;
-    let held = hold_root(directory.path())?;
-    let leaf = std::path::Path::new("token");
+    let name = format!("token-{step}-{torn}");
+    let leaf = std::path::Path::new(&name);
     publish_probe::tear(torn);
     publish_probe::kill_at(Some(step));
     let killed = held.read_or_publish(leaf, || Ok([1; 16]));
@@ -199,21 +217,18 @@ fn killed_then_published(step: usize, torn: bool) -> Result<[u8; 16], DemandErro
 #[test]
 fn a_kill_at_any_publication_step_leaves_no_record_or_the_complete_one() {
     use crate::native_host::publish_probe::STEPS;
+    let directory = tempfile::tempdir().unwrap();
+    let held = hold_root(directory.path()).unwrap();
     for step in 0..STEPS {
-        let published = killed_then_published(step, false).unwrap();
+        let published = killed_then_published(&held, step, false).unwrap();
         assert_eq!(
             published,
             if step == 3 { [1; 16] } else { [2; 16] },
             "step {step}"
         );
     }
-}
-
-/// Negative control: a record written in place is torn by a kill mid-write,
-/// and every later read refuses it.
-#[test]
-fn negative_control_a_record_published_in_place_is_torn_by_a_kill() {
-    assert!(killed_then_published(1, true).is_err());
+    // The in-place mutation must leave a torn record that later reads refuse.
+    assert!(killed_then_published(&held, 1, true).is_err());
 }
 
 /// Concurrent first publications in one directory all return one record.
@@ -248,8 +263,8 @@ fn concurrent_publishers_return_one_record() {
 
 /// Publishing requires one candidate; reading any existing publication must
 /// require none, even when the candidate source is unavailable.
-fn candidate_work(eager: bool, readers: usize) -> Result<(), String> {
-    use crate::native_host::publish_probe;
+#[test]
+fn reading_an_existing_record_never_generates_another_candidate() -> Result<(), String> {
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let root = hold_root(directory.path()).map_err(|error| error.to_string())?;
     let leaf = std::path::Path::new("token");
@@ -269,34 +284,29 @@ fn candidate_work(eager: bool, readers: usize) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     assert_eq!(calls.get(), 1);
     assert_eq!(published, [7; 16]);
-    publish_probe::generate_candidates_eagerly(eager);
-    let result = (|| {
-        for _ in 0..readers {
-            let record = root.read_or_publish::<16>(leaf, || {
-                calls.set(calls.get() + 1);
-                unavailable()
-            });
-            if !matches!(record, Ok(record) if record == published) || calls.get() != 1 {
-                return Err("an existing record requested another candidate".into());
+    let mut runner = proptest::test_runner::TestRunner::new(proptest::test_runner::Config {
+        source_file: Some(file!()),
+        test_name: Some(concat!(
+            module_path!(),
+            "::reading_an_existing_record_never_generates_another_candidate"
+        )),
+        ..proptest::test_runner::Config::with_cases(16)
+    });
+    runner
+        .run(&(1usize..9), |readers| {
+            for _ in 0..readers {
+                let record = root.read_or_publish::<16>(leaf, || {
+                    calls.set(calls.get() + 1);
+                    unavailable()
+                });
+                proptest::prop_assert!(
+                    matches!(record, Ok(record) if record == published) && calls.get() == 1,
+                    "an existing record requested another candidate"
+                );
             }
-        }
-        Ok(())
-    })();
-    publish_probe::generate_candidates_eagerly(false);
-    result
-}
-
-proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config::with_cases(16))]
-    #[test]
-    fn reading_an_existing_record_never_generates_another_candidate(readers in 1usize..9) {
-        proptest::prop_assert_eq!(candidate_work(false, readers), Ok(()));
-    }
-}
-
-#[test]
-fn negative_control_eager_candidates_add_work_and_can_prevent_reopen() {
-    assert!(candidate_work(true, 1).is_err());
+            Ok(())
+        })
+        .map_err(|error| error.to_string())
 }
 
 /// Enumerate all crash cuts of the token's reachability chain. The kernel
@@ -355,10 +365,13 @@ fn a_returned_record_has_a_durable_name_through_every_held_parent() {
 #[test]
 fn held_directory_traversal_borrows_parents_without_duplicating_handles() {
     use crate::native_host::{publish_probe, stat_probe::take_directory_clones};
+    let directory = tempfile::tempdir().unwrap();
+    let root = hold_root(directory.path()).unwrap();
     for depth in 1..=4 {
-        let directory = tempfile::tempdir().unwrap();
-        let root = hold_root(directory.path()).unwrap();
-        let relative: PathBuf = (0..depth).map(|_| "child").collect();
+        let first = format!("depth-{depth}");
+        let relative: PathBuf = std::iter::once(first.as_str())
+            .chain((1..depth).map(|_| "child"))
+            .collect();
         for duplicate in [false, true] {
             take_directory_clones();
             publish_probe::duplicate_parent_handles(duplicate);

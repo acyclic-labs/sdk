@@ -1,0 +1,19 @@
+--- a/rust/crates/filesystem/src/native_host/unix_stat.rs
++++ b/rust/crates/filesystem/src/native_host/unix_stat.rs
+@@ -282,14 +282,8 @@
+             Ok(()) => return Ok(handle),
+             Err(error) => error,
+         };
+-        Err(if error.raw_os_error() == Some(libc::EOPNOTSUPP) {
+-            io::Error::new(
+-                io::ErrorKind::Unsupported,
+-                "checkout filesystem issues no kernel file handles",
+-            )
+-        } else {
+-            error
+-        })
++        let _ = error;
++        Ok(handle)
+     })?;
+     let bytes = usize::try_from(handle.handle_bytes)
+         .ok()

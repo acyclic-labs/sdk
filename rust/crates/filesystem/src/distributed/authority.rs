@@ -103,24 +103,8 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         authority: AuthorityId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<AuthoritySnapshot, AuthorityStoreError> {
-        self.fork_snapshot_payload::<false>(authority, work)
-            .await
-            .map(|(snapshot, _)| snapshot)
-    }
-
-    pub(super) async fn fork_snapshot_payload<const RETAIN: bool>(
-        &self,
-        authority: AuthorityId,
-        work: &mut AuthorityWork<'_>,
-    ) -> Result<
-        (
-            AuthoritySnapshot,
-            Option<(acyclic_stream::Record, ProviderAllocation, usize)>,
-        ),
-        AuthorityStoreError,
-    > {
         self.authority_require_live(authority, work).await?;
-        self.snapshot_payload::<RETAIN>(authority, work).await
+        self.snapshot(authority, work).await
     }
 
     pub(super) async fn snapshot(
@@ -133,7 +117,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             .map(|(snapshot, _)| snapshot)
     }
 
-    async fn snapshot_payload<const RETAIN: bool>(
+    pub(super) async fn snapshot_payload<const RETAIN: bool>(
         &self,
         authority: AuthorityId,
         work: &mut AuthorityWork<'_>,

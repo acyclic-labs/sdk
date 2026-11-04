@@ -5,17 +5,13 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const CHILD: &str = "materializer::directory_preparation::crash_tests::publication_write_child";
 const OPERATION: OperationId = OperationId::from_bytes([0xa7; 16]);
 
-fn spawn(root: &Path, cut: Option<u64>, prepare: bool) -> std::io::Result<Child> {
+fn spawn(root: &Path, cut: Option<u64>) -> std::io::Result<Child> {
     Command::new(std::env::current_exe()?)
         .args(["--exact", CHILD, "--nocapture"])
         .env("ACYCLIC_PUBLICATION_CRASH_ROOT", root)
         .env(
             "ACYCLIC_PUBLICATION_CRASH_CUT",
             cut.unwrap_or(0).to_string(),
-        )
-        .env(
-            "ACYCLIC_PUBLICATION_PREPARE_ONLY",
-            u8::from(prepare).to_string(),
         )
         .env_remove("RUST_MIN_STACK")
         .stdout(Stdio::piped())
@@ -111,8 +107,11 @@ fn publication_writes(selected: Vec<usize>) -> TestResult {
         .try_into()
         .map_err(|_| "one registered publication partition must be selected")?;
     let root = tempfile::tempdir()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     let seed = root.path().join("seed");
-    succeeds(spawn(&seed, None, true)?)?;
+    runtime.block_on(publish(&seed, None, true))?;
     assert_eq!(
         std::fs::read(seed.join("checkout/file"))?,
         b"original generation",
@@ -122,24 +121,20 @@ fn publication_writes(selected: Vec<usize>) -> TestResult {
     let seed = acyclic_native_runtime::testing::snapshot::Snapshot::capture(&seed)?;
     let baseline = root.path().join("baseline");
     seed.restore(&baseline)?;
-    succeeds(spawn(&baseline, None, false)?)?;
-    let writes: u64 = std::fs::read_to_string(baseline.join("writes"))?.parse()?;
+    let writes = runtime.block_on(publish(&baseline, None, false))?;
     assert!(
         writes > 3,
         "the probe did not cover journal, mkdir, and publication writes"
     );
-    // The shared checked registry assigns every measured write and sync, not
-    // a hand-written phase list. Each partition also proves the initial cut
-    // and completed publication. One cut/recovery owns the child allowance;
-    // neither wave can fan out processes, descriptors or filesystem flushes.
+    // The shared checked registry assigns every measured write and sync,
+    // including the initial cut and completed publication, exactly once.
+    // One cut/recovery owns the child allowance, so execution cannot fan out
+    // processes, descriptors or filesystem flushes within this partition.
     let total = usize::try_from(writes.checked_add(1).ok_or("write count overflow")?)?;
     let assigned =
-        acyclic_test_support::partitions::indices(total, WRITE_PARTITIONS, partition, |index| {
-            index == 0 || index + 1 == total
-        })?;
-    // The measured transition has 299 crash positions. Four partitions still
-    // admitted 76 durable cut/recovery pairs each. Keep the complete registry,
-    // including both witnesses, while bounding one fixture to seven pairs.
+        acyclic_test_support::partitions::indices(total, WRITE_PARTITIONS, partition, |_| false)?;
+    // Do not repeat the same initial/completed witnesses in every partition:
+    // their registered owners exercise the same independent recovery path.
     assert!(
         assigned.len() <= 7,
         "publication fixture exceeds its cut allowance"
@@ -149,11 +144,11 @@ fn publication_writes(selected: Vec<usize>) -> TestResult {
         let started = std::time::Instant::now();
         let cut = u64::try_from(index)?.checked_add(1).ok_or("cut overflow")?;
         let path = root.path().join(cut.to_string());
-        // Only generation setup is shared, captured after its writer exits.
+        // Only completed generation setup is shared as immutable bytes.
         // Every transition and recovery still runs against independent files
         // with the original physical write/sync probe and durable semantics.
         seed.restore(&path)?;
-        let output = spawn(&path, Some(cut), false)?.wait_with_output()?;
+        let output = spawn(&path, Some(cut))?.wait_with_output()?;
         assert_eq!(
             output.status.code(),
             Some(if cut <= writes { 86 } else { 0 }),
@@ -161,8 +156,7 @@ fn publication_writes(selected: Vec<usize>) -> TestResult {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        succeeds(spawn(&path, None, false)?)
-            .map_err(|error| format!("recovery cut {cut}: {error}"))?;
+        succeeds(spawn(&path, None)?).map_err(|error| format!("recovery cut {cut}: {error}"))?;
         assert_eq!(
             std::fs::read(path.join("checkout/file"))?,
             b"rebased generation"
@@ -183,14 +177,15 @@ fn publication_write_child() -> TestResult {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(publish(&root, (cut != 0).then_some(cut)))
+    runtime
+        .block_on(publish(&root, (cut != 0).then_some(cut), false))
+        .map(|_| ())
 }
 
-async fn publish(root: &Path, cut: Option<u64>) -> TestResult {
+async fn publish(root: &Path, cut: Option<u64>, prepare: bool) -> TestResult<u64> {
     let cancellation = crate::CancellationToken::new();
     let fs = crate::Fs::local(crate::LocalOptions::new(root.join("fs"))).await?;
     let manifest = root.join("generations");
-    let prepare = std::env::var("ACYCLIC_PUBLICATION_PREPARE_ONLY")? == "1";
     let workspace = if manifest.exists() {
         fs.open_workspace("publication", crate::WorkBudget::UNBOUNDED, &cancellation)
             .await
@@ -227,7 +222,7 @@ async fn publish(root: &Path, cut: Option<u64>) -> TestResult {
         workspace
     };
     if prepare {
-        return Ok(());
+        return Ok(0);
     }
     let ids = std::fs::read(&manifest)?;
     let from = GenerationId::new(crate::Digest::from_bytes(ids[..32].try_into()?));
@@ -294,6 +289,5 @@ async fn publish(root: &Path, cut: Option<u64>) -> TestResult {
         to.id(),
         "recovery changed the logical head"
     );
-    std::fs::write(root.join("writes"), writes.to_string())?;
-    Ok(())
+    Ok(writes)
 }

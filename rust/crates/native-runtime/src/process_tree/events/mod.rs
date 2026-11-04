@@ -558,7 +558,10 @@ fn arm_on<'a>(
             });
             let native = hub.poller.register(*source, wait.token)?;
             ready = native.is_none();
-            wait.registrations[index]._native = native;
+            wait.registrations
+                .get_mut(index)
+                .ok_or(io::ErrorKind::InvalidData)?
+                ._native = native;
             if ready {
                 break;
             }

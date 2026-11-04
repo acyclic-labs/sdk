@@ -157,24 +157,12 @@ impl NativeJob {
                     Some(Arc::clone(&file)),
                     span.clone(),
                 );
-                #[cfg(windows)]
-                if overlapped && inline_blocking_allowed() {
-                    return finish.finish(windows::read_batch_in_place(&file, &reads));
-                }
-                #[cfg(target_os = "linux")]
-                return submit_file_io(finish, |callback| {
-                    linux::submit_read(file, reads, callback)
-                });
-                #[cfg(windows)]
-                return submit_file_io(finish, |callback| {
-                    windows::submit_read(file, overlapped, reads, callback)
-                });
-                #[cfg(not(any(windows, target_os = "linux")))]
-                finish.finish(
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        read_batch_impl(&file, &reads)
-                    }))
-                    .unwrap_or_else(|_| std::process::abort()),
+                run_read(
+                    file,
+                    reads,
+                    finish,
+                    #[cfg(windows)]
+                    overlapped,
                 )
             }),
             Self::Write {
@@ -244,6 +232,36 @@ impl NativeJob {
             ),
         }
     }
+}
+
+/// Transfers the original read completion and held file to the OS adapter.
+fn run_read(
+    file: Arc<NativeFilePayload>,
+    reads: Vec<OwnedRead>,
+    finish: FileCompletion<Vec<Bytes>>,
+    #[cfg(windows)] overlapped: bool,
+) -> Option<Waker> {
+    #[cfg(windows)]
+    if overlapped && inline_blocking_allowed() {
+        return finish.finish(windows::read_batch_in_place(&file, &reads));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        submit_file_io(finish, |callback| linux::submit_read(file, reads, callback))
+    }
+    #[cfg(windows)]
+    {
+        submit_file_io(finish, |callback| {
+            windows::submit_read(file, overlapped, reads, callback)
+        })
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    finish.finish(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            read_batch_impl(&file, &reads)
+        }))
+        .unwrap_or_else(|_| std::process::abort()),
+    )
 }
 
 /// Runs a host task and drops its charges before publishing its terminal.

@@ -154,11 +154,8 @@ impl SharedFuseInstance {
         session.initialize()?;
         let notifier = session.notifier();
         views.set_notifier(notifier.clone());
-        state.worker = Some(
-            std::thread::Builder::new()
-                .name("acyclic-fuse".to_owned())
-                .spawn(move || session.run())?,
-        );
+        state.worker =
+            Some(session.start(std::thread::Builder::new().name("acyclic-fuse".to_owned()))?);
         state.invalidator = Some(
             std::thread::Builder::new()
                 .name("acyclic-fuse-invalidator".to_owned())

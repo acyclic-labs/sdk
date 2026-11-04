@@ -60,18 +60,6 @@ fn directory_mode_is_restored_before_fixture_retirement() -> std::io::Result<()>
 fn negative_control_unrestored_directory_cannot_retire_with_its_original_mode() {
     assert!(std::panic::catch_unwind(fixture_retirement_mode::<false>).is_err());
 }
-#[test]
-fn a_local_root_is_classified_local() -> std::io::Result<()> {
-    let temporary = tempfile::tempdir()?;
-    assert!(
-        filesystem_is_local(
-            &test_root(temporary.path())?.directory,
-            &mut ordinary_work()
-        )
-        .map_err(ordinary_error)?
-    );
-    Ok(())
-}
 #[cfg(target_os = "linux")]
 #[test]
 fn capability_reads_do_not_change_owned_access_times() -> std::io::Result<()> {
@@ -148,15 +136,20 @@ fn every_stat_of_a_file_reports_its_one_handle() -> std::io::Result<()> {
 }
 #[test]
 fn held_root_rejects_intermediate_symlink_escape_for_reads_and_writes() -> std::io::Result<()> {
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _, symlink};
     let temporary = tempfile::tempdir()?;
     let root_path = temporary.path().join("root");
     let outside_path = temporary.path().join("outside");
     std::fs::create_dir(&root_path)?;
     std::fs::create_dir(&outside_path)?;
-    std::fs::write(outside_path.join("secret"), b"outside")?;
-    symlink(&outside_path, root_path.join("pivot"))?;
+    let target = outside_path.join("secret");
+    std::fs::write(&target, b"outside")?;
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644))?;
+    let link = root_path.join("pivot");
+    symlink(&outside_path, &link)?;
+    assert!(test_root(&link).is_err());
     let root = test_root(&root_path)?;
+    assert!(filesystem_is_local(&root.directory, &mut ordinary_work()).map_err(ordinary_error)?);
     assert!(
         root.open_file(Path::new("pivot/secret"), &mut ordinary_work())
             .map_err(ordinary_error)
@@ -176,31 +169,16 @@ fn held_root_rejects_intermediate_symlink_escape_for_reads_and_writes() -> std::
     let mut secret = String::new();
     std::fs::File::open(outside_path.join("secret"))?.read_to_string(&mut secret)?;
     assert_eq!(secret, "outside");
-    Ok(())
-}
-#[test]
-fn held_special_metadata_rejects_intermediate_symlink_escape() -> std::io::Result<()> {
-    use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _, symlink};
-    let temporary = tempfile::tempdir()?;
-    let root_path = temporary.path().join("root");
-    let outside_path = temporary.path().join("outside");
-    std::fs::create_dir(&root_path)?;
-    std::fs::create_dir(&outside_path)?;
-    let target = outside_path.join("target");
-    std::fs::write(&target, b"outside")?;
-    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644))?;
-    symlink(&outside_path, root_path.join("pivot"))?;
-    let root = test_root(&root_path)?;
     #[cfg(target_os = "linux")]
     assert!(
-        root.open_linux_metadata_target(Path::new("pivot/target"), &mut ordinary_work())
+        root.open_linux_metadata_target(Path::new("pivot/secret"), &mut ordinary_work())
             .is_err()
     );
     #[cfg(target_os = "macos")]
     assert!(
         open_macos_metadata_target(
             &root.directory,
-            Path::new("pivot/target"),
+            Path::new("pivot/secret"),
             &mut ordinary_work()
         )
         .is_err()
@@ -320,17 +298,6 @@ fn held_linux_symlink_metadata_does_not_mutate_target() -> Result<(), Box<dyn st
     Ok(())
 }
 #[test]
-fn root_symbolic_link_is_never_admitted() -> std::io::Result<()> {
-    use std::os::unix::fs::symlink;
-    let temporary = tempfile::tempdir()?;
-    let real = temporary.path().join("real");
-    let link = temporary.path().join("link");
-    std::fs::create_dir(&real)?;
-    symlink(&real, &link)?;
-    assert!(test_root(&link).is_err());
-    Ok(())
-}
-#[test]
 fn bound_unix_socket_lands_inside_the_held_root() -> std::io::Result<()> {
     use std::os::unix::fs::FileTypeExt;
     let temporary = tempfile::tempdir()?;
@@ -360,33 +327,62 @@ fn bound_unix_socket_rejects_paths_beyond_sun_path() -> std::io::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
-    // Root metadata always targets the held directory, even when its name is replaced.
-    #[test]
-    fn empty_metadata_path_keeps_the_held_root(mode in 0_u32..=0o777) {
-        use crate::kernel::{FileMetadata, MetadataField};
-        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-        let temporary = tempfile::tempdir().unwrap();
-        let original = temporary.path().join("root");
-        let moved = temporary.path().join("moved");
-        std::fs::create_dir(&original).unwrap();
-        let restore = DirectoryModeRestore::new(&original)
-            .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
-        let root = test_root(&original).unwrap();
-        std::fs::rename(&original, &moved).unwrap();
-        std::fs::create_dir(&original).unwrap();
-        std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o700)).unwrap();
+#[test]
+fn empty_metadata_path_keeps_the_held_root() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::{FileMetadata, MetadataField};
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    let temporary = tempfile::tempdir()?;
+    let original = temporary.path().join("root");
+    let moved = temporary.path().join("moved");
+    std::fs::create_dir(&original)?;
+    let restore = DirectoryModeRestore::new(&original)?;
+    let root = test_root(&original)?;
+    std::fs::rename(&original, &moved)?;
+    std::fs::create_dir(&original)?;
+    std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o700))?;
+    let mut runner = proptest::test_runner::TestRunner::new(proptest::test_runner::Config {
+        source_file: Some(file!()),
+        test_name: Some(concat!(
+            module_path!(),
+            "::empty_metadata_path_keeps_the_held_root"
+        )),
+        ..proptest::test_runner::Config::with_cases(32)
+    });
+    // Every generated mode opens the real held target after its name was replaced.
+    let result = runner.run(&(0_u32..=0o777), |mode| {
+        restore
+            .directory
+            .set_permissions(restore.permissions.clone())
+            .unwrap();
         let mut work = ordinary_work();
-        let target = root.open_linux_metadata_target(Path::new(""), &mut work).unwrap();
-        proptest::prop_assert_eq!(target.metadata().unwrap().ino(), std::fs::metadata(&moved).unwrap().ino());
-        apply_metadata(&target, FileMetadata {
-            posix_mode: MetadataField::Value(mode),
-            ..FileMetadata::default()
-        }, &mut work).unwrap();
-        proptest::prop_assert_eq!(std::fs::metadata(&moved).unwrap().permissions().mode() & 0o777, mode);
-        proptest::prop_assert_eq!(std::fs::metadata(&original).unwrap().permissions().mode() & 0o777, 0o700);
-        drop(restore);
-        temporary.close().map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
-    }
+        let target = root
+            .open_linux_metadata_target(Path::new(""), &mut work)
+            .unwrap();
+        proptest::prop_assert_eq!(
+            target.metadata().unwrap().ino(),
+            std::fs::metadata(&moved).unwrap().ino()
+        );
+        apply_metadata(
+            &target,
+            FileMetadata {
+                posix_mode: MetadataField::Value(mode),
+                ..FileMetadata::default()
+            },
+            &mut work,
+        )
+        .unwrap();
+        proptest::prop_assert_eq!(
+            std::fs::metadata(&moved).unwrap().permissions().mode() & 0o777,
+            mode
+        );
+        proptest::prop_assert_eq!(
+            std::fs::metadata(&original).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        Ok(())
+    });
+    drop(restore);
+    temporary.close()?;
+    result.map_err(|error| std::io::Error::other(error.to_string()))?;
+    Ok(())
 }

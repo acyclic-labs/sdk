@@ -117,7 +117,8 @@ impl FileLock {
         let mut release = Release(Some(self));
         let result = operation();
         // Disarm before unlocking: one release attempt, including on error.
-        let unlocked = release.0.take().expect("scope retains its lock").unlock();
+        release.0 = None;
+        let unlocked = self.unlock();
         match result {
             Ok(value) => unlocked.map(|()| value),
             Err(error) => Err(error),

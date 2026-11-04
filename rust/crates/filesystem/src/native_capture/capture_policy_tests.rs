@@ -283,52 +283,131 @@ mod unchanged_properties {
     use proptest::prelude::*;
     use std::os::unix::fs::PermissionsExt;
 
-    proptest! {
-        // Real capture must retain every byte and metadata change, including a
-        // content change with restored timestamps, while exact repeats write no paths.
-        #[test]
-        fn repeated_regular_capture_avoids_unchanged_writes(
-            body in prop::collection::vec(1_u8..=255, 1..96),
-            empty in any::<bool>(),
-            truncate in any::<bool>(),
-            change_body in any::<bool>(), change_mode in any::<bool>(),
-        ) {
-            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-            runtime.block_on(async {
-                let source = tempfile::tempdir().unwrap();
-                let file = source.path().join("file");
-                let body = if empty { Vec::new() } else { body };
-                std::fs::write(&file, &body).unwrap();
-                std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
-                let before = std::fs::metadata(&file).unwrap();
-                let budget = crate::performance::work_budget(1_000_000, 64_000_000);
-                let cancellation = CancellationToken::new();
-                let work = NativeMaterializationWork::new(budget, &cancellation).unwrap();
-                let mut checkout = native_checkout(&work).await.unwrap();
-                let root = NamespacePath::new(Vec::new(), checkout.volume_config().limits).unwrap();
-                let options = options(source.path(), 16).unwrap();
-                capture_subtrees_with_native_work(&mut checkout, &[root.clone()], &options, &CapturePolicy::default(), &cancellation, None, &work).await.unwrap();
-                let mut expected = body;
-                if change_body {
-                    if expected.is_empty() { expected.push(1); }
-                    else if truncate { expected.clear(); }
-                    else { expected[0] ^= 1; }
-                    std::fs::write(&file, &expected).unwrap();
-                }
-                if change_mode { std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).unwrap(); }
-                std::fs::File::open(&file).unwrap().set_times(std::fs::FileTimes::new().set_modified(before.modified().unwrap()).set_accessed(before.accessed().unwrap())).unwrap();
-                let baseline = NativeViewBaseline::new(options.expected_root_identity, true);
-                let before_capture = work.receipt();
-                let receipt = capture_subtrees_with_native_work(&mut checkout, &[root], &options, &CapturePolicy::default(), &cancellation, Some(&baseline), &work).await.unwrap();
-                prop_assert_eq!(receipt.value.changed_paths != 0, change_body || change_mode);
-                if empty && !change_body && !change_mode {
-                    prop_assert_eq!(receipt.work.backend_write_operations, before_capture.backend_write_operations);
-                }
-                let content = checkout.read_file_range(&path("/file").unwrap(), crate::ByteRange { offset: 0, length: expected.len() as u64 }, &work, &cancellation).await.unwrap();
-                prop_assert_eq!(content.bytes.as_ref(), expected.as_slice());
-                Ok(())
-            })?;
-        }
+    // Real capture must retain every byte and metadata change, including a
+    // content change with restored timestamps, while exact repeats write no paths.
+    #[test]
+    fn repeated_regular_capture_avoids_unchanged_writes() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let setup = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+        let initial = runtime.block_on(native_checkout(&setup)).unwrap();
+        let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
+            source_file: Some(file!()),
+            test_name: Some(concat!(
+                module_path!(),
+                "::repeated_regular_capture_avoids_unchanged_writes"
+            )),
+            ..ProptestConfig::default()
+        });
+        runner
+            .run(
+                &(
+                    prop::collection::vec(1_u8..=255, 1..96),
+                    any::<bool>(),
+                    any::<bool>(),
+                    any::<bool>(),
+                    any::<bool>(),
+                ),
+                |(body, empty, truncate, change_body, change_mode)| {
+                    runtime.block_on(async {
+                        let source = tempfile::tempdir().unwrap();
+                        let file = source.path().join("file");
+                        let body = if empty { Vec::new() } else { body };
+                        std::fs::write(&file, &body).unwrap();
+                        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))
+                            .unwrap();
+                        let before = std::fs::metadata(&file).unwrap();
+                        let budget = crate::performance::work_budget(1_000_000, 64_000_000);
+                        let cancellation = CancellationToken::new();
+                        let work = NativeMaterializationWork::new(budget, &cancellation).unwrap();
+                        let mut checkout = initial
+                            .private_candidate(
+                                &mut crate::kernel::KernelAccounting::native(&work, &cancellation),
+                                &cancellation,
+                            )
+                            .unwrap();
+                        let root = NamespacePath::new(Vec::new(), checkout.volume_config().limits)
+                            .unwrap();
+                        let options = options(source.path(), 16).unwrap();
+                        capture_subtrees_with_native_work(
+                            &mut checkout,
+                            &[root.clone()],
+                            &options,
+                            &CapturePolicy::default(),
+                            &cancellation,
+                            None,
+                            &work,
+                        )
+                        .await
+                        .unwrap();
+                        let mut expected = body;
+                        if change_body {
+                            if expected.is_empty() {
+                                expected.push(1);
+                            } else if truncate {
+                                expected.clear();
+                            } else {
+                                expected[0] ^= 1;
+                            }
+                            std::fs::write(&file, &expected).unwrap();
+                        }
+                        if change_mode {
+                            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640))
+                                .unwrap();
+                        }
+                        std::fs::File::open(&file)
+                            .unwrap()
+                            .set_times(
+                                std::fs::FileTimes::new()
+                                    .set_modified(before.modified().unwrap())
+                                    .set_accessed(before.accessed().unwrap()),
+                            )
+                            .unwrap();
+                        let baseline =
+                            NativeViewBaseline::new(options.expected_root_identity, true);
+                        let before_capture = work.receipt();
+                        let receipt = capture_subtrees_with_native_work(
+                            &mut checkout,
+                            &[root],
+                            &options,
+                            &CapturePolicy::default(),
+                            &cancellation,
+                            Some(&baseline),
+                            &work,
+                        )
+                        .await
+                        .unwrap();
+                        prop_assert_eq!(
+                            receipt.value.changed_paths != 0,
+                            change_body || change_mode
+                        );
+                        if empty && !change_body && !change_mode {
+                            prop_assert_eq!(
+                                receipt.work.backend_write_operations,
+                                before_capture.backend_write_operations
+                            );
+                        }
+                        let content = checkout
+                            .read_file_range(
+                                &path("/file").unwrap(),
+                                crate::ByteRange {
+                                    offset: 0,
+                                    length: expected.len() as u64,
+                                },
+                                &work,
+                                &cancellation,
+                            )
+                            .await
+                            .unwrap();
+                        prop_assert_eq!(content.bytes.as_ref(), expected.as_slice());
+                        Ok(())
+                    })
+                },
+            )
+            .unwrap();
     }
 }
 
@@ -634,31 +713,46 @@ async fn content_hints_override_metadata_hints_in_either_order()
     Ok(())
 }
 
-#[tokio::test]
-async fn rename_into_new_directory_hydrates_parents_even_with_create_hints()
--> Result<(), Box<dyn std::error::Error>> {
+// Property: any subset/order/duplication of parent creation hints leaves the
+// same renamed FileId and complete ancestry, within the event/path bound.
+#[test]
+fn rename_parent_hints_are_confluent() -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let initial = runtime.block_on(checkout(&[("/old.txt", "old")]))?;
     for hints in [vec![], vec![0], vec![1], vec![0, 1]] {
-        rename_with_hints(2, hints, false).await?;
+        runtime.block_on(rename_with_hints(&initial, 2, hints, false))?;
     }
+    let mut runner = proptest::test_runner::TestRunner::new(proptest::test_runner::Config {
+        cases: 32,
+        source_file: Some(file!()),
+        test_name: Some(concat!(
+            module_path!(),
+            "::rename_parent_hints_are_confluent"
+        )),
+        ..proptest::test_runner::Config::default()
+    });
+    runner
+        .run(
+            &(
+                1usize..5,
+                proptest::collection::vec(0usize..4, 0..8),
+                proptest::bool::ANY,
+            ),
+            |(depth, hints, rename_first)| {
+                runtime
+                    .block_on(rename_with_hints(&initial, depth, hints, rename_first))
+                    .unwrap();
+                Ok(())
+            },
+        )
+        .unwrap();
     Ok(())
 }
 
-// Property: any subset/order/duplication of parent creation hints leaves the
-// same renamed FileId and complete ancestry, within the event/path bound.
-proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
-    #[test]
-    fn rename_parent_hints_are_confluent(
-        depth in 1usize..5,
-        hints in proptest::collection::vec(0usize..4, 0..8),
-        rename_first in proptest::bool::ANY,
-    ) {
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-            .block_on(rename_with_hints(depth, hints, rename_first)).unwrap();
-    }
-}
-
 async fn rename_with_hints(
+    initial: &crate::facade::MemoryCheckout,
     depth: usize,
     hints: Vec<usize>,
     rename_first: bool,
@@ -677,7 +771,13 @@ async fn rename_with_hints(
         source.path().join(destination.trim_start_matches('/')),
         b"new",
     )?;
-    let mut checkout = checkout(&[("/old.txt", "old")]).await?;
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let mut checkout = initial.private_candidate(
+        &mut crate::kernel::KernelAccounting::native(&work, &cancellation),
+        &cancellation,
+    )?;
     let before = checkout
         .lookup_no_follow(
             &path("/old.txt")?,

@@ -35,6 +35,26 @@ mod tests;
 pub const DIRECTORY: &str = ".acyclic-sdk/host-files";
 const MAXIMUM_BYTES: u64 = 65_536;
 
+// A failed observation cannot authorize request or replay-result retirement.
+// This only establishes visibility, not durable acknowledgement.
+fn projection_present(path: &Path) -> std::io::Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+pub(super) fn git_request(directory: PathBuf, operation: OperationId) -> acyclic_fs::GitRequest {
+    acyclic_fs::GitRequest {
+        operation: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
+        unanswered: Arc::new(move |request: acyclic_fs::OperationId| {
+            let file = format!("{}.json", OperationId::from_bytes(request.into_bytes()));
+            projection_present(&directory.join("requests").join(file)).unwrap_or(true)
+        }),
+    }
+}
+
 // Both endpoints observe their own reads. Admit only events that can change
 // the projection, so opening a file cannot schedule another read of itself.
 fn projection_changed(event: &notify::Result<notify::Event>) -> bool {
@@ -199,11 +219,9 @@ impl Shared {
         let leaf = format!("{operation}.json");
         let reply = match regular_bytes(&self.status.join(&leaf)) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(storage),
-            Err(Error::NotFound(_)) => match std::fs::symlink_metadata(self.requests.join(&leaf)) {
-                Ok(_) => return,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    Err(Error::Indeterminate(operation))
-                }
+            Err(Error::NotFound(_)) => match projection_present(&self.requests.join(&leaf)) {
+                Ok(true) => return,
+                Ok(false) => Err(Error::Indeterminate(operation)),
                 Err(error) => Err(storage(error)),
             },
             Err(error) => Err(error),
@@ -902,7 +920,9 @@ impl Served {
         };
         if self.known.contains_key(&operation) {
             // A known request changes only by its withdrawal.
-            if std::fs::symlink_metadata(&path).is_err() {
+            if !projection_present(&path).map_err(|error| {
+                Error::Storage(owner_failure("observe native request projection", &error))
+            })? {
                 self.withdraw(requests, operation)?;
             }
             return Ok(());

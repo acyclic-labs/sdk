@@ -336,17 +336,25 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
     let path = ".volumes/home/note";
     let token = serde_json::to_string(&file).map_err(storage)?;
     for version in [serde_json::Value::Null, serde_json::json!(token)] {
+        let authored = version.is_null();
         let (result, projected) = run(
             read_context.clone(),
             crate::tool::files::read()?,
             serde_json::json!({"path": path, "version": version}),
         )
         .await?;
-        assert_eq!(result.value["text"], "first");
-        assert_eq!(
-            result.value["file"],
-            serde_json::to_value(&file).map_err(storage)?
-        );
+        let result: crate::tool::files::ReadFileResult =
+            serde_json::from_value(result.value).map_err(storage)?;
+        assert_eq!(result.text, "first");
+        match (authored, result.file) {
+            (true, crate::tool::files::FileReadSource::Authored(selected)) => {
+                assert!(selected.matches_content(&file));
+            }
+            (false, crate::tool::files::FileReadSource::Content(selected)) => {
+                assert_eq!(selected, file);
+            }
+            _ => panic!("read changed the selected source kind"),
+        }
         assert!(projected.to_string().contains(path));
     }
     let wrong_path = run(

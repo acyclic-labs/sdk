@@ -104,26 +104,6 @@ fn exact_resources(output: &Output, heap: AllocationInfo, work: WorkCounters, co
 }
 
 #[test]
-fn production_reserve_has_fixed_heap_counts() {
-    let _subscriber =
-        tracing::subscriber::set_default(tracing::subscriber::NoSubscriber::default());
-    // Same fixed physical counts on Linux and Windows: reuse 0, growth 1.
-    for (capacity, count, old_count) in [(8, 0, 1), (3, 1, 4)] {
-        let (work, _, _, _) = expected(3, capacity, 1, 0, false);
-        let (new, heap) = run(fixture(&[0, 255, 10], capacity, 0, false), 1, false);
-        let (old, old_heap) = run(fixture(&[0, 255, 10], capacity, 0, false), 1, true);
-        eprintln!(
-            "RESERVE_HEAP windows={} capacity={capacity} candidate={heap:?} old={old_heap:?}",
-            cfg!(windows)
-        );
-        assert_eq!(new, old);
-        assert!(exact_resources(&new, heap, work, count));
-        assert_eq!(old_heap.count_total, old_count);
-        assert!(!exact_resources(&old, old_heap, work, count));
-    }
-}
-
-#[test]
 fn reserve_matches_frozen_baseline_and_has_no_success_error_boxes()
 -> Result<(), Box<dyn std::error::Error>> {
     let _subscriber =
@@ -168,10 +148,13 @@ fn reserve_matches_frozen_baseline_and_has_no_success_error_boxes()
                 // Restoring the old eager boxes must fail the same exact oracle.
                 prop_assert!(!exact_resources(&old, old_heap, work, count));
             }
-            Ok(())
+            Ok((heap.count_total, old_heap.count_total))
         };
+    // Independent literal heap counts, checked through every property assertion.
+    // Both native platforms reuse without allocation and grow exactly once.
+    assert_eq!(check((vec![0, 255, 10], 5, 1, 0, false)).unwrap(), (0, 1));
+    assert_eq!(check((vec![0, 255, 10], 0, 1, 0, false)).unwrap(), (1, 4));
     for case in [
-        (vec![0, 255, 10], 0, 1, 0, false),
         (vec![0, 255, 10], 4, 1, 0, false),
         (vec![0, 255, 10], 0, 1, 1, false),
         (vec![0, 255, 10], 0, 1, 2, false),
@@ -192,7 +175,7 @@ fn reserve_matches_frozen_baseline_and_has_no_success_error_boxes()
             0u8..3,
             any::<bool>(),
         ),
-        check,
+        |case| check(case).map(|_| ()),
     )?;
     Ok(())
 }
