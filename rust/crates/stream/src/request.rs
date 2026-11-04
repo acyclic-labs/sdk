@@ -602,6 +602,19 @@ fn validate_commit_size(request: &CommitRequest) -> Result<(), StreamError> {
 }
 
 pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), StreamError> {
+    validate_commit_shape_with(request, |_| {})
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ShapeVisit {
+    Condition,
+    Carrier,
+}
+
+pub(crate) fn validate_commit_shape_with(
+    request: &CommitRequest,
+    mut visit: impl FnMut(ShapeVisit),
+) -> Result<(), StreamError> {
     for mutation in &request.mutations {
         if let CommitMutation::Fork {
             source,
@@ -631,6 +644,7 @@ pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), Strea
         let condition = request
             .conditions
             .binary_search_by(|condition| {
+                visit(ShapeVisit::Condition);
                 condition_path(condition).cmp(crate::CommitMutation::path(mutation))
             })
             .ok()
@@ -644,10 +658,10 @@ pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), Strea
             CommitMutation::SoftAppend { path, closed, .. }
                 if condition.is_some()
                     || closed.as_ref() == Some(path)
-                    || request
-                        .mutations
-                        .iter()
-                        .all(|other| matches!(other, CommitMutation::SoftAppend { .. })) =>
+                    || request.mutations.iter().all(|other| {
+                        visit(ShapeVisit::Carrier);
+                        matches!(other, CommitMutation::SoftAppend { .. })
+                    }) =>
             {
                 return Err(StreamError::InvalidArgument);
             }

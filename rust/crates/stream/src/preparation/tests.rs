@@ -284,9 +284,11 @@ fn settling_copies_only_admitted_skipped_paths_and_views_the_rest_in_place()
         .map(crate::CommitMutation::path)
         .collect();
     assert_eq!(applied, [&live]);
+    let mut repeated_shape_visits = [0_usize; 2];
     for count in [0, 1, 2, 7, 31, 127] {
-        for pattern in 0..64_u32 {
-            let anchor = StreamPath::new("anchor")?;
+        for pattern in 0..128_u32 {
+            let mixed = pattern & 64 != 0;
+            let anchor = StreamPath::new(if mixed { "anchor" } else { "zz-anchor" })?;
             let mut request = CommitRequest {
                 deadline_unix_millis: None,
                 conditions: vec![CommitCondition::Absent {
@@ -301,12 +303,12 @@ fn settling_copies_only_admitted_skipped_paths_and_views_the_rest_in_place()
             for index in 0..count {
                 let path = StreamPath::new(format!("item/{index:03}"))?;
                 let record = vec![AppendRecord::from(vec![1])];
-                request.mutations.push(if index % 5 == 1 {
+                request.mutations.push(if mixed && index % 5 == 1 {
                     CommitMutation::Append {
                         path,
                         records: record,
                     }
-                } else if index % 5 == 3 {
+                } else if mixed && index % 5 == 3 {
                     request
                         .conditions
                         .push(CommitCondition::Absent { path: path.clone() });
@@ -327,6 +329,16 @@ fn settling_copies_only_admitted_skipped_paths_and_views_the_rest_in_place()
             }
             crate::request::normalize_commit(&mut request)?;
             crate::request::validate_commit_shape(&request)?;
+            let mut conditions = 0_usize;
+            let mut carriers = 0_usize;
+            crate::request::validate_commit_shape_with(&request, |visit| match visit {
+                crate::request::ShapeVisit::Condition => conditions += 1,
+                crate::request::ShapeVisit::Carrier => carriers += 1,
+            })?;
+            repeated_shape_visits[0] =
+                repeated_shape_visits[0].max(carriers.saturating_sub(request.mutations.len()));
+            repeated_shape_visits[1] = repeated_shape_visits[1]
+                .max(conditions.saturating_sub(request.mutations.len() + request.conditions.len()));
             let skipped = settle(
                 &request,
                 |path| {
@@ -370,5 +382,10 @@ fn settling_copies_only_admitted_skipped_paths_and_views_the_rest_in_place()
             );
         }
     }
+    assert_eq!(
+        repeated_shape_visits,
+        [0, 0],
+        "shape validation repeated scans: carrier and condition excess"
+    );
     Ok(())
 }
