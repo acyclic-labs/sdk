@@ -180,6 +180,30 @@ pub(super) fn reap_exited_id(
         })?;
     result.map(|_| (ExitStatus::from_raw(status), recorded))
 }
+pub(super) fn pipe_available(
+    pipe: &impl Pipe,
+    meter: Option<&dyn crate::NativeReadMeter>,
+) -> io::Result<(Option<usize>, io::Result<()>)> {
+    let mut available: libc::c_int = 0;
+    let (result, recorded) =
+        super::pipe_operation_attempt(meter, crate::NativeOperationKind::Read, || {
+            // SAFETY: the original live pipe owns this descriptor and FIONREAD
+            // writes one integer without consuming or waiting for pipe data.
+            if unsafe { libc::ioctl(pipe.as_raw_fd(), libc::FIONREAD, &raw mut available) } < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                usize::try_from(available).map_err(io::Error::other)
+            }
+        })?;
+    match result {
+        Ok(count) => Ok((Some(count), recorded)),
+        Err(error) => {
+            recorded?;
+            Err(error)
+        }
+    }
+}
+
 pub(super) fn read_pipe(
     pipe: &mut (impl Read + Pipe),
     buffer: &mut [std::mem::MaybeUninit<u8>],

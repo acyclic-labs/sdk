@@ -763,6 +763,17 @@ impl ProcessTree {
         meter: Option<&dyn crate::NativeReadMeter>,
         stderr: bool,
     ) -> io::Result<Option<usize>> {
+        let (read, recorded) = self.read_output_attempt(buffer, meter, stderr)?;
+        recorded?;
+        Ok(read)
+    }
+
+    fn read_output_attempt(
+        &mut self,
+        buffer: &mut [u8],
+        meter: Option<&dyn crate::NativeReadMeter>,
+        stderr: bool,
+    ) -> io::Result<(Option<usize>, io::Result<()>)> {
         if buffer.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -770,7 +781,7 @@ impl ProcessTree {
             ));
         }
         let Some(child) = self.child.as_mut() else {
-            return Ok(Some(0));
+            return Ok((Some(0), Ok(())));
         };
         // SAFETY: initialized bytes can be borrowed as MaybeUninit bytes.
         let buffer =
@@ -787,7 +798,7 @@ impl ProcessTree {
                 .map(|pipe| platform::read_pipe(pipe, buffer, meter))
         };
         let Some(result) = result else {
-            return Ok(Some(0));
+            return Ok((Some(0), Ok(())));
         };
         let (read, recorded) = result?;
         // A pipe at end of file is released, so no later readiness wait
@@ -799,8 +810,7 @@ impl ProcessTree {
                 drop(child.stdout.take());
             }
         }
-        recorded?;
-        Ok(read)
+        Ok((read, recorded))
     }
 
     fn close_stdin(&mut self) {
