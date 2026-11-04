@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { coverage, inventory, readCoverage, rows } from "./coverage.mjs";
 
@@ -43,4 +46,21 @@ test("the checked-in inventory has valid references and every case is mapped", (
   // readCoverage's pass field remains false until every recorded product gap
   // has an executable acceptance case. Inventory validity is not qualification.
   assert.equal(result.pass, !result.missing.length && !result.gaps.length);
+});
+
+test("a scripted send must start a follow-up turn, never race the recipient's boundary", () => {
+  const root = mkdtempSync(join(tmpdir(), "graphcoder-e2e-cases-"));
+  try {
+    mkdirSync(join(root, "cases"));
+    const write = delivery => writeFileSync(join(root, "cases", "send.json"), JSON.stringify({ id: "send",
+      model: { steps: [{ tools: [{ id: "send", name: "send", arguments: { agent: "worker", message: "m", ...delivery } }] }] } }));
+    for (const delivery of [{}, { delivery: "steer" }]) {
+      write(delivery);
+      assert.throws(() => inventory(root), /send: scripted send send must use delivery follow_up/);
+    }
+    write({ delivery: "follow_up" });
+    assert.deepEqual(inventory(root).map(test => test.id), ["send"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
