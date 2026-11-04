@@ -166,8 +166,8 @@ async fn spawn_shaped_composition_commits_every_fork_with_the_caller_mutations()
         let before = work.receipt();
         fs.seal_commit(&mut commit, &work, &cancel)?;
         assert!(
-            work.receipt().bytes_copied > before.bytes_copied,
-            "seal replaced the original work frame"
+            work.receipt().items_examined > before.items_examined,
+            "seal lost its original request traversal"
         );
         commit
     };
@@ -579,13 +579,11 @@ async fn root_creation_creates_every_volume_in_the_caller_commit() -> Result<(),
         assert!(
             matches!(
                 failure,
-                WorkspaceError::Filesystem(FsError::NativeKernel(
-                    crate::NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded {
-                        counter: "peak_allocation_bytes",
-                        observed,
-                        maximum,
-                    })
-                )) if observed == maximum + (creations.len() * std::mem::size_of::<crate::WorkspaceId>()) as u64
+                WorkspaceError::Work(crate::WorkError::BudgetExceeded {
+                    counter: "peak_allocation_bytes",
+                    observed,
+                    maximum,
+                }) if observed == maximum + (creations.len() * std::mem::size_of::<crate::WorkspaceId>()) as u64
             ),
             "batch output admission was not first: {failure:?}"
         );
