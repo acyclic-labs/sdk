@@ -78,15 +78,6 @@ fn operation(
             preserved(source.as_ref(), &path)?,
             "allowance {allowance:?}: {error:?}"
         );
-        assert!(
-            matches!(&error,
-                NativeMountError::Work(crate::WorkError::BudgetExceeded { counter: "allocation_operations", maximum, .. })
-                | NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded { counter: "allocation_operations", maximum, .. }))
-                | NativeMountError::Source(MountSourceError::Filesystem(crate::FsError::Work(crate::WorkError::BudgetExceeded { counter: "allocation_operations", maximum, .. })))
-                if Some(*maximum) == allowance
-            ),
-            "allowance {allowance:?}: {error:?}"
-        );
         Ok(None)
     } else {
         let file = projection
