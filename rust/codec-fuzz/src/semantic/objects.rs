@@ -676,7 +676,10 @@ fn writer_seeds() -> Result<(Vec<Seed>, AvailabilityCursor), Box<dyn std::error:
         }
         let batch = client
             .put_batch(vec![
-                (body(), vec![Digest::of(b"original absent batch reference")]),
+                (
+                    OwnedBytes::from_static(b"original batch with absent reference"),
+                    vec![Digest::of(b"original absent batch reference")],
+                ),
                 (OwnedBytes::from_static(other), Vec::new()),
             ])
             .await;
