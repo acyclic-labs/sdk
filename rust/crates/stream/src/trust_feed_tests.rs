@@ -1,7 +1,7 @@
 //! Feed proofs over an in-memory source, stepped by hand: every assertion
 //! follows one poll of the run with all input ready, so nothing waits.
 use super::*;
-use crate::{CommitId, RecordHeaders, StreamPath};
+use crate::{CommitId, IdempotencyKey, MemoryStream, OwnedBytes, RecordHeaders, StreamPath};
 use acyclic_auth::trust::{ChangeSource as _, EnvironmentFrontier, Issuer};
 use acyclic_auth::verify::Trust as _;
 use bytes::Bytes;
@@ -159,13 +159,13 @@ fn served(follower: &Follower, account: &str) -> bool {
 /// Fail the original rewind after its revocation checkpoint, before the
 /// duplicate current keyring. Later follows retain the same source history.
 struct InterruptedReplay {
-    source: Src,
+    source: Arc<MemoryStream>,
     follows: AtomicUsize,
 }
 
 impl Source for InterruptedReplay {
     fn tail<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<u64, StreamError>> {
-        self.source.tail(path)
+        Source::tail(&self.source, path)
     }
 
     fn follow<'a>(
@@ -174,7 +174,7 @@ impl Source for InterruptedReplay {
         from: u64,
     ) -> BoxFuture<'a, Result<Records, StreamError>> {
         async move {
-            let records = self.source.follow(path, from).await?;
+            let records = Source::follow(&self.source, path, from).await?;
             if path == account_path("test", "account")
                 && self.follows.fetch_add(1, Ordering::SeqCst) == 1
             {
@@ -190,8 +190,8 @@ impl Source for InterruptedReplay {
     }
 }
 
-#[test]
-fn reconnect_completes_an_interrupted_authenticated_replay() {
+#[tokio::test]
+async fn reconnect_completes_an_interrupted_authenticated_replay() {
     let anchor = Issuer::new("test", key(1));
     let current = Issuer::new("test", key(9));
     let mut frontier = EnvironmentFrontier::genesis("test", anchor.anchor());
@@ -200,12 +200,26 @@ fn reconnect_completes_an_interrupted_authenticated_replay() {
         .unwrap();
     let (mut root, mut history) = anchor.genesis("account", key(2), NOW).unwrap();
     history.push(current.keyring(&mut root, NOW).unwrap());
-    let world = world(&anchor, history);
-    world.fake.push(&environment_path("test"), environment);
-    let follower = world.follower;
+    let source = Arc::new(MemoryStream::default());
+    for (path, records) in [
+        (account_path("test", "account"), history),
+        (environment_path("test"), vec![environment]),
+    ] {
+        let stream = Stream::new(source.clone(), path).unwrap();
+        for (index, value) in records.into_iter().enumerate() {
+            stream
+                .append(
+                    OwnedBytes::from(value),
+                    IdempotencyKey::new(format!("{}-{index}", stream.path()).into_bytes()).unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+    }
+    let follower = Arc::new(Follower::new("test", anchor.anchor()));
     let (mut feed, accounts) = TrustFeed::new(
         InterruptedReplay {
-            source: Src(world.fake),
+            source,
             follows: AtomicUsize::new(0),
         },
         Arc::clone(&follower),
