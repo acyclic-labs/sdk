@@ -4,6 +4,7 @@ use std::sync::mpsc::{Receiver, Sender};
 
 enum Event {
     Polling,
+    Released,
     Retired(Result<(), NativeMountError>),
 }
 
@@ -198,6 +199,8 @@ fn waiting_mount(
     polling: Sender<Event>,
     acknowledged: Receiver<()>,
     mut interrupted: bool,
+    physical: Option<Arc<std::sync::OnceLock<std::thread::ThreadId>>>,
+    caller_waited: Arc<std::sync::atomic::AtomicBool>,
 ) -> std::io::Result<super::super::mount::Mount> {
     super::super::mount::Mount::accepted_unmount(move |timeout| {
         if timeout == 0 {
@@ -205,6 +208,15 @@ fn waiting_mount(
             return Ok(false);
         }
         assert_eq!(timeout, -1);
+        if physical
+            .as_ref()
+            .is_some_and(|owner| owner.get() != Some(&std::thread::current().id()))
+        {
+            // Refuse the observer's misplaced wait without hanging the
+            // negative control. The accepted physical owner still drains it.
+            caller_waited.store(true, std::sync::atomic::Ordering::Release);
+            return Err(std::io::ErrorKind::WouldBlock.into());
+        }
         if std::mem::take(&mut interrupted) {
             return Err(std::io::ErrorKind::Interrupted.into());
         }
@@ -249,6 +261,7 @@ fn last_session_drop_waits_for_kernel_ack_using_birth_credit()
 
 fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::error::Error>> {
     let meter = matches!(mode, Retirement::Meter);
+    let last_owner = matches!(mode, Retirement::LastOwner);
     let (source, _) = shared_sources(posix_config())?;
     let core = projection_core(
         Arc::new(source),
@@ -257,7 +270,7 @@ fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::
     )?;
     let original = crate::NativeMaterializationWork::new(
         crate::WorkBudget {
-            backend_read_operations: 1,
+            backend_read_operations: 1 + u64::from(last_owner),
             backend_write_operations: 1,
             ..crate::WorkBudget::UNBOUNDED
         },
@@ -265,7 +278,7 @@ fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::
     )
     .map_err(|(cause, _)| cause)?;
     let cleanup = original.reserve_work(crate::WorkCounters {
-        backend_read_operations: u64::from(!meter),
+        backend_read_operations: u64::from(!meter) + u64::from(last_owner),
         backend_write_operations: 1,
         ..crate::WorkCounters::UNCHARGED
     })?;
@@ -285,7 +298,15 @@ fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::
         },
         None,
     )?;
-    let mount = waiting_mount(polling, acknowledged, interrupted)?;
+    let physical = last_owner.then(|| Arc::new(std::sync::OnceLock::new()));
+    let caller_waited = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mount = waiting_mount(
+        polling,
+        acknowledged,
+        interrupted,
+        physical.clone(),
+        Arc::clone(&caller_waited),
+    )?;
     core.stop();
     if !meter {
         // Losing the original caller cannot revoke already accepted cleanup.
@@ -310,6 +331,26 @@ fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::
         state: Arc::clone(&state),
         invalidator: None,
     };
+    let (release, accepted) = std::sync::mpsc::channel();
+    if let Some(physical) = physical {
+        let core = Arc::clone(&facade.core);
+        let state = Arc::clone(&state);
+        let events = events.clone();
+        facade.invalidator = Some(std::thread::spawn(move || {
+            physical.set(std::thread::current().id()).unwrap();
+            // Preempt the already accepted physical owner until the observer
+            // leaves. Its original loop, state and cleanup credit remain held.
+            accepted.recv().unwrap();
+            run_fuse_session((core, Arc::clone(&state)));
+            let result = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .failure
+                .take()
+                .map_or(Ok(()), Err);
+            events.send(Event::Retired(result)).unwrap();
+        }));
+    }
     let caller = original.clone();
     let worker = std::thread::spawn(move || {
         let result = match mode {
@@ -336,29 +377,39 @@ fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::
                 );
                 owner.driver = Some(facade);
                 drop(owner);
-                Ok(())
+                events.send(Event::Released).unwrap();
+                release.send(()).unwrap();
+                return;
             }
         };
         events.send(Event::Retired(result)).unwrap();
     });
-    match observed.recv()? {
-        Event::Polling => {
-            assert!(
-                matches!(state.try_lock(), Err(std::sync::TryLockError::WouldBlock)),
-                "session ownership escaped before the kernel acknowledgment"
-            );
-            acknowledge.send(())?;
-        }
-        Event::Retired(result) => {
-            worker.join().map_err(|_| "retirement worker panicked")?;
-            panic!("retirement returned before the kernel acknowledgment: {result:?}");
+    let mut released = !last_owner;
+    let mut polling = false;
+    while !released || !polling {
+        match observed.recv()? {
+            Event::Polling => polling = true,
+            Event::Released => released = true,
+            Event::Retired(result) => {
+                worker.join().map_err(|_| "retirement worker panicked")?;
+                panic!("retirement returned before the kernel acknowledgment: {result:?}");
+            }
         }
     }
+    assert!(
+        matches!(state.try_lock(), Err(std::sync::TryLockError::WouldBlock)),
+        "session ownership escaped before the kernel acknowledgment"
+    );
+    acknowledge.send(())?;
     let Event::Retired(result) = observed.recv()? else {
         panic!("retirement polled again instead of awaiting acknowledgment");
     };
     worker.join().map_err(|_| "retirement worker panicked")?;
     result?;
+    assert!(
+        !caller_waited.load(std::sync::atomic::Ordering::Acquire),
+        "observer drop entered the original native wait instead of its accepted physical owner"
+    );
     assert!(
         state
             .lock()

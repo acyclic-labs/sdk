@@ -1,6 +1,8 @@
 use super::*;
 
 /// Process-owned mounted namespace.
+/// Dropping an observer signals its accepted physical retirement owner. Use
+/// an explicit stop to wait for cleanup and observe its terminal outcome.
 pub struct NativeMountSession {
     // Native producers retire before source data and the destination fence.
     pub(super) driver: Option<DriverSession>,
@@ -469,6 +471,20 @@ impl NativeMountSession {
 
 impl Drop for NativeMountSession {
     fn drop(&mut self) {
+        // An accepted physical loop already owns its source and destination
+        // fence. Drop only its observer: the driver's Drop wakes that owner.
+        // Waiting here can prevent a controlled native submission from running
+        // on the executor whose current task is releasing this session.
+        if self.retained_source.is_none()
+            && self.startup_source_watch.is_none()
+            && self.destination_guard.is_none()
+            && self.driver.as_ref().is_some_and(|driver| {
+                with_driver!(driver, session, session.has_retirement_owner(), false)
+            })
+        {
+            drop(self.driver.take());
+            return;
+        }
         // Last-owner release has the same physical retirement boundary as an
         // explicit stop. It consumes birth-paid cleanup, never a fresh meter
         // or cancellation token. If a native operation refuses, its existing
