@@ -15,30 +15,16 @@ pub(super) async fn check<O: crate::AsyncObjectStore, A: crate::AsyncAuthoritySt
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(), crate::FsError> {
-    // Every temporary below is retired before reconciling the standalone ledger.
-    // Native reads retain the original request's RAII allocation custody.
-    let before = accounting
-        .standalone_parts()
-        .map(|(a, _, _, _)| a.live_bytes());
+    let mut scratch = accounting.allocation_scope()?;
     let result = check_inner(
         objects,
         authority,
         candidate,
         limits,
-        accounting,
+        &mut scratch,
         cancellation,
     )
     .await;
-    if let Some(before) = before {
-        let (allocations, _, _, _) = accounting.standalone_parts().ok_or(WorkError::Overflow)?;
-        let retired = allocations
-            .live_bytes()
-            .checked_sub(before)
-            .ok_or(WorkError::Overflow)?;
-        allocations
-            .release(retired)
-            .map_err(|_| WorkError::Overflow)?;
-    }
     result.map_err(|error| match error {
         crate::FsError::Publication(_) => error,
         error => PublicationError::ProjectionValidation(Box::new(error)).into(),

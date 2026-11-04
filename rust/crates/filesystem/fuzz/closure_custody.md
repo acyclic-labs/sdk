@@ -97,3 +97,19 @@ then checks batch and whole-closure custody against that local provider.
 output transfer. Shared-memory reads still pass; the local owned read must fail
 `single owned output funding retired at scope exit`. This closes the shared-only
 coverage gap without an artificial owned-read provider.
+
+Content comparison and publication projection retire only their own scratch
+through the shared allocation scope. Changed-path collection carries its actual
+owned allocation through publication instead of reconstructing it from total
+live bytes; its failure path retires that same allocation without rescanning
+paths. These transfers introduce no copies, I/O, durability barriers or waits.
+
+The existing `native_range_restoration_compares_bytes_across_payload_layouts`
+property also compares its actual committed file records while an observer
+retires an independent owned buffer on the first delegated store read. Cleanup
+must leave the other independent buffer fully funded, then retire exactly to
+zero after that buffer is destroyed. Apply
+`mutations/content_comparison_scratch.patch` to restore the old total-live-byte
+cleanup in the production comparison. The property must reject it at
+`comparison custody` or `comparison cleanup retired independent allocation`;
+restore the patch before requiring the same property to pass.

@@ -137,6 +137,8 @@ fn native_range_restoration_compares_bytes_across_payload_layouts() -> Result<()
                             .record
                             .unwrap();
                         assert_ne!(selected.payload, original.payload);
+                        comparison_preserves_independent_custody(fs.objects(), selected, original)
+                            .await?;
                     }
                 }
                 Ok(())
@@ -145,6 +147,81 @@ fn native_range_restoration_compares_bytes_across_payload_layouts() -> Result<()
         },
     )?;
     Ok(())
+}
+
+async fn comparison_preserves_independent_custody<S: crate::AsyncObjectStore>(
+    store: &S,
+    selected: crate::kernel::FileRecord,
+    original: crate::kernel::FileRecord,
+) -> Result<(), Box<dyn Error>> {
+    use crate::kernel::allocation::{KernelAccounting, retained::Retained};
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let independent = Retained::<Vec<u8>>::allocate(73, &mut accounting)?;
+    let retired = Retained::<Vec<u8>>::allocate(127, &mut accounting)?;
+    let store = RetiringRead {
+        inner: store,
+        retired: std::sync::Mutex::new(Some(retired)),
+    };
+    assert!(
+        crate::kernel::records_match_content(
+            &store,
+            selected,
+            original,
+            crate::VolumeConfig::portable(crate::Lifecycle::Durable),
+            &mut accounting,
+            &cancellation,
+        )
+        .await
+        .map_err(|error| format!("comparison custody: {error:?}"))?
+    );
+    assert!(
+        store.retired.lock().unwrap().is_none(),
+        "comparison performed no physical read"
+    );
+    assert_eq!(
+        accounting.standalone_parts().unwrap().0.live_bytes(),
+        73,
+        "comparison cleanup retired independent allocation"
+    );
+    drop(independent);
+    assert_eq!(accounting.standalone_parts().unwrap().0.live_bytes(), 0);
+    Ok(())
+}
+
+struct RetiringRead<'a, S> {
+    inner: &'a S,
+    retired: std::sync::Mutex<Option<crate::kernel::allocation::retained::Retained<Vec<u8>>>>,
+}
+
+impl<S: crate::AsyncObjectStore> crate::AsyncObjectStore for RetiringRead<'_, S> {
+    async fn read(
+        &self,
+        id: crate::ObjectId,
+        maximum: u64,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        let retired = self.retired.lock().unwrap().take();
+        drop(retired);
+        self.inner.read(id, maximum, work).await
+    }
+
+    async fn put(
+        &self,
+        id: crate::ObjectId,
+        bytes: OwnedBytes,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        self.inner.put(id, bytes, work).await
+    }
+
+    async fn contains(
+        &self,
+        id: crate::ObjectId,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<bool, crate::ObjectStoreError> {
+        self.inner.contains(id, work).await
+    }
 }
 
 #[tokio::test]

@@ -131,24 +131,8 @@ pub(crate) async fn records_match_content<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<bool, FsError> {
-    let before = accounting
-        .standalone_parts()
-        .map(|(allocations, ..)| allocations.live_bytes());
-    let result = compare(store, left, right, config, accounting, cancellation).await;
-    // No body or plan escapes this operation, including when the second read
-    // is denied. Native byte carriers release their own original-ledger guards.
-    if let Some(before) = before
-        && let Some((allocations, ..)) = accounting.standalone_parts()
-    {
-        let retired = allocations
-            .live_bytes()
-            .checked_sub(before)
-            .ok_or(crate::WorkError::Overflow)?;
-        allocations
-            .release(retired)
-            .map_err(|error| error.into_work_or(FsError::HandleAllocationFailed))?;
-    }
-    result
+    let mut scratch = accounting.allocation_scope()?;
+    compare(store, left, right, config, &mut scratch, cancellation).await
 }
 
 async fn compare<S: AsyncObjectStore>(
