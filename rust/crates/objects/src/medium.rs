@@ -86,6 +86,11 @@ pub trait Medium: acyclic_stream::ProviderPlatform + 'static {
     fn allocate(&self, _bytes: u64) -> Result<(), MediumError> {
         Ok(())
     }
+    /// Transfers an engine buffer admitted by [`Medium::allocate`] into
+    /// immutable bytes, retaining its original allocation custody.
+    fn finish_allocation(&self, bytes: Vec<u8>) -> Result<OwnedBytes, MediumError> {
+        Ok(bytes.into())
+    }
     /// Withholds `operations` physical write attempts from the
     /// caller's budget, so the writes after it are never refused for budget;
     /// free unless the medium meters its caller.

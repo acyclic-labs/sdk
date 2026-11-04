@@ -25,6 +25,14 @@ pub(super) fn resident_read(
 }
 
 impl<S: AsyncObjectStore> StagedObjects<S> {
+    pub(super) fn unstaged(&self, requests: &[ObjectReadRequest]) -> bool {
+        let index = self.index();
+        index.objects.is_empty()
+            || requests
+                .iter()
+                .all(|request| !index.objects.contains_key(&request.object_id))
+    }
+
     pub(super) async fn read_private(
         &self,
         object_id: ObjectId,

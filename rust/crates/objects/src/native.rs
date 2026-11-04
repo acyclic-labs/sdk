@@ -13,7 +13,8 @@ type Meter = Arc<dyn NativeReadMeter>;
 
 /// The caller's meter over every medium operation of one native call, batch
 /// members included: each physical operation is admitted before dispatch, and
-/// every buffer the medium or engine allocates stays charged until the call ends.
+/// returned payload backing keeps its charge through the final byte alias.
+/// Temporary engine allocations remain charged for the call.
 /// Canonical payload bytes belong to the caller's logical-object accounting;
 /// medium envelopes, index keys and listings are neither source nor output bytes.
 pub(crate) struct Metered<M> {
@@ -57,7 +58,7 @@ impl<M> Metered<M> {
     }
 
     /// Keeps the meter's own refusal for the caller; the engine sees a failure.
-    fn charge(&self, result: std::io::Result<()>) -> Result<(), MediumError> {
+    fn charge<T>(&self, result: std::io::Result<T>) -> Result<T, MediumError> {
         result.map_err(|error| {
             let relay = std::io::Error::from(error.kind());
             self.refusal
@@ -75,6 +76,18 @@ impl<M> Metered<M> {
             .unwrap_or_else(PoisonError::into_inner)
             .grow(bytes);
         self.charge(grown)
+    }
+
+    fn retain_read(&self, bytes: OwnedBytes) -> Result<OwnedBytes, MediumError>
+    where
+        M: Medium,
+    {
+        let allocated = self.inner.read_allocation_bytes(&bytes);
+        if allocated == 0 {
+            return Ok(bytes);
+        }
+        let allocation = self.charge(ReadAllocation::new(&self.meter, allocated))?;
+        self.charge(bytes.with_guard(allocation, Arc::clone(&self.meter)))
     }
 
     /// The meter's refusal behind `error`, else the engine's error.
@@ -105,11 +118,7 @@ impl<M: Medium> Medium for Metered<M> {
     ) -> Result<Option<OwnedBytes>, MediumError> {
         self.charge(self.meter.admit_read(0))?;
         let read = self.inner.read(key, range).await?;
-        let allocated = read
-            .as_ref()
-            .map_or(0, |bytes| self.inner.read_allocation_bytes(bytes));
-        self.hold(allocated)?;
-        Ok(read)
+        read.map(|bytes| self.retain_read(bytes)).transpose()
     }
 
     async fn remove(&self, key: &str) -> Result<bool, MediumError> {
@@ -119,12 +128,10 @@ impl<M: Medium> Medium for Metered<M> {
 
     async fn observe(&self, key: String) -> Result<Option<Observed<'_>>, MediumError> {
         self.charge(self.meter.admit_read(0))?;
-        let observed = self.inner.observe(key).await?;
-        if let Some(observed) = &observed {
-            self.hold(
-                self.inner.read_allocation_bytes(&observed.bytes)
-                    + observed.observation.version_bytes(),
-            )?;
+        let mut observed = self.inner.observe(key).await?;
+        if let Some(observed) = &mut observed {
+            observed.bytes = self.retain_read(std::mem::take(&mut observed.bytes))?;
+            self.hold(observed.observation.version_bytes())?;
         }
         Ok(observed)
     }
@@ -178,6 +185,30 @@ impl<M: Medium> Medium for Metered<M> {
 
     fn allocate(&self, bytes: u64) -> Result<(), MediumError> {
         self.hold(usize::try_from(bytes).unwrap_or(usize::MAX))
+    }
+
+    fn finish_allocation(&self, bytes: Vec<u8>) -> Result<OwnedBytes, MediumError> {
+        let mut allocation = self.charge(
+            self.held
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .split(bytes.len()),
+        )?;
+        if let Err(error) = allocation.reconcile_capacity(bytes.capacity()) {
+            drop(bytes);
+            drop(allocation);
+            return self.charge(Err(error));
+        }
+        self.charge(
+            OwnedBytes::from_vec_with_guard(bytes, allocation, Arc::clone(&self.meter)).map_err(
+                |failure| match failure.into_error() {
+                    acyclic_stream::PreparedOwnedBytesError::Admission(error) => error,
+                    acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
+                        std::io::ErrorKind::InvalidData.into()
+                    }
+                },
+            ),
+        )
     }
 
     fn reserve_writes(&self, operations: u64) -> Result<(), MediumError> {

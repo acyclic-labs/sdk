@@ -36,14 +36,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         requests: &[ObjectReadRequest],
         work: &mut AuthorityWork<'_>,
     ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
-        let unstaged = {
-            let index = self.index();
-            index.objects.is_empty()
-                || requests
-                    .iter()
-                    .all(|request| !index.objects.contains_key(&request.object_id))
-        };
-        if unstaged {
+        if self.unstaged(requests) {
             return self.inner.read_many_stored(requests, work).await;
         }
         crate::async_storage::read_many_stored_sequential(self, requests, work).await
@@ -213,6 +206,9 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         requests: &[ObjectReadRequest],
         work: &mut AuthorityWork<'_>,
     ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
+        if self.unstaged(requests) {
+            return self.inner.read_many(requests, work).await;
+        }
         crate::async_storage::read_many_sequential(self, requests, work).await
     }
     async fn contains(
