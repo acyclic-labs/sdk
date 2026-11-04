@@ -119,7 +119,9 @@ impl<'de> DeserializeSeed<'de> for Walk<'_, '_> {
         self,
         decoder: D,
     ) -> std::result::Result<Branches, D::Error> {
-        if std::ptr::eq(self.schema, &NONE)
+        // An absent schema cannot turn a borrowed or ignored subtree into
+        // an owned Value. Its actual layout still proves the skip is opaque.
+        if (std::ptr::eq(self.schema, &NONE) || std::ptr::eq(self.schema, &UNKNOWN))
             && self
                 .layout
                 .is_some_and(|layout| layout.opaque(self.maximum_depth))

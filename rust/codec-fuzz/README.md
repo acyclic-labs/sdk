@@ -909,3 +909,11 @@ retained production mutation with the prior oracle, with the current oracle,
 and after exact restoration. A prior miss, current semantic failure and
 restored pass are required. This is finite domain conformance, not a complete
 branch report or coverage-guided campaign.
+
+Borrowed raw admission uses the actual layout when no value schema is
+supplied. It skips the raw subtree without converting its numeric tokens to
+floating-point values; explicit value-expansion schemas retain their original
+walk. `typed-json-reject-unknown-borrowed.patch` restores the old missing-schema
+refusal for the same retained raw operands. The existing nested-container
+allocation property also checks an out-of-range numeric token, retaining its
+physical skip-stack bound and zero-scratch negative control.
