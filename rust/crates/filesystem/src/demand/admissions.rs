@@ -25,19 +25,9 @@ pub(super) fn insert<T>(
     work: &mut WorkCounters,
     budget: WorkBudget,
 ) -> Result<usize, DemandError> {
-    let copied = WorkCounters {
-        bytes_copied: if values.len() == values.capacity() {
-            (values.len() * std::mem::size_of::<T>()) as u64
-        } else {
-            0
-        },
-        ..WorkCounters::UNCHARGED
-    };
-    work.admit(&copied, &budget)?;
     capacity
         .ensure_for_push(values, usize::MAX, ledger, work, budget)
         .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
-    work.charge(&copied, &budget)?;
     let index = values.len();
     values.push(value);
     Ok(index)
