@@ -125,6 +125,7 @@ struct Archive {
     authority: AuthorityId,
     digest: Digest,
     evidence: HistoricalGenerationEvidence,
+    decode_hash_start: std::sync::atomic::AtomicU64,
 }
 
 impl AsyncObjectStore for Archive {
@@ -177,6 +178,12 @@ impl AsyncObjectStore for Archive {
         }
         let value =
             (id == self.authority && record.digest == self.digest).then(|| self.evidence.clone());
+        if value.is_some() {
+            self.decode_hash_start.store(
+                work.spent().bytes_hashed,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
         work.accept(Ok(crate::OperationReceipt {
             work: crate::WorkCounters {
                 items_examined: 1,
@@ -238,6 +245,7 @@ async fn archives_bind_original_publication_creation_and_retention_and_reject_fo
             authority: authority_id,
             digest: record.digest,
             evidence: genuine.clone(),
+            decode_hash_start: std::sync::atomic::AtomicU64::new(0),
         };
         assert!(
             !archive
@@ -250,6 +258,13 @@ async fn archives_bind_original_publication_creation_and_retention_and_reject_fo
                 .await?
         );
         let actual = page(&authority, &archive, authority_id, position, 1).await?;
+        let before_decode = archive
+            .decode_hash_start
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            actual.work.bytes_hashed >= before_decode + genuine.bytes.len() as u64,
+            "historical decoder omitted original evidence hashing"
+        );
         assert_eq!(actual.facts().len(), 1);
         assert_eq!(actual.facts()[0].operation_id, record.operation_id);
         assert_eq!(
