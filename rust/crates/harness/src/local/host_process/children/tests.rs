@@ -166,38 +166,41 @@ async fn served(host: &str, body: fn(&str, &Path) -> Result) -> Result {
             .await?,
     );
     let (ready, readiness) = tokio::sync::oneshot::channel();
-    let server_local = Arc::clone(&local);
+    let (shutdown, stopped) = tokio::sync::oneshot::channel();
     let mut server = tokio::spawn(async move {
         host_files::serve_until(
-            server_local,
+            local,
             move || {
                 ready.send(()).map_err(|()| {
                     crate::Error::Storage("native child workspace readiness receiver closed".into())
                 })
             },
-            std::future::pending(),
+            async move {
+                stopped.await.map_err(|cause| {
+                    crate::Error::Storage(format!("native child workspace shutdown: {cause}"))
+                })
+            },
         )
         .await
     });
-    let result = async {
-        tokio::select! {
-            biased;
-            result = &mut server => return Err(failed(
-                "start native child workspace", format!("owner ended: {result:?}")
-            )),
-            ready = readiness => ready.map_err(|cause| failed("start native child workspace", cause))?,
-        }
-        body(host, &cwd)
-    }
-    .await;
-    server.abort();
-    if !server.is_finished() {
-        let _ = server.await;
-    }
-    Arc::try_unwrap(local)
-        .map_err(|_| "fixture retained host server")?
-        .disconnect()
-        .await?;
+    let readiness = tokio::select! {
+        biased;
+        result = &mut server => return Err(failed(
+            "start native child workspace", format!("owner ended: {result:?}")
+        )),
+        ready = readiness => ready.map_err(|cause| failed("start native child workspace", cause)),
+    };
+    let result = readiness.and_then(|()| body(host, &cwd));
+    let _ = shutdown.send(());
+    let retirement = server.await;
+    assert!(
+        matches!(retirement, Ok(Ok(()))),
+        "{}",
+        failed(
+            "retire native child workspace",
+            format!("owner={retirement:?}; fixture={result:?}")
+        )
+    );
     result
 }
 
