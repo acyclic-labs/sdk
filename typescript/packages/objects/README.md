@@ -29,6 +29,10 @@ Construct `HttpObjectsV1` with `{ endpoint, token }` for HTTPS services. Node/Bu
 use `GrpcObjectsV1` or `createObjectsV1GrpcClients` from `./grpc`, which owns a
 session callers close; optional `caCertificate` adds a private PEM CA.
 
+`ObjectsV1Error.code` classifies a failure. Its `detail` and standard `cause`
+retain the server's original error detail, including component, reason and
+request ID; its message includes that attribution when the server supplies it.
+
 ## Breaking transition and published history
 
 The historical TypeScript implementation and its WASM projection are removed
