@@ -641,8 +641,12 @@ async fn oversized_summary_input_rejects_before_accounting_or_journal_publicatio
     Ok(())
 }
 
-#[tokio::test]
-async fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled() -> Result<()> {
+#[test]
+fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| Error::Storage(error.to_string()))?;
     for (capacity, output, source_length, fault, counts) in [
         (100, 1_024, 1, None, 0),
         (131_072, 8_192, 1, None, 0),
@@ -665,14 +669,13 @@ async fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled()
             }],
             ..Default::default()
         };
-        let error = executor
-            .summarize(
+        let error = runtime
+            .block_on(executor.summarize(
                 &journal,
                 OperationId::new(),
                 source,
                 ModelContent::Text("Summarize the preceding context".into()),
-            )
-            .await
+            ))
             .err()
             .ok_or_else(|| Error::Invalid("invalid summary was admitted".into()))?;
         assert!(matches!(error, Error::Invalid(_)), "{error}");
@@ -690,7 +693,19 @@ async fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled()
         ToolRegistry::default(),
     )
     .with_max_output_tokens(1_024)?;
+    #[cfg(feature = "filesystem")]
+    let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
+        crate::AgentId::new(),
+        65_536,
+    ))?;
+    #[cfg(feature = "filesystem")]
+    let journal = storage.journal();
+    #[cfg(feature = "filesystem")]
+    let journal = journal.as_ref();
+    #[cfg(not(feature = "filesystem"))]
     let journal = Journal::default();
+    #[cfg(not(feature = "filesystem"))]
+    let journal = &journal;
     let source = crate::context::Context {
         messages: vec![ModelMessage {
             role: ModelRole::User,
@@ -700,19 +715,38 @@ async fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled()
     };
     let operation = OperationId::new();
     let instruction = ModelContent::Text("Summarize the preceding context".into());
-    let summary = executor
-        .summarize(&journal, operation, source.clone(), instruction.clone())
-        .await?;
+    let (summary, _preparations) =
+        acyclic_test_support::differential::observe::<_, _, (&'static str, u64)>(
+            || (),
+            |()| {
+                runtime.block_on(executor.summarize(
+                    journal,
+                    operation,
+                    source.clone(),
+                    instruction.clone(),
+                ))
+            },
+        );
+    let summary = summary?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     assert_eq!(
-        journal.load(&summary.output, None)?.await?.as_ref(),
+        _preparations
+            .iter()
+            .filter(|(operation, _)| *operation == "prepare request")
+            .count(),
+        1,
+        "summary admission must dispatch its original prepared request"
+    );
+    assert_eq!(
+        runtime
+            .block_on(journal.load(&summary.output, None)?)?
+            .as_ref(),
         b"summary"
     );
     let count_calls = accounting_calls.load(Ordering::SeqCst);
     assert_eq!(count_calls, 1);
     assert_eq!(
-        executor
-            .summarize(&journal, operation, source, instruction)
-            .await?,
+        runtime.block_on(executor.summarize(journal, operation, source, instruction))?,
         summary
     );
     assert_eq!(accounting_calls.load(Ordering::SeqCst), count_calls);
