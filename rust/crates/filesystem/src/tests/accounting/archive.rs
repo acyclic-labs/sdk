@@ -134,7 +134,6 @@ fn decoder_custody(
     authority: AuthorityId,
     record: &DurableCommit,
 ) -> Result<(), Box<dyn Error>> {
-    use crate::kernel::allocation::retained::Retained;
     for native in [false, true] {
         let mut required_peak = 0;
         for refusal in 0..4 {
@@ -153,7 +152,8 @@ fn decoder_custody(
             } else {
                 AuthorityWork::new(budget, &cancel)
             };
-            let mut independent = Retained::<Vec<u8>>::allocate(73, &mut work.accounting())?;
+            let mut independent =
+                crate::kernel::Owned::<Vec<u8>>::allocate(73, &mut work.accounting())?;
             independent.value.resize(73, 0xa5);
             let live = |work: &AuthorityWork<'_>| {
                 if native {
@@ -215,7 +215,7 @@ fn decoder_custody(
             );
             assert!(independent.value.iter().all(|byte| *byte == 0xa5));
             let independent_bytes = independent.value.capacity() as u64;
-            drop(independent);
+            independent.retire(&mut work.accounting())?;
             assert_eq!(live(&work), baseline - independent_bytes);
         }
     }
