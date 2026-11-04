@@ -354,7 +354,7 @@ async fn native_index_custody_is_released_and_a_cancelled_tail_is_not_reused() -
     let journal = storage.journal();
     // This exercises the fallback driver cache. The Filesystem journal's
     // persisted index can now answer without retaining a full driver index.
-    let replay_only = native_growth::ReplayOnly(journal.as_ref());
+    let replay_only = native_growth::ReplayOnly::new(journal.as_ref());
     let journal: &dyn ExecutionJournal = &replay_only;
     let operation = OperationId::new();
     journal
