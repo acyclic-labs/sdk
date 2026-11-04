@@ -73,11 +73,9 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
         assert!(host_profiles.len() <= declared.len() + 3, "{package_name}");
         assert_eq!(host_profiles.len(), wasm_profiles.len());
         assert!(host_profiles.iter().all(|profile| profile.target == host));
-        assert!(
-            wasm_profiles
-                .iter()
-                .all(|profile| profile.target == "wasm32-unknown-unknown")
-        );
+        assert!(wasm_profiles
+            .iter()
+            .all(|profile| profile.target == "wasm32-unknown-unknown"));
 
         let host_ids = host_profiles
             .iter()
@@ -91,22 +89,18 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
 
         for profile in &host_profiles {
             assert!(!profile.features.contains("default"));
-            assert!(
-                profile
-                    .features
-                    .iter()
-                    .all(|feature| declared.contains(feature))
-            );
+            assert!(profile
+                .features
+                .iter()
+                .all(|feature| declared.contains(feature)));
         }
         for feature in &declared {
             assert!(host_profiles.iter().any(|profile| {
                 !profile.default_features && profile.features.contains(feature)
             }));
         }
-        assert!(
-            host_profiles
-                .iter()
-                .any(|profile| { profile.default_features && profile.features == declared })
-        );
+        assert!(host_profiles
+            .iter()
+            .any(|profile| { profile.default_features && profile.features == declared }));
     }
 }
