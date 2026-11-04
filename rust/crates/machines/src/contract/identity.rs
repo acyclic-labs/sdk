@@ -187,7 +187,10 @@ mod resource_identity_tests {
                 "01020304-0506-4708-890a-0b0c0d0e0f10",
             ),
         ] {
-            assert_eq!(super::normalize_identity(kind, value)?.to_string(), expected);
+            assert_eq!(
+                super::normalize_identity(kind, value)?.to_string(),
+                expected
+            );
         }
         assert!(super::normalize_identity("machine", "").is_err());
         Ok(())
