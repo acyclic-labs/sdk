@@ -117,9 +117,9 @@ impl<'a, S> OperationReadCache<'a, S> {
         }
         if self.data_custody.is_some()
             && let Some(original) = state.slots.allocation.standalone_ledger()
-            && !accounting
-                .standalone_parts()
-                .is_some_and(|(ledger, ..)| ledger.shares_retained_ledger(&original))
+            && !accounting.standalone_parts().is_some_and(|(ledger, ..)| {
+                ledger.shares_retained_ledger(std::sync::Arc::as_ptr(original))
+            })
         {
             return Ok(false);
         }

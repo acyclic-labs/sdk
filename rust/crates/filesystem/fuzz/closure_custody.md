@@ -185,6 +185,8 @@ and paged leaf admission share this distinction; residency is never inferred
 from the leaf's total live bytes. One weak ledger identity and one byte total
 describe the operation cache without retaining additional funding or scanning
 entries. A different original source cannot be attached to the same proof owner.
+Identity checks borrow the retained source; only the initial binding creates a
+weak reference, which retires with the last original cache allocation.
 
 `mutations/operation_cache_duplicate_charge.patch` removes that exclusion from
 the production observer. The exact-peak relation must reject the duplicate
