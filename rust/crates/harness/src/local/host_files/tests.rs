@@ -834,6 +834,109 @@ async fn workspace_shutdown_retains_its_cause_when_retirement_refuses() -> Resul
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn saved_command_result_follows_its_original_request_directory() -> Result<()> {
+    let (checkout, mut files, _probe) = carrier_io()?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    std::fs::write(checkout.path().join("source.txt"), b"first").map_err(storage)?;
+    let local = Arc::new(
+        LocalHarness::open(
+            LocalHarnessConfig::native_host(checkout.path())
+                .state_directory(state.path().join("owner")),
+        )
+        .await?,
+    );
+    let directory = checkout.path().join(DIRECTORY);
+    let requests = acyclic_fs::hold_root(&files.requests).map_err(native_file_error)?;
+    let owner = HostWorkspaceOwner::new(Arc::clone(&local))?.with_requests(directory.clone());
+    let opened = owner
+        .dispatch(
+            OperationId::new(),
+            HostAction::Open {
+                host: "codex".into(),
+                session: "request-retention".into(),
+            },
+        )
+        .await?;
+    let task: crate::agent::AgentPath =
+        serde_json::from_value(opened["task"].clone()).map_err(storage)?;
+    let command = |command: &str| HostAction::Fs {
+        task: task.clone(),
+        command: command.into(),
+    };
+    owner
+        .dispatch(OperationId::new(), command("add source.txt"))
+        .await?;
+    let operation = OperationId::new();
+    let session = uuid::Uuid::new_v4();
+    let action = command("commit -m first");
+    let leaf = format!("{operation}.json");
+    immutable(
+        &files.requests.join(&leaf),
+        &serde_json::to_vec(&Request {
+            session,
+            operation,
+            action: action.clone(),
+        })
+        .map_err(storage)?,
+    )?;
+    // Admit the real encoded request before losing its reply.
+    files
+        .served
+        .observe(&files.requests, session, std::ffi::OsStr::new(&leaf))?;
+    let request = files
+        .served
+        .start()
+        .pop()
+        .ok_or_else(|| Error::NotFound("admitted native request".into()))?;
+    let committed = owner.dispatch(request.operation, request.action).await?;
+    assert!(committed.get("Committed").is_some());
+    // Replacing the directory name does not withdraw the original request.
+    let retained = directory.join("retained-requests");
+    std::fs::rename(&files.requests, &retained).map_err(storage)?;
+    std::fs::create_dir(&files.requests).map_err(storage)?;
+    assert!(retained.join(&leaf).is_file());
+    assert!(!files.requests.join(&leaf).exists());
+    std::fs::write(checkout.path().join("source.txt"), b"second").map_err(storage)?;
+    owner
+        .dispatch(OperationId::new(), command("commit -m second"))
+        .await?;
+    let workspace = local
+        .workspace()
+        .ok_or_else(|| Error::NotFound("native workspace".into()))?;
+    let repository = acyclic_fs::GitCompatRepository::new(
+        workspace.view().workspace().id(),
+        workspace.store.clone(),
+    );
+    let saved = repository.load().await.map_err(storage)?;
+    let identity = acyclic_fs::OperationId::from_bytes(operation.into_bytes());
+    assert_eq!(
+        serde_json::to_value(saved.request(identity)).map_err(storage)?,
+        committed
+    );
+    assert_eq!(owner.dispatch(operation, action).await?, committed);
+    // Only removal in the original held directory proves withdrawal.
+    requests
+        .remove_file(Path::new(&leaf), acyclic_fs::NativeDurability::Durable)
+        .map_err(native_file_error)?;
+    owner
+        .dispatch(OperationId::new(), command("tag answered"))
+        .await?;
+    assert!(
+        repository
+            .load()
+            .await
+            .map_err(storage)?
+            .request(identity)
+            .is_none()
+    );
+    drop((repository, owner, files));
+    Arc::try_unwrap(local)
+        .map_err(|_| Error::Conflict("native result owner retained after shutdown".into()))?
+        .disconnect()
+        .await
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn workspace_projection_uses_shared_results_without_client_state() -> Result<()> {
     rejected_requests_end_without_owner_exit()?;
     let registry = Arc::new(Mutex::<Registry>::default());
