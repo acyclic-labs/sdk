@@ -205,3 +205,23 @@ fn a_panicking_cut_still_drains_every_other_cut_before_returning() {
     assert!(result.is_err());
     assert_eq!(finished.load(Ordering::SeqCst), 36);
 }
+
+#[test]
+fn a_failed_namespace_open_retains_its_native_child_error() {
+    let directory = tempfile::tempdir().unwrap();
+    // A failed namespace open never reaches a snapshot or physical cut.
+    let rejected = directory.path().join("rejected");
+    let root = rejected.join("run-1/state");
+    std::fs::create_dir_all(root.parent().unwrap()).unwrap();
+    std::fs::write(&root, b"not a directory").unwrap();
+    let original = format!(
+        "{:?}",
+        LocalCoreStateStore::open_owned(&root).err().unwrap()
+    );
+    let failure = std::panic::catch_unwind(|| run_cut(&rejected, &[], true, 1))
+        .expect_err("a failed namespace open must not count as a physical cut");
+    let message = failure
+        .downcast_ref::<String>()
+        .expect("the supervisor must retain the original child error");
+    assert!(message.contains(&original), "original error lost: {message}");
+}
