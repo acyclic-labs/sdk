@@ -1,0 +1,1 @@
+[{"name":"RESUMEALL","aliases":["RA"],"description":"Resume all conversation trees","arguments":"none","action":{"kind":"request","request":{"kind":"resume","scope":"all"},"confirmation":false}}]

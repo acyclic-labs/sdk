@@ -1,0 +1,1 @@
+[{"name":"reasoning","aliases":["reason"],"description":"Toggle reasoning","arguments":"required_text","action":{"kind":"select","query":"reasoning"}}]
