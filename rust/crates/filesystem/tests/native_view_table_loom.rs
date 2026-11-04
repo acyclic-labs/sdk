@@ -123,40 +123,33 @@ fn check(broken: bool) {
             }
         });
 
-        // A replacement view created while the old one retires.
-        let creator = loom::thread::spawn({
-            let table = Arc::clone(&table);
-            move || {
-                let replacement = ViewTable::insert(
-                    &table,
-                    Core {
-                        id: 2,
-                        dropped: Arc::new(AtomicBool::new(false)),
-                    },
-                )
-                .unwrap();
-                assert_ne!(
-                    replacement.serial().get(),
-                    serial,
-                    "serials are never reused"
-                );
-                let lease = table.enter(replacement.serial().get()).unwrap();
-                assert_eq!(lease.id, 2, "a lease reaches only its own view");
-                drop(lease);
-                replacement
-            }
-        });
-
         let retiring = owner.begin_retirement(|| {});
         assert!(table.enter(serial).is_none(), "transfer closes admission");
-        // The same production drain moves from the observer to its physical
-        // owner while admitted callbacks and a new view remain concurrent.
-        loom::thread::spawn(move || {
+        let physical = loom::thread::spawn(move || {
             RETIRE_WITHOUT_DRAIN.with(|fault| fault.set(broken));
             drop(retiring);
-        })
-        .join()
+        });
+
+        // The observer creates the replacement while the physical owner
+        // drains callbacks; a separate creator adds no ownership boundary.
+        let replacement = ViewTable::insert(
+            &table,
+            Core {
+                id: 2,
+                dropped: Arc::new(AtomicBool::new(false)),
+            },
+        )
         .unwrap();
+        assert_ne!(
+            replacement.serial().get(),
+            serial,
+            "serials are never reused"
+        );
+        let lease = table.enter(replacement.serial().get()).unwrap();
+        assert_eq!(lease.id, 2, "a lease reaches only its own view");
+        drop(lease);
+
+        physical.join().unwrap();
         if !broken {
             assert!(
                 dropped.load(Ordering::SeqCst),
@@ -167,7 +160,6 @@ fn check(broken: bool) {
         assert!(table.enter(serial).is_none(), "a retired serial stays gone");
 
         callback.join().unwrap();
-        let replacement = creator.join().unwrap();
         assert!(table.enter(serial).is_none(), "a retired serial stays gone");
         assert_eq!(table.len(), 1);
         drop(replacement);
