@@ -99,7 +99,22 @@ async fn conflicting_creation_config_is_rejected_without_changing_opened_config(
             let baseline = original.live_allocation_bytes();
             let result = fs.open_volume(id, &restricted, &cancel).await;
             if admitted == 0 {
-                assert!(result.is_err(), "opening ignored original read admission");
+                assert!(
+                    matches!(
+                        result,
+                        Err(FsError::Authority(
+                            crate::AuthorityStoreError::NativeOriginal(
+                                crate::NativeTreeMaterializationError::Work(
+                                    crate::WorkError::BudgetExceeded {
+                                        counter: "authority_records_read",
+                                        ..
+                                    }
+                                )
+                            )
+                        ))
+                    ),
+                    "opening lost original read admission or its typed refusal"
+                );
             } else {
                 assert_eq!(result?.config(), config());
             }
@@ -107,11 +122,17 @@ async fn conflicting_creation_config_is_rejected_without_changing_opened_config(
             assert_eq!(spent.authority_records_read, admitted);
             assert!(spent.items_examined >= 7);
             assert_eq!(spent.authority_records_appended, 0);
+            assert_eq!(spent.backend_read_operations, 1);
             assert_eq!(spent.backend_write_operations, 0);
             assert_eq!(original.live_allocation_bytes(), baseline);
 
             caller.cancel();
-            assert!(fs.open_volume(id, &restricted, &cancel).await.is_err());
+            assert!(matches!(
+                fs.open_volume(id, &restricted, &cancel).await,
+                Err(FsError::NativeKernel(
+                    crate::NativeTreeMaterializationError::Cancelled
+                ))
+            ));
             assert_eq!(original.receipt(), spent);
             assert_eq!(original.live_allocation_bytes(), baseline);
             drop(restricted);
