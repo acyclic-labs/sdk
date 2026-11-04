@@ -161,3 +161,43 @@ async fn placeholder_anchor_recovers_on_key_publication_without_restart() {
         FollowerState::Fenced(FenceCause::AnchorLost)
     );
 }
+
+#[tokio::test]
+async fn closing_a_fenced_environment_ends_its_original_anchor_wait() {
+    let issuer = Issuer::new("test", SigningKey::from_bytes(&[1; 32]));
+    let provider = Arc::new(MemoryStream::default());
+    let stream = Stream::new(provider.clone(), environment_path("test")).unwrap();
+    // Intentionally malformed untrusted input, persisted by the real provider.
+    stream
+        .append(
+            OwnedBytes::from_static(&[0xff]),
+            IdempotencyKey::new(b"malformed".to_vec()).unwrap(),
+        )
+        .await
+        .unwrap();
+    let follower = Arc::new(Follower::new("test", issuer.anchor()));
+    let (mut feed, _accounts) = TrustFeed::new(provider, follower.clone(), Arc::new(Clock));
+    let mut run = Box::pin(feed.run());
+    let wake = Arc::new(PublicationWake::default());
+    assert!(step(run.as_mut(), &wake).is_none());
+    assert_eq!(
+        *follower.state().borrow(),
+        FollowerState::Fenced(FenceCause::Refused)
+    );
+    assert_eq!(follower.environment_refusal(), Some(VerifyError::Malformed));
+    assert_eq!(
+        follower.environment_keys("test").err(),
+        Some(VerifyError::Unavailable)
+    );
+    wake.0.store(false, Ordering::SeqCst);
+    follower.close(FenceCause::Shutdown);
+    assert!(wake.0.load(Ordering::SeqCst));
+    assert_eq!(
+        step(run.as_mut(), &wake),
+        Some(Err(StreamError::Unavailable))
+    );
+    assert_eq!(
+        *follower.state().borrow(),
+        FollowerState::Closed(FenceCause::Shutdown)
+    );
+}

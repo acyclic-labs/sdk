@@ -7,6 +7,7 @@ use acyclic_auth::{
 use ed25519_dalek::SigningKey;
 use std::sync::Arc;
 
+/// Re-anchoring a refused record must agree with fresh current-key admission.
 pub fn check(bytes: &[u8]) -> Result<(), String> {
     check_publication(bytes, Follower::reanchor)
 }
