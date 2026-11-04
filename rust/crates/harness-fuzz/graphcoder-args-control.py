@@ -1,4 +1,4 @@
-"""Replay one shipped input corpus and detect its production admission defect."""
+"""Check a shipped input boundary and detect its production admission defect."""
 import argparse
 import base64
 import copy
@@ -12,6 +12,13 @@ import sys
 root = Path(__file__).resolve().parents[3]
 recovery = "python3 rust/crates/harness-fuzz/graphcoder-args-control.py"
 controls = {
+    "native_stdin_binary": (
+        "plugin/src/input.rs",
+        b"input.take(65_537).read_to_end(&mut bytes)?;",
+        b"let _ = input.take(65_537).read_to_end(&mut bytes);",
+        "null",
+        b"native stdin read error must retain its original cause",
+    ),
     "command_result": (
         "rust/crates/harness-core/src/contract_errors.rs",
         b"crate::wire::ErrorCode::InteractionCancelled | crate::wire::ErrorCode::Cancelled => {\n                Self::Cancelled\n            }",
@@ -333,12 +340,20 @@ def run(target, seed, witness, *, capture=False, runs=0):
     environment.pop("ACYCLIC_FUZZ_CORPUS", None)
     if capture:
         environment["ACYCLIC_FUZZ_CORPUS"] = str(root / seed)
-    child = subprocess.Popen(
-        [
+    if target == "native_stdin_binary":
+        command = [
+            "cargo", "nextest", "run", "--locked", "-p", "acyclic-plugin",
+            "--test", "main", "--profile", "ci", "-E",
+            "test(native_input::native_stdin_failures_stop_before_workspace_effects)",
+        ]
+    else:
+        command = [
             "cargo", "+nightly-2026-07-01", "fuzz", "run", "--dev",
             "--fuzz-dir", "rust/crates/harness-fuzz", *options, target, seed,
             "--", f"-runs={runs}", "-print_final_stats=1",
-        ],
+        ]
+    child = subprocess.Popen(
+        command,
         cwd=root, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
     found = False
@@ -431,8 +446,9 @@ def qualify(target, runs=0, selected_controls=None):
             source.write_bytes(original)
         require(source.read_bytes() == original, "restore production source")
     code, _ = run(target, corpus, witness, runs=runs)
-    require(code == 0, f"replay production {target} corpus")
-    print(f"{target}: production corpus and planted-defect oracle passed", flush=True)
+    oracle = "named binary test" if target == "native_stdin_binary" else "production corpus"
+    require(code == 0, f"replay {target} {oracle}")
+    print(f"{target}: {oracle} and planted-defect oracle passed", flush=True)
 
 
 def binding_oracle_regression():
