@@ -73,43 +73,6 @@ fn due_alarms_share_one_bounded_index_and_replacements_remove_old_nodes()
 
 #[cfg(not(loom))]
 #[test]
-fn due_wake_survives_running_work_but_cleared_and_stale_generations_do_not_rearm()
--> Result<(), super::super::Error> {
-    let set = ReadySet::default();
-    let registration = set.register(7)?;
-    let work = set
-        .take()
-        .ok_or(super::super::Error::Invalid("missing replay"))?;
-    registration.update_alarm(&alarm(1, Some(10), None))?;
-    assert_eq!(set.wake_due(10, 1), 1);
-    registration.update_alarm(&alarm(2, Some(20), None))?;
-    assert!(
-        matches!(
-            registration.update_alarm(&alarm(1, Some(10), None)),
-            Err(super::super::Error::Conflict)
-        ),
-        "old durable observations cannot replace a newer alarm"
-    );
-    drop(work);
-    assert_eq!(
-        set.counts(),
-        (1, 1),
-        "due while running must survive parking"
-    );
-    drop(set.take());
-    registration.update_alarm(&alarm(3, None, None))?;
-    assert_eq!(
-        set.wake_due(100, 10),
-        0,
-        "clear must remove the replacement's due node"
-    );
-    assert_eq!(set.counts(), (1, 0));
-    assert_eq!(set.alarm_count(), 0);
-    Ok(())
-}
-
-#[cfg(not(loom))]
-#[test]
 fn earlier_deadline_rearms_the_shared_dispatcher_after_unlock() -> Result<(), super::super::Error> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct Signal {
@@ -213,44 +176,6 @@ fn unchanged_alarm_keeps_the_waiter_but_popped_or_suspended_alarm_reinstalls()
 
 #[cfg(not(loom))]
 #[test]
-fn replay_coalescing_and_hibernation_have_bounded_ownership() -> Result<(), super::super::Error> {
-    let set = ReadySet::default();
-    let registration = set.register(7)?;
-    assert_eq!(
-        set.counts(),
-        (1, 1),
-        "registered subscriptions must start with replay"
-    );
-    let wake = registration.waker();
-    for _ in 0..100 {
-        wake.wake_by_ref();
-    }
-    assert_eq!(set.counts(), (1, 1));
-    let work = set
-        .take()
-        .ok_or(super::super::Error::Invalid("missing initial replay"))?;
-    assert_eq!(*work.key(), 7);
-    wake.wake_by_ref();
-    drop(work);
-    assert_eq!(
-        set.counts(),
-        (1, 1),
-        "append during replay must survive parking"
-    );
-    drop(set.take());
-    assert_eq!(set.counts(), (1, 0));
-    drop(registration);
-    wake.wake_by_ref();
-    assert_eq!(
-        set.counts(),
-        (0, 0),
-        "retired wake cannot recreate registration"
-    );
-    Ok(())
-}
-
-#[cfg(not(loom))]
-#[test]
 fn dormant_population_retains_no_work_and_unlinks_cancelled_ready_entries()
 -> Result<(), super::super::Error> {
     let set = ReadySet::default();
@@ -286,8 +211,13 @@ mod schedules {
         loom::model(|| {
             let set = ReadySet::default();
             let registration = set.register(7).unwrap();
-            let work = set.take().unwrap();
             let wake = registration.waker();
+            assert_eq!(set.counts(), (1, 1));
+            wake.wake_by_ref();
+            wake.wake_by_ref();
+            assert_eq!(set.counts(), (1, 1), "queued wakes must coalesce");
+            let work = set.take().unwrap();
+            assert_eq!(*work.key(), 7);
             let reader = thread::spawn(move || drop(work));
             let writer = thread::spawn(move || wake.wake());
             reader.join().unwrap();
@@ -337,17 +267,33 @@ mod schedules {
                 .update_alarm(&alarm(1, Some(10), None))
                 .unwrap();
             let due_set = Arc::clone(&set);
-            let due = thread::spawn(move || due_set.wake_due(10, 1));
+            let due = thread::spawn(move || {
+                let count = due_set.wake_due(10, 1);
+                registration
+                    .update_alarm(&alarm(2, Some(20), None))
+                    .unwrap();
+                assert!(matches!(
+                    registration.update_alarm(&alarm(1, Some(10), None)),
+                    Err(super::super::super::Error::Conflict)
+                ));
+                (count, registration)
+            });
             let park = thread::spawn(move || drop(work));
-            assert_eq!(due.join().unwrap(), 1);
+            let (count, registration) = due.join().unwrap();
+            assert_eq!(count, 1);
             park.join().unwrap();
-            assert_eq!(set.alarm_count(), 0);
+            assert_eq!(set.alarm_count(), 1);
+            assert_eq!(set.next_deadline(), Some(20));
             assert_eq!(
                 set.counts(),
                 (1, 1),
                 "a due alarm must survive either order of the parking handoff"
             );
             drop(set.take());
+            assert_eq!(set.counts(), (1, 0));
+            registration.update_alarm(&alarm(3, None, None)).unwrap();
+            assert_eq!(set.wake_due(100, 1), 0);
+            assert_eq!(set.alarm_count(), 0);
             assert_eq!(set.counts(), (1, 0));
             drop(registration);
             assert_eq!(set.counts(), (0, 0));

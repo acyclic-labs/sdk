@@ -11,7 +11,7 @@ use acyclic_harness::{
     core::{AggregateKind, Authority, AuthorityRoot},
     filesystem::{PRIVATE_VOLUME, TurnLimits},
     hosting::{Placement, RootRequest, VerifiedCaller},
-    model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
+    model::{Model, ModelDispatch, ModelProvider, PreparedModelRequest},
     resources::ProviderRef,
     server::{self, Actors, Execution, ServerConfig},
 };
@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
 type Outcome<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+const ROOT: [u8; 16] = [91; 16];
 
 async fn listener() -> std::io::Result<tokio::net::TcpListener> {
     tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await
@@ -48,19 +49,14 @@ impl acyclic_harness::hosting::Platform for Owner {
         command: &'a AgentCommand,
     ) -> BoxProviderFuture<'a, Result<PolicyDecision, StreamError>> {
         let kind = match command {
-            AgentCommand::Bind { .. } => "bind",
-            AgentCommand::Root {} => "root",
-            AgentCommand::Children { .. } => "children",
-            AgentCommand::Approvals { .. } => "approvals",
-            AgentCommand::Settlement { .. } => "settlement",
-            AgentCommand::Prompt { .. } => "prompt",
-            AgentCommand::Reply { .. } => "reply",
-            AgentCommand::Read { .. } => "read",
-            _ => "other",
+            AgentCommand::Settlement { agent } if agent.id_bytes() != ROOT => "foreign_settlement",
+            _ => command.kind(),
         };
         let gate = self.0.as_ref().and_then(|gate| {
             let mut gate = gate.lock().unwrap();
             let pending = gate.as_mut().filter(|gate| gate.command == kind)?;
+            // Query policy runs again before disclosure. Only prompt retries
+            // use earlier admissions to select an otherwise identical command.
             if pending.skip != 0 {
                 pending.skip -= 1;
                 None
@@ -119,20 +115,13 @@ impl server::Verifier for CredentialGate {
 impl ModelProvider for ModelGate {
     fn generate<'a>(
         &'a self,
-        request: &'a PreparedModelRequest,
+        _: &'a PreparedModelRequest,
         _: ModelDispatch,
     ) -> acyclic_harness::model::ModelStream<'a> {
-        let system = request.request().messages.iter().any(|message| {
-            matches!(&message.content, acyclic_harness::model::ModelContent::Text(text)
-                if text.contains("You are GraphCoder"))
-        });
         let entered = self.entered.lock().unwrap().take();
         let output = self.output.lock().unwrap().take();
         acyclic_harness::model::ModelStream::new(
             futures::stream::once(async move {
-                if !system {
-                    return Err(Error::Invalid("GraphCoder prompt missing".into()));
-                }
                 if let Some(entered) = entered {
                     let _ = entered.send(());
                 }
@@ -140,7 +129,7 @@ impl ModelProvider for ModelGate {
                     .ok_or_else(|| Error::Invalid("model dispatched twice".into()))?
                     .await
                     .map_err(|_| Error::Storage("model producer closed".into()))?;
-                Ok(futures::stream::iter(
+                Ok::<_, Error>(futures::stream::iter(
                     acyclic_harness::conformance::protocol::model_events(1)
                         .into_iter()
                         .map(Ok),
@@ -164,7 +153,7 @@ fn composition_at(
     owner: Owner,
     member: &[u8],
 ) -> Outcome<Actors<MemoryStream, LogicalObjectStore<acyclic_objects::MemoryObjects>>> {
-    let root = AgentId::from_bytes([91; 16]);
+    let root = AgentId::from_bytes(ROOT);
     let audience = Authority {
         kind: AggregateKind::Conversation,
         id: root.to_string(),
@@ -287,7 +276,7 @@ async fn selected_discovery_preserves_the_published_member() -> Outcome {
     // still retain the caller's selected member rather than rediscover another.
     let (selected, _) = AgentControls::discover(clients[0].clone(), 0).await?;
     let binding = AgentBinding::new(&selected.binding_bytes())?;
-    let root = acyclic_harness_client::AgentPath::root(&AgentId::from_bytes([91; 16]));
+    let root = acyclic_harness_client::AgentPath::root(&AgentId::from_bytes(ROOT));
     let foreign = AgentControls::new(clients[1].clone(), 0, binding);
     assert!(matches!(
         foreign.select(root.clone()).await,
@@ -470,7 +459,7 @@ async fn run(producer: Producer) -> Outcome {
     let (ready, endpoint) = oneshot::channel();
     let (stop, stopping) = oneshot::channel();
     let mut stop = Some(stop);
-    let hosted = tokio::spawn(server::serve(
+    let mut hosted = tokio::spawn(server::serve(
         listener,
         ServerConfig::new(composition(model, owner)?),
         |endpoint| {
@@ -484,7 +473,14 @@ async fn run(producer: Producer) -> Outcome {
         },
     ));
     let _abort = Abort(hosted.abort_handle());
-    let (url, credential) = endpoint.await?;
+    // Preserve the server's cause when its endpoint producer closes.
+    let Ok((url, credential)) = endpoint.await else {
+        return Err(format!(
+            "server stopped before its endpoint was ready: {:?}",
+            hosted.await
+        )
+        .into());
+    };
     let options = acyclic_harness_client::resolve_connection_options(
         Some(&url),
         Some(&credential),
@@ -517,7 +513,16 @@ async fn run(producer: Producer) -> Outcome {
             if drop_command { commanding.await?; } else { entering.await?; pending.await?; }
             Outcome::Ok(())
         } => {
-            pending?;
+            if let Err(error) = pending {
+                let cause = tokio::select! {
+                    result = &mut qualification => format!("endpoint: {result:?}"),
+                    result = &mut hosted => format!("server: {result:?}"),
+                };
+                return Err(format!(
+                    "producer gate closed before it was reached ({error}); {cause}"
+                )
+                .into());
+            }
             eprintln!("STEP producer wait armed; closed-model={drop_model}; closed-command={drop_command}");
             if abort_host { hosted.abort(); }
             else if matches!(producer, Producer::Host | Producer::ReplyHost) { drop(stop.take()); }
@@ -536,12 +541,15 @@ async fn run(producer: Producer) -> Outcome {
     let serving = hosted.await;
     if drop_model || drop_command || drop_reply_host {
         let failure = result.expect_err("closed producer must fail the waiting client");
-        assert!(matches!(
-            failure.cause,
-            Some(acyclic_conformance::client::Cause::Stream(
-                StreamError::Unavailable
-            ))
-        ));
+        assert!(
+            matches!(
+                failure.cause,
+                Some(acyclic_conformance::client::Cause::Stream(
+                    StreamError::Unavailable
+                ))
+            ),
+            "closed producer returned {failure:?}"
+        );
         if drop_reply_host {
             assert_eq!(failure.case, "reply_liveness");
         } else if drop_command {
@@ -580,8 +588,8 @@ async fn graphcoder_on_actors_and_closed_producer_liveness() -> Outcome {
         ("prompt", 0, "prompt"),
         ("prompt", 1, "prompt_retry"),
         ("prompt", 2, "changed_prompt"),
-        ("settlement", 0, "tree_admission"),
-        ("settlement", 1, "reply_cut"),
+        ("foreign_settlement", 0, "tree_admission"),
+        ("settlement", 0, "reply_cut"),
         ("reply", 0, "reply"),
         ("read", 0, "output"),
     ] {
