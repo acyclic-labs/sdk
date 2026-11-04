@@ -352,23 +352,25 @@ impl Pool {
                 generation: route.generation,
             },
         )?;
-        let routed = self.routes.on_node(&node).any(|(_, route)| route.live());
-        if !routed
-            && self
-                .dials
-                .get(&node)
-                .is_some_and(|dial| dial.opening.opening_admitted())
-        {
-            // A queued Open owns its future admission, not the retired request
-            // already carried by this dial's Hello. Dispatch drains queued
-            // withdrawals before starting that Open's own dial.
-            self.dials.remove(&node);
-        }
-        if !routed && !self.admissions.interested(&node) {
-            self.dials.remove(&node);
-            self.links.remove(&node);
-            if node == self.home {
-                self.reset_home();
+        // Each cancelled sibling has its own queued removal. Consult the node
+        // index once rather than scanning those siblings on every withdrawal.
+        if self.routes.on_node(&node).next().is_none() {
+            let admitted = self.admissions.interested(&node);
+            if !admitted
+                || self
+                    .dials
+                    .get(&node)
+                    .is_some_and(|dial| dial.opening.opening_admitted())
+            {
+                // A queued Open owns its future admission, not the retired
+                // request already carried by this dial's Hello.
+                self.dials.remove(&node);
+            }
+            if !admitted {
+                self.links.remove(&node);
+                if node == self.home {
+                    self.reset_home();
+                }
             }
         }
         Ok(())

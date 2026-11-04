@@ -64,6 +64,23 @@ async fn indexed_node_routes_follow_home_replacement_and_cancel()
         assert!(!pool.node_interested(""));
         assert_eq!(pool.routes.len(), unrelated as usize);
         assert_eq!(pool.routes.nodes.len(), 1);
+        // A burst of cursor drops queues one removal per route. The first
+        // removal must not inspect every cancelled sibling before the rest of
+        // those events can be dispatched.
+        for route in pool.routes.values() {
+            route.progress.cancel();
+        }
+        let before = pool.routes.visits.get();
+        pool.remove(1)?;
+        assert!(
+            pool.routes.visits.get() - before <= 1,
+            "one retirement must not scan cancelled siblings"
+        );
+        // Restore the previous liveness query over these same real routes:
+        // none is live, so its work grows with every remaining sibling.
+        let before = pool.routes.visits.get();
+        assert!(!pool.routes.on_node("other").any(|(_, route)| route.live()));
+        assert_eq!(pool.routes.visits.get() - before, unrelated as usize - 1);
         pool.routes.clear();
         assert!(pool.routes.nodes.is_empty());
         eprintln!(
