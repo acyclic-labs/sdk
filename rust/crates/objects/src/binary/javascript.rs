@@ -62,14 +62,14 @@ fn original_error(value: JsValue) -> Error {
     }
     if let Ok(detail) = Reflect::get(&value, &"detailBytes".into())
         && !detail.is_undefined()
-    {
-        return detail
+        && let Some(error) = detail
             .dyn_into::<Uint8Array>()
             .ok()
             .and_then(|view| acyclic_stream::javascript_bytes::snapshot(&view, |_| Ok(())).ok())
             .and_then(|(bytes, ())| wire::ErrorDetail::decode(bytes.as_slice()).ok())
             .and_then(Error::from_detail)
-            .unwrap_or_else(unavailable);
+    {
+        return error;
     }
     error_code(&value)
         .ok()
