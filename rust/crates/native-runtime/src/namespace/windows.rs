@@ -63,8 +63,11 @@ pub(super) fn prepare_rename(
 
     let name = to.strip_suffix(&[0]).ok_or(io::ErrorKind::InvalidInput)?;
     let name_bytes = std::mem::size_of_val(name);
+    // Win32 resolves FileName as a terminated DOS path before passing the
+    // counted name to the filesystem. Retain that terminator in the packet;
+    // FileNameLength alone excludes it.
     let packet_bytes = std::mem::offset_of!(FILE_RENAME_INFO, FileName)
-        .checked_add(name_bytes)
+        .checked_add(std::mem::size_of_val(to))
         .ok_or(io::ErrorKind::InvalidInput)?;
     let length = u32::try_from(packet_bytes).map_err(|_| io::ErrorKind::InvalidInput)?;
     // The flexible UTF-16 name follows a pointer-aligned native header.
@@ -86,7 +89,7 @@ pub(super) fn prepare_rename(
         allocation.reconcile_capacity(packet.capacity() * std::mem::size_of::<usize>())?;
     }
     let copied = capacity
-        .checked_add(name_bytes)
+        .checked_add(std::mem::size_of_val(to))
         .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<u32>()))
         .ok_or(io::ErrorKind::InvalidInput)?;
     if let Some(meter) = meter {
@@ -95,7 +98,7 @@ pub(super) fn prepare_rename(
     }
     packet.resize(words, 0);
     // SAFETY: the initialized allocation has FILE_RENAME_INFO alignment and
-    // covers its fixed fields and the complete checked, non-terminated name.
+    // covers its fixed fields and the complete checked, terminated name.
     unsafe {
         let header = packet.as_mut_ptr().cast::<FILE_RENAME_INFO>();
         (*header).Anonymous.Flags = if mode == RenameMode::Replace {
@@ -106,9 +109,9 @@ pub(super) fn prepare_rename(
         (*header).FileNameLength =
             u32::try_from(name_bytes).map_err(|_| io::ErrorKind::InvalidInput)?;
         std::ptr::copy_nonoverlapping(
-            name.as_ptr(),
+            to.as_ptr(),
             std::ptr::addr_of_mut!((*header).FileName).cast::<u16>(),
-            name.len(),
+            to.len(),
         );
     }
     if let Some(meter) = meter {
