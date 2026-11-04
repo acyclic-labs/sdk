@@ -107,13 +107,15 @@ async fn storage_file_borrows_the_proven_authority_fact_without_physical_inferen
         authority_id,
         AccountingCursor::genesis(),
         1,
-        acyclic_fs::performance::work_budget(4096, 16 * 1024 * 1024),
-        &cancel,
+        &mut acyclic_fs::AuthorityWork::new(
+            acyclic_fs::performance::work_budget(4096, 16 * 1024 * 1024),
+            &cancel,
+        ),
     )
     .await
     .unwrap();
     assert!(page.complete);
-    let fact = &page.facts[0];
+    let fact = &page.facts()[0];
     let account = AccountId::new(&[0xff, 3]).unwrap();
     let measured = acyclic_test_support::measure(|| {
         std::hint::black_box(Storage::project(&account, fact));

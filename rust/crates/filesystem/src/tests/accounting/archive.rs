@@ -250,13 +250,13 @@ async fn archives_bind_original_publication_creation_and_retention_and_reject_fo
                 .await?
         );
         let actual = page(&authority, &archive, authority_id, position, 1).await?;
-        assert_eq!(actual.facts.len(), 1);
-        assert_eq!(actual.facts[0].operation_id, record.operation_id);
+        assert_eq!(actual.facts().len(), 1);
+        assert_eq!(actual.facts()[0].operation_id, record.operation_id);
         assert_eq!(
-            Some(actual.facts[0].settled_at_micros),
+            Some(actual.facts()[0].settled_at_micros),
             record.settled_at_micros
         );
-        match actual.facts[0].transition {
+        match actual.facts()[0].transition {
             AccountingTransition::Published {
                 generation_root,
                 logical_regular_file_bytes,
