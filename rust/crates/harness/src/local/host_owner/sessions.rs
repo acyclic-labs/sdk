@@ -365,9 +365,13 @@ impl HostWorkspaceOwner {
     pub(super) async fn session_value(&self, child: &AgentPath) -> Result<Value> {
         let (state, session) = self.native.session(child).await?;
         let pending = session.pending(&state);
+        let result = match &session.result {
+            Some(result) => Some(self.native.outcome(&state, result).await?),
+            None => None,
+        };
         Ok(json!({"task":child,"cwd":self.view(child)?.path(),
             "status":{"settled":session.claimed().is_none(),"turn":session.settled},
-            "control":session.control,"events":session.events,"results":session.result.into_iter()
+            "control":session.control,"events":session.events,"results":result.into_iter()
                 .map(|outcome| json!({ "outcome": outcome })).collect::<Vec<_>>(),
             "pending":pending}))
     }

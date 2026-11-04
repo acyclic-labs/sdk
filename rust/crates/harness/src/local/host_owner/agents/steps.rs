@@ -52,6 +52,7 @@ pub(super) fn apply(
     agent: &AgentState,
     session: &mut Session,
     id: &IntentId,
+    source: &FileRef,
     event: Event,
     outs: &mut Vec<Out>,
 ) -> Result<Option<Running>> {
@@ -92,7 +93,7 @@ pub(super) fn apply(
         }
         Event::Complete {
             operation,
-            outcome,
+            outcome: _,
             events,
         } => {
             if session.claimed() != Some(operation) {
@@ -103,7 +104,7 @@ pub(super) fn apply(
                 ));
             }
             session.settled += 1;
-            session.result = Some(outcome);
+            session.result = Some(StoredOutcome::Complete(source.clone()));
             session.events = events;
             return Ok(session.running.take());
         }
@@ -121,7 +122,7 @@ pub(super) fn apply(
                 && session.claimed().is_none()
             {
                 session.settled += 1;
-                session.result = Some(crate::Outcome::Cancelled);
+                session.result = Some(StoredOutcome::Cancelled);
                 session.events = None;
                 return Ok(session.running.take());
             }

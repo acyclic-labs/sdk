@@ -26,6 +26,8 @@ use futures::TryStreamExt as _;
 
 mod steps;
 use steps::{apply, idle, reject, start, waiting};
+#[cfg(any(test, feature = "test-support"))]
+pub(super) mod validation;
 
 /// Host name of the inbox records this owner writes for a native session.
 const HOST: &str = "native";
@@ -73,11 +75,28 @@ pub struct TurnClaim {
     pub turn: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+enum SessionVersion {
+    #[default]
+    #[serde(rename = "1")]
+    V1,
+}
+
+/// A completion already lives in its immutable admitted request file.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(super) enum StoredOutcome {
+    /// The exact admitted completion, including its original output fields.
+    Complete(FileRef),
+    /// An input stopped before a process claimed it has no completion event.
+    Cancelled,
+}
+
 /// A native session's state: the open turn's checkpoint while one runs,
 /// otherwise the output of its last conversation entry.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Session {
+    version: SessionVersion,
     /// Parent-local name of a spawned session, from its brief.
     pub(super) reference: Option<String>,
     /// Parent-local names of its children still open, in spawn order.
@@ -87,7 +106,7 @@ pub(super) struct Session {
     /// Settled turns.
     pub(super) settled: u64,
     /// The last settled turn's outcome.
-    pub(super) result: Option<crate::Outcome<TurnOutput>>,
+    pub(super) result: Option<StoredOutcome>,
     /// The last settled turn's native event log: every event its host
     /// emitted, so each conversation entry carries its turn's own.
     #[serde(default)]
@@ -101,6 +120,10 @@ pub(super) struct Session {
 }
 
 impl Session {
+    fn decode(bytes: &[u8]) -> serde_json::Result<Self> {
+        serde_json::from_slice(bytes)
+    }
+
     /// The claim of the input its open turn runs.
     pub(super) fn claimed(&self) -> Option<OperationId> {
         self.running.as_ref().and_then(|running| running.claimed)
@@ -181,6 +204,21 @@ pub(super) enum Event {
     },
 }
 
+impl Event {
+    fn decode(bytes: &[u8]) -> serde_json::Result<Self> {
+        serde_json::from_slice(bytes)
+    }
+
+    fn completed(self) -> Result<crate::Outcome<TurnOutput>> {
+        match self {
+            Self::Complete { outcome, .. } => Ok(outcome),
+            _ => Err(Error::Conflict(
+                "native result does not name a completion".into(),
+            )),
+        }
+    }
+}
+
 /// Content access of one agent over its own volumes.
 struct Content {
     reader: Arc<FilesystemContentVerifier<LocalAuthorityBackend, LocalObjectBackend>>,
@@ -248,7 +286,7 @@ impl HostDriver {
 
     /// Reads the owner's committed snapshot at its exact published size.
     async fn read_session(&self, agent: &AgentState, file: &FileRef) -> Result<Session> {
-        serde_json::from_slice(
+        Session::decode(
             &self
                 .read(agent, file, file.descriptor().byte_length())
                 .await?,
@@ -353,7 +391,7 @@ impl HostDriver {
     /// or the output of its own last conversation entry.
     pub(super) async fn session(&self, agent: &AgentState) -> Result<Session> {
         if let Some(turn) = &agent.turn {
-            return serde_json::from_slice(&turn.checkpoint).map_err(storage);
+            return Session::decode(&turn.checkpoint).map_err(storage);
         }
         if agent.conversation_tail <= agent.conversation_base {
             return Ok(Session::default());
@@ -411,17 +449,17 @@ impl HostDriver {
             }
             TurnInput::Hook { host, id, event } if host == HOST => {
                 let bytes = self.read(agent, event, MAXIMUM_BYTES).await?;
-                match serde_json::from_slice::<Event>(&bytes) {
-                    Ok(event) => {
+                match Event::decode(&bytes) {
+                    Ok(decoded) => {
                         // A stop drops every input queued before it.
                         drops = matches!(
-                            event,
+                            decoded,
                             Event::Control {
                                 control: Control::Cancel | Control::Archive
                             }
                         )
                         .then_some(inbox);
-                        apply(agent, &mut session, id, event, &mut outs)?
+                        apply(agent, &mut session, id, event, decoded, &mut outs)?
                     }
                     Err(error) => reject(&mut session, id, &error.to_string()),
                 }
@@ -651,6 +689,19 @@ impl NativeAgents {
         self.driver.read(agent, file, MAXIMUM_BYTES).await
     }
 
+    pub(super) async fn outcome(
+        &self,
+        agent: &AgentState,
+        stored: &StoredOutcome,
+    ) -> Result<crate::Outcome<TurnOutput>> {
+        match stored {
+            StoredOutcome::Cancelled => Ok(crate::Outcome::Cancelled),
+            StoredOutcome::Complete(file) => Event::decode(&self.read(agent, file).await?)
+                .map_err(storage)?
+                .completed(),
+        }
+    }
+
     /// Delivers `event` to `agent` as request `operation`, then runs its turn.
     /// Resending an operation replays its one inbox record.
     pub(super) async fn request(
@@ -740,7 +791,11 @@ impl NativeAgents {
                 } => {
                     let state = self.state(agent).await?;
                     let settled = self.driver.read_session(&state, &entry.output).await?;
-                    json!({"kind": "answered", "sequence": sequence, "outcome": settled.result})
+                    let outcome = match &settled.result {
+                        Some(result) => Some(self.outcome(&state, result).await?),
+                        None => None,
+                    };
+                    json!({"kind": "answered", "sequence": sequence, "outcome": outcome})
                 }
                 crate::agent::Reply::Pending | crate::agent::Reply::Continuing { .. } => {
                     json!({ "kind": "pending" })

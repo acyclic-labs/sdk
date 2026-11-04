@@ -8,6 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 mod agents;
 mod events;
 mod sessions;
+/// Exercises the production native session storage codecs.
+#[cfg(feature = "test-support")]
+pub use agents::validation::check_native_session_storage;
 pub use agents::{Control, TurnClaim};
 pub use sessions::SessionAction;
 /// The production closed-log selector, exposed only for validation.
