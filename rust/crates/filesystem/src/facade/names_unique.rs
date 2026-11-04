@@ -158,6 +158,30 @@ mod tests {
         let maximum = input.len();
         let mut keys = Owned::<Vec<Vec<u8>>>::allocate(0, &mut accounting)?;
         for key in input {
+            if !keys.value.is_empty() && keys.value.len() == keys.value.capacity() {
+                let before = (keys.bytes, keys.value.as_ptr(), accounting.spent());
+                let KernelAccounting::Standalone { budget, .. } = &mut accounting else {
+                    return Err("expected standalone custody".into());
+                };
+                budget.bytes_copied = before.2.bytes_copied;
+                let refused = keys.ensure_for_push(maximum, &mut accounting);
+                let KernelAccounting::Standalone { budget, .. } = &mut accounting else {
+                    return Err("expected standalone custody".into());
+                };
+                *budget = WorkBudget::UNBOUNDED;
+                assert!(matches!(
+                    refused,
+                    Err(FsError::Work(WorkError::BudgetExceeded {
+                        counter: "bytes_copied",
+                        ..
+                    }))
+                ));
+                assert_eq!(
+                    (keys.bytes, keys.value.as_ptr(), accounting.spent()),
+                    before,
+                    "refused growth changed nested buffer custody"
+                );
+            }
             keys.ensure_for_push(maximum, &mut accounting)?;
             let mut owned = Owned::<Vec<u8>>::allocate(key.len() + 7, &mut accounting)?;
             owned.value.extend_from_slice(&key);
