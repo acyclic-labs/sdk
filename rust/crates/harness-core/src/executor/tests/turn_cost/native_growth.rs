@@ -50,13 +50,13 @@ impl ExecutionJournal for ReplayOnly<'_> {
             self.indexed_pages.fetch_add(1, Ordering::SeqCst);
         }
         let replay = self.journal.replay(operation, after, maximum, io)?;
-        Ok(Box::pin(async move {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
             let page = replay.await?;
             if !page.is_empty() {
                 *self.copied_after_page.lock().unwrap() = io.map(|io| io.receipt().bytes_copied);
             }
             Ok(page)
-        }))
+        })
     }
     fn append<'a>(
         &'a self,
