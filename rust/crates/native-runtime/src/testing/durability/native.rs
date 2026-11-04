@@ -200,7 +200,14 @@ fn namespace_interruption(operation: Operation, metered: bool, reissue: bool) ->
     assert_eq!(renamed.get(), usize::from(is_rename));
     assert_eq!(
         observer.used_operations.load(Ordering::Acquire),
-        u64::from(metered) * if is_rename { 4 } else { 2 },
+        // Only the successful Windows invocation opens a write-through rename
+        // handle; the injected first interruption happens before that open.
+        u64::from(metered)
+            * if is_rename {
+                4 + u64::from(cfg!(windows))
+            } else {
+                2
+            },
     );
     let trace = schedule.durable_writes();
     assert_eq!(trace.len(), if cfg!(unix) && is_rename { 3 } else { 2 });

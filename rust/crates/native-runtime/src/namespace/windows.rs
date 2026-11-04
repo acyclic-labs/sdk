@@ -1,5 +1,121 @@
-//! Normalize DOS paths before entering Win32 namespace publication APIs.
+//! Windows namespace publication and DOS path normalization.
 use super::*;
+
+/// Replace a name while original readers retain the old file. The source is
+/// opened write-through: NTFS flushes rename metadata as part of that request,
+/// rather than requiring a separate caller flush after publication.
+/// See the native [caching contract](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew#caching-behavior).
+#[allow(
+    unsafe_code,
+    reason = "passes held paths and an aligned bounded rename packet to Win32"
+)]
+pub(super) fn rename(
+    from: &[u16],
+    to: &[u16],
+    mode: RenameMode,
+    meter: Option<&Arc<dyn NativeReadMeter>>,
+) -> io::Result<()> {
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS,
+    };
+    use windows_sys::Win32::{
+        Foundation::INVALID_HANDLE_VALUE,
+        Storage::FileSystem::{
+            CreateFileW, DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            FILE_FLAG_WRITE_THROUGH, FILE_RENAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, FileRenameInfoEx, OPEN_EXISTING, SYNCHRONIZE,
+            SetFileInformationByHandle,
+        },
+    };
+
+    let name = to.strip_suffix(&[0]).ok_or(io::ErrorKind::InvalidInput)?;
+    let name_bytes = std::mem::size_of_val(name);
+    let packet_bytes = std::mem::offset_of!(FILE_RENAME_INFO, FileName)
+        .checked_add(name_bytes)
+        .ok_or(io::ErrorKind::InvalidInput)?;
+    let length = u32::try_from(packet_bytes).map_err(|_| io::ErrorKind::InvalidInput)?;
+    // The flexible UTF-16 name follows a pointer-aligned native header.
+    let words = packet_bytes.div_ceil(std::mem::size_of::<usize>());
+    let capacity = words
+        .checked_mul(std::mem::size_of::<usize>())
+        .ok_or(io::ErrorKind::InvalidInput)?;
+    let mut allocation = meter
+        .map(|meter| ReadAllocation::new(meter, capacity))
+        .transpose()?;
+    let mut packet = Vec::<usize>::new();
+    packet
+        .try_reserve_exact(words)
+        .map_err(|error| match meter {
+            Some(meter) => meter.allocation_failed(error),
+            None => io::ErrorKind::OutOfMemory.into(),
+        })?;
+    if let Some(allocation) = &mut allocation {
+        allocation.reconcile_capacity(packet.capacity() * std::mem::size_of::<usize>())?;
+    }
+    let copied = capacity
+        .checked_add(name_bytes)
+        .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<u32>()))
+        .ok_or(io::ErrorKind::InvalidInput)?;
+    if let Some(meter) = meter {
+        meter.check()?;
+        meter.admit_codec(0, copied as u64, 0)?;
+    }
+    packet.resize(words, 0);
+    // SAFETY: the initialized allocation has FILE_RENAME_INFO alignment and
+    // covers its fixed fields and the complete checked, non-terminated name.
+    unsafe {
+        let header = packet.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+        (*header).Anonymous.Flags = if mode == RenameMode::Replace {
+            FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS
+        } else {
+            0
+        };
+        (*header).FileNameLength =
+            u32::try_from(name_bytes).map_err(|_| io::ErrorKind::InvalidInput)?;
+        std::ptr::copy_nonoverlapping(
+            name.as_ptr(),
+            std::ptr::addr_of_mut!((*header).FileName).cast::<u16>(),
+            name.len(),
+        );
+    }
+    if let Some(meter) = meter {
+        meter.record_codec(0, copied as u64, 0)?;
+        meter.admit_read(0)?;
+    }
+    // SAFETY: namespace_path supplied a held NUL-terminated source. Opening
+    // the entry itself preserves symlink rename semantics and allows folders.
+    let handle = unsafe {
+        CreateFileW(
+            from.as_ptr(),
+            DELETE | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_WRITE_THROUGH | FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: transfer the successful open to exactly one closing owner.
+    let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+    // SAFETY: the write-through handle and the initialized, aligned packet
+    // remain live through the single atomic rename. No retry or unlink occurs.
+    if unsafe {
+        SetFileInformationByHandle(
+            handle.as_raw_handle(),
+            FileRenameInfoEx,
+            packet.as_ptr().cast(),
+            length,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
 
 /// Keep allocation custody for both the encoded input and the normalized
 /// output until each buffer is actually retired. Verbatim/device paths
