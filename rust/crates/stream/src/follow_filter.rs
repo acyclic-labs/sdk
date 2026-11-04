@@ -602,6 +602,15 @@ mod tests {
                 keys: vec![range(b"a", b"b")],
                 ..Default::default()
             })?,
+            FollowFilter::new(wire::SessionFilter {
+                keys: vec![range(b"a", b"zz")],
+                all_of: vec![wire::SessionFilterClause {
+                    all_keys: true,
+                    keys: vec![range(b"b", b"zz")],
+                    attributes: vec![],
+                }],
+                ..Default::default()
+            })?,
         ];
         for marker in [
             None,
@@ -659,14 +668,18 @@ mod tests {
                             },
                             None,
                         );
-                        let unrestricted_changes = valid
+                        let whole_changes = valid
                             && format.as_ref().is_ok_and(|format| format.is_some())
-                            && index == 0;
+                            && record
+                                .headers
+                                .keys()
+                                .iter()
+                                .all(|key| filter.matches_entry(key, &record.headers));
                         let projection = compare(
                             || project(filter, record.clone()),
                             || filter.project(record.clone()),
                             if valid {
-                                if unrestricted_changes {
+                                if whole_changes {
                                     3 * probes
                                 } else if matches {
                                     2 * probes
@@ -676,7 +689,7 @@ mod tests {
                             } else {
                                 0
                             },
-                            unrestricted_changes.then_some(record.value.len()),
+                            whole_changes.then_some(record.value.len()),
                         );
                         if fault == 0 && padding == 15 && prefix == "a" {
                             eprintln!(
