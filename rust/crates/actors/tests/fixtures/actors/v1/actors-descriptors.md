@@ -1,5 +1,16 @@
 # Actors descriptor fixture provenance
 
+Refresh all current Actors descriptors together from the maintained schema:
+
+```sh
+node scripts/capture-descriptors.mjs actors
+```
+
+This command invokes the existing Rust generator and pinned Buf compiler,
+canonicalizes their independent outputs, writes both Rust descriptor copies
+and the Buf fixture, and records the compatibility digests. The descriptor
+contract test compares the two compiler outputs without discarding options.
+
 `actors-v1.bin` is copied from `compatibility/descriptors/actors-v1.bin`, emitted
 by the pinned Rust/protoc pipeline:
 
