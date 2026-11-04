@@ -567,6 +567,21 @@ impl IndexWork for Work {
     }
 }
 
+// Reads borrow the original admission without an allocation capability.
+struct ReadOnly<'a>(&'a mut Work);
+
+impl IndexReadWork for ReadOnly<'_> {
+    type Error = &'static str;
+
+    fn validate(&mut self) -> Result<(), Self::Error> {
+        self.0.check()
+    }
+
+    fn examine(&mut self, items: u64) -> Result<(), Self::Error> {
+        self.0.charge_items(items)
+    }
+}
+
 #[test]
 fn original_credit_covers_physical_backing_through_extraction_and_retirement() {
     for population in [1_u64, 4, 32, 256] {
@@ -800,12 +815,13 @@ fn extracted_values_keep_their_original_leaf_funding_after_cancelled_removal()
 #[test]
 fn ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors()
 -> Result<(), &'static str> {
-    use proptest::test_runner::{Config, TestRunner};
+    use proptest::test_runner::{Config, RngSeed, TestRunner};
     use std::ops::Bound::{Excluded, Unbounded};
 
     let mut runner = TestRunner::new(Config {
         cases: 128,
         failure_persistence: None,
+        rng_seed: RngSeed::Fixed(0x7265_6164_2d69_6e64),
         ..Config::default()
     });
     runner
@@ -830,12 +846,14 @@ fn ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors()
                 for key in existing.into_iter().chain(queries) {
                     let before = work.items;
                     let observed = table
-                        .seek_after(key, &mut work)
+                        .seek_after(key, &mut ReadOnly(&mut work))
                         .map_err(TestCaseError::fail)?;
                     prop_assert_eq!(observed, expected.range((Excluded(key), Unbounded)).next());
                     prop_assert!(work.items - before <= 25 * 40 + 3);
                     let before = work.items;
-                    let observed = table.get_mut(key, &mut work).map_err(TestCaseError::fail)?;
+                    let observed = table
+                        .get_mut(key, &mut ReadOnly(&mut work))
+                        .map_err(TestCaseError::fail)?;
                     prop_assert_eq!(observed.as_deref(), expected.get(&key));
                     if let Some(value) = observed {
                         *value += 1;
@@ -866,11 +884,13 @@ fn ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors()
                             .is_none()
                     );
                 }
-                let mut row = table.first(&mut work).map_err(TestCaseError::fail)?;
+                let mut row = table
+                    .first(&mut ReadOnly(&mut work))
+                    .map_err(TestCaseError::fail)?;
                 for expected in &expected {
                     prop_assert_eq!(row, Some(expected));
                     row = table
-                        .seek_after(*expected.0, &mut work)
+                        .seek_after(*expected.0, &mut ReadOnly(&mut work))
                         .map_err(TestCaseError::fail)?;
                 }
                 prop_assert_eq!(row, None);
@@ -903,44 +923,59 @@ fn ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors()
         for key in expected.keys().copied().chain([[255; N]]) {
             let before = work.items;
             assert_eq!(
-                table.seek_after(key, &mut work)?,
+                table.seek_after(key, &mut ReadOnly(&mut work))?,
                 expected.range((Excluded(key), Unbounded)).next()
             );
             assert!(work.items - before <= (25 * N + 3) as u64);
         }
         let before = work.items;
         table
-            .get_mut([0; N], &mut work)?
+            .get_mut([0; N], &mut ReadOnly(&mut work))?
             .ok_or("missing original key")?;
         let required = work.items - before;
         for credit in 0..required {
             work.maximum_items = Some(work.items + credit);
             assert_eq!(
-                table.get_mut([0; N], &mut work).err(),
+                table.get_mut([0; N], &mut ReadOnly(&mut work)).err(),
                 Some("items refused")
             );
         }
         work.maximum_items = None;
-        assert_eq!(table.get([0; N], &mut work)?, Some(&0));
+        assert_eq!(table.get([0; N], &mut ReadOnly(&mut work))?, Some(&0));
         let before = work.items;
-        table.seek_after([0; N], &mut work)?;
+        table.seek_after([0; N], &mut ReadOnly(&mut work))?;
         let required = work.items - before;
         for credit in 0..required {
             work.maximum_items = Some(work.items + credit);
             assert_eq!(
-                table.seek_after([0; N], &mut work).err(),
+                table.seek_after([0; N], &mut ReadOnly(&mut work)).err(),
                 Some("items refused")
             );
         }
         work.maximum_items = None;
         work.cancelled = true;
-        assert_eq!(table.get_mut([255; N], &mut work).err(), Some("cancelled"));
         assert_eq!(
-            table.seek_after([255; N], &mut work).err(),
+            table.get_mut([255; N], &mut ReadOnly(&mut work)).err(),
+            Some("cancelled")
+        );
+        assert_eq!(
+            table.seek_after([255; N], &mut ReadOnly(&mut work)).err(),
             Some("cancelled")
         );
         let mut empty = FixedIndex::<usize, Allocation, N>::default();
-        assert_eq!(empty.get_mut([0; N], &mut work).err(), Some("cancelled"));
+        assert_eq!(
+            empty.get_mut([0; N], &mut ReadOnly(&mut work)).err(),
+            Some("cancelled")
+        );
+        assert_eq!(
+            empty.get([0; N], &mut ReadOnly(&mut work)).err(),
+            Some("cancelled"),
+            "cancelled empty exact read must be refused"
+        );
+        assert_eq!(
+            empty.first(&mut ReadOnly(&mut work)).err(),
+            Some("cancelled")
+        );
         let before = work.items;
         work.maximum_items = Some(before);
         assert!(
@@ -961,7 +996,10 @@ fn ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors()
                 )
                 .is_none()
         );
-        assert_eq!(empty.seek_after([0; N], &mut work).err(), Some("cancelled"));
+        assert_eq!(
+            empty.seek_after([0; N], &mut ReadOnly(&mut work)).err(),
+            Some("cancelled")
+        );
         assert!(
             empty
                 .get_or_try_insert_with([0; N], &mut work, |_| panic!("cancelled construction"))
