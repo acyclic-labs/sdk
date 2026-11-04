@@ -360,33 +360,62 @@ fn bound_unix_socket_rejects_paths_beyond_sun_path() -> std::io::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
-    // Root metadata always targets the held directory, even when its name is replaced.
-    #[test]
-    fn empty_metadata_path_keeps_the_held_root(mode in 0_u32..=0o777) {
-        use crate::kernel::{FileMetadata, MetadataField};
-        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-        let temporary = tempfile::tempdir().unwrap();
-        let original = temporary.path().join("root");
-        let moved = temporary.path().join("moved");
-        std::fs::create_dir(&original).unwrap();
-        let restore = DirectoryModeRestore::new(&original)
-            .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
-        let root = test_root(&original).unwrap();
-        std::fs::rename(&original, &moved).unwrap();
-        std::fs::create_dir(&original).unwrap();
-        std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o700)).unwrap();
+#[test]
+fn empty_metadata_path_keeps_the_held_root() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::{FileMetadata, MetadataField};
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    let temporary = tempfile::tempdir()?;
+    let original = temporary.path().join("root");
+    let moved = temporary.path().join("moved");
+    std::fs::create_dir(&original)?;
+    let restore = DirectoryModeRestore::new(&original)?;
+    let root = test_root(&original)?;
+    std::fs::rename(&original, &moved)?;
+    std::fs::create_dir(&original)?;
+    std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o700))?;
+    let mut runner = proptest::test_runner::TestRunner::new(proptest::test_runner::Config {
+        source_file: Some(file!()),
+        test_name: Some(concat!(
+            module_path!(),
+            "::empty_metadata_path_keeps_the_held_root"
+        )),
+        ..proptest::test_runner::Config::with_cases(32)
+    });
+    // Every generated mode opens the real held target after its name was replaced.
+    let result = runner.run(&(0_u32..=0o777), |mode| {
+        restore
+            .directory
+            .set_permissions(restore.permissions.clone())
+            .unwrap();
         let mut work = ordinary_work();
-        let target = root.open_linux_metadata_target(Path::new(""), &mut work).unwrap();
-        proptest::prop_assert_eq!(target.metadata().unwrap().ino(), std::fs::metadata(&moved).unwrap().ino());
-        apply_metadata(&target, FileMetadata {
-            posix_mode: MetadataField::Value(mode),
-            ..FileMetadata::default()
-        }, &mut work).unwrap();
-        proptest::prop_assert_eq!(std::fs::metadata(&moved).unwrap().permissions().mode() & 0o777, mode);
-        proptest::prop_assert_eq!(std::fs::metadata(&original).unwrap().permissions().mode() & 0o777, 0o700);
-        drop(restore);
-        temporary.close().map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
-    }
+        let target = root
+            .open_linux_metadata_target(Path::new(""), &mut work)
+            .unwrap();
+        proptest::prop_assert_eq!(
+            target.metadata().unwrap().ino(),
+            std::fs::metadata(&moved).unwrap().ino()
+        );
+        apply_metadata(
+            &target,
+            FileMetadata {
+                posix_mode: MetadataField::Value(mode),
+                ..FileMetadata::default()
+            },
+            &mut work,
+        )
+        .unwrap();
+        proptest::prop_assert_eq!(
+            std::fs::metadata(&moved).unwrap().permissions().mode() & 0o777,
+            mode
+        );
+        proptest::prop_assert_eq!(
+            std::fs::metadata(&original).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        Ok(())
+    });
+    drop(restore);
+    temporary.close()?;
+    result.map_err(|error| std::io::Error::other(error.to_string()))?;
+    Ok(())
 }
