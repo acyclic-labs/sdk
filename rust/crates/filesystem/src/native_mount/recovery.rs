@@ -348,7 +348,7 @@ impl NativeMountRecoveryOwner {
         let worker = crate::sync::native::thread::Builder::new().spawn(move || {
             retire_recovery(worker);
         })?;
-        let mut owner = Self {
+        let owner = Self {
             shared,
             retirement: Some(retirement),
             worker: Some(worker),
