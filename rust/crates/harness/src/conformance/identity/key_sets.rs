@@ -2,7 +2,7 @@
 //! captured Dex public RSA key. No unrelated key is eligible to admit a token.
 use super::*;
 
-pub(super) async fn verify(backend: &dyn Backend, now: u64) -> Result {
+pub(super) async fn verify(backend: &dyn Backend, refusal: &Fixture, now: u64) -> Result {
     let mut source = Source::keys(&[(7, "one")]);
     let original: Value = serde_json::from_slice(&source.bytes)?;
     let eligible = original["keys"][0].clone();
@@ -22,10 +22,11 @@ pub(super) async fn verify(backend: &dyn Backend, now: u64) -> Result {
     let mut verifier = oidc::Verifier::new(config()?);
     verifier.refresh(&source, now).await?;
     let valid = token(7, "one", &claims(now))?;
-    admit(backend, &verifier, &source, &valid, now, true).await?;
+    admit(backend, refusal, &verifier, &source, &valid, now, true).await?;
     for algorithm in ["RS256", "ES256", "HS256", "none"] {
         admit(
             backend,
+            refusal,
             &verifier,
             &source,
             &header_mutation(&valid, "alg", json!(algorithm))?,
@@ -68,7 +69,7 @@ pub(super) async fn verify(backend: &dyn Backend, now: u64) -> Result {
         }
         verifier.verify(&valid, at)?;
     }
-    admit(backend, &verifier, &source, &valid, now + 10, true).await?;
+    admit(backend, refusal, &verifier, &source, &valid, now + 10, true).await?;
 
     // The reported RSA/EC mixture exercises the same selection with a real RSA
     // key, including duplicate kid values belonging to other signing families.
@@ -89,6 +90,6 @@ pub(super) async fn verify(backend: &dyn Backend, now: u64) -> Result {
     )?;
     let mut rsa_verifier = oidc::Verifier::new(rsa_config);
     rsa_verifier.refresh(&source, now).await?;
-    admit(backend, &rsa_verifier, &source, &valid, now, false).await?;
+    admit(backend, refusal, &rsa_verifier, &source, &valid, now, false).await?;
     Ok(())
 }
