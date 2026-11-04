@@ -928,3 +928,12 @@ service reply and checks decoded cardinality before zip-based comparisons.
 guard to reject only missing replies; the unchanged property must reject its
 extra reply. The earlier count-guard control still covers missing members.
 This is a derived adversarial input, not an additional captured service packet.
+
+The native Stream boundary retains the same raw Auth refusal envelope. The
+existing `tests::tail::native_tail_preserves_the_complete_real_observation`
+control exercises the actual authenticated service, TCP client and native
+result, with duplicate metadata and binary header bytes derived from the real
+service rejection. `negative-controls/stream_native_refusal.patch` removes
+that original diagnostic from the shared native conversion; the same control
+must reject it. This Rust component control does not establish Node ABI or
+platform qualification.
