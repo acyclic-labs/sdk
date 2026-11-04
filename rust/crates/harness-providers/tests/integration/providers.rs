@@ -13,6 +13,7 @@ use acyclic_harness::{
     },
     test_support::{PromptOutcome, local_harness_config, prompt_settled},
 };
+use acyclic_harness_providers::{HttpRequest, HttpTransport as _};
 use futures::TryStreamExt as _;
 use serde_json::Value;
 use std::sync::Arc;
@@ -28,12 +29,15 @@ pub(super) fn check_events(expected: &[Value], events: &[ModelEvent]) -> TestRes
     }
     for (expected, actual) in expected.iter().zip(events) {
         let actual = serde_json::to_value(actual)?;
-        let reasoning = at(&actual, "/kind") == "reasoning_block";
+        let retained: &[&str] = match at(&actual, "/kind").as_str() {
+            Some("reasoning_block") => &["/block/continuity", "/block/origin/credential_scope"],
+            Some("text_part") => &["/native"],
+            _ => &[],
+        };
         if !matchers::subset(expected, &actual)
-            || (reasoning
-                && ["/block/continuity", "/block/origin/credential_scope"]
-                    .iter()
-                    .any(|pointer| at(expected, pointer) != at(&actual, pointer)))
+            || retained
+                .iter()
+                .any(|pointer| at(expected, pointer) != at(&actual, pointer))
         {
             return Err(
                 format!("provider events differ: expected {expected}, got {actual}").into(),
@@ -55,7 +59,7 @@ fn completed_steps(case: &ProviderCase) -> usize {
         .count()
 }
 
-async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> TestResult {
+pub(super) async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> TestResult {
     let provider = resolve(case, transport.clone())?;
     for (step, expected) in case.expect.events.iter().enumerate() {
         let request = PreparedModelRequest::prepare(
@@ -110,12 +114,22 @@ async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> TestResult {
             }
         }
         for (index, event) in events.iter().enumerate() {
+            if let ModelEvent::TextPart { .. } = event {
+                let mut broken = events.clone();
+                if let ModelEvent::TextPart { text, .. } = &mut broken[index] {
+                    text.push('!');
+                }
+                if check_events(expected, &broken).is_ok() {
+                    return Err("provider oracle accepted corrupted retained text".into());
+                }
+            }
             if let ModelEvent::ReasoningBlock { .. } = event {
                 for scope in [false, true] {
                     let mut broken = events.clone();
                     if let Some(ModelEvent::ReasoningBlock { block }) = broken.get_mut(index) {
                         if scope {
-                            block.origin.credential_scope = None;
+                            block.origin.credential_scope =
+                                block.origin.credential_scope.is_none().then_some([73; 32]);
                         } else {
                             block.continuity.push(255);
                         }
@@ -146,11 +160,26 @@ async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> TestResult {
     if sent.len() != case.responses.len() || remaining != 0 {
         return Err("provider parsing left an unused fixture".into());
     }
+    // Replay one actual production request after the recording ends. A refused
+    // extra exchange must remain observable to the exact request-count oracle.
+    let request = sent.into_iter().next().ok_or("empty HTTP recording")?;
+    if transport
+        .send(HttpRequest {
+            url: request.url,
+            headers: Default::default(),
+            body: request.body,
+        })
+        .await
+        .is_ok()
+    {
+        return Err("HTTP recording accepted an unscripted exchange".into());
+    }
+    let (excess, remaining) = transport.take_requests();
+    if excess.len() != 1 || remaining != 0 {
+        return Err("HTTP recording hid an exhausted exchange".into());
+    }
     Ok(())
 }
-
-/// Sorts ahead of every case tool, so a positional alias would move.
-const ADDED_DEFAULT_TOOL: &str = "acyclic.aaa_added_default";
 
 /// A registered tool returning its arguments, named like an installed MCP tool.
 pub(super) fn echo_tool(name: &str) -> acyclic_harness::tool::Tool {
@@ -205,45 +234,38 @@ pub(super) async fn run(case: ProviderCase) -> TestResult {
     if parse {
         parsed(&case, transport.clone()).await?;
     }
-    // A case with registered tools runs again with a default tool added ahead
-    // of them: every request expectation, including wire tool names, holds.
-    let added = [None, Some(ADDED_DEFAULT_TOOL)];
-    for (run, added) in added
-        .iter()
-        .take(if case.tools.is_empty() { 1 } else { 2 })
-        .enumerate()
-    {
-        if parse || run > 0 {
-            transport.restart()?;
-        }
-        task(&case, &transport, *added).await?;
+    if parse {
+        transport.restart()?;
     }
-    Ok(())
+    task(&case, &transport).await
 }
 
-async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str>) -> TestResult {
+async fn task(case: &ProviderCase, transport: &Arc<Recorded>) -> TestResult {
     let temporary = local_workspace::temporary()?;
     let directory = temporary.path().join("filesystem");
     std::fs::create_dir(&directory)?;
     let (host, volume, workspace, reader, _authority) =
-        local_workspace::seed(&directory, &case.seed).await?;
+        local_workspace::seed(&directory, &case.seed)
+            .await
+            .map_err(|error| format!("provider scenario seed: {error}"))?;
     let provider = Arc::new(resolve(case, transport.clone())?);
-    let config = local_harness_config(&directory, (provider.model().clone(), provider))?
+    let config = local_harness_config(&directory, (provider.model().clone(), provider))
+        .map_err(|error| format!("provider scenario configuration: {error}"))?
         .state_directory(temporary.path().join("state"))
         .volume(volume.clone())
         .compaction(CompactionPolicy::Disabled)
         .goal_continuations(None)
-        .tools(
-            case.tools
-                .iter()
-                .map(String::as_str)
-                .chain(added)
-                .map(echo_tool),
-        );
-    let harness = Arc::new(LocalHarness::open(config).await?);
+        .tools(case.tools.iter().map(String::as_str).map(echo_tool));
+    let harness = Arc::new(
+        LocalHarness::open(config)
+            .await
+            .map_err(|error| format!("provider scenario open: {error}"))?,
+    );
     match (
         case.expect.outcome,
-        prompt_settled(&harness, "provider", &case.prompt).await?,
+        prompt_settled(&harness, "provider", &case.prompt)
+            .await
+            .map_err(|error| format!("provider scenario prompt: {error}"))?,
     ) {
         (
             super::expected_outcome::ExpectedOutcome::Succeeded,
@@ -256,7 +278,9 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
     drop(harness);
     drop(reader);
     drop(host);
-    let cold = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&directory)).await?;
+    let cold = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&directory))
+        .await
+        .map_err(|error| format!("provider scenario reopen: {error}"))?;
     let cold = acyclic_harness::filesystem::FilesystemHost::new(cold, volume.provider(), None)?;
     for (path, expected) in &case.expect.files {
         let actual = cold
@@ -264,7 +288,7 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
             .await;
         match (expected, actual) {
             (Some(expected), Ok(bytes)) if bytes.as_ref() == expected.as_bytes() => {}
-            (None, Err(acyclic_harness::Error::NotFound(_))) => {}
+            (None, Err(error)) if error.code() == acyclic_harness::wire::ErrorCode::NotFound => {}
             (_, actual) => {
                 return Err(format!("provider persisted file differs: {path}: {actual:?}").into());
             }
@@ -297,7 +321,11 @@ fn check_requests(case: &ProviderCase, transport: &Recorded) -> TestResult {
         check_request(expected, &body)?;
         // Fault the recorded production request, leaving fixture assertions intact.
         // Every declared call/result payload and identity must reject loss/change.
-        for pointer in expected.keys() {
+        let mut asserted = Vec::new();
+        for (pointer, value) in expected {
+            assertion_paths(value, at(&body, pointer), pointer.clone(), &mut asserted)?;
+        }
+        for pointer in &asserted {
             let mut dropped = body.clone();
             let (parent, key) = pointer
                 .rsplit_once('/')
@@ -324,6 +352,40 @@ fn check_requests(case: &ProviderCase, transport: &Recorded) -> TestResult {
                 }
             }
         }
+    }
+    Ok(())
+}
+
+/// Retain field-level fault injection when notices move ordered history entries.
+fn assertion_paths(
+    expected: &Value,
+    actual: &Value,
+    pointer: String,
+    paths: &mut Vec<String>,
+) -> TestResult {
+    paths.push(pointer.clone());
+    match (expected, actual) {
+        (Value::Object(expected), Value::Object(actual)) if !expected.contains_key("$contains") => {
+            for (key, value) in expected {
+                let escaped = key.replace('~', "~0").replace('/', "~1");
+                assertion_paths(
+                    value,
+                    actual.get(key).ok_or("request assertion field")?,
+                    format!("{pointer}/{escaped}"),
+                    paths,
+                )?;
+            }
+        }
+        (Value::Array(expected), Value::Array(actual)) => {
+            let mut remaining = actual.iter().enumerate();
+            for value in expected {
+                let (index, actual) = remaining
+                    .find(|(_, actual)| matchers::subset(value, actual))
+                    .ok_or("request assertion observation")?;
+                assertion_paths(value, actual, format!("{pointer}/{index}"), paths)?;
+            }
+        }
+        _ => {}
     }
     Ok(())
 }

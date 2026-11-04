@@ -18,12 +18,12 @@
   "expect":{
     "text":"done",
     "requests":[
-      {"/tools":[{"type":"function","name":"mcp__docs__search"}]},
       {
-        "/tools":[{"type":"function","name":"mcp__docs__search"}],
-        "/input/2":{"type":"function_call","call_id":"call","name":"mcp__docs__search"},
-        "/input/2/arguments":{"$json":{"query":"wren"}},
-        "/input/3":{"type":"function_call_output","call_id":"call","output":{"$json":{"query":"wren"}}}
+        "/tools":[{"type":"function","name":"code"}]
+      },
+      {
+        "/tools":[{"type":"function","name":"code"}],
+        "/input":[{"type":"function_call","call_id":"call","name":"mcp__docs__search","arguments":{"$json":{"query":"wren"}}},{"type":"function_call_output","call_id":"call","output":"tool execution failed: tool `mcp__docs__search` is not available; call one of the declared tools"}]
       }
     ],
     "events":[

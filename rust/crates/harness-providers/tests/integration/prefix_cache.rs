@@ -44,6 +44,7 @@ use std::{
 
 /// The backstop marker's opening bytes.
 const MARKER: &[u8] = b"[context backstop:";
+const CONTEXT_TOKENS: u32 = 1 << 17;
 
 fn holds(body: &[u8], needle: &[u8]) -> bool {
     body.windows(needle.len()).any(|window| window == needle)
@@ -56,11 +57,10 @@ struct Sent {
 }
 
 /// Scripted replies in request order, then a plain answer for any later turn.
-/// Counts are 32 tokens until a per-byte weight is scripted.
+/// Admission and completion usage both count one token per request byte.
 struct Scripted {
     path: &'static str,
     state: Mutex<(&'static str, VecDeque<Step>, Vec<Sent>)>,
-    weight: std::sync::atomic::AtomicU64,
 }
 
 impl Scripted {
@@ -69,11 +69,8 @@ impl Scripted {
     }
 
     fn reply(&self, request: HttpRequest) -> acyclic_harness::Result<Bytes> {
+        let tokens = request.body.len() as u64;
         if request.url.ends_with("/count") {
-            let tokens = match self.weight.load(Ordering::SeqCst) {
-                0 => 32,
-                weight => request.body.len() as u64 * weight,
-            };
             return Ok(Bytes::from(format!(r#"{{"input_tokens":{tokens}}}"#)));
         }
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
@@ -83,7 +80,7 @@ impl Scripted {
             body: request.body,
         });
         let step = state.1.pop_front().unwrap_or_else(|| text("ok"));
-        let frames = harness_mock_model::events(self.path, &step)
+        let frames = harness_mock_model::events_with_usage(self.path, &step, tokens)
             .ok_or_else(|| acyclic_harness::Error::Invalid("unscripted reply".into()))?;
         Ok(Bytes::from(frames.concat()))
     }
@@ -220,7 +217,6 @@ fn executors(
             tools,
             (
                 limits,
-                // Usable: 2^20 - 1024 tokens.
                 CompactionPolicy::Threshold(ThresholdCompaction {
                     response_reserve_tokens: 1024,
                     recent_tokens: 1,
@@ -252,7 +248,7 @@ fn resolve(
                     thinking_levels: false,
                     max_context_tokens: None,
                     capacity: ModelContextCapacity {
-                        context_tokens: 1 << 20,
+                        context_tokens: CONTEXT_TOKENS,
                         output_tokens: Some(1024),
                     },
                     features: ModelFeatures {
@@ -354,7 +350,6 @@ async fn run(adapter: Adapter, path: &'static str, family: &str, messages: &[u8]
             ]),
             Vec::new(),
         )),
-        weight: 0.into(),
     });
     let model = Arc::new(resolve(adapter, transport.clone())?);
     let changing = Arc::new(Changing {
@@ -471,20 +466,16 @@ async fn run(adapter: Adapter, path: &'static str, family: &str, messages: &[u8]
     };
     set_template(root.clone()).await?;
     agents.drain(&root).await?;
-    let message = |to: &AgentPath, name: &'static str, prompt: &'static str| {
-        let bound = &bound;
-        let to = to.clone();
-        async move {
-            let body = bound
-                .stage_text(&to, "message", &user(), &intent(name), (prompt, prompt))
-                .await?;
-            Ok::<_, acyclic_harness::agent::Error>(InboxRecord::Message(Message {
-                from: user(),
-                id: intent(name),
-                body: Box::new(body),
-                attachments: None,
-            }))
-        }
+    let message = async |to: &AgentPath, name: &str, prompt: &str| {
+        let body = bound
+            .stage_text(to, "message", &user(), &intent(name), (prompt, prompt))
+            .await?;
+        Ok::<_, acyclic_harness::agent::Error>(InboxRecord::Message(Message {
+            from: user(),
+            id: intent(name),
+            body: Box::new(body),
+            attachments: None,
+        }))
     };
     agents
         .send(
@@ -545,10 +536,11 @@ async fn run(adapter: Adapter, path: &'static str, family: &str, messages: &[u8]
     }
 
     let sent = std::mem::take(&mut transport.state.lock().unwrap_or_else(|p| p.into_inner()).2);
-    // Near, then (about 1.2M of 1M usable tokens) over, the window, each
-    // turn with a tool call. The irreducible set stays far inside it.
-    for (name, weight) in [("m12", 20), ("m13", 40)] {
-        transport.weight.store(weight, Ordering::SeqCst);
+    // Each input fits; their retained pair exceeds the window. Actual input
+    // bytes drive both local admission bounds and the remote count, so the
+    // overflow remains reachable when no count request is necessary.
+    let pressure = "x".repeat(CONTEXT_TOKENS as usize * 3 / 5);
+    for name in ["m12", "m13"] {
         transport
             .state
             .lock()
@@ -556,11 +548,7 @@ async fn run(adapter: Adapter, path: &'static str, family: &str, messages: &[u8]
             .1
             .extend([program(name, "3 + 3"), text("filled")]);
         agents
-            .send(
-                &root,
-                &user(),
-                &message(&root, name, "Fill the window").await?,
-            )
+            .send(&root, &user(), &message(&root, name, &pressure).await?)
             .await?;
         agents.drain(&root).await?;
     }

@@ -156,6 +156,12 @@ async fn refresh_pair(broken: bool, status: u16) -> Result<()> {
     assert!(right.as_mut().now_or_never().is_none());
     release.send(()).expect("refresh response remains owned");
     let (left, right) = futures::join!(left, right);
+    let requests = transport
+        .sent
+        .lock()
+        .map_err(|_| invalid("fixture poisoned"))?;
+    // Observe endpoint ownership before a losing publication can fail as well.
+    assert_eq!(requests.len(), 1, "two refreshes raced");
     if status == 200 {
         assert_eq!(left?, right?);
     } else {
@@ -164,11 +170,6 @@ async fn refresh_pair(broken: bool, status: u16) -> Result<()> {
         assert_eq!(left.to_string(), right.to_string());
         assert!(left.to_string().contains(&status.to_string()));
     }
-    let requests = transport
-        .sent
-        .lock()
-        .map_err(|_| invalid("fixture poisoned"))?;
-    assert_eq!(requests.len(), 1, "two refreshes raced");
     assert_eq!(requests[0].url, "https://auth.openai.com/oauth/token");
     assert_eq!(
         crate::json(&requests[0].body)?["refresh_token"],

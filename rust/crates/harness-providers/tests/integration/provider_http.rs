@@ -99,16 +99,16 @@ impl Recorded {
         if request.url.ends_with("/count") {
             return Ok((200, Bytes::from_static(br#"{"input_tokens":32}"#), false));
         }
+        state.sent.push(Sent {
+            url: request.url,
+            body: request.body,
+        });
         let bytes = self
             .replies
             .get(state.next)
             .cloned()
             .ok_or_else(|| Error::Invalid("recorded HTTP exhausted".into()))?;
         state.next += 1;
-        state.sent.push(Sent {
-            url: request.url,
-            body: request.body,
-        });
         Ok(bytes)
     }
     /// The reply in `width`-byte chunks; a stalled reply then stays silent forever.

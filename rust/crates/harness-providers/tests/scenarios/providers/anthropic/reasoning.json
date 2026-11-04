@@ -23,10 +23,7 @@
             "text":"think",
             "origin":{
               "provider":"anthropic","model":"model",
-              "credential_scope":[
-                165,54,146,128,221,54,244,197,34,106,51,104,235,128,181,88,70,2,158,12,6,66,99,228,
-                126,168,154,34,239,230,242,214
-              ]
+              "credential_scope":null
             },
             "continuity":[
               123,34,116,121,112,101,34,58,34,116,104,105,110,107,105,110,103,34,44,34,116,104,105,110,
@@ -36,6 +33,7 @@
             "outcome":"preserved-readable"
           }
         },
+        {"kind":"text_part","text":"hé🦀"},
         {"kind":"completed","metadata":{"usage":{"input_tokens":5,"output_tokens":1}}}
       ]
     ]

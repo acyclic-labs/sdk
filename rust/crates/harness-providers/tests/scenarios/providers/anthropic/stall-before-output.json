@@ -1,0 +1,18 @@
+{
+ "stalls": [
+  0
+ ],
+ "responses": [
+  [
+   "data: {\"type\":\"message_start\",\"message\":{\"id\":\"run\",\"usage\":{\"input_tokens\":5}}}\n\n"
+  ]
+ ],
+ "expect": {
+  "outcome": "failed",
+  "text": "",
+  "events": [[]],
+  "requests": [
+   {}
+  ]
+ }
+}

@@ -13,6 +13,7 @@
       [
         {"kind":"content","delta":"hé"},
         {"kind":"content","delta":"🦀"},
+        {"kind":"text_part","text":"hé🦀"},
         {"kind":"completed","metadata":{"usage":{"promptTokenCount":5,"candidatesTokenCount":1}}}
       ]
     ],

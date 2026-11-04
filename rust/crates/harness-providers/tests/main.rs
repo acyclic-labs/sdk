@@ -19,8 +19,6 @@ mod local_workspace;
 mod matchers;
 #[path = "integration/mcp_identity.rs"]
 mod mcp_identity;
-#[path = "../../harness/tests/support/ordered_matcher.rs"]
-mod ordered_matcher;
 #[path = "integration/prefix_cache.rs"]
 mod prefix_cache;
 #[path = "../../harness/tests/support/progress_guard.rs"]

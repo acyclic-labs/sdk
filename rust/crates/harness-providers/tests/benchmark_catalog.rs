@@ -8,7 +8,7 @@ use std::{collections::BTreeMap, process::Command};
 fn generated_benchmark_catalog_loads_and_old_incomplete_features_fail()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = acyclic_test_support::source_path("");
-    let output = Command::new("python3")
+    let output = Command::new(if cfg!(windows) { "python" } else { "python3" })
         .args([
             "-c",
             "import json; from scripts.benchmarks.contracts import catalog; \

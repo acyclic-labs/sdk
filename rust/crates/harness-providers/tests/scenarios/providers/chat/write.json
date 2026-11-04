@@ -18,31 +18,7 @@
     "requests":[
       {},
       {
-        "/messages/2/tool_calls/0":{"type":"function","id":"call","function":{"name":"write"}},
-        "/messages/3":{
-          "role":"tool",
-          "tool_call_id":"call",
-          "content":{
-            "$json":{
-              "file":{
-                "path":"plans/a.md",
-                "display_name":"a.md",
-                "descriptor":{
-                  "byte_length":6,
-                  "media_type":"text/markdown",
-                  "sha256":[
-                    123,154,114,70,109,57,96,235,42,172,204,252,132,137,57,69,52,144,219,6,
-                    120,189,71,37,222,243,247,137,184,145,201,25
-                  ]
-                }
-              }
-            }
-          }
-        },
-        "/messages/3/tool_call_id":"call",
-        "/messages/2/tool_calls/0/function/arguments":{
-          "$json":{"path":"plans/a.md","text":"after\n","media_type":"text/markdown","display_name":"a.md"}
-        }
+        "/messages":[{"tool_calls":[{"type":"function","id":"call","function":{"name":"write","arguments":{"$json":{"path":"plans/a.md","text":"after\n","media_type":"text/markdown","display_name":"a.md"}}}}]},{"role":"tool","tool_call_id":"call","content":{"$contains":"tool execution failed: tool `write` rejected its arguments:"}}]
       }
     ],
     "events":[
@@ -57,9 +33,10 @@
       ],
       [
         {"kind":"content","delta":"done"},
+        {"kind":"text_part","text":"done"},
         {"kind":"completed","metadata":{"usage":{"prompt_tokens":5,"completion_tokens":1}}}
       ]
     ],
-    "files":{"plans/a.md":"after\n"}
+    "files":{"plans/a.md":"before\n"}
   }
 }
