@@ -119,9 +119,11 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
         } else {
             caller.cancel();
         }
-        // The original lease producer releases this exact queued read.
+        let std::task::Poll::Ready(result) = futures::poll!(future.as_mut()) else {
+            panic!("a cancelled read still waits for the spill lease");
+        };
+        drop(future);
         drop(spill_file);
-        let result = future.await;
         if exit == 2 {
             assert!(matches!(
                 result,
@@ -296,8 +298,11 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
             } else {
                 original_token.cancel();
             }
+            let std::task::Poll::Ready(result) = futures::poll!(future.as_mut()) else {
+                panic!("a cancelled mixed batch still waits for the spill lease");
+            };
+            drop(future);
             drop(spill_file);
-            let result = future.await;
             if exit == 1 {
                 assert!(matches!(result, Err(ObjectStoreError::Cancelled)));
             } else {
