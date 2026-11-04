@@ -92,6 +92,13 @@ pub(super) fn exercise(bytes: &[u8]) {
     mcp::check(bytes);
     model::check(bytes);
     selection::inactive(bytes);
+    #[cfg(any(
+        not(test),
+        all(
+            feature = "filesystem-local",
+            any(feature = "mcp-stdio", feature = "mcp-http")
+        )
+    ))]
     selection::partial(bytes);
     let (&role, document) = bytes.split_first().unwrap_or((&0, &[]));
     let files = Files::new();
