@@ -37,7 +37,7 @@ impl HeldRoot {
     {
         let mut work = crate::native_host::ordinary_work();
         let (mut reader, _allocation) =
-            crate::native_host::read_names_held(&self.root.directory, &mut work)?;
+            crate::native_host::read_names_held(&self.root.directory(), &mut work)?;
         let mut ended = false;
         Ok(std::iter::from_fn(move || {
             if ended {
