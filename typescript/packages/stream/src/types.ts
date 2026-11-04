@@ -23,6 +23,7 @@ import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import type { TokenOperation } from "./token-operations.js";
 import type { StreamErrorCode as RustStreamErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 export type { TokenOperation } from "./token-operations.js";
+export { TOKEN_AUTHORIZATION } from "./token-operations.js";
 
 type PublicWire<Wire, Overrides extends object = object, Omitted extends keyof Wire = never> =
   Readonly<Omit<Wire, "$typeName" | "$unknown" | keyof Overrides | Omitted> & Overrides>;
