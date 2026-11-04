@@ -100,7 +100,8 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
     let cleaned = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let worker_cleaned = Arc::clone(&cleaned);
     let destination = scratch.destination.clone();
-    let mut cancelled = Box::pin(native_scope(mounts, async |claims| {
+    let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::seeded(71);
+    let mut cancelled = Box::pin(schedule.scope(native_scope(mounts, async |claims| {
         tokio::task::spawn_blocking(move || {
             write_projected(&destination.join("data"), b"unverified").unwrap();
             started.send(()).unwrap();
@@ -113,12 +114,20 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
         // No verification and no successful return: losing the capture waiter
         // leaves claims in the worker until its physical cleanup completes.
         Err::<((), Claims), _>(Error::Conflict("unverified worker".into()))
-    }));
-    tokio::select! {
-        started = began => started.map_err(storage)?,
-        result = &mut cancelled => panic!("worker did not remain active: {result:?}"),
+    })));
+    let mut began = std::pin::pin!(began);
+    loop {
+        tokio::select! {
+            started = &mut began => {
+                started.map_err(storage)?;
+                break;
+            },
+            result = &mut cancelled => panic!("worker did not remain active: {result:?}"),
+            boundary = boundaries.recv() => boundary.unwrap().release(),
+        }
     }
     drop(cancelled);
+    let before_cleanup = schedule.trace().len();
     let mut preflight = Box::pin(sync(mounts));
     assert!(
         futures::poll!(&mut preflight).is_pending(),
@@ -140,7 +149,26 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
         "next command entered before physical cleanup"
     );
     release.send(()).map_err(storage)?;
-    next.await?;
+    let mut completed = Box::pin(async {
+        next.await?;
+        schedule.drained().await;
+        Ok::<_, Error>(())
+    });
+    loop {
+        tokio::select! {
+            result = &mut completed => {
+                result?;
+                break;
+            },
+            boundary = boundaries.recv() => boundary.unwrap().release(),
+        }
+    }
+    assert!(
+        schedule.trace()[before_cleanup..]
+            .iter()
+            .any(|event| event == "task:dispatch"),
+        "physical cleanup escaped its original task scope"
+    );
     assert_eq!(published(scratch, "/data").await?, b"next verified");
     assert!(scratch.native().await.is_none());
     assert!(!scratch.destination.exists());

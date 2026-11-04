@@ -507,38 +507,11 @@ impl Owner {
             Ok::<_, std::io::Error>(owner_record::SecretBytes(parts.concat()))
         })
         .map_err(storage)?;
-        let write = |file: &mut fs::File| -> std::io::Result<()> {
-            #[cfg(test)]
-            {
-                let half = bytes.0.len() / 2;
-                acyclic_native_runtime::write_file_all(file, &bytes.0[..half])?;
-                publication::step(1)?;
-                acyclic_native_runtime::write_file_all(file, &bytes.0[half..])
-            }
-            #[cfg(not(test))]
-            acyclic_native_runtime::write_file_all(file, &bytes.0)
-        };
-        // Negative control alone recreates the old torn-publication mechanism.
-        #[cfg(test)]
-        if publication::torn() {
-            let mut file = private_file::create(path).map_err(storage)?;
-            publication::step(0).map_err(storage)?;
-            write(&mut file).map_err(storage)?;
-            return Ok(true);
-        }
+        let write = |file: &mut fs::File| acyclic_native_runtime::write_file_all(file, &bytes.0);
         let observe = |stage| {
             if let Some(key) = signing_key {
                 key.observe_publication(stage);
             }
-            #[cfg(test)]
-            publication::step(match stage {
-                private_file::PublicationStage::Created => 0,
-                private_file::PublicationStage::Synced => 2,
-                private_file::PublicationStage::Published => 3,
-                private_file::PublicationStage::Installed => return Ok(()),
-            })?;
-            #[cfg(not(test))]
-            let _ = stage;
             Ok(())
         };
         match mode {
@@ -550,42 +523,5 @@ impl Owner {
             }
         }
         .map_err(storage)
-    }
-}
-
-/// Simulated kills at each durable step of owner publication.
-#[cfg(test)]
-pub(super) mod publication {
-    use std::cell::Cell;
-
-    /// The steps a kill can follow: created, half written, synced, renamed.
-    pub(in crate::local) const STEPS: usize = 4;
-    const KILLED: &str = "killed during owner publication";
-
-    thread_local! {
-        static KILL_AT: Cell<Option<usize>> = const { Cell::new(None) };
-        static TORN: Cell<bool> = const { Cell::new(false) };
-    }
-
-    /// Kills the next publication on this thread after `step`.
-    pub(in crate::local) fn kill_at(step: Option<usize>) {
-        KILL_AT.with(|kill| kill.set(step));
-    }
-
-    /// Negative control: publish by writing the record in place.
-    pub(in crate::local) fn tear(torn: bool) {
-        TORN.with(|flag| flag.set(torn));
-    }
-
-    pub(super) fn torn() -> bool {
-        TORN.with(Cell::get)
-    }
-
-    pub(super) fn step(step: usize) -> std::io::Result<()> {
-        if KILL_AT.with(Cell::get) == Some(step) {
-            KILL_AT.with(|kill| kill.set(None));
-            return Err(std::io::Error::other(KILLED));
-        }
-        Ok(())
     }
 }
