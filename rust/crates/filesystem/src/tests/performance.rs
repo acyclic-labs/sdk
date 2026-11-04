@@ -199,8 +199,8 @@ proptest::proptest! {
             // errors and their priority against an independent field oracle.
             let mut below = sum;
             let field = selected.min(23);
-            let limit = counter_fields(&mut below)[field];
-            *limit = limit.saturating_sub(1);
+            let mut limits = counter_fields(&mut below);
+            *limits[field] = limits[field].saturating_sub(1);
             for budget in [WorkBudget::UNBOUNDED, make(maxima), sum, below] {
                 let admitted = expected.and_then(|sum| sum.verify(budget).map(|()| sum));
                 proptest::prop_assert_eq!(prior.admit(&delta, &budget), admitted.map(|_| ()));
