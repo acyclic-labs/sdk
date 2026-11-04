@@ -29,6 +29,8 @@ type MemoryHost =
     FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
 
 struct Fixture {
+    #[cfg(feature = "hosting")]
+    filesystem: Fs<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>,
     _issuer: AuthorityRoot,
     host: Arc<MemoryHost>,
     root: ContextRoot,
@@ -232,7 +234,8 @@ async fn publication_replay_hashing_does_not_allocate_an_encoded_copy() -> Resul
 impl Fixture {
     async fn new() -> Result<Self> {
         let provider = ProviderRef::new("diff".into(), "filesystem".into(), "2".into(), &mut None)?;
-        let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+        let filesystem = Fs::memory();
+        let host = FilesystemHost::new(filesystem.clone(), &provider, None)?;
         let agent = AgentId::from_bytes([1; 16]);
         let volume = VolumeRef::new(
             provider,
@@ -276,6 +279,8 @@ impl Fixture {
         #[cfg(not(feature = "hosting"))]
         let _ = files;
         Ok(Self {
+            #[cfg(feature = "hosting")]
+            filesystem,
             _issuer: issuer,
             host,
             root: ContextRoot {
@@ -662,6 +667,98 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
         ),
         "retained diff pages require the requesting reader's authority"
     );
+    Ok(())
+}
+
+/// Range writes can restore identical bytes with a different chunk layout.
+/// Equality must spend the same input allowance as a changed file; otherwise
+/// a small page silently compares arbitrarily large restored files first.
+#[cfg(all(feature = "hosting", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn workspace_diff_admits_range_restoration_before_reading_content() -> Result<()> {
+    use acyclic_fs::{CancellationToken, PublicationPermit, WorkBudget, WorkspaceError};
+    use acyclic_harness::{client::AgentPageRequest, hosting::DiffPages};
+    let fixture = Fixture::new().await?;
+    let volume = &fixture.root.volume;
+    let cancel = CancellationToken::new();
+    let work = WorkBudget::UNBOUNDED;
+    let workspace = fixture
+        .filesystem
+        .open_workspace(volume.storage_name(&mut None)?, work, &cancel)
+        .await
+        .expect("existing workspace")
+        .value;
+    for length in [4096, 65_537] {
+        let text = "x".repeat(length);
+        fixture
+            .put("restored.txt", &text, &format!("seed-{length}"))
+            .await?;
+        let base = fixture.source("restored.txt").await?.generation;
+        let mut transaction = workspace
+            .begin_transaction(acyclic_fs::IdempotencyKey::new(), work, &cancel)
+            .await
+            .expect("range transaction")
+            .value;
+        transaction
+            .write_range(
+                "/restored.txt",
+                1,
+                text.as_bytes()[1..length - 1].to_vec(),
+                work,
+                &cancel,
+            )
+            .await
+            .expect("original range write");
+        transaction
+            .commit::<WorkspaceError, _, _>(
+                None,
+                PublicationPermit::Unrestricted,
+                work,
+                &cancel,
+                |_| async {
+                    Ok(acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: Default::default(),
+                    })
+                },
+            )
+            .await
+            .expect("range publication");
+        let current = fixture.source("restored.txt").await?.generation;
+        let pages = DiffPages::default();
+        let omitted = pages
+            .page(
+                &fixture.files,
+                volume,
+                (&base, &current),
+                &AgentPageRequest::new(128, 2048, None).expect("small page"),
+            )
+            .await?;
+        assert_eq!(
+            omitted.len(),
+            1,
+            "content equality bypassed the page allowance"
+        );
+        assert_eq!(omitted[0].omitted_bytes, Some(length as u64));
+        assert!(omitted[0].patch.is_empty());
+        let funded = pages
+            .page(
+                &fixture.files,
+                volume,
+                (&base, &current),
+                &AgentPageRequest::new(128, 64 * 1024, None).expect("funded page"),
+            )
+            .await?;
+        if length <= 64 * 1024 {
+            assert!(
+                funded.is_empty(),
+                "funded equality must ignore chunk layout"
+            );
+        } else {
+            assert_eq!(funded.len(), 1, "file read cap must precede equality");
+            assert_eq!(funded[0].omitted_bytes, Some(length as u64));
+        }
+    }
     Ok(())
 }
 

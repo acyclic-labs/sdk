@@ -78,3 +78,17 @@ after the real source refuses its before-image and before continuity is
 recovered. Reverse the production patch and require the same test to pass,
 including the exact empty diff after a complete baseline is retained.
 A compilation or setup failure does not qualify the mutation.
+
+`diff-eager-content-comparison.patch` restores the former unbounded content
+comparison before the consumer's input allowance. Apply it and run:
+
+```sh
+cargo nextest run --locked -p acyclic-harness --features hosting,test-support --test main -E 'test(workspace_diff_admits_range_restoration_before_reading_content)'
+```
+
+The unchanged test must fail at `content equality bypassed the page allowance`.
+The original filesystem range-write entry point restores equal bytes with a
+different payload layout. Insufficient credit must retain an explicit omission;
+sufficient credit establishes equality only below the file read cap. Reverse
+the production patch and require the same test to pass. A compilation or setup
+failure does not qualify the mutation.

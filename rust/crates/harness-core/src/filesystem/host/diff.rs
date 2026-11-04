@@ -6,11 +6,12 @@ use acyclic_fs::{access::Action, kernel::FileRecord};
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// The complete exact-path publication of `volume`'s changes from the fork
-    /// `base` to `current`: every regular file whose content differs, with
+    /// `base` to `current`: every regular file whose payload may differ, with
     /// each existing endpoint pinned and its largest length. Equal Merkle
-    /// subtrees are never traversed, and equal content is certified
-    /// independently of chunk layout, so a file restored to its base bytes or
-    /// changed only in metadata is not published. A path is disclosed only
+    /// subtrees are never traversed. Equal payload identities exclude metadata
+    /// changes without reading content. Different layouts may hold equal bytes;
+    /// the consumer compares those only within its content allowance, retaining
+    /// an explicit omission when it cannot establish equality. A path is disclosed only
     /// when `grant` and each owner's current policy let the caller list it at
     /// the generation that holds it; internal paths never are.
     pub async fn diff_publication(
@@ -58,19 +59,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             {
                 continue;
             }
-            if was.is_some()
-                && is.is_some()
-                && io.sdk(
-                    after
-                        .generation
-                        .matches_content(
-                            &before.generation,
-                            &format!("/{path}"),
-                            &io,
-                            io.cancellation(),
-                        )
-                        .await,
-                )?
+            if was
+                .zip(is)
+                .is_some_and(|(was, is)| was.payload == is.payload)
             {
                 continue;
             }
