@@ -71,6 +71,7 @@ fn cancelled_custody_transfer_preserves_the_current_owner() -> Result<()> {
 
 #[test]
 fn original_index_custody_survives_issuer_drop_and_refused_mutation() -> Result<()> {
+    use crate::wire_codec::{OwnedIndexAllocation, OwnedIndexWork};
     use acyclic_collections::FixedIndex;
 
     let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
@@ -80,8 +81,8 @@ fn original_index_custody_survives_issuer_drop_and_refused_mutation() -> Result<
         unreachable!("standalone constructor")
     };
     let original = Arc::clone(work);
-    let mut index = FixedIndex::<u64, PreparationCustody>::default();
-    index.get_or_try_insert_with([0; 16], &mut &io, |_| Ok(7))?;
+    let mut index = FixedIndex::<u64, OwnedIndexAllocation>::default();
+    index.get_or_try_insert_with([0; 16], &mut OwnedIndexWork(Some(&io)), |_| Ok(7))?;
     assert_eq!(io.owned_bytes()?, 0);
     let retained = original.lock().unwrap().1.as_ref().unwrap().live_bytes();
     assert!(retained > 0);
@@ -98,10 +99,11 @@ fn original_index_custody_survives_issuer_drop_and_refused_mutation() -> Result<
             &cancellation,
         )?;
         let mut constructed = false;
-        let refused = index.get_or_try_insert_with([255; 16], &mut &attempt, |_| {
-            constructed = true;
-            Err(Error::Invalid("original constructor refusal".into()))
-        });
+        let refused =
+            index.get_or_try_insert_with([255; 16], &mut OwnedIndexWork(Some(&attempt)), |_| {
+                constructed = true;
+                Err(Error::Invalid("original constructor refusal".into()))
+            });
         assert!(refused.is_err());
         assert_eq!(constructed, allocations == 2);
         assert_eq!(attempt.owned_bytes()?, 0);
@@ -116,8 +118,14 @@ fn original_index_custody_survives_issuer_drop_and_refused_mutation() -> Result<
     }
 
     let reader = PreparationIo::from_budget(budget, &cancellation)?;
-    assert_eq!(index.get([0; 16], &mut &reader)?, Some(&7));
-    assert_eq!(index.get([255; 16], &mut &reader)?, None);
+    assert_eq!(
+        index.get([0; 16], &mut OwnedIndexWork(Some(&reader)))?,
+        Some(&7)
+    );
+    assert_eq!(
+        index.get([255; 16], &mut OwnedIndexWork(Some(&reader)))?,
+        None
+    );
     assert_eq!(reader.receipt().allocation_operations, 0);
     let exhausted = PreparationIo::from_budget(
         WorkBudget {
@@ -126,10 +134,18 @@ fn original_index_custody_survives_issuer_drop_and_refused_mutation() -> Result<
         },
         &cancellation,
     )?;
-    assert!(index.get([0; 16], &mut &exhausted).is_err());
+    assert!(
+        index
+            .get([0; 16], &mut OwnedIndexWork(Some(&exhausted)))
+            .is_err()
+    );
     assert_eq!(exhausted.receipt().items_examined, 0);
     cancellation.cancel();
-    assert!(index.get([0; 16], &mut &reader).is_err());
+    assert!(
+        index
+            .get([0; 16], &mut OwnedIndexWork(Some(&reader)))
+            .is_err()
+    );
     let before = reader.receipt();
     drop(index);
     assert_eq!(reader.receipt(), before);
@@ -143,9 +159,11 @@ fn original_index_custody_survives_issuer_drop_and_refused_mutation() -> Result<
         let baseline = native.live_allocation_bytes();
         let io = PreparationIo::from_native_work(&native)?;
         let before = native.receipt().allocation_operations;
-        let mut index = FixedIndex::<u64, PreparationCustody>::default();
+        let mut index = FixedIndex::<u64, OwnedIndexAllocation>::default();
         for key in 0..3 {
-            index.get_or_try_insert_with([key; 16], &mut &io, |_| Ok(u64::from(key)))?;
+            index.get_or_try_insert_with([key; 16], &mut OwnedIndexWork(Some(&io)), |_| {
+                Ok(u64::from(key))
+            })?;
         }
         assert_eq!(native.receipt().allocation_operations - before, 5);
         drop(io);
@@ -153,7 +171,7 @@ fn original_index_custody_survives_issuer_drop_and_refused_mutation() -> Result<
         let reader = PreparationIo::from_native_work(&native)?;
         cancellation.cancel();
         assert!(matches!(
-            index.get([0; 16], &mut &reader),
+            index.get([0; 16], &mut OwnedIndexWork(Some(&reader))),
             Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
                 ..
