@@ -2,20 +2,21 @@ import assert from "node:assert/strict";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { grpcFixture, tlsIdentity } from "./session-grpc-fixture.js";
 
-const broken = process.env.STREAM_SESSION_FAULT === "aliases";
+const fault = process.env.STREAM_SESSION_FAULT;
 const observed: unknown[] = [];
 Reflect.set(globalThis, "captureSessionError", (error: { code?: unknown }) => observed.push(error.code));
 if (process.versions.bun) {
-const { plugin } = await import("bun");
-plugin({ name: "session-error-vocabulary", setup(build) {
-  build.onLoad({ filter: /[\\/]src[\\/]grpc\.ts$/ }, async args => {
-    const source = await Bun.file(args.path).text();
-    const needle = "throw sessionTransportError(error);";
-    assert(source.includes(needle), "canonical error probe no longer matches");
-    const expression = broken ? 'providerError(error, "session")' : "sessionTransportError(error)";
-    return { contents: source.replace(needle, `const failure = ${expression}; Reflect.get(globalThis, "captureSessionError")(failure); if (Reflect.get(globalThis, "capturePhysicalError")) Reflect.get(globalThis, "capturePhysicalError")(error); throw failure;`), loader: "ts" };
-  });
-} });
+  const { plugin } = await import("bun");
+  plugin({ name: "session-error-vocabulary", setup(build) {
+    build.onLoad({ filter: /[\\/]src[\\/]grpc\.ts$/ }, async args => {
+      const source = await Bun.file(args.path).text();
+      const needle = "throw sessionTransportError(error);";
+      assert(source.includes(needle), "canonical error probe no longer matches");
+      const expression = fault === "aliases" ? 'providerError(error, "session")'
+        : fault === "disposition" ? 'Object.assign(sessionTransportError(error), { transient: false })' : "sessionTransportError(error)";
+      return { contents: source.replace(needle, `const failure = ${expression}; Reflect.get(globalThis, "captureSessionError")(failure); if (Reflect.get(globalThis, "capturePhysicalError")) Reflect.get(globalThis, "capturePhysicalError")(error); throw failure;`), loader: "ts" };
+    });
+  } });
 }
 const { GrpcStreamProvider } = await import("../src/grpc.js");
 const { StreamError } = await import("../src/types.js");
@@ -39,6 +40,7 @@ const statuses = {
   unavailable: [Code.Unavailable, "offline"],
   hierarchy_changed: [Code.FailedPrecondition, "hierarchy_changed"],
   deadline_elapsed: [Code.FailedPrecondition, "deadline_elapsed"],
+  revision_foreign: [Code.FailedPrecondition, "revision_foreign"],
   unsupported: [Code.Unimplemented, "unsupported_capability"],
 } satisfies Record<StreamErrorCode, readonly [Code, string]>;
 const codes = streamErrorCodes();

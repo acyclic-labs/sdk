@@ -9,7 +9,8 @@ test("Node gRPC resumes original follows after physical HTTP/2 loss", async () =
   const output = new URL("./session-error-driver.node.mjs", import.meta.url);
   try {
     // Compile only the existing fixture. Node loads the shipped product modules.
-    const built = await Bun.build({ entrypoints: [fileURLToPath(entry)], outfile: fileURLToPath(output),
+    const built = await Bun.build({ entrypoints: [fileURLToPath(entry)], outdir: fileURLToPath(new URL(".", import.meta.url)),
+      naming: "session-error-driver.node.mjs",
       target: "node", packages: "external", plugins: [{ name: "shipped-stream", setup(build) {
         build.onResolve({ filter: /(?:^|\/)\.\.\/(?:src|generated)\// }, args => ({
           path: resolve(args.resolveDir, args.path.replace("/src/", "/dist/")), external: true,
@@ -24,16 +25,19 @@ test("Node gRPC resumes original follows after physical HTTP/2 loss", async () =
   } finally { await unlink(output).catch(error => { if (error.code !== "ENOENT") throw error; }); }
 });
 
-for (const broken of [false, true]) {
-  test(broken ? "negative control rejects public aliases entering Rust Session I/O" : "every Rust error code round-trips through TLS gRPC and WASM Session I/O", () => {
+for (const fault of ["", "aliases", "disposition"]) {
+  test(fault === "aliases" ? "negative control rejects public aliases entering Rust Session I/O"
+    : fault === "disposition" ? "negative control detects lost physical reconnect disposition"
+    : "every Rust error code round-trips through TLS gRPC and WASM Session I/O", () => {
     const child = spawnSync("bun", [fileURLToPath(new URL("./session-error-driver.ts", import.meta.url))], {
-      env: { ...process.env, STREAM_SESSION_FAULT: broken ? "aliases" : "" },
+      env: { ...process.env, STREAM_SESSION_FAULT: fault },
       encoding: "utf8", windowsHide: true,
     });
     expect(child.error).toBeUndefined();
-    if (broken) {
+    if (fault) {
       expect(child.status).not.toBe(0);
-      expect(child.stderr).toContain("JS transport must emit canonical Rust code: invalid_response");
+      expect(child.stderr).toContain(fault === "aliases" ? "JS transport must emit canonical Rust code: invalid_response"
+        : "physical connection loss ended the original follows");
     } else {
       if (child.status !== 0) throw new Error(child.stderr || child.stdout);
       const result = JSON.parse(child.stdout);
