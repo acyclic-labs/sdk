@@ -139,6 +139,27 @@ async fn an_upload_retry_naming_other_content_is_refused()
                     .await,
                 Err(Error::Unauthorized(_))
             ));
+            for (reference, bound) in [(&file, true), (&forged, false)] {
+                let (release, delivered) = tokio::sync::oneshot::channel();
+                *read_cut.delivery.lock().expect("read delivery") = Some(delivered);
+                let (failed, failure) = tokio::sync::oneshot::channel();
+                *read_cut.failure.lock().expect("content failure") = Some(failed);
+                let read =
+                    binding.read(reference, reference.descriptor().byte_length(), None, None)?;
+                futures::pin_mut!(read);
+                match futures::future::select(read.as_mut(), failure).await {
+                    futures::future::Either::Right((Ok(()), _)) => {}
+                    _ => panic!("content failure escaped before binding delivery"),
+                }
+                assert!(futures::poll!(read.as_mut()).is_pending());
+                release
+                    .send(())
+                    .map_err(|()| "the original binding receiver was dropped")?;
+                match (bound, read.await) {
+                    (true, Err(Error::Storage(_))) | (false, Err(Error::Unauthorized(_))) => {}
+                    _ => panic!("binding must determine whether a content failure is disclosed"),
+                }
+            }
             let (release, delivered) = tokio::sync::oneshot::channel();
             *read_cut.delivery.lock().expect("read delivery") = Some(delivered);
             drop(release);
@@ -193,6 +214,7 @@ struct LocalCell {
 #[derive(Default)]
 struct ReadCut {
     delivery: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    failure: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     requests: std::sync::atomic::AtomicUsize,
 }
 
@@ -212,12 +234,22 @@ impl acyclic_objects::binary::Transport for LocalCell {
                 .then(|| cut.delivery.lock().expect("read delivery").take())
                 .flatten()
         });
-        let (body, revision) =
-            acyclic_objects::route::invoke_at(self.account.as_ref(), route, input).await?;
+        let failure = self.read_cut.as_ref().and_then(|cut| {
+            (route == "blobs/get")
+                .then(|| cut.failure.lock().expect("content failure").take())
+                .flatten()
+        });
+        let result = acyclic_objects::route::invoke_at(self.account.as_ref(), route, input).await;
         if let Some(delivery) = delivery {
             delivery.await.map_err(|_| {
                 acyclic_objects::Error::from(acyclic_objects::wire::ErrorCode::Unavailable)
             })?;
+        }
+        let (body, revision) = result?;
+        if let Some(failure) = failure {
+            // Lose the actual content reply while its binding reply is held.
+            let _ = failure.send(());
+            return Err(acyclic_objects::wire::ErrorCode::Unavailable.into());
         }
         if route == "blobs/retain"
             && self
