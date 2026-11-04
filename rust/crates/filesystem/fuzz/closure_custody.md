@@ -164,8 +164,10 @@ residency is reconstructed from counters or claimed a second time.
 
 `owned_cache_batches_preserve_original_funding_at_every_capacity` uses the
 shipped local object provider with empty, full and partially occupied caches.
+The full-cache case first persists and reads 4,096 distinct canonical chunks,
+then batches uncached owned reads after confirming all 4,096 entries are resident.
 It checks exact batch, cached-payload and single-page retirement while an
-independent allocation stays live. Apply
+independent physical buffer stays live. Apply
 `mutations/operation_cache_original_custody.patch` to replace the cache miss's
 frame with a separate ledger and transfer only counters. The real owned-read
 relation must reject the missing original funding. Restore the patch before
