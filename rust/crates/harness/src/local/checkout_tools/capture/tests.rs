@@ -168,92 +168,99 @@ async fn run(tools: &CheckoutTools, slot: &mut Option<Cursor>) -> Result<()> {
 
 #[tokio::test]
 async fn cursor_custody_follows_actual_capture_admission() -> Result<()> {
-    let (_directory, harness, tools) = fixture().await?;
-    for boundary in [0, 1] {
-        for producer_lost in [false, true] {
-            // Each interruption gets a fresh cursor and current head, then
-            // recovers on the same physical workspace before the next case.
-            let mut slot = Some(Cursor::initial(&tools.workspace, &tools.capture_policy)?);
-            let workspace = tools.workspace.view().workspace();
-            let cancellation = CancellationToken::new();
-            let original = workspace
+    let (directory, harness, tools) = fixture().await?;
+    for (boundary, producer_lost, expected) in [
+        (0, false, b"before".as_slice()),
+        (0, true, b"next-1".as_slice()),
+        (1, false, b"next-2".as_slice()),
+        (1, true, b"next-3".as_slice()),
+    ] {
+        // Recovery publishes each case's bytes. Later cases must change
+        // them so capture still reaches its real commit callback.
+        if boundary != 0 || producer_lost {
+            std::fs::write(directory.path().join("marker"), expected).map_err(storage)?;
+        }
+        // Each interruption gets a fresh cursor and current head.
+        let mut slot = Some(Cursor::initial(&tools.workspace, &tools.capture_policy)?);
+        let workspace = tools.workspace.view().workspace();
+        let cancellation = CancellationToken::new();
+        let original = workspace
+            .head(WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value
+            .id();
+        let calls = AtomicUsize::new(0);
+        let (arrived, arrival) = tokio::sync::oneshot::channel();
+        let (mut release, released) = tokio::sync::oneshot::channel();
+        let rendezvous = std::sync::Mutex::new(Some((arrived, released)));
+        let before_effect = || {
+            let rendezvous = if calls.fetch_add(1, Ordering::Relaxed) == boundary {
+                rendezvous.lock().unwrap().take()
+            } else {
+                None
+            };
+            async move {
+                if let Some((arrived, released)) = rendezvous {
+                    arrived.send(()).map_err(|_| {
+                        Error::Unauthorized("capture admission observer was dropped".into())
+                    })?;
+                    released.await.map_err(|_| {
+                        Error::Unauthorized("capture admission producer was dropped".into())
+                    })?;
+                }
+                Ok(())
+            }
+        };
+        let mut recording = Box::pin(record_changes(
+            (&tools.capture_options, &tools.capture_policy),
+            (&tools.workspace, tools.workspace.view()),
+            &mut slot,
+            (OperationId::new(), 0),
+            PublicationPermit::Unrestricted,
+            &before_effect,
+            None,
+        ));
+        // The original authorization callback announces its actual wait.
+        // Its producer is retained here, or withdrawn to refuse admission.
+        tokio::select! {
+            arrived = arrival => arrived.map_err(storage)?,
+            result = &mut recording => panic!("capture skipped admission boundary {boundary}: {result:?}"),
+        }
+        if producer_lost {
+            drop(release);
+            assert!(
+                recording.await.is_err(),
+                "lost admission producer was accepted"
+            );
+        } else {
+            drop(recording);
+            release.closed().await;
+        }
+        if boundary == 0 {
+            assert!(
+                slot.is_some(),
+                "capture consumed its cursor before admission"
+            );
+        } else {
+            assert!(
+                slot.is_none(),
+                "capture retained its cursor after consumed cancellation"
+            );
+        }
+        assert_eq!(
+            workspace
                 .head(WorkBudget::UNBOUNDED, &cancellation)
                 .await
                 .map_err(storage)?
                 .value
-                .id();
-            let calls = AtomicUsize::new(0);
-            let (arrived, arrival) = tokio::sync::oneshot::channel();
-            let (mut release, released) = tokio::sync::oneshot::channel();
-            let rendezvous = std::sync::Mutex::new(Some((arrived, released)));
-            let before_effect = || {
-                let rendezvous = if calls.fetch_add(1, Ordering::Relaxed) == boundary {
-                    rendezvous.lock().unwrap().take()
-                } else {
-                    None
-                };
-                async move {
-                    if let Some((arrived, released)) = rendezvous {
-                        arrived.send(()).map_err(|_| {
-                            Error::Unauthorized("capture admission observer was dropped".into())
-                        })?;
-                        released.await.map_err(|_| {
-                            Error::Unauthorized("capture admission producer was dropped".into())
-                        })?;
-                    }
-                    Ok(())
-                }
-            };
-            let mut recording = Box::pin(record_changes(
-                (&tools.capture_options, &tools.capture_policy),
-                (&tools.workspace, tools.workspace.view()),
-                &mut slot,
-                (OperationId::new(), 0),
-                PublicationPermit::Unrestricted,
-                &before_effect,
-                None,
-            ));
-            // The original authorization callback announces its actual wait.
-            // Its producer is retained here, or withdrawn to refuse admission.
-            tokio::select! {
-                arrived = arrival => arrived.map_err(storage)?,
-                result = &mut recording => panic!("capture skipped admission boundary {boundary}: {result:?}"),
-            }
-            if producer_lost {
-                drop(release);
-                assert!(
-                    recording.await.is_err(),
-                    "lost admission producer was accepted"
-                );
-            } else {
-                drop(recording);
-                release.closed().await;
-            }
-            if boundary == 0 {
-                assert!(
-                    slot.is_some(),
-                    "capture consumed its cursor before admission"
-                );
-            } else {
-                assert!(
-                    slot.is_none(),
-                    "capture retained its cursor after consumed cancellation"
-                );
-            }
-            assert_eq!(
-                workspace
-                    .head(WorkBudget::UNBOUNDED, &cancellation)
-                    .await
-                    .map_err(storage)?
-                    .value
-                    .id(),
-                original,
-                "an interrupted capture published its candidate"
-            );
-            run(&tools, &mut slot).await?;
-            assert_eq!(contents(&tools).await?, b"before");
-            drop(slot);
-        }
+                .id(),
+            original,
+            "an interrupted capture published its candidate"
+        );
+        run(&tools, &mut slot).await?;
+        assert_eq!(contents(&tools).await?, expected);
+        drop(slot);
     }
     drop(tools);
     harness.disconnect().await
