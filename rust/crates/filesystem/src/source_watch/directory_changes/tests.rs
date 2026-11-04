@@ -50,6 +50,8 @@ fn completion_thread_loss_wakes_active_and_late_waiters_without_retiring_pending
             );
             assert_eq!(reads.capacity(), capacity);
             assert!(!completion.retired(&reads));
+            assert!(matches!(completion.wait_for(|| Ok(false)),
+                Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::BrokenPipe));
         }
     });
     // The original waiter registration is the sole readiness producer.
@@ -99,11 +101,19 @@ fn assert_retired(shared: &Shared) {
     assert_eq!(shared.buffer_bytes.load(Ordering::Acquire), 0);
 }
 fn wait_retired(shared: &Shared) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !shared.stop_completed.load(Ordering::Acquire) && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    assert!(shared.stop_completed.load(Ordering::Acquire));
+    assert!(
+        shared
+            .wait_for(|| {
+                if shared.stop_completed.load(Ordering::Acquire) {
+                    Ok(true)
+                } else if shared.parked.load(Ordering::Acquire) {
+                    Err(DemandError::NativeWorkUnavailable)
+                } else {
+                    Ok(false)
+                }
+            })
+            .expect("original watch retires without losing its collector or cleanup work")
+    );
     assert_retired(shared);
 }
 fn record(extended: bool, action: u32, file: u64, name: &str, last: bool) -> Vec<u8> {

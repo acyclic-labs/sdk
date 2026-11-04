@@ -113,7 +113,7 @@ impl Drop for Ended {
         for &key in waiting().iter() {
             // SAFETY: a registered watch stays borrowed by its waiter, which
             // unregisters under this lock before the borrow ends.
-            unsafe { &*(key as *const Shared) }.collected();
+            unsafe { &*(key as *const Shared) }.notify_waiters();
         }
     }
 }
@@ -214,7 +214,7 @@ fn serve(port: HANDLE) {
             // names, taken by `retain_for_packet`.
             let shared = unsafe { Arc::from_raw(entry.lpCompletionKey as *const Shared) };
             // Removing the packet completed its read; waiters may go on.
-            shared.collected();
+            shared.notify_waiters();
             Shared::serve(shared);
         }
     }

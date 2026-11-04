@@ -17,7 +17,7 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, OwnedHandl
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 #[cfg(test)]
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_INVALID_FUNCTION, ERROR_IO_INCOMPLETE, ERROR_NOT_FOUND,
     ERROR_NOTIFY_ENUM_DIR, ERROR_OPERATION_ABORTED, HANDLE,
@@ -84,9 +84,9 @@ struct Shared {
     reads: Mutex<Reads>,
     /// The bytes of the read buffer this watch owns; zero once retired.
     buffer_bytes: AtomicU64,
-    /// Signalled each time the hub collects a packet for this watch, which
-    /// completes the read it names: a read's status and bytes land when the
-    /// port's thread removes its packet, not when the kernel finishes it.
+    /// Signalled when the hub collects a packet, retirement ends, or the
+    /// collector is lost. Read status lands when the port's thread removes
+    /// its packet, not when the kernel finishes it.
     arrived: Condvar,
     arrivals: Mutex<()>,
     /// The hub found the reads held; their holder wakes it on release.
@@ -213,10 +213,19 @@ impl Shared {
             reads: Some(reads),
         })
     }
-    /// The hub collected a packet for this watch.
-    fn collected(&self) {
+    /// Publishes a packet or terminal state to the original waiters.
+    fn notify_waiters(&self) {
         drop(self.arrivals.lock().unwrap_or_else(PoisonError::into_inner));
         self.arrived.notify_all();
+    }
+    /// Every physical retirement ends in one of these terminal states.
+    fn publish_retirement(&self, retired: bool) {
+        if retired {
+            self.stop_completed.store(true, Ordering::Release);
+        } else {
+            self.parked.store(true, Ordering::Release);
+        }
+        self.notify_waiters();
     }
     /// Waits until the hub has collected the pending read's completion.
     /// The hub itself cannot wait for its own collection: it answers false,
@@ -224,7 +233,15 @@ impl Shared {
     /// collect nothing more: the wait fails and the read stays pending, so
     /// its storage stays pinned.
     fn await_completion(&self, reads: &Reads) -> Result<bool, DemandError> {
-        if reads.collected() {
+        self.wait_for(|| Ok(reads.collected()))
+    }
+    /// The caller owns this watch's sole blocking wait. Its original
+    /// collector registration also wakes the wait on producer loss.
+    fn wait_for(
+        &self,
+        mut ready: impl FnMut() -> Result<bool, DemandError>,
+    ) -> Result<bool, DemandError> {
+        if ready()? {
             return Ok(true);
         }
         if hub::serving() {
@@ -232,7 +249,7 @@ impl Shared {
         }
         let _waiting = hub::Waiting::enter(self)?;
         let mut arrivals = self.arrivals.lock().unwrap_or_else(PoisonError::into_inner);
-        while !reads.collected() {
+        while !ready()? {
             if hub::lost() {
                 return Err(hub::lost_error());
             }
