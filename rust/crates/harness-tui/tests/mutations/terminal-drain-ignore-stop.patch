@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-tui/tests/terminal_frames.rs b/rust/crates/harness-tui/tests/terminal_frames.rs
+--- a/rust/crates/harness-tui/tests/terminal_frames.rs
++++ b/rust/crates/harness-tui/tests/terminal_frames.rs
+@@ -415,7 +415,7 @@
+                 match select(stopped.as_mut(), ready).await {
+                     // Dropping the fixture's sender is the stop event, including
+                     // when restoration retains the slave after a failure.
+-                    Either::Left(_) => return Ok(()),
++                    Either::Left((_, ready)) => ready.await.into_result()?,
+                     Either::Right((outcome, _)) => outcome.into_result()?,
+                 }
+             }
