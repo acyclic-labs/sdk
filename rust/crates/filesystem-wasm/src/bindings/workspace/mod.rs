@@ -344,17 +344,16 @@ impl BrowserWorkspace {
             || Ok(IdempotencyKey::new()),
             |value| fixed_16(&value).map(IdempotencyKey::from_bytes),
         )?;
-        let outcome = self
-            .engine
-            .live_rebase(
+        let outcome = sdk_value!(unbounded_future!(
+            self.engine,
+            live_rebase(
                 idempotency_key,
                 maximum_generations,
                 maximum_changes,
                 maximum_conflicts,
             )
-            .await
-            .map(browser_workspace_rebase_result)
-            .map_err(js_error)?;
+        ))
+        .map(browser_workspace_rebase_result)?;
         ts(outcome)
     }
 

@@ -209,7 +209,28 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
     }
 
     /// Rebases this fork onto its current source.
-    pub async fn live_rebase(
+    pub async fn live_rebase<W: crate::facade::FsWork>(
+        &self,
+        idempotency_key: IdempotencyKey,
+        maximum_generations: u32,
+        maximum_changes: u32,
+        maximum_conflicts: u32,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<WorkspaceRebase<A, O>, WorkspaceError> {
+        let accounting = work.accounting(cancellation);
+        let result = self
+            .live_rebase_result(
+                idempotency_key,
+                maximum_generations,
+                maximum_changes,
+                maximum_conflicts,
+            )
+            .await;
+        work.finish(result, &accounting)
+    }
+
+    async fn live_rebase_result(
         &self,
         idempotency_key: IdempotencyKey,
         maximum_generations: u32,

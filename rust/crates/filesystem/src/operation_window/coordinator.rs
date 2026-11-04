@@ -412,9 +412,12 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                     limits.maximum_generations,
                     limits.maximum_changes,
                     limits.maximum_conflicts,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
                 )
                 .await
-                .map_err(OperationWindowError::Workspace)?
+                .map_err(|failure| OperationWindowError::Workspace(failure.error))?
+                .value
         } else {
             let generation = workspace
                 .head(
