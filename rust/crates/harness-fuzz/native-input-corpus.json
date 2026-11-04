@@ -542,5 +542,29 @@
     "features": 15889,
     "platform": "Linux x86_64",
     "scope": "Production catalog admission from the shipping catalog and derived caller bytes in the existing native-input target. This is not complete branch coverage, full binary dispatch, owner effects, lifecycle, typed receiver or other-platform acceptance."
-  }
+  },
+  "binary_stdin_qualification": {
+  "result": "pass",
+  "source_commit": "6fb608543d9655ba71660cc4297a84837ab9f387",
+  "source_tree": "d95b22b8034c6cf5cbbe3e41b89b45d1c3acce22",
+  "source_content_sha256": "8bbc667129bedeccb9ef15f34193b1eeaf95c78d39109ad2d3552eb08df29996",
+  "source_sha256": {
+    "plugin/tests/native_input.rs": "86b78cc7df539131260ab77cbc339a65c0eef70f79b0d891a6803ee00ef93db5",
+    "plugin/tests/main.rs": "b0c944dbc2f69034d473ea1ab2afb7a58118ee8122f6b89896ec32681bf1071c",
+    "plugin/src/input.rs": "16457cff25395cd5ce57a0d63152b5834706f2068c0bae7ace0ff986710c3182",
+    "plugin/src/main.rs": "b1441af526abcbd55c8c66d6e11defe1e28edd831a3686835a966928de82e5bc",
+    "plugin/tests/support/binary.rs": "e972c7d311f8775732e512bd1444b4eb4eebe7dd27c89971bdc8fbabf686c2a2",
+    "rust/crates/harness-fuzz/graphcoder-args-control.py": "22fe866ff5c111592be6fc47264f47282f6ad88884530ad16fb9ef6e3c65b34c"
+  },
+  "platform": "Linux x86_64",
+  "test": "native_input::native_stdin_failures_stop_before_workspace_effects",
+  "command": "python3 rust/crates/harness-fuzz/graphcoder-args-control.py native_stdin_binary --runs 0",
+  "negative_control": "Actual read_to_end error propagation omitted; unchanged original OS-cause assertion failed with EOF instead of the original directory read error.",
+  "restoration": "Exact input.rs source restored before the same named binary test passed.",
+  "selected_tests": 1,
+  "unselected_tests": 4,
+  "test_seconds": 0.007,
+  "selected_binary_wall_seconds": 0.008,
+  "scope": "Real acyclic binary in the original Cargo source snapshot, three native stdin entry points, original OS cause, process retirement and absence of workspace/settings effects. Unix directory read error avoids standard input EBADF-to-EOF conversion. The earlier write-only Unix fixture failed restoration and is unqualified. No relocated selector, installed host loop, lifecycle or Windows/macOS qualification."
+}
 }
