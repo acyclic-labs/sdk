@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 mod clock;
+mod completion;
 mod drain;
 mod invocation_failure;
 mod pause;
@@ -160,6 +161,8 @@ struct LocalTarget<P: StreamProvider> {
     requests: RequestLedger,
     handler: Arc<dyn Handler>,
     running: std::sync::Mutex<Running<P>>,
+    clock: Arc<ControlledClock>,
+    time: std::sync::Mutex<ClockControl>,
 }
 
 impl<P: StreamProvider> LocalTarget<P> {
@@ -168,11 +171,14 @@ impl<P: StreamProvider> LocalTarget<P> {
         handler: Arc<dyn Handler>,
         requests: RequestLedger,
     ) -> Result<Self, StreamError> {
+        let (clock, time) = ControlledClock::new(1_000);
         let target = Self {
             store: Store::new(Arc::clone(provider), root()?),
             handler,
             requests,
             running: std::sync::Mutex::new(None),
+            clock: Arc::new(clock),
+            time: std::sync::Mutex::new(time),
         };
         target.launch()?;
         Ok(target)
@@ -182,7 +188,7 @@ impl<P: StreamProvider> LocalTarget<P> {
         let runtime = Arc::new(Runtime::new(
             Store::new(Arc::clone(self.store.provider()), root()?),
             Arc::clone(&self.handler),
-            Arc::new(SystemClock),
+            Arc::clone(&self.clock) as Arc<dyn Clock>,
         ));
         let host = Arc::clone(&runtime);
         let task = tokio::spawn(async move {
@@ -205,6 +211,19 @@ impl<P: StreamProvider> LocalTarget<P> {
     }
 }
 
+impl<P: StreamProvider> Drop for LocalTarget<P> {
+    fn drop(&mut self) {
+        if let Some((_, task)) = self
+            .running
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            task.abort();
+        }
+    }
+}
+
 impl<P: StreamProvider> Target for LocalTarget<P> {
     type Provider = P;
     fn requests(&self) -> RequestLedger {
@@ -214,7 +233,20 @@ impl<P: StreamProvider> Target for LocalTarget<P> {
         &self.store
     }
     fn clock(&self) -> &dyn Clock {
-        &SystemClock
+        self.clock.as_ref()
+    }
+    fn complete<'a>(&'a self, _actor: &'a ActorReference) -> BoxFuture<'a, Result<(), Error>> {
+        async move { self.runtime()?.complete().await }.boxed()
+    }
+    fn advance_to(&self, deadline: u64) -> BoxFuture<'_, Result<(), Error>> {
+        async move {
+            self.time
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .advance_to(deadline)?;
+            Ok(())
+        }
+        .boxed()
     }
     fn pause<'a>(
         &'a self,
@@ -269,6 +301,12 @@ impl Target for DurableBackend {
     }
     fn clock(&self) -> &dyn Clock {
         self.target.clock()
+    }
+    fn complete<'a>(&'a self, actor: &'a ActorReference) -> BoxFuture<'a, Result<(), Error>> {
+        self.target.complete(actor)
+    }
+    fn advance_to(&self, deadline: u64) -> BoxFuture<'_, Result<(), Error>> {
+        self.target.advance_to(deadline)
     }
     fn pause<'a>(
         &'a self,

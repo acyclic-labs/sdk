@@ -4,7 +4,7 @@
 //! The host under test runs [`Package`] for every actor under the target's
 //! state root. The suite creates actors with the companion create mutation,
 //! appends commands to their inboxes and observes their committed outboxes;
-//! only pause/resume and restart go through [`Backend`].
+//! completion, clock advancement, pause/resume and restart go through [`Backend`].
 use crate::addressing::ActorReference;
 use crate::guest::{
     AlarmChange, Checkpoint, CodecIdentity, Delivery, Effect, GuestError, GuestFuture, Handler,
@@ -28,10 +28,8 @@ pub mod sockets;
 
 /// Upper bound for one observation; an event-driven wait ends earlier.
 const BUDGET_MS: u64 = 5_000;
-/// Alarm lead time; long enough to clear or restart before it fires.
+/// Logical spacing between alarm generations.
 const ALARM_MS: u64 = 100;
-/// Quiet window that proves nothing further is published.
-const QUIET_MS: u64 = 250;
 
 /// The host under test, already running [`Package`] under `store().root()`.
 pub trait Backend: ProviderPlatform {
@@ -47,6 +45,23 @@ pub trait Backend: ProviderPlatform {
     fn store(&self) -> &Store<Self::Provider>;
     /// The host clock that also schedules alarms.
     fn clock(&self) -> &dyn Clock;
+    /// Finish this actor's committed activation and all delivery work due at
+    /// the current host time, using the original host scheduler. A stopped
+    /// producer must end this wait with an error. Future alarms remain pending.
+    fn complete<'a>(
+        &'a self,
+        actor: &'a ActorReference,
+    ) -> BoxProviderFuture<'a, Result<(), Error>>;
+    /// Advance the SAME clock used by the host. The caller then joins completion.
+    /// A wall-clock host waits on its original deadline event instead.
+    fn advance_to(&self, deadline: u64) -> BoxProviderFuture<'_, Result<(), Error>> {
+        Box::pin(async move {
+            self.clock()
+                .sleep_until(deadline)
+                .await
+                .map_err(Error::from)
+        })
+    }
     /// Durably pause or resume one actor through the host's control surface.
     fn pause<'a>(
         &'a self,
@@ -398,29 +413,39 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
         Ok(())
     }
 
-    /// Follow the outbox until it holds `expected` records, then require a
-    /// quiet window with nothing more.
+    /// Inspect the finite output prefix after the original host completes.
+    /// Reading one extra record retains duplicate and late-publication checks.
     async fn expect(&self, expected: &[&str]) -> Result<(), Failure> {
-        let observed = self.observe(expected.len(), BUDGET_MS).await?;
+        self.target.complete(&self.actor).await?;
+        let observed = match self
+            .target
+            .store()
+            .provider()
+            .read(acyclic_stream::ReadRequest {
+                key: None,
+                path: self.outbox.clone(),
+                from: 0,
+                limit: expected.len() + 1,
+                at_least: Default::default(),
+            })
+            .await
+        {
+            Ok(mut records) => {
+                let mut observed = Vec::new();
+                while let Some(record) = records.next().await {
+                    observed.push(
+                        String::from_utf8_lossy(&record.map_err(Error::from)?.value).into_owned(),
+                    );
+                }
+                observed
+            }
+            Err(StreamError::NotFound) => Vec::new(),
+            Err(error) => return Err(Error::from(error).into()),
+        };
         if observed != expected {
             return self.violation(format!("outbox {observed:?}, expected {expected:?}"));
         }
-        let extra = self.observe(expected.len() + 1, QUIET_MS).await?;
-        if extra.len() > expected.len() {
-            return self.violation(format!("outbox grew to {extra:?} after {expected:?}"));
-        }
         Ok(())
-    }
-
-    async fn observe(&self, count: usize, budget_ms: u64) -> Result<Vec<String>, Failure> {
-        observe(
-            self.target.store().provider().as_ref(),
-            self.target.clock(),
-            acyclic_stream::FollowRequest::new(self.outbox.clone(), 0),
-            count,
-            budget_ms,
-        )
-        .await
     }
 
     async fn cursor(&self) -> Result<Option<u64>, Failure> {
@@ -1104,11 +1129,8 @@ async fn reserved<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failu
     target.pause(&fixture.actor, true).await?;
     target.restart().await?;
     // A paused owner retains its due cleanup, including across physical reopen.
-    target
-        .clock()
-        .sleep_until(deadline)
-        .await
-        .map_err(Error::from)?;
+    target.advance_to(deadline).await?;
+    target.complete(&fixture.actor).await?;
     wait_pool_used(&fixture, 2).await?;
     target.pause(&fixture.actor, false).await?;
     wait_pool_used(&fixture, 0).await?;
@@ -1287,17 +1309,33 @@ async fn ordered<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failu
 pub(crate) async fn alarms<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
     let mut alarm = Fixture::create(target, run, "alarm").await?;
     alarm.send(&format!("set {ALARM_MS}")).await?;
+    target.complete(&alarm.actor).await?;
+    target
+        .advance_to(target.clock().now_unix_ms().saturating_add(ALARM_MS))
+        .await?;
     alarm.expect(&["a1"]).await?;
 
     let mut cleared = Fixture::create(target, run, "cleared").await?;
     cleared.send(&format!("set {ALARM_MS}")).await?;
     cleared.send("clear").await?;
     cleared.send("emit").await?;
+    target.complete(&cleared.actor).await?;
+    target
+        .advance_to(target.clock().now_unix_ms().saturating_add(ALARM_MS))
+        .await?;
     cleared.expect(&["r2"]).await?;
 
     let mut replaced = Fixture::create(target, run, "replaced").await?;
     replaced.send(&format!("set {}", 10 * ALARM_MS)).await?;
     replaced.send(&format!("set {ALARM_MS}")).await?;
+    target.complete(&replaced.actor).await?;
+    target
+        .advance_to(target.clock().now_unix_ms().saturating_add(ALARM_MS))
+        .await?;
+    replaced.expect(&["a2"]).await?;
+    target
+        .advance_to(target.clock().now_unix_ms().saturating_add(10 * ALARM_MS))
+        .await?;
     replaced.expect(&["a2"]).await
 }
 
@@ -1308,8 +1346,9 @@ async fn paused<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failur
     paused.expect(&["r0"]).await?;
     target.pause(&paused.actor, true).await?;
     paused.send("emit").await?;
-    if paused.observe(2, QUIET_MS).await?.len() != 1 {
-        return paused.violation("a paused actor consumed input".into());
+    paused.expect(&["r0"]).await?;
+    if paused.cursor().await? != Some(1) {
+        return paused.violation("a paused actor advanced its cursor".into());
     }
     target.pause(&paused.actor, false).await?;
     paused.expect(&["r0", "r1"]).await
@@ -1340,6 +1379,10 @@ pub(crate) async fn restarted<T: Backend + ?Sized>(target: &T, run: &str) -> Res
     }
     target.restart().await?;
     restarted.send("emit").await?;
+    restarted.expect(&["r0", "r2"]).await?;
+    target
+        .advance_to(target.clock().now_unix_ms().saturating_add(2 * ALARM_MS))
+        .await?;
     restarted.expect(&["r0", "r2", "a1"]).await
 }
 
@@ -1361,23 +1404,19 @@ pub async fn bench<T: Backend + ?Sized>(target: &T) -> Result<Measurement, Failu
     const DELIVERIES: usize = 256;
     let mut fixture = Fixture::create(target, target.namespace(), "bench").await?;
     fixture.send("emit").await?;
-    if fixture.observe(1, BUDGET_MS).await? != ["r0"] {
-        return fixture.violation("benchmark warmup did not publish r0".into());
-    }
+    fixture.expect(&["r0"]).await?;
+    let expected = (0..=DELIVERIES)
+        .map(|i| format!("r{i}"))
+        .collect::<Vec<_>>();
+    let expected = expected.iter().map(String::as_str).collect::<Vec<_>>();
     let ledger = target.requests();
     let sample = ledger.start_sample();
     for _ in 0..DELIVERIES {
         fixture.send("emit").await?;
     }
-    let observed = fixture.observe(DELIVERIES + 1, BUDGET_MS).await?;
+    fixture.expect(&expected).await?;
     let sample = sample.finish();
     let elapsed = sample.elapsed;
-    let expected = (0..=DELIVERIES)
-        .map(|i| format!("r{i}"))
-        .collect::<Vec<_>>();
-    if observed != expected {
-        return fixture.violation("benchmark lost, reordered or duplicated a delivery".into());
-    }
     Ok(Measurement {
         deliveries: DELIVERIES,
         elapsed,

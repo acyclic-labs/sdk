@@ -29,6 +29,7 @@ pub struct ActorsDomain {
     clock: SystemClock,
     pause: Function,
     restart: Function,
+    complete: Function,
 }
 
 #[wasm_bindgen]
@@ -37,6 +38,7 @@ impl ActorsDomain {
         journal: JsValue,
         pause: Function,
         restart: Function,
+        complete: Function,
     ) -> Result<Self, JsValue> {
         let provider = JournalStream::open(journal, JournalStreamLimits::default())
             .await
@@ -49,6 +51,7 @@ impl ActorsDomain {
             clock: SystemClock,
             pause,
             restart,
+            complete,
         })
     }
 
@@ -143,6 +146,15 @@ impl Backend for ActorsDomain {
     }
     fn clock(&self) -> &dyn Clock {
         &self.clock
+    }
+    fn complete<'a>(
+        &'a self,
+        actor: &'a ActorReference,
+    ) -> BoxProviderFuture<'a, Result<(), Error>> {
+        Box::pin(control(self.complete.call1(
+            &JsValue::UNDEFINED,
+            &Uint8Array::from(actor.encode().as_slice()),
+        )))
     }
     fn pause<'a>(
         &'a self,

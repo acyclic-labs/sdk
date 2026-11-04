@@ -42,7 +42,12 @@ export class Actors extends DurableObject<Env> {
     await this.discover();
     if (this.routes.get(key(address)) === undefined) refuse("pause-owner");
     await this.owner(address).pause(paused);
-  }, () => this.restart()));
+  }, () => this.restart(), async (address: Uint8Array) => {
+    await this.discover();
+    if (this.routes.get(key(address)) === undefined) refuse("completion-owner");
+    // The same owner wake awaits publication and its final registered-input recheck.
+    await this.owner(address).wake();
+  }));
   private readonly journal = new SqliteJournal(this.ctx.storage, "actors", changes => {
     if (changes.some(([path]) => path === root)) {
       const generation = Number(this.metadata.get("generation") ?? "0") + 1;
