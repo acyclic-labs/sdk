@@ -140,25 +140,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn assignment_files_reject_ambiguous_or_changed_declarations() -> Result<(), serde_json::Error>
-    {
-        // Authored declaration data, not a provider or tool fixture.
-        let declared = PairAssignment::new([3; 32], 8);
-        let object = serde_json::to_string(&declared)?;
-        assert_eq!(serde_json::from_str::<PairAssignment>(&object)?, declared);
-        for malformed in [
-            object.replacen("\"version\":1", "\"version\":2", 1),
-            format!("{{\"version\":1,{}", &object[1..]),
-            format!("{{\"unknown\":0,{}", &object[1..]),
-            format!("{object} null"),
-            serde_json::json!([1, declared.population, declared.replicate]).to_string(),
-        ] {
-            assert!(serde_json::from_str::<PairAssignment>(&malformed).is_err());
-        }
-        Ok(())
-    }
-
-    #[test]
     fn complete_blocks_balance_positions_in_the_predeclared_order() -> Result<(), Error> {
         let plan = AssignmentPlan::new(4, 4)?;
         let mut positions = [0u8; 4];

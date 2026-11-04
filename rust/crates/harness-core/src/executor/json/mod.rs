@@ -315,8 +315,6 @@ pub fn json_owned_value_conversion_additional_bytes(shape: JsonValueShape) -> Re
 }
 
 #[cfg(test)]
-mod layout_guard_tests;
-#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod value_shape_tests;

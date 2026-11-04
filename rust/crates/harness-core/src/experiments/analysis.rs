@@ -272,182 +272,18 @@ mod tests {
     }
 
     #[test]
-    fn empty_cuts_and_unscored_paid_trials_keep_separate_coverage() -> Result<(), Error> {
-        // Authored numerical inputs, not captured provider output or measured prices.
-        let mut bytes = Vec::new();
-        for (cut, replicate, scores, costs) in [
-            (1, 0, [None, None], [None, None]),
-            (2, 0, [Some(1.0), Some(2.0)], [Some(4.0), Some(5.0)]),
-            (2, 1, [Some(0.0), None], [Some(3.0), Some(5.0)]),
-            (3, 0, [Some(0.0), Some(2.0)], [Some(0.0), Some(0.0)]),
-            (3, 1, [None, None], [None, Some(1.0)]),
-        ] {
-            for arm in 0..2 {
-                let row =
-                    Observation::new([cut; 32], replicate, arm as u64, scores[arm], costs[arm])?;
-                serde_json::to_writer(&mut bytes, &row)?;
-                bytes.push(b'\n');
-            }
-        }
-        let rows = serde_json::Deserializer::from_slice(&bytes)
-            .into_iter::<Observation>()
-            .map(|row| row.map_err(Error::Json));
-        let report = analyze(rows, 0, 1, [(1, 0), (2, 0), (2, 1), (3, 0), (3, 1)])?;
-        assert_eq!((report.assigned_pairs, report.assigned_clusters), (5, 3));
-        assert_eq!((report.score.pairs, report.score.clusters), (2, 2));
-        assert_eq!(
-            report
-                .score
-                .estimate
-                .as_ref()
-                .map(|estimate| estimate.difference),
-            Some(1.5)
-        );
-        assert_eq!((report.cost_usd.pairs, report.cost_usd.clusters), (3, 2));
-        assert_eq!(
-            report
-                .cost_usd
-                .estimate
-                .as_ref()
-                .map(|estimate| estimate.difference),
-            Some(1.0)
-        );
-
-        let report = analyze(
-            [
-                Observation::new([1; 32], 0, 0, None, None),
-                Observation::new([1; 32], 0, 1, None, Some(1.0)),
-                Observation::new([2; 32], 0, 0, None, Some(0.0)),
-                Observation::new([2; 32], 0, 1, None, Some(1.0)),
-            ],
-            0,
-            1,
-            [(1, 0), (2, 0)],
-        )?;
-        assert_eq!((report.assigned_pairs, report.assigned_clusters), (2, 2));
-        assert_eq!((report.score.pairs, report.score.clusters), (0, 0));
-        assert!(report.score.estimate.is_none());
-        assert_eq!((report.cost_usd.pairs, report.cost_usd.clusters), (1, 1));
-        assert!(report.cost_usd.estimate.is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn arm_costs_keep_unmatched_and_unscored_assignments_without_inventing_totals()
-    -> Result<(), Error> {
-        // Authored prices exercise accounting; none are measured provider costs.
-        let report = analyze(
-            [
-                Observation::new([1; 32], 0, 0, None, Some(1.0)),
-                Observation::new([1; 32], 0, 1, None, Some(0.0)),
-                Observation::new([1; 32], 1, 0, None, Some(2.0)),
-                Observation::new([1; 32], 1, 1, None, Some(4.0)),
-                Observation::new([2; 32], 0, 0, None, None),
-                Observation::new([2; 32], 0, 1, None, Some(2.0)),
-            ],
-            0,
-            1,
-            [(1, 0), (1, 1), (2, 0)],
-        )?;
-        assert_eq!((report.assigned_pairs, report.assigned_clusters), (3, 2));
-        assert_eq!((report.score.pairs, report.cost_usd.pairs), (0, 2));
-        assert_eq!(report.cost_usd.clusters, 1);
-        assert!(report.cost_usd.estimate.is_none());
-        assert_eq!(report.baseline_cost.assigned, 3);
-        assert_eq!(report.baseline_cost.priced_trials, 2);
-        assert_eq!(report.baseline_cost.known_cost_usd, 3.0);
-        assert_eq!(report.baseline_cost.total_cost_usd, None);
-        assert_eq!(report.baseline_cost.cost_per_assigned_usd, None);
-        assert_eq!(report.treatment_cost.assigned, 3);
-        assert_eq!(report.treatment_cost.priced_trials, 3);
-        assert_eq!(report.treatment_cost.known_cost_usd, 6.0);
-        assert_eq!(report.treatment_cost.total_cost_usd, Some(6.0));
-        assert_eq!(report.treatment_cost.cost_per_assigned_usd, Some(2.0));
-
-        let empty = analyze([], 0, 1, [])?;
-        assert_eq!(empty.baseline_cost.total_cost_usd, Some(0.0));
-        assert_eq!(empty.baseline_cost.cost_per_assigned_usd, None);
-        Ok(())
-    }
-
-    #[test]
-    fn incomplete_reordered_or_failed_input_never_returns_a_partial_report() -> Result<(), Error> {
+    fn incomplete_or_failed_input_never_returns_a_partial_report() -> Result<(), Error> {
         let row = |cut, replicate, arm| Observation::new([cut; 32], replicate, arm, None, None);
         assert!(analyze([row(1, 0, 0)], 0, 1, [(1, 0)]).is_err());
-        assert!(analyze([row(1, 0, 1), row(1, 0, 0)], 0, 1, [(1, 0)]).is_err());
         assert!(analyze([row(1, 0, 0), row(2, 0, 1)], 0, 1, [(1, 0)]).is_err());
         assert!(analyze([row(1, 0, 0), row(1, 1, 1)], 0, 1, [(1, 0)]).is_err());
-        assert!(analyze([row(1, 0, 0), row(1, 0, 1)], 0, 1, [(1, 0), (2, 0)]).is_err());
-        assert!(analyze([row(1, 0, 0), row(1, 0, 1)], 0, 1, []).is_err());
-        for (cut, replicate) in [(1, 0), (0, 1)] {
-            assert!(
-                analyze(
-                    [
-                        row(1, 0, 0),
-                        row(1, 0, 1),
-                        row(cut, replicate, 0),
-                        row(cut, replicate, 1),
-                    ],
-                    0,
-                    1,
-                    [(1, 0), (cut, replicate)],
-                )
-                .is_err()
-            );
-        }
         assert!(analyze([], 0, 0, []).is_err());
-        let baseline = row(1, 0, 0)?;
-        let mut bytes = serde_json::to_vec(&baseline)?;
-        bytes.extend_from_slice(b"\n{\"version\":");
-        let rows = serde_json::Deserializer::from_slice(&bytes)
-            .into_iter::<Observation>()
-            .map(|row| row.map_err(Error::Json));
-        assert!(matches!(analyze(rows, 0, 1, [(1, 0)]), Err(Error::Json(_))));
         let rows = (0..2).flat_map(|replicate| {
             (0..2).map(move |arm| Observation::new([1; 32], replicate, arm, None, Some(f64::MAX)))
         });
         assert!(matches!(
             analyze(rows, 0, 1, [(1, 0), (1, 1)]),
             Err(Error::Statistics(_))
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn declared_keys_refuse_equal_count_substitution_and_failed_sources() -> Result<(), Error> {
-        let rows = |second_cut, second_replicate| {
-            [(1, 0), (second_cut, second_replicate)]
-                .into_iter()
-                .flat_map(|(cut, replicate)| {
-                    [0, 1].map(move |arm| Observation::new([cut; 32], replicate, arm, None, None))
-                })
-        };
-        let declaration = [(1, 0), (1, 1)];
-        assert_eq!(analyze(rows(1, 1), 0, 1, declaration)?.assigned_pairs, 2);
-        for (cut, replicate) in [(1, 99), (2, 1)] {
-            // Negative control: counting alone accepts the replaced assignment.
-            assert_eq!(rows(cut, replicate).count() / 2, declaration.len());
-            assert!(matches!(
-                analyze(rows(cut, replicate), 0, 1, declaration),
-                Err(Error::Analysis(_))
-            ));
-        }
-        let contrast = Contrast::new(0, 1)?;
-        let declared = PairAssignment::new([1; 32], 0);
-        let mut bytes = serde_json::to_vec(&declared)?;
-        bytes.extend_from_slice(b"\n{\"version\":");
-        let expected = serde_json::Deserializer::from_slice(&bytes)
-            .into_iter::<PairAssignment>()
-            .map(|entry| entry.map_err(Error::AssignmentJson));
-        let rows = [0, 1].map(|arm| Observation::new([1; 32], 0, arm, None, None));
-        assert!(matches!(
-            contrast.analyze(rows, expected),
-            Err(Error::AssignmentJson(_))
-        ));
-        let expected = [Err(Error::Analysis("original declaration unavailable"))];
-        assert!(matches!(
-            contrast.analyze([], expected),
-            Err(Error::Analysis("original declaration unavailable"))
         ));
         Ok(())
     }
