@@ -435,9 +435,13 @@ mod tests {
         // Each cursor probe uses at most four 64-bit paths (including wrap),
         // plus the initial lookup, extraction and one shared insertion.
         let walk = 8 * 8 + 1;
-        let insertion = FixedIndex::<CachedNode, OwnedIndexAllocation, 8>::insertion_bound(1)
-            .expect("one fixed-width insertion")
-            .examined_items;
+        let insertion = acyclic_collections::FixedIndex::<
+            CachedNode,
+            crate::wire_codec::OwnedIndexAllocation,
+            8,
+        >::insertion_bound(1)
+        .expect("one fixed-width insertion")
+        .examined_items;
         let maximum =
             (HOT_PAGES as u64 + 1) * (1 + 4 * walk + 8) + 2 * (walk + 8) + 2 * walk + 8 + insertion;
         assert!(
