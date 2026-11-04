@@ -24,7 +24,7 @@ cargo test --locked -p acyclic-harness-core --lib config::evaluate::model::tests
 cargo fuzz run --fuzz-dir rust/crates/harness-fuzz config_evaluation --no-default-features --features core -- -runs=1000 -seed=1
 ```
 
-Fifteen retained patches alter the actual production source admission, walk, fold or cache. Apply each separately
+Fifteen retained patches alter the actual production source admission, walk, fold or cache. One additional patch restores the lossy JSON-reference defect in the shared oracle. Apply each separately
 against an unchanged oracle, run that same named property, then restore the
 source:
 
@@ -40,6 +40,7 @@ source:
 | `config-dependency-finished-active.patch` | A valid shared dependency is falsely rejected by the plain-data oracle. |
 | `config-dependency-ignore-cycle.patch` | A cyclic closure enters the VM before admission. |
 | `config-dynamic-import.patch` | Dynamic import reaches the engine instead of being refused by source admission. |
+| `config-json-lossy-reference.patch` | Invalid original UTF-8 is replaced before reference parsing, falsely rejecting the correct production refusal. |
 | `config-json-object-literal.patch` | A JSON object is incorrectly interpreted as a JavaScript object literal, losing its `__proto__` property. |
 | `config-transform-output.patch` | TypeScript transformation output is discarded, incorrectly refusing the required valid typed literal. |
 | `config-import-root-escape.patch` | An import escaping the original tree root is incorrectly admitted. |
@@ -78,9 +79,13 @@ finite value domain, the reference uses the original engine's `JSON.parse`
 through a fixed JavaScript module containing only the encoded input string.
 This preserves duplicate-key semantics: `{"x":1e400,"x":0}` produces `{"x":0}`,
 while an overflow that survives the parse is refused by the plain-data fold.
-Malformed syntax must still be refused. No second JSON parser is introduced.
+Malformed syntax and invalid UTF-8 must still be refused. Original text is
+validated once before reference parsing and borrowed for encoding when valid.
+Lossy text is used only to construct the separate generated-data operands;
+it cannot supply the expectation for original raw JSON bytes. No second JSON
+parser, encoding allocation or evaluation producer is introduced.
 
-Seven additional authored internal corpus inputs retain the original JSON
+Eight additional authored internal corpus inputs retain the original JSON
 property-semantics example, numeric and escaped-string cases, overwritten and
 surviving numeric overflow, TypeScript type erasure with a static import, a
 forbidden dynamic import and malformed JSON.

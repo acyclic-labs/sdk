@@ -1,6 +1,7 @@
 //! Generated settings exercise the original evaluator and its original cache.
 use super::*;
 use serde_json::json;
+use std::borrow::Cow;
 use std::cell::Cell;
 
 thread_local! {
@@ -86,7 +87,8 @@ fn json_equivalent(left: &Value, right: &Value) -> bool {
 }
 
 async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
-    let text = String::from_utf8_lossy(bytes);
+    let utf8 = std::str::from_utf8(bytes).ok();
+    let text = utf8.map_or_else(|| String::from_utf8_lossy(bytes), Cow::Borrowed);
     let specifier = serde_json::to_string(&text).map_err(|error| error.to_string())?;
     let tree = Files {
         input: specifier.as_bytes().to_vec(),
@@ -177,13 +179,13 @@ async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
             }
         }
     }
-    let expected = match serde_json::from_slice::<Value>(bytes) {
-        Ok(value) => Some(value),
+    let expected = match utf8.map(serde_json::from_str::<Value>) {
+        Some(Ok(value)) => Some(value),
         // IgnoredAny admits numbers outside serde's finite Value domain. A
         // later duplicate property can overwrite one before the production
         // JSON fold sees it. Use the original engine parser for that domain;
         // the fixed program contains only an encoded data string.
-        Err(_) if serde_json::from_slice::<serde::de::IgnoredAny>(bytes).is_ok() => {
+        Some(Err(_)) if serde_json::from_str::<serde::de::IgnoredAny>(&text).is_ok() => {
             let source = format!("export default JSON.parse({specifier});");
             evaluate_cached(
                 "raw-reference.js",
@@ -197,7 +199,7 @@ async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
             .ok()
             .map(|result| result.value)
         }
-        Err(_) => None,
+        _ => None,
     };
     let actual = evaluate_cached(
         "raw.json",
