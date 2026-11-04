@@ -1,11 +1,11 @@
 --- a/rust/crates/harness-core/src/config/evaluate.rs
 +++ b/rust/crates/harness-core/src/config/evaluate.rs
-@@ -171,7 +171,7 @@
-     while let Some((current, index)) = stack.last().cloned() {
-         let Some(next) = modules[&current].0.imports.get(index).cloned() else {
-             if let Some((_, active)) = modules.get_mut(&current) {
+@@ -170,7 +170,7 @@
+     while let Some((current, index)) = stack.last_mut() {
+         let Some(next) = modules[current.as_str()].0.imports.get(*index) else {
+             if let Some((_, active)) = modules.get_mut(current.as_str()) {
 -                *active = false;
 +                *active = true;
              }
+             order.push(std::mem::take(current));
              stack.pop();
-             order.push(current);
