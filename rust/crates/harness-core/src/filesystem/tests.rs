@@ -553,7 +553,8 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
                 crate::conversation::ContentAccess::default()
             )?
             .await
-            .unwrap_err()
+            .err()
+            .expect("a later file must be absent from the pinned generation")
             .code(),
         crate::wire::ErrorCode::NotFound
     );
