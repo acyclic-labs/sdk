@@ -34,20 +34,28 @@ impl Writing {
         self.abort.abort();
     }
 }
-fn owner(frame: &wire::SessionFrame) -> wire::SessionChannel {
+fn owner(frame: &wire::SessionFrame) -> (wire::SessionChannel, bool) {
     use wire::session_frame::Body;
+    let interest = match &frame.body {
+        Some(Body::Hello(hello)) => hello.interest.as_ref(),
+        Some(Body::Interest(interest)) => Some(interest),
+        _ => None,
+    };
     if frame.channel_id == 0
-        && let Some(Body::Interest(interest)) = &frame.body
+        && let Some(interest) = interest
         && interest.upsert.len() == 1
         && interest.remove.is_empty()
         && let Some(channel) = interest.upsert[0].channel
     {
-        return channel;
+        return (channel, true);
     }
-    wire::SessionChannel {
-        channel_id: frame.channel_id,
-        generation: frame.generation,
-    }
+    (
+        wire::SessionChannel {
+            channel_id: frame.channel_id,
+            generation: frame.generation,
+        },
+        false,
+    )
 }
 struct Connection {
     controller: web_sys::AbortController,
@@ -140,9 +148,10 @@ impl Responses {
                     let controller = web_sys::AbortController::new().map_err(failure)?;
                     let signal = controller.signal();
                     let (abort, registration) = AbortHandle::new_pair();
+                    let (channel, subscription) = owner(&frame);
                     *self.writing.borrow_mut() = Some(Writing {
-                        channel: owner(&frame),
-                        subscription: matches!(&frame.body, Some(wire::session_frame::Body::Interest(interest)) if interest.upsert.len() == 1 && interest.remove.is_empty()),
+                        channel,
+                        subscription,
                         controller,
                         abort,
                     });

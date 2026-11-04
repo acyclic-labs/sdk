@@ -169,9 +169,13 @@ impl Pool {
                             })
                             .await;
                         match result {
-                            Ok((node, mut link, response)) => {
+                            Ok(Ok((node, mut link, response))) => {
                                 link.observation = Some(observation);
                                 break Ok((node, link, response));
+                            }
+                            Ok(Err(error)) => {
+                                observation.finish(Some(&error));
+                                break Err(error);
                             }
                             Err(error) => {
                                 observation.finish(Some(&error));
@@ -471,6 +475,7 @@ impl Pool {
     }
 }
 
+// The outer error is transport failure; the inner error is an opening refusal.
 async fn handshake(
     channel: Endpoint,
     destination: &str,
@@ -478,7 +483,7 @@ async fn handshake(
     credentials: BTreeMap<u32, Bytes>,
     interest: wire::SessionInterest,
     progress: Arc<Progress>,
-) -> Result<Ready, StreamError> {
+) -> Result<Result<Ready, StreamError>, StreamError> {
     progress.reset_opening();
     let sender = Arc::new(Outbound::new(crate::MAX_ITEMS, crate::MAX_COMMAND_BYTES));
     let credit = wire::SessionWindow {
@@ -553,6 +558,16 @@ async fn handshake(
         .await
         .transpose()?
         .ok_or(StreamError::Unavailable)?;
+    // A locally rejected opening interest can close its original channel before
+    // Welcome. Preserve that terminal refusal, including Unavailable, instead
+    // of treating it as a physical connection failure eligible for retry.
+    if opening_subscription.is_some_and(|channel| {
+        welcome.wire().channel_id == channel.channel_id
+            && welcome.wire().generation == channel.generation
+    }) && let Some(Body::Closed(closed)) = &welcome.wire().body
+    {
+        return Ok(Err(StreamError::from_session_close(&closed.code)));
+    }
     if welcome.wire().channel_id != 0 || welcome.wire().generation != 0 {
         return Err(StreamError::InvalidResponse);
     }
@@ -569,5 +584,5 @@ async fn handshake(
         bytes: welcome.receive_bytes,
         frames: welcome.receive_frames,
     })?;
-    Ok((welcome.node_id, link, response))
+    Ok(Ok((welcome.node_id, link, response)))
 }
