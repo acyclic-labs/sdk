@@ -1,6 +1,5 @@
 use super::*;
-use acyclic_stream::StreamProviderExt as _;
-use acyclic_stream::{MemoryStream, OwnedBytes, StreamProvider};
+use acyclic_stream::{MemoryStream, OwnedBytes};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 const AUTHORITY: AuthorityId = AuthorityId::from_bytes([73; 16]);

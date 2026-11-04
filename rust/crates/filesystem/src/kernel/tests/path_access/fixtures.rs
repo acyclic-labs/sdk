@@ -3,12 +3,12 @@ use super::*;
 use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{FileId, VolumeId};
 use crate::kernel::{
-    FileMetadata, FileTablePage, GenerationRoot, InlineFileData, LogicalName, MetadataField,
-    NameEncoding, TreeEntry, TreePage,
+    FileMetadata, FileTablePage, GenerationRoot, InlineFileData, LogicalName, NameEncoding,
+    TreeEntry, TreePage,
 };
 use crate::memory::MemoryObjectStore;
-use crate::model::{CaseSensitivity, ConcurrencyMode, Lifecycle, UnicodePolicy, VolumeLimits};
-use crate::storage::{ObjectId, ObjectKind, ObjectRead, ObjectReadRequest, ObjectStoreError};
+use crate::model::{CaseSensitivity, Lifecycle, UnicodePolicy};
+use crate::storage::{ObjectId, ObjectRead, ObjectReadRequest, ObjectStoreError};
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -48,7 +48,6 @@ fn metadata() -> FileMetadata {
     FileMetadata::default()
 }
 
-use crate::test_support::put_object as put;
 use crate::test_support::{put_file_metadata, put_file_table_page, put_tree_page};
 
 struct CancellingStore {
