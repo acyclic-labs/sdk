@@ -201,7 +201,7 @@ impl crate::native_host::NativeHostWork for &Arc<NativeWorkReservation> {
     fn record(&mut self, actual: WorkCounters) -> Result<(), Self::Error> {
         self.edit(|state| {
             state.host_pending = actual.remaining(state.host_pending)?;
-            let started = io_work(actual);
+            let started = actual.native_io_operations();
             self.begin(state, started)?;
             let completed = started.remaining(actual)?;
             self.finish(state, completed, completed)
@@ -219,7 +219,7 @@ impl crate::native_host::NativeHostWork for &Arc<NativeWorkReservation> {
                     actual.remaining(state.available()?)?;
                 }
             }
-            let started = io_work(actual);
+            let started = actual.native_io_operations();
             self.begin(state, started)?;
             let completed = started.remaining(actual)?;
             self.finish(state, completed, completed)
