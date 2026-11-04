@@ -13,11 +13,12 @@ fn every_pair_cut_is_durable(omit_reader_sync: bool) -> Result<bool, Box<dyn std
     }
     let _reset = Reset;
     let mut safe = true;
+    let directory = tempfile::tempdir()?;
+    let root = HostRoot::open(directory.path(), &mut ordinary_work())?;
     for first in 0..5 {
         for second in 0..5 {
-            let directory = tempfile::tempdir()?;
-            let root = HostRoot::open(directory.path(), &mut ordinary_work())?;
-            for (leaf, cut, byte) in [("first", first, 1), ("second", second, 2)] {
+            let leaves = ["first", "second"].map(|leaf| format!("{first}-{second}-{leaf}"));
+            for (leaf, cut, byte) in [(&leaves[0], first, 1), (&leaves[1], second, 2)] {
                 publish_probe::kill_at((cut < 4).then_some(cut));
                 let published =
                     root.read_or_publish(Path::new(leaf), || Ok([byte]), &mut ordinary_work());
@@ -33,8 +34,8 @@ fn every_pair_cut_is_durable(omit_reader_sync: bool) -> Result<bool, Box<dyn std
                 &cancellation,
             );
             let read = root.read_published_pair::<1, 1, _>(
-                Path::new("first"),
-                Path::new("second"),
+                Path::new(&leaves[0]),
+                Path::new(&leaves[1]),
                 &mut work,
             )?;
             assert_eq!(read.is_some(), first >= 3 && second >= 3);
