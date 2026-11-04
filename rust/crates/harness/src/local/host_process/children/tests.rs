@@ -102,8 +102,21 @@ async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof
         let mut writer = fs::OpenOptions::new()
             .write(true)
             .open(format!("/proc/{pid}/fd/1"))?;
+        let mut diagnostic_writer = fs::OpenOptions::new()
+            .write(true)
+            .open(format!("/proc/{pid}/fd/2"))?;
         running.process.queue_stdin(b"exit\n".to_vec())?;
         wait_exit(&mut running)?;
+        // Replay the actual diagnostic with stdout quiescent and both writers
+        // retained. Progress must schedule another pass without requiring EOF.
+        let diagnostic = running.process.failure_message("");
+        assert!(diagnostic.contains("native-diagnostic"));
+        diagnostic_writer.write_all(diagnostic.as_bytes())?;
+        assert!(
+            output(&mut running, &mut [0; 8])?,
+            "consumed stderr must schedule the next bounded output pass"
+        );
+        assert!(running.process.take_output_progress());
         // Replay after direct-child exit. Derive one invalid UTF-8 frame from
         // the captured start, between that start and its original reply, so
         // framing loss cannot be reset by another turn-start. Keeping this
@@ -152,6 +165,7 @@ async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof
             "PAIRED_NATIVE_DONE"
         );
         drop(writer);
+        drop(diagnostic_writer);
         Ok(())
     })
     .await
