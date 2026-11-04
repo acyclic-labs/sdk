@@ -10,13 +10,17 @@ fn native_stdin_failures_stop_before_workspace_effects() -> Result<(), Box<dyn s
     let directory = tempfile::tempdir()?;
     let workspace = directory.path().join("workspace");
     std::fs::create_dir(&workspace)?;
+    // Rust stdin treats Unix EBADF as EOF; a directory produces a real read error.
+    #[cfg(unix)]
+    let input = std::fs::File::open(&workspace)?;
+    #[cfg(windows)]
     let input = std::fs::File::options()
         .write(true)
         .create_new(true)
         .open(directory.path().join("stdin"))?;
     let cause = (&input)
         .read(&mut [0_u8; 1])
-        .expect_err("write-only stdin must refuse an OS read")
+        .expect_err("selected stdin must refuse an OS read")
         .to_string();
     let executable = binary::acyclic();
     for args in [

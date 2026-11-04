@@ -32,10 +32,13 @@ the catalog extension requires its own mutation and restored-corpus result.
 
 The real binary test
 `native_input::native_stdin_failures_stop_before_workspace_effects` passes the
-same write-only file as stdin to `__workspace`, `__install-package` and
+same unreadable file handle as stdin to `__workspace`, `__install-package` and
 `__hook codex Stop`. It compares the original OS cause with stderr or the hook
 refusal, checks process retirement and checks that workspace and settings effects
 have not occurred. It uses the existing executable selection and process owner.
+On Unix, stdin is an opened directory: Rust standard input deliberately maps a
+write-only descriptor's EBADF to EOF, which would test JSON truncation instead.
+Windows uses a write-only file's access-denied read error.
 Control `native_stdin_binary` omits actual stdin read-error propagation and must
 fail the unchanged cause assertion before exact-restored source passes:
 
