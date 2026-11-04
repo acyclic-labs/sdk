@@ -196,7 +196,7 @@ async fn check_index_storage(
     work: Option<&acyclic_fs::NativeMaterializationWork>,
 ) -> Result<()> {
     let allocation_budget = io.remaining()?.peak_allocation_bytes;
-    let live = || {
+    let live = || -> Result<u64> {
         work.map_or_else(
             || Ok(allocation_budget - io.remaining()?.peak_allocation_bytes),
             |work| Ok(work.live_allocation_bytes()),
