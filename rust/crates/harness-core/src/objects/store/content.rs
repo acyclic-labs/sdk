@@ -25,22 +25,34 @@ impl ObjectContentStore {
             .map_err(|_| Error::Invalid("Objects file version is not a blob digest".into()))
     }
 
-    /// The content blob of `file`, once this volume's record binds it to the
-    /// file's path: a version staged in another volume, or at another path,
-    /// has no record here.
-    pub(super) async fn bound_content(&self, file: &FileRef) -> Result<Digest> {
+    /// Overlaps the immutable content query with this volume's binding check.
+    /// A binding refusal cancels the query; its result is disclosed only after
+    /// the binding succeeds, including when the query itself failed first.
+    pub(super) async fn bound_content<T, F>(
+        &self,
+        file: &FileRef,
+        query: impl FnOnce(Digest) -> F,
+    ) -> Result<T>
+    where
+        F: std::future::Future<Output = std::result::Result<T, acyclic_objects::Error>>,
+    {
         let content = self.content_digest(file)?;
         let record = Digest::of(&self.record(file)?);
-        match self.objects.head(record).await {
-            Ok(head) if head.references == [content] => Ok(content),
-            Ok(_) => Err(Error::Unauthorized(
-                "file is not bound to this Objects volume".into(),
-            )),
-            Err(error) if error.code == acyclic_objects::wire::ErrorCode::NotFound => Err(
-                Error::Unauthorized("file is not bound to this Objects volume".into()),
-            ),
-            Err(error) => Err(storage(error)),
-        }
+        let binding = async {
+            match self.objects.head(record).await {
+                Ok(head) if head.references == [content] => Ok(()),
+                Ok(_) => Err(Error::Unauthorized(
+                    "file is not bound to this Objects volume".into(),
+                )),
+                Err(error) if error.code == acyclic_objects::wire::ErrorCode::NotFound => Err(
+                    Error::Unauthorized("file is not bound to this Objects volume".into()),
+                ),
+                Err(error) => Err(storage(error)),
+            }
+        };
+        let (_, observed) =
+            futures::try_join!(binding, async { Ok::<_, Error>(query(content).await) })?;
+        observed.map_err(storage)
     }
 
     pub(super) async fn read_exact(
@@ -58,14 +70,14 @@ impl ObjectContentStore {
         maximum_bytes: u64,
     ) -> Result<acyclic_stream::OwnedBytes> {
         let read = self
-            .objects
-            .get(
-                self.bound_content(file).await?,
-                ByteRange::FULL,
-                maximum_bytes.min(self.maximum_bytes),
-            )
-            .await
-            .map_err(storage)?;
+            .bound_content(file, |digest| {
+                self.objects.get(
+                    digest,
+                    ByteRange::FULL,
+                    maximum_bytes.min(self.maximum_bytes),
+                )
+            })
+            .await?;
         self.verify_length(file, read.head().length)?;
         file.descriptor().verify(read.body(), &mut None)?;
         Ok(read.into_body())
