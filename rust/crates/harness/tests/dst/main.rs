@@ -248,6 +248,7 @@ fn scenario(directory: &Path) -> EntryFuture<'_, Result<(Vec<u8>, Vec<u8>, Vec<u
                 directory.join("filesystem"),
                 (model.clone(), provider.clone()),
             )?
+            .without_user_settings()
             .volume(volume.clone())
             .state_directory(directory.join("state")))
         };
