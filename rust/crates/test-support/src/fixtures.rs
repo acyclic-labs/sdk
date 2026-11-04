@@ -65,31 +65,11 @@ pub fn crate_source_path(manifest: &str, relative: impl AsRef<Path>) -> PathBuf 
     source_path(package.join(relative))
 }
 
-/// Locates the Cargo binary target whose runtime variable is `variable`.
-///
-/// Test runners that execute relocated test binaries (nextest archives) set
-/// `CARGO_BIN_EXE_<name>` at run time; ordinary Cargo runs use the path the
-/// test was compiled with. Use [`binary_path!`](crate::binary_path).
-pub fn binary_target(variable: &str, compiled: &str) -> PathBuf {
-    std::env::var_os(variable).map_or_else(|| PathBuf::from(compiled), PathBuf::from)
-}
-
 /// The path of a file inside the calling crate's source directory.
 #[macro_export]
 macro_rules! crate_path {
     ($relative:expr) => {
         $crate::crate_source_path(env!("CARGO_MANIFEST_DIR"), $relative)
-    };
-}
-
-/// The path of the calling package's Cargo binary target `$name`.
-#[macro_export]
-macro_rules! binary_path {
-    ($name:literal) => {
-        $crate::binary_target(
-            concat!("CARGO_BIN_EXE_", $name),
-            env!(concat!("CARGO_BIN_EXE_", $name)),
-        )
     };
 }
 
