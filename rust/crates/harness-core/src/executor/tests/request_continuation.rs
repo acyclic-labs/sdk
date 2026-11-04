@@ -5,7 +5,6 @@ use super::*;
 /// their encoded buffers shared and exercises the explicit copy boundary.
 struct ContinuingModel {
     turns: u32,
-    warm: bool,
     seen: AtomicUsize,
 }
 
@@ -15,7 +14,7 @@ impl ContinuingModel {
         request: &crate::model::PreparedModelRequest,
         dispatch: crate::model::ModelDispatch,
     ) -> Result<Vec<ModelEvent>> {
-        if self.warm && dispatch.step > 0 && request.cached_message_digests(None, None)?.is_none() {
+        if dispatch.step > 0 && request.cached_message_digests(None, None)?.is_none() {
             return Err(Error::Invalid(
                 "stock turn lost its admitted request continuation".into(),
             ));
@@ -25,7 +24,7 @@ impl ContinuingModel {
                 "stock continuation lost or duplicated messages".into(),
             ));
         }
-        if [0, 1, 10, 100, 1_000].contains(&dispatch.step) {
+        if [0, 1, 10].contains(&dispatch.step) || dispatch.step == self.turns {
             let canonical = crate::contract::canonical_json_bytes(request.request())?;
             if request.bytes() != canonical
                 || request.request_digest() != *blake3::hash(&canonical).as_bytes()
@@ -70,10 +69,28 @@ impl ModelProvider for ContinuingModel {
     }
 }
 
-#[tokio::test]
-async fn one_stock_turn_continues_its_admitted_request_from_one_to_a_thousand_steps() -> Result<()>
-{
-    for turns in [1, 16, 17, 100, 1_000] {
+#[test]
+fn one_stock_turn_preserves_admitted_continuations_across_step_limits() -> Result<()> {
+    use crate::filesystem::ExecutionReplayObservation as ReplayObservation;
+    use acyclic_test_support::differential::observe;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let visits =
+        |trace: &[ReplayObservation], event| trace.iter().filter(|kind| **kind == event).count();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
+        crate::AgentId::new(),
+        65_536,
+    ))?;
+    let journal = storage.journal();
+    let journal = journal.as_ref();
+    // Exercise both sides of the message-vector growth boundary and each step
+    // limit outcome here. The shared continuation properties measure encoding,
+    // validation and buffer growth through 1,000 messages independently.
+    for turns in [1, 16, 17, 32] {
         let budgets = if turns == 17 {
             vec![None, Some(1), Some(turns + 1)]
         } else {
@@ -82,7 +99,6 @@ async fn one_stock_turn_continues_its_admitted_request_from_one_to_a_thousand_st
         for max_steps in budgets {
             let provider = Arc::new(ContinuingModel {
                 turns,
-                warm: true,
                 seen: AtomicUsize::new(0),
             });
             let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
@@ -105,21 +121,18 @@ async fn one_stock_turn_continues_its_admitted_request_from_one_to_a_thousand_st
                 input: ModelContent::Text("input".into()),
                 selected_context: None,
             };
-            let issuer = crate::core::AuthorityRoot::new(
-                "continuation",
-                [89; 32],
-                crate::core::Authority {
-                    kind: crate::core::AggregateKind::Conversation,
-                    id: crate::ConversationId::from_bytes([89; 16]).to_string(),
-                },
+            // Capture the shipped ordinary entry point, including the real
+            // authenticated journal. No fixture substitutes its indexed reads.
+            let (result, _trace) = observe::<_, _, ReplayObservation>(
+                || (),
+                |()| runtime.block_on(executor.execute_progress(input.clone(), journal)),
             );
-            let journal = Journal {
-                8: Some(issuer.verifier(&mut None)?),
-                ..Default::default()
-            };
-            let result = StockExecution::ordinary(&executor)
-                .execute_progress(&input, &journal)
-                .await;
+            #[cfg(not(target_arch = "wasm32"))]
+            assert_eq!(
+                visits(&_trace, ReplayObservation::Requested),
+                0,
+                "ordinary continuation requested journal replay at {turns} steps ({max_steps:?})"
+            );
             if let Some(maximum) = max_steps.filter(|maximum| *maximum <= turns) {
                 assert!(
                     matches!(result, Err(Error::Conflict(message)) if message == "executor step limit reached")
@@ -139,12 +152,66 @@ async fn one_stock_turn_continues_its_admitted_request_from_one_to_a_thousand_st
             assert_eq!(output.text, "done");
             assert_eq!(output.steps, turns + 1);
             #[cfg(feature = "research")]
-            assert!(
-                output.journal_cut.is_none(),
-                "unsupported receipts cannot certify closure"
+            {
+                let cut = output
+                    .journal_cut
+                    .expect("persisted terminal append receipt");
+                assert_eq!(cut.version, 1);
+                assert_eq!(cut.operation, input.operation_id);
+                let (_, records) =
+                    runtime.block_on(StockExecution::ordinary(&executor).model_records(
+                        journal,
+                        input.operation_id,
+                        turns,
+                        ModelPurpose::Response,
+                    ))?;
+                let terminal = records
+                    .iter()
+                    .find(|record| {
+                        matches!(
+                            &record.event,
+                            ExecutionEvent::Model { usage: Some(_), .. }
+                                | ExecutionEvent::ModelInline { usage: Some(_), .. }
+                        )
+                    })
+                    .expect("original terminal usage");
+                assert_eq!(cut.sequence, terminal.sequence);
+            }
+            let (replayed, _trace) = observe::<_, _, ReplayObservation>(
+                || (),
+                |()| runtime.block_on(executor.execute(input.clone(), journal)),
             );
+            let replayed = replayed?;
+            #[cfg(not(target_arch = "wasm32"))]
+            assert_eq!(
+                visits(&_trace, ReplayObservation::Requested),
+                0,
+                "restored continuation requested journal replay at {turns} steps ({max_steps:?})"
+            );
+            assert_eq!(replayed.text, output.text);
+            assert_eq!(replayed.steps, output.steps);
+            #[cfg(feature = "research")]
+            assert_eq!(replayed.journal_cut, output.journal_cut);
             assert_eq!(tool.0.load(Ordering::SeqCst), turns as usize);
             assert_eq!(provider.seen.load(Ordering::SeqCst), turns as usize + 1);
+            // Read one original record through the same journal's replay
+            // entry point. Indexed point reads share the record decoder, so
+            // observe replay requests separately from decoded records. This
+            // control keeps both observations connected to the real journal.
+            #[cfg(not(target_arch = "wasm32"))]
+            if turns == 32 {
+                let (record, _trace) = observe::<_, _, ReplayObservation>(
+                    || (),
+                    |()| {
+                        runtime.block_on(async {
+                            journal.replay(input.operation_id, 0, 1, None)?.await
+                        })
+                    },
+                );
+                assert_eq!(record?.len(), 1);
+                assert_eq!(visits(&_trace, ReplayObservation::Requested), 1);
+                assert_eq!(visits(&_trace, ReplayObservation::Decoded), 1);
+            }
         }
     }
     Ok(())
@@ -266,7 +333,6 @@ async fn continued_tool_results_stop_before_aggregate_render_overflow_is_publish
     };
     let provider = Arc::new(ContinuingModel {
         turns: 10,
-        warm: true,
         seen: AtomicUsize::new(0),
     });
     let executor = uncompacted_executor(

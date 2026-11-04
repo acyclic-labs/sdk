@@ -97,6 +97,13 @@ mod traits;
 use summary::*;
 use summary_cache::SummaryCache;
 
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ExecutionReplayObservation {
+    Requested,
+    Decoded,
+}
+
 /// Bound on one journal payload. A journal records harness-owned
 /// execution state, not admitted content, so it takes no content bound;
 /// this is the largest exactly representable length.

@@ -1,0 +1,12 @@
+diff --git a/rust/crates/stream/src/runtime/sources.rs b/rust/crates/stream/src/runtime/sources.rs
+--- a/rust/crates/stream/src/runtime/sources.rs
++++ b/rust/crates/stream/src/runtime/sources.rs
+@@ -42,7 +42,7 @@ impl Wake {
+                 self.queued.store(0, Ordering::Release);
+                 return;
+             }
+-            self.queued.swap(0, Ordering::AcqRel);
++            self.queued.store(0, Ordering::Release);
+         };
+         if !late {
+             reset();

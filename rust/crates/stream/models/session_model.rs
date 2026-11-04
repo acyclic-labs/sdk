@@ -9,7 +9,6 @@ use acyclic_stream::{StreamSelection, wire};
 mod sync;
 use sync::{Arc, AtomicU64, Mutex, Ordering};
 
-mod cancellation;
 mod checked;
 #[path = "../../stream-napi/src/eager.rs"]
 mod eager;
@@ -54,6 +53,42 @@ fn wake_probe(
     (count, wake)
 }
 
+fn waiter_replacement<T>(
+    poll: impl Fn(&std::task::Waker) -> std::task::Poll<T>,
+    publish: impl FnOnce(),
+    unlocked: impl Fn() -> bool + Send + Sync + 'static,
+) {
+    struct RetiringWake(Box<dyn Fn() + Send + Sync>);
+    impl std::task::Wake for RetiringWake {
+        fn wake(self: std::sync::Arc<Self>) {
+            panic!("the replaced waiter must not be notified");
+        }
+    }
+    impl Drop for RetiringWake {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let retired = Arc::new(AtomicU64::new(0));
+    let observed = Arc::clone(&retired);
+    let previous = std::task::Waker::from(std::sync::Arc::new(RetiringWake(Box::new(move || {
+        assert!(
+            unlocked(),
+            "the replaced waiter must retire outside its lock"
+        );
+        observed.fetch_add(1, Ordering::SeqCst);
+    }))));
+    assert!(poll(&previous).is_pending());
+    drop(previous);
+    assert_eq!(retired.load(Ordering::SeqCst), 0);
+    let (notified, current) = wake_count();
+    assert!(poll(&current).is_pending());
+    assert_eq!(retired.load(Ordering::SeqCst), 1);
+    publish();
+    assert_eq!(notified.0.load(Ordering::SeqCst), 1);
+    assert!(poll(&current).is_ready());
+}
+
 #[test]
 fn cursor_consumption_and_movement_are_atomic() {
     cursor(false);
@@ -91,9 +126,15 @@ fn cursor(broken: bool) {
 
 // The retired child-only opaque consumer is mapped in README.md. The retained
 // oracle races the real anchored record/progress cut against generation fencing.
-fn anchored_cursor(broken: bool, progress_update: bool) {
+fn anchored_cursor(broken: u8, progress_update: bool) {
     loom::model(move || {
-        let cursor = Arc::new(progress::Progress::with_preceding(0, Some([1; 32])));
+        let cursor = Arc::new(progress::Progress::from_cursor(
+            &wire::SessionCursor {
+                next: 0,
+                opaque: Default::default(),
+            },
+            Some([1; 32]),
+        ));
         let consuming = Arc::clone(&cursor);
         let consuming = loom::thread::spawn(move || {
             if progress_update {
@@ -104,14 +145,19 @@ fn anchored_cursor(broken: bool, progress_update: bool) {
         });
         let moving = Arc::clone(&cursor);
         let moving = loom::thread::spawn(move || {
-            let early = if broken {
+            let early = if broken == 1 {
                 Some(moving.subscription()?.preceding)
             } else {
                 None
             };
             assert_eq!(moving.fence()?, 2);
             let position = moving.subscription()?;
-            Ok::<_, StreamError>((position.next, early.unwrap_or(position.preceding)))
+            let anchor = match broken {
+                1 => early.unwrap(),
+                2 => Some([1; 32]),
+                _ => position.preceding,
+            };
+            Ok::<_, StreamError>((position.next, anchor))
         });
         let consumed = consuming.join().unwrap().unwrap();
         let position = moving.join().unwrap().unwrap();
@@ -129,22 +175,32 @@ fn anchored_cursor(broken: bool, progress_update: bool) {
         let retained = cursor.subscription().unwrap();
         assert_eq!((retained.next, retained.preceding), position);
         assert!(retained.opaque.is_empty());
+        assert!(cursor.consume_record(2, position.0, [4; 32]).unwrap());
+        let replaced = cursor.subscription().unwrap();
+        assert_eq!(replaced.next, position.0 + 1);
+        assert_eq!(replaced.preceding, Some([4; 32]));
+        assert!(replaced.opaque.is_empty());
     });
 }
 #[test]
 fn anchored_consumption_and_movement_keep_one_cursor() {
-    anchored_cursor(false, false);
-    anchored_cursor(false, true);
+    anchored_cursor(0, false);
+    anchored_cursor(0, true);
 }
 #[test]
 #[should_panic(expected = "resume must atomically retain the anchored cursor")]
 fn anchored_record_negative_control_splits_the_resume_cut() {
-    anchored_cursor(true, false);
+    anchored_cursor(1, false);
 }
 #[test]
 #[should_panic(expected = "resume must atomically retain the anchored cursor")]
 fn anchored_progress_negative_control_splits_the_resume_cut() {
-    anchored_cursor(true, true);
+    anchored_cursor(1, true);
+}
+#[test]
+#[should_panic(expected = "resume must atomically retain the anchored cursor")]
+fn anchored_record_negative_control_reuses_the_initial_commit() {
+    anchored_cursor(2, false);
 }
 
 #[test]

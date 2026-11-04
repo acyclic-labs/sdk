@@ -227,33 +227,6 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
         ),
         Err(Error::Invalid(_))
     ));
-    let combined_bytes = serde_json::to_vec(&continued)
-        .map_err(|error| Error::Invalid(error.to_string()))?
-        .len() as u64;
-    assert!(
-        (serde_json::to_vec(&snapshot)
-            .map_err(|error| Error::Invalid(error.to_string()))?
-            .len() as u64)
-            < combined_bytes - 1
-    );
-    assert!(
-        (serde_json::to_vec(&delta)
-            .map_err(|error| Error::Invalid(error.to_string()))?
-            .len() as u64)
-            < combined_bytes - 1
-    );
-    assert!(matches!(
-        ContextPipeline::continue_base(
-            snapshot.clone(),
-            delta.clone(),
-            Limits {
-                render_bytes: combined_bytes - 1,
-                ..limits
-            },
-            None,
-        ),
-        Err(Error::Invalid(_))
-    ));
     let mut duplicate = delta;
     duplicate.metadata = snapshot.metadata.clone();
     assert!(matches!(

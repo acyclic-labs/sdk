@@ -1,0 +1,12 @@
+diff --git a/rust/crates/stream/src/session/client/progress.rs b/rust/crates/stream/src/session/client/progress.rs
+--- a/rust/crates/stream/src/session/client/progress.rs
++++ b/rust/crates/stream/src/session/client/progress.rs
+@@ -185,7 +185,7 @@ impl Progress {
+         conflated: bool,
+     ) -> Result<bool, StreamError> {
+         let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+-        if generation != state.generation || sequence < state.position.next {
++        if sequence < state.position.next {
+             return Ok(false);
+         }
+         let bootstrap = if let Some((selected, expected)) = state.bootstrap {

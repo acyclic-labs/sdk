@@ -1,0 +1,16 @@
+diff --git a/rust/crates/harness/src/client/diff.rs b/rust/crates/harness/src/client/diff.rs
+index 926fc80052..a6f058b0f9 100644
+--- a/rust/crates/harness/src/client/diff.rs
++++ b/rust/crates/harness/src/client/diff.rs
+@@ -351,9 +351,10 @@ impl DiffFollow<'_> {
+                 }
+             }
+         }
++        let publication = self.pending.take()?;
+         let result = self
+             .view
+-            .apply(self.pending.as_ref()?, self.reader, self.limits)
++            .apply(&publication, self.reader, self.limits)
+             .await;
+         self.pending = None;
+         self.ended = result.is_err();

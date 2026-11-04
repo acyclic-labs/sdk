@@ -1,6 +1,61 @@
 use super::super::super::*;
 use super::super::fixture::fixture;
 
+/// Dispatch a queued Open on either side of its real cursor's cancellation.
+pub fn verify_cancelled_queued_open() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _entered = runtime.enter();
+    let channel = tonic::transport::Endpoint::from_static("http://model.invalid").connect_lazy();
+    loom::model(move || {
+        let (mut pool, _) = fixture(&channel);
+        pool.routes.clear();
+        let client = super::super::fixture::client(&pool);
+        let progress = Arc::new(Progress::new(0));
+        let (records, receiver) = mpsc::channel(2);
+        let cursor = client.cursor(3, Arc::clone(&progress), receiver).unwrap();
+        let (ready, _opened) = oneshot::channel();
+        let command = Command::Open(Box::new(OpenCommand {
+            revisions: Arc::clone(&client.revisions),
+            filter: None,
+            credential: 0,
+            id: 3,
+            attempt_epoch: 0,
+            acknowledge: false,
+            kind: Kind::Follow(wire::SessionFollow {
+                resource: crate::wire_codec::session::stream_resource("queued"),
+                delivery: wire::SessionDelivery::All as i32,
+                ..Default::default()
+            }),
+            raw: false,
+            progress: Arc::clone(&progress),
+            records,
+            ready,
+            observation: cursor.observation.operation.clone(),
+            input: None,
+        }));
+        let cancellation = loom::thread::spawn(move || drop(cursor));
+        // Dispatch can consume removal before the already queued Open.
+        if let Some(id) = pool.removed.try_next().unwrap() {
+            pool.remove(id).unwrap();
+        }
+        pool.command(command).unwrap();
+        cancellation.join().unwrap();
+        if let Some(id) = pool.removed.try_next().unwrap() {
+            pool.remove(id).unwrap();
+        }
+        assert!(
+            !pool.routes.contains_key(&3),
+            "cancellation must fence an open even after removal was handled"
+        );
+        assert!(progress.cancelled());
+        assert_eq!(pool.active.load(Ordering::Acquire), 0);
+        assert!(!pool.admissions.interested("good"));
+    });
+}
+
 /// The real Cursor drop, removal signal and Open dispatcher, with both wake
 /// registration orders. No Tokio synchronization is used for model ordering.
 pub fn verify_cancel_before_open(broken: bool) {

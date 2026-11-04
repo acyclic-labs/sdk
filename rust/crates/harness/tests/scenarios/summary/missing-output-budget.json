@@ -1,1 +1,2 @@
-{"turns":[],"expect":{"error":"summary requires a caller-selected output token budget","request_count":0}}
+{"turns":[],"expect":{"error":"unknown output capacity requires a role reservation","request_count":0},
+  "capacity":{"output_tokens":null}}

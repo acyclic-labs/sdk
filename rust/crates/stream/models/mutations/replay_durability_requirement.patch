@@ -1,0 +1,11 @@
+diff --git a/rust/crates/stream/src/local/local_stream.rs b/rust/crates/stream/src/local/local_stream.rs
+--- a/rust/crates/stream/src/local/local_stream.rs
++++ b/rust/crates/stream/src/local/local_stream.rs
+@@ -556,7 +556,6 @@
+             {
+                 work.reserve_durability(1)?;
+             }
+-            journal.required = journal.appended;
+         }
+         Ok(())
+     }

@@ -1,0 +1,11 @@
+diff --git a/rust/crates/stream/src/session/client/outbound.rs b/rust/crates/stream/src/session/client/outbound.rs
+--- a/rust/crates/stream/src/session/client/outbound.rs
++++ b/rust/crates/stream/src/session/client/outbound.rs
+@@ -81,7 +81,6 @@ impl<T> Outbound<T> {
+             state.bytes = 0;
+             (std::mem::take(&mut state.frames), state.reader.take())
+         };
+-        self.closed.set(true)?;
+         if let Some(wake) = wake {
+             wake.wake();
+         }

@@ -7,9 +7,7 @@ repository root, the explicit compiler routing is:
 RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream-models --features model-checking --test session_model
 ```
 
-On Linux, pass the wrapper explicitly through `the shell` as
-`--env RUSTC_WORKSPACE_WRAPPER=/work/src/scripts/loom-rustc.sh`. An ordinary Rust
-compile without that routing deliberately refuses this model target. Compiling
+An ordinary Rust compile without that routing deliberately refuses this model target. Compiling
 the target does not execute or qualify its schedules or negative controls.
 
 The model target requires the existing `model-checking` feature. Ordinary
@@ -31,8 +29,10 @@ Stream owner at `b5899587789ad2152b29beaab1ee85e843a25645`:
 | Disable a parked source; keep-polling negative | The same production source queues stop consumption after credit removal. Re-admission must deliver the original queued record. |
 | Generated reserved-slot capacities | The existing frame/record-size inputs exercise actual source admission for uncredited latest, credited ordinary, and globally full cases. |
 | Cursor movement and stale generation | Included `client/progress.rs`, with the real generated `acyclic_stream::wire::SessionCursor`. |
-| Atomic anchored resume cut; split-observation negative | Both `consume_record` and `consume_progress` race `fence` and `subscription`. Sequence and preceding immutable commit must move together; both stale consumption methods must refuse. |
+| Atomic anchored resume cut; split-observation and initial-anchor negatives | Both `consume_record` and `consume_progress` race `fence` and `subscription`. Sequence and preceding immutable commit must move together; both stale consumption methods must refuse, then the new generation must advance the same cut. This single race subsumes the former duplicate `checked::moving`; the generated checked-history fold remains distinct. |
 | Conflated latest movement | `tests/client_pool_loom.rs` runs the production `session::verify_latest_progress` model and its generation-split negative control. The standalone target does not repeat that same pair. |
+| Cancellation of a queued Open | `tests/client_pool_loom.rs` races the actual cursor drop with `Pool::command` and the original removal event. It checks route retirement, pending membership, the cancellation fence and the last interest count. The former standalone `installed` boolean did not execute the dispatcher or receiver closure. |
+| Initial EOF retry yield | `client/pool/retry_model.rs` calls the real `Pool::reconnect`, polls its dial, then applies completion after cancellation. Its test clock holds the original executor delay; its typed `Welcome` is internal model input, not captured transport evidence. |
 
 The former child-only opaque-consumption model called the removed
 `consume_opaque`. The product retired child subscriptions: `session.proto`
@@ -49,9 +49,186 @@ source wake/recheck models remain distinct from these admission histories.
 
 The record and progress split-observation controls are independent test functions,
 so either expected panic cannot prevent the other control from reaching its pair
-assertion. These source changes have not executed either control.
+assertion.
 
 The source-admission fixtures use `binding = None`. They establish that fixture's
 credit/consumption contract; authority-bound non-call follows retain their actual
 bounded lookahead and are not qualified by this fixture as never polling after
 credit removal.
+
+The retry clock's bypass control alone does not establish that the oracle detects
+removing the production delay. The kept source mutation exercises that boundary:
+
+```sh
+git apply rust/crates/stream/models/mutations/initial_retry_delay.patch
+RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream --no-default-features --features grpc,model-checking --test main client_pool_loom::initial_eof_retry_yields_to_deadline_and_cancellation -- --exact --nocapture
+git apply --reverse rust/crates/stream/models/mutations/initial_retry_delay.patch
+```
+
+The mutated source must fail at `initial retry must yield before another physical
+RPC`; restore it before running the same command as the positive control. This
+checks scheduling at the executor entrance, not physical RPC timing, wire refusal
+metadata, membership changes or transport retirement.
+
+The ordinary `sources::tests::every_local_and_global_credit_combination_matches_the_admission_contract`
+matrix also checks follow and finite-reply bindings admitted by the production
+authority methods, plus a held progress watermark. It traverses the actual source
+queues for every boolean credit/terminal/progress state and pending queue lengths
+around the lookahead boundary. The existing signed test credential is SDK-generated;
+the typed source events are internal scheduler inputs, not recorded external wire.
+This component check does not qualify credential rotation or transport lifecycle.
+
+`mutations/source_progress_fence.patch` removes the production progress fence.
+The unchanged matrix command must then fail at `source admission differs`:
+
+```sh
+cargo test --locked -p acyclic-stream --no-default-features --features session --lib session::sources::tests::every_local_and_global_credit_combination_matches_the_admission_contract -- --exact --nocapture
+```
+
+Restore the patch before using that command as the positive control. The former
+matrix always supplied no binding and no progress; it could not detect this fence
+omission or a mistaken credit-free lookahead for finite replies.
+
+The local replay model calls the production `require_accepted` durability handoff,
+`flush_through` and publication wait. Its `REQUIRE = false` control selects a
+model branch; it does not itself demonstrate detection of a production defect.
+`mutations/replay_durability_requirement.patch` removes the production promotion
+of the original appended frame into the required durability cut. Apply it and run
+the unchanged positive oracle:
+
+```sh
+git apply rust/crates/stream/models/mutations/replay_durability_requirement.patch
+RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream --no-default-features --features local,model-checking --test main local_replay_model::replay_and_flush_preserve_durability -- --exact --nocapture
+git apply --reverse rust/crates/stream/models/mutations/replay_durability_requirement.patch
+```
+
+The mutant must fail at `replay omitted the original durability requirement`;
+the same command on restored production source must pass. This model exercises
+the unreserved handoff with no native work budget. Its volatile journal fixture
+and inline blocking adapter do not qualify native reservation, root ownership,
+physical worker cancellation or OS durability failures. The public reopen and
+emitted-history recovery properties remain separate and are kept.
+
+The latest-consumption model calls the production `Progress::consume_latest`,
+`fence` and `next` on the same cursor lock. Its existing broken branch writes the
+cursor directly; `mutations/progress_generation_fence.patch` instead removes the
+shipping generation check without changing the model or its positive oracle:
+
+```sh
+git apply rust/crates/stream/models/mutations/progress_generation_fence.patch
+RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream --no-default-features --features grpc,model-checking --test main client_pool_loom::latest_consumption_and_move_fence_share_one_application_cut -- --exact --nocapture
+git apply --reverse rust/crates/stream/models/mutations/progress_generation_fence.patch
+```
+
+The mutant must fail at `a stale delivery cannot advance the fenced resume cut`;
+restored source must pass the same command. This model races one conflated
+consumption against one generation fence. It does not qualify bootstrap or
+checked-record admission, cursor overflow, transport loss, physical restarts or
+multiple placement participants. The sequential generation property and distinct
+strict-record and overflow refusal controls remain separate.
+
+The source recheck model polls the real `ReadySources` scheduler. Its visibility
+history publishes a relaxed payload through a coalesced wake, then checks the
+payload inside the provider poll before joining the writer. The relaxed
+notification observation supplies no acquire edge. The existing `release_only`
+branch is a model-selected fault; `mutations/source_wake_acquire.patch` instead
+removes the acquire from the shipping hint reset without changing the model:
+
+```sh
+git apply rust/crates/stream/models/mutations/source_wake_acquire.patch
+RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream --no-default-features --features grpc,model-checking --test main client_pool_loom::source_deduplication_survives_pending_rechecks_during_drain -- --exact --nocapture
+git apply --reverse rust/crates/stream/models/mutations/source_wake_acquire.patch
+```
+
+The mutant must fail at `coalesced wake lost its publication`; restored production
+must pass the same command. This qualifies the atomic publication edge and the
+existing repeated-recheck history through the production scheduler and its Loom
+synchronization adapter. The source and payload are internal model inputs;
+external wire, authority changes, producer loss, physical restarts, non-owner
+topology and source coverage remain separate. Ordinary `Arc` reference counts
+are not instrumented by Loom. One modeled source does not establish constant
+cost across the scheduler's source map or multiple queued hints.
+
+The outbound response-reader model polls the production `Outbound::cancelled`
+future while `Outbound::close` publishes through its original `Gate`. A queued
+frame reader and a response reader have separate wake registrations. Removing
+the gate publication must therefore be detected independently of draining frames
+or waking the queued frame reader:
+
+```sh
+git apply rust/crates/stream/models/mutations/outbound_close_publication.patch
+RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream-models --features model-checking --test session_model outbound::closing_a_link_wakes_its_response_reader_without_nesting_locks -- --exact --nocapture
+git apply --reverse rust/crates/stream/models/mutations/outbound_close_publication.patch
+```
+
+The mutant must fail at `closing a node must cancel its pending response read`;
+restored production must pass the same command. The original model and its wake
+lock-order assertion stay unchanged. This checks explicit close publication with
+one reader through included production source and its Loom adapter. It does not
+qualify implicit producer loss, transport retirement, poison recovery, value
+destructors, external wire, physical restarts or multiple nodes.
+
+The Signal and Gate registration models include the shipping notification
+methods. Their original wake callbacks inspect the corresponding mutex with
+`try_lock`, before recording the notification. The existing private-state fault
+branches are distinct from moving the actual shipping guard across its callback:
+
+```sh
+git apply rust/crates/stream/models/mutations/notification_lock_order.patch
+RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream-models --features model-checking --test session_model registration_cannot_lose_a_wakeup -- --nocapture
+git apply --reverse rust/crates/stream/models/mutations/notification_lock_order.patch
+```
+
+This selection contains the two original Signal/Gate positive registration
+models. The mutant must fail both original `wake must run outside` lock-order
+assertions; byte-identical restored production must pass both. The model bodies,
+callbacks and assertions stay unchanged. This checks one producer and waiter
+through the included production methods and Loom mutexes; waiter replacement,
+producer loss, poisoning, value destruction, external wire, physical restarts and
+multiple nodes remain separate obligations.
+
+Waiter replacement has a separate callback: dropping the last retained waker
+may run user destruction code even when no notification occurs. One shared
+observer checks the original Signal, Gate and Outbound poll methods. It releases
+the caller's old waker, replaces the stored waiter, requires destruction outside
+the original mutex, and then requires notification and readiness of the new
+waiter. The registration race models above remain necessary.
+
+```sh
+git apply rust/crates/stream/models/mutations/waiter_retirement_lock.patch
+RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream-models --features model-checking --test session_model replacing_waiter_retires_previous_outside_lock -- --nocapture
+git apply --reverse rust/crates/stream/models/mutations/waiter_retirement_lock.patch
+```
+
+The mutation retires each previous waker while holding its shipping mutex. All
+three unchanged observer assertions must fail; restored production must pass all
+three controls. Existing notification controls have no destructor observer and
+must not be credited with detecting this defect. This deterministic replacement
+history uses actual included production bodies and Loom mutexes. Ordinary waker
+Arc reference counts are not instrumented. RawWaker clone callbacks, concurrent
+replacement, producer loss, poisoned mutexes, queued-value destruction, external
+wire, physical restarts and multiple nodes remain separate obligations. No
+production operations or allocations are added.
+
+The existing pool peer-isolation model also retains two silent transport
+responses through the shipping `Pool::read` method. Production frame rejection
+drops the rejected peer's actual `Link`. Its pending read must be notified,
+complete with the original node and epoch, and release its response when the
+dispatcher discards it. The healthy peer's response must remain pending and
+retained while its actual route delivers a record and admits another open.
+
+```sh
+git apply rust/crates/stream/models/mutations/response_read_cancellation.patch
+RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream --no-default-features --features grpc,model-checking --test main client_pool_loom::malformed_node_cannot_terminate_independent_routes_or_opens -- --exact --nocapture
+git apply --reverse rust/crates/stream/models/mutations/response_read_cancellation.patch
+```
+
+The mutation makes the actual read wait only for the peer. The unchanged model
+must reject it at `link loss must notify its pending response read`; restored
+production must pass. The response streams deliberately never produce bytes or
+EOF: this checks ownership and cancellation, not a wire decoder or physical
+transport. The fixture bypasses public connection admission. Registration races
+remain covered by the component models; current-main public admission, real
+transport retirement, source coverage and physical restarts remain separate.
+No production operations, allocations or waits are added. This two-node history
+does not prove asymptotic cost of the pool's maps or route scans.

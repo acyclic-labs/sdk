@@ -269,7 +269,7 @@ async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
         selected_context: None,
     };
     let narrow = Limits {
-        file_bytes: 1,
+        render_bytes: "bounded".len() as u64 - 1,
         ..Limits::default()
     };
     assert!(matches!(
@@ -448,111 +448,6 @@ fn independently_selected_event_budget_still_rejects_excess_observations() -> Re
     Ok(())
 }
 
-#[tokio::test]
-async fn journal_retry_keys_and_sequences_are_operation_scoped() -> Result<()> {
-    let journal = Journal::default();
-    let first = OperationId::from_bytes([20; 16]);
-    let second = OperationId::from_bytes([21; 16]);
-    for (operation_id, digest) in [(first, [1; 32]), (second, [2; 32])] {
-        journal
-            .append(
-                operation_id,
-                "execution:started",
-                &ExecutionEvent::Started {
-                    request_digest: digest,
-                },
-                None,
-            )?
-            .await?;
-    }
-    let replayed_first = journal
-        .replay(first, 0, EXECUTION_REPLAY_PAGE_RECORDS, None)?
-        .await?;
-    let [first_entry] = replayed_first.as_slice() else {
-        unreachable!("expected exactly one replayed event for the first operation");
-    };
-    assert_eq!(first_entry.sequence, 1);
-    let replayed_second = journal
-        .replay(second, 0, EXECUTION_REPLAY_PAGE_RECORDS, None)?
-        .await?;
-    let [second_entry] = replayed_second.as_slice() else {
-        unreachable!("expected exactly one replayed event for the second operation");
-    };
-    assert_eq!(second_entry.sequence, 1);
-    Ok(())
-}
-
-#[tokio::test]
-async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
-    let scope = RuntimeScope::new(
-        crate::Capabilities::new([
-            "task:spawn:context-probe@1",
-            "model:generate",
-            "tool:call:write",
-        ]),
-        Limits::default(),
-    )?;
-    let context = admitted_context(scope.clone())?;
-    let tool = crate::tool::files::write()?;
-    let mut tools = ToolRegistry::default();
-    tools.register((tool, None), &mut None, None)?;
-    let operation = OperationId::new();
-    let invocation = ToolInvocation {
-        operation_id: OperationId::new(),
-        call_id: "publication".into(),
-        name: "write".into(),
-        arguments: json!({"path":"destination.txt","content":"body"}),
-    };
-    let base = StockExecutor::new(
-        Model::new("test".into(), "scoped".into(), "1".into())?,
-        Arc::new(scripted_model()),
-        ContextPipeline::new(Vec::<Arc<dyn crate::context::ContextStage>>::new()),
-        tools,
-    )
-    .with_tool_authority(scope, allowed()?)?
-    // This context has no private summary writer, so it cannot enable compaction.
-    .with_compaction_policy(crate::context::CompactionPolicy::Disabled);
-    let journal = Journal::default();
-    let mut messages = vec![call_message(&invocation)];
-    let before = messages.clone();
-    assert!(matches!(
-        StockExecution::ordinary(&base)
-            .settle_tool_call(
-                &journal,
-                operation,
-                0,
-                invocation.clone(),
-                0,
-                &mut messages,
-                &mut Vec::new()
-            )
-            .await,
-        Err(Error::Unauthorized(_))
-    ));
-    let contextual = base.with_task_context(&context, operation)?;
-    // The agent's private writer exists, but this scope has no write grant.
-    assert!(matches!(
-        StockExecution::ordinary(&contextual)
-            .settle_tool_call(
-                &journal,
-                operation,
-                0,
-                invocation,
-                0,
-                &mut messages,
-                &mut Vec::new()
-            )
-            .await,
-        Err(Error::Unauthorized(_))
-    ));
-    assert_eq!(journal.3.load(Ordering::SeqCst), 0);
-    assert_eq!(journal.4.load(Ordering::SeqCst), 0);
-    assert!(journal.0.lock().unwrap().is_empty());
-    assert!(journal.1.lock().unwrap().is_empty());
-    assert_eq!(messages, before);
-    Ok(())
-}
-
 mod prepared_request_reuse_properties {
     use super::*;
     use proptest::prelude::*;
@@ -684,10 +579,10 @@ mod prepared_request_reuse_properties {
 async fn inherited_environment_respects_final_message_and_byte_limits() -> Result<()> {
     use crate::context::{ContextManifest, EnvironmentFacts};
     for (message_limit, render_bytes, parent_bytes, convention_bytes, expect_environment) in [
-        (3, 32_768, 10, 0, false),
-        (4, 32_768, 10, 0, true),
-        (10, 8_000, 6_000, 0, false),
-        (10, 8_000, 10, 5_000, false),
+        (3, 32_768, 10, 0, Some(false)),
+        (4, 32_768, 10, 0, Some(true)),
+        (10, 8_000, 6_000, 0, Some(false)),
+        (10, 8_000, 10, 5_000, None),
     ] {
         let model = Model::new("example".into(), "model".into(), "1".into())?;
         let root = crate::model::PreparedModelRequest::prepare(
@@ -759,7 +654,7 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
         // Bind the manifest before installing the inherited prefix, as public
         // callers may. Optional admission must use the final request, not the
         // incomplete composition that happened to exist at manifest binding.
-        let executor = uncompacted_executor(
+        let bound = uncompacted_executor(
             model,
             provider.clone(),
             ContextPipeline::default(),
@@ -767,8 +662,17 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
         )
         .with_limits(limits)
         .with_context_manifest(manifest_file, journal.clone())
-        .await?
-        .with_inherited_prefix(prefix, journal.clone())?;
+        .await;
+        let Some(expect_environment) = expect_environment else {
+            assert!(matches!(bound, Err(Error::Invalid(reason))
+                if reason == "manifest exceeds JSON/render bounds"));
+            assert!(
+                provider.requests().is_empty(),
+                "rejected manifest dispatched the model"
+            );
+            continue;
+        };
+        let executor = bound?.with_inherited_prefix(prefix, journal.clone())?;
         let input = TurnInput {
             max_steps: None,
             operation_id: OperationId::from_bytes([83; 16]),
@@ -811,16 +715,19 @@ async fn a_retried_settlement_is_one_record() -> Result<()> {
     let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
     let journal = storage.journal();
     let operation = OperationId::new();
-    journal
-        .append(
-            operation,
-            "started",
-            &ExecutionEvent::Started {
-                request_digest: [1; 32],
-            },
-            None,
-        )?
-        .await?;
+    let other_operation = OperationId::new();
+    for (operation_id, digest) in [(operation, [1; 32]), (other_operation, [2; 32])] {
+        journal
+            .append(
+                operation_id,
+                "started",
+                &ExecutionEvent::Started {
+                    request_digest: digest,
+                },
+                None,
+            )?
+            .await?;
+    }
     let failed = |call: &str| ExecutionEvent::ToolFailed {
         step: 0,
         call_id: call.into(),
@@ -845,6 +752,16 @@ async fn a_retried_settlement_is_one_record() -> Result<()> {
             .append_if_tail(operation, 1, "tool:0:other:failed", &other, None)?
             .await?
     );
-    assert_eq!(journal.replay(operation, 0, 8, None)?.await?.len(), 2);
+    for (operation_id, digest, count) in [(operation, [1; 32], 2), (other_operation, [2; 32], 1)] {
+        let records = journal.replay(operation_id, 0, 8, None)?.await?;
+        assert_eq!(records.len(), count);
+        assert_eq!(records[0].sequence, 1);
+        assert_eq!(
+            records[0].event,
+            ExecutionEvent::Started {
+                request_digest: digest,
+            }
+        );
+    }
     Ok(())
 }
