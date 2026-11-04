@@ -217,4 +217,24 @@ fn silent_crash_cut_notifies_capture_before_its_deadline() {
     }
     drop(store);
     assert_eq!(run_cut(directory.path(), &snapshots, true, 1), None);
+
+    // An actual namespace-open failure is not a reached cut. Preserve the
+    // child's original native error rather than reporting only its exit code.
+    let rejected = directory.path().join("rejected");
+    let root = rejected.join("run-1/state");
+    std::fs::create_dir_all(root.parent().unwrap()).unwrap();
+    std::fs::write(&root, b"not a directory").unwrap();
+    let original = format!(
+        "{:?}",
+        LocalCoreStateStore::open_owned(&root).err().unwrap()
+    );
+    let failure = std::panic::catch_unwind(|| run_cut(&rejected, &snapshots, true, 1))
+        .expect_err("a failed namespace open must not count as a physical cut");
+    let message = failure
+        .downcast_ref::<String>()
+        .expect("the supervisor must retain the original child error");
+    assert!(
+        message.contains(&original),
+        "original error lost: {message}"
+    );
 }
