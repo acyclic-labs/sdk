@@ -140,8 +140,11 @@ fn measure(replies: [ScriptedTurn; 6]) -> Result<Windows> {
         };
         assert_eq!(
             (observed.open, observed.reopen),
-            ((7, 11), (1, 5)),
-            "open flushes changed: {:?}; reopen: {:?}",
+            // The project volume already has a journal before this open.
+            // Both opens must publish its recovered name before serving it;
+            // reopen also rotates the deferred-publication incarnation.
+            ((7, 12), (1, 6)),
+            "durability windows: {observed:?}; open trace: {:?}; reopen trace: {:?}",
             &writes[cuts[0]..cuts[1]],
             &writes[cuts[7]..cuts[8]]
         );
