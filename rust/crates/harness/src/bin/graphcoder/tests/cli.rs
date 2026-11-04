@@ -907,7 +907,7 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
 }
 
 #[tokio::test]
-async fn catalog_errors_exit_without_terminal_rendering() {
+async fn catalog_errors_exit_with_their_cause_on_stderr() {
     let fixture = fixture();
     let catalog = fixture.settings.join("catalog.json");
     for document in [
@@ -919,9 +919,14 @@ async fn catalog_errors_exit_without_terminal_rendering() {
         }
         let output = graphcoder(&fixture, &catalog, vec!["-p", "hello"], "").await;
         assert!(!output.status.success());
-        // The host API returns the typed error. The CLI only maps its status:
-        // it cannot start a write after the report/shutdown owner has ended.
+        // The host API returns the typed error; the text CLI renders it once,
+        // never the empty stderr that left callers without a cause.
         assert!(output.stdout.is_empty());
-        assert!(output.stderr.is_empty());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.starts_with("graphcoder: ") && stderr.trim_end().len() > "graphcoder:".len(),
+            "{stderr:?}"
+        );
+        assert_eq!(stderr.matches("graphcoder: ").count(), 1, "{stderr:?}");
     }
 }
