@@ -28,134 +28,155 @@ async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
     for (capacity, expected_owned, expected_page_reads) in
         [(4096, 3, 2), (0, 3, 2), (1, 1, 2), (2, 0, 2), (3, 0, 1)]
     {
-        let store = crate::LogicalObjectStore::new(std::sync::Arc::clone(&provider));
-        let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let mut independent = Retained::<Vec<u8>>::allocate(73, &mut work.accounting())?;
-        independent.value.resize(73, 0xa5);
-        let independent_bytes = independent.value.capacity() as u64;
-        let baseline = work.allocations.live_bytes();
-        let cache = OperationReadCache::new(&store, capacity, &mut work.accounting(), None)?;
-        if capacity == 4096 {
-            // Persist distinct canonical chunks through the real provider, then
-            // fill the operation cache through its ordinary read entry point.
-            let objects: Vec<_> = (0..capacity as u64)
-                .map(|value| {
-                    crate::storage::HashedObject::new(
-                        crate::ObjectKind::BlobChunk,
-                        OwnedBytes::from(value.to_le_bytes().to_vec()),
+        let mut measured_peak = u64::MAX;
+        // The observed operation must fit the exact peak of the same physical
+        // reads without an observer. Residency is already on the source ledger.
+        for observed in [false, true] {
+            let custody = crate::kernel::ProofDataCustody::default();
+            let owner = observed.then_some(&custody);
+            let store = crate::LogicalObjectStore::new(std::sync::Arc::clone(&provider));
+            let mut work = crate::AuthorityWork::new(
+                WorkBudget {
+                    peak_allocation_bytes: measured_peak,
+                    ..WorkBudget::UNBOUNDED
+                },
+                &cancellation,
+            );
+            let mut independent = Retained::<Vec<u8>>::allocate(73, &mut work.accounting())?;
+            independent.value.resize(73, 0xa5);
+            let independent_bytes = independent.value.capacity() as u64;
+            let baseline = work.allocations.live_bytes();
+            let cache = OperationReadCache::new(&store, capacity, &mut work.accounting(), owner)?;
+            if capacity == 4096 {
+                // Persist distinct canonical chunks through the real provider, then
+                // fill the operation cache through its ordinary read entry point.
+                let objects: Vec<_> = (0..capacity as u64)
+                    .map(|value| {
+                        crate::storage::HashedObject::new(
+                            crate::ObjectKind::BlobChunk,
+                            OwnedBytes::from(value.to_le_bytes().to_vec()),
+                        )
+                    })
+                    .collect();
+                store
+                    .put_many_hashed(
+                        &objects,
+                        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
                     )
-                })
-                .collect();
-            store
-                .put_many_hashed(
-                    &objects,
-                    &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+                    .await?;
+                let warm: Vec<_> = objects
+                    .iter()
+                    .map(|object| ObjectReadRequest {
+                        object_id: object.object_id(),
+                        maximum_bytes: object.bytes().len() as u64,
+                    })
+                    .collect();
+                let reads = crate::kernel::read_objects_with_accounting(
+                    &cache,
+                    &warm,
+                    &mut work.accounting(),
+                    &cancellation,
                 )
-                .await?;
-            let warm: Vec<_> = objects
-                .iter()
-                .map(|object| ObjectReadRequest {
-                    object_id: object.object_id(),
-                    maximum_bytes: object.bytes().len() as u64,
-                })
-                .collect();
+                .await
+                .map_err(|error| format!("warming {capacity} operation cache entries: {error}"))?;
+                assert_eq!(cache.lock_state().entry_count, capacity);
+                let retained = crate::kernel::file_read::retained_object_reads_bytes(
+                    &reads.value,
+                    reads.value.capacity(),
+                )?;
+                drop(reads.value);
+                crate::kernel::file_read::release_read_allocation(
+                    retained,
+                    reads.custody,
+                    &mut work.accounting(),
+                )?;
+            }
             let reads = crate::kernel::read_objects_with_accounting(
                 &cache,
-                &warm,
+                &requests,
                 &mut work.accounting(),
                 &cancellation,
             )
             .await
-            .map_err(|error| format!("warming {capacity} operation cache entries: {error}"))?;
-            assert_eq!(cache.lock_state().entry_count, capacity);
+            .map_err(|error| format!("owned miss batch at cache capacity {capacity}: {error}"))?;
+            assert_eq!(reads.value.len(), requests.len());
+            assert_eq!(reads.value[0].bytes.as_ref(), b"first");
+            assert_eq!(reads.value[1].bytes.as_ref(), b"second");
+            assert_eq!(reads.value[2].bytes.as_ref(), b"first");
+            let owned = reads
+                .value
+                .iter()
+                .filter(|read| matches!(read.retention, ObjectReadRetention::Owned { .. }))
+                .count();
+            assert_eq!(owned, expected_owned);
             let retained = crate::kernel::file_read::retained_object_reads_bytes(
                 &reads.value,
                 reads.value.capacity(),
             )?;
+            let state = cache.lock_state();
+            let resident =
+                OperationReadCache::<()>::slot_bytes(&state)? + state.retained_owned_bytes;
+            drop(state);
+            assert_eq!(
+                work.allocations.live_bytes(),
+                baseline + resident + retained
+            );
             drop(reads.value);
             crate::kernel::file_read::release_read_allocation(
                 retained,
                 reads.custody,
                 &mut work.accounting(),
             )?;
-        }
-        let reads = crate::kernel::read_objects_with_accounting(
-            &cache,
-            &requests,
-            &mut work.accounting(),
-            &cancellation,
-        )
-        .await
-        .map_err(|error| format!("owned miss batch at cache capacity {capacity}: {error}"))?;
-        assert_eq!(reads.value.len(), requests.len());
-        assert_eq!(reads.value[0].bytes.as_ref(), b"first");
-        assert_eq!(reads.value[1].bytes.as_ref(), b"second");
-        assert_eq!(reads.value[2].bytes.as_ref(), b"first");
-        let owned = reads
-            .value
-            .iter()
-            .filter(|read| matches!(read.retention, ObjectReadRetention::Owned { .. }))
-            .count();
-        assert_eq!(owned, expected_owned);
-        let retained = crate::kernel::file_read::retained_object_reads_bytes(
-            &reads.value,
-            reads.value.capacity(),
-        )?;
-        let state = cache.lock_state();
-        let resident = OperationReadCache::<()>::slot_bytes(&state)? + state.retained_owned_bytes;
-        drop(state);
-        assert_eq!(
-            work.allocations.live_bytes(),
-            baseline + resident + retained
-        );
-        drop(reads.value);
-        crate::kernel::file_read::release_read_allocation(
-            retained,
-            reads.custody,
-            &mut work.accounting(),
-        )?;
-        assert_eq!(work.allocations.live_bytes(), baseline + resident);
-        let before = work.spent().backend_read_operations;
-        // Distinct decode bounds miss the decoded cache while sharing the
-        // operation cache's original encoded object.
-        for maximum_page_items in [1, 2] {
-            let (decoded, allocation) = crate::kernel::persistent_io::read_page_with_accounting::<
-                _,
-                crate::kernel::tree_mutation::TreeFormat,
-            >(
-                &cache,
-                page,
-                DecodeLimits {
-                    maximum_page_items,
-                    ..DecodeLimits::default()
-                },
-                &mut work.accounting(),
-                &cancellation,
-                None,
-            )
-            .await?;
-            let retained = decoded.logical_bytes;
-            drop(decoded);
-            crate::kernel::file_read::release_read_allocation(
-                retained,
-                allocation,
-                &mut work.accounting(),
-            )?;
-            let state = cache.lock_state();
-            let resident =
-                OperationReadCache::<()>::slot_bytes(&state)? + state.retained_owned_bytes;
             assert_eq!(work.allocations.live_bytes(), baseline + resident);
-            assert_eq!(work.allocations.scratch_bytes(), 0);
+            let before = work.spent().backend_read_operations;
+            // Distinct decode bounds miss the decoded cache while sharing the
+            // operation cache's original encoded object.
+            for maximum_page_items in [1, 2] {
+                let (decoded, allocation) =
+                    crate::kernel::persistent_io::read_page_with_accounting::<
+                        _,
+                        crate::kernel::tree_mutation::TreeFormat,
+                    >(
+                        &cache,
+                        page,
+                        DecodeLimits {
+                            maximum_page_items,
+                            ..DecodeLimits::default()
+                        },
+                        &mut work.accounting(),
+                        &cancellation,
+                        owner,
+                    )
+                    .await?;
+                let retained = decoded.logical_bytes;
+                drop(decoded);
+                crate::kernel::file_read::release_read_allocation(
+                    retained,
+                    allocation,
+                    &mut work.accounting(),
+                )?;
+                let state = cache.lock_state();
+                let resident =
+                    OperationReadCache::<()>::slot_bytes(&state)? + state.retained_owned_bytes;
+                assert_eq!(work.allocations.live_bytes(), baseline + resident);
+                assert_eq!(work.allocations.scratch_bytes(), 0);
+            }
+            assert_eq!(
+                work.spent().backend_read_operations - before,
+                expected_page_reads
+            );
+            drop(cache);
+            assert_eq!(custody.operation_cache_bytes(), 0);
+            assert_eq!(work.allocations.live_bytes(), baseline);
+            assert!(independent.value.iter().all(|byte| *byte == 0xa5));
+            drop(independent);
+            assert_eq!(work.allocations.live_bytes(), baseline - independent_bytes);
+            if observed {
+                assert_eq!(work.spent().peak_allocation_bytes, measured_peak);
+            } else {
+                measured_peak = work.spent().peak_allocation_bytes;
+            }
         }
-        assert_eq!(
-            work.spent().backend_read_operations - before,
-            expected_page_reads
-        );
-        drop(cache);
-        assert_eq!(work.allocations.live_bytes(), baseline);
-        assert!(independent.value.iter().all(|byte| *byte == 0xa5));
-        drop(independent);
-        assert_eq!(work.allocations.live_bytes(), baseline - independent_bytes);
     }
     Ok(())
 }
