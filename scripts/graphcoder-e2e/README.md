@@ -1,10 +1,10 @@
 # Shipping acceptance cases
 
 Build `graphcoder` and `harness-mock-model` on the target OS ahead of timing.
-Windows MSVC executables must be cross-built; run Windows suites serially.
-ConPTY preparation has no local PowerShell compiler entry point: cross-build
-`scripts/graphcoder-conpty.cs` and supply its executable as
-`E2E_CONPTY_HOST` before running a Windows PTY case.
+Run Windows suites serially. Compile `scripts/graphcoder-conpty.cs` with the
+.NET Framework C# compiler and supply its executable as `E2E_CONPTY_HOST`
+before running a Windows PTY case. `scripts/qualify-ci.ps1` prepares both hosts
+and the scratch root before selecting terminal cases.
 The Windows process host is the shared native-runtime `acyclic-process-host`
 binary. Build it with `cargo build --locked -p acyclic-native-runtime --bin acyclic-process-host`
 for the target platform, then supply its absolute executable as `E2E_PROCESS_HOST`.
