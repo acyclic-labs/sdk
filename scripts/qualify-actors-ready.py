@@ -104,8 +104,8 @@ def completion():
     normalized = original.replace(b"\r\n", b"\n")
     name = "local::runtime::tests::completion::completion_joins_discovery_delivery_and_producer_lifetime"
     controls = [
-        (b"Event::Completion(completion) => completing.push(completion),",
-         b"Event::Completion(completion) => { let _ = completion.send(Ok(())); },",
+        (b"receive\n            .await\n            .map_err(|_| Error::CompletionStopped)?\n            .map_err(Error::CompletionFailed)",
+         b"let _ = receive;\n        Ok(())",
          "completion escaped"),
         (b"completion_tail = match provider.tail(self.store.root().clone()).await {",
          b"let _ = provider.tail(self.store.root().clone()).await;\n"

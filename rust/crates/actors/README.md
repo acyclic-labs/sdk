@@ -190,6 +190,8 @@ without scanning residents or taking over their execution. Future alarms stay
 pending. Concurrent producers can append after that cut. A cancelled host returns
 `CompletionStopped`; the first failed delivery refuses completion with its
 original cause until restart.
+The completion channel is allocated lazily; event-driven hosts that never run
+the continuous dispatcher or request completion retain no channel allocation.
 
 `conformance::bench(&backend)` is an on-demand workload over a fresh backend.
 It excludes setup and warmup, verifies all 256 deliveries, and returns elapsed

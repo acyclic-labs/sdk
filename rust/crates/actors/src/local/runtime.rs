@@ -35,7 +35,7 @@ use std::{
     future::poll_fn,
     hash::BuildHasher,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     task::{Context, Poll, Waker},
@@ -112,6 +112,11 @@ struct Inner {
 
 type Completion = tokio::sync::oneshot::Sender<Result<(), Arc<Error>>>;
 
+struct Completions {
+    send: tokio::sync::mpsc::UnboundedSender<Completion>,
+    receive: SyncMutex<Option<tokio::sync::mpsc::UnboundedReceiver<Completion>>>,
+}
+
 enum Event {
     Created(Record),
     Dispatched(Result<Snapshot, Error>),
@@ -142,14 +147,12 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
     instance: uuid::Uuid,
     limits: RuntimeLimits,
     admission: tokio::sync::Semaphore,
-    completion: tokio::sync::mpsc::UnboundedSender<Completion>,
-    completions: SyncMutex<Option<tokio::sync::mpsc::UnboundedReceiver<Completion>>>,
+    completions: OnceLock<Completions>,
 }
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// One runtime per state root and handler package.
     pub fn new(store: Store<P>, handler: Arc<dyn Handler>, clock: Arc<dyn Clock>) -> Self {
-        let (completion, completions) = tokio::sync::mpsc::unbounded_channel();
         Self {
             store,
             claims: None,
@@ -161,8 +164,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             instance: uuid::Uuid::new_v4(),
             limits: RuntimeLimits::default(),
             admission: tokio::sync::Semaphore::new(RuntimeLimits::default().active),
-            completion,
-            completions: SyncMutex::new(Some(completions)),
+            completions: OnceLock::new(),
         }
     }
 
@@ -436,13 +438,24 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// delivery refuses completion until the host is restarted.
     pub async fn complete(&self) -> Result<(), Error> {
         let (send, receive) = tokio::sync::oneshot::channel();
-        self.completion
+        self.completions()
+            .send
             .send(send)
             .map_err(|_| Error::CompletionStopped)?;
         receive
             .await
             .map_err(|_| Error::CompletionStopped)?
             .map_err(Error::CompletionFailed)
+    }
+
+    fn completions(&self) -> &Completions {
+        self.completions.get_or_init(|| {
+            let (send, receive) = tokio::sync::mpsc::unbounded_channel();
+            Completions {
+                send,
+                receive: SyncMutex::new(Some(receive)),
+            }
+        })
     }
 
     /// Host forever: follow the root's activation log to discover actors
@@ -453,7 +466,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         // The running future exclusively owns acknowledgement producers,
         // including while restoring or opening the activation cursor.
         let mut completions = self
-            .completions
+            .completions()
+            .receive
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
@@ -613,9 +627,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     };
                     if seen >= completion_tail
                         && self.ready.counts().1 == 0
-                        && self
-                            .ready
-                            .next_deadline()
+                        && timer
+                            .as_ref()
+                            .map(|(deadline, _)| *deadline)
                             .is_none_or(|deadline| deadline > self.clock.now_unix_ms())
                     {
                         for completion in completing.drain(..) {

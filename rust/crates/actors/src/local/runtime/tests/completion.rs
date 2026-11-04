@@ -16,7 +16,10 @@ async fn completion_joins_discovery_delivery_and_producer_lifetime() -> TestResu
         let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock))
             .with_limits(RuntimeLimits::new(1, 1)?);
         let mut completed = Box::pin(runtime.complete());
-        assert!(futures::poll!(completed.as_mut()).is_pending());
+        assert!(
+            futures::poll!(completed.as_mut()).is_pending(),
+            "completion escaped before its dispatcher"
+        );
         let mut serving = Box::pin(runtime.run(|_, error| panic!("unexpected delivery: {error}")));
         // The dispatcher has already restored an EMPTY root. Creation must
         // arrive through its original follow, not a second placement path.
