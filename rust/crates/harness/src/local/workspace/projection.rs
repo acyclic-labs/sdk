@@ -37,13 +37,18 @@ impl Drop for Native {
         }
         // The worker retains callbacks, destination custody and alias cleanup
         // through physical retirement, including cancellation of the caller.
-        drop(acyclic_native_runtime::spawn_blocking(move || {
+        let retire = move || {
             if let Err(error) = mount.abandon() {
                 tracing::error!(?error, "workspace mount retirement failed");
                 return;
             }
             unlink();
-        }));
+        };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            drop(acyclic_native_runtime::spawn_blocking(retire));
+        } else {
+            retire();
+        }
     }
 }
 
