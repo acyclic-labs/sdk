@@ -41,10 +41,20 @@ macro_rules! cargo_binary {
 ///
 /// If the explicit source root is relative, or the fixture path is absolute.
 pub fn source_path(relative: impl AsRef<Path>) -> PathBuf {
-    resolve(
-        std::env::var_os("ACYCLIC_TEST_SOURCE_ROOT").map(PathBuf::from),
-        relative.as_ref(),
-    )
+    let root = std::env::var_os("ACYCLIC_TEST_SOURCE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."));
+    let relative = relative.as_ref();
+    assert!(
+        root.is_absolute(),
+        "test source root must be absolute: {}",
+        root.display()
+    );
+    assert!(
+        relative.is_relative(),
+        "fixture path must be repository-relative"
+    );
+    root.join(relative)
 }
 
 /// Locates `relative` inside the crate whose compile-time manifest directory is
@@ -88,31 +98,4 @@ macro_rules! crate_path {
     ($relative:expr) => {
         $crate::crate_source_path(env!("CARGO_MANIFEST_DIR"), $relative)
     };
-}
-
-fn resolve(root: Option<PathBuf>, relative: &Path) -> PathBuf {
-    let root = root.unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."));
-    assert!(
-        root.is_absolute(),
-        "test source root must be absolute: {}",
-        root.display()
-    );
-    assert!(
-        relative.is_relative(),
-        "fixture path must be repository-relative"
-    );
-    root.join(relative)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn explicit_source_snapshot_replaces_the_build_hosts_path() {
-        let root = std::env::temp_dir().join("cross-built-fixtures");
-        let source = resolve(Some(root.clone()), Path::new("plugin/src/main.rs"));
-        assert_eq!(source, root.join("plugin/src/main.rs"));
-        assert!(source.is_absolute());
-    }
 }

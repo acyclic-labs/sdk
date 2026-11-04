@@ -37,23 +37,27 @@ fn derived_options_preserve_repeated_resources_and_streaming()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     OptionsFile::render(root.path())?;
-    let status = Command::new(acyclic_test_support::runtime_path("PROTOC", protoc_bin_vendored::protoc_bin_path)?)
-        .arg(format!("--proto_path={}", root.path().display()))
-        .arg(format!(
-            "--proto_path={}",
-            acyclic_test_support::source_path("compatibility/proto").display()
-        ))
-        .arg(format!(
-            "--proto_path={}",
-            acyclic_test_support::runtime_path("PROTOC_INCLUDE", protoc_bin_vendored::include_path)?.display()
-        ))
-        .arg(format!(
-            "--descriptor_set_out={}",
-            root.path().join("options.bin").display()
-        ))
-        .arg("--include_imports")
-        .arg("optionstest/v1/optionstest.proto")
-        .status()?;
+    let status = Command::new(acyclic_test_support::runtime_path(
+        "PROTOC",
+        protoc_bin_vendored::protoc_bin_path,
+    )?)
+    .arg(format!("--proto_path={}", root.path().display()))
+    .arg(format!(
+        "--proto_path={}",
+        acyclic_test_support::source_path("compatibility/proto").display()
+    ))
+    .arg(format!(
+        "--proto_path={}",
+        acyclic_test_support::runtime_path("PROTOC_INCLUDE", protoc_bin_vendored::include_path)?
+            .display()
+    ))
+    .arg(format!(
+        "--descriptor_set_out={}",
+        root.path().join("options.bin").display()
+    ))
+    .arg("--include_imports")
+    .arg("optionstest/v1/optionstest.proto")
+    .status()?;
     assert!(status.success());
     let pool = DescriptorPool::decode(std::fs::read(root.path().join("options.bin"))?.as_slice())?;
     let extension = pool
@@ -90,7 +94,10 @@ fn product_descriptors() -> Result<DescriptorPool, Box<dyn std::error::Error>> {
         "stream/v1/stream.proto",
         "stream/v1/session.proto",
     ];
-    let mut command = Command::new(acyclic_test_support::runtime_path("PROTOC", protoc_bin_vendored::protoc_bin_path)?);
+    let mut command = Command::new(acyclic_test_support::runtime_path(
+        "PROTOC",
+        protoc_bin_vendored::protoc_bin_path,
+    )?);
     for family in [
         "actors",
         "filesystem-wire",
@@ -115,7 +122,11 @@ fn product_descriptors() -> Result<DescriptorPool, Box<dyn std::error::Error>> {
         ))
         .arg(format!(
             "--proto_path={}",
-            acyclic_test_support::runtime_path("PROTOC_INCLUDE", protoc_bin_vendored::include_path)?.display()
+            acyclic_test_support::runtime_path(
+                "PROTOC_INCLUDE",
+                protoc_bin_vendored::include_path
+            )?
+            .display()
         ))
         .arg(format!("--descriptor_set_out={}", output.display()))
         .arg("--include_imports")

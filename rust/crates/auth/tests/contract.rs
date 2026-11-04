@@ -68,11 +68,14 @@ fn rendered_contract_compiles_and_preserves_presence() -> Result<(), Box<dyn std
         std::fs::read(checked_in)?
     );
     let descriptor = root.path().join("auth.bin");
-    let status = std::process::Command::new(acyclic_test_support::runtime_path("PROTOC", protoc_bin_vendored::protoc_bin_path)?)
-        .arg(format!("--proto_path={}", root.path().display()))
-        .arg(format!("--descriptor_set_out={}", descriptor.display()))
-        .arg("auth/v1/auth.proto")
-        .status()?;
+    let status = std::process::Command::new(acyclic_test_support::runtime_path(
+        "PROTOC",
+        protoc_bin_vendored::protoc_bin_path,
+    )?)
+    .arg(format!("--proto_path={}", root.path().display()))
+    .arg(format!("--descriptor_set_out={}", descriptor.display()))
+    .arg("auth/v1/auth.proto")
+    .status()?;
     assert!(status.success());
     let set = prost_types::FileDescriptorSet::decode(std::fs::read(descriptor)?.as_slice())?;
     let file = set.file.first().ok_or("missing descriptor")?;
