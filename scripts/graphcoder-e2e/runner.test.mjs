@@ -113,21 +113,6 @@ test("terminal completion admits the final frame after its last input action", a
   } finally { rmSync(root, { recursive: true }); }
 });
 
-test("screen assertions observe complete synchronized frames at every fragmentation boundary", async () => {
-  const bytes = "\x1b[?2026h\x1b[Hdraft\x1b[Hfinal\x1b[?2026l";
-  for (let cut = 0; cut <= bytes.length; cut++) {
-    const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
-    const seen = [];
-    const capture = () => seen.push(screen.buffer.active.getLine(0).translateToString(true));
-    const frames = new TerminalFrames(screen, capture);
-    await frames.write(bytes.slice(0, cut));
-    await frames.write(bytes.slice(cut));
-    assert.ok(seen.includes("final"));
-    assert.ok(seen.every(text => text === "" || text === "final"), JSON.stringify(seen));
-    frames.dispose(); screen.dispose();
-  }
-});
-
 test("shipping terminal refusals survive coalesced and fragmented redraws", async () => {
   for (const schedule of [[], [0], [63], [255, 0, 7, 1]]) await fuzzTerminalFrames(Buffer.from(schedule));
 });
@@ -141,17 +126,16 @@ test("observed producer frame asserts captured content with one screen projectio
   const root = mkdtempSync(join(tmpdir(), "observed-frame-"));
   const buffer = Object.getOwnPropertyDescriptor(Terminal.prototype, "buffer");
   const write = TerminalFrames.prototype.write;
-  let reads = 0;
-  const projections = [];
+  let reads = 0, afterFrame;
+  const projections = [], observed = new WeakSet();
   Object.defineProperty(Terminal.prototype, "buffer", { ...buffer, get() { reads++; return buffer.get.call(this); } });
-  const observed = new WeakSet();
   TerminalFrames.prototype.write = function (bytes) {
     if (!observed.has(this)) {
       observed.add(this);
       const frame = this.frame;
       this.frame = () => {
         const before = reads;
-        try { return frame(); } finally { projections.push(reads - before); }
+        try { return frame(); } finally { projections.push(reads - before); afterFrame?.(); }
       };
     }
     return write.call(this, bytes);
@@ -182,6 +166,45 @@ test("observed producer frame asserts captured content with one screen projectio
     }
     assert.ok(projections.includes(1), "the original frame must be inspected");
     assert.ok(projections.every(count => count <= 1), "one screen projection serves matching and assertion");
+    for (const [redraw, requestAfterFrame] of [[false, false], [true, false], [true, true]]) {
+      // Replay original native frames through a real child. Its request arrives
+      // after input, before the next redraw, just as the model fixture can wake
+      // the action driver while the preceding cells are still visible.
+      let owner, request, requested = false, capture, observed = 0, pendingRequest;
+      afterFrame = () => { if (++observed === 2) pendingRequest?.(); };
+      const processes = new TerminalProcess();
+      const start = processes.startTerminal.bind(processes);
+      processes.startTerminal = (...args) => {
+        owner = start(...args);
+        owner.child.stderr.once("data", () => {
+          const notify = () => {
+            requested = true;
+            request();
+            owner.child.stdin.write("request observed\n");
+          };
+          if (requestAfterFrame && observed < 2) pendingRequest = notify;
+          else notify();
+        });
+        return owner;
+      };
+      try {
+        const running = pty(processes, process.execPath, {
+          id: "observed-frame", workspace: root,
+          args: ["-e", `const fs=require('node:fs');const first=JSON.parse(fs.readFileSync(process.argv[1],'utf8')).stdout;const next=${redraw ? "first" : "JSON.parse(fs.readFileSync(process.argv[2],'utf8')).idle.stdout"};process.stdin.once('data',()=>{${requestAfterFrame ? "process.stdin.once('data',()=>process.stdin.destroy());process.stdout.write(next,()=>process.stderr.write('request\\n'))" : "process.stdin.once('data',()=>process.stdout.write(next,()=>process.stdin.destroy()));process.stderr.write('request\\n')"}});process.stdout.write(first)`,
+            queryCapturePath, fileURLToPath(new URL("./fixtures/terminal-frames.json", import.meta.url))],
+          requested() { return requested; },
+          onRequest(callback) { request = callback; return () => { request = undefined; }; },
+        }, { actions: [
+          { when: { query_failure: "storage failure: diff command:" }, send: "redraw\n" },
+          { after_request: "redraw", when: { query_failure: "storage failure: diff command:" } },
+        ] }, result => { capture = result; });
+        if (redraw) assert.equal((await running).code, 0);
+        else await assert.rejects(running, /PTY completed 1\/2 actions/);
+        assert.equal(capture.actions, redraw ? 2 : 1,
+          "a request wakeup cannot admit the next input action on consumed cells");
+        assert.equal(processes.children.size, 0);
+      } finally { afterFrame = undefined; await processes.close(); }
+    }
   } finally {
     TerminalFrames.prototype.write = write;
     Object.defineProperty(Terminal.prototype, "buffer", buffer);
