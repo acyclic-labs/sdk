@@ -28,6 +28,7 @@ pub mod escrow;
 pub mod guest;
 /// Event-owned hosting of an arbitrary Handler over injected storage.
 pub mod hosting;
+mod identity;
 /// Inbox invocation protocol shared by native and hosted actors.
 pub mod invocation;
 /// Deployment versions, cohort selection, call provenance and durable handoff.
