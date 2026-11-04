@@ -70,10 +70,12 @@ fn string(message: &DynamicMessage, field: &str) -> String {
 }
 
 fn actions(message: &DynamicMessage, field: &str) -> Result<Vec<Action>, Error> {
-    message
+    let value = message
         .get_field_by_name(field)
-        .and_then(|value| value.as_list().cloned())
-        .unwrap_or_default()
+        .ok_or_else(|| invalid("authorization action field is missing"))?;
+    value
+        .as_list()
+        .ok_or_else(|| invalid("authorization actions must be a list"))?
         .iter()
         .map(|value| {
             value
