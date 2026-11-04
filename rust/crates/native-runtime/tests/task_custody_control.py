@@ -12,7 +12,7 @@ import subprocess
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("defect", choices=["panic", "output"])
+    parser.add_argument("defect", choices=["panic", "output", "native-output"])
     defect = parser.parse_args().defect
     if defect == "panic":
         path = Path("rust/crates/native-runtime/src/task/custody.rs")
@@ -27,7 +27,22 @@ def main():
         features = []
     else:
         path = Path("rust/crates/native-runtime/src/testing/executor.rs")
-        anchor, replacement, count = b"_owner: owner,", b"_owner: None,", 2
+        anchor = (
+            b"let _ = sender.send(result.map(|value| Accounted {\n"
+            b"                value,\n"
+            b"                _owner: owner,\n"
+            b"            }));"
+        )
+        if defect == "native-output":
+            anchor = (
+                b"let value = work.value.await;\n"
+                b"            Accounted {\n"
+                b"                value,\n"
+                b"                _owner: owner,\n"
+                b"            }"
+            )
+        replacement = anchor.replace(b"_owner: owner,", b"_owner: None,")
+        count = 1
         test = "testing::executor::tests::unjoined_original_output_keeps_its_task_accounted_through_release"
         expected = "task accounting retired before its original cleanup"
         features = ["--features", "test-support"]
@@ -37,6 +52,9 @@ def main():
     ]
     recovery = shlex.join(["python3", __file__, defect])
     source = path.read_bytes()
+    if b"\r\n" in source:
+        anchor = anchor.replace(b"\n", b"\r\n")
+        replacement = replacement.replace(b"\n", b"\r\n")
     step = "source-anchor"
     try:
         if source.count(anchor) != count:

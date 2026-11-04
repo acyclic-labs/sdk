@@ -1,0 +1,203 @@
+diff --git a/rust/crates/harness-core/src/filesystem/execution_journal/persistent_index/cache.rs b/rust/crates/harness-core/src/filesystem/execution_journal/persistent_index/cache.rs
+index 15530dbb3c..0bd8c733de 100644
+--- a/rust/crates/harness-core/src/filesystem/execution_journal/persistent_index/cache.rs
++++ b/rust/crates/harness-core/src/filesystem/execution_journal/persistent_index/cache.rs
+@@ -1,7 +1,5 @@
+ //! A bounded hot cache of pages reachable from the current authenticated roots.
+ use super::*;
+-use crate::wire_codec::{OwnedIndexAllocation, OwnedIndexWork};
+-use acyclic_collections::FixedIndex;
+ 
+ const HOT_PAGES: usize = 128;
+ 
+@@ -40,19 +38,27 @@ impl Drop for CachedNode {
+ 
+ #[derive(Default)]
+ pub(in crate::filesystem::execution_journal) struct NodeCache {
+-    values: FixedIndex<CachedNode, OwnedIndexAllocation, 8>,
++    keys: crate::model::DigestIndex<usize>,
++    values: Vec<Option<CachedNode>>,
++    vacant: Vec<usize>,
+     len: usize,
+-    replacement: Option<[u8; 8]>,
++    replacement: usize,
+     io: Option<PreparationIo>,
+ }
+ 
++fn key(sequence: u64) -> [u8; 32] {
++    let mut key = [0; 32];
++    key[..8].copy_from_slice(&sequence.to_be_bytes());
++    key
++}
++
+ impl NodeCache {
+     pub(super) fn bind(&mut self, io: Option<&PreparationIo>) -> Result<()> {
+         match (&mut self.io, io) {
+             (Some(retained), Some(current)) if retained.shares_ledger(current) => {
+                 retained.use_current_context(current);
+             }
+-            (None, Some(current)) if self.len == 0 => {
++            (None, Some(current)) if self.values.capacity() == 0 && self.vacant.capacity() == 0 => {
+                 self.io = Some(current.scoped()?);
+             }
+             (None, None) => (),
+@@ -71,83 +77,119 @@ impl NodeCache {
+         reference: NodeRef,
+         io: Option<&PreparationIo>,
+     ) -> Result<Option<OwnedBytes>> {
+-        let node = self.node(reference, io)?;
+-        if let Some(node) = node {
+-            node.referenced
+-                .store(true, std::sync::atomic::Ordering::Relaxed);
+-        }
+-        Ok(node.map(|node| node.bytes.clone()))
+-    }
+-
+-    fn node(&self, reference: NodeRef, io: Option<&PreparationIo>) -> Result<Option<&CachedNode>> {
++        let Some(position) = self.keys.get(0, &key(reference.sequence), io)? else {
++            return Ok(None);
++        };
+         let node = self
+             .values
+-            .get(reference.sequence.to_be_bytes(), &mut OwnedIndexWork(io))?;
+-        if node.is_some_and(|node| node.reference != reference) {
++            .get(position)
++            .and_then(Option::as_ref)
++            .ok_or_else(|| invalid(io, "execution page cache slot is missing"))?;
++        if node.reference != reference {
+             return Err(invalid(io, "execution page cache digest differs"));
+         }
+-        Ok(node)
++        node.referenced
++            .store(true, std::sync::atomic::Ordering::Relaxed);
++        Ok(Some(node.bytes.clone()))
+     }
+ 
+     pub(super) fn insert(&mut self, reference: NodeRef, bytes: &OwnedBytes) -> Result<()> {
+-        if let Some(node) = self.node(reference, self.io.as_ref())? {
+-            node.referenced
+-                .store(true, std::sync::atomic::Ordering::Relaxed);
++        if self.get(reference, self.io.as_ref())?.is_some() {
+             return Ok(());
+         }
+-        if self.len == HOT_PAGES {
++        if self.vacant.is_empty() && self.values.len() == HOT_PAGES {
+             // One second chance per observed page keeps hot immutable roots
+             // through unrelated publications. At most HOT_PAGES + 1 probes:
+             // this exclusive borrow prevents another get from resetting a bit.
+             loop {
+                 crate::model::charge_items(self.io.as_ref(), 1)?;
+-                let mut work = OwnedIndexWork(self.io.as_ref());
+-                let next = match self.replacement {
+-                    Some(after) => self.values.seek_after(after, &mut work)?,
+-                    None => self.values.first(&mut work)?,
+-                };
+-                let (key, node) = match next {
+-                    Some(node) => node,
+-                    None => self.values.first(&mut work)?.ok_or_else(|| {
++                let node = self
++                    .values
++                    .get(self.replacement)
++                    .and_then(Option::as_ref)
++                    .ok_or_else(|| {
+                         invalid(self.io.as_ref(), "execution page eviction slot is missing")
+-                    })?,
+-                };
++                    })?;
+                 let referenced = node
+                     .referenced
+                     .swap(false, std::sync::atomic::Ordering::Relaxed);
+                 let reference = node.reference;
+-                self.replacement = Some(*key);
++                self.replacement = (self.replacement + 1) % HOT_PAGES;
+                 if !referenced {
+                     self.remove(reference)?;
+                     break;
+                 }
+             }
+         }
+-        self.values.get_or_try_insert_with(
+-            reference.sequence.to_be_bytes(),
+-            &mut OwnedIndexWork(self.io.as_ref()),
+-            |_| CachedNode::new(reference, bytes, self.io.as_ref()),
+-        )?;
++        self.keys.reserve_key(self.io.as_ref())?;
++        if self.vacant.is_empty() && self.values.len() == self.values.capacity() {
++            let capacity = self
++                .values
++                .capacity()
++                .checked_mul(2)
++                .map(|n| n.max(1))
++                .ok_or_else(|| invalid(self.io.as_ref(), "execution page cache overflows"))?;
++            crate::executor::stock_vec_reserve(&mut self.values, capacity, self.io.as_ref())?;
++        }
++        let node = CachedNode::new(reference, bytes, self.io.as_ref())?;
++        let position = self.vacant.last().copied().unwrap_or(self.values.len());
++        self.keys
++            .set(0, key(reference.sequence), Some(position), self.io.as_ref())?;
++        if self.vacant.pop().is_some() {
++            *self.values.get_mut(position).ok_or_else(|| {
++                invalid(self.io.as_ref(), "execution page cache slot is missing")
++            })? = Some(node);
++        } else {
++            self.values.push(Some(node));
++        }
+         self.len += 1;
+         Ok(())
+     }
+ 
+     pub(super) fn remove(&mut self, reference: NodeRef) -> Result<()> {
+-        if self.node(reference, self.io.as_ref())?.is_none() {
++        if self
++            .keys
++            .get(0, &key(reference.sequence), self.io.as_ref())?
++            .is_none()
++        {
+             return Ok(());
+         }
+-        let removed = self.values.remove(
+-            reference.sequence.to_be_bytes(),
+-            &mut OwnedIndexWork(self.io.as_ref()),
+-        )?;
+-        if removed.is_some() {
+-            self.len -= 1;
++        if self.vacant.len() == self.vacant.capacity() {
++            let capacity = self
++                .vacant
++                .capacity()
++                .checked_mul(2)
++                .map(|n| n.max(1))
++                .ok_or_else(|| {
++                    invalid(self.io.as_ref(), "execution page cache free slots overflow")
++                })?;
++            crate::executor::stock_vec_reserve(&mut self.vacant, capacity, self.io.as_ref())?;
+         }
+-        drop(removed);
++        let position = self
++            .keys
++            .remove(0, &key(reference.sequence), self.io.as_ref())?
++            .ok_or_else(|| invalid(self.io.as_ref(), "execution page cache key disappeared"))?;
++        drop(
++            self.values
++                .get_mut(position)
++                .ok_or_else(|| invalid(self.io.as_ref(), "execution page cache slot is missing"))?
++                .take(),
++        );
++        self.vacant.push(position);
++        self.len -= 1;
+         Ok(())
+     }
+ }
+ 
++impl Drop for NodeCache {
++    fn drop(&mut self) {
++        self.keys = Default::default();
++        self.values = Vec::new();
++        self.vacant = Vec::new();
++        drop(self.io.take());
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;

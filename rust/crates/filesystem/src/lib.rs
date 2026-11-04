@@ -389,6 +389,8 @@ pub use simulation::{
 };
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub use source::{ReconcileOutcome, Source, SourceError, SourceMode, SourceOptions, SourceState};
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+pub use source_watch::HeldRootWatch;
 pub use speculation::{
     ObjectResidency, PromotionAdmission, PromotionCandidate, PromotionDestination,
     PromotionExecutor, PromotionMetrics, PromotionPlan, PromotionRejection, PromotionSpeculator,

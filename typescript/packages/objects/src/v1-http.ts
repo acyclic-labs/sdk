@@ -116,7 +116,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
       if (response.status !== 200) {
         let detail: wire.ErrorDetail | undefined;
         try { detail = fromBinary(wire.ErrorDetailSchema, decode_objects_v1_json("ErrorDetail", data, data.byteLength)); } catch { /* the status classifies it */ }
-        throw new ObjectsV1Error(detail !== undefined && detail.code in wire.ErrorCode && detail.code !== wire.ErrorCode.UNSPECIFIED ? detail.code : STATUS[response.status] ?? wire.ErrorCode.UNAVAILABLE);
+        throw new ObjectsV1Error(detail !== undefined && detail.code in wire.ErrorCode && detail.code !== wire.ErrorCode.UNSPECIFIED ? detail.code : STATUS[response.status] ?? wire.ErrorCode.UNAVAILABLE, detail);
       }
       checkCredential(lease);
       let decoded: Uint8Array;

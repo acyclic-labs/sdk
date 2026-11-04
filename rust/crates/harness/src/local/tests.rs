@@ -42,7 +42,7 @@ impl ObservedConversation {
     async fn open(harness: &Arc<LocalHarness>) -> Result<Self> {
         // The root's runtime runs once the harness hosts its agents.
         harness.agents().await?;
-        let conversation = Conversation::open(harness.connect().await?)?;
+        let conversation = Conversation::open(harness.connect().await?);
         Self::observe(conversation, None).await
     }
 

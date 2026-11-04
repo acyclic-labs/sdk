@@ -156,6 +156,9 @@ pub(crate) trait HostChangeSink: Send + Sync {
     /// report or for the producer's final owner to drop.
     fn delivery_lost(&self) {}
 
+    /// Reports the original cause before the terminal loss notification.
+    fn delivery_failed(&self, _cause: &DemandError) {}
+
     #[cfg(windows)]
     fn host_changed_wide(
         &self,
@@ -239,6 +242,8 @@ pub struct SourceWatchStartupFailure {
 mod api;
 mod callback;
 mod delivery;
+mod observer;
 mod startup_failure;
+pub use observer::HeldRootWatch;
 #[cfg(test)]
 mod tests;

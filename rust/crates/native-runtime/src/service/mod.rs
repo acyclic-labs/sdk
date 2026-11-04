@@ -74,35 +74,36 @@ fn receive(reader: &mut impl Read) -> io::Result<ServiceStartOutcome> {
 }
 
 fn send(writer: &mut impl io::Write, frame: u8, body: &[u8]) -> io::Result<()> {
-    let header = [frame];
-    let result = (|| {
-        #[cfg(windows)]
-        if !body.is_empty() {
-            // Windows pipes cannot gather separate buffers in one write.
-            // Assemble once to retain the original single-call publication.
-            let length = body
-                .len()
-                .checked_add(1)
-                .ok_or(io::ErrorKind::InvalidInput)?;
-            let mut frame = Vec::new();
-            frame
-                .try_reserve_exact(length)
-                .map_err(|_| io::ErrorKind::OutOfMemory)?;
-            frame.push(header[0]);
-            frame.extend_from_slice(body);
-            return crate::io_progress::write_all(&mut [io::IoSlice::new(&frame)], |buffers| {
-                writer.write(&buffers[0])
-            });
-        }
-        crate::io_progress::write_all(
-            &mut [io::IoSlice::new(&header), io::IoSlice::new(body)],
-            |buffers| writer.write_vectored(buffers),
-        )
-    })();
-    match result {
+    match write_frame(writer, frame, body) {
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
         result => result,
     }
+}
+
+fn write_frame(writer: &mut impl io::Write, frame: u8, body: &[u8]) -> io::Result<()> {
+    let header = [frame];
+    #[cfg(windows)]
+    if !body.is_empty() {
+        // Windows pipes cannot gather separate buffers in one write.
+        // Assemble once to retain the original single-call publication.
+        let length = body
+            .len()
+            .checked_add(1)
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        let mut frame = Vec::new();
+        frame
+            .try_reserve_exact(length)
+            .map_err(|_| io::ErrorKind::OutOfMemory)?;
+        frame.push(header[0]);
+        frame.extend_from_slice(body);
+        return crate::io_progress::write_all(&mut [io::IoSlice::new(&frame)], |buffers| {
+            writer.write(buffers.first().ok_or(io::ErrorKind::InvalidInput)?)
+        });
+    }
+    crate::io_progress::write_all(
+        &mut [io::IoSlice::new(&header), io::IoSlice::new(body)],
+        |buffers| writer.write_vectored(buffers),
+    )
 }
 
 /// The service's end of its readiness channel.

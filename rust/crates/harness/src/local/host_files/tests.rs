@@ -31,6 +31,55 @@ fn observer(bridge: &Bridge) -> std::thread::JoinHandle<()> {
         .expect("the original owner observer")
 }
 
+fn reply_path(status: &Path, operation: OperationId) -> PathBuf {
+    status.join(format!("{operation}.json"))
+}
+
+fn remove_projection(path: &Path) -> Result<()> {
+    let (parent, leaf) = projection_parent(path)?;
+    remove_held_projection(&parent, &leaf)
+}
+
+fn regular_bytes(path: &Path, maximum: u64) -> Result<Vec<u8>> {
+    let (parent, leaf) = projection_parent(path)?;
+    held_bytes(&parent, &leaf, maximum)
+}
+
+fn immutable(path: &Path, bytes: &[u8]) -> Result<()> {
+    if bytes.len() as u64 > MAXIMUM_REQUEST_BYTES {
+        return Err(Error::Invalid(
+            "native file projection exceeds its bound".into(),
+        ));
+    }
+    let (parent, leaf) = projection_parent(path)?;
+    parent
+        .publish_immutable(&leaf, bytes, acyclic_fs::NativeDurability::Durable)
+        .map_err(native_file_error)
+}
+
+fn projection_parent(path: &Path) -> Result<(acyclic_fs::HeldRoot, PathBuf)> {
+    let endpoint = path
+        .ancestors()
+        .find(|ancestor| ancestor.ends_with(DIRECTORY))
+        .ok_or_else(|| Error::Invalid("native projection is outside its workspace".into()))?;
+    let workspace = endpoint
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| Error::Invalid("native projection workspace absent".into()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| Error::Invalid("native projection parent absent".into()))?;
+    let leaf = PathBuf::from(
+        path.file_name()
+            .ok_or_else(|| Error::Invalid("native projection leaf absent".into()))?,
+    );
+    let root = acyclic_fs::hold_root(workspace).map_err(native_file_error)?;
+    let parent = root
+        .open_directory(parent.strip_prefix(workspace).map_err(storage)?)
+        .map_err(native_file_error)?;
+    Ok((parent, leaf))
+}
+
 fn carrier_io() -> Result<(tempfile::TempDir, CarrierIo, std::fs::File)> {
     use acyclic_fs::NativeDurability::Visibility;
 
@@ -61,7 +110,7 @@ fn carrier_io() -> Result<(tempfile::TempDir, CarrierIo, std::fs::File)> {
         checkout,
         CarrierIo {
             served: Served::default(),
-            requests: requests.path().to_path_buf(),
+            requests: Arc::new(requests),
             status,
             _ownership: Arc::new(ownership),
         },
@@ -139,7 +188,7 @@ async fn carrier_io_publishes_without_blocking_its_coordinator() -> Result<()> {
     // Publishing a diagnostic does not retire its original allocation. Use a
     // real rejected directory read and keep that exact cause until withdrawal.
     let original =
-        regular_bytes(&files.requests, u64::MAX).expect_err("a directory is not a reply");
+        regular_bytes(files.requests.path(), u64::MAX).expect_err("a directory is not a reply");
     let diagnostic = |cause: &Error| match cause {
         Error::Invalid(message) | Error::Storage(message) => message.as_ptr(),
         cause => panic!("directory refusal must retain its diagnostic: {cause}"),
@@ -163,7 +212,7 @@ async fn carrier_io_publishes_without_blocking_its_coordinator() -> Result<()> {
     assert_eq!(diagnostic(cause), original_diagnostic);
     files = files
         .apply(failed, move |files| {
-            files.served.withdraw(&files.requests, failed)
+            files.served.withdraw(&files.status, failed)
         })
         .await?;
     assert!(!files.served.known.contains_key(&failed));
@@ -228,7 +277,7 @@ async fn carrier_io_producer_loss_keeps_its_failure_and_releases_its_files() -> 
     let (_checkout, mut files, probe) = carrier_io()?;
     let operation = OperationId::new();
     let original =
-        regular_bytes(&files.requests, u64::MAX).expect_err("a directory is not a reply");
+        regular_bytes(files.requests.path(), u64::MAX).expect_err("a directory is not a reply");
     let message = original.to_string();
     let code = original.code();
     files
@@ -249,7 +298,7 @@ async fn carrier_io_producer_loss_keeps_its_failure_and_releases_its_files() -> 
         .expect_err("a directory cannot be retired as a reply file");
     let result = files
         .apply(operation, move |files| {
-            files.served.withdraw(&files.requests, operation)
+            files.served.withdraw(&files.status, operation)
         })
         .await;
     let Err(Error::Cleanup(causes)) = result else {
@@ -378,8 +427,17 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
     // Real owner loss before registration is not allowed to publish an alias
     // with no future producer. Join that same native observer inside setup.
     let early_lock = ownership(&cwd)?;
+    let original_directory = cwd.join(DIRECTORY);
+    let retained_directory = original_directory.with_file_name("retained-host-files");
     let result = Registry::bridge(&registry, &cwd, |directory, endpoint| {
-        let bridge = Bridge::open(directory, endpoint)?;
+        // Discovery has admitted the descriptor. Connection must use that
+        // same directory even if its name changes before the owner probe.
+        std::fs::rename(&original_directory, &retained_directory).map_err(storage)?;
+        std::fs::create_dir(&original_directory).map_err(storage)?;
+        let bridge = Bridge::open(directory, endpoint)
+            .expect("discovery retains its original directory through connection admission");
+        std::fs::remove_dir(&original_directory).map_err(storage)?;
+        std::fs::rename(&retained_directory, &original_directory).map_err(storage)?;
         let observing = observer(&bridge);
         drop(early_lock);
         observing.join().expect("early owner terminal must return");
@@ -422,7 +480,7 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
     assert!(matches!(failed.wait(OperationId::new(), delivery),
         Err(Error::Storage(error)) if error == failure));
     drop(waiting);
-    assert!(!lock(&failed.watching).watched);
+    assert!(lock(&failed.watching).watches.is_none());
     // This is a new caller's admission, not a retry of the failed operation.
     let fresh = Registry::bridge(&registry, &failed_cwd, Bridge::open)?;
     let fresh_alias = Registry::bridge(&registry, &failed_child, Bridge::open)?;
@@ -490,6 +548,12 @@ fn rejected_requests_end_without_owner_exit() -> Result<()> {
     std::fs::create_dir_all(&requests).map_err(storage)?;
     std::fs::create_dir(directory.join("status")).map_err(storage)?;
     let root = acyclic_fs::hold_root(&directory).map_err(native_file_error)?;
+    let request_root = root
+        .open_directory(Path::new("requests"))
+        .map_err(native_file_error)?;
+    let status = root
+        .open_directory(Path::new("status"))
+        .map_err(native_file_error)?;
     let owner = acyclic_native_runtime::FileLock::try_acquire(
         root.open_file(Path::new("owner.lock"), true)
             .map_err(native_file_error)?,
@@ -517,8 +581,8 @@ fn rejected_requests_end_without_owner_exit() -> Result<()> {
         &descriptor,
         &serde_json::to_vec(&endpoint).map_err(storage)?,
     )?;
-    let (_, endpoint) = discover(&endpoint.workspace)?;
-    let bridge = Arc::new(Bridge::open(&directory, endpoint)?);
+    let (directory, endpoint) = discover(&endpoint.workspace)?;
+    let bridge = Arc::new(Bridge::open(directory, endpoint)?);
     let mut served = Served::default();
     for fault in 0..3 {
         let operation = OperationId::new();
@@ -563,7 +627,8 @@ fn rejected_requests_end_without_owner_exit() -> Result<()> {
         };
         std::fs::write(&path, bytes).map_err(storage)?;
         served.touch(
-            &requests,
+            &request_root,
+            &status,
             session,
             Touched {
                 names: BTreeSet::from([OsString::from(format!("{operation}.json"))]),
@@ -595,7 +660,7 @@ fn rejected_requests_end_without_owner_exit() -> Result<()> {
         drop(late);
         assert!(lock(&bridge.shared.waiters).waiting.is_empty());
         assert_eq!(lock(&bridge.shared.waiters).registered, 0);
-        assert!(!lock(&bridge.watching).watched);
+        assert!(lock(&bridge.watching).watches.is_none());
     }
     // Exercise caller cleanup, not just delivery: the rejecting owner has
     // already removed the input when request_operation withdraws it again.
@@ -639,7 +704,7 @@ fn rejected_requests_end_without_owner_exit() -> Result<()> {
                     break;
                 }
             }
-            served.observe(&requests, uuid::Uuid::new_v4(), &leaf)?;
+            served.observe(&request_root, &status, uuid::Uuid::new_v4(), &leaf)?;
             assert!(served.start().is_empty());
             assert!(!lock(&bridge.shared.waiters).gone);
             completion
@@ -796,6 +861,216 @@ async fn workspace_shutdown_retains_its_cause_when_retirement_refuses() -> Resul
             if cause == "native owner still has live harness handles"));
     }
     Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn saved_command_result_follows_its_original_request_directory() -> Result<()> {
+    let (checkout, mut files, _probe) = carrier_io()?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    std::fs::write(checkout.path().join("source.txt"), b"first").map_err(storage)?;
+    let local = Arc::new(
+        LocalHarness::open(
+            LocalHarnessConfig::native_host(checkout.path())
+                .state_directory(state.path().join("owner")),
+        )
+        .await?,
+    );
+    let directory = checkout.path().join(DIRECTORY);
+    let requests = Arc::clone(&files.requests);
+    let owner = HostWorkspaceOwner::new(Arc::clone(&local))?.with_requests(Arc::clone(&requests));
+    let opened = owner
+        .dispatch(
+            OperationId::new(),
+            HostAction::Open {
+                host: "codex".into(),
+                session: "request-retention".into(),
+            },
+        )
+        .await?;
+    let task: crate::agent::AgentPath =
+        serde_json::from_value(opened["task"].clone()).map_err(storage)?;
+    let command = |command: &str| HostAction::Fs {
+        task: task.clone(),
+        command: command.into(),
+    };
+    owner
+        .dispatch(OperationId::new(), command("add source.txt"))
+        .await?;
+    let operation = OperationId::new();
+    let session = uuid::Uuid::new_v4();
+    let action = command("commit -m first");
+    let leaf = format!("{operation}.json");
+    immutable(
+        &files.requests.path().join(&leaf),
+        &serde_json::to_vec(&Request {
+            session,
+            operation,
+            action: action.clone(),
+        })
+        .map_err(storage)?,
+    )?;
+    // Admit the real encoded request before losing its reply.
+    files.served.observe(
+        &files.requests,
+        &files.status,
+        session,
+        std::ffi::OsStr::new(&leaf),
+    )?;
+    let request = files
+        .served
+        .start()
+        .pop()
+        .ok_or_else(|| Error::NotFound("admitted native request".into()))?;
+    let committed = owner.dispatch(request.operation, request.action).await?;
+    assert!(committed.get("Committed").is_some());
+    // Replacing the directory name does not withdraw the original request.
+    let retained = directory.join("retained-requests");
+    std::fs::rename(files.requests.path(), &retained).map_err(storage)?;
+    std::fs::create_dir(files.requests.path()).map_err(storage)?;
+    assert!(retained.join(&leaf).is_file());
+    assert!(!files.requests.path().join(&leaf).exists());
+    std::fs::write(checkout.path().join("source.txt"), b"second").map_err(storage)?;
+    owner
+        .dispatch(OperationId::new(), command("commit -m second"))
+        .await?;
+    let workspace = local
+        .workspace()
+        .ok_or_else(|| Error::NotFound("native workspace".into()))?;
+    let repository = acyclic_fs::GitCompatRepository::new(
+        workspace.view().workspace().id(),
+        workspace.store.clone(),
+    );
+    let saved = repository.load().await.map_err(storage)?;
+    let identity = acyclic_fs::OperationId::from_bytes(operation.into_bytes());
+    assert_eq!(
+        serde_json::to_value(saved.request(identity)).map_err(storage)?,
+        committed
+    );
+    assert_eq!(owner.dispatch(operation, action).await?, committed);
+    // The same notification owner must still answer through its admitted
+    // directories after both names are occupied by unrelated replacements.
+    let original_status = directory.join("retained-status");
+    std::fs::rename(files.status.path(), &original_status).map_err(storage)?;
+    std::fs::create_dir(files.status.path()).map_err(storage)?;
+    let replacement_reply = files.status.path().join(&leaf);
+    std::fs::write(&replacement_reply, b"replacement reply").map_err(storage)?;
+    let next = OperationId::new();
+    let next_leaf = format!("{next}.json");
+    let pending = Request {
+        session,
+        operation: next,
+        action: command("tag retained-notification"),
+    };
+    let pending_bytes = serde_json::to_vec(&pending).map_err(storage)?;
+    requests
+        .publish_immutable(
+            Path::new(&next_leaf),
+            &pending_bytes,
+            acyclic_fs::NativeDurability::Durable,
+        )
+        .map_err(native_file_error)?;
+    // The replacement's invalid bytes must not replace this admitted input.
+    std::fs::write(files.requests.path().join(&next_leaf), b"{unrelated").map_err(storage)?;
+    files.served.touch(
+        &files.requests,
+        &files.status,
+        session,
+        Touched {
+            names: BTreeSet::new(),
+            rescan: true,
+            failure: None,
+        },
+    )?;
+    files
+        .served
+        .answer(&files.status, operation, Ok(committed.clone()))?;
+    let original_reply = original_status.join(&leaf);
+    assert_eq!(
+        std::fs::read(&original_reply).map_err(storage)?,
+        crate::client::encode_command_result(0, operation, &Ok(committed.clone()), u64::MAX)?
+    );
+    let ready = files.served.start();
+    assert_eq!(ready.len(), 1);
+    let pending = ready
+        .into_iter()
+        .next()
+        .expect("the original pending input");
+    assert_eq!(
+        serde_json::to_vec(&pending).map_err(storage)?,
+        pending_bytes
+    );
+    let outcome = owner.dispatch(pending.operation, pending.action).await;
+    files.served.answer(&files.status, next, outcome)?;
+    // An invalid leaf cannot prove that the client withdrew its request.
+    let parked = retained.join("pending.json");
+    std::fs::rename(retained.join(&leaf), &parked).map_err(storage)?;
+    std::fs::create_dir(retained.join(&leaf)).map_err(storage)?;
+    let original_error = native_file_error(
+        requests
+            .open_file(Path::new(&leaf), false)
+            .expect_err("a directory cannot be an original regular request"),
+    );
+    let observation = files
+        .served
+        .touch(
+            &files.requests,
+            &files.status,
+            session,
+            Touched {
+                names: BTreeSet::from([OsString::from(&leaf)]),
+                rescan: false,
+                failure: None,
+            },
+        )
+        .expect_err("an uncertain original query must retain its cause");
+    assert_eq!(observation.code(), original_error.code());
+    assert_eq!(observation.to_string(), original_error.to_string());
+    assert!(original_reply.is_file());
+    owner
+        .dispatch(OperationId::new(), command("tag uncertain"))
+        .await?;
+    assert_eq!(
+        serde_json::to_value(repository.load().await.map_err(storage)?.request(identity))
+            .map_err(storage)?,
+        committed
+    );
+    std::fs::remove_dir(retained.join(&leaf)).map_err(storage)?;
+    std::fs::rename(&parked, retained.join(&leaf)).map_err(storage)?;
+    // Only removal in the original held directory proves withdrawal.
+    requests
+        .remove_file(Path::new(&leaf), acyclic_fs::NativeDurability::Durable)
+        .map_err(native_file_error)?;
+    files.served.touch(
+        &files.requests,
+        &files.status,
+        session,
+        Touched {
+            names: BTreeSet::from([OsString::from(&leaf)]),
+            rescan: false,
+            failure: None,
+        },
+    )?;
+    assert!(!original_reply.exists());
+    assert_eq!(
+        std::fs::read(&replacement_reply).map_err(storage)?,
+        b"replacement reply"
+    );
+    owner
+        .dispatch(OperationId::new(), command("tag answered"))
+        .await?;
+    assert!(
+        repository
+            .load()
+            .await
+            .map_err(storage)?
+            .request(identity)
+            .is_none()
+    );
+    drop((repository, owner, files));
+    Arc::try_unwrap(local)
+        .map_err(|_| Error::Conflict("native result owner retained after shutdown".into()))?
+        .disconnect()
+        .await
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -973,8 +1248,50 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     let _: crate::agent::AgentPath =
         serde_json::from_value(committed["task"].clone()).map_err(storage)?;
     assert!(Path::new(committed["cwd"].as_str().expect("committed workspace path")).is_absolute());
-    remove_projection(&recovery_path)?;
     drop(waiting);
+    // Re-admission after the last waiter retires must still observe the
+    // original directory. Move the actual committed bytes away before
+    // arming: neither publication's initial read nor unrelated request
+    // events may stand in for the original reply notification.
+    let status = checkout.path().join(DIRECTORY).join("status");
+    let retained_status = checkout.path().join(DIRECTORY).join("retained-status");
+    std::fs::rename(&status, &retained_status).map_err(storage)?;
+    std::fs::create_dir(&status).map_err(storage)?;
+    let original_reply = reply_path(&retained_status, operation);
+    let parked_reply = retained_status.join("parked-reply");
+    std::fs::rename(&original_reply, &parked_reply).map_err(storage)?;
+    let (delivery, response) = mpsc::sync_channel(1);
+    let readmitted = connected.wait(operation, delivery)?;
+    connected.shared.published(operation);
+    assert!(matches!(
+        response.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+    std::fs::rename(&parked_reply, &original_reply).map_err(storage)?;
+    let recovered =
+        tokio::task::spawn_blocking(move || response.recv_timeout(Duration::from_secs(2)))
+            .await
+            .map_err(storage)?
+            .map_err(storage)?;
+    let Delivery::Reply(Ok(recovered)) = recovered else {
+        panic!("the original reply producer must survive idle watch re-admission");
+    };
+    assert_eq!(recovered, committed);
+    assert_eq!(std::fs::read_dir(&status).map_err(storage)?.count(), 0);
+    drop(readmitted);
+    std::fs::remove_dir(&status).map_err(storage)?;
+    std::fs::rename(&retained_status, &status).map_err(storage)?;
+    remove_projection(&recovery_path)?;
+    // The admitted client must read the committed reply in its original
+    // directory even when an unrelated directory takes over the same name.
+    // Rename while idle: an active root move can retire notification delivery.
+    // The earlier delayed reply checks re-admission's actual event producer.
+    let status = checkout.path().join(DIRECTORY).join("status");
+    let retained_status = checkout.path().join(DIRECTORY).join("retained-status");
+    std::fs::rename(&status, &retained_status).map_err(storage)?;
+    std::fs::create_dir(&status).map_err(storage)?;
+    let replacement = reply_path(&status, operation);
+    std::fs::write(&replacement, b"{unrelated replacement reply").map_err(storage)?;
     let (delivery, response) = mpsc::sync_channel(1);
     let late = connected.wait(operation, delivery)?;
     connected.shared.published(operation);
@@ -985,7 +1302,14 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         panic!("withdrawal must not replace an available committed outcome");
     };
     assert_eq!(recovered, committed);
+    assert_eq!(
+        std::fs::read(&replacement).map_err(storage)?,
+        b"{unrelated replacement reply"
+    );
     drop(late);
+    std::fs::remove_file(&replacement).map_err(storage)?;
+    std::fs::remove_dir(&status).map_err(storage)?;
+    std::fs::rename(&retained_status, &status).map_err(storage)?;
     let requests_registry = Arc::clone(&registry);
     let result = tokio::task::spawn_blocking(move || {
         // A caller can occupy its exact writable reply name before watching.
@@ -1015,7 +1339,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             ),
             Err(error) if error.request_operation_id() == Some(operation) && error.code() == crate::wire::ErrorCode::Indeterminate
         ));
-        served.withdraw(&directory.join("requests"), operation)?;
+        served.withdraw(&held, operation)?;
         // The actual shared owner must still complete an unrelated request.
         let request = |cwd: &Path, action| request_with(&requests_registry, cwd, action);
         let result = request(
@@ -1225,7 +1549,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         .ok_or_else(|| Error::Conflict("client bridge absent".into()))?;
     assert!(lock(&bridge.shared.waiters).waiting.is_empty());
     assert!(
-        !lock(&bridge.watching).watched,
+        lock(&bridge.watching).watches.is_none(),
         "a connection nothing awaits must not stay watched"
     );
     // The real connection has completed ordinary requests. Lose its
@@ -1289,7 +1613,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         "a refused connection must not publish a request with no response producer"
     );
     assert!(lock(&bridge.shared.waiters).waiting.is_empty());
-    assert!(!lock(&bridge.watching).watched);
+    assert!(lock(&bridge.watching).watches.is_none());
     assert!(
         !owner.is_finished(),
         "client failure must not kill the workspace owner"
@@ -1297,7 +1621,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     // The owner is still alive: failure of its native exit observation must
     // retain that cause rather than falsely declaring the owner gone.
     let (directory, endpoint) = discover(&cwd)?;
-    let observed = Arc::new(Bridge::open(&directory, endpoint)?);
+    let observed = Arc::new(Bridge::open(directory, endpoint)?);
     let (delivery, response) = mpsc::sync_channel(1);
     let waiting = observed.wait(OperationId::new(), delivery)?;
     observed
@@ -1325,7 +1649,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         Err(Error::Storage(error)) if error == failure
     ));
     assert!(lock(&observed.shared.waiters).waiting.is_empty());
-    assert!(!lock(&observed.watching).watched);
+    assert!(lock(&observed.watching).watches.is_none());
     let (producer, mut ended) = tokio::sync::mpsc::unbounded_channel();
     drop(producer);
     assert!(matches!(
@@ -1340,7 +1664,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     // A rejected projection that cannot be unlinked has no withdrawal
     // producer. Its error must retire the original owner and end the call.
     let (directory, endpoint) = discover(&cwd)?;
-    let blocked = Arc::new(Bridge::open(&directory, endpoint)?);
+    let blocked = Arc::new(Bridge::open(directory, endpoint)?);
     let operation = OperationId::new();
     let (delivery, response) = mpsc::sync_channel(1);
     let waiting = blocked.wait(operation, delivery)?;
@@ -1364,13 +1688,28 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         remove_projection(&rejected).expect_err("file withdrawal cannot remove a directory");
     assert_eq!(causes.primary().to_string(), admission.to_string());
     assert_eq!(causes.cleanup().to_string(), withdrawal.to_string());
+    let Delivery::Reply(Err(observed)) = response
+        .try_recv()
+        .expect("the rejected reply must settle its original waiter")
+    else {
+        panic!("the rejected reply must retain its admission cause");
+    };
+    assert_eq!(observed.request_operation_id(), Some(operation));
+    let Error::Command(failure) = observed else {
+        panic!("the rejected reply must retain its typed request identity");
+    };
+    assert_eq!(
+        failure
+            .original()
+            .expect("original admission cause")
+            .to_string(),
+        admission.to_string()
+    );
+    // Client observation already retained the original admission cause. Join
+    // the actual owner-lock producer before asserting its separate retirement.
     observer(&blocked)
         .join()
-        .expect("the original owner observer must retire");
-    assert!(matches!(
-        response.try_recv().map_err(storage)?,
-        Delivery::Gone
-    ));
+        .expect("original owner-lock producer retires");
     drop(waiting);
     assert!(lock(&blocked.shared.waiters).gone);
     let (delivery, _) = mpsc::sync_channel(1);
@@ -1424,11 +1763,11 @@ fn request_observation_failure_preserves_accepted_work_until_real_withdrawal() -
         let root = tempfile::tempdir().map_err(storage)?;
         let directory = root.path().join(DIRECTORY);
         let requests = directory.join("requests");
-        let retained = directory.join("retained");
         let status = directory.join("status");
         std::fs::create_dir_all(&requests).map_err(storage)?;
         std::fs::create_dir(&status).map_err(storage)?;
         let held = acyclic_fs::hold_root(&status).map_err(native_file_error)?;
+        let inputs = acyclic_fs::hold_root(&requests).map_err(native_file_error)?;
         let session = uuid::Uuid::new_v4();
         let operation = OperationId::new();
         let name = OsString::from(format!("{operation}.json"));
@@ -1448,7 +1787,7 @@ fn request_observation_failure_preserves_accepted_work_until_real_withdrawal() -
             rescan: false,
             failure: None,
         };
-        served.touch(&requests, session, touched())?;
+        served.touch(&inputs, &held, session, touched())?;
         assert_eq!(
             served.rescans, 0,
             "named request observation scanned history"
@@ -1465,35 +1804,22 @@ fn request_observation_failure_preserves_accepted_work_until_real_withdrawal() -
             .then(|| regular_bytes(&reply_path(&status, operation), u64::MAX))
             .transpose()?;
         // A successful observation cannot retire accepted work.
-        served.touch(&requests, session, touched())?;
-        std::fs::rename(&requests, &retained).map_err(storage)?;
-        // A loop is an observation failure on every supported OS. Windows
-        // reports a regular-file parent as NotFound, which cannot prove this.
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&requests, &requests).map_err(storage)?;
-        #[cfg(windows)]
-        {
-            // The shared junction adapter needs no symbolic-link privilege.
-            // Resolve its target while it exists, then move the alias over
-            // that empty placeholder to make the same real directory loop.
-            let alias = directory.join("observation-fault");
-            std::fs::create_dir(&requests).map_err(storage)?;
-            acyclic_fs::test_directory_junction(&alias, &requests).map_err(storage)?;
-            std::fs::remove_dir(&requests).map_err(storage)?;
-            std::fs::rename(&alias, &requests).map_err(storage)?;
-        }
-        let cause = std::fs::symlink_metadata(&path).unwrap_err();
-        assert_ne!(cause.kind(), std::io::ErrorKind::NotFound);
-        let Err(error) = served.touch(&requests, session, touched()) else {
+        served.touch(&inputs, &held, session, touched())?;
+        // A directory cannot be opened as an original regular request. Its
+        // real held-directory error cannot establish request withdrawal.
+        let retained = requests.join("retained.json");
+        std::fs::rename(&path, &retained).map_err(storage)?;
+        std::fs::create_dir(&path).map_err(storage)?;
+        let cause = native_file_error(
+            inputs
+                .open_file(Path::new(&name), false)
+                .expect_err("a directory cannot be an original regular request"),
+        );
+        let Err(error) = served.touch(&inputs, &held, session, touched()) else {
             panic!("observation failure was treated as withdrawal");
         };
-        assert!(matches!(error, Error::Storage(_)));
-        assert!(error.to_string().contains(&cause.to_string()));
-        assert!(
-            error
-                .to_string()
-                .contains("observe native request presence")
-        );
+        assert_eq!(error.code(), cause.code());
+        assert_eq!(error.to_string(), cause.to_string());
         assert!(
             match served.known.get(&operation) {
                 Some(Tracked::Queued) => phase == 0,
@@ -1511,14 +1837,11 @@ fn request_observation_failure_preserves_accepted_work_until_real_withdrawal() -
             );
         }
         // Recovery observes the same input; only its actual removal withdraws.
-        #[cfg(unix)]
-        std::fs::remove_file(&requests).map_err(storage)?;
-        #[cfg(windows)]
-        std::fs::remove_dir(&requests).map_err(storage)?;
-        std::fs::rename(&retained, &requests).map_err(storage)?;
-        served.touch(&requests, session, touched())?;
+        std::fs::remove_dir(&path).map_err(storage)?;
+        std::fs::rename(&retained, &path).map_err(storage)?;
+        served.touch(&inputs, &held, session, touched())?;
         remove_projection(&path)?;
-        served.touch(&requests, session, touched())?;
+        served.touch(&inputs, &held, session, touched())?;
         if phase == 1 {
             assert!(matches!(
                 served.known.get(&operation),
@@ -1545,6 +1868,7 @@ fn notifications_name_requests_and_only_overflow_rescans() -> Result<()> {
     let root = tempfile::tempdir().map_err(storage)?;
     let requests = std::fs::canonicalize(root.path()).map_err(storage)?;
     let notices = Notices::new(requests.clone());
+    let held = acyclic_fs::hold_root(&requests).map_err(native_file_error)?;
     // Requests published before the owner ran are found by one startup scan.
     assert!(notices.take().rescan);
     let named = |kind, leaf: &str| Ok(notify::Event::new(kind).add_path(requests.join(leaf)));
@@ -1580,7 +1904,8 @@ fn notifications_name_requests_and_only_overflow_rescans() -> Result<()> {
     let mut served = Served::default();
     let session = uuid::Uuid::new_v4();
     served.touch(
-        &requests,
+        &held,
+        &held,
         session,
         Touched {
             names: BTreeSet::from(["absent.json".into()]),
@@ -1590,7 +1915,8 @@ fn notifications_name_requests_and_only_overflow_rescans() -> Result<()> {
     )?;
     assert_eq!(served.rescans, 0);
     served.touch(
-        &requests,
+        &held,
+        &held,
         session,
         Touched {
             names: BTreeSet::new(),
@@ -1607,7 +1933,7 @@ fn notifications_name_requests_and_only_overflow_rescans() -> Result<()> {
     let failure = notices.take();
     assert!(!failure.rescan);
     let error = served
-        .touch(&requests, session, failure)
+        .touch(&held, &held, session, failure)
         .unwrap_err()
         .to_string();
     assert!(error.contains("step=observe native workspace files:"));
@@ -1616,7 +1942,7 @@ fn notifications_name_requests_and_only_overflow_rescans() -> Result<()> {
     assert!(later.names.is_empty());
     assert_eq!(
         served
-            .touch(&requests, session, later)
+            .touch(&held, &held, session, later)
             .unwrap_err()
             .to_string(),
         error

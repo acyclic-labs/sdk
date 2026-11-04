@@ -247,19 +247,7 @@ impl ProjFsSession {
         let context = view.context()?;
         view.list(runtime)?;
         self.context = Some(context);
-        runtime
-            .projector
-            .materialize(
-                Projection {
-                    runtime: runtime.as_ref(),
-                    work,
-                    context,
-                    starting: true,
-                },
-                MountPath::root(),
-            )
-            .map_err(NativeMountError::Driver)?;
-        runtime.projector.settle()
+        runtime.projector.initialize(work)
     }
 
     fn activate(
@@ -341,19 +329,7 @@ impl ProjFsSession {
         });
         lock_recover(&runtime.projector.lifecycle).context = Some(SendContext(context));
         runtime.projector.lifecycle_changed.notify_all();
-        runtime
-            .projector
-            .materialize(
-                Projection {
-                    runtime: runtime.as_ref(),
-                    work,
-                    context,
-                    starting: true,
-                },
-                MountPath::root(),
-            )
-            .map_err(NativeMountError::Driver)?;
-        runtime.projector.settle()
+        runtime.projector.initialize(work)
     }
 
     pub(in crate::native_mount) fn stop_physical(&mut self) -> Result<(), NativeMountError> {
@@ -433,7 +409,13 @@ impl ProjFsSession {
                     drop(directory);
                     result.err()
                 });
-        let state = std::mem::take(&mut *lock_recover(&runtime.projector.state));
+        let state = std::mem::replace(
+            &mut *lock_recover(&runtime.projector.state),
+            ProjectorState {
+                stopping: true,
+                ..ProjectorState::default()
+            },
+        );
         self.namespace_outcome = Some(ProjFsNamespaceOutcome {
             failures: crate::native_mount::retirement::TerminalFailures {
                 producer: self.capture_failure.take(),

@@ -2,6 +2,7 @@ use super::*;
 use crate::async_storage::AsyncObjectStore;
 use crate::foundation::FileId;
 use crate::kernel::allocation::KernelAccounting;
+use crate::kernel::allocation::retained::Retained;
 use crate::kernel::tree_mutation::TreeFormat;
 use crate::kernel::{
     FileKind, LogicalName, NameEncoding, TreeEntry, TreePage, encode_tree_page, tree_page_id,
@@ -73,6 +74,17 @@ async fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write(
 
     let mut first_allocations = AllocationLedger::default();
     let mut first_work = WorkCounters::default();
+    let independent = Retained::<Vec<u8>>::allocate(
+        73,
+        &mut KernelAccounting::borrowed_standalone(
+            &mut first_allocations,
+            &mut first_work,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ),
+    )?;
+    let baseline = first_allocations.live_bytes();
+    let independent_bytes = independent.value.capacity() as u64;
     let first = (read_page_with_accounting::<_, TreeFormat>(
         &store,
         page,
@@ -90,7 +102,10 @@ async fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write(
     .map(|(page, _)| page)?;
     assert!(matches!(first.page, PageLease::Shared { .. }));
     assert_eq!(first.logical_bytes, 0);
-    assert_eq!(first_allocations.live_bytes(), 0);
+    assert_eq!(first_allocations.live_bytes(), baseline);
+    assert_eq!(first_allocations.scratch_bytes(), 0);
+    drop(independent);
+    assert_eq!(first_allocations.live_bytes(), baseline - independent_bytes);
     assert_eq!(first_work.backend_read_operations, 1);
 
     let mut warm_allocations = AllocationLedger::default();
@@ -233,6 +248,17 @@ async fn mixed_page_batches_read_only_cold_identities_and_preserve_order()
 
     let mut seed_allocations = AllocationLedger::default();
     let mut seed_work = WorkCounters::default();
+    let independent = Retained::<Vec<u8>>::allocate(
+        73,
+        &mut KernelAccounting::borrowed_standalone(
+            &mut seed_allocations,
+            &mut seed_work,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ),
+    )?;
+    let seed_baseline = seed_allocations.live_bytes();
+    let independent_bytes = independent.value.capacity() as u64;
     let seed = (read_page_with_accounting::<_, TreeFormat>(
         &store,
         first,
@@ -249,10 +275,27 @@ async fn mixed_page_batches_read_only_cold_identities_and_preserve_order()
     .await
     .map(|(page, _)| page)?;
     assert!(matches!(seed.page, PageLease::Shared { .. }));
-    assert_eq!(seed_allocations.live_bytes(), 0);
+    assert_eq!(seed_allocations.live_bytes(), seed_baseline);
+    assert_eq!(seed_allocations.scratch_bytes(), 0);
+    drop(independent);
+    assert_eq!(
+        seed_allocations.live_bytes(),
+        seed_baseline - independent_bytes
+    );
 
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
+    let independent = Retained::<Vec<u8>>::allocate(
+        73,
+        &mut KernelAccounting::borrowed_standalone(
+            &mut allocations,
+            &mut work,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ),
+    )?;
+    let baseline = allocations.live_bytes();
+    let independent_bytes = independent.value.capacity() as u64;
     let mut batch = (read_pages_with_accounting::<_, TreeFormat, _>(
         &store,
         [first, second, first].into_iter(),
@@ -299,7 +342,10 @@ async fn mixed_page_batches_read_only_cold_identities_and_preserve_order()
         names,
         [b"first".to_vec(), b"second".to_vec(), b"first".to_vec()]
     );
-    assert_eq!(allocations.live_bytes(), 0);
+    assert_eq!(allocations.live_bytes(), baseline);
+    assert_eq!(allocations.scratch_bytes(), 0);
+    drop(independent);
+    assert_eq!(allocations.live_bytes(), baseline - independent_bytes);
 
     assert_resident_cache_shape(store.stats()?, 2);
 

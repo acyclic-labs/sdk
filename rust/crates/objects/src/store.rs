@@ -249,7 +249,7 @@ mod format_recovery_tests {
 /// Why a root batch did not commit.
 enum Commit {
     /// It may have: its keys stay.
-    Unknown,
+    Unknown(Error),
     /// It did not: its keys are removed.
     Failed(Error),
     /// Its batch exists but may not be durable: its keys stay, and a crash
@@ -503,10 +503,22 @@ fn version() -> Result<[u8; 16], Error> {
 /// A conditional write's unknown outcome means this actor's work may no
 /// longer be its own.
 fn moved(error: MediumError) -> Error {
-    match error {
-        MediumError::Ambiguous(_) => ErrorCode::OutcomeUnknown.into(),
-        error => medium(error),
+    let code = if matches!(&error, MediumError::Ambiguous(_)) {
+        ErrorCode::OutcomeUnknown
+    } else {
+        ErrorCode::Unavailable
+    };
+    Error {
+        code,
+        ..medium(error)
     }
+}
+
+fn changed() -> Error {
+    Error::caused(
+        ErrorCode::OutcomeUnknown,
+        Cause::new("objects.store", "concurrent_change"),
+    )
 }
 
 fn canonical(mut references: Vec<Digest>) -> Vec<Digest> {
@@ -811,9 +823,9 @@ impl<M: Medium> Account<M> {
 
     /// Marks `tag` as holding each of `children`, then admits them: refused
     /// when one is absent or marked by a deleter. Whether it created any key;
-    /// `None` means an index write's outcome is unknown, so the holder must
+    /// an unknown index write keeps its original failure, so the holder must
     /// not commit.
-    async fn reference(&self, children: &[Digest], tag: &str) -> Result<Option<bool>, Error> {
+    async fn reference(&self, children: &[Digest], tag: &str) -> Result<bool, Error> {
         let mut created = false;
         for child in children {
             match self
@@ -822,8 +834,7 @@ impl<M: Medium> Account<M> {
                 .await
             {
                 Ok(new) => created |= new,
-                Err(MediumError::Ambiguous(_)) => return Ok(None),
-                Err(error) => return Err(medium(error)),
+                Err(error) => return Err(moved(error)),
             }
         }
         for child in children {
@@ -832,7 +843,7 @@ impl<M: Medium> Account<M> {
                 _ => return Err(ErrorCode::MissingReference.into()),
             }
         }
-        Ok(Some(created))
+        Ok(created)
     }
 
     fn index_key(&self, child: &Digest, tag: &str) -> String {
@@ -853,13 +864,15 @@ impl<M: Medium> Account<M> {
         batch: Vec<u8>,
     ) -> Result<(), Commit> {
         match self.reference(references, tag).await {
-            Ok(Some(_)) => {}
-            Ok(None) => return Err(Commit::Unknown),
+            Ok(_) => {}
+            Err(error) if error.code == ErrorCode::OutcomeUnknown => {
+                return Err(Commit::Unknown(error));
+            }
             Err(error) => return Err(Commit::Failed(error)),
         }
         match self.medium.create(key, batch.into()).await {
             Ok(_) => {}
-            Err(MediumError::Ambiguous(_)) => return Err(Commit::Unknown),
+            Err(error @ MediumError::Ambiguous(_)) => return Err(Commit::Unknown(moved(error))),
             Err(error) => return Err(Commit::Failed(medium(error))),
         }
         let mut keys: Vec<String> = references
@@ -1096,14 +1109,14 @@ impl<M: Medium> Account<M> {
             .await
             .map_err(moved)?
         else {
-            return Err(ErrorCode::OutcomeUnknown.into());
+            return Err(changed());
         };
         if self.any(&self.index_prefix(&digest)).await? {
             self.revive(marked, envelope).await?;
             return Ok((Delete::Referenced, Vec::new()));
         }
         if !self.medium.remove_if(marked).await.map_err(moved)? {
-            return Err(ErrorCode::OutcomeUnknown.into());
+            return Err(changed());
         }
         self.untrack(&digest, &envelope.version);
         // This blob's own keys: no later blob of the digest shares them.
@@ -1310,8 +1323,10 @@ impl<M: Medium> Account<M> {
         // Any writer of the payload first holds every child; an index key
         // outlives a refusal, pinning its child until this version's removal.
         let tag = Self::envelope_tag(&digest, &envelope.version);
-        let Some(indexed) = self.reference(&envelope.references, &tag).await? else {
-            return Ok(Put::Unknown);
+        let indexed = match self.reference(&envelope.references, &tag).await {
+            Ok(indexed) => indexed,
+            Err(error) if error.code == ErrorCode::OutcomeUnknown => return Ok(Put::Unknown),
+            Err(error) => return Err(error),
         };
         let Some(wrote) = self.write_payload(&digest, &envelope, payload).await? else {
             return Ok(Put::Unknown);
@@ -1822,7 +1837,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
                 let key = format!("{}{name}", self.root_prefix(root));
                 match self.commit_batch(&references, &tag, &key, batch).await {
                     Ok(()) => {}
-                    Err(Commit::Unknown) => return Err(ErrorCode::OutcomeUnknown.into()),
+                    Err(Commit::Unknown(error)) => return Err(error),
                     Err(Commit::Failed(error)) => {
                         self.unreference(&references, &tag).await?;
                         return Err(error);
@@ -1851,13 +1866,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
                     let Some(references) = self.batch(key).await? else {
                         continue;
                     };
-                    match self.medium.remove(key).await {
-                        Ok(_) => {}
-                        Err(MediumError::Ambiguous(_)) => {
-                            return Err(ErrorCode::OutcomeUnknown.into());
-                        }
-                        Err(error) => return Err(medium(error)),
-                    }
+                    self.medium.remove(key).await.map_err(moved)?;
                     removed.push((key, references));
                 }
                 // A batch back from a crash must find its index keys: its removal is
@@ -1949,11 +1958,9 @@ impl<M: Medium> crate::Blobs for Account<M> {
                         .map(|accepted| accepted.is_some()),
                     None => self.medium.create(&self.epoch_key(), advanced).await,
                 };
-                match claimed {
-                    Ok(true) => {}
-                    Ok(false) => return Err(ErrorCode::Conflict.into()),
-                    Err(MediumError::Ambiguous(_)) => return Err(ErrorCode::OutcomeUnknown.into()),
-                    Err(error) => return Err(medium(error)),
+                match claimed.map_err(moved)? {
+                    true => {}
+                    false => return Err(ErrorCode::Conflict.into()),
                 }
                 let mut collection = Collection {
                     epoch,

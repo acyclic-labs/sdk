@@ -116,9 +116,8 @@ pub struct HostWorkspaceOwner {
     locks: AgentLocks,
     /// Serializes root creation, whose agent is not named before it.
     opening: tokio::sync::Mutex<()>,
-    /// The native owner directory, whose `requests` files say which
-    /// requests' clients have not yet read their reply.
-    requests: Option<std::path::PathBuf>,
+    /// The original request directory, held through namespace replacement.
+    requests: Option<Arc<acyclic_fs::HeldRoot>>,
     #[cfg(test)]
     retirement_observer: Option<std::sync::mpsc::SyncSender<std::thread::ThreadId>>,
 }
@@ -154,11 +153,12 @@ impl HostWorkspaceOwner {
         })
     }
 
-    /// Keeps each native request's saved result until its reply under
-    /// `directory`'s `results` is durable: the reply then answers a replay.
+    /// Keeps each native filesystem request's saved result until its client
+    /// withdraws it from this original held directory after reading its reply.
+    /// An uncertain observation retains the result.
     #[must_use]
-    pub fn with_requests(mut self, directory: std::path::PathBuf) -> Self {
-        self.requests = Some(directory);
+    pub fn with_requests(mut self, requests: Arc<acyclic_fs::HeldRoot>) -> Self {
+        self.requests = Some(requests);
         self
     }
 
@@ -388,11 +388,19 @@ impl HostWorkspaceOwner {
         let request = self
             .requests
             .clone()
-            .map(|directory| acyclic_fs::GitRequest {
+            .map(|requests| acyclic_fs::GitRequest {
                 operation: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
                 unanswered: std::sync::Arc::new(move |request: acyclic_fs::OperationId| {
                     let file = format!("{}.json", OperationId::from_bytes(request.into_bytes()));
-                    directory.join("requests").join(&file).exists()
+                    match requests.open_file(Path::new(&file), false) {
+                        Err(acyclic_fs::DemandError::Absent) => false,
+                        Err(acyclic_fs::DemandError::Io(cause))
+                            if cause.kind() == std::io::ErrorKind::NotFound =>
+                        {
+                            false
+                        }
+                        _ => true,
+                    }
                 }),
             });
         serde_json::to_value(self.view(task)?.fs(operation, command, request).await?)

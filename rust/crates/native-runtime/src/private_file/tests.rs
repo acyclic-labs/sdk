@@ -55,34 +55,35 @@ fn credential_identity_requires_a_persistent_account_namespace() -> io::Result<(
 }
 
 #[test]
-fn private_file_permissions_exist_before_any_secret_is_written() -> io::Result<()> {
-    let root = tempfile::tempdir()?;
-    let path = root.path().join("credential");
-    let mut file = create(&path)?;
-    assert!(is_private(&file)?);
-    file.write_all(b"fixture")?;
-    assert!(is_private(&open(&path, false)?)?);
-    Ok(())
-}
-
-#[test]
 fn every_publication_cut_exposes_only_complete_private_records() -> io::Result<()> {
-    for failed in [
-        PublicationStage::Created,
-        PublicationStage::Synced,
-        PublicationStage::Installed,
-        PublicationStage::Published,
-    ] {
-        let root = tempfile::tempdir()?;
-        let path = root.path().join("owner");
-        let temporary = root.path().join("staging");
+    let root = tempfile::tempdir()?;
+    for (index, failed) in [
+        None,
+        Some(PublicationStage::Created),
+        Some(PublicationStage::Synced),
+        Some(PublicationStage::Installed),
+        Some(PublicationStage::Published),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let path = root.path().join(format!("owner-{index}"));
+        let temporary = root.path().join(format!("staging-{index}"));
         let result = publish(
             &path,
             &temporary,
             crate::RenameMode::NoReplace,
-            |file| file.write_all(b"complete"),
+            |file| {
+                assert!(is_private(file)?);
+                file.write_all(b"com")?;
+                assert!(!path.exists(), "partial private record became visible");
+                if failed.is_none() {
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+                file.write_all(b"plete")
+            },
             |stage| {
-                if stage == failed {
+                if Some(stage) == failed {
                     Err(io::ErrorKind::Interrupted.into())
                 } else {
                     Ok(())
@@ -90,10 +91,13 @@ fn every_publication_cut_exposes_only_complete_private_records() -> io::Result<(
             },
         );
         assert!(result.is_err());
-        assert!(!temporary.exists());
+        assert!(
+            !temporary.exists(),
+            "unpublished staging owner did not retire"
+        );
         if matches!(
             failed,
-            PublicationStage::Installed | PublicationStage::Published
+            Some(PublicationStage::Installed | PublicationStage::Published)
         ) {
             assert_eq!(fs::read(&path)?, b"complete");
             assert!(is_private(&open(&path, false)?)?);
@@ -101,8 +105,17 @@ fn every_publication_cut_exposes_only_complete_private_records() -> io::Result<(
             assert!(!path.exists());
         }
     }
-    let root = tempfile::tempdir()?;
     let path = root.path().join("owner");
+    assert!(
+        publish(
+            &path,
+            &path,
+            crate::RenameMode::NoReplace,
+            |_| Ok(()),
+            |_| Ok(())
+        )
+        .is_err()
+    );
     let mut staged = StagedFile::create(root.path(), "original-")?;
     staged.as_file_mut().write_all(b"original publication")?;
     let retained = staged.publish_retained(&path, crate::RenameMode::NoReplace)?;
@@ -307,25 +320,6 @@ fn public_modes_symlinks_and_nonregular_entries_fail_before_reading() -> io::Res
     symlink(&path, &alias)?;
     assert!(open(&alias, false).is_err());
     assert!(open(root.path(), false).is_err());
-    Ok(())
-}
-
-#[test]
-fn negative_control_in_place_publication_exposes_a_torn_record() -> io::Result<()> {
-    let root = tempfile::tempdir()?;
-    let path = root.path().join("owner");
-    assert!(
-        publish(
-            &path,
-            &path,
-            crate::RenameMode::NoReplace,
-            |_| Ok(()),
-            |_| Ok(())
-        )
-        .is_err()
-    );
-    create(&path)?.write_all(b"half")?;
-    assert_ne!(fs::read(&path)?, b"half-complete");
     Ok(())
 }
 

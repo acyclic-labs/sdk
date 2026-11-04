@@ -2,11 +2,11 @@ use super::*;
 
 #[test]
 fn abandoned_replay_releases_parked_native_and_blocking_workers() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
     for native in [false, true] {
         for wake in [0, 1, 2] {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .build()
-                .unwrap();
             let (schedule, mut events) = Schedule::seeded(29);
             let (answer, waiting) = oneshot::channel::<()>();
             let (started, running) = oneshot::channel();
@@ -83,22 +83,13 @@ fn abandoned_replay_releases_parked_native_and_blocking_workers() {
 
 #[test]
 fn parking_a_worker_does_not_invent_callback_readiness() {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    struct Count(AtomicUsize);
-    impl Wake for Count {
-        fn wake(self: Arc<Self>) {
-            self.wake_by_ref();
-        }
-        fn wake_by_ref(self: &Arc<Self>) {
-            self.0.fetch_add(1, Ordering::SeqCst);
-        }
-    }
+    use std::sync::atomic::{AtomicBool, Ordering};
     let host = Host::with_pool(Pool::new(1));
-    let wakes = Arc::new(Count(AtomicUsize::new(0)));
+    let startup = Arc::new(crate::NativeWake::default());
     {
         let mut state = lock(&host.state);
         state.waiting_start = true;
-        state.driver = Some(Waker::from(wakes.clone()));
+        state.driver = Some(Waker::from(startup.clone()));
     }
     let ready = Arc::new(AtomicBool::new(false));
     let work_ready = ready.clone();
@@ -121,9 +112,14 @@ fn parking_a_worker_does_not_invent_callback_readiness() {
             .wait(state)
             .unwrap_or_else(PoisonError::into_inner);
     }
-    // Readiness has not been published by the original future yet.
-    let invented = wakes.0.load(Ordering::SeqCst);
     drop(state);
+    // Parking publishes phase before waking the driver outside the lock.
+    // Join that original event before inspecting callback readiness.
+    startup.wait(None);
+    let (invented, waiting_start) = {
+        let state = lock(&host.state);
+        (state.ready, state.waiting_start)
+    };
     ready.store(true, Ordering::SeqCst);
     host.wake_by_ref();
     executor::complete_io(host.drive(std::future::poll_fn(|_| {
@@ -134,7 +130,8 @@ fn parking_a_worker_does_not_invent_callback_readiness() {
         }
     })));
     thread.join().unwrap();
-    assert_eq!(invented, 0, "parking enqueued an extra seeded task poll");
+    assert!(!invented, "parking invented callback readiness");
+    assert!(!waiting_start, "parking retained its startup waiter");
 }
 
 #[test]
@@ -158,13 +155,7 @@ fn file_batches_never_claim_a_callback_dependency() {
     assert!(task.pending.as_ref().unwrap().may_wait_for_driver());
 }
 
-fn direct_callback(erase_scope: bool, prepared: bool) -> bool {
-    crate::initialize_native_io_services().unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .start_paused(true)
-        .build()
-        .unwrap();
+fn direct_callback(runtime: &tokio::runtime::Runtime, erase_scope: bool, prepared: bool) -> bool {
     let (schedule, mut events) = Schedule::seeded(29);
     let meter = Arc::new(crate::tests::ReadBudgetMeter::new(0, 0));
     runtime.block_on(async {
@@ -218,23 +209,29 @@ fn direct_callback(erase_scope: bool, prepared: bool) -> bool {
 }
 
 #[test]
-fn direct_native_callbacks_borrow_the_receiving_host() {
-    for prepared in [false, true] {
-        assert!(direct_callback(false, prepared));
-        assert!(
-            !direct_callback(true, prepared),
-            "erased custody escaped the control"
-        );
-    }
-}
-
-fn inline_metered_callback(erase_scope: bool, prepared: bool) -> bool {
+fn metered_native_callbacks_retain_the_receiving_host() {
     crate::initialize_native_io_services().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .start_paused(true)
         .build()
         .unwrap();
+    for prepared in [false, true] {
+        assert!(direct_callback(&runtime, false, prepared));
+        assert!(
+            !direct_callback(&runtime, true, prepared),
+            "erased custody escaped the control"
+        );
+        assert!(inline_metered_callback(&runtime, false, prepared));
+        assert!(!inline_metered_callback(&runtime, true, prepared));
+    }
+}
+
+fn inline_metered_callback(
+    runtime: &tokio::runtime::Runtime,
+    erase_scope: bool,
+    prepared: bool,
+) -> bool {
     let (schedule, mut events) = Schedule::seeded(29);
     let meter = Arc::new(crate::tests::ReadBudgetMeter::new(0, 0));
     runtime.block_on(async {
@@ -289,14 +286,6 @@ fn inline_metered_callback(erase_scope: bool, prepared: bool) -> bool {
 }
 
 #[test]
-fn inline_metered_waits_retain_the_original_host() {
-    for prepared in [false, true] {
-        assert!(inline_metered_callback(false, prepared));
-        assert!(!inline_metered_callback(true, prepared));
-    }
-}
-
-#[test]
 fn unscoped_physical_workers_leave_the_driver_available_to_reply() {
     // Occupies every worker of the process-global host pool, so runs alone.
     if crate::tests::passed_in_exclusive_process(
@@ -334,21 +323,62 @@ fn unscoped_physical_workers_leave_the_driver_available_to_reply() {
         receive.recv().unwrap();
     }
     let host = Host::for_workers(workers);
-    let mut completion = crate::run_blocking_io(|| 42, None).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
+        .build()
+        .unwrap();
+    let (schedule, _events) = Schedule::seeded(29);
+    let context = runtime.block_on(schedule.scope(async { Context::current().unwrap() }));
+    let (requested, mut requests) = mpsc::unbounded_channel();
+    // Retain the original simulation sources on the physical submission,
+    // without entering CURRENT and resubmitting it through another task.
+    let mut completion = BLOCKING_CONTEXT
+        .sync_scope(Some(context.clone()), || {
+            crate::run_blocking_io(
+                move || {
+                    if Host::current().is_none() {
+                        return Err(std::io::ErrorKind::InvalidInput);
+                    }
+                    let (reply, waiting) = oneshot::channel();
+                    requested
+                        .send(reply)
+                        .map_err(|_| std::io::ErrorKind::BrokenPipe)?;
+                    blocking_on(waiting).map_err(|_| std::io::ErrorKind::BrokenPipe)
+                },
+                None,
+            )
+        })
+        .unwrap();
     let mut job = completion.pending.take().unwrap();
-    Work::bind(&mut job, None, Some(host.clone()));
+    Work::bind(&mut job, Some(context), Some(host.clone()));
     let mut drive = Box::pin(host.drive(queued(job, workers)));
     // Every physical worker is waiting for this driver. Its first poll must
     // yield before any reply is sent, even though none belongs to this Host.
     assert!(drive.as_mut().poll(&mut cx).is_pending());
-    for (index, reply) in replies.into_iter().enumerate() {
-        reply.send(index).unwrap();
-    }
-    executor::complete_io(drive).unwrap();
-    assert_eq!(executor::complete_io(completion).unwrap(), 42);
-    for (index, completion) in occupants.into_iter().enumerate() {
-        assert_eq!(executor::complete_io(completion).unwrap(), index);
-    }
+    runtime.block_on(schedule.scope(async {
+        let deadline = tokio::time::sleep(std::time::Duration::from_secs(30));
+        tokio::pin!(deadline);
+        for (index, reply) in replies.into_iter().enumerate() {
+            reply.send(index).unwrap();
+        }
+        let completed = async {
+            drive.await.unwrap();
+            assert_eq!(completion.await.unwrap().unwrap(), 42);
+            for (index, completion) in occupants.into_iter().enumerate() {
+                assert_eq!(completion.await.unwrap(), index);
+            }
+        };
+        tokio::pin!(completed);
+        loop {
+            tokio::select! {
+                biased;
+                Some(request) = requests.recv() => request.send(42).unwrap(),
+                () = &mut completed => break,
+                () = &mut deadline => panic!("foreign native occupancy advanced the consumer deadline before its original callback reply"),
+            }
+        }
+    }));
 }
 
 #[test]
@@ -627,8 +657,9 @@ fn saturated_native_submission_leaves_the_simulated_driver_available() {
         }));
         loop {
             tokio::select! {
-                () = &mut root => break,
+                biased;
                 event = events.recv() => event.unwrap().release(),
+                () = &mut root => break,
             }
         }
         drop(root);

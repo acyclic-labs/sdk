@@ -90,7 +90,7 @@ async fn a_refused_history_preparation_can_select_a_new_project_generation() -> 
         .await?,
     );
     let (agents, root) = harness.agents().await?;
-    let client = crate::local::agent_conversation::Conversation::open(harness.connect().await?)?;
+    let client = crate::local::agent_conversation::Conversation::open(harness.connect().await?);
     client.send("first", "first").await?;
     settled(agents, root).await?;
     let actor = agents.actor(root).map_err(storage)?;

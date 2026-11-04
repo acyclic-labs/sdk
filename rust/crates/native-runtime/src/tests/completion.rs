@@ -1,6 +1,17 @@
 use super::*;
 
-fn failed_child(test: &str, marker: &str, message: &str) -> io::Result<()> {
+fn aborted_child(
+    test: &str,
+    marker: &str,
+    message: &str,
+    run: impl FnOnce() -> io::Result<()> + std::panic::UnwindSafe,
+) -> io::Result<()> {
+    if std::env::var_os(marker).is_some() {
+        // Only process termination can satisfy the parent. A returned error
+        // or an unwound body must not become a failing libtest exit instead.
+        let _ = std::panic::catch_unwind(run);
+        std::process::exit(0);
+    }
     let output = crate::process_output(
         crate::ProcessCommand::new(std::env::current_exe()?)
             .args(["--exact", test, "--nocapture"])
@@ -8,7 +19,10 @@ fn failed_child(test: &str, marker: &str, message: &str) -> io::Result<()> {
         CaptureSchedule::Unbounded,
         8 * 1024 * 1024,
     )?;
-    assert!(!output.status.success());
+    assert!(
+        !output.status.success(),
+        "fail-stop body returned or unwound into its original caller"
+    );
     assert!(String::from_utf8_lossy(&output.stderr).contains(message));
     Ok(())
 }
@@ -17,49 +31,49 @@ fn failed_child(test: &str, marker: &str, message: &str) -> io::Result<()> {
 #[test]
 fn accepted_callback_cannot_disappear_without_terminal_completion() -> io::Result<()> {
     const MARKER: &str = "ACYCLIC_DROPPED_COMPLETION_CHILD";
-    if std::env::var_os(MARKER).is_some() {
-        eprintln!("dropping accepted native callback");
-        let _ = submit_file_io(
-            FileCompletion::new(
-                Arc::new(CompletionMutex::new(CompletionState::<()>::default())),
-                None,
-                None,
-                None,
-                obs::OperationSpan::new(tracing::Span::none()),
-            ),
-            |callback| {
-                drop(callback);
-                Ok(())
-            },
-        );
-        return Err(io::Error::other("missing terminal callback"));
-    }
-    failed_child(
+    aborted_child(
         "tests::completion::accepted_callback_cannot_disappear_without_terminal_completion",
         MARKER,
         "dropping accepted native callback",
+        || {
+            eprintln!("dropping accepted native callback");
+            let _ = submit_file_io(
+                FileCompletion::new(
+                    Arc::new(CompletionMutex::new(CompletionState::<()>::default())),
+                    None,
+                    None,
+                    None,
+                    obs::OperationSpan::new(tracing::Span::none()),
+                ),
+                |callback| {
+                    drop(callback);
+                    Ok(())
+                },
+            );
+            Ok(())
+        },
     )
 }
 
 #[test]
 fn native_file_worker_unwind_is_fail_stop() -> io::Result<()> {
     const MARKER: &str = "ACYCLIC_NATIVE_UNWIND_CHILD_TEST";
-    if std::env::var_os(MARKER).is_some() {
-        let file =
-            NativeFile::from_file(tempfile::tempfile()?, None).map_err(|(error, _)| error)?;
-        let _ = complete(file.control_async(
-            |_, _| {
-                eprintln!("injected native worker unwind");
-                std::panic::resume_unwind(Box::new("injected native worker unwind"));
-            },
-            None,
-        )?);
-        return Err(io::Error::other("worker unwind returned"));
-    }
-    failed_child(
+    aborted_child(
         "tests::completion::native_file_worker_unwind_is_fail_stop",
         MARKER,
         "injected native worker unwind",
+        || {
+            let file =
+                NativeFile::from_file(tempfile::tempfile()?, None).map_err(|(error, _)| error)?;
+            let _ = complete(file.control_async(
+                |_, _| {
+                    eprintln!("injected native worker unwind");
+                    std::panic::resume_unwind(Box::new("injected native worker unwind"));
+                },
+                None,
+            )?);
+            Ok(())
+        },
     )
 }
 

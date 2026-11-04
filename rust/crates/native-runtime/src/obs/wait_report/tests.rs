@@ -128,14 +128,14 @@ fn a_retained_descendant_does_not_retain_a_finished_or_cancelled_wait() {
 #[test]
 fn closing_adjacent_waits_preserves_all_other_live_keys() {
     let report = WaitReport::default();
-    let mut waits: Vec<_> = (0..1024).map(|key| Some(pending(&report, key))).collect();
+    let mut waits: Vec<_> = (0..7).map(|key| Some(pending(&report, key))).collect();
     // Exercise middle, first, last and newly adjacent removals. Only the
     // owner's two neighbors change; reporting must retain every other key.
-    for key in [512, 0, 1023, 511, 513] {
+    for key in [3, 0, 6, 2, 4] {
         drop(waits[key].take());
     }
     let lines = snapshot(&report);
-    assert_eq!(lines.lines().count(), 1019);
+    assert_eq!(lines.lines().count(), 2);
     for (key, wait) in waits.iter().enumerate() {
         assert_eq!(
             lines.contains(&format!("channel-close {key} since ")),

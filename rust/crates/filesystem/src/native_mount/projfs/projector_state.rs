@@ -70,6 +70,27 @@ impl MaterializeQueue {
         }
     }
 
+    pub(super) fn run(
+        &self,
+        mut materialize: impl FnMut(MountPath) -> Result<Vec<MountPath>, String>,
+    ) {
+        while let Some(directory) = self.next() {
+            // Complete the accepted queue item even if its source panics:
+            // other workers wait for this item's completion before retiring.
+            let written =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| materialize(directory)))
+                    .unwrap_or_else(|payload| {
+                        let message = payload
+                            .downcast_ref::<String>()
+                            .map(String::as_str)
+                            .or_else(|| payload.downcast_ref::<&str>().copied())
+                            .unwrap_or("non-string panic payload");
+                        Err(format!("projection source panicked: {message}"))
+                    });
+            self.done(written);
+        }
+    }
+
     pub(super) fn next(&self) -> Option<MountPath> {
         let mut state = lock_recover(&self.state);
         loop {
@@ -159,6 +180,7 @@ pub(super) const HELD_SETTLE_LIMIT: std::time::Duration = std::time::Duration::f
 
 #[derive(Default)]
 pub(super) struct ProjectorState {
+    pub(super) startup: Option<crate::NativeMaterializationWork>,
     pub(super) written: HashMap<MountPath, WrittenEntry>,
     pub(super) pending: HashMap<MountPath, WrittenEntry>,
     pub(super) directories: HashMap<MountPath, Materialized>,
@@ -190,7 +212,11 @@ impl ProjectorState {
     pub(super) fn readiness(&self) -> Readiness {
         if self.stopping {
             Readiness::Stopped
-        } else if self.processed < self.notified || self.retry || !self.stale.is_empty() {
+        } else if self.startup.is_some()
+            || self.processed < self.notified
+            || self.retry
+            || !self.stale.is_empty()
+        {
             Readiness::Ready
         } else {
             Readiness::Idle

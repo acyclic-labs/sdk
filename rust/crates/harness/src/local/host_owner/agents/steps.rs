@@ -85,8 +85,9 @@ pub(super) fn apply(
             if let Some(reason) = reason {
                 return Ok(reject(session, id, reason));
             }
-            // Named by its turn number, so a replayed claim names it again.
-            let claim = OperationId::from_bytes(claim_bytes(agent, session));
+            // The accepted request owns its claim, so its reply can be
+            // reconstructed without admitting a competing request.
+            let claim = claim_id(id);
             if let Some(running) = &mut session.running {
                 running.claimed = Some(claim);
             }
@@ -129,16 +130,4 @@ pub(super) fn apply(
         }
     }
     Ok(None)
-}
-
-/// The claim identity of `agent`'s next turn: one per turn number, so a
-/// replayed claim names the same operation.
-fn claim_bytes(agent: &AgentState, session: &Session) -> [u8; 16] {
-    let mut hasher = blake3::Hasher::new_derive_key("acyclic.native-host.claim.v1");
-    hasher.update(agent.path.as_str().as_bytes());
-    hasher.update(&[0]);
-    hasher.update(&(session.settled + 1).to_le_bytes());
-    let mut bytes = [0; 16];
-    hasher.finalize_xof().fill(&mut bytes);
-    bytes
 }

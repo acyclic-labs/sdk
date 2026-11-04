@@ -294,7 +294,7 @@ async fn refused_writes_preserve_storage() -> TestResult {
 }
 
 async fn closed_write_preserves_storage() -> TestResult {
-    // The original authority ends a parked mutation when its producer closes;
+    // The original authority ends an ahead-of-provider mutation when it closes;
     // no deadline, readiness retry or replacement revision can release it.
     let medium = crate::MemoryMedium::default();
     let provider = Arc::new(crate::Store::new(medium.clone()).account(b"closed-write-minimum")?);

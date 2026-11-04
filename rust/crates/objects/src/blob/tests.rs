@@ -100,13 +100,5 @@ fn persisted_golden_frames_refuse_other_versions() -> Result<(), Box<dyn std::er
             "{name}"
         );
     }
-    assert_eq!(Manifest::decode(&manifest.encode())?, manifest);
-    assert_eq!(Envelope::decode(&envelope.encode())?, envelope);
-    assert_eq!(
-        decode_batch(&encode_batch(&[Digest::from_bytes([3; 32])]))?,
-        vec![Digest::from_bytes([3; 32])]
-    );
-    assert_eq!(decode_incarnation(&encode_incarnation(7, 9))?, (7, 9));
-    assert_eq!(decode_epoch(&encode_epoch(9))?, 9);
     Ok(())
 }

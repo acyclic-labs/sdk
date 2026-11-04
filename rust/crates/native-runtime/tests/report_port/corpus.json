@@ -1,0 +1,15 @@
+{
+  "source": "e9e81ff94c85bdfd1dbe4c9d484c36c471cefc16",
+  "writer": "src/obs/report_port/tests.rs::kernel_backpressure_preserves_report_identity_and_unrelated_physical_completion",
+  "command": "cargo test --locked -p acyclic-native-runtime --lib obs::report_port::tests::kernel_backpressure_preserves_report_identity_and_unrelated_physical_completion -- --exact --nocapture",
+  "platform": "Linux x86_64",
+  "capture_input": "ACYCLIC_REPORT_REQUEST_CAPTURE",
+  "files": {
+    "request": {
+      "bytes": 138,
+      "sha256": "f73dce1d8e555e1ba4ffc5ce0fb58dbc02089f7e3ba42dfc10d7330ad85d859d",
+      "provenance": "Original serde ReportRequest writer bytes, sent unchanged into the real native ReportPort control and accepted before its original acknowledgement/backpressure assertions."
+    }
+  },
+  "scope": "Request decoder and single-admission state only. Startup, acknowledgement, execution failure, endpoint inheritance and physical retirement remain separate controls."
+}

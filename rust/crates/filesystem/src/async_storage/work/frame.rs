@@ -42,10 +42,10 @@ impl<'a> AuthorityFrame<'a> {
             value: AuthorityWork {
                 allocations: std::mem::take(allocations),
                 scratch_floor: 0,
+                read_observation: None,
                 work: std::mem::take(work),
                 budget,
                 cancellation,
-                read_observation: None,
                 #[cfg(not(target_arch = "wasm32"))]
                 original: None,
                 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "distributed")))]

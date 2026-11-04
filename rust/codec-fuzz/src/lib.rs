@@ -17,6 +17,9 @@ pub mod object_schedule;
 mod objects_json;
 mod semantic;
 
+/// Original Objects service writer outputs, without invoking other producers.
+pub use semantic::object_seeds as object_semantic_seeds;
+
 /// Real service-writer outputs to capture under both protobuf syntax targets.
 pub fn semantic_seeds(
     streams: &[(String, Vec<u8>)],

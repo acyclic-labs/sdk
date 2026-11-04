@@ -73,7 +73,9 @@ pub(crate) fn in_file_scope(health: &Arc<FileHealth>) -> bool {
         // SAFETY: `with_scope` retains each health borrow and pinned node on
         // this thread, restoring TLS before either can drop.
         let active = unsafe { &*node };
-        if Arc::ptr_eq(unsafe { &*active.health }, health) {
+        // SAFETY: the same live pinned frame retains this health borrow.
+        let active_health = unsafe { &*active.health };
+        if Arc::ptr_eq(active_health, health) {
             return true;
         }
         node = active.previous;
@@ -115,7 +117,9 @@ pub(crate) fn with_file_admission<T>(
         // entire lifetime. No reference escapes this synchronous operation.
         let active = unsafe { &*node };
         if std::ptr::eq(active.file, file) {
-            return run_admitted(file, unsafe { &*active.health }, operation);
+            // SAFETY: the matching live frame retains its health borrow.
+            let health = unsafe { &*active.health };
+            return run_admitted(file, health, operation);
         }
     }
     let health = shared_file_health(file, None)?;

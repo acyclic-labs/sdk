@@ -42,10 +42,10 @@ elif choice.startswith("issuance-"):
     target = "capability"
     source = root.parent / "src/trust" / ("issuance/wire.rs" if choice == "issuance-reply" else "issuance.rs")
     oracle = root / "fuzz_targets/capability.rs"
-elif choice == "trust-target":
+elif choice in ("trust-target", "trust-reanchor"):
     target = "trust_record"
     source = root.parent / "src/trust/follower.rs"
-    oracle = root / "fuzz_targets/trust_record.rs"
+    oracle = root.parent / "tests/common/trust_record.rs"
 else:
     target = "credential"
     source = root.parent / "src/credential.rs"
@@ -174,7 +174,12 @@ try:
         ),
         "trust-target": (
             b"if !matches {", b"if false && !matches {",
-            "trust record targets must be disjoint", "foreign-keyring",
+            "account record must refuse environment scope", "foreign-keyring",
+        ),
+        "trust-reanchor": (
+            b"if environment.revision.sequence != 0" + newline + b"                || ",
+            b"if ",
+            "anchor publication replaced an authenticated signed frontier", "environment-bootstrap",
         ),
         "issuance-request": (
             b"if request.wire() != bytes {", b"if false && request.wire() != bytes {",
@@ -222,6 +227,14 @@ try:
     if any(hashlib.sha256(path.read_bytes()).digest() != digest
            for path, digest in oracle_hashes.items()):
         raise RuntimeError("Auth oracle changed during the negative control")
+    if choice in ("trust-target", "trust-reanchor"):
+        step = "admit the original " + choice + " input after restoring the production guard"
+        restored = subprocess.run(
+            command, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        print(restored.stdout, end="")
+        if restored.returncode != 0:
+            raise RuntimeError("the restored production " + choice + " guard did not pass the same oracle")
 except (OSError, RuntimeError) as error:
     print(
         f"STEP {step} failed: {error}; inspect the original output and correct the source or command; "

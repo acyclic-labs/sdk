@@ -9,7 +9,7 @@ use std::sync::Arc;
 /// Runs one prompt through the original served conversation and its event stream.
 pub async fn answer(config: LocalHarnessConfig, operation: &str, prompt: &str) -> Result<String> {
     let local = Arc::new(LocalHarness::open(config).await?);
-    let conversation = Conversation::open(local.connect().await?)?;
+    let conversation = Conversation::open(local.connect().await?);
     let result = receive(conversation, operation, prompt).await;
     let disconnected = match Arc::try_unwrap(local) {
         Ok(local) => local.disconnect().await,

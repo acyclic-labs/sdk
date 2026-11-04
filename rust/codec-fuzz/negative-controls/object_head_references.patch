@@ -1,0 +1,11 @@
+--- a/rust/crates/objects/src/convert.rs
++++ b/rust/crates/objects/src/convert.rs
+@@ -129,7 +129,7 @@
+             wire::Kind::Unspecified => return Err(invalid()),
+         },
+         length: value.length,
+-        references: digests(&value.references)?,
++        references: Vec::new(),
+         revision: None,
+     })
+ }

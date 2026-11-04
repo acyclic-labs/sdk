@@ -107,6 +107,9 @@ def main():
     original = SOURCE.read_bytes()
     source = original.replace(b"\r\n", b"\n")
     controls = {
+        "queued-wake": (b"Some(Phase::Queued { .. }) | None => None,",
+         b"Some(Phase::Queued { .. }) => { self.ready_count += 1; None }, None => None,",
+         "wake_racing_replay_and_park_cannot_lose_ready_work", "queued wakes must coalesce"),
         "running-wake": (b"*notified = true;", b"*notified = false;",
          "wake_racing_replay_and_park_cannot_lose_ready_work",
          "wake must remain ready across parking"),

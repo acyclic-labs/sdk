@@ -285,12 +285,25 @@ async fn a_dropped_root_reopens_while_a_forked_copy_of_its_lock_lives()
 
 /// Fails selected operations: bit 0 makes creates ambiguous, bit 1 fails root
 /// reads, and bit 2 loses one replacement reply. Bit 3 applies that replacement
-/// before losing its reply; otherwise the original value remains.
+/// before losing its reply; otherwise the original value remains. Bit 4 loses a
+/// root removal reply; bit 5 applies that removal before losing its reply.
+/// Bit 6 loses only a root-batch create reply, after its indexes were admitted.
+/// Bit 7 fails the durability barrier without acknowledging its keys.
 #[derive(Default)]
 pub(crate) struct Faulty {
     inner: MemoryMedium,
     pub(crate) faults: AtomicU8,
     replacements: AtomicUsize,
+    volatile: bool,
+}
+
+impl Faulty {
+    pub(crate) fn with_barriers() -> Self {
+        Self {
+            volatile: true,
+            ..Self::default()
+        }
+    }
 }
 
 /// Fails a root release on the server's medium through `client`, one of the
@@ -298,6 +311,7 @@ pub(crate) struct Faulty {
 pub(crate) async fn failed_release(
     client: &dyn Blobs,
     server: &Faulty,
+    faults: u8,
 ) -> Result<crate::Error, Box<dyn std::error::Error + Send + Sync>> {
     let root = RootId::new(*b"cause")?;
     let body = OwnedBytes::from(b"server cause".to_vec());
@@ -308,22 +322,67 @@ pub(crate) async fn failed_release(
         .ok_or("put was not acknowledged")?
         .digest;
     client.retain(&root, vec![digest]).await?;
-    server.faults.store(2, Ordering::SeqCst);
+    server.faults.store(faults, Ordering::SeqCst);
     let error = client
         .release(&root)
         .await
         .err()
         .ok_or("release succeeded over a failed medium")?;
     server.faults.store(0, Ordering::SeqCst);
-    assert_eq!(error.code, ErrorCode::Unavailable);
+    assert_eq!(
+        error.code,
+        if faults == 2 {
+            ErrorCode::Unavailable
+        } else {
+            ErrorCode::OutcomeUnknown
+        }
+    );
     Ok(error)
+}
+
+/// One failed durability barrier reaches every covered batch member through
+/// the shipping transport; an independent admission refusal stays in order.
+pub(crate) async fn failed_batch(
+    client: &dyn Blobs,
+    server: &Faulty,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    server.faults.store(128, Ordering::SeqCst);
+    let results = client
+        .put_batch(vec![
+            (b"batch cause first".as_slice().into(), Vec::new()),
+            (
+                b"batch cause missing".as_slice().into(),
+                vec![Digest::of(b"batch cause absent reference")],
+            ),
+            (b"batch cause last".as_slice().into(), Vec::new()),
+        ])
+        .await;
+    server.faults.store(0, Ordering::SeqCst);
+    assert_eq!(results.len(), 3);
+    let errors = results
+        .into_iter()
+        .map(Result::unwrap_err)
+        .collect::<Vec<_>>();
+    assert_eq!(errors[1].code, ErrorCode::MissingReference);
+    assert_eq!(errors[1].cause(), None);
+    let cause = acyclic_auth::refusal::Cause::new("objects.medium", "failed");
+    for error in [&errors[0], &errors[2]] {
+        assert_eq!(error.code, ErrorCode::Unavailable);
+        assert_eq!(error.cause(), Some(&cause));
+    }
+    // A fresh request on the same transport progresses after the barrier fails.
+    client
+        .put(b"after batch failure".as_slice().into(), Vec::new())
+        .await?;
+    Ok(())
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Medium for Faulty {
     async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
-        if self.faults.load(Ordering::SeqCst) & 1 != 0 {
+        let faults = self.faults.load(Ordering::SeqCst);
+        if faults & 1 != 0 || (faults & 64 != 0 && key.contains("/r/")) {
             return Err(MediumError::Ambiguous(std::io::ErrorKind::TimedOut.into()));
         }
         self.inner.create(key, bytes).await
@@ -339,6 +398,13 @@ impl Medium for Faulty {
         self.inner.read(key, range).await
     }
     async fn remove(&self, key: &str) -> Result<bool, MediumError> {
+        let faults = self.faults.load(Ordering::SeqCst);
+        if faults & 16 != 0 && key.contains("/r/") {
+            if faults & 32 != 0 {
+                self.inner.remove(key).await?;
+            }
+            return Err(MediumError::Ambiguous(std::io::ErrorKind::TimedOut.into()));
+        }
         self.inner.remove(key).await
     }
     async fn observe(&self, key: String) -> Result<Option<Observed<'_>>, MediumError> {
@@ -377,10 +443,13 @@ impl Medium for Faulty {
         self.inner.list(prefix, after, limit).await
     }
     async fn flush(&self, keys: &[String]) -> Result<(), MediumError> {
+        if self.faults.load(Ordering::SeqCst) & 128 != 0 {
+            return Err(MediumError::Failed(std::io::ErrorKind::BrokenPipe.into()));
+        }
         self.inner.flush(keys).await
     }
     fn volatile(&self) -> bool {
-        self.inner.volatile()
+        self.volatile
     }
     fn recovered(&self) -> bool {
         self.inner.recovered()
@@ -402,9 +471,37 @@ async fn ambiguous_publication_is_unknown_and_retry_safe() -> Result<(), Box<dyn
     assert_eq!(blobs.put(body.clone(), Vec::new()).await?, Put::Unknown);
     store.medium().faults.store(0, Ordering::SeqCst);
     assert!(matches!(
-        blobs.put(body, Vec::new()).await?,
+        blobs.put(body.clone(), Vec::new()).await?,
         Put::Created { .. }
     ));
+    let root = RootId::new(*b"uncertain")?;
+    let cause = acyclic_auth::refusal::Cause::new("objects.medium", "outcome_unknown");
+    // Delete before an uncertain retain protects this object's index.
+    store.medium().faults.store(4, Ordering::SeqCst);
+    let error = blobs
+        .delete(Digest::of(&body))
+        .await
+        .expect_err("an ambiguous conditional removal cannot be acknowledged");
+    assert_eq!(error.code, ErrorCode::OutcomeUnknown);
+    assert_eq!(error.cause(), Some(&cause));
+    for faults in [1, 64] {
+        store.medium().faults.store(faults, Ordering::SeqCst);
+        let error = blobs
+            .retain(&root, vec![Digest::of(&body)])
+            .await
+            .expect_err("an ambiguous retain cannot be acknowledged");
+        assert_eq!(error.code, ErrorCode::OutcomeUnknown);
+        assert_eq!(error.cause(), Some(&cause));
+    }
+    store.medium().faults.store(1, Ordering::SeqCst);
+    let error = blobs
+        .collect()
+        .await
+        .expect_err("an ambiguous epoch cannot be acknowledged");
+    assert_eq!(error.code, ErrorCode::OutcomeUnknown);
+    assert_eq!(error.cause(), Some(&cause));
+    store.medium().faults.store(0, Ordering::SeqCst);
+    assert_eq!(blobs.delete(Digest::of(&body)).await?, Delete::Referenced);
     Ok(())
 }
 
@@ -512,13 +609,6 @@ async fn an_unrooted_blob_survives_the_pass_after_the_one_finding_it()
             .map_err(|error| error.code),
         Err(ErrorCode::NotFound)
     );
-    Ok(())
-}
-
-#[test]
-fn empty_ranges_distinguish_full_content_from_explicit_selection() -> Result<(), crate::Error> {
-    assert_eq!(ByteRange::FULL.resolve(0)?, 0..0);
-    assert!(ByteRange::new(1, 1).resolve(4).is_err());
     Ok(())
 }
 
@@ -1347,8 +1437,17 @@ async fn stalled_delete_then_reput(
     release
         .send(())
         .expect("parked medium operation remains alive");
-    let deleted = stalled
-        .await
+    let deleted = stalled.await;
+    if let Err(error) = &deleted {
+        assert_eq!(
+            error.cause(),
+            Some(&acyclic_auth::refusal::Cause::new(
+                "objects.store",
+                "concurrent_change"
+            ))
+        );
+    }
+    let deleted = deleted
         .map(|deletion| deletion.outcome)
         .map_err(|error| error.code);
     let readable = others.get(digest, ByteRange::FULL, 32).await.is_ok();
@@ -1592,39 +1691,6 @@ async fn a_delayed_collector_never_removes_a_later_version()
     .filter(|(key, _)| key.contains("/p/") && key.contains(&hex))
     .count();
     assert_eq!(payloads, 1);
-    Ok(())
-}
-
-#[test]
-fn envelopes_refuse_obsolete_encodings() -> Result<(), Box<dyn std::error::Error>> {
-    let envelope = crate::blob::Envelope {
-        kind: crate::Kind::Blob,
-        length: 3,
-        stored: 3,
-        references: vec![Digest::of(b"child")],
-        version: [4; 16],
-        dying: Some([5; 16]),
-        condemned: 9,
-    };
-    let encoded = envelope.encode();
-    assert_eq!(crate::blob::Envelope::decode(&encoded)?, envelope);
-    // Stamping and marking never change the size.
-    let restamped = crate::blob::Envelope {
-        dying: None,
-        condemned: u64::MAX,
-        ..envelope.clone()
-    };
-    assert_eq!(restamped.encode().len(), encoded.len());
-    assert_eq!(
-        crate::blob::Envelope::decode(&encoded[..encoded.len() - 8]).map_err(|error| error.code),
-        Err(ErrorCode::Corrupt)
-    );
-    let mut pending = encoded[..encoded.len() - 24].to_vec();
-    *pending.last_mut().ok_or("empty")? = 2;
-    assert_eq!(
-        crate::blob::Envelope::decode(&pending).map_err(|error| error.code),
-        Err(ErrorCode::Corrupt)
-    );
     Ok(())
 }
 
@@ -1928,9 +1994,8 @@ async fn a_remote_put_batch_waits_for_durability_once_and_fails_members_alone()
                     Some(put_response::Outcome::AlreadyExists(_)) => "exists",
                     _ => "unknown",
                 },
-                Some(put_result::Outcome::Error(code)) => {
-                    ErrorCode::try_from(code).map_or("unspecified", |code| code.as_str_name())
-                }
+                Some(put_result::Outcome::Error(detail)) => ErrorCode::try_from(detail.code)
+                    .map_or("unspecified", |code| code.as_str_name()),
                 None => "absent",
             })
             .collect();

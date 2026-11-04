@@ -16,19 +16,8 @@ proptest::proptest! {
 }
 
 #[test]
-fn config_provider_names_match_keychain_accounts_and_environment_variables() -> Result<()> {
-    for (id, variable) in [("exa", "EXA_API_KEY"), ("tinyfish", "TINYFISH_API_KEY")] {
-        let config: SearchConfig = serde_json::from_value(serde_json::json!({"provider":id}))
-            .map_err(|e| Error::Invalid(e.to_string()))?;
-        assert_eq!(config.provider.id(), id);
-        assert_eq!(config.provider.env(), variable);
-    }
-    Ok(())
-}
-
-#[test]
 fn credential_precedence_is_lazy_and_blank_keys_fall_through() -> Result<()> {
-    for provider in [SearchBackend::Exa, SearchBackend::TinyFish] {
+    for (id, variable) in [("exa", "EXA_API_KEY"), ("tinyfish", "TINYFISH_API_KEY")] {
         for (keychain_key, env_key, config_key, expected) in [
             (
                 Some("keychain"),
@@ -41,23 +30,19 @@ fn credential_precedence_is_lazy_and_blank_keys_fall_through() -> Result<()> {
             (None, None, Some(" \t"), None),
             (None, None, None, None),
         ] {
-            let config = SearchConfig {
-                endpoint: None,
-                provider,
-                api_keys: config_key
-                    .map(|key| (provider.id().into(), key.into()))
-                    .into_iter()
-                    .collect(),
-                native_sources: true,
-            };
+            let config: SearchConfig = serde_json::from_value(serde_json::json!({
+                "provider": id,
+                "api_keys": config_key.map(|key| (id, key)).into_iter().collect::<BTreeMap<_, _>>(),
+            }))
+            .map_err(|e| Error::Invalid(e.to_string()))?;
             let key = config.resolve_with(
-                |id| {
-                    assert_eq!(id, provider.id());
+                |account| {
+                    assert_eq!(account, id);
                     Ok(keychain_key.map(str::to_owned))
                 },
                 |name| {
                     assert!(keychain_key.is_none_or(|key| key.trim().is_empty()));
-                    assert_eq!(name, provider.env());
+                    assert_eq!(name, variable);
                     Ok(env_key.map(str::to_owned))
                 },
             )?;

@@ -155,24 +155,26 @@ impl StockExecution<'_> {
         policy: &crate::context::ThresholdCompaction,
         message_limit: usize,
     ) -> Result<(usize, usize)> {
-        let canonical_request = crate::model::PreparedModelRequest::prepare(
-            self.request_from_context(context)?,
-            self.stock.limits,
-            self.io,
-        )?;
         let ceiling = policy.input_ceiling(capacity, self.output_tokens())?;
         let count = if pre_stage {
-            stock_count_tokens(
+            let canonical_request = crate::model::PreparedModelRequest::prepare(
+                self.request_from_context(context)?,
+                self.stock.limits,
+                self.io,
+            )?;
+            let count = stock_count_tokens(
                 self.stock.provider.as_ref(),
                 &canonical_request,
                 ceiling,
                 self.io,
             )
-            .await?
+            .await?;
+            with_history_io(self.io, |work| count.validate(&canonical_request, work))?;
+            count
         } else {
+            // The source is the projected request whose count the caller validated.
             count
         };
-        with_history_io(self.io, |work| count.validate(&canonical_request, work))?;
         let available = capacity
             .context_tokens
             .checked_sub(

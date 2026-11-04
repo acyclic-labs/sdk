@@ -1,0 +1,22 @@
+--- a/rust/crates/objects/src/blob.rs
++++ b/rust/crates/objects/src/blob.rs
+@@ -230,7 +230,9 @@
+         }
+         bytes.extend_from_slice(&self.version);
+         bytes.push(u8::from(self.dying.is_some()));
+-        bytes.extend_from_slice(&self.dying.unwrap_or_default());
++        if let Some(dying) = self.dying {
++            bytes.extend_from_slice(&dying);
++        }
+         bytes.extend_from_slice(&self.condemned.to_le_bytes());
+         bytes
+     }
+@@ -253,7 +255,7 @@
+         };
+         let version = nonce(&mut reader)?;
+         let dying = match reader.take(1)? {
+-            [0] if nonce(&mut reader)? == [0; 16] => None,
++            [0] => None,
+             [1] => Some(nonce(&mut reader)?),
+             _ => return Err(corrupt()),
+         };

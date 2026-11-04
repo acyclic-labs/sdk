@@ -3,16 +3,6 @@ pub(crate) mod wire;
 use crate::{HttpRequest, ResolvedModel, dispatch, projection};
 use acyclic_harness_core::{Error, NativeCustody, NativeWork, Result, context::ModelTokenCount};
 
-struct Body {
-    bytes: Vec<u8>,
-    _custody: NativeCustody,
-}
-impl AsRef<[u8]> for Body {
-    fn as_ref(&self) -> &[u8] {
-        &self.bytes
-    }
-}
-
 fn boundary(work: NativeWork<'_>, reason: &'static str) -> Error {
     #[cfg(not(target_arch = "wasm32"))]
     if work.is_some() {
@@ -191,19 +181,15 @@ pub(crate) async fn count(
                 .iter()
                 .map(|(key, value)| key.capacity() + value.capacity())
                 .sum::<usize>();
-        crate::native::retain(
-            hold,
-            (retained as u64)
-                .checked_add(acyclic_auth::operation::bytes_owner_allocation_bytes::<Body>() as u64)
-                .ok_or_else(|| boundary(work, "token count retained capacity overflow"))?,
-        )?;
+        crate::native::retain(hold, retained as u64)?;
     }
     #[cfg(target_arch = "wasm32")]
-    let admission = None;
-    let body = bytes::Bytes::from_owner(Body {
-        bytes,
-        _custody: admission,
-    });
+    let body = bytes.into();
+    #[cfg(not(target_arch = "wasm32"))]
+    let body = match admission {
+        Some(custody) => crate::http::owned_bytes::owned(bytes, custody)?,
+        None => bytes.into(),
+    };
     let exchange = HttpRequest { url, headers, body };
     send_count(provider, exchange, count, count_custody, work).await
 }
@@ -243,10 +229,6 @@ fn local(
     };
     Ok((result?, custody))
 }
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-#[path = "body_tests.rs"]
-mod body_tests;
 
 pub(crate) async fn send_count(
     provider: &ResolvedModel,

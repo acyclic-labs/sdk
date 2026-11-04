@@ -1,0 +1,12 @@
+--- a/rust/crates/objects/src/availability.rs
++++ b/rust/crates/objects/src/availability.rs
+@@ -21,9 +21,6 @@
+ impl AvailabilityCursor {
+     /// Decodes a source-issued cursor. An all-zero incarnation is invalid.
+     pub fn new(incarnation: [u8; 16], sequence: u64) -> Result<Self, Error> {
+-        if incarnation == [0; 16] {
+-            return Err(ErrorCode::InvalidArgument.into());
+-        }
+         Ok(Self {
+             incarnation,
+             sequence,

@@ -12,14 +12,17 @@ proto-descriptors = ["dep:acyclic-proto-build"]
 process-arguments = ["dep:serde_json"]
 local-hotpath-options = ["dep:acyclic-test-support"]
 local-hotpath-quantiles = ["dep:serde"]
+report-port = ["dep:acyclic-native-runtime", "dep:serde_json", "dep:tokio"]
 default = ["native"]
 agent = ["dep:acyclic-harness-core"]
 experiments = ["agent", "dep:serde_json"]
-native = ["dep:acyclic-fs", "dep:acyclic-harness", "dep:prost", "dep:serde_json"]
+native = ["dep:acyclic-fs", "dep:acyclic-harness", "dep:prost", "dep:serde_json", "owner-record"]
+owner-record = ["dep:acyclic-native-runtime"]
 
 [dependencies]
 serde = { workspace = true, optional = true }
 acyclic-test-support = { path = "../crates/test-support", optional = true }
+acyclic-native-runtime = { path = "../crates/native-runtime", optional = true }
 acyclic-proto-build = { path = "../../compatibility", optional = true }
 acyclic-fs = { path = "../crates/filesystem", default-features = false, optional = true }
 acyclic-harness-core = { path = "../crates/harness-core", default-features = false, optional = true }
@@ -27,6 +30,7 @@ acyclic-harness = { path = "../crates/harness", default-features = false, featur
 libfuzzer-sys = "0.4"
 prost = { workspace = true, optional = true }
 serde_json = { version = "1", optional = true }
+tokio = { workspace = true, features = ["rt", "net", "io-util", "macros"], optional = true }
 
 [lints]
 workspace = true
@@ -128,7 +132,23 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "native_report_port"
+required-features = ["report-port"]
+path = "fuzz_targets/native_report_port.rs"
+test = false
+doc = false
+bench = false
+
 [[test]]
 name = "local_hotpath_options"
 required-features = ["local-hotpath-options"]
 path = "tests/local_hotpath_options.rs"
+
+[[bin]]
+name = "native_owner_record"
+required-features = ["owner-record"]
+path = "fuzz_targets/native_owner_record.rs"
+test = false
+doc = false
+bench = false

@@ -374,6 +374,17 @@ pub(crate) async fn read_object_with_accounting<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(crate::storage::ObjectRead, u64), FsError> {
+    read_object_observed(store, object, maximum, accounting, cancellation, None).await
+}
+
+pub(crate) async fn read_object_observed<S: AsyncObjectStore>(
+    store: &S,
+    object: crate::ObjectId,
+    maximum: u64,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+    observation: Option<&crate::kernel::ProofDataCustody>,
+) -> Result<(crate::storage::ObjectRead, u64), FsError> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = accounting.native_work() {
         accounting.check()?;
@@ -390,10 +401,13 @@ pub(crate) async fn read_object_with_accounting<S: AsyncObjectStore>(
         .scope()
         .map_err(crate::ObjectStoreError::from)
         .map_err(read_store_error)?;
-    let read = store
-        .read(object, maximum, &mut work)
-        .await
-        .map_err(read_store_error)?;
+    work.read_observation = observation;
+    let before = observation.map(|_| work.spent());
+    let read = store.read(object, maximum, &mut work).await;
+    if let Some((owner, before)) = work.read_observation.take().zip(before) {
+        owner.record_original_work(work.spent().checked_sub_cumulative(&before)?)?;
+    }
+    let read = read.map_err(read_store_error)?;
     let bytes = match read.retention {
         crate::storage::ObjectReadRetention::Shared => 0,
         crate::storage::ObjectReadRetention::Owned { logical_bytes } => logical_bytes,

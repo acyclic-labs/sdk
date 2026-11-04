@@ -77,6 +77,11 @@ async fn decoded_misses_keep_the_original_epoch_through_scalar_and_batch_io()
                 } else {
                     KernelAccounting::standalone(B, &cancel)
                 };
+                let independent = Retained::<Vec<u8>>::allocate(73, &mut accounting)?;
+                let native_baseline = original.live_allocation_bytes();
+                let standalone_baseline = accounting
+                    .standalone_parts()
+                    .map(|(allocations, _, _, _)| allocations.live_bytes());
                 let limits = DecodeLimits::default();
                 let pending = async {
                     let mut values = Vec::new();
@@ -153,7 +158,7 @@ async fn decoded_misses_keep_the_original_epoch_through_scalar_and_batch_io()
                         );
                         let bytes = page.logical_bytes;
                         if native {
-                            assert!(original.live_allocation_bytes() > baseline);
+                            assert!(original.live_allocation_bytes() > native_baseline);
                         }
                         Owned::new(page, allocation, bytes).retire(&mut accounting)?;
                     }
@@ -169,9 +174,18 @@ async fn decoded_misses_keep_the_original_epoch_through_scalar_and_batch_io()
                 }
                 assert_eq!(cache.stats()?.in_flight, 0);
                 if let Some((allocations, _, _, _)) = accounting.standalone_parts() {
-                    assert_eq!(allocations.live_bytes(), 0);
+                    assert_eq!(Some(allocations.live_bytes()), standalone_baseline);
+                    assert_eq!(allocations.scratch_bytes(), 0);
                 }
                 cache.clear()?;
+                let independent_bytes = independent.value.capacity() as u64;
+                drop(independent);
+                if let Some((allocations, _, _, _)) = accounting.standalone_parts() {
+                    assert_eq!(
+                        Some(allocations.live_bytes() + independent_bytes),
+                        standalone_baseline
+                    );
+                }
                 drop(accounting);
                 assert_eq!(original.live_allocation_bytes(), baseline);
                 // A fresh miss can populate the new epoch, using the same

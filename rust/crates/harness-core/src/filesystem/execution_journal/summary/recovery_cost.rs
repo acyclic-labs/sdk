@@ -93,10 +93,10 @@ async fn check_cold_recovery(native: bool) -> Result<()> {
                 "recovery rebuilt the full in-memory journal"
             );
             assert_eq!(summary.tail, u64::from(count) + 2);
-            assert_eq!(summary.retries.entries().count(), 1);
-            assert_eq!(summary.tools.entries().count(), 1);
-            assert_eq!(summary.contexts.entries().count(), 0);
-            assert_eq!(summary.models.entries().count(), 0);
+            assert_eq!(summary.retries.len(), 1);
+            assert_eq!(summary.tools.len(), 1);
+            assert_eq!(summary.contexts.len(), 0);
+            assert_eq!(summary.models.len(), 0);
         }
         check_full_fold(&reopened, operation, count, &io).await?;
         drop(reopened);
@@ -141,7 +141,7 @@ where
     let hold = io.guard_owned(io.owned_since(owned)?)?;
     assert_eq!(summary.tail, u64::from(count) + 2);
     assert!(
-        summary.retries.entries().count() > 1,
+        summary.retries.len() > 1,
         "full-fold negative control did not violate the recovered-state bound"
     );
     assert_eq!(

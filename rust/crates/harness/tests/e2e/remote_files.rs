@@ -1,5 +1,5 @@
 //! The existing executor scenarios with both file backends on public services.
-use super::{TestResult, execution, scenario::Scenario, scenario_data};
+use super::{TestResult, execution, local_cloud::scenarios as cases, scenario::Scenario};
 use acyclic_fs::{EmbeddedCapabilities, Fs, LogicalObjectStore, StreamAuthorityStore};
 use acyclic_harness::{AgentId, filesystem::MemoryHarnessStorage};
 use acyclic_objects::{Blobs, MemoryObjects, grpc::GrpcObjects};
@@ -20,35 +20,6 @@ async fn filesystem<P: acyclic_harness::store::JournalProvider, O: Blobs + 'stat
         LogicalObjectStore::new(objects),
         EmbeddedCapabilities { durable },
     ))
-}
-
-fn cases() -> TestResult<Vec<(PathBuf, Value)>> {
-    let root = acyclic_harness::test_support::environment("CARGO_MANIFEST_DIR")
-        .map_or_else(
-            || acyclic_test_support::source_path("rust/crates/harness"),
-            PathBuf::from,
-        )
-        .join("tests/scenarios");
-    let mut paths = Vec::new();
-    for family in ["core", "recovery"] {
-        scenario_data::discover(&root.join(family), &mut paths)?;
-    }
-    paths.sort();
-    let mut cases = Vec::new();
-    for path in paths {
-        let mut value = scenario_data::load_value(&root, &path)?;
-        let driver = value
-            .as_object_mut()
-            .ok_or("scenario must be an object")?
-            .remove("driver");
-        if matches!(
-            driver.as_ref().map(Value::as_str),
-            None | Some(Some("executor"))
-        ) {
-            cases.push((path, value));
-        }
-    }
-    Ok(cases)
 }
 
 async fn compare<P: acyclic_harness::store::JournalProvider, O: Blobs + 'static>(

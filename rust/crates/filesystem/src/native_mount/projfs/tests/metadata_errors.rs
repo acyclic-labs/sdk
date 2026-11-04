@@ -405,7 +405,7 @@ async fn read_close_after_rename_does_not_block_publication()
     )?;
     assert_eq!(
         notify(PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION),
-        HR_IO_DEVICE
+        HR_FILE_NOT_FOUND
     );
     for _ in 0..2 {
         flush_callback_gate(

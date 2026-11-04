@@ -185,7 +185,7 @@ cargo test --locked -p acyclic-harness --features filesystem-local,native-execut
 
 It uses the production request serializer, immutable projection writer and
 `Served` admission/dispatch/reply path. At queued, running and answered phases,
-a real directory-link loop must retain accepted ownership, its original cause
+a real non-file request in the original held directory must retain accepted ownership, its original cause
 and any published reply bytes; only an actual absent projection withdraws.
 It also checks zero directory
 rescans for named events. No decoder, filesystem-error model or alternate

@@ -21,7 +21,7 @@ pub fn write_file_with(
 /// Writes all bytes through the same per-call durable boundary.
 pub fn write_file_all(writer: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
     crate::io_progress::write_all(&mut [io::IoSlice::new(bytes)], |buffers| {
-        write_file(writer, &buffers[0])
+        write_file(writer, buffers.first().ok_or(io::ErrorKind::InvalidInput)?)
     })
 }
 

@@ -6,8 +6,9 @@
 //! never delays another's revocations. Any follow ending fences everything;
 //! a refused account record fences that account, whose reads refuse as
 //! `VerifyError::Refused`, and pauses its original follow until an
-//! environment record lets it apply.
+//! environment record or bootstrap key publication lets it apply.
 use crate::{FollowFilter, Record, Stream, StreamError, StreamProvider, UnixMillisClock};
+use acyclic_auth::crypto::BlockId;
 use acyclic_auth::trust::{
     Applied, FenceCause, Follower, FollowerState, account_path, environment_path,
 };
@@ -165,6 +166,7 @@ pub struct TrustFeed<S> {
     next: HashMap<Option<String>, u64>,
     /// Absent once every [`Accounts`] handle is dropped.
     added: Option<mpsc::UnboundedReceiver<String>>,
+    anchor: Option<tokio::sync::watch::Receiver<Arc<[BlockId]>>>,
 }
 
 impl<S: Source> TrustFeed<S> {
@@ -185,9 +187,19 @@ impl<S: Source> TrustFeed<S> {
                 clock,
                 next,
                 added: Some(added),
+                anchor: None,
             },
             Accounts(sender),
         )
+    }
+
+    /// Watch the authenticated owner's bootstrap key set. The current value
+    /// applies before opening any follow; later publications retry the retained
+    /// environment record and blocked accounts. Losing this producer ends the run as unavailable.
+    #[must_use]
+    pub fn watch_anchor(mut self, anchor: tokio::sync::watch::Receiver<Arc<[BlockId]>>) -> Self {
+        self.anchor = Some(anchor);
+        self
     }
 
     /// Follows until a Stream is lost, then fences the follower and returns
@@ -198,8 +210,9 @@ impl<S: Source> TrustFeed<S> {
     /// Stream's follow opened.
     ///
     /// # Errors
-    /// The lost Stream's error, or `AccessDenied` for a refused environment
-    /// record, which keeps everything fenced.
+    /// The lost Stream's error, or `Unavailable` if the anchor producer is lost.
+    /// A refused environment record stays fenced with its cause while waiting
+    /// for an anchor publication; it never becomes a credential verdict.
     pub async fn run(&mut self) -> Result<(), StreamError> {
         let mut fence = Fence {
             follower: Arc::clone(&self.follower),
@@ -207,8 +220,11 @@ impl<S: Source> TrustFeed<S> {
         };
         self.follower.connect();
         let result = self.follow().await;
-        if matches!(result, Err(StreamError::AccessDenied)) {
-            fence.cause = FenceCause::Refused;
+        if matches!(
+            *self.follower.state().borrow(),
+            FollowerState::Fenced(FenceCause::AnchorLost)
+        ) {
+            fence.cause = FenceCause::AnchorLost;
         }
         result
     }
@@ -232,7 +248,13 @@ impl<S: Source> TrustFeed<S> {
             clock,
             next,
             added,
+            anchor,
         } = self;
+        if let Some(anchor) = anchor {
+            follower
+                .reanchor(anchor.borrow_and_update().clone())
+                .map_err(|_| StreamError::Unavailable)?;
+        }
         let environment = follower
             .environment()
             .map_err(|_| StreamError::Unavailable)?;
@@ -249,7 +271,35 @@ impl<S: Source> TrustFeed<S> {
         }
         let mut tails = HashMap::new();
         let mut blocked: HashMap<String, Option<(Record, Records)>> = HashMap::new();
+        let mut retry_blocked = None;
         loop {
+            if let Some(now) = retry_blocked.take() {
+                // Both authenticated key publications and environment records
+                // retry this one retained record/follow per blocked account.
+                for (account, pending) in std::mem::take(&mut blocked) {
+                    if let Some((record, records)) = pending {
+                        if follower.apply_queued(&account, &record.value, now).is_ok() {
+                            let key = Some(account.clone());
+                            advance(follower, next, &mut tails, key.clone(), record.sequence);
+                            follower.release(&account);
+                            follows.push(read(key, records));
+                        } else {
+                            follower.refuse(&account);
+                            blocked.insert(account, Some((record, records)));
+                        }
+                    } else {
+                        let from = next.get(&Some(account.clone())).copied().unwrap_or(0);
+                        follows.push(open(
+                            &*source,
+                            follower,
+                            &**clock,
+                            &environment,
+                            Some(account),
+                            from,
+                        ));
+                    }
+                }
+            }
             let account = async {
                 match added {
                     Some(added) => added.next().await,
@@ -257,9 +307,29 @@ impl<S: Source> TrustFeed<S> {
                 }
             };
             futures::pin_mut!(account);
-            let event = match future::select(follows.next(), account).await {
-                Either::Left((item, _)) => Either::Left(item),
-                Either::Right((account, _)) => Either::Right(account),
+            let event = {
+                let input = async {
+                    match future::select(follows.next(), account).await {
+                        Either::Left((item, _)) => Either::Left(item),
+                        Either::Right((account, _)) => Either::Right(account),
+                    }
+                };
+                futures::pin_mut!(input);
+                let publication = anchor_changed(anchor, follower);
+                futures::pin_mut!(publication);
+                match future::select(publication, input).await {
+                    Either::Left((keys, _)) => {
+                        follower
+                            .reanchor(keys?)
+                            .map_err(|_| StreamError::Unavailable)?;
+                        if !blocked.is_empty() {
+                            retry_blocked =
+                                Some(follower.protected_now(clock.now_unix_millis() / 1000));
+                        }
+                        continue;
+                    }
+                    Either::Right((event, _)) => event,
+                }
             };
             match event {
                 Either::Left(Some(((key, Event::Opened { tail, position }), records))) => {
@@ -272,44 +342,20 @@ impl<S: Source> TrustFeed<S> {
                     follows.push(read(key, records));
                 }
                 Either::Left(Some(((None, Event::Record(record)), records))) => {
-                    let now = follower.protected_now(clock.now_unix_millis() / 1000);
-                    let applied = follower
-                        .apply_environment(&record.value, now)
-                        .map_err(|_| StreamError::AccessDenied)?;
+                    let (applied, now) =
+                        apply_environment(follower, &**clock, anchor, &record).await?;
+                    if !tails.contains_key(&None)
+                        && matches!(
+                            *follower.state().borrow(),
+                            FollowerState::Fenced(FenceCause::Refused)
+                        )
+                    {
+                        follower.resume();
+                    }
                     advance(follower, next, &mut tails, None, record.sequence);
                     follows.push(read(None, records));
                     if applied == Applied::Changed {
-                        // One retained record and original follow per refused
-                        // account. Only an actual environment event retries it.
-                        for (account, pending) in std::mem::take(&mut blocked) {
-                            if let Some((record, records)) = pending {
-                                if follower.apply_queued(&account, &record.value, now).is_ok() {
-                                    let key = Some(account.clone());
-                                    advance(
-                                        follower,
-                                        next,
-                                        &mut tails,
-                                        key.clone(),
-                                        record.sequence,
-                                    );
-                                    follower.release(&account);
-                                    follows.push(read(key, records));
-                                } else {
-                                    follower.refuse(&account);
-                                    blocked.insert(account, Some((record, records)));
-                                }
-                            } else {
-                                let from = next.get(&Some(account.clone())).copied().unwrap_or(0);
-                                follows.push(open(
-                                    &*source,
-                                    follower,
-                                    &**clock,
-                                    &environment,
-                                    Some(account),
-                                    from,
-                                ));
-                            }
-                        }
+                        retry_blocked = Some(now);
                     }
                 }
                 Either::Left(Some(((Some(account), Event::Record(record)), records))) => {
@@ -346,6 +392,57 @@ impl<S: Source> TrustFeed<S> {
                 Either::Right(None) => *added = None,
             }
         }
+    }
+}
+
+/// Keep the original record, follow and refusal on the suspended driver stack.
+/// Only the key-set producer can retry it; closing the follower ends the wait.
+async fn apply_environment(
+    follower: &Follower,
+    clock: &dyn UnixMillisClock,
+    anchor: &mut Option<tokio::sync::watch::Receiver<Arc<[BlockId]>>>,
+    record: &Record,
+) -> Result<(Applied, u64), StreamError> {
+    loop {
+        let now = follower.protected_now(clock.now_unix_millis() / 1000);
+        if let Ok(applied) = follower.apply_environment(&record.value, now) {
+            return Ok((applied, now));
+        }
+        let mut state = follower.state();
+        let changed = async {
+            let keys = anchor_changed(anchor, follower).await?;
+            follower
+                .reanchor(keys)
+                .map_err(|_| StreamError::Unavailable)
+        };
+        let closed = async {
+            state
+                .wait_for(|state| matches!(state, FollowerState::Closed(_)))
+                .await
+                .map_err(|_| StreamError::Unavailable)?;
+            Err::<(), _>(StreamError::Unavailable)
+        };
+        futures::pin_mut!(changed, closed);
+        let result = match future::select(closed, changed).await {
+            Either::Left((result, _)) | Either::Right((result, _)) => result,
+        };
+        result?;
+    }
+}
+
+async fn anchor_changed(
+    anchor: &mut Option<tokio::sync::watch::Receiver<Arc<[BlockId]>>>,
+    follower: &Follower,
+) -> Result<Arc<[BlockId]>, StreamError> {
+    match anchor {
+        Some(anchor) => {
+            anchor.changed().await.map_err(|_| {
+                follower.fence(FenceCause::AnchorLost);
+                StreamError::Unavailable
+            })?;
+            Ok(anchor.borrow_and_update().clone())
+        }
+        None => future::pending().await,
     }
 }
 

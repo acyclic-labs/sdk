@@ -21,7 +21,7 @@ fn crash_latch(forget_crash: bool) {
                 0
             );
         }
-        assert_eq!(schedule.durable_writes().len(), 1);
+        assert_eq!(schedule.durable_write_count(), 1);
     });
 }
 

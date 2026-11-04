@@ -1,5 +1,7 @@
 //! Funded fixed-width radix keys keep lookup work independent of the journal length.
 use super::*;
+use crate::wire_codec::{OwnedIndexAllocation, OwnedIndexWork};
+use acyclic_collections::FixedIndex;
 
 pub(super) trait SummaryKey: Copy {
     fn digest(&self, io: Option<&PreparationIo>) -> Result<[u8; 32]>;
@@ -53,8 +55,9 @@ impl SummaryKey for (u32, [u8; 32]) {
 }
 
 pub(super) struct SummaryMap<K, V> {
-    keys: crate::model::DigestIndex<usize>,
-    values: Vec<V>,
+    keys: FixedIndex<u64, OwnedIndexAllocation, 32>,
+    values: FixedIndex<([u8; 32], V), OwnedIndexAllocation, 8>,
+    len: usize,
     _key: std::marker::PhantomData<K>,
 }
 
@@ -62,19 +65,43 @@ impl<K, V> Default for SummaryMap<K, V> {
     fn default() -> Self {
         Self {
             keys: Default::default(),
-            values: Vec::new(),
+            values: Default::default(),
+            len: 0,
             _key: std::marker::PhantomData,
         }
     }
 }
 
 impl<K: SummaryKey, V> SummaryMap<K, V> {
-    pub(super) fn entries(&self) -> impl Iterator<Item = Result<([u8; 32], &V)>> + '_ {
-        self.keys.entries().map(|(key, position)| {
-            self.values
-                .get(position)
-                .map(|value| (key, value))
-                .ok_or_else(|| missing(None))
+    pub(super) fn entries<'a>(
+        &'a self,
+        io: Option<&'a PreparationIo>,
+    ) -> impl Iterator<Item = Result<([u8; 32], &'a V)>> + 'a {
+        let mut after = None;
+        let mut finished = false;
+        std::iter::from_fn(move || {
+            if finished {
+                return None;
+            }
+            let mut work = OwnedIndexWork(io);
+            let next = match after {
+                None => self.values.first(&mut work),
+                Some(key) => self.values.seek_after(key, &mut work),
+            };
+            match next {
+                Ok(Some((key, (digest, value)))) => {
+                    after = Some(*key);
+                    Some(Ok((*digest, value)))
+                }
+                Ok(None) => {
+                    finished = true;
+                    None
+                }
+                Err(error) => {
+                    finished = true;
+                    Some(Err(error))
+                }
+            }
         })
     }
 
@@ -83,20 +110,26 @@ impl<K: SummaryKey, V> SummaryMap<K, V> {
         digest: &[u8; 32],
         io: Option<&PreparationIo>,
     ) -> Result<Option<&V>> {
-        self.keys
-            .get(0, digest, io)?
-            .map(|position| self.values.get(position).ok_or_else(|| missing(io)))
-            .transpose()
+        let mut work = OwnedIndexWork(io);
+        let Some(position) = self.keys.get(*digest, &mut work)? else {
+            return Ok(None);
+        };
+        self.values
+            .get(position.to_be_bytes(), &mut work)?
+            .map(|(_, value)| value)
+            .ok_or_else(|| missing(io))
+            .map(Some)
     }
 
-    fn position(&self, key: &K, io: Option<&PreparationIo>) -> Result<Option<usize>> {
-        self.keys.get(0, &key.digest(io)?, io)
+    fn position(&self, key: &K, io: Option<&PreparationIo>) -> Result<Option<u64>> {
+        Ok(self
+            .keys
+            .get(key.digest(io)?, &mut OwnedIndexWork(io))?
+            .copied())
     }
 
     pub(super) fn get(&self, key: &K, io: Option<&PreparationIo>) -> Result<Option<&V>> {
-        self.position(key, io)?
-            .map(|position| self.values.get(position).ok_or_else(|| missing(io)))
-            .transpose()
+        self.get_digest(&key.digest(io)?, io)
     }
 
     pub(super) fn get_mut(
@@ -104,9 +137,14 @@ impl<K: SummaryKey, V> SummaryMap<K, V> {
         key: &K,
         io: Option<&PreparationIo>,
     ) -> Result<Option<&mut V>> {
-        self.position(key, io)?
-            .map(|position| self.values.get_mut(position).ok_or_else(|| missing(io)))
-            .transpose()
+        let Some(position) = self.position(key, io)? else {
+            return Ok(None);
+        };
+        self.values
+            .get_mut(position.to_be_bytes(), &mut OwnedIndexWork(io))?
+            .map(|(_, value)| value)
+            .ok_or_else(|| missing(io))
+            .map(Some)
     }
 
     pub(super) fn contains_key(&self, key: &K, io: Option<&PreparationIo>) -> Result<bool> {
@@ -124,33 +162,39 @@ impl<K: SummaryKey, V> SummaryMap<K, V> {
         value: V,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        if let Some(position) = self.keys.get(0, &digest, io)? {
-            *self.values.get_mut(position).ok_or_else(|| missing(io))? = value;
-            return Ok(());
-        }
-        self.keys.reserve_key(io)?;
-        if self.values.len() == self.values.capacity() {
-            let capacity = self
-                .values
-                .capacity()
-                .checked_mul(2)
-                .map(|capacity| capacity.max(1))
-                .ok_or_else(|| {
+        let mut incoming = Some(value);
+        let mut work = OwnedIndexWork(io);
+        let position = *self
+            .keys
+            .get_or_try_insert_with(digest, &mut work, |work| {
+                let next = self.len.checked_add(1).ok_or_else(|| {
                     canonical_boundary(
                         io,
                         crate::wire::ErrorCode::Invalid,
                         "execution summary capacity overflows",
                     )
                 })?;
-            crate::executor::stock_vec_reserve(&mut self.values, capacity, io)?;
+                let ordinal = self.len as u64;
+                self.values
+                    .get_or_try_insert_with(ordinal.to_be_bytes(), work, |_| {
+                        Ok((digest, incoming.take().ok_or_else(|| missing(io))?))
+                    })?;
+                // The outer index admitted all of its work before this constructor;
+                // successful inner publication is followed only by outer publication.
+                self.len = next;
+                Ok(ordinal)
+            })?;
+        if let Some(value) = incoming {
+            self.values
+                .get_mut(position.to_be_bytes(), &mut work)?
+                .ok_or_else(|| missing(io))?
+                .1 = value;
         }
-        let position = self.values.len();
-        crate::executor::stock_vec_push(&mut self.values, value, io)?;
-        self.keys.set(0, digest, Some(position), io)
+        Ok(())
     }
 
     pub(super) fn len(&self) -> usize {
-        self.values.len()
+        self.len
     }
 }
 

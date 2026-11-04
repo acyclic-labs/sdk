@@ -22,6 +22,7 @@ path = "src/scenarios.rs"
 test = false
 
 [dependencies]
+acyclic-test-support = { path = "../test-support" }
 acyclic-harness = { version = "=0.2.0", path = "../harness", features = ["test-support", "filesystem-local"] }
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", features = ["memory"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["local"] }
@@ -31,7 +32,6 @@ tokio = { workspace = true, features = ["rt-multi-thread"] }
 serde_json.workspace = true
 
 [dev-dependencies]
-acyclic-test-support = { path = "../test-support" }
 tokio = { workspace = true, features = ["test-util"] }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 async-trait.workspace = true

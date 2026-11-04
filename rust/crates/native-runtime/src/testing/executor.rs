@@ -34,10 +34,6 @@ struct State {
     root_drivers: BTreeMap<u64, Arc<Waker>>,
     random: blake3::OutputReader,
     trace: Vec<(u64, &'static str)>,
-    #[cfg(test)]
-    forget_wake: bool,
-    #[cfg(test)]
-    forget_round: bool,
 }
 
 impl State {
@@ -96,10 +92,6 @@ impl Executor {
             root_drivers: BTreeMap::new(),
             random: hash.finalize_xof(),
             trace: Vec::new(),
-            #[cfg(test)]
-            forget_wake: false,
-            #[cfg(test)]
-            forget_round: false,
         })))
     }
 
@@ -132,10 +124,6 @@ impl Executor {
         let driver = {
             let mut state = lock(&self.0);
             if !state.live.contains(&id) {
-                return;
-            }
-            #[cfg(test)]
-            if state.forget_wake {
                 return;
             }
             state.ready.insert(id);
@@ -225,10 +213,6 @@ impl Executor {
         }
         // A self-waking task cannot consume another ready task's entire turn.
         // The seed chooses the order within a round, never whether a task runs.
-        #[cfg(test)]
-        if state.forget_round {
-            state.served.clear();
-        }
         if !state
             .ready
             .difference(&state.served)
@@ -374,14 +358,6 @@ impl Executor {
         drop((tasks, driver, roots));
     }
 
-    pub(super) fn spawn<F>(self: &Arc<Self>, future: F) -> TaskHandle<F::Output>
-    where
-        F: Future + Send + 'static,
-        F::Output: Send + 'static,
-    {
-        self.spawn_owned(None, future)
-    }
-
     /// Spawns a task whose accounting owner retires only after its output is
     /// delivered or dropped.
     pub(super) fn spawn_owned<F>(
@@ -394,11 +370,16 @@ impl Executor {
         F::Output: Send + 'static,
     {
         let (sender, receiver) = oneshot::channel();
+        let work = Accounted {
+            value: future,
+            _owner: owner,
+        };
         let task = async move {
-            // Declared first, so a cancelled future also drops before it.
-            let owner = owner;
+            // Capture the aggregate, retaining its field drop order before polling.
+            let work = work;
+            let owner = work._owner;
             let result = {
-                let mut future = std::pin::pin!(tokio::task::unconstrained(future));
+                let mut future = std::pin::pin!(tokio::task::unconstrained(work.value));
                 std::future::poll_fn(|cx| {
                     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         future.as_mut().poll(cx)
@@ -409,7 +390,7 @@ impl Executor {
                 })
                 .await
             };
-            let _ = sender.send(result.map(|value| Finished {
+            let _ = sender.send(result.map(|value| Accounted {
                 value,
                 _owner: owner,
             }));
@@ -443,10 +424,10 @@ impl Wake for TaskWake {
 /// Owned task handle. Dropping detaches; aborting cancels the original future.
 pub struct TaskHandle<T>(Handle<T>);
 
-/// A finished task's output and the accounting owner of the task. Fields drop
-/// in declaration order, so an undelivered output is released before its task
-/// stops counting as active; a delivered one has moved to the joiner first.
-struct Finished<T> {
+/// Original work or output and its accounting owner. Fields drop in declaration
+/// order, including cancellation before the wrapper's first poll. A delivered
+/// output moves to the joiner before its task stops counting as active.
+struct Accounted<T> {
     value: T,
     _owner: Option<Active>,
 }
@@ -472,9 +453,9 @@ impl AbortHandle {
 }
 
 enum Handle<T> {
-    Tokio(tokio::task::JoinHandle<Finished<T>>),
+    Tokio(tokio::task::JoinHandle<Accounted<T>>),
     Simulated {
-        receiver: oneshot::Receiver<io::Result<Finished<T>>>,
+        receiver: oneshot::Receiver<io::Result<Accounted<T>>>,
         wake: Arc<TaskWake>,
     },
 }
@@ -485,11 +466,15 @@ impl<T> TaskHandle<T> {
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
+        let work = Accounted {
+            value: future,
+            _owner: owner,
+        };
         Self(Handle::Tokio(tokio::spawn(async move {
-            // Declared first, so a cancelled future also drops before it.
-            let owner = owner;
-            let value = future.await;
-            Finished {
+            let work = work;
+            let owner = work._owner;
+            let value = work.value.await;
+            Accounted {
                 value,
                 _owner: owner,
             }
@@ -538,8 +523,6 @@ pub(super) fn complete_io<F: Future>(future: F) -> F::Output {
     let wake = Arc::new(CompletionWake {
         ready: Mutex::new(false),
         signal: Condvar::new(),
-        #[cfg(test)]
-        omit_latch: false,
     });
     wait_io(future, &wake)
 }
@@ -567,8 +550,6 @@ struct CompletionWake {
     // Sole lock; no nesting with executor/queue locks. Condvar wait releases it.
     ready: Mutex<bool>,
     signal: Condvar,
-    #[cfg(test)]
-    omit_latch: bool,
 }
 
 impl Wake for CompletionWake {
@@ -576,11 +557,6 @@ impl Wake for CompletionWake {
         self.wake_by_ref();
     }
     fn wake_by_ref(self: &Arc<Self>) {
-        #[cfg(test)]
-        if self.omit_latch {
-            self.signal.notify_one();
-            return;
-        }
         *lock(&self.ready) = true;
         self.signal.notify_one();
     }

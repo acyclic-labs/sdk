@@ -56,8 +56,8 @@ proptest! {
         }
     }
 
-    // Compare retained physical storage with ledger changes, including radix branches
-    // and spare vector capacity rather than only the logical key/value sizes.
+    // Compare retained physical storage with the original ledger, including
+    // transferred node custody and the pending batch's spare vector capacity.
     #[test]
     fn refused_tools_fund_their_summary_entries(count in 1..24usize, step in any::<u32>()) {
         let io = PreparationIo::from_budget(
@@ -66,7 +66,7 @@ proptest! {
         ).unwrap();
         let mut state = ExecutionSummary::default();
         accept(&mut state, ExecutionEvent::Started { request_digest: [1; 32] }).unwrap();
-        let before = io.owned_bytes().unwrap();
+        let before = io.remaining().unwrap().peak_allocation_bytes;
         let mut retained = 0i64;
         for index in 0..count {
             let sequence = state.tail + 1;
@@ -91,8 +91,33 @@ proptest! {
         }
         let retained = u64::try_from(retained)
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
-        prop_assert_eq!(io.owned_bytes().unwrap() - before, retained);
+        prop_assert_eq!(before - io.remaining().unwrap().peak_allocation_bytes, retained);
         prop_assert_eq!(state.tools.len(), count);
+        let untransferred = io.owned_bytes().unwrap();
+        let mut rebuilt = SummaryMap::<[u8; 32], bool>::default();
+        for (index, entry) in state.tools.entries(Some(&io)).enumerate() {
+            use super::super::summary_map::SummaryKey;
+            let (digest, settled) = entry.map_err(|error| TestCaseError::fail(error.to_string()))?;
+            let expected = (step, *blake3::hash(format!("call-{index}").as_bytes()).as_bytes())
+                .digest(None).map_err(|error| TestCaseError::fail(error.to_string()))?;
+            prop_assert_eq!(digest, expected, "summary writer order changed");
+            prop_assert!(*settled);
+            // Replay the accepted production trace through the same map entry
+            // point, isolating retained-index copies from encoding and batching.
+            let copied = io.receipt().bytes_copied;
+            rebuilt.insert_digest(digest, *settled, Some(&io))
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            prop_assert_eq!(io.receipt().bytes_copied, copied,
+                "summary insertion copied prior backing");
+            prop_assert_eq!(rebuilt.get_digest(&digest, Some(&io)).unwrap(), Some(settled));
+        }
+        let rebuilt_hold = io.guard_owned(io.owned_since(untransferred).unwrap()).unwrap();
+        drop(rebuilt);
+        drop(rebuilt_hold);
+        let pending = io.guard_owned(io.owned_bytes().unwrap()).unwrap();
+        drop(state);
+        drop(pending);
+        prop_assert_eq!(io.remaining().unwrap().peak_allocation_bytes, before);
     }
 
     #[test]

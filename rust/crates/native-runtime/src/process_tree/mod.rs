@@ -384,7 +384,7 @@ impl ProcessTree {
                 if let Some(boundary) = boundary {
                     boundary.install(&mut native)?;
                 }
-                return platform::spawn_controlled(&mut native, meter, slot);
+                platform::spawn_controlled(&mut native, meter, slot)
             }
             #[cfg(windows)]
             platform::spawn_controlled(command, meter, slot)
@@ -881,7 +881,7 @@ impl ProcessTree {
                 ));
             }
         };
-        self.wait_exit_until(deadline, None)
+        self.wait_exit_until(deadline, None, &mut None)
     }
 
     /// Waits for direct-child exit, retaining descendant ownership.
@@ -890,13 +890,14 @@ impl ProcessTree {
         &mut self,
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<ExitStatus> {
-        self.wait_exit_until(None, meter)
+        self.wait_exit_until(None, meter, &mut None)
     }
 
     fn wait_exit_until(
         &mut self,
         deadline: Option<Instant>,
         meter: Option<&dyn crate::NativeReadMeter>,
+        retained: &mut Option<ExitStatus>,
     ) -> io::Result<ExitStatus> {
         let operation = obs::span!(
             INFO,
@@ -914,10 +915,12 @@ impl ProcessTree {
                 {
                     let child = self.child.as_mut().ok_or(io::ErrorKind::NotFound)?;
                     process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-                        match deadline {
+                        let status = match deadline {
                             Some(deadline) => platform::wait_for_exit(child, deadline),
                             None => child.wait(),
-                        }
+                        }?;
+                        *retained = Some(status);
+                        Ok(status)
                     })
                 }
                 #[cfg(unix)]
@@ -925,7 +928,7 @@ impl ProcessTree {
                     let id = self.owned_child_id()?;
                     match deadline {
                         Some(deadline) => exit_wait::wait_metered(id, deadline, meter),
-                        None => platform::await_exiting_id(id, meter),
+                        None => platform::await_exiting_id(id, meter, retained),
                     }
                 }
             })())
@@ -1239,7 +1242,7 @@ impl ProcessTree {
             self.capture_terminate_descendants(meter)?;
             self.capture_close_stdin(meter)?;
             if self.child.is_some() {
-                *status = Some(self.wait_exit(meter)?);
+                self.wait_exit_until(None, meter, status)?;
                 if let Some(child) = self.child.as_mut() {
                     if child.stdout.is_some() {
                         process_control_attempt(meter, crate::NativeOperationKind::Write, || {
@@ -1277,7 +1280,7 @@ impl ProcessTree {
         self.guard.terminate_with_meter(meter)?;
         self.capture_close_stdin(meter)?;
         if self.child.is_some() || self.native_child.is_some() {
-            *status = Some(platform::await_exiting_id(self.owned_child_id()?, meter)?);
+            platform::await_exiting_id(self.owned_child_id()?, meter, status)?;
             // Only actually retained standard pipes require a release call.
             // Denial keeps the observed leader unreaped and its remaining
             // streams owned by this same tree, rather than hiding their drops

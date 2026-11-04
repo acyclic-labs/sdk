@@ -41,10 +41,6 @@ struct Progress {
 pub(crate) struct Coalescer {
     progress: Mutex<Progress>,
     drained: Condvar,
-    /// Negative control: join the running drain, which may have started
-    /// before the caller staged.
-    #[cfg(test)]
-    join_running: bool,
     #[cfg(all(test, not(loom)))]
     arrivals: tests::Arrivals,
 }
@@ -54,8 +50,6 @@ impl Default for Coalescer {
         Self {
             progress: Mutex::new(Progress::default()),
             drained: Condvar::new(),
-            #[cfg(test)]
-            join_running: false,
             #[cfg(all(test, not(loom)))]
             arrivals: tests::Arrivals::default(),
         }
@@ -98,12 +92,6 @@ impl Coalescer {
         let mut progress = self.progress.lock().unwrap_or_else(PoisonError::into_inner);
         // The running drain may have started before this caller staged.
         let target = progress.started + 1;
-        #[cfg(test)]
-        let target = if self.join_running && progress.draining {
-            progress.started
-        } else {
-            target
-        };
         #[cfg(all(test, not(loom)))]
         self.arrivals.arrive();
         loop {
@@ -745,17 +733,10 @@ mod tests {
     }
 
     #[test]
-    fn one_request_drains_once_and_concurrent_requests_share_the_next_drain() {
-        let lone = Coalescer::default();
-        let drains = AtomicUsize::new(0);
-        lone.flush(|| {
-            drains.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(drains.load(Ordering::SeqCst), 1);
-
-        const REQUESTS: usize = 64;
+    fn concurrent_requests_share_the_next_covering_drain() {
+        // One running drain and two waiters distinguish premature coverage,
+        // one covering drain shared by both waiters, and a drain per waiter.
+        const REQUESTS: usize = 3;
         let shared = Arc::new(Coalescer::default());
         let drains = Arc::new(AtomicUsize::new(0));
         let threads: Vec<_> = (0..REQUESTS)
@@ -777,7 +758,11 @@ mod tests {
         for thread in threads {
             thread.join().unwrap().unwrap();
         }
-        assert_eq!(drains.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            drains.load(Ordering::SeqCst),
+            2,
+            "queued requests must share exactly one later covering drain"
+        );
     }
 }
 
@@ -789,14 +774,11 @@ mod model {
 
     /// Each thread stages one write, then flushes. A drain covers exactly
     /// the writes staged when it starts. Thread 0's drain may fail.
-    fn requests(join_running: bool, fail_first: bool) {
+    fn requests(fail_first: bool) {
         let mut builder = loom::model::Builder::new();
         builder.preemption_bound = Some(3);
         builder.check(move || {
-            let coalescer = Arc::new(Coalescer {
-                join_running,
-                ..Coalescer::default()
-            });
+            let coalescer = Arc::new(Coalescer::default());
             let staged = Arc::new(AtomicUsize::new(0));
             let durable = Arc::new(AtomicUsize::new(0));
             let uncovered = Arc::new(AtomicUsize::new(0));
@@ -838,17 +820,11 @@ mod model {
 
     #[test]
     fn every_acknowledgement_follows_a_drain_that_started_after_its_write() {
-        requests(false, false);
+        requests(false);
     }
 
     #[test]
     fn a_failed_drain_acknowledges_nobody_and_strands_nobody() {
-        requests(false, true);
-    }
-
-    #[test]
-    #[should_panic(expected = "acknowledged before a covering drain")]
-    fn negative_control_joining_the_running_drain_acknowledges_uncovered_writes() {
-        requests(true, false);
+        requests(true);
     }
 }

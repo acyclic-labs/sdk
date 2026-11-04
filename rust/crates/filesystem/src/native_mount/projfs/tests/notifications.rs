@@ -297,7 +297,6 @@ async fn native_access_cached_opens_recheck_read_in_every_mount_mode()
 async fn native_access_projection_start_paths_admit_before_host_effects()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
-    let source = windows_checkout_source().await?;
     let directory = tempfile::tempdir()?;
     let destination = directory.path().join("must-not-be-opened");
     for (writable, reason) in [
@@ -310,17 +309,19 @@ async fn native_access_projection_start_paths_admit_before_host_effects()
             "ProjFS cannot enforce restrictive writable policies before host effects",
         ),
     ] {
-        if writable {
-            crate::native_mount::adapter::tests::access::publish_test_access(
-                &source,
-                vec![crate::native_mount::adapter::tests::access::deny(
-                    "revoked",
-                    &[crate::access::Action::Write],
-                    "**",
-                )],
-            )?;
-        }
         for prepared in [false, true] {
+            // Each failed constructor owns and retires its original source.
+            let source = windows_checkout_source().await?;
+            if writable {
+                crate::native_mount::adapter::tests::access::publish_test_access(
+                    &source,
+                    vec![crate::native_mount::adapter::tests::access::deny(
+                        "revoked",
+                        &[crate::access::Action::Write],
+                        "**",
+                    )],
+                )?;
+            }
             let request = crate::NativeMountRequest {
                 mount_id: crate::MountId::new(),
                 volume_id: source.volume_id()?,
@@ -345,6 +346,8 @@ async fn native_access_projection_start_paths_admit_before_host_effects()
             );
             // A host-root open would fail first on this deliberately absent path.
             assert!(!destination.try_exists()?);
+            drop(error);
+            assert!(matches!(source.volume_id(), Err(MountSourceError::Stale)));
         }
     }
     Ok(())

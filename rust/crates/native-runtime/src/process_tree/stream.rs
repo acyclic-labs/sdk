@@ -23,7 +23,31 @@ struct Capture<H> {
     wakes: CaptureWakes,
 }
 
+type CaptureTurn<H> = (pump::Turn, Capture<H>, [Vec<u8>; 2]);
+
 impl<H: CaptureHandler> Capture<H> {
+    fn start(
+        tree: ProcessTree,
+        schedule: CaptureSchedule,
+        max_bytes: usize,
+        input: Option<OwnedCaptureInput>,
+        handler: H,
+        streaming: bool,
+    ) -> Result<CaptureTurn<H>, CaptureOutcome<H>> {
+        let (tree, mut pump, handler, wakes) =
+            tree.start_capture(schedule, max_bytes, input, handler)?;
+        if streaming {
+            pump.stream_output();
+        }
+        Ok(Self {
+            tree,
+            pump,
+            handler,
+            wakes,
+        }
+        .turn(streaming))
+    }
+
     fn check(mut self) -> (io::Result<()>, Self) {
         let checked = (|| {
             for wake in self.wakes.as_slice() {
@@ -35,7 +59,7 @@ impl<H: CaptureHandler> Capture<H> {
         (checked, self)
     }
 
-    fn turn(mut self, streaming: bool) -> (pump::Turn, Self, [Vec<u8>; 2]) {
+    fn turn(mut self, streaming: bool) -> CaptureTurn<H> {
         let turn = pump::handled_turn(
             &mut self.pump,
             &mut self.tree,
@@ -54,6 +78,43 @@ impl<H: CaptureHandler> Capture<H> {
         let result = self.pump.finish(&mut self.tree, result, None);
         drop(self.tree);
         CaptureOutcome::new(self.handler, result)
+    }
+
+    async fn reserve(
+        mut self,
+        sender: &mpsc::Sender<ProcessChunk>,
+    ) -> io::Result<(io::Result<mpsc::Permit<'_, ProcessChunk>>, Self)> {
+        let reserved = loop {
+            match sender.try_reserve() {
+                Ok(permit) => break Ok(permit),
+                Err(mpsc::error::TrySendError::Closed(_)) => break Err(receiver_lost()),
+                Err(mpsc::error::TrySendError::Full(_)) => {}
+            }
+            let control = match self.pump.arm_control(self.wakes.as_slice()) {
+                Ok(control) => control,
+                Err(error) => break Err(error),
+            };
+            let reserved = match control {
+                Some(control) => {
+                    control_first(async { control.await.into_result() }, sender.reserve()).await
+                }
+                None => Ok(Some(sender.reserve().await)),
+            };
+            match reserved {
+                Ok(Some(Ok(permit))) => break Ok(permit),
+                Ok(Some(Err(_))) => break Err(receiver_lost()),
+                Err(error) => break Err(error),
+                Ok(None) => {
+                    let (checked, returned) =
+                        crate::run_blocking_io(move || self.check(), None)?.await?;
+                    self = returned;
+                    if let Err(error) = checked {
+                        break Err(error);
+                    }
+                }
+            }
+        };
+        Ok((reserved, self))
     }
 }
 
@@ -169,22 +230,7 @@ impl ProcessTree {
         // The initial output credit is the new, empty channel. Setup and the
         // first pipe turn share one worker submission with the owner callbacks.
         let started = crate::run_blocking_io(
-            move || {
-                self.start_capture(schedule, max_bytes, input, handler).map(
-                    |(tree, mut pump, handler, wakes)| {
-                        if streaming {
-                            pump.stream_output();
-                        }
-                        Capture {
-                            tree,
-                            pump,
-                            handler,
-                            wakes,
-                        }
-                        .turn(streaming)
-                    },
-                )
-            },
+            move || Capture::start(self, schedule, max_bytes, input, handler, streaming),
             None,
         )?
         .await?;
@@ -193,61 +239,33 @@ impl ProcessTree {
             Err(outcome) => return Ok(outcome),
         };
         let mut initial = Some((turn, bytes));
-        let result = 'capture: loop {
+        let result = loop {
             // Reserve before touching either pipe. The other wait contains
             // only control/deadline sources, so a full pipe cannot spin it.
             let permit = if let Some(sender) = sender.as_ref() {
-                Some(loop {
-                    match sender.try_reserve() {
-                        Ok(permit) => break permit,
-                        Err(mpsc::error::TrySendError::Closed(_)) => {
-                            break 'capture Err(receiver_lost());
-                        }
-                        Err(mpsc::error::TrySendError::Full(_)) => {}
-                    }
-                    let control = match capture.pump.arm_control(capture.wakes.as_slice()) {
-                        Ok(control) => control,
-                        Err(error) => break 'capture Err(error),
-                    };
-                    let reserved = match control {
-                        Some(control) => {
-                            control_first(async { control.await.into_result() }, sender.reserve())
-                                .await
-                        }
-                        None => Ok(Some(sender.reserve().await)),
-                    };
-                    match reserved {
-                        Ok(Some(Ok(permit))) => break permit,
-                        Ok(Some(Err(_))) => break 'capture Err(receiver_lost()),
-                        Err(error) => break 'capture Err(error),
-                        Ok(None) => {
-                            let (checked, returned) =
-                                crate::run_blocking_io(move || capture.check(), None)?.await?;
-                            capture = returned;
-                            if let Err(error) = checked {
-                                break 'capture Err(error);
-                            }
-                        }
-                    }
-                })
+                let (reserved, returned) = capture.reserve(sender).await?;
+                capture = returned;
+                match reserved {
+                    Ok(permit) => Some(permit),
+                    Err(error) => break Err(error),
+                }
             } else {
                 None
             };
-            let (turn, bytes) = match initial.take() {
-                Some(initial) => initial,
-                None => {
-                    let (turn, returned, bytes) =
-                        crate::run_blocking_io(move || capture.turn(streaming), None)?.await?;
-                    capture = returned;
-                    (turn, bytes)
-                }
+            let (turn, bytes) = if let Some(initial) = initial.take() {
+                initial
+            } else {
+                let (turn, returned, bytes) =
+                    crate::run_blocking_io(move || capture.turn(streaming), None)?.await?;
+                capture = returned;
+                (turn, bytes)
             };
             let [stdout, stderr] = bytes;
             let yielded = !stdout.is_empty() || !stderr.is_empty();
-            if let Some(permit) = permit {
-                if yielded {
-                    permit.send(ProcessChunk { stdout, stderr });
-                }
+            if let Some(permit) = permit
+                && yielded
+            {
+                permit.send(ProcessChunk { stdout, stderr });
             }
             match turn {
                 pump::Turn::Done(result) => break result,

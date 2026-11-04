@@ -1,0 +1,12 @@
+diff --git a/rust/crates/objects/src/route.rs b/rust/crates/objects/src/route.rs
+--- a/rust/crates/objects/src/route.rs
++++ b/rust/crates/objects/src/route.rs
+@@ -350,7 +350,7 @@
+     }
+     Ok(match route {
+         "blobs/put" => encode(put_blob(blobs, decode(input)?).await?),
+-        "blobs/put-batch" => encode(put_blobs(blobs, decode(input)?).await?),
++        "blobs/put-batch" => return Err(wire::ErrorCode::Unavailable.into()),
+         "blobs/put-manifest" => encode(put_manifest(blobs, decode(input)?).await?),
+         "blobs/get" => encode(get_blob(blobs, decode(input)?).await?),
+         "blobs/head" => encode(head_blob(blobs, decode(input)?).await?),

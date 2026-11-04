@@ -1,5 +1,5 @@
 //! Capture persisted claim corpus bytes through the production writer.
-#[path = "../native_claim_record.rs"]
+#[path = "../../crates/native-runtime/tests/claim_codec/oracle.rs"]
 mod native_claim_record;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -9,6 +9,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&directory)?;
     for (name, bytes) in native_claim_record::seeds() {
         native_claim_record::check(&bytes);
+        native_claim_record::check_prefixes(&bytes);
         std::fs::write(std::path::Path::new(&directory).join(name), bytes)?;
     }
     Ok(())

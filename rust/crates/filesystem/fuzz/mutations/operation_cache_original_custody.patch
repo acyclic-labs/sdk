@@ -1,0 +1,14 @@
+diff --git a/rust/crates/filesystem/src/kernel/path_access/provider.rs b/rust/crates/filesystem/src/kernel/path_access/provider.rs
+--- a/rust/crates/filesystem/src/kernel/path_access/provider.rs
++++ b/rust/crates/filesystem/src/kernel/path_access/provider.rs
+@@ -49,5 +49,9 @@
+             .map(|owner| (owner, context.spent()));
+-        let read = self.store.read(object_id, maximum_bytes, context).await;
++        let mut replacement = crate::AuthorityWork::new(
++            context.remaining()?, context.cancellation,
++        );
++        let read = self.store.read(object_id, maximum_bytes, &mut replacement).await;
++        context.accept(replacement.receipt(Ok::<_, crate::ObjectStoreError>(())))?;
+         if let Some((owner, before)) = observation {
+             owner.record_original_work(context.spent().checked_sub_cumulative(&before)?)?;
+         }

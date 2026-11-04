@@ -10,7 +10,14 @@ import { awaitSignal } from "@acyclic-labs/auth/credential";
 export * from "../generated/proto/objects/v1/objects_pb.js";
 
 export class ObjectsV1Error extends Error {
-  constructor(readonly code: wire.ErrorCode) { super(`Objects operation failed (${wire.ErrorCode[code]})`); this.name = "ObjectsV1Error"; }
+  /** The original service detail, including its request identity and attribution. */
+  constructor(readonly code: wire.ErrorCode, readonly detail?: wire.ErrorDetail) {
+    let attribution = detail?.component ?? "";
+    if (detail?.reason) attribution += `${attribution ? ": " : ""}${detail.reason}`;
+    if (detail?.requestId) attribution += `${attribution ? ", " : ""}request ${detail.requestId}`;
+    super(`Objects operation failed (${wire.ErrorCode[code]})${attribution ? ` (${attribution})` : ""}`, detail === undefined ? undefined : { cause: detail });
+    this.name = "ObjectsV1Error";
+  }
 }
 export function objectsV1Error(value: unknown): ObjectsV1Error {
   if (value instanceof ObjectsV1Error) return value;

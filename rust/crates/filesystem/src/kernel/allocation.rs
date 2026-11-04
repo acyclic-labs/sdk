@@ -564,6 +564,18 @@ impl AllocationLedger {
         self.snapshot().live_bytes()
     }
 
+    pub(crate) fn shares_retained_ledger(
+        &self,
+        ledger: &std::sync::Weak<std::sync::Mutex<SharedAllocationBytes>>,
+    ) -> bool {
+        match &self.state {
+            LedgerState::Shared(state) | LedgerState::Suspended(state) => {
+                std::ptr::eq(ledger.as_ptr(), std::sync::Arc::as_ptr(state))
+            }
+            LedgerState::Empty | LedgerState::Inline(_) => false,
+        }
+    }
+
     pub(crate) fn ensure_active(&self) -> Result<(), crate::FsError> {
         if matches!(self.state, LedgerState::Suspended(_)) {
             return Err(crate::FsError::AccountingHandoffActive);

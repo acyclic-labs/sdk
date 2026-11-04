@@ -1,0 +1,11 @@
+--- a/rust/crates/objects/src/blob.rs
++++ b/rust/crates/objects/src/blob.rs
+@@ -239,7 +239,7 @@
+         let mut reader = Reader(bytes);
+         reader.header(ENVELOPE_MAGIC)?;
+         let kind = match reader.take(1)? {
+-            [1] => Kind::Blob,
++            [1] | [0] => Kind::Blob,
+             [2] => Kind::Manifest,
+             _ => return Err(corrupt()),
+         };

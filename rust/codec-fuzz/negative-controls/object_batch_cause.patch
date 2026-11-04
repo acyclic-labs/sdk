@@ -1,0 +1,12 @@
+diff --git a/rust/crates/objects/src/convert.rs b/rust/crates/objects/src/convert.rs
+--- a/rust/crates/objects/src/convert.rs
++++ b/rust/crates/objects/src/convert.rs
+@@ -324,4 +324,7 @@
+             Some(wire::put_result::Outcome::Error(detail)) => Error::from_detail(detail)
+-                .map(Err)
++                .map(|mut error| {
++                    error.refusal = None;
++                    Err(error)
++                })
+                 .ok_or_else(|| wire::ErrorCode::Unavailable.into()),
+             None => Err(wire::ErrorCode::Unavailable.into()),

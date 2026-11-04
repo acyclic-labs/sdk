@@ -125,10 +125,26 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
     Ok(())
 }
 
-#[tokio::test]
-async fn default_threshold_evicts_into_the_backstop_marker_without_a_model_call() -> Result<()> {
+#[test]
+fn default_threshold_evicts_into_the_backstop_marker_without_a_model_call() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| Error::Storage(error.to_string()))?;
     for output_capacity in [Some(4096), None] {
+        #[cfg(feature = "filesystem")]
+        let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
+            crate::AgentId::new(),
+            65_536,
+        ))?;
+        #[cfg(feature = "filesystem")]
+        let journal = storage.journal();
+        #[cfg(feature = "filesystem")]
+        let journal = journal.as_ref();
+        #[cfg(not(feature = "filesystem"))]
         let journal = Journal::default();
+        #[cfg(not(feature = "filesystem"))]
+        let journal = &journal;
         let (provider, _accounting_calls) =
             counted_model(65_536, None, [ScriptedTurn::Text("answer".into())], []);
         let provider = Arc::new(
@@ -178,9 +194,14 @@ async fn default_threshold_evicts_into_the_backstop_marker_without_a_model_call(
             input: ModelContent::Text("c".repeat(5_000)),
             selected_context: None,
         };
-        let output = executor.execute(input.clone(), &journal).await?;
+        let (output, _trace) =
+            acyclic_test_support::differential::observe::<_, _, (&'static str, u64)>(
+                || (),
+                |()| runtime.block_on(executor.execute(input.clone(), journal)),
+            );
+        let output = output?;
         assert_eq!(output.text, "answer");
-        assert_eq!(executor.execute(input, &journal).await?, output);
+        assert_eq!(runtime.block_on(executor.execute(input, journal))?, output);
         let requests = provider.requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].max_output_tokens, requested_output);
@@ -195,7 +216,7 @@ async fn default_threshold_evicts_into_the_backstop_marker_without_a_model_call(
             panic!("the backstop marker opens the request");
         };
         assert!(
-            journal.load(file, None)?.await?.as_ref()
+            runtime.block_on(journal.load(file, None)?)?.as_ref()
                 == super::super::compaction::BACKSTOP_MARKER.as_bytes()
         );
         assert_eq!(
@@ -205,6 +226,15 @@ async fn default_threshold_evicts_into_the_backstop_marker_without_a_model_call(
         assert_eq!(
             requests[0].messages.last().map(|message| &message.content),
             Some(&ModelContent::Text("c".repeat(5_000)))
+        );
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        assert_eq!(
+            _trace
+                .iter()
+                .filter(|(kind, _)| *kind == "prepare request")
+                .count(),
+            5,
+            "post-stage budgeting repeated admission of the validated request"
         );
     }
     Ok(())

@@ -24,11 +24,12 @@ export interface ObjectsV1GrpcOptions extends CredentialOptions {
 
 function grpcError(error: unknown): ObjectsV1Error {
   if (!(error instanceof ConnectError)) return objectsV1Error(error);
-  const detail = error.findDetails(wire.ErrorDetailSchema).find(value => value.code in wire.ErrorCode && value.code !== wire.ErrorCode.UNSPECIFIED);
-  if (detail !== undefined) return new ObjectsV1Error(detail.code);
+  const details = error.findDetails(wire.ErrorDetailSchema);
+  const detail = details.find(value => value.code in wire.ErrorCode && value.code !== wire.ErrorCode.UNSPECIFIED) ?? details[0];
+  if (detail !== undefined && detail.code in wire.ErrorCode && detail.code !== wire.ErrorCode.UNSPECIFIED) return new ObjectsV1Error(detail.code, detail);
   // The Rust client's classification of a status without a typed detail.
   const code = error.code === Code.InvalidArgument ? wire.ErrorCode.INVALID_ARGUMENT : error.code === Code.NotFound ? wire.ErrorCode.NOT_FOUND : error.code === Code.PermissionDenied || error.code === Code.Unauthenticated ? wire.ErrorCode.ACCESS_DENIED : error.code === Code.ResourceExhausted ? wire.ErrorCode.QUOTA_EXCEEDED : error.code === Code.OutOfRange ? wire.ErrorCode.RANGE_NOT_SATISFIABLE : error.code === Code.Unimplemented ? wire.ErrorCode.UNSUPPORTED : error.code === Code.DataLoss ? wire.ErrorCode.CORRUPT : error.code === Code.DeadlineExceeded ? wire.ErrorCode.DEADLINE_ELAPSED : wire.ErrorCode.UNAVAILABLE;
-  return new ObjectsV1Error(code);
+  return new ObjectsV1Error(code, detail);
 }
 
 /** The generated Blobs service client over one owned HTTP/2 session. */

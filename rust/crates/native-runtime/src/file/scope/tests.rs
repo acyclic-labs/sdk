@@ -119,27 +119,31 @@ fn owned_control_reuses_only_current_file_health() -> io::Result<()> {
 
 #[test]
 fn borrowed_file_scope_restores_admission_after_unwind() -> io::Result<()> {
-    let original = tempfile::tempfile()?;
-    let foreign = tempfile::tempfile()?;
-    let health = shared_file_health(&original, None)?;
-    let other = shared_file_health(&foreign, None)?;
+    // Positional Windows I/O reopens synchronous handles without changing
+    // their cursor. Anonymous temporary files prohibit that sharing.
+    let original = tempfile::NamedTempFile::new()?;
+    let foreign = tempfile::NamedTempFile::new()?;
+    let original = original.as_file();
+    let foreign = foreign.as_file();
+    let health = shared_file_health(original, None)?;
+    let other = shared_file_health(foreign, None)?;
     let before_scope = ACTIVE_FILES.with(Cell::get);
-    with_owned_file_scope(&original, &health, || {
+    with_owned_file_scope(original, &health, || {
         let current = ACTIVE_FILES.with(Cell::get);
         let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            with_owned_file_scope(&foreign, &other, || panic!("scope unwind control"));
+            with_owned_file_scope(foreign, &other, || panic!("scope unwind control"));
         }));
         if unwound.is_ok() {
             return Err(io::Error::other("scope unwind control did not unwind"));
         }
         expect_restored(current)?;
         let before = queries();
-        write_all_at(&original, 0, b"restored", None)?;
-        read_expected(&original, b"restored")?;
+        write_all_at(original, 0, b"restored", None)?;
+        read_expected(original, b"restored")?;
         expect_queries(before, 0)
     })?;
     expect_restored(before_scope)?;
     let before = queries();
-    read_expected(&original, b"restored")?;
+    read_expected(original, b"restored")?;
     expect_queries(before, 1)
 }

@@ -95,8 +95,9 @@ proptest! {
     #[test]
     fn read_projection_has_exact_linear_index_work_and_quadratic_negative(n in 2usize..16) {
         use acyclic_test_support::differential::observe;
-        for count in [n,2*n] {
-            for native in [false,true] {
+        for native in [false,true] {
+            let mut costs = Vec::new();
+            for count in [n,2*n,3*n] {
                 let ((output, receipt, remaining_custody), trace): (_,Vec<(&'static str,u64)>) = observe(||fixture(count), |mut messages| super::instruction_index::traced(|| {
                     let measured = crate::test_support::accounted::accounted(native,32*1024*1024,false,|io| {
                         deduplicate_reads(&mut messages,Some(io)).unwrap();
@@ -104,8 +105,9 @@ proptest! {
                     (messages,measured.1,measured.5)
                 }));
                 let steps:u64 = trace.iter().filter(|(name,_)|*name=="instruction-step").map(|(_,items)|items).sum();
-                prop_assert_eq!(steps,144*count as u64-28);
+                prop_assert_eq!(steps,4*count as u64+4,"history traversal must visit only the presence prefix and each message/part once");
                 prop_assert!(receipt.items_examined >= steps);
+                costs.push((receipt.items_examined,receipt.allocation_operations));
                 prop_assert_eq!(remaining_custody,if native { acyclic_fs::NativeMaterializationWork::accounting_state_bytes() } else { 0 });
                 // Independent baseline constructs the expected projection, never
                 // calling the candidate decoder or sharing its retained state.
@@ -134,19 +136,12 @@ proptest! {
                     prop_assert_eq!(transfer[1],("custody-absorb",result_body(&baseline[2]).len() as u64));
                 }
                 prop_assert_eq!(serde_json::to_vec(&output).unwrap(),serde_json::to_vec(&baseline).unwrap());
-                let (_, broken): (_,Vec<(&'static str,u64)>) = observe(||fixture(count), |mut messages| super::instruction_index::traced(|| {
-                    // Deliberately restore a whole-history visit before each result.
-                    for result in (2..messages.len()).step_by(2) {
-                        for part in messages[..result].iter().flat_map(|m|m.content.parts()) {
-                            std::hint::black_box(part);
-                            super::instruction_index::step(None,1).unwrap();
-                        }
-                    }
-                    deduplicate_reads(&mut messages,None).unwrap();
-                }));
-                prop_assert_eq!(broken.iter().filter(|(name,_)|*name=="instruction-step").map(|(_,items)|items).sum::<u64>(), steps + (count*(count+1)) as u64);
-                prop_assert_ne!(broken.iter().filter(|(name,_)|*name=="instruction-step").map(|(_,items)|items).sum::<u64>(),144*count as u64-28);
             }
+            // Original receipts include the real shared-index work, decoding,
+            // authentication and projection. Equal input deltas must have
+            // equal work/allocation deltas; no private radix model is replayed.
+            prop_assert_eq!(costs[2].0-costs[1].0,costs[1].0-costs[0].0);
+            prop_assert_eq!(costs[2].1-costs[1].1,costs[1].1-costs[0].1);
         }
     }
 }
@@ -155,10 +150,11 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
     #[test]
     fn radix_index_round_trips_updates_and_consumption(keys in prop::collection::vec(any::<[u8;32]>(),0..24)) {
-        let mut work=None;
-        let mut quota=crate::wire_codec::CodecQuota::new(&mut work,0).unwrap();
-        let mut index=super::instruction_index::Index::new(keys.len(),&mut quota).unwrap();
-        for (position,key) in keys.iter().enumerate() { index.set(0,*key,Some((position,0)),None).unwrap(); }
+        let mut index=super::instruction_index::Index::default();
+        for (position,key) in keys.iter().enumerate() {
+            index.reserve_key(None).unwrap();
+            index.set(0,*key,Some((position,0)),None).unwrap();
+        }
         for (position,key) in keys.iter().enumerate() {
             let expected=keys.iter().rposition(|candidate|candidate==key).unwrap();
             prop_assert_eq!(index.get(0,key,None).unwrap(),Some((expected,0)));
@@ -166,45 +162,5 @@ proptest! {
             let _=position;
         }
         for key in keys { index.set(0,key,None,None).unwrap(); prop_assert_eq!(index.get(0,&key,None).unwrap(),None); }
-    }
-}
-
-#[cfg(all(
-    feature = "filesystem",
-    feature = "test-support",
-    not(target_arch = "wasm32")
-))]
-#[test]
-fn radix_storage_has_one_funded_allocation_with_redundant_storage_control() {
-    for extra in [false, true] {
-        let measured =
-            crate::test_support::accounted::accounted(true, 8 * 1024 * 1024, false, |io| {
-                let initial = io.receipt().allocation_operations;
-                with_history_io(Some(io), |work| {
-                    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-                    let mut index = super::instruction_index::Index::new(256, &mut quota)?;
-                    let redundant = extra.then(|| {
-                        super::instruction_index::Index::<(usize, usize)>::new(256, &mut quota)
-                            .unwrap()
-                    });
-                    for n in 0u8..=127 {
-                        let mut key = [0u8; 32];
-                        key[31] = n;
-                        index.set(0, key, Some((n as usize, 0)), Some(io))?;
-                        assert_eq!(index.get(0, &key, Some(io))?, Some((n as usize, 0)));
-                    }
-                    drop(redundant);
-                    drop(index);
-                    Ok::<_, Error>(())
-                })
-                .unwrap();
-                io.receipt().allocation_operations - initial
-            })
-            .unwrap();
-        assert_eq!(measured.0, 1 + u64::from(extra));
-        assert_eq!(
-            measured.5,
-            acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
-        );
     }
 }

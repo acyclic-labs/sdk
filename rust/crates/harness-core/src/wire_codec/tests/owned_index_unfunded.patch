@@ -1,0 +1,18 @@
+diff --git a/rust/crates/harness-core/src/wire_codec/index.rs b/rust/crates/harness-core/src/wire_codec/index.rs
+--- a/rust/crates/harness-core/src/wire_codec/index.rs
++++ b/rust/crates/harness-core/src/wire_codec/index.rs
+@@ -36,7 +36,13 @@ impl IndexWork for OwnedIndexWork<'_> {
+     fn claim(&mut self, bytes: u64) -> Result<Self::Allocation> {
+         #[cfg(feature = "filesystem")]
+         {
+-            self.0.map(|mut io| io.claim(bytes)).transpose()
++            self.0
++                .map(|mut io| io.claim(bytes))
++                .transpose()
++                .map(|custody| {
++                    drop(custody);
++                    None
++                })
+         }
+         #[cfg(not(feature = "filesystem"))]
+         {
