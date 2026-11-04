@@ -488,6 +488,7 @@ pub(super) fn update_claude(document: &mut Value, executable: &str, install: boo
         .or_insert_with(|| json!({}))
         .as_object_mut()
         .ok_or("Claude hooks must be an object")?;
+    let mut installed = install.then(|| acyclic_harness::host_hooks::claude_hooks(executable));
     for event in acyclic_harness::host_hooks::CLAUDE_EVENTS {
         if let Some(groups) = hooks.get_mut(event) {
             let groups = groups
@@ -504,8 +505,9 @@ pub(super) fn update_claude(document: &mut Value, executable: &str, install: boo
                 .as_array_mut()
                 .ok_or("Claude hook event must be an array")?;
             groups.extend(
-                acyclic_harness::host_hooks::claude_hooks(executable)
-                    .remove(event)
+                installed
+                    .as_mut()
+                    .and_then(|installed| installed.remove(event))
                     .ok_or("missing shared Claude hook")?,
             );
         }

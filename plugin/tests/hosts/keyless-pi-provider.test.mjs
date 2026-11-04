@@ -10,7 +10,7 @@ import {environment} from '../../../scripts/graphcoder-e2e/scratch.mjs';
 import {hostFixtureDirectory} from '../../../scripts/graphcoder-e2e/fixture-directory.mjs';
 import {nativeHost} from './native-host.mjs';
 import {assertNativeCompletion,installedHost,launchNativeHost} from './native-model.mjs';
-import register from './keyless-pi-provider.mjs';
+import register from './pi-provider.mjs';
 
 // Exercise the actual lockfile-pinned native provider/auth/Responses path.
 // This is an unsupported-admission control, never an installed-host pass.
@@ -23,7 +23,7 @@ test('pinned Pi retains native keyless refusal without a credential or HTTP requ
  const root=hostFixtureDirectory('native-keyless-'),scope=new Processes();
  try {
   let provider;
-  register({registerProvider(value){assert.equal(provider,undefined);provider=value;}});
+  await register({registerProvider(value){assert.equal(provider,undefined);provider=value;}});
   assert.deepEqual((await provider.auth.apiKey.resolve({})).auth,{});
   const models=createModels();models.setProvider(provider);
   const model=models.getModel('fixture','tiny');

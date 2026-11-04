@@ -63,7 +63,11 @@
       "args": [
         "__mcp",
         "claude-code"
-      ]
+      ],
+      "env": {
+        "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY:-}",
+        "ANTHROPIC_BASE_URL": "${ANTHROPIC_BASE_URL:-}"
+      }
     }
   }
 }

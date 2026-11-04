@@ -19,6 +19,24 @@ const quote=text=>"'"+text.replaceAll("'","'\\''")+"'";
 // The helper command uses POSIX quoting. Claude advertises both PowerShell
 // and Bash on Windows, so name the intended native tool in every prompt.
 const shellTool=host=>host==='claude-code'?'Bash':'native shell';
+export function assertCodexPairTools(records,installed) {
+ const recovery='step=validate native Codex declarations; recovery=restore the original installed or bare tool namespace';
+ assert.ok(Array.isArray(records)&&records.length>0,recovery);
+ for(const record of records) {
+  assert.ok(Array.isArray(record?.body?.tools),recovery);
+  let declaration;
+  for(const tool of record.body.tools)if(tool?.name==='mcp__acyclic_sessions') {
+   assert.equal(declaration,undefined,recovery);
+   declaration=tool;
+  }
+  if(installed) {
+   assert.ok(declaration,recovery);
+   assert.equal(declaration.type,'namespace',recovery);
+   assert.ok(Array.isArray(declaration.tools)&&declaration.tools.length>0&&
+    declaration.tools.every(tool=>tool?.type==='function'&&typeof tool.name==='string'&&tool.name.length>0),recovery);
+  } else assert.equal(declaration,undefined,recovery);
+ }
+}
 export async function nativePair({host,binary,mock,plugin,output,source,artifactSource=source,order,live,packageStage}) {
  assert.ok(order?.length===2&&((order[0]==='bare'&&order[1]==='installed')||
   (order[0]==='installed'&&order[1]==='bare')),
@@ -92,9 +110,9 @@ export async function nativePair({host,binary,mock,plugin,output,source,artifact
      captures.push({mode,...completed});
      // Validate original startup metadata in the existing terminal decoder;
      // missing evidence cannot qualify a bare leg, and needs no second parse.
-     const nativeBuiltins=assertNativeCompletion(host,completed,answer,live&&host==='claude-code'
-      ?{model:live.model,installed:mode==='installed'}:undefined);
-     if(live&&host==='claude-code') {
+     const nativeBuiltins=assertNativeCompletion(host,completed,answer,host==='claude-code'
+      ?{model:nativeModel(host,live),installed:mode==='installed'}:undefined);
+     if(host==='claude-code') {
       if(builtinPlugins===undefined)builtinPlugins=nativeBuiltins;
       else assert.equal(nativeBuiltins,builtinPlugins,'native Claude builtin plugin set changed between paired legs');
      }
@@ -109,9 +127,8 @@ export async function nativePair({host,binary,mock,plugin,output,source,artifact
    server.child.kill('SIGTERM');await server.closed;
    records=await recordedRequests(events,join(output,'requests.jsonl'));
    for(const mode of ['bare','installed'])requests({assert:{requests:2},model:{steps}},records.filter(row=>row.case===mode));
-   const namespace=host==='codex'?'mcp__acyclic_sessions':'mcp__plugin_acyclic_acyclic-sessions__';
-   assert.ok(JSON.stringify(records.filter(row=>row.case==='installed')).includes(namespace),'installed native model never observed original coordination namespace');
-   assert.ok(!JSON.stringify(records.filter(row=>row.case==='bare')).includes(namespace),'bare native model still observed plugin coordination');
+   if(host==='codex')for(const mode of ['bare','installed'])
+    assertCodexPairTools(records.filter(row=>row.case===mode),mode==='installed');
   }
   await json(join(output,'pair.json'),{...pair,case:result,physical_custody:'requires enclosing original completion receipt',
    fixture_setup_seconds:setupSeconds,setup_and_case_seconds:result.total_seconds,requests:records});

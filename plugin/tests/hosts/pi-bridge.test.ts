@@ -64,14 +64,19 @@ test("installed Pi failed spawn closes custody and shutdown without adjacent ass
       },
     }));
       const { default: acyclic } = await import(pathToFileURL(path).href);
-    acyclic({ on: (name: string, handler: (...args: any[]) => Promise<void>) => hooks.set(name, handler),
+    acyclic({ events: {emit() {}}, on: (name: string, handler: (...args: any[]) => Promise<void>) => hooks.set(name, handler),
       registerTool: (tool: any) => tools.set(tool.name, tool) });
     const ctx = { cwd: directory, sessionManager: { getSessionId: () => "fixture", getSessionFile: () => undefined } };
     await hooks.get("session_start")!({}, ctx);
     const cancelled = new AbortController(); cancelled.abort();
     await assert.rejects(tools.get("spawn")!.execute("cancelled", { reference: "child", prompt: "fixture" }, cancelled.signal), /cancelled/);
     assert.equal(spawns, 0, "cancelled dispatch must not allocate a native process");
-    const refused = assert.rejects(tools.get("spawn")!.execute("fixture", { reference: "child", prompt: "fixture" }), /ENOENT/);
+    let failure: unknown;
+    const refused = assert.rejects(tools.get("spawn")!.execute("fixture", { reference: "child", prompt: "fixture" }), error => {
+      failure = error;
+      assert.equal((error as {cause?: {code?: string}}).cause?.code, "ENOENT");
+      return true;
+    });
     const initializing = new AbortController();
     const request = tools.get("wait")!.execute("initializing", { reference: "child" }, initializing.signal);
     initializing.abort();
@@ -82,7 +87,7 @@ test("installed Pi failed spawn closes custody and shutdown without adjacent ass
     assert(child);
     assert.doesNotThrow(() => child!.stdin!.emit("error", new Error("closed native stdin")),
       "a failed native pipe must not crash Pi");
-    await assert.rejects(tools.get("spawn")!.execute("later", { reference: "later", prompt: "fixture" }), /ENOENT/);
+    await assert.rejects(tools.get("spawn")!.execute("later", { reference: "later", prompt: "fixture" }), error => error === failure);
     assert.equal(spawns, 1, "terminal native failure must refuse subsequent calls without another process");
     let finished = false;
     const shutdown = hooks.get("session_shutdown")!({}, ctx).then(() => { finished = true; });

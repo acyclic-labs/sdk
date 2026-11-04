@@ -2,6 +2,37 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {test} from 'node:test';
 import {assertNativeCompletion} from './native-model.mjs';
+import {assertCodexPairTools} from './native-pairs.mjs';
+
+test('Codex pair admission requires original declarations rather than namespace prose',async()=> {
+ const {tool}=JSON.parse(await readFile(new URL('./fixtures/native-codex-namespace.json',import.meta.url),'utf8'));
+ const record=tools=>({body:{tools,input:JSON.stringify(tool)}});
+ assertCodexPairTools([record([tool])],true);
+ assert.throws(()=>assertCodexPairTools([record([])],true));
+ assertCodexPairTools([record([])],false);
+ assert.throws(()=>assertCodexPairTools([record([tool])],false));
+ for(const changed of [{...tool,type:'function'},{...tool,tools:[]},{...tool,tools:null}])
+  assert.throws(()=>assertCodexPairTools([record([changed])],true));
+ assert.throws(()=>assertCodexPairTools([record([tool,tool])],true));
+ assert.throws(()=>assertCodexPairTools([record(null)],false));
+ assert.throws(()=>assertCodexPairTools([record([tool]),record([])],true));
+ assert.throws(()=>assertCodexPairTools([],true));
+});
+
+test('recorded native workflow tool refusals retain their reason before successful parent completion',async()=> {
+ const record=JSON.parse(await readFile(new URL('./fixtures/native-claude-workflow-refusal.json',import.meta.url),'utf8'));
+ const terminal=record.events.at(-1);
+ const result=events=>({code:record.code,stderr:'',stdout:events.map(event=>JSON.stringify(event)).join('\n')+'\n'});
+ assertNativeCompletion(record.host,result([terminal]),record.answer);
+ for(const event of record.events.slice(0,-1)) {
+  const original=event.message.content.find(part=>part.type==='tool_result'&&part.is_error);
+  assert.throws(()=>assertNativeCompletion(record.host,result([event,terminal]),record.answer),error=> {
+   assert.equal(error.code,'NATIVE_HOST_TOOL_FAILED');
+   assert.deepEqual(error.cause,original,'the original native reason and tool call identity must survive');
+   return true;
+  });
+ }
+});
 
 test('Claude failed tool results survive a later successful parent terminal', async()=> {
  const record=JSON.parse(await readFile(new URL('./fixtures/native-claude-tool-terminals.json',import.meta.url),'utf8'));
@@ -37,12 +68,31 @@ const {records}=JSON.parse(await readFile(new URL('./fixtures/native-completion.
 for(const record of records)test(`${record.host} requires its original successful native terminal`,()=>{
  assertNativeCompletion(record.host,record,record.answer);
  const events=record.stdout.trim().split('\n').map(line=>({line,event:JSON.parse(line)}));
+ // Corrupt a retained original event before its successful terminal. Malformed
+ // JSON and non-record values must keep the same typed failure/recovery path.
+ for(const line of [events[0].line.slice(0,-1),'null','[]',JSON.stringify({...events[0].event,type:null})]) {
+  assert.throws(()=>assertNativeCompletion(record.host,{...record,stdout:line+'\n'+record.stdout},record.answer),error=> {
+   assert.equal(error.code,'NATIVE_HOST_EVENT_INVALID');
+   assert.match(error.message,/step=validate native .* completion:.*recovery=node --test/);
+   return true;
+  });
+ }
  const terminal=record.host==='codex'?'turn.completed':'result';
  const missing={...record,stdout:events.filter(({event})=>event.type!==terminal).map(({line})=>line).join('\n')+'\n'};
  assert.ok(missing.stdout.includes(record.answer),'original assistant output still contains the answer');
  assert.throws(()=>assertNativeCompletion(record.host,missing,record.answer),/native .* terminal missing/);
  assert.throws(()=>assertNativeCompletion(record.host,record,'UNOBSERVED_NATIVE_ANSWER'),/native answer missing/);
  assert.throws(()=>assertNativeCompletion(record.host,{...record,code:1},record.answer));
+ if(record.host==='codex') {
+  const result=sequence=>({...record,stdout:sequence.map(({line})=>line).join('\n')+'\n'});
+  const messages=events.filter(({event})=>event.item?.type==='agent_message');
+  // Reorder/delete/duplicate original records: an answer must be inside the
+  // same native turn, rather than accepted after its successful terminal.
+  for(const sequence of [events.filter(({event})=>event.type!=='turn.started'),
+   [...events.filter(({event})=>event.item?.type!=='agent_message'),...messages],
+   [...events,...events.filter(({event})=>event.type==='turn.completed')]])
+   assert.throws(()=>assertNativeCompletion(record.host,result(sequence),record.answer),{code:'NATIVE_HOST_TERMINAL_ORDER'});
+ }
 });
 
 test('Codex tool failure survives a successful parent answer and process exit',async()=>{
@@ -98,6 +148,14 @@ test('Claude native pair initialization fences model namespace and bare contamin
    const namespace={...record,stdout:record.stdout.replace('plugin:acyclic:acyclic-sessions','acyclic-sessions')};
    assert.throws(()=>assertNativeCompletion(record.host,namespace,record.answer,selection),/MCP connections differ/);
   }
+  const changedResult=change=>({...record,stdout:lines.map(line=>{
+   const event=JSON.parse(line);return event.type==='result'?JSON.stringify({...event,...change}):line;
+  }).join('\n')+'\n'});
+  // Corrupt the original terminal identity, keeping the answer and exit zero.
+  for(const change of [{session_id:'foreign-session'},{parent_tool_use_id:'paired_shell'}])
+   assert.throws(()=>assertNativeCompletion(record.host,changedResult(change),record.answer,selection),{code:'NATIVE_HOST_SESSION_MISMATCH'});
+  const terminal=lines.find(line=>JSON.parse(line).type==='result');
+  assert.throws(()=>assertNativeCompletion(record.host,{...record,stdout:record.stdout+terminal+'\n'},record.answer,selection),{code:'NATIVE_HOST_TERMINAL_ORDER'});
   for(const changed of [{...builtin.plugins[0],path:'installed'},
    {...builtin.plugins[0],source:'agents-md@user'}, {...builtin.plugins[0],name:'unrelated'},
    ...builtin.plugins]) {
