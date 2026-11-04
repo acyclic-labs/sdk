@@ -301,7 +301,7 @@ pub enum FenceCause {
     LostFollow,
     /// The authenticated bootstrap key-set publication owner was lost.
     AnchorLost,
-    /// An environment record was refused; everything stays fenced.
+    /// An environment record was refused; await an owner anchor publication.
     Refused,
     /// The driver stopped for good.
     Shutdown,
@@ -317,7 +317,7 @@ pub enum FollowerState {
     Connecting,
     /// Serving the environment's trust.
     Serving,
-    /// Refusing trust until the driver reconnects.
+    /// Refusing trust until its producer recovers or its anchor changes.
     Fenced(FenceCause),
     /// Refusing trust for good: every change wait resolves [`SourceClosed`].
     Closed(FenceCause),
@@ -379,13 +379,13 @@ impl Follower {
     /// # Errors
     /// Inaccessible frontier storage. This does not serve trust:
     /// the refused record must still authenticate and catch up first.
-    pub fn reanchor(&self, anchor: Vec<BlockId>) -> Result<(), VerifyError> {
+    pub fn reanchor(&self, anchor: Arc<[BlockId]>) -> Result<(), VerifyError> {
         let mut environment = self
             .environment
             .write()
             .map_err(|_| VerifyError::Unavailable)?;
-        if environment.revision.sequence == 0 && environment.revision.keys.as_ref() != anchor {
-            environment.revision.keys = anchor.into();
+        if environment.revision.sequence == 0 {
+            environment.revision.keys = anchor;
         }
         Ok(())
     }

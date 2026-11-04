@@ -3,13 +3,19 @@
 //! and replay agrees with following: custody restored from the accepted
 //! records holds the follower's frontier.
 use acyclic_auth::{
+    contract::{TrustRecord, TrustRecordKind, TrustRecordProto},
     trust::{Applied, Follower, Issuer, KeyringFrontier},
     verify::Trust,
 };
 use ed25519_dalek::SigningKey;
 use libfuzzer_sys::fuzz_target;
+use prost::Message as _;
+
+#[path = "../../tests/common/reanchor.rs"]
+mod reanchor_check;
 
 fuzz_target!(|bytes: &[u8]| {
+    reanchor_check::check(bytes).unwrap();
     let issuer = Issuer::new("test", SigningKey::from_bytes(&[1; 32]));
     let anchor = issuer.anchor();
     let follower = Follower::new("test", anchor.clone());
@@ -46,18 +52,26 @@ fuzz_target!(|bytes: &[u8]| {
         for record in own.iter().map(Vec::as_slice).chain([record]) {
             let applied = follower.apply(record, 100);
             if applied == Ok(Applied::Changed) {
-                // Use the original scoped admission, including its duplicate
-                // check, rather than decoding or inferring a record's owner.
-                let environment = follower.apply_environment(record, 100) == Ok(Applied::Duplicate);
-                let account =
-                    follower.apply_account("account", record, 100) == Ok(Applied::Duplicate);
-                assert!(
-                    !(environment && account),
-                    "trust record targets must be disjoint"
-                );
-                environment_changed |= environment;
-                if account {
-                    accepted.push(record.to_vec());
+                // The canonical decoder selects the original scoped duplicate
+                // check. Probing the wrong scope would fence this live follower
+                // and silently stop the subsequent served-floor assertions.
+                let decoded =
+                    TrustRecord::try_from(TrustRecordProto::decode(record).unwrap()).unwrap();
+                match decoded.record {
+                    TrustRecordKind::Environment(_) => {
+                        assert_eq!(
+                            follower.apply_environment(record, 100),
+                            Ok(Applied::Duplicate)
+                        );
+                        environment_changed = true;
+                    }
+                    _ => {
+                        assert_eq!(
+                            follower.apply_account("account", record, 100),
+                            Ok(Applied::Duplicate)
+                        );
+                        accepted.push(record.to_vec());
+                    }
                 }
             }
             // No record sequence lowers a served epoch floor.

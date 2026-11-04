@@ -11,8 +11,34 @@ use acyclic_stream::{
     trust_feed::TrustFeed,
 };
 use ed25519_dalek::SigningKey;
-use futures::FutureExt as _;
-use std::sync::Arc;
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::{Context, Poll, Wake, Waker},
+};
+
+#[derive(Default)]
+struct PublicationWake(AtomicBool);
+impl Wake for PublicationWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+fn step<F: Future>(run: Pin<&mut F>, wake: &Arc<PublicationWake>) -> Option<F::Output> {
+    let waker = Waker::from(wake.clone());
+    match run.poll(&mut Context::from_waker(&waker)) {
+        Poll::Ready(value) => Some(value),
+        Poll::Pending => None,
+    }
+}
 
 struct Clock;
 impl UnixMillisClock for Clock {
@@ -39,11 +65,12 @@ async fn placeholder_anchor_recovers_on_key_publication_without_restart() {
         .await
         .unwrap();
     let follower = Arc::new(Follower::new("test", placeholder.anchor()));
-    let (keys, watched) = tokio::sync::watch::channel(placeholder.anchor());
+    let (keys, watched) = tokio::sync::watch::channel(Arc::<[_]>::from(placeholder.anchor()));
     let (feed, accounts) = TrustFeed::new(provider.clone(), follower.clone(), Arc::new(Clock));
     let mut feed = feed.watch_anchor(watched);
     let mut run = Box::pin(feed.run());
-    assert!(run.as_mut().now_or_never().is_none());
+    let wake = Arc::new(PublicationWake::default());
+    assert!(step(run.as_mut(), &wake).is_none());
     assert_eq!(
         *follower.state().borrow(),
         FollowerState::Fenced(FenceCause::Refused)
@@ -55,8 +82,13 @@ async fn placeholder_anchor_recovers_on_key_publication_without_restart() {
     assert_eq!(follower.environment_refusal(), Some(VerifyError::Signature));
     // Neither another wrong key nor withdrawing every key authenticates it.
     for rejected in [placeholder.anchor(), vec![]] {
-        keys.send_replace(rejected);
-        assert!(run.as_mut().now_or_never().is_none());
+        wake.0.store(false, Ordering::SeqCst);
+        keys.send_replace(rejected.into());
+        assert!(
+            wake.0.load(Ordering::SeqCst),
+            "key publication must wake its suspended driver"
+        );
+        assert!(step(run.as_mut(), &wake).is_none());
         assert_eq!(
             *follower.state().borrow(),
             FollowerState::Fenced(FenceCause::Refused)
@@ -66,8 +98,10 @@ async fn placeholder_anchor_recovers_on_key_publication_without_restart() {
             Some(VerifyError::Unavailable)
         );
     }
-    keys.send_replace(issuer.anchor());
-    assert!(run.as_mut().now_or_never().is_none());
+    wake.0.store(false, Ordering::SeqCst);
+    keys.send_replace(issuer.anchor().into());
+    assert!(wake.0.load(Ordering::SeqCst));
+    assert!(step(run.as_mut(), &wake).is_none());
     assert_eq!(*follower.state().borrow(), FollowerState::Serving);
     assert_eq!(
         follower.environment_keys("test").unwrap().as_ref(),
@@ -90,12 +124,12 @@ async fn placeholder_anchor_recovers_on_key_publication_without_restart() {
             .unwrap();
     }
     accounts.follow("account").unwrap();
-    assert!(run.as_mut().now_or_never().is_none());
+    assert!(step(run.as_mut(), &wake).is_none());
     assert!(follower.account("account").is_ok());
 
     // A new bootstrap set cannot overwrite an authenticated signed frontier.
-    keys.send_replace(placeholder.anchor());
-    assert!(run.as_mut().now_or_never().is_none());
+    keys.send_replace(placeholder.anchor().into());
+    assert!(step(run.as_mut(), &wake).is_none());
     assert_eq!(
         follower.environment_keys("test").unwrap().as_ref(),
         issuer.anchor()
@@ -110,11 +144,16 @@ async fn placeholder_anchor_recovers_on_key_publication_without_restart() {
         )
         .await
         .unwrap();
-    assert!(run.as_mut().now_or_never().is_none());
+    assert!(step(run.as_mut(), &wake).is_none());
     assert!(follower.account("account").is_ok());
+    wake.0.store(false, Ordering::SeqCst);
     drop(keys);
+    assert!(
+        wake.0.load(Ordering::SeqCst),
+        "producer loss must wake its driver"
+    );
     assert_eq!(
-        run.as_mut().now_or_never(),
+        step(run.as_mut(), &wake),
         Some(Err(StreamError::Unavailable))
     );
     assert_eq!(

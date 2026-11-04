@@ -166,7 +166,7 @@ pub struct TrustFeed<S> {
     next: HashMap<Option<String>, u64>,
     /// Absent once every [`Accounts`] handle is dropped.
     added: Option<mpsc::UnboundedReceiver<String>>,
-    anchor: Option<tokio::sync::watch::Receiver<Vec<BlockId>>>,
+    anchor: Option<tokio::sync::watch::Receiver<Arc<[BlockId]>>>,
 }
 
 impl<S: Source> TrustFeed<S> {
@@ -197,7 +197,7 @@ impl<S: Source> TrustFeed<S> {
     /// applies before opening any follow; later publications retry the retained
     /// environment record. Losing this producer ends the run as unavailable.
     #[must_use]
-    pub fn watch_anchor(mut self, anchor: tokio::sync::watch::Receiver<Vec<BlockId>>) -> Self {
+    pub fn watch_anchor(mut self, anchor: tokio::sync::watch::Receiver<Arc<[BlockId]>>) -> Self {
         self.anchor = Some(anchor);
         self
     }
@@ -310,8 +310,8 @@ impl<S: Source> TrustFeed<S> {
                     follows.push(read(key, records));
                 }
                 Either::Left(Some(((None, Event::Record(record)), records))) => {
-                    let applied = apply_environment(follower, &**clock, anchor, &record).await?;
-                    let now = follower.protected_now(clock.now_unix_millis() / 1000);
+                    let (applied, now) =
+                        apply_environment(follower, &**clock, anchor, &record).await?;
                     if !tails.contains_key(&None)
                         && matches!(
                             *follower.state().borrow(),
@@ -398,18 +398,15 @@ impl<S: Source> TrustFeed<S> {
 async fn apply_environment(
     follower: &Follower,
     clock: &dyn UnixMillisClock,
-    anchor: &mut Option<tokio::sync::watch::Receiver<Vec<BlockId>>>,
+    anchor: &mut Option<tokio::sync::watch::Receiver<Arc<[BlockId]>>>,
     record: &Record,
-) -> Result<Applied, StreamError> {
-    let mut state = follower.state();
+) -> Result<(Applied, u64), StreamError> {
     loop {
-        if matches!(*state.borrow(), FollowerState::Closed(_)) {
-            return Err(StreamError::Unavailable);
-        }
         let now = follower.protected_now(clock.now_unix_millis() / 1000);
         if let Ok(applied) = follower.apply_environment(&record.value, now) {
-            return Ok(applied);
+            return Ok((applied, now));
         }
+        let mut state = follower.state();
         let changed = async {
             let keys = anchor_changed(anchor, follower).await?;
             follower
@@ -424,7 +421,7 @@ async fn apply_environment(
             Err::<(), _>(StreamError::Unavailable)
         };
         futures::pin_mut!(changed, closed);
-        let result = match future::select(changed, closed).await {
+        let result = match future::select(closed, changed).await {
             Either::Left((result, _)) | Either::Right((result, _)) => result,
         };
         result?;
@@ -432,9 +429,9 @@ async fn apply_environment(
 }
 
 async fn anchor_changed(
-    anchor: &mut Option<tokio::sync::watch::Receiver<Vec<BlockId>>>,
+    anchor: &mut Option<tokio::sync::watch::Receiver<Arc<[BlockId]>>>,
     follower: &Follower,
-) -> Result<Vec<BlockId>, StreamError> {
+) -> Result<Arc<[BlockId]>, StreamError> {
     match anchor {
         Some(anchor) => {
             anchor.changed().await.map_err(|_| {

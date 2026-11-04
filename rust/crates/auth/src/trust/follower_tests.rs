@@ -8,6 +8,9 @@ use futures::FutureExt;
 
 const NOW: u64 = 1_000;
 
+#[path = "../../tests/common/reanchor.rs"]
+mod reanchor_check;
+
 thread_local! {
     static VERIFYING_KEYRING: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
@@ -107,7 +110,7 @@ fn reanchor_during_environment_verification_cannot_publish_the_old_proof() {
     VERIFYING_ENVIRONMENT.with(|hook| {
         *hook.borrow_mut() = Some(Box::new(move || {
             concurrent
-                .reanchor(Issuer::new("test", key(9)).anchor())
+                .reanchor(Issuer::new("test", key(9)).anchor().into())
                 .unwrap();
         }));
     });
@@ -120,7 +123,7 @@ fn reanchor_during_environment_verification_cannot_publish_the_old_proof() {
         FollowerState::Fenced(FenceCause::Refused)
     );
     assert_eq!(trust.environment.read().unwrap().frontier(), (0, [0; 32]));
-    trust.reanchor(world.issuer.anchor()).unwrap();
+    trust.reanchor(world.issuer.anchor().into()).unwrap();
     assert_eq!(trust.apply_environment(&record, NOW), Ok(Applied::Changed));
 }
 
