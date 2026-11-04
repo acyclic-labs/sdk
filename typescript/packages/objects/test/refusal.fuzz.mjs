@@ -8,8 +8,8 @@ import { ObjectsV1Memory, ObjectsV1Request } from "../generated/wasm/acyclic_obj
 
 let original;
 let requestBytes;
-async function producer() {
-  if (original !== undefined) return;
+export async function producer() {
+  if (original !== undefined) return original;
   await MemoryObjectsV1.create();
   const memory = new ObjectsV1Memory();
   let request;
@@ -29,6 +29,7 @@ async function producer() {
   requestBytes = toBinary(wire.AvailabilityRequestSchema, create(wire.AvailabilityRequestSchema, {
     digest: await blobDigest(new Uint8Array()),
   }));
+  return original;
 }
 
 async function observedFailure(failure) {

@@ -790,6 +790,25 @@ top-level category. `negative-controls/object_javascript_category.patch`
 restores category loss; the same WASM control must reject it at
 `unsupported detail code 0 preserves category InvalidArgument`.
 
+The Stream session target reuses that same original Rust refusal producer and
+corpus through the shipped session pool's JavaScript callback boundary:
+
+```sh
+node typescript/packages/stream/test/refusal.fuzz.mjs rust/codec-fuzz/corpus/protobuf/acyclic.objects.v1.ErrorDetail
+```
+
+Build the Objects and Stream packages first. The exported `fuzz` function accepts
+arbitrary diagnostic bytes and checks all gRPC status categories, original opaque
+bytes and terminal completion without an extra connection. Derived operands are
+not captures of deployed member attribution. The retained
+`negative-controls/stream_javascript_refusal.patch` restores the code-only
+callback decoder; the same target must reject the missing original envelope.
+The existing WASM interruption control also drives the real authenticated server
+and public session pool, rejecting one interest between two successful requests
+on the same physical connection. This checks the original channel refusal reaches
+its caller without closing the connection. Browser execution and instrumented
+coverage remain separate qualification obligations.
+
 Actors uses the same canonical `refusal::Cause`. Its original code, message
 and raw detail envelope survive the public client metadata projection, including
 unknown service codes and partial attribution. The protobuf and protobuf JSON

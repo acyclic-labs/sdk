@@ -26,9 +26,23 @@ pub(crate) fn status(error: &Status) -> StreamError {
     }
 }
 
+/// Admits a platform callback's owned envelope through the native mapping.
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+pub(crate) fn status_owned(parts: acyclic_auth::refusal::Parts) -> StreamError {
+    match category_parts(Code::from_i32(parts.code), &parts.message) {
+        StreamError::Unavailable => Refusal::capture_owned(parts, UNAVAILABLE, None)
+            .map_or(StreamError::Unavailable, StreamError::Refused),
+        category => category,
+    }
+}
+
 /// The category alone, without retaining diagnostics.
 pub(crate) fn category(error: &Status) -> StreamError {
-    match (error.code(), error.message()) {
+    category_parts(error.code(), error.message())
+}
+
+fn category_parts(code: Code, message: &str) -> StreamError {
+    match (code, message) {
         (Code::DataLoss, _) => StreamError::InvalidResponse,
         (Code::DeadlineExceeded, _) => StreamError::DeadlineElapsed,
         (Code::InvalidArgument, "invalid_path") => StreamError::InvalidPath,

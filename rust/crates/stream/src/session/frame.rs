@@ -2,15 +2,22 @@
 
 use crate::{Record, StreamError, StreamPath, wire, wire_codec};
 
-/// One received frame and any original provider record it still owns.
+/// One received frame and the original value it still owns.
 ///
 /// Wire transports construct this from their decoded frame and make no claim
 /// about the backing allocation. In-process publication retains the original
 /// record, including its native allocation guards, through the same session.
+/// A local channel refusal retains its original error through the same custody.
 #[derive(Debug)]
 pub struct Frame {
     wire: wire::SessionFrame,
-    record: Option<Record>,
+    original: Option<Original>,
+}
+
+#[derive(Debug)]
+enum Original {
+    Record(Record),
+    Error(StreamError),
 }
 
 impl Frame {
@@ -63,8 +70,25 @@ impl Frame {
             )
         };
         let mut frame = Self::data(identity, super::cursor(next), item);
-        frame.record = Some(record);
+        frame.original = Some(Original::Record(record));
         Ok((frame, key))
+    }
+
+    /// Retains a locally rejected channel's original error. Wire-only peers
+    /// continue to use the session close code; they cannot claim local custody.
+    #[must_use]
+    pub fn closed(identity: wire::SessionChannel, error: StreamError) -> Self {
+        Self {
+            wire: super::frame(
+                identity.channel_id,
+                identity.generation,
+                wire::session_frame::Body::Closed(wire::SessionClosed {
+                    code: error.code().into(),
+                    ..Default::default()
+                }),
+            ),
+            original: Some(Original::Error(error)),
+        }
     }
 
     pub(super) fn data(
@@ -86,7 +110,7 @@ impl Frame {
     }
 
     /// The original canonical frame. Its body cannot be changed independently
-    /// of the retained provider record.
+    /// of its retained original value.
     #[must_use]
     pub fn wire(&self) -> &wire::SessionFrame {
         &self.wire
@@ -98,13 +122,24 @@ impl Frame {
         self.wire
     }
 
+    pub(crate) fn into_parts(self) -> (wire::SessionFrame, Option<StreamError>) {
+        let error = match self.original {
+            Some(Original::Error(error)) => Some(error),
+            _ => None,
+        };
+        (self.wire, error)
+    }
+
     /// The original record retained by in-process publication, with its
     /// body/header relation checked before admission. This does not authorize
     /// another read context. Wire-only transports cannot manufacture this
     /// process-local backing custody.
     #[must_use]
     pub fn original_record(&self) -> Option<&Record> {
-        self.record.as_ref()
+        match &self.original {
+            Some(Original::Record(record)) => Some(record),
+            _ => None,
+        }
     }
 
     /// Checks the original read/follow context. In-process records have already
@@ -118,7 +153,7 @@ impl Frame {
         let Some(wire::session_data::Item::Record(record)) = &data.item else {
             return Err(StreamError::Unavailable);
         };
-        match &self.record {
+        match self.original_record() {
             Some(original) => {
                 validate_origin(original, record, followed)?;
                 Ok(original.clone())
@@ -135,7 +170,10 @@ impl Frame {
     }
 
     pub(super) fn into_record(self, path: &StreamPath) -> Result<Record, StreamError> {
-        let original = self.record;
+        let original = match self.original {
+            Some(Original::Record(record)) => Some(record),
+            _ => None,
+        };
         let Some(wire::session_frame::Body::Data(data)) = self.wire.body else {
             return Err(StreamError::Unavailable);
         };
@@ -166,6 +204,9 @@ fn validate_origin(
 
 impl From<wire::SessionFrame> for Frame {
     fn from(wire: wire::SessionFrame) -> Self {
-        Self { wire, record: None }
+        Self {
+            wire,
+            original: None,
+        }
     }
 }

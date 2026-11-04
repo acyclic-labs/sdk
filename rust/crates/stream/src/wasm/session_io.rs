@@ -1,7 +1,7 @@
 //! Binary platform callbacks for the canonical session client, also on Node/Bun.
 use super::*;
 use crate::runtime::PlatformExecutor;
-use crate::session::{Client, transport};
+use crate::session::{Client, Frame, transport};
 use futures::{
     Stream,
     future::{AbortHandle, Abortable},
@@ -71,12 +71,19 @@ fn failure(error: JsValue) -> transport::Failure {
         .ok()
         .and_then(|value| value.as_bool())
         == Some(true);
-    let error = Reflect::get(&error, &JsValue::from_str("code"))
-        .ok()
-        .and_then(|code| code.as_string())
-        .as_deref()
-        .and_then(StreamError::from_code)
-        .unwrap_or(StreamError::Unavailable);
+    let error = match Reflect::get(&error, &"refusal".into()) {
+        Ok(refusal) if refusal.is_undefined() => Reflect::get(&error, &"code".into())
+            .ok()
+            .and_then(|code| code.as_string())
+            .as_deref()
+            .and_then(StreamError::from_code)
+            .unwrap_or(StreamError::Unavailable),
+        Ok(refusal) => acyclic_auth::refusal::javascript::parts(&refusal, |view| {
+            crate::javascript_bytes::snapshot(view, |_| Ok(())).map(|(bytes, ())| bytes)
+        })
+        .map_or(StreamError::Unavailable, wire_codec::status::status_owned),
+        Err(_) => StreamError::Unavailable,
+    };
     transport::Failure { error, transient }
 }
 impl Connection {
@@ -100,10 +107,7 @@ struct Responses {
     ended: bool,
 }
 impl Responses {
-    fn poll(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<wire::SessionFrame, transport::Failure>>> {
+    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Frame, transport::Failure>>> {
         if self.ended {
             return Poll::Ready(None);
         }
@@ -123,16 +127,10 @@ impl Responses {
                                 // A rejected interest never installed its channel. Surface
                                 // that local failure through the engine's terminal path;
                                 // sibling interests keep their physical connection.
-                                return Poll::Ready(Some(Ok(wire::SessionFrame {
-                                    channel_id: writing.channel.channel_id,
-                                    generation: writing.channel.generation,
-                                    body: Some(wire::session_frame::Body::Closed(
-                                        wire::SessionClosed {
-                                            code: error.error.code().into(),
-                                            ..Default::default()
-                                        },
-                                    )),
-                                })));
+                                return Poll::Ready(Some(Ok(Frame::closed(
+                                    writing.channel,
+                                    error.error,
+                                ))));
                             }
                             return Poll::Ready(Some(Err(error)));
                         }
@@ -186,7 +184,9 @@ impl Responses {
                     return Poll::Ready(Some(Err(StreamError::LimitExceeded.into())));
                 }
                 Poll::Ready(Some(
-                    wire_codec::session::decode_frame(&bytes.to_vec()).map_err(Into::into),
+                    wire_codec::session::decode_frame(&bytes.to_vec())
+                        .map(Into::into)
+                        .map_err(Into::into),
                 ))
             }
         }
@@ -208,7 +208,7 @@ impl Stream for Responses {
         if matches!(result, Poll::Ready(None | Some(Err(_)))) {
             self.ended = true;
         }
-        result.map(|item| item.map(|item| item.map(Into::into)))
+        result
     }
 }
 impl transport::Transport for Endpoint {
@@ -315,7 +315,7 @@ mod tests {
                 (reported.clone(), true),
                 (reported.clone(), false),
             ] {
-                let original = super::super::validation::js_error(error.clone());
+                let original = super::super::js_error(error.clone());
                 Reflect::set(&original, &"transient".into(), &transient.into()).unwrap();
                 let io = Object::new();
                 let next = Closure::<dyn Fn() -> Promise>::new({
@@ -390,5 +390,116 @@ mod tests {
                 drop(responses);
             }
         }
+
+        // Exercise the shipped session pool and public ABI as well as its
+        // physical callback boundary. A peer refusal must finish this request.
+        let connect = Closure::<dyn Fn() -> Promise>::new({
+            let error = super::super::js_error(reported.clone());
+            move || Promise::reject(&error)
+        });
+        let session = super::super::WasmSession::new(
+            connect.as_ref().unchecked_ref::<Function>().clone(),
+            true,
+            None,
+        );
+        let request = wire_codec::heads_request_to_wire(crate::HeadsRequest {
+            retained: Default::default(),
+            durable_through: None,
+            projection: crate::HeadProjection::Tail,
+            paths: Default::default(),
+            children: None,
+            limit: 1,
+            at_least: Default::default(),
+        });
+        let actual = session
+            .heads(&request.encode_to_vec(), 0)
+            .await
+            .unwrap_err();
+        assert_eq!(failure(actual).error, reported, "public session refusal");
+
+        // Use the real authenticated server for the successful handshake and
+        // replies. Reject only the second interest at the platform write boundary;
+        // its original error must cross the pool without retiring the connection.
+        let (requests, incoming) = futures::channel::mpsc::unbounded();
+        let responses = crate::session::serve(
+            Arc::new(MemoryStream::default()),
+            crate::session::testing::authority(),
+            "node".into(),
+            crate::session::Limits::default(),
+            Box::pin(incoming),
+        )
+        .unwrap();
+        let responses = Rc::new(futures::lock::Mutex::new(responses));
+        let next = Closure::<dyn Fn() -> Promise>::new(move || {
+            let responses = responses.clone();
+            wasm_bindgen_futures::future_to_promise(async move {
+                match responses.lock().await.next().await {
+                    Some(Ok(frame)) => {
+                        Ok(Uint8Array::from(frame.wire().encode_to_vec().as_slice()).into())
+                    }
+                    Some(Err(error)) => Err(super::super::js_error(error)),
+                    None => Ok(JsValue::NULL),
+                }
+            })
+        });
+        let reject = Rc::new(std::cell::Cell::new(false));
+        let rejections = Rc::new(std::cell::Cell::new(0));
+        let send = Closure::<dyn Fn(Uint8Array) -> Promise>::new({
+            let reject = reject.clone();
+            let rejections = rejections.clone();
+            let reported = reported.clone();
+            move |bytes: Uint8Array| {
+                let frame = wire_codec::session::decode_frame(&bytes.to_vec()).unwrap();
+                if matches!(&frame.body, Some(wire::session_frame::Body::Interest(interest)) if !interest.upsert.is_empty())
+                {
+                    if reject.replace(false) {
+                        rejections.set(rejections.get() + 1);
+                        return Promise::reject(&super::super::js_error(reported.clone()));
+                    }
+                }
+                requests.unbounded_send(Ok(frame)).unwrap();
+                Promise::resolve(&JsValue::UNDEFINED)
+            }
+        });
+        let close = Closure::<dyn Fn()>::new(|| {});
+        let io = Object::new();
+        for (name, method) in [
+            ("next", next.as_ref()),
+            ("send", send.as_ref()),
+            ("close", close.as_ref()),
+        ] {
+            Reflect::set(&io, &name.into(), method).unwrap();
+        }
+        let connections = Rc::new(std::cell::Cell::new(0));
+        let connect = Closure::<dyn Fn() -> JsValue>::new({
+            let connections = connections.clone();
+            move || {
+                connections.set(connections.get() + 1);
+                io.clone().into()
+            }
+        });
+        let session = super::super::WasmSession::new(
+            connect.as_ref().unchecked_ref::<Function>().clone(),
+            true,
+            None,
+        );
+        session
+            .register_credential(
+                0,
+                Uint8Array::from(crate::session::testing::credential().as_ref()),
+            )
+            .unwrap();
+        let request = request.encode_to_vec();
+        session.heads(&request, 0).await.unwrap();
+        reject.set(true);
+        let error = session.heads(&request, 0).await.unwrap_err();
+        assert_eq!(failure(error).error, reported, "original rejected interest");
+        session.heads(&request, 0).await.unwrap();
+        assert_eq!(rejections.get(), 1);
+        assert_eq!(
+            connections.get(),
+            1,
+            "channel refusal retains the original connection"
+        );
     }
 }
