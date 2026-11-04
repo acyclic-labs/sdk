@@ -242,7 +242,7 @@ impl HostWorkspace {
         reference: &str,
     ) -> Result<Self> {
         self.verify().await?;
-        if child.parent().as_ref() != Some(&self.agent) {
+        if !child.is_child_of(&self.agent) {
             return Err(Error::Unauthorized(
                 "host child belongs to another parent".into(),
             ));
