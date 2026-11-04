@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { Terminal, screenText } from "../graphcoder-pty/screen.mjs";
-import { TerminalFrames, FailureHistory } from "./frames.mjs";
+import { TerminalFrames, FailureHistory, queryFailure } from "./frames.mjs";
 import { OutputWatch } from "./process.mjs";
+import { executionSucceeded } from "./assertions.mjs";
 
 function bold(terminal, text) {
   const buffer = terminal.buffer.active;
@@ -26,10 +27,10 @@ export function rawNeedles(actions) {
 }
 
 // `raw` is the OutputWatch over the executable's raw terminal output.
-export function matches(screen, raw, condition) {
-  const visible = screenText(screen);
+export function matches(screen, raw, condition, visible = screenText(screen)) {
   return (condition.contains ?? []).every(text => visible.includes(text))
     && (!condition.task_failure || expectedTaskFailure(visible, condition))
+    && (!condition.query_failure || queryFailure(visible)?.startsWith(condition.query_failure))
     && (condition.absent ?? []).every(text => !visible.includes(text))
     && (!condition.bold || bold(screen, condition.bold))
     && (condition.raw ?? []).every(text => raw.has(text))
@@ -74,7 +75,9 @@ export async function pty(processes, binary, fixture, input, capture) {
           throw error;
         }
         if (action.after_request && !fixture.requested(action.after_request)) return;
-        if (!matches(screen, raw, action.when)) return;
+        if (!matches(screen, raw, action.when, visible)) return;
+        if (action.assert) assert.ok(matches(screen, raw, action.assert, visible),
+          `step=assert observed terminal frame: ${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
         failures.accept(visible, action.when);
         if (unavailable && visible.includes(unavailable)) command = undefined;
         snapshots.push({ action: index, visible });
@@ -120,7 +123,8 @@ export async function pty(processes, binary, fixture, input, capture) {
     assert.equal(index, input.actions.length, `PTY completed ${index}/${input.actions.length} actions: ${cause ? JSON.stringify(cause) : ""}${result.stderr}\n${result.stdout}`);
     if (!input.killed) {
       assert.ok(frames.ready(), `step=admit completed terminal transaction; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
-      assert.equal(result.code, input.exit ?? 0, result.stderr + visible);
+      if ((input.exit ?? 0) === 0) executionSucceeded(result);
+      else assert.equal(result.code, input.exit, result.stderr + visible);
     }
     else assert.ok(result.signal || result.code !== 0, "PTY executable must be killed");
     for (const text of input.settled_contains ?? []) {

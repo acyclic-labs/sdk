@@ -14,14 +14,15 @@ export async function startWorkspaceOwner({scope,binary,workspace,state,env,root
  const watcher=watch(workspace,{recursive:true});
  watcher.on('change',()=>{if(existsSync(descriptor))ready();});watcher.on('error',failed);
  try {
-  const owner=scope.startOwned(binary,['--workspace',workspace,'--host-workspace','--host-state-directory',state,...args],
-   {cwd:workspace,env,scopeCapture:capture,scopeMountRoot:root,...(process.platform!=='win32'?{scopeReportSignal:'SIGTERM'}:{})});
-  // The diagnostic observer belongs to this same terminal. Its failure must
-  // settle readiness too, and remain observable after readiness succeeds.
-  const closed=owner.closed;
-  closed.then(()=>failed(new Error('step=observe workspace owner readiness: workspace owner exited before descriptor; recovery=node --test plugin/tests/hosts/workspace-owner.test.mjs')),failed);
-  if(existsSync(descriptor))ready();
-  await notified;return {...owner,closed};
+  const reported=scope.startReportedOwned(binary,['--workspace',workspace,'--host-workspace','--host-state-directory',state,...args],
+   {cwd:workspace,env,scopeCapture:capture,scopeMountRoot:root,...(process.platform!=='win32'?{scopeReportSignal:'SIGTERM'}:{})}).then(async owner=>{
+    // The diagnostic observer remains owned by the same process terminal.
+    owner.closed.then(()=>failed(new Error('step=observe workspace owner readiness: workspace owner exited before descriptor; recovery=node --test plugin/tests/hosts/workspace-owner.test.mjs')),failed);
+    if(existsSync(descriptor))ready();
+    await owner.reportReady;
+    return owner;
+   });
+  const [owner]=await Promise.all([reported,notified]);return owner;
  } finally {watcher.close();}
 }
 

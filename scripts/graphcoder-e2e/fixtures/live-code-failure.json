@@ -1,0 +1,22 @@
+{
+  "event": {
+    "tool_name": "code",
+    "tool_input": {
+      "code": "return await tools.wait({agents: [\"harness/agents/6fe85eedc99a4c94a1cf419ae72d8b87/children/adc336ff7d40b749b4f263aeb2b3d92c\"]});"
+    },
+    "tool_use_id": "ea5afb66-db4b-4082-5d57-84647e1a71e8:00000002:0000000000000000",
+    "session_id": null,
+    "tool_response": {
+      "context": [],
+      "output": {
+        "error": "SyntaxError: return not in a function"
+      },
+      "version": 2
+    },
+    "hook_event_name": "PostToolUse"
+  },
+  "model": "claude-haiku-5-5",
+  "attribution": "Captured from original real-provider fork-merge journey; source-bound enclosing failure retained separately.",
+  "platform": "linux",
+  "source": "f2a8def7d7411353485c847bc1f8a85b4a0a6162"
+}

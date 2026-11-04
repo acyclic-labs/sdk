@@ -1,0 +1,15 @@
+{
+  "provenance": {
+    "source": "534dd56f5552ea2ca83890fdfd16aeae6205aea8",
+    "platform": "win32",
+    "executable_sha256": "1e6481d489269c09b2f11a7b642e92788bf9c6ef2e8ce926f88271dc3ba4fd33",
+    "selector": "obs::report_port::windows::tests::native_pipe_keeps_request_ack_and_producer_loss_on_the_selected_owner",
+    "capture_sha256": "476a1fced5bf4e67704475a48782c0fa2437ba53ad8be8587dc01ae9862835ec",
+    "mode": "ACYCLIC_REPORT_PIPE_CHILD=ack",
+    "projection": "Retain actual ready frame; protocol controls replace only selected launch generation"
+  },
+  "ready": {
+    "ready": true,
+    "generation": "b82d45f4c2f75e02925bf42dab7fc17a"
+  }
+}

@@ -6,28 +6,126 @@ import { tmpdir } from "node:os";
 import { join, resolve, toNamespacedPath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Processes } from "./process.mjs";
-import { fileBytes, jsonlReply, messageReply, requests } from "./assertions.mjs";
+import { executionSucceeded, fileBytes, fileRead, jsonlReply, messageReply, requests, toolOutcome } from "./assertions.mjs";
 const captured = JSON.parse(readFileSync(new URL("./fixtures/shipping-output.json", import.meta.url), "utf8")).captures;
 const childResults = JSON.parse(readFileSync(new URL("./fixtures/live-child-results.json", import.meta.url), "utf8")).cases;
 const mergeResults = JSON.parse(readFileSync(new URL("./fixtures/live-merge-results.json", import.meta.url), "utf8")).cases;
 const shellResults = JSON.parse(readFileSync(new URL("./fixtures/live-shell-results.json", import.meta.url), "utf8")).cases;
+const nativeFailure = JSON.parse(readFileSync(new URL("./fixtures/native-execution-failure.json", import.meta.url), "utf8")).capture;
+const nativeReady = JSON.parse(readFileSync(new URL("./fixtures/native-report-ready.json", import.meta.url), "utf8")).ready;
+const fileReads = JSON.parse(readFileSync(new URL("./fixtures/live-file-read-results.json", import.meta.url), "utf8")).cases;
+const codeFailure = JSON.parse(readFileSync(new URL("./fixtures/live-code-failure.json", import.meta.url), "utf8")).event;
+const nestedFailures = JSON.parse(readFileSync(new URL("./fixtures/live-nested-settlement-failure.json", import.meta.url), "utf8")).cases;
+const childMessage = JSON.parse(readFileSync(new URL("./fixtures/live-child-message.json", import.meta.url), "utf8"));
+const committedReply = JSON.parse(captured["jsonl-reopen"].stdout);
 import { answer, requireTools, runCase } from "./live.mjs";
+
+test("completed code calls cannot erase the original VM refusal", () => {
+  assert.throws(() => requireTools([codeFailure], ["code"]), error => {
+    assert.ok(error.message.includes(codeFailure.tool_response.output.error));
+    return true;
+  });
+  const selectedValue = structuredClone(codeFailure);
+  selectedValue.tool_response.output = { value: { error: codeFailure.tool_response.output.error } };
+  requireTools([selectedValue], ["code"]);
+  const opaqueValue = structuredClone(codeFailure);
+  delete opaqueValue.tool_response.version;
+  delete opaqueValue.tool_response.context;
+  requireTools([opaqueValue], ["code"]);
+});
+
+test("completed wait retains the original failed descendant settlement", () => {
+  for (const { event } of nestedFailures) {
+    assert.throws(() => requireTools([event], ["wait"]), /conflict: volume alias names another binding/);
+    toolOutcome(event.tool_response, ["volume alias names another binding"], "inspect original child settlement");
+    // A selected program value is data, not a native wait-result envelope.
+    toolOutcome({ version: 2, context: [], output: { value: event.tool_response } });
+  }
+});
+
+test("file reads retain the original authored or content source", () => {
+  for (const { event } of fileReads) {
+    const original = event.tool_response, expected = original.text;
+    const kind = Object.keys(original.file)[0], source = original.file[kind];
+    assert.equal(fileRead(original, event.tool_input.path, expected), source);
+    for (const mutate of [
+      value => { delete value.file; },
+      value => { value.file.other = value.file[kind]; },
+      value => { value.file[kind].path = "different.txt"; },
+      value => { delete value.file[kind].volume; },
+      value => { delete value.file[kind][kind === "authored" ? "generation" : "version"]; },
+      value => { value.text += " "; },
+    ]) {
+      const changed = structuredClone(original); mutate(changed);
+      assert.throws(() => fileRead(changed, event.tool_input.path, expected));
+    }
+  }
+});
+
+test("successful execution cannot erase the original returned native cause", () => {
+  let stderrReads = 0;
+  for (const original of [captured["text-responses"], captured["jsonl-reopen"]]) executionSucceeded({
+    ...original, get stderr() { stderrReads++; return original.stderr; },
+  });
+  assert.equal(stderrReads, 0, "successful status admission must not reread its transcript for an unused error message");
+  // Mutate only the original failure's independent exit/ACK observations.
+  // Successful stdout comes from its separately retained shipping contract.
+  // Neither can promote a retained native failure to a successful execution.
+  for (const [format, successful] of [["text", captured["text-responses"]], ["jsonl", captured["jsonl-reopen"]]]) {
+    for (const field of ["execution_failure", "startup_rejection"]) {
+      for (const acknowledged of [false, true]) {
+        const failure = nativeFailure.termination.execution_failure;
+        const termination = { ...nativeFailure.termination, execution_failure: undefined,
+          [field]: failure, report_acknowledged: acknowledged,
+          ...(acknowledged ? { report_outcome: "empty", missing_wait_report: false } : {}) };
+        assert.throws(() => answer({ ...successful, termination }, format, undefined, "e2e"), error => {
+          assert.equal(error.actual, failure, "retain the exact native cause as the failed assertion operand");
+          assert.match(error.message, /^selected native execution reported failure/);
+          return true;
+        });
+      }
+    }
+  }
+  assert.throws(() => executionSucceeded(nativeFailure), error => {
+    assert.equal(error.actual, nativeFailure.termination.execution_failure);
+    return true;
+  });
+});
 
 test("reply-only cases reject recorded tool failure despite successful native completion", {
   skip: process.platform === "win32" && "the protocol child uses an executable POSIX script",
 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "live-reply-tools-"));
   try {
-    for (const captured of [undefined, ...shellResults]) {
-      const name = captured?.status ?? "no-tools", directory = join(root, name);
+    const catalog = join(root, "catalog.json");
+    await writeFile(catalog, JSON.stringify({ selected: { endpoint: "http://127.0.0.1" } }));
+    for (const [captured, capability, journey, selection] of [[undefined, "ready", "session"],
+      ...shellResults.map(captured => [captured, "ready", "session"]),
+      [undefined, "absent", "session"], [undefined, "foreign", "session"],
+      [undefined, "absent", "child-result"],
+      ...["openai/gpt-6-luna", "anthropic/claude-haiku-5-5", "gemini/gemini-3.8-flash"]
+        .map(model => [undefined, "ready", "session", { model, catalog }])]) {
+      const name = `${captured?.status ?? "no-tools"}-${capability}-${journey}-${selection?.model.split("/")[0] ?? "login"}`, directory = join(root, name);
       await mkdir(directory);
       const program = join(directory, "reply.mjs");
       // This native child speaks only the driver's text protocol. Tool events
       // are original shipping captures, replayed through the real recorder.
       await writeFile(program, `#!${process.execPath}
-import { readFileSync } from "node:fs";
+import { readFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
+import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createInterface } from "node:readline";
+const capability = ${JSON.stringify(capability)};
+const selection = ${JSON.stringify(selection ?? null)};
+if (selection) {
+  assert.equal(process.argv[process.argv.indexOf("--model") + 1], selection.model);
+  assert.equal(process.argv[process.argv.indexOf("--catalog") + 1], selection.catalog);
+  assert.equal(JSON.parse(readFileSync(selection.catalog, "utf8")).selected.endpoint, "http://127.0.0.1");
+}
+if (capability !== "absent") writeSync(Number(process.env.ACYCLIC_REPORT_FD), JSON.stringify({
+  ...${JSON.stringify(nativeReady)}, generation: capability === "ready" ? process.env.ACYCLIC_REPORT_GENERATION : ${JSON.stringify(nativeReady.generation)},
+}) + "\\n");
 const settings = process.argv[process.argv.indexOf("--settings-root") + 1];
 const event = ${JSON.stringify(captured?.event ?? null)};
 if (event) {
@@ -36,18 +134,31 @@ if (event) {
   if (recorded.error) throw recorded.error;
   if (recorded.status !== 0) throw new Error(recorded.stderr);
 }
-const prompt = process.argv[process.argv.indexOf("-p") + 1];
-process.stdout.write(prompt.match(/LIVE_[a-f0-9]+/)[0] + "\\n");
+if (process.argv.includes("--input-format")) {
+  let marker, turn = 0;
+  createInterface({input:process.stdin}).on("line", line => {
+    const input = JSON.parse(line);
+    marker ??= input.prompt.match(/LIVE_[a-f0-9]+/)[0];
+    process.stdout.write(JSON.stringify({ ...${JSON.stringify(committedReply)},
+      id: input.id, inbox: ++turn, text: turn === 1 ? "SPAWNED" : marker }) + "\\n");
+  });
+} else {
+  const prompt = process.argv[process.argv.indexOf("-p") + 1];
+  process.stdout.write(prompt.match(/LIVE_[a-f0-9]+/)[0] + "\\n");
+}
 `);
       await chmod(program, 0o700);
-      const result = await runCase(program, root, directory, "session", new AbortController().signal);
+      const result = await runCase(program, root, directory, journey, new AbortController().signal, selection);
       assert.equal(result.captures.length, 1);
       assert.equal(result.captures[0].code, 0, result.captures[0].stderr);
       assert.equal(result.captures[0].signal, null);
-      assert.equal(result.status, captured?.status === "fail" ? "fail" : "pass", result.error);
+      assert.equal(result.status, captured?.status === "fail" || capability !== "ready" ? "fail" : "pass", result.error);
       if (captured?.status === "fail") {
         assert.deepEqual(result.hooks, [captured.event]);
         assert.match(result.failure.error, /unexpected tool error.*exit_code=1/);
+      } else if (capability !== "ready") {
+        assert.equal(result.captures[0].report_capability.ready, false);
+        assert.match(result.failure.error, /step=admit selected native report capability/);
       }
       assert.deepEqual([result.phases.at(-1).phase, result.phases.at(-1).outcome], ["retired", "completed"]);
     }
@@ -137,6 +248,8 @@ test("collaboration requires the spawned child's exact settled public result", (
     const [spawn, wait] = original;
     const child = spawn.tool_response.agent, expected = wait.tool_response.settled[0].answer;
     requireTools(original, ["spawn", "wait"], expected);
+    assert.throws(() => requireTools(original, ["spawn", "wait"], expected, undefined, 2),
+      /different child set|different child reference/);
     for (const mutate of [
       events => events.pop(),
       events => { events[1].hook_event_name = "PreToolUse"; },
@@ -157,6 +270,32 @@ test("collaboration requires the spawned child's exact settled public result", (
       mutate(events);
       assert.throws(() => requireTools(events, ["spawn", "wait"], expected));
     }
+  }
+});
+
+test("child message settlement follows its original selected send", () => {
+  const { events: original, expected } = childMessage;
+  const check = events => requireTools(events, ["spawn", "send", "wait"], expected);
+  check(original);
+  const selectedSend = events => events.find(event => event.tool_name === "send" && event.tool_input.message === expected);
+  for (const mutate of [
+    events => events.pop(),
+    events => { events.splice(events.indexOf(selectedSend(events)), 1); },
+    events => { selectedSend(events).hook_event_name = "PreToolUse"; },
+    events => { selectedSend(events).tool_input.agent += "/other"; },
+    events => { selectedSend(events).tool_response.sent += "/other"; },
+    events => { selectedSend(events).tool_response.status = "refused"; },
+    events => { selectedSend(events).tool_response.error = "message refused"; },
+    events => { events.at(-1).tool_response.settled[0].answer = "READY"; },
+    events => { events.at(-1).tool_response.settled[0].agent += "/other"; },
+    events => { events.at(-1).tool_input.agents = ["other"]; },
+    events => { events.splice(1, 0, events.pop()); },
+    events => { events.push(structuredClone(events.find(event => event.tool_input?.message === "READY"))); },
+    events => { events[1].tool_response.error = "earlier wait refused"; },
+  ]) {
+    const events = structuredClone(original);
+    mutate(events);
+    assert.throws(() => check(events));
   }
 });
 

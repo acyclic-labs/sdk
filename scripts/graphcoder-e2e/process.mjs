@@ -8,6 +8,7 @@ import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ProcessReport } from "./process-report.mjs";
 import { listenReportPipe } from "./report-pipe.mjs";
+import { Lines } from "./lines.mjs";
 
 export async function schedule(items, platform, execute) {
   if (platform !== "win32") return Promise.all(items.map(execute));
@@ -157,7 +158,11 @@ export class Processes {
           observe?.("closed");
           if (progressFailure) throw progressFailure;
           const result = settled(code, signal, stdoutPath, stderrPath);
-          if (report?.termination) result.termination = report.termination;
+          if (report) {
+            result.report_capability = report.capability;
+            const termination = report.termination;
+            if (termination) result.termination = termination;
+          }
           if (!scopeCapture) return result;
           return Promise.resolve().then(() => scopeCapture(result)).then(() => result);
         }).then(resolve, reject);
@@ -426,14 +431,9 @@ export class Spool {
         if (error) this.#break(error);
       });
     }
-    const decoder = new StringDecoder("utf8");
-    let partial = "";
-    const lines = (text, done) => {
-      const parts = (partial + text).split("\n");
-      partial = parts.pop();
-      let full = false;
-      for (const line of parts) if (!this.#line(line.endsWith("\r") ? line.slice(0, -1) : line)) full = true;
-      if (!full || !this.#state.open) { done(); return; }
+    const lines = new Lines(line => this.#line(line.endsWith("\r") ? line.slice(0, -1) : line));
+    const accepted = (room, done) => {
+      if (room || !this.#state.open) { done(); return; }
       // Lines already in this chunk are written; the next chunk waits for drain.
       let released = false;
       this.#blocked = () => { if (!released) { released = true; this.#blocked = undefined; done(); } };
@@ -441,8 +441,8 @@ export class Spool {
       this.#file.once("drain", this.#blocked);
     };
     const sink = new Writable({
-      write: (chunk, _encoding, done) => lines(decoder.write(chunk), done),
-      final: done => { const rest = partial + decoder.end(); partial = ""; rest ? lines(rest + "\n", done) : done(); },
+      write: (chunk, _encoding, done) => accepted(lines.write(chunk), done),
+      final: done => accepted(lines.end(), done),
     });
     // Every line taken, or a source that closed without ending.
     const drained = new Promise(resolve => {

@@ -1,5 +1,5 @@
-// Real Codex-login acceptance. Login directories are passed to GraphCoder by
-// path; this driver never opens, copies or serializes their contents.
+// Real provider acceptance. Catalogs and optional login directories are passed
+// by path; this driver never reads or copies login contents.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -10,14 +10,13 @@ import { environment, scratchDirectory } from "./scratch.mjs";
 import { commandCancellation, withOwnedCase } from "./suite.mjs";
 import { failedCase, failureReport, publishReport, summarizeCases } from "./report.mjs";
 import { conversation } from "./conversation.mjs";
-import { fileBytes, jsonlReply, toolOutcome } from "./assertions.mjs";
+import { executionSucceeded, requireReportCapability, fileBytes, fileRead, jsonlReply, toolOutcome } from "./assertions.mjs";
 
 const recovery = "LIVE_CODEX_HOME=/absolute/existing/login node scripts/graphcoder-e2e/live.mjs GRAPHCODER FRESH_OUTPUT SAMPLES [CASE ...]";
-export const liveCases = ["session", "shell", "child-result", "resume", "fork-merge"];
+export const liveCases = ["session", "instructions", "skill-invocation", "file-mention", "custom-slash-command", "shell", "file-tools", "child-result", "child-message", "nested-children", "resume", "fork-merge"];
 
 export function answer(result, format, expected, id) {
-  assert.equal(result.code, 0, `GraphCoder exit ${result.code}: ${result.stderr}`);
-  assert.equal(result.signal, null, "GraphCoder was interrupted");
+  executionSucceeded(result);
   let value;
   if (format === "text") value = result.stdout.replace(/\r?\n$/, "");
   else {
@@ -30,10 +29,12 @@ export function answer(result, format, expected, id) {
   return value;
 }
 
-export function requireTools(hooks, names, expectedChildResult, mergeWorkspace) {
+export function requireTools(hooks, names, expectedChildResult, mergeWorkspace, expectedChildren = 1) {
   const remaining = new Set(names);
   const mergeCwd = mergeWorkspace === undefined ? undefined : toNamespacedPath(mergeWorkspace);
-  let child, childName, consumed = false, merged = false;
+  const children = new Map();
+  const requireMessage = remaining.has("send");
+  let merged = false;
   for (const hook of hooks) {
     if (hook.hook_event_name !== "PostToolUse") continue;
     if (hook.tool_response === undefined || hook.tool_response === null)
@@ -42,36 +43,61 @@ export function requireTools(hooks, names, expectedChildResult, mergeWorkspace) 
     remaining.delete(hook.tool_name);
     if (expectedChildResult === undefined) continue;
     if (hook.tool_name === "spawn" && typeof hook.tool_response?.agent === "string") {
-      assert.equal(child, undefined, "single-child journey spawned another child");
-      child = hook.tool_response.agent;
-      childName = hook.tool_response.name;
-    } else if (hook.tool_name === "wait" && child && hook.tool_response?.settled?.length) {
-      const references = hook.tool_input?.agents;
-      assert.ok(Array.isArray(references) && references.length === 1
-        && (references[0] === child || (typeof childName === "string" && references[0] === childName)),
+      const child = hook.tool_response.agent;
+      assert.ok(!children.has(child), "journey repeated a spawned child");
+      const selected = { agent: child, name: hook.tool_response.name, sent: !requireMessage, consumed: false };
+      children.set(child, selected);
+    } else if (hook.tool_name === "send" && requireMessage) {
+      const child = children.get(hook.tool_input?.agent);
+      assert.ok(child, "message used a different canonical child");
+      assert.equal(hook.tool_response.sent, child.agent, "message result names a different child");
+      assert.equal(hook.tool_response.status, "queued", "message was not queued");
+      child.sent = hook.tool_input.message === expectedChildResult;
+      child.consumed = false;
+    } else if (hook.tool_name === "wait" && hook.tool_response?.settled?.length) {
+      const agents = hook.tool_input?.agents;
+      const reference = Array.isArray(agents) && agents.length === 1 ? agents[0] : undefined;
+      const only = expectedChildren === 1 && children.size === 1 ? children.values().next().value : undefined;
+      const child = children.get(reference) ?? (only?.name === reference ? only : undefined);
+      assert.ok(child,
       "wait used a different child reference");
       assert.deepEqual(hook.tool_response.running, [], "child remains running");
       assert.equal(hook.tool_response.settled.length, 1, "wait settled a different child set");
       const [settled] = hook.tool_response.settled;
-      assert.equal(settled.agent, child, "settlement names a different child");
+      assert.equal(settled.agent, child.agent, "settlement names a different child");
       assert.equal(settled.phase, "idle", "child did not settle successfully");
+      // A successful preparatory wait does not consume a later message. Every
+      // native failure was already rejected above, including earlier waits.
+      if (requireMessage && (!child.sent || settled.answer !== expectedChildResult)) continue;
       assert.equal(settled.answer, expectedChildResult, "parent did not consume the child's exact result");
-      consumed = true;
-    } else if (mergeWorkspace !== undefined && consumed && typeof childName === "string"
+      child.consumed = true;
+    } else if (mergeWorkspace !== undefined && children.size === 1
       && hook.tool_name === "fs" && typeof hook.cwd === "string" && isAbsolute(hook.cwd)
       && toNamespacedPath(hook.cwd) === mergeCwd
-      && hook.tool_response?.result?.Committed?.message === `merge agents/${childName}`) {
+      && children.values().next().value.consumed
+      && hook.tool_response?.result?.Committed?.message === `merge agents/${children.values().next().value.name}`) {
       // The filesystem generates this message from its completed join operand.
       merged = true;
     }
   }
   for (const name of remaining) assert.fail(`missing completed ${name} tool call`);
-  if (expectedChildResult !== undefined) assert.ok(consumed, "missing completed public wait for the spawned child's result");
+  if (expectedChildResult !== undefined) {
+    assert.equal(children.size, expectedChildren, "journey spawned a different child set");
+    for (const child of children.values()) {
+      assert.ok(child.sent, "missing completed message to the spawned child");
+      assert.ok(child.consumed, "missing completed public wait for the spawned child's result");
+    }
+    if (expectedChildren === 2) {
+      const [first, second] = children.keys();
+      assert.ok(first.startsWith(second + "/children/") || second.startsWith(first + "/children/"),
+        "nested journey requires the original descendant path, not two siblings");
+    }
+  }
   if (mergeWorkspace !== undefined) assert.ok(merged,
     `step=admit committed merge of the settled child's branch in its parent workspace; recovery=${recovery}`);
 }
 
-export async function runCase(binary, login, root, name, signal) {
+export async function runCase(binary, login, root, name, signal, { model = "openai/gpt-6-luna", catalog } = {}) {
   const setupBegin = performance.now();
   const directory = join(root, name), workspace = join(directory, "workspace");
   const settings = join(directory, "settings");
@@ -81,37 +107,57 @@ export async function runCase(binary, login, root, name, signal) {
   const marker = `LIVE_${randomUUID().replaceAll("-", "")}`;
   const messageId = "live";
   let step = "prepare workspace and isolated settings", env, childHooks, begin, receipt, hooksPending = false;
+  const providerArgs = ["--model", model, ...(catalog ? ["--catalog", catalog] : [])];
   const invoke = async (prompt, format, expected) => {
     hooksPending = true;
     const args = ["--workspace", workspace, "--settings-root", settings,
-      "--model", "openai/gpt-6-luna", "--operation", operation,
+      ...providerArgs, "--operation", operation,
       ...(format === "text" ? ["-p", prompt] : ["--input-format", "jsonl"])];
     const result = await processes.run(binary, args, { cwd: workspace, env, scopeReport: true },
       format === "text" ? "" : JSON.stringify({ prompt, id: messageId }) + "\n");
     captures.push({ argv: args, ...result });
     step = "assert GraphCoder answer";
-    return answer(result, format, expected, messageId);
+    const value = answer(result, format, expected, messageId);
+    requireReportCapability(result, recovery);
+    return value;
   };
   const hooks = async () => {
     hooksPending = false;
     try { return (await readFile(hookFile, "utf8")).trim().split(/\r?\n/).filter(Boolean).map(JSON.parse); }
     catch (error) { if (error.code === "ENOENT") return []; throw error; }
   };
-  const collaborate = async (task, followup) => {
+  const collaborate = async (task, followup, intermediate) => {
     hooksPending = true;
     const fixture = { workspace, env, args: ["--workspace", workspace,
-      "--settings-root", settings, "--model", "openai/gpt-6-luna"] };
+      "--settings-root", settings, ...providerArgs] };
     await conversation(processes, binary, fixture, { operation, turns: [
       { id: "spawn", text: task, answer: "SPAWNED" },
+      ...(intermediate === undefined ? [] : [intermediate]),
       { id: "report", text: followup, answer: marker },
     ] }, capture => captures.push(capture));
+    requireReportCapability(captures.at(-1), recovery);
   };
   const phases = [];
   const prepare = async () => {
     await mkdir(workspace, { recursive: true });
+    if (name === "instructions") {
+      await writeFile(join(workspace, "AGENTS.md"), `agents_token: AGENT_${marker}\n`);
+      await writeFile(join(workspace, "CLAUDE.md"), `claude_token: CLAUDE_${marker}\n`);
+    } else if (name === "skill-invocation") {
+      const skill = join(workspace, ".agents/skills/inventory");
+      await mkdir(skill, { recursive: true });
+      await writeFile(join(skill, "SKILL.md"), `---\nname: inventory\ndescription: Report the selected inventory token\n---\nReply with exactly SKILL_${marker} and no additional text. Do not use tools.\n`);
+    } else if (name === "file-mention") {
+      await writeFile(join(workspace, "mention.txt"), `MENTION_${marker}\n`);
+    } else if (name === "custom-slash-command") {
+      const commands = join(workspace, ".claude/commands");
+      await mkdir(commands, { recursive: true });
+      await writeFile(join(commands, "report-token.md"),
+        `Reply with exactly COMMAND_${marker} $ARGUMENTS and no additional text. Do not use tools.\n`);
+    }
     env = environment(settings);
     // Reuse only the admitted login path after stripping provider keys.
-    env.CODEX_HOME = login;
+    if (login) env.CODEX_HOME = login;
     const recorder = fileURLToPath(new URL("./hook.mjs", import.meta.url));
     await writeFile(join(settings, ".claude/settings.json"), JSON.stringify({ hooks: {
       PostToolUse: [{ hooks: [{ type: "command", command: process.execPath, args: [recorder, hookFile] }] }],
@@ -124,18 +170,53 @@ export async function runCase(binary, login, root, name, signal) {
       step = "invoke shipping GraphCoder";
       if (name === "session") {
         await invoke(`Reply with exactly ${marker}. Do not use tools.`, "text", marker);
+      } else if (name === "instructions" || name === "skill-invocation" || name === "file-mention" || name === "custom-slash-command") {
+        await invoke(name === "instructions"
+          ? "Report agents_token then claude_token from the current project instructions, separated by one space. Do not use tools. Reply with exactly those two values and no additional text."
+          : name === "skill-invocation" ? "/inventory Follow the selected skill precisely."
+          : name === "file-mention" ? "Report the exact token in @mention.txt with no additional text. Do not use tools."
+          : "/report-token SELECTED_ARGUMENT", "text",
+        name === "instructions" ? `AGENT_${marker} CLAUDE_${marker}`
+          : name === "skill-invocation" ? `SKILL_${marker}`
+          : name === "file-mention" ? `MENTION_${marker}` : `COMMAND_${marker} SELECTED_ARGUMENT`);
+        step = "assert selected context reached the model without a file tool";
+        const recorded = childHooks = await hooks();
+        requireTools(recorded, []);
+        assert.equal(recorded.length, 0, "context acceptance used a tool instead of the selected context");
       } else if (name === "shell") {
-        await invoke(`Use the shell tool to create shell.txt containing exactly the UTF-8 bytes ${marker}, with no newline or other bytes, then reply DONE.`, "text", "DONE");
+        await invoke(`Use the shell tool to create shell.txt containing exactly the UTF-8 bytes ${marker}, with no newline or other bytes, then reply with exactly DONE and no additional text.`, "text", "DONE");
         step = "assert shell effect and completed tool event";
         const recorded = childHooks = await hooks();
         await fileBytes(join(workspace, "shell.txt"), marker);
         requireTools(recorded, ["shell"]);
+      } else if (name === "file-tools") {
+        await invoke(`Use write to create result.txt containing exactly BEFORE_${marker}, with no newline. Use edit to replace BEFORE_ with AFTER_. Use read to verify the edited file, then reply with exactly its contents and no additional text.`, "text", `AFTER_${marker}`);
+        step = "assert write edit and read share the published file";
+        const recorded = childHooks = await hooks();
+        await fileBytes(join(workspace, "result.txt"), `AFTER_${marker}`);
+        requireTools(recorded, ["write", "edit", "read"]);
+        const read = recorded.findLast(hook => hook.tool_name === "read");
+        fileRead(read.tool_response, "result.txt", `AFTER_${marker}`);
       } else if (name === "child-result") {
         await collaborate(`Spawn a child named worker, asking it to reply with exactly ${marker}. End this turn with exactly SPAWNED so the spawn commits. Retain the exact canonical agent path returned by spawn for the next turn.`,
           "Use wait with the exact canonical agent path from the preceding spawn result. Read that child's settled idle answer, then reply with exactly that answer, without additional text.");
         step = "assert child result read by parent";
         const recorded = childHooks = await hooks();
         requireTools(recorded, ["spawn", "wait"], marker);
+      } else if (name === "nested-children") {
+        const task = `Spawn exactly one child named leaf, asking it to reply with exactly ${marker} and no additional text. Preserve the canonical agent path from spawn. In a later distinct tool call, use wait with that exact path, read its settled idle answer, then reply with exactly that answer. Do not return a console-only code result or use a top-level return statement; a code tool program returns its final expression.`;
+        await collaborate(`Spawn exactly one child named worker with this task: ${JSON.stringify(task)}. Preserve the returned canonical agent path. End this turn with exactly SPAWNED so the worker spawn commits.`,
+          "Use wait with the exact canonical worker path from the preceding spawn result. Read its settled idle answer, then reply with exactly that answer and no additional text.");
+        step = "assert original worker and descendant settlements";
+        const recorded = childHooks = await hooks();
+        requireTools(recorded, ["spawn", "wait"], marker, undefined, 2);
+      } else if (name === "child-message") {
+        await collaborate("Spawn exactly one child named worker. Its initial task is: Reply with exactly READY. On your next message, reply with exactly that message and no additional text. Preserve the returned canonical child path. End this turn with exactly SPAWNED so the spawn commits.",
+          "Use wait with the exact canonical worker path. Read its settled idle answer to the committed message, then reply with exactly that answer and no additional text.",
+          { id: "send", text: `Use send with the exact canonical worker path and message ${marker}. End this turn with exactly SENT so the message commits.`, answer: "SENT" });
+        step = "assert original child received and settled the committed message";
+        const recorded = childHooks = await hooks();
+        requireTools(recorded, ["spawn", "send", "wait"], marker);
       } else if (name === "resume") {
         const prompt = `Use the shell tool to append exactly the UTF-8 bytes ${marker} to once.txt, with no newline or other bytes, then reply with exactly ${marker}.`;
         const first = await invoke(prompt, "jsonl", marker);
@@ -203,7 +284,9 @@ async function campaign(signal) {
   assert.ok(/^[1-9][0-9]*$/.test(count ?? "") && Number.isSafeInteger(samples),
     `step=admit explicit positive sample count; recovery=${recovery}`);
   const login = process.env.LIVE_CODEX_HOME ?? process.env.E2E_LIVE_CODEX_HOME;
-  assert.ok(binary && isAbsolute(binary) && output && login && isAbsolute(login), `step=admit arguments and existing login path; recovery=${recovery}`);
+  const catalog = process.env.E2E_LIVE_CATALOG, model = process.env.E2E_LIVE_MODEL ?? "openai/gpt-6-luna";
+  assert.ok(binary && isAbsolute(binary) && output && (catalog ? isAbsolute(catalog) : login && isAbsolute(login)),
+    `step=admit arguments and provider catalog or existing login path; recovery=${recovery}`);
   const names = selected.length ? selected : liveCases;
   assert.equal(new Set(names).size, names.length, `step=reject duplicate cases; recovery=${recovery}`);
   for (const name of names) assert.ok(liveCases.includes(name), `step=admit case ${name}; recovery=${recovery}`);
@@ -213,11 +296,11 @@ async function campaign(signal) {
   sampling: for (let sample = 1; sample <= samples; sample++) {
     for (const name of names) {
       if (signal.aborted) break sampling;
-      results.push({ sample, ...await runCase(resolve(binary), login, join(root, String(sample)), name, signal) });
+      results.push({ sample, ...await runCase(resolve(binary), login, join(root, String(sample)), name, signal, { model, catalog }) });
       if (signal.aborted) break sampling;
     }
   }
-  const report = { tier: "real-codex-login", model: "openai/gpt-6-luna", platform: process.platform,
+  const report = { tier: catalog ? "real-provider-catalog" : "real-codex-login", model, platform: process.platform,
     measurement: "complete case including original physical retirement; nearest-rank successful-case percentiles, not overhead",
     cells: summarizeCases(names, results), results,
     ...(signal.aborted ? { cancellation: signal.reason.message } : {}),
