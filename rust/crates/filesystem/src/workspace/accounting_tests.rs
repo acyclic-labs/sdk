@@ -321,6 +321,19 @@ async fn generation_parents_keep_original_work_and_result_custody()
         assert_eq!(live, baseline, "parent digest retained temporary backing");
     }
     let source = Prefunded {
+        budget,
+        held: Mutex::new(None),
+    };
+    let (result, spent, live, baseline) = foreign
+        .normalized_join_parent_for(&selected, &source, &cancellation)
+        .await;
+    assert!(matches!(result, Err(WorkspaceError::IncompatibleWorkspace)));
+    assert_eq!(spent.backend_read_operations, 2);
+    assert_eq!(
+        live, baseline,
+        "incompatible parent retained decoded backing"
+    );
+    let source = Prefunded {
         budget: WorkBudget {
             bytes_hashed: completed
                 .ok_or("missing completed digest work")?

@@ -78,6 +78,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Digest, WorkspaceError> {
+        let mut scope = accounting.allocation_scope()?;
+        let accounting = &mut *scope;
         accounting.check()?;
         if !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner)
             || !Arc::ptr_eq(&self.inner, &target.workspace.volume.fs.inner)
@@ -85,7 +87,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         {
             return Err(WorkspaceError::IncompatibleWorkspace);
         }
-        let source_root = read_generation_root_with_accounting(
+        let mut source_root = read_generation_root_with_accounting(
             &self.inner.objects,
             source.id.object_id(),
             source.workspace.volume.config,
@@ -107,19 +109,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         {
             return Err(WorkspaceError::IncompatibleWorkspace);
         }
-        let normalized = (
-            GenerationRoot {
-                volume_id: target.workspace.volume.id,
-                root_file_id: target_root.0.root_file_id,
-                file_table: source_root.0.file_table,
-                required_features: source_root.0.continuation_features(),
-                parents: source_root.0.parents,
-            },
-            source_root.1,
-        );
+        source_root.0.volume_id = target.workspace.volume.id;
+        source_root.0.required_features = source_root.0.continuation_features();
         let encoded =
             crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
-                crate::kernel::encode_generation_root(&normalized.0, observe, allocation_error)
+                crate::kernel::encode_generation_root(&source_root.0, observe, allocation_error)
             })?;
         let hashing = WorkCounters {
             bytes_hashed: (encoded.0.len() as u64),
