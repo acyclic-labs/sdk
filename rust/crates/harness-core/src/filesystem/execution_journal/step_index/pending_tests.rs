@@ -29,8 +29,13 @@ fn recovered_tail_step_lookup_is_bounded_through_one_thousand_unrelated_steps() 
             )?;
             let after = io.receipt();
             assert_eq!(
-                after.bytes_copied, before.bytes_copied,
-                "pending insertion relocated prior entries"
+                after.bytes_copied - before.bytes_copied,
+                if step == 1 {
+                    std::mem::size_of::<Entry>() as u64
+                } else {
+                    0
+                },
+                "pending insertion exceeded its one inline promotion copy"
             );
             if step == 0 {
                 single_allocations = after.allocation_operations - before.allocation_operations;
