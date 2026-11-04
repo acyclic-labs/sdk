@@ -97,7 +97,56 @@ def observation():
         source.write_bytes(original)
 
 
+def completion():
+    """Qualify the real dispatcher cut, its output oracle and operation cost."""
+    source = ROOT / "rust/crates/actors/src/local/runtime.rs"
+    original = source.read_bytes()
+    normalized = original.replace(b"\r\n", b"\n")
+    name = "local::runtime::tests::completion::completion_joins_discovery_delivery_and_producer_lifetime"
+    controls = [
+        (b"Event::Completion(completion) => completing.push(completion),",
+         b"Event::Completion(completion) => { let _ = completion.send(Ok(())); },",
+         "completion escaped"),
+        (b"completion_tail = match provider.tail(self.store.root().clone()).await {",
+         b"let _ = provider.tail(self.store.root().clone()).await;\n"
+         b"completion_tail = match provider.tail(self.store.root().clone()).await {",
+         "assertion `left == right` failed"),
+    ]
+    print("Completion producer sha256=" + hashlib.sha256(original).hexdigest(), flush=True)
+    try:
+        for anchor, plant, diagnostic in controls:
+            if normalized.count(anchor) != 1:
+                raise RuntimeError("completion producer anchor changed; recovery: " + RECOVERY + " --completion")
+            source.write_bytes(normalized.replace(anchor, plant))
+            run([name], "unchanged-oracle rejection", diagnostic,
+                model=False, recovery="--completion")
+        source.write_bytes(original)
+        selected = [
+            name,
+            "local::runtime::tests::conformance_suite_passes_on_memory_runtime",
+            "local::runtime::tests::conformance_suite_passes_on_durable_local_runtime",
+            "local::runtime::tests::negative_control_conformance_rejects_a_host_that_loses_alarm_changes",
+            "local::runtime::tests::clock::controlled_clock_drives_original_alarms_and_reports_producer_loss",
+        ]
+        command = ["cargo", "nextest", "run", "--locked", "-p", "acyclic-actors",
+                   "--all-features", "--lib", "-E", " | ".join(f"test(={test})" for test in selected),
+                   "--no-capture", "--no-tests=fail"]
+        print("STEP restored Actor completion controls: " + repr(command), flush=True)
+        if subprocess.run(command, cwd=ROOT).returncode:
+            raise RuntimeError("restored Actor completion controls failed; recovery: " + RECOVERY + " --completion")
+        command = ["cargo", "check", "--locked", "-p", "acyclic-actors", "--tests",
+                   "--all-features", "--target", "x86_64-pc-windows-gnu"]
+        print("STEP Windows Actor cross-check: " + repr(command), flush=True)
+        if subprocess.run(command, cwd=ROOT).returncode:
+            raise RuntimeError("Windows Actor cross-check failed; recovery: " + RECOVERY + " --completion")
+    finally:
+        source.write_bytes(original)
+
+
 def main():
+    if sys.argv[1:] == ["--completion"]:
+        completion()
+        return
     if sys.argv[1:] == ["--observation"]:
         observation()
         return
