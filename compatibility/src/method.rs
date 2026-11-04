@@ -53,7 +53,7 @@ pub fn write_authorization(
     method_type: &str,
     output: &std::path::Path,
 ) -> Result<(), Error> {
-    let (rust, _) = authorization(bytes, service, method_type)?;
+    let rust = authorization(bytes, service, method_type)?;
     std::fs::write(output.join("authorization.rs"), rust)?;
     Ok(())
 }
@@ -121,18 +121,14 @@ struct Extractor {
     possible: Vec<Action>,
 }
 
-/// Generate a service's exhaustive method enum and admission table, plus its
-/// TypeScript projection. Dynamic extractor vocabularies remain output ceilings;
+/// Generate a service's exhaustive method enum and admission table.
+/// Dynamic extractor vocabularies remain output ceilings;
 /// they are never promoted to unconditional required permissions.
 ///
 /// # Errors
 /// Refuses undeclared actions, unknown extractors, missing admission rules and
 /// rules that disagree with their registered static or dynamic extractor.
-pub fn authorization(
-    bytes: &[u8],
-    service: &str,
-    method_type: &str,
-) -> Result<(String, String), Error> {
+pub fn authorization(bytes: &[u8], service: &str, method_type: &str) -> Result<String, Error> {
     product_authorization(bytes, service, method_type, None)
 }
 
@@ -146,7 +142,7 @@ pub fn product_authorization(
     service: &str,
     method_type: &str,
     product: Option<&str>,
-) -> Result<(String, String), Error> {
+) -> Result<String, Error> {
     if method_type.is_empty()
         || !method_type
             .bytes()
@@ -193,7 +189,6 @@ pub fn product_authorization(
         .ok_or_else(|| invalid("authorization service is missing"))?;
     let mut variants = Vec::new();
     let mut rows = Vec::new();
-    let mut javascript = Vec::new();
     for method in service.methods() {
         let name = method.name();
         let route = format!("/{}/{}", service.full_name(), name);
@@ -202,7 +197,6 @@ pub fn product_authorization(
         let mut required = Vec::new();
         let mut possible = Vec::new();
         let mut rules = Vec::new();
-        let mut js_rules = Vec::new();
         for value in value.as_list().into_iter().flatten() {
             let declaration = value
                 .as_message()
@@ -210,11 +204,10 @@ pub fn product_authorization(
             let admitted = actions(declaration, "action")?;
             let resource = string(declaration, "resource");
             let extractor = string(declaration, "extractor");
-            let (resources, js_resources) = match (resource.is_empty(), extractor.is_empty()) {
-                (false, true) if !admitted.is_empty() => (
-                    format!("auth_action::method::Resources::Template({resource:?})"),
-                    serde_json::json!({"template": resource}),
-                ),
+            let resources = match (resource.is_empty(), extractor.is_empty()) {
+                (false, true) if !admitted.is_empty() => {
+                    format!("auth_action::method::Resources::Template({resource:?})")
+                }
                 (true, false) => {
                     let registered = extractors.get(&extractor).ok_or_else(|| {
                         invalid(format!("unknown authorization extractor {extractor}"))
@@ -231,12 +224,9 @@ pub fn product_authorization(
                         ))
                         .into());
                     }
-                    (
-                        format!(
-                            "auth_action::method::Resources::Extractor {{name:{extractor:?},possible_actions:{}}}",
-                            rust_actions(&registered.possible)
-                        ),
-                        serde_json::json!({"extractor": extractor,"possibleActions":registered.possible.iter().map(|action| action.as_str()).collect::<Vec<_>>()}),
+                    format!(
+                        "auth_action::method::Resources::Extractor {{name:{extractor:?},possible_actions:{}}}",
+                        rust_actions(&registered.possible)
                     )
                 }
                 _ => {
@@ -257,7 +247,6 @@ pub fn product_authorization(
                 "auth_action::method::Rule {{admitted:{},resources:{resources}}}",
                 rust_actions(&admitted)
             ));
-            js_rules.push(serde_json::json!({"admitted":admitted.iter().map(|action| action.as_str()).collect::<Vec<_>>(),"resources":js_resources}));
         }
         if rules.is_empty() {
             return Err(invalid(format!("{} has no admission rule", method.full_name())).into());
@@ -268,7 +257,6 @@ pub fn product_authorization(
         }
         variants.push(name.to_owned());
         rows.push(format!("auth_action::method::MethodAuth {{method:{method_type}::{name},route:{route:?},admitted:{},scope: auth_action::method::Scope::Exact,rules:&[{}]}}", rust_actions(&required), rules.join(",")));
-        javascript.push(serde_json::json!({"method":name,"route":route,"admitted":required.iter().map(|action| action.as_str()).collect::<Vec<_>>(),"scope":"exact","rules":js_rules}));
     }
     let mut rust = String::from("// Generated from the canonical service authorization options.\n");
     writeln!(
@@ -314,5 +302,5 @@ pub fn product_authorization(
     if variants.is_empty() {
         return Err(invalid("authorization selection has no methods").into());
     }
-    Ok((rust, typescript(&javascript, method_type)?))
+    Ok(rust)
 }

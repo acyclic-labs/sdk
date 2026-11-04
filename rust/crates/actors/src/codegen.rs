@@ -54,7 +54,7 @@ pub fn generate(output_root: impl AsRef<Path>) -> io::Result<()> {
         output_root,
     )
     .map_err(|error| io::Error::other(error.to_string()))?;
-    let (rust, _) = acyclic_proto_build::product_authorization(
+    let rust = acyclic_proto_build::product_authorization(
         &descriptor_bytes,
         "acyclic.actors.v1.ActorsService",
         "WorkersMethod",
