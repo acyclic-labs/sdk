@@ -130,8 +130,17 @@ pub fn applied<'a>(
     request: &'a CommitRequest,
     skipped: &'a [StreamPath],
 ) -> impl Iterator<Item = &'a CommitMutation> + Clone + 'a {
+    applied_with(request, skipped, Ord::cmp)
+}
+
+// Keep comparison accounting on the same traversal as provider selection.
+fn applied_with<'a>(
+    request: &'a CommitRequest,
+    skipped: &'a [StreamPath],
+    mut compare: impl FnMut(&StreamPath, &StreamPath) -> std::cmp::Ordering + Clone + 'a,
+) -> impl Iterator<Item = &'a CommitMutation> + Clone + 'a {
     request.mutations.iter().filter(move |mutation| {
-        !matches!(mutation, CommitMutation::SoftAppend { path, .. } if skipped.binary_search(path).is_ok())
+        !matches!(mutation, CommitMutation::SoftAppend { path, .. } if skipped.binary_search_by(|skipped| compare(skipped, path)).is_ok())
     })
 }
 
