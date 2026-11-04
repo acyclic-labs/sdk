@@ -200,8 +200,7 @@ fn linux_mount_behaviour_cases() -> Result<(), Box<dyn std::error::Error>> {
                     let mut writer = file.try_clone()?;
                     let syncer = file.try_clone()?;
                     std::thread::scope(|threads| -> Result<(), Box<dyn std::error::Error>> {
-                        let pause =
-                            super::super::fuse::pause_next_write_after_admission(source.clone());
+                        let pause = super::super::fuse::pause_next_write_after_admission(&mount)?;
                         let writer_thread = threads.spawn(move || writer.write_all(b"new"));
                         pause.admitted.recv_timeout(Duration::from_secs(5))?;
 

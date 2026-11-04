@@ -116,6 +116,8 @@ impl Drop for StateGuard<'_> {
 pub(super) use crate::native_mount::shared::metering::source_original as fuse_native_source_original;
 
 pub(super) struct ProjectionCore {
+    #[cfg(test)]
+    pub(super) write_pause: std::sync::Mutex<tests::write_gate::PauseSlot>,
     pub(super) source: Arc<dyn MountFilesystem>,
     pub(super) clock: super::super::clock::Clock,
     pub(super) state: RankedMutex<ProjectionState, VIEW>,
@@ -186,6 +188,8 @@ impl ProjectionCore {
             work,
         )?;
         Ok(Arc::new(Self {
+            #[cfg(test)]
+            write_pause: std::sync::Mutex::new(tests::write_gate::PauseSlot::default()),
             source,
             clock: super::super::clock::Clock::capture(),
             state: RankedMutex::new(state),
