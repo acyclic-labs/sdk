@@ -64,7 +64,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         after: Sequence,
         limit: ReplayLimit,
         work: &mut AuthorityWork<'_>,
-    ) -> Result<(Vec<DurableCommit>, AuthorityAllocation), AuthorityStoreError> {
+    ) -> Result<crate::kernel::Owned<Vec<DurableCommit>>, AuthorityStoreError> {
         work.check()?;
         if limit.records == 0 || limit.payload_bytes == 0 {
             return Err(AuthorityStoreError::InvalidReplayLimit);
@@ -145,7 +145,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             ));
         }
         work.check()?;
-        Ok(crate::async_storage::authority_parts(output))
+        Ok(output)
     }
 
     pub(super) async fn authority_fence(

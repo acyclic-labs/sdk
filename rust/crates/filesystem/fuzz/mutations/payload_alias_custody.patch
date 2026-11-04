@@ -1,0 +1,21 @@
+--- a/rust/crates/filesystem/src/kernel/allocation/retained.rs
++++ b/rust/crates/filesystem/src/kernel/allocation/retained.rs
+@@ -399,13 +399,9 @@
+         accounting: &mut KernelAccounting<'_>,
+     ) -> Result<bytes::Bytes, crate::FsError> {
+-        let control =
+-            acyclic_auth::operation::bytes_owner_allocation_bytes::<RetainedBytes<T>>() as u64;
+-        let mut allocation = RetainedAllocation::claim(control, 1, accounting)?;
+-        self.allocation.absorb(&mut allocation)?;
+-        Ok(bytes::Bytes::from_owner(RetainedBytes {
+-            bytes: self.value,
+-            _custody: custody,
+-            _allocation: self.allocation,
+-        }))
++        let _ = accounting;
++        let Self { value, allocation } = self;
++        drop(allocation);
++        drop(custody);
++        Ok(bytes::Bytes::from(value))
+     }
+ }

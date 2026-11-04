@@ -20,7 +20,7 @@ pub(super) async fn resolve_path_with_accounting<S: AsyncObjectStore>(
     validate_path(path, config, accounting)?;
     let cache_entries = maximum_cache_entries_for_components(path.depth(), config)
         .map_err(|failure| crate::FsError::Path(failure.error))?;
-    let initial_live = standalone_live(accounting)?;
+    let initial_scratch = standalone_scratch(accounting)?;
     let result = {
         let mut frame_guard = None;
         let mut frame_observation = FrameObservation {
@@ -214,14 +214,14 @@ pub(super) async fn resolve_path_with_accounting<S: AsyncObjectStore>(
         drop(frame_observation);
         result
     };
-    if initial_live.is_some() {
+    if initial_scratch.is_some() {
         let retained = match &result {
             Ok(result) => {
                 dependency_bytes(&result.0.dependencies, result.0.dependencies.capacity())?
             }
             Err(_) => 0,
         };
-        cleanup_standalone(accounting, initial_live, retained)?;
+        cleanup_standalone(accounting, initial_scratch, retained)?;
     }
     result.map(|mut result| {
         result.0.lookup.work = accounting.spent();
