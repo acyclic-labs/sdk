@@ -18,11 +18,13 @@ fn encoded_lengths_cover_append_and_sealed_chain_envelopes()
     let trust = Snapshot::default();
     let mut cap = verify(&root(|_| {}), &trust, NOW)?;
     for seed in 20..28 {
-        assert_eq!(cap.encoded_len(), cap.encode().len());
-        let sealed = verify(&cap.encode(), &trust, NOW)?.seal()?;
+        let append_length = cap.encoded_len();
+        assert_eq!(append_length, cap.encode().len());
+        let next = cap.attenuate(vec![], &[seed; 32])?;
+        let sealed = cap.seal()?;
         assert_eq!(sealed.encoded_len(), sealed.encode().len());
-        assert_eq!(sealed.encoded_len(), cap.encoded_len() + 32);
-        cap = cap.attenuate(vec![], &[seed; 32])?;
+        assert_eq!(sealed.encoded_len(), append_length + 32);
+        cap = next;
     }
     Ok(())
 }
