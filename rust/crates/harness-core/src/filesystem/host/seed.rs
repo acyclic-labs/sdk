@@ -205,12 +205,14 @@ mod tests {
                 .as_ref(),
             b"user edit"
         );
-        assert!(matches!(
+        assert_eq!(
             reopened
                 .stat(&reference, None, "/skills/deleted/SKILL.md")
-                .await,
-            Err(Error::NotFound(_))
-        ));
+                .await
+                .unwrap_err()
+                .code(),
+            crate::wire::ErrorCode::NotFound
+        );
 
         // Negative control: an all-preexisting candidate must still create a
         // durable receipt, rather than returning an unrecorded clean commit.

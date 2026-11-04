@@ -393,12 +393,12 @@ proptest! {
 
 #[test]
 fn request_writer_corpus_preserves_admission_and_refuses_obsolete_fields() {
-    assert!(
-        crate::contract::json_from_slice::<ModelRequest>(include_bytes!(
-            "../../../harness-fuzz/corpus/model_request/obsolete-pinned"
-        ))
-        .is_err()
-    );
+    for obsolete in [
+        include_bytes!("../../../harness-fuzz/corpus/model_request/obsolete-pinned").as_slice(),
+        include_bytes!("../../../harness-fuzz/corpus/model_request/obsolete-no-summary").as_slice(),
+    ] {
+        assert!(crate::contract::json_from_slice::<ModelRequest>(obsolete).is_err());
+    }
     let mut pinned = request().unwrap();
     exchange(&mut pinned);
     for message in &mut pinned.messages[1..] {
@@ -433,8 +433,7 @@ fn request_writer_corpus_preserves_admission_and_refuses_obsolete_fields() {
     ];
     let seeds =
         acyclic_test_support::source_path("rust/crates/harness-fuzz").join("corpus/model_request");
-    let mut corpus = Vec::new();
-    for (name, request, admitted) in [
+    let cases = [
         ("pinned", pinned, true),
         ("error-bound", bound, true),
         (
@@ -450,8 +449,21 @@ fn request_writer_corpus_preserves_admission_and_refuses_obsolete_fields() {
         ("error-unpaired", unpaired, false),
         ("refused", refused, true),
         ("project-instructions", instructions, true),
-    ] {
-        let bytes = crate::contract::canonical_json_bytes(&request).unwrap();
+    ];
+    let corpus: Vec<_> = cases
+        .iter()
+        .map(|(name, request, _)| {
+            (
+                *name,
+                crate::contract::canonical_json_bytes(request).unwrap(),
+            )
+        })
+        .collect();
+    eprintln!(
+        "MODEL_REQUEST_WRITER_CORPUS {}",
+        serde_json::to_string(&corpus).unwrap()
+    );
+    for (name, request, admitted) in cases {
         let retained = std::fs::read(seeds.join(name)).unwrap();
         assert_eq!(
             crate::contract::json_from_slice::<ModelRequest>(&retained).unwrap(),
@@ -471,12 +483,7 @@ fn request_writer_corpus_preserves_admission_and_refuses_obsolete_fields() {
             assert_eq!(decoded.request(), prepared.request());
             assert_eq!(decoded.request_digest(), prepared.request_digest());
         }
-        corpus.push((name, bytes));
     }
-    eprintln!(
-        "MODEL_REQUEST_WRITER_CORPUS {}",
-        serde_json::to_string(&corpus).unwrap()
-    );
 }
 
 #[test]

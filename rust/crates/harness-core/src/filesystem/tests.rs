@@ -542,7 +542,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             crate::conversation::ContentAccess::default(),
         )
         .await?;
-    assert!(matches!(
+    assert_eq!(
         delegated_reader
             .read_private_path(
                 &volume,
@@ -553,9 +553,11 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
                 crate::conversation::ContentAccess::default()
             )?
             .await
-            .map(|(file, bytes, _)| (file, bytes)),
-        Err(Error::NotFound(_))
-    ));
+            .err()
+            .expect("a later file must be absent from the pinned generation")
+            .code(),
+        crate::wire::ErrorCode::NotFound
+    );
     assert!(host.read_content(&empty, &read, 16, None).await?.is_empty());
     let wrong_digest = FileRef::new(
         volume.clone(),
