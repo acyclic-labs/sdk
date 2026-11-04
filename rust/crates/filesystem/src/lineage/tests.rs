@@ -152,25 +152,42 @@ async fn descendant_authorization_stops_at_the_authenticated_anchor() {
     });
     let root = workspace("unregistered-anchor");
     let child = workspace("registered-child");
-    graph
-        .register(WorkspaceLineageRecord {
-            version: LINEAGE_VERSION,
-            revision: 1,
-            ready: true,
-            workspace_id: child,
-            workspace_name: "registered-child".into(),
-            parent_workspace_id: Some(root),
-            parent_workspace_name: Some("unregistered-anchor".into()),
-            fork_generation: generation(1),
-            initial_generation: generation(2),
-        })
-        .await
-        .unwrap();
+    let grandchild = workspace("registered-grandchild");
+    for (id, name, parent, parent_name) in [
+        (child, "registered-child", root, "unregistered-anchor"),
+        (
+            grandchild,
+            "registered-grandchild",
+            child,
+            "registered-child",
+        ),
+    ] {
+        graph
+            .register(WorkspaceLineageRecord {
+                version: LINEAGE_VERSION,
+                revision: 1,
+                ready: true,
+                workspace_id: id,
+                workspace_name: name.into(),
+                parent_workspace_id: Some(parent),
+                parent_workspace_name: Some(parent_name.into()),
+                fork_generation: generation(1),
+                initial_generation: generation(2),
+            })
+            .await
+            .unwrap();
+    }
     graph.store().take_reads();
     graph.authorize_descendant(root, root).await.unwrap();
     assert_eq!(graph.store().take_reads(), 0, "the anchor needs no lookup");
     graph.authorize_descendant(child, root).await.unwrap();
     assert_eq!(graph.store().take_reads(), 1, "one observed child edge");
+    graph.authorize_descendant(grandchild, root).await.unwrap();
+    assert_eq!(
+        graph.store().take_reads(),
+        2,
+        "one observation per parent edge"
+    );
     // The former complete-history walk reads beyond the authenticated anchor.
     assert!(matches!(
         graph.ancestors(child, u32::MAX).await,
