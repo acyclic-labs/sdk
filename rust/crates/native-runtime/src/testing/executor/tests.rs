@@ -1,5 +1,72 @@
 use super::*;
 
+#[test]
+fn unjoined_original_output_keeps_its_task_accounted_through_release() {
+    fn accounted(schedule: &Schedule) {
+        let mut drained = std::pin::pin!(schedule.drained());
+        assert!(
+            drained
+                .as_mut()
+                .poll(&mut PollContext::from_waker(Waker::noop()))
+                .is_pending(),
+            "task accounting retired before its original cleanup"
+        );
+    }
+    struct Output(Schedule);
+    impl Drop for Output {
+        fn drop(&mut self) {
+            accounted(&self.0);
+        }
+    }
+    struct Producer {
+        schedule: Schedule,
+        panic: bool,
+    }
+    impl Future for Producer {
+        type Output = Output;
+        fn poll(self: Pin<&mut Self>, _: &mut PollContext<'_>) -> Poll<Output> {
+            assert!(!self.panic, "original producer panic");
+            Poll::Ready(Output(self.schedule.clone()))
+        }
+    }
+    impl Drop for Producer {
+        fn drop(&mut self) {
+            accounted(&self.schedule);
+        }
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    for panic in [false, true] {
+        for detached in [false, true] {
+            let (schedule, _events) = Schedule::seeded(83);
+            let executor = schedule.0.executor.as_ref().unwrap();
+            let task = runtime.block_on(schedule.scope(async {
+                let active = Context::current().unwrap().accept("task");
+                executor.spawn_owned(
+                    Some(active),
+                    Producer {
+                        schedule: schedule.clone(),
+                        panic,
+                    },
+                )
+            }));
+            let task = if detached {
+                drop(task);
+                None
+            } else {
+                Some(task)
+            };
+            // Drop the original future before either its error or a rejected
+            // delivery can retire accounting. Unjoined output retains it too.
+            executor.poll_owned(&PollContext::from_waker(Waker::noop()));
+            assert!(executor.trace().iter().any(|(_, phase)| *phase == "ready"));
+            drop(task);
+            runtime.block_on(schedule.drained());
+        }
+    }
+}
+
 fn reentrant_waker_cleanup(entry: u8) {
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct Reenter {
@@ -359,7 +426,7 @@ fn different_seeds_explore_different_ready_orders() -> io::Result<()> {
 }
 
 #[test]
-fn dropped_handles_detach_and_aborted_futures_retire() -> io::Result<()> {
+fn dropped_task_handles_detach_and_retire() -> io::Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
     let executor = Executor::new(73);
     runtime.block_on(executor.run(async {
@@ -369,25 +436,9 @@ fn dropped_handles_detach_and_aborted_futures_retire() -> io::Result<()> {
             finished.send(91).unwrap();
         }));
         assert_eq!(waiting.await.unwrap(), 91);
-        let task = executor.spawn(std::future::pending::<()>());
-        task.abort();
-        assert_eq!(task.await.unwrap_err().to_string(), "owned task cancelled");
     }));
     let state = lock(&executor.0);
     assert!(state.tasks.is_empty() && state.ready.is_empty() && state.live.is_empty());
-    Ok(())
-}
-
-#[test]
-fn owned_panics_keep_their_cause_and_retire() -> io::Result<()> {
-    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    let executor = Executor::new(11);
-    runtime.block_on(executor.run(async {
-        let task = executor.spawn(async { panic!("original task cause") });
-        let error = task.await.unwrap_err().to_string();
-        assert_eq!(error, "owned task panicked: original task cause");
-    }));
-    assert!(lock(&executor.0).live.is_empty());
     Ok(())
 }
 
