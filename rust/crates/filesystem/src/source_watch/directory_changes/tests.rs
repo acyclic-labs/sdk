@@ -253,7 +253,7 @@ mod original {
         assert!(
             shared
                 .wait_for(|| {
-                    if shared.stop_completed.load(Ordering::Acquire) {
+                    if shared.delivery.is_retired() {
                         Ok(true)
                     } else if shared.parked.load(Ordering::Acquire) {
                         Err(DemandError::NativeWorkUnavailable)

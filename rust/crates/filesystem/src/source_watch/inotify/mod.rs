@@ -96,7 +96,6 @@ struct Shared {
     reading: Reading,
     watches: Custody<Vec<(PathBuf, i32)>>,
     stopping: AtomicBool,
-    completed: AtomicBool,
     controller_alive: AtomicBool,
     cleanup: Custody<StartupCleanup>,
     ownership: SourcePayloadOwnership,
