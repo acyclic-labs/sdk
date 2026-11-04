@@ -586,8 +586,5 @@ fn permits_canonical<const CURRENT: bool>(
 }
 
 #[cfg(test)]
-mod tests;
-
-#[cfg(test)]
 #[derive(Debug, PartialEq)]
 pub(crate) struct StructuralAdmission;

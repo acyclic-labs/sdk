@@ -187,38 +187,23 @@ fn credential(world: &World, trust: &Follower, index: u8) -> (Vec<u8>, BlockId) 
 }
 
 #[test]
-fn revocation_refuses_the_next_verify() {
-    let mut world = world();
-    let trust = follower(&world);
-    let (bytes, id) = credential(&world, &trust, 0);
-    let record = world.root.revoke(&[(id, NOW + 10_000)], NOW).unwrap();
-    // Negative control: before the record applies, the credential verifies.
-    assert!(verify::verify(&bytes, &trust, NOW).is_ok());
-    assert_eq!(trust.apply(&record, NOW), Ok(Applied::Changed));
-    assert_eq!(
-        verify::verify(&bytes, &trust, NOW).err(),
-        Some(VerifyError::Revoked)
-    );
-    // Redelivery is a duplicate and changes nothing.
-    assert_eq!(trust.apply(&record, NOW), Ok(Applied::Duplicate));
-}
-
-#[test]
 fn swap_precedes_wake_and_lost_follow_fences() {
     let mut world = world();
     let trust = follower(&world);
     let (bytes, id) = credential(&world, &trust, 0);
+    assert!(verify::verify(&bytes, &trust, NOW).is_ok());
     let mut wake = trust.changed();
     assert!((&mut wake).now_or_never().is_none());
-    trust
-        .apply(&world.root.revoke(&[(id, NOW + 10_000)], NOW).unwrap(), NOW)
-        .unwrap();
+    let revoked = world.root.revoke(&[(id, NOW + 10_000)], NOW).unwrap();
+    assert_eq!(trust.apply(&revoked, NOW), Ok(Applied::Changed));
     // The wake is ready and the swapped trust is already visible.
     assert_eq!(wake.now_or_never(), Some(Ok(())));
     assert_eq!(
         verify::verify(&bytes, &trust, NOW).err(),
         Some(VerifyError::Revoked)
     );
+
+    assert_eq!(trust.apply(&revoked, NOW), Ok(Applied::Duplicate));
 
     let (other, _) = credential(&world, &trust, 1);
     let fenced = trust.changed();
@@ -1104,16 +1089,14 @@ impl Schedule {
 
 /// One simulated follow over a lossy transport. `eager` is the negative
 /// control: it resumes on reconnect before catching up to the observed tail.
-fn simulate(seed: u64, eager: bool) -> Result<(), String> {
-    let mut world = world();
+fn simulate(
+    world: &World,
+    credentials: &[(Vec<u8>, BlockId)],
+    seed: u64,
+    eager: bool,
+) -> Result<(), String> {
     let trust = Follower::new("test", world.issuer.anchor());
-    let mut stream = world.genesis.clone();
-    let credentials = (0..4)
-        .map(|index| {
-            let probe = follower(&world);
-            credential(&world, &probe, index)
-        })
-        .collect::<Vec<_>>();
+    let (mut root, mut stream) = world.issuer.genesis("account", key(2), NOW).unwrap();
     // Stream index of each credential's revocation, and of the epoch floor
     // that refuses every credential, once appended.
     let mut revoked_at = [None::<usize>; 4];
@@ -1124,24 +1107,17 @@ fn simulate(seed: u64, eager: bool) -> Result<(), String> {
         match schedule.next(6) {
             0 => match schedule.next(8) {
                 // An unrelated key revocation changes trust but no verdict.
-                0 => stream.push(
-                    world
-                        .root
-                        .revoke_keys(&[("retired", NOW + 50)], NOW)
-                        .unwrap(),
-                ),
+                0 => stream.push(root.revoke_keys(&[("retired", NOW + 50)], NOW).unwrap()),
                 1 if floor_at.is_none() => {
                     floor_at = Some(stream.len());
-                    stream.push(world.root.raise_minimum_epoch(2, NOW).unwrap());
+                    stream.push(root.raise_minimum_epoch(2, NOW).unwrap());
                 }
                 _ => {
                     let index = schedule.next(4) as usize;
                     if revoked_at[index].is_none() {
                         revoked_at[index] = Some(stream.len());
                         stream.push(
-                            world
-                                .root
-                                .revoke(&[(credentials[index].1, NOW + 10_000)], NOW)
+                            root.revoke(&[(credentials[index].1, NOW + 10_000)], NOW)
                                 .unwrap(),
                         );
                     }
@@ -1237,12 +1213,18 @@ fn simulate(seed: u64, eager: bool) -> Result<(), String> {
 
 #[test]
 fn simulated_lossy_follow_never_admits_stale_trust_and_loses_nothing() {
+    let world = world();
+    let probe = follower(&world);
+    let credentials = (0..4)
+        .map(|index| credential(&world, &probe, index))
+        .collect::<Vec<_>>();
     for seed in 0..512 {
-        simulate(seed, false).unwrap_or_else(|error| panic!("seed {seed}: {error}"));
+        simulate(&world, &credentials, seed, false)
+            .unwrap_or_else(|error| panic!("seed {seed}: {error}"));
     }
     // Negative control: resuming before catch-up admits stale trust.
     assert!(
-        (0..512).any(|seed| simulate(seed, true).is_err()),
+        (0..512).any(|seed| simulate(&world, &credentials, seed, true).is_err()),
         "the checker must catch a follower that serves before catching up"
     );
 }
@@ -1339,9 +1321,8 @@ fn retained_records_do_not_release_an_account_before_its_revocations() {
 /// Waiters registered in any state, interleaved with every transition: each
 /// resolves on the next transition, `Ok` unless closed. `late` is the negative
 /// control: a waiter that subscribes when first polled, after the transition.
-fn interleave(seed: u64, late: bool) -> Result<(), String> {
-    let world = world();
-    let trust = Arc::new(follower(&world));
+fn interleave(world: &World, seed: u64, late: bool) -> Result<(), String> {
+    let trust = Arc::new(follower(world));
     trust.connect();
     let mut schedule = Schedule(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
     let mut waits: Vec<Changed> = Vec::new();
@@ -1382,12 +1363,13 @@ fn interleave(seed: u64, late: bool) -> Result<(), String> {
 
 #[test]
 fn simulated_waits_in_every_state_wake_on_the_next_transition() {
+    let world = world();
     for seed in 0..256 {
-        interleave(seed, false).unwrap_or_else(|error| panic!("seed {seed}: {error}"));
+        interleave(&world, seed, false).unwrap_or_else(|error| panic!("seed {seed}: {error}"));
     }
     // Negative control: subscribing after the transition loses the wake.
     assert!(
-        (0..256).any(|seed| interleave(seed, true).is_err()),
+        (0..256).any(|seed| interleave(&world, seed, true).is_err()),
         "the checker must catch a waiter that registers after the transition"
     );
 }

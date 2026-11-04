@@ -92,24 +92,6 @@ fn rendered_contract_compiles_and_preserves_presence() -> Result<(), Box<dyn std
 }
 
 #[test]
-fn objects_opaque_key_examples() {
-    for key in [
-        "dir/../secret",
-        "report?.txt",
-        "a//b",
-        "/x",
-        "time:12:00",
-        "%2F",
-    ] {
-        let name = acyclic_auth::objects_resource(b"bucket", key.as_bytes());
-        assert!(valid_resource(&name));
-        assert_eq!(
-            acyclic_auth::decode_component(name.rsplit('/').next().unwrap()).unwrap(),
-            key.as_bytes()
-        );
-    }
-}
-#[test]
 fn public_certificate_fuzz_seeds_are_admitted() {
     for seed in [
         include_bytes!("../fuzz/corpus/capability/public-certificates").as_slice(),

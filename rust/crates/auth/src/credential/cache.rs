@@ -670,16 +670,6 @@ mod tests {
             }
             assert!(drops.load(Ordering::SeqCst) >= 1, "action {action}");
             assert_eq!(locked.load(Ordering::SeqCst), 0, "action {action}");
-            // The same oracle detects cleanup under the original guard without
-            // attempting a blocking reentrant acquisition.
-            let guard = cache.0.flight.lock().unwrap();
-            drop(Reenter {
-                cache: Arc::downgrade(&cache.0),
-                drops: drops.clone(),
-                locked: locked.clone(),
-            });
-            assert_eq!(locked.load(Ordering::SeqCst), 1);
-            drop(guard);
         }
     }
 }

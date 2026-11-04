@@ -328,10 +328,14 @@ mod tests {
     use super::*;
 
     fn server(path: PathBuf) -> Server {
+        server_at(path, "https://example.test")
+    }
+
+    fn server_at(path: PathBuf, endpoint: &str) -> Server {
         Server::new(Options {
             command: "identity-mcp".to_owned(),
             json: true,
-            endpoint: "https://example.test".to_owned(),
+            endpoint: endpoint.to_owned(),
             credentials: path,
             agent: false,
             org: None,
@@ -540,8 +544,7 @@ mod tests {
         });
         let directory = tempfile::tempdir().expect("directory");
         let path = directory.path().join("identity.json");
-        let mut server = server(path.clone());
-        server.identity = Identity::new(&endpoint).expect("identity");
+        let mut server = server_at(path.clone(), &endpoint);
         server
             .call("identity_login")
             .await
@@ -621,8 +624,7 @@ mod tests {
             axum::serve(listener, router).await.expect("serve");
         });
         let directory = tempfile::tempdir().expect("directory");
-        let mut server = server(directory.path().join("identity.json"));
-        server.identity = Identity::new(&endpoint).expect("identity");
+        let mut server = server_at(directory.path().join("identity.json"), &endpoint);
         pending(&mut server);
         for _ in 0..2 {
             let error = server
@@ -686,8 +688,7 @@ mod tests {
             axum::serve(listener, router).await.expect("serve");
         });
         let directory = tempfile::tempdir().expect("directory");
-        let mut server = server(directory.path().join("identity.json"));
-        server.identity = Identity::new(&endpoint).expect("identity");
+        let mut server = server_at(directory.path().join("identity.json"), &endpoint);
         pending(&mut server);
         {
             let completion = server.call("identity_login_complete");
@@ -747,8 +748,7 @@ mod tests {
         });
         let directory = tempfile::tempdir().expect("directory");
         let path = directory.path().join("identity.json");
-        let mut server = server(path.clone());
-        server.identity = Identity::new(&endpoint).expect("identity");
+        let mut server = server_at(path.clone(), &endpoint);
         pending(&mut server);
         if !login {
             Store::open(&path)
@@ -868,8 +868,7 @@ mod tests {
         });
         let directory = tempfile::tempdir().expect("directory");
         let path = directory.path().join("identity.json");
-        let mut server = server(path.clone());
-        server.identity = Identity::new(&endpoint).expect("identity");
+        let mut server = server_at(path.clone(), &endpoint);
         pending(&mut server);
         let error = server
             .call("identity_login_complete")
@@ -1296,8 +1295,7 @@ mod tests {
             axum::serve(listener, router).await.expect("serve");
         });
         let directory = tempfile::tempdir().expect("directory");
-        let mut server = server(directory.path().join("identity.json"));
-        server.identity = Identity::new(&endpoint).expect("identity");
+        let mut server = server_at(directory.path().join("identity.json"), &endpoint);
         pending(&mut server);
         let output = Output::default();
         let mut client = connect(server, &output);
