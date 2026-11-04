@@ -211,7 +211,8 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
             &mut vec![call_message(&commit)],
             &mut Vec::new(),
         )
-        .await?;
+        .await
+        .map_err(|error| format!("initial filesystem commit: {error:?}"))?;
     let operation = OperationId::new();
     let invocation = ToolInvocation {
         operation_id: operation,
@@ -233,7 +234,8 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
             &mut messages,
             &mut Vec::new(),
         )
-        .await?;
+        .await
+        .map_err(|error| format!("initial filesystem show: {error:?}"))?;
     assert!(serde_json::to_string(&messages)?.contains("saved original contents"));
     let (_, records) = StockExecution::ordinary(&bound)
         .tool_records(&*journal, operation, 0, "status")
@@ -284,7 +286,8 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
                 &mut vec![call_message(&invocation)],
                 &mut Vec::new(),
             )
-            .await?,
+            .await
+            .map_err(|error| format!("original filesystem replay: {error:?}"))?,
         ExecutionProgress::Ready(Some(_))
     ));
     let (_, records) = StockExecution::ordinary(&bound)
@@ -331,7 +334,8 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
                     &mut replay,
                     &mut Vec::new(),
                 )
-                .await?,
+                .await
+                .map_err(|error| format!("restored workspace policy replay: {error:?}"))?,
             ExecutionProgress::Ready(Some(_))
         ));
         assert_eq!(replay, messages, "replay changed the saved contents");
