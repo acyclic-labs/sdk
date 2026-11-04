@@ -58,6 +58,13 @@ Unknown values remain null, including absent counters, timing and prices. Zero
 is retained only when it was reported or derived from known values. An explicit
 immutable `ModelPriceRecord` selects the existing usage cost projection; the
 exporter does not infer a price schedule, currency, wall time or failure label.
+JSONL usage, Arrow/Parquet and Inspect share one admission of the original
+terminal model observation and its immutable usage artifact. Nonterminal
+sources, foreign operations/agents and contradictory counters or reported
+metadata refuse before completed rows are returned. Missing usage remains
+unknown. An available indexed admission must also match the completed call's
+request digest before supplying its replay key; an unsupported index leaves
+that key unknown rather than scanning history.
 Artifacts are original immutable `FileRef` values encoded as JSON strings.
 Edge endpoints retain their original type (`agent`, `user`, `host` or an opaque
 `producer`); consumers must not infer an agent from a notice source's spelling.
@@ -211,6 +218,12 @@ Equal-length or equal-valued independent records retain different identities.
 `physical_copied_bytes` and `physical_shared_bytes` remain null. Zero-length
 record values remain known zero. RDF retains the same identity and coverage
 without attesting a new content producer.
+
+Live resource files and this offline edge use the same
+`live::resources::Sharing` projection over the original record. The shared
+`Source` carrier retains the authorized account, selected path and original
+envelope before encoding. No payload is reparsed, and physical coverage is
+neither derived from inheritance nor filled with zero.
 
 The projection retains one row and does not copy, hash or decode record values.
 It encodes account and commit once, formats two endpoint tuples and copies

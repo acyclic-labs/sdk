@@ -40,7 +40,11 @@ pub fn project(
         .filter(|target| !target.is_empty() && !target.contains('/'))
         .ok_or_else(|| refuse("has a foreign source or target"))?;
     let binding = MachineBinding::decode(target, record)?;
-    let mut row = Row::stream(Some(agent.as_str()), account, selected, record, "placement");
+    let mut row = Row::stream(
+        Some(agent.as_str()),
+        crate::live::resources::Source::project(account, selected, record),
+        "placement",
+    );
     row.binding_version = Some(binding.version);
     row.provider = Some(
         serde_json::to_string(binding.machine.as_resource().provider()).map_err(export_error)?,

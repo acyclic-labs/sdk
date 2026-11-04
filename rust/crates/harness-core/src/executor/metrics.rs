@@ -330,20 +330,14 @@ columns! {
 
 impl<'a> Row<'a> {
     #[cfg(feature = "research")]
-    fn stream(
-        agent: Option<&str>,
-        account: &acyclic_auth::addressing::AccountId,
-        selected: &'a acyclic_stream::StreamPath,
-        record: &acyclic_stream::Record,
-        kind: &str,
-    ) -> Self {
+    fn stream(agent: Option<&str>, source: crate::live::resources::Source<'a>, kind: &str) -> Self {
         use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-        let mut row = Self::base(None, record.sequence, selected.as_str(), kind);
+        let mut row = Self::base(None, source.sequence, source.stream, kind);
         row.agent_path = agent.map(str::to_owned);
-        row.source_account = Some(URL_SAFE_NO_PAD.encode(account.as_bytes()));
-        row.source_origin = Some(record.origin.as_str().into());
-        row.source_commit_id = Some(digest(*record.commit_id.as_bytes()));
-        row.source_committed_at_micros = Some(record.committed_at_micros);
+        row.source_account = Some(URL_SAFE_NO_PAD.encode(source.account));
+        row.source_origin = Some(source.origin.into());
+        row.source_commit_id = Some(digest(*source.commit_id));
+        row.source_committed_at_micros = Some(source.committed_at_micros);
         row
     }
 
@@ -410,7 +404,8 @@ fn digest(value: [u8; 32]) -> String {
     blake3::Hash::from(value).to_hex().to_string()
 }
 
-/// Reads one page exactly once. Referenced usage and admitted requests are loaded;
+/// Reads one page exactly once. Referenced usage, original terminal model
+/// observations and admitted requests are loaded;
 /// tool payloads and earlier journal pages are never reconstructed. Admissions
 /// retain call identity with unknown measurements until the terminal observation.
 /// `price` explicitly selects an immutable price for each call; it may select none.
@@ -468,8 +463,14 @@ pub async fn journal_page<'price>(
                 usage.cache,
                 &mut edges,
             );
-            row.replay_key =
-                step_replay_key(journal, operation, usage.dispatch.step, usage.purpose).await?;
+            row.replay_key = step_replay_key(
+                journal,
+                operation,
+                usage.dispatch.step,
+                usage.purpose,
+                Some(usage.dispatch.request_digest),
+            )
+            .await?;
             models.push(model_call(row, usage, selected)?);
             continue;
         }
@@ -487,9 +488,14 @@ pub async fn journal_page<'price>(
             } => {
                 row.kind = "admitted".into();
                 row.step = Some(step);
-                row.replay_key =
-                    step_replay_key(journal, operation, step, super::ModelPurpose::Response)
-                        .await?;
+                row.replay_key = step_replay_key(
+                    journal,
+                    operation,
+                    step,
+                    super::ModelPurpose::Response,
+                    None,
+                )
+                .await?;
                 row.call_id = Some(call_id);
                 row.artifact = Some(artifact(&invocation)?);
                 tools.push(row);
@@ -502,9 +508,14 @@ pub async fn journal_page<'price>(
             } => {
                 row.kind = "completed".into();
                 row.step = Some(step);
-                row.replay_key =
-                    step_replay_key(journal, operation, step, super::ModelPurpose::Response)
-                        .await?;
+                row.replay_key = step_replay_key(
+                    journal,
+                    operation,
+                    step,
+                    super::ModelPurpose::Response,
+                    None,
+                )
+                .await?;
                 row.call_id = Some(call_id);
                 row.artifact = Some(artifact(&result)?);
                 tools.push(row);
@@ -523,9 +534,14 @@ pub async fn journal_page<'price>(
                         .unwrap_or("unknown")
                 );
                 row.step = Some(step);
-                row.replay_key =
-                    step_replay_key(journal, operation, step, super::ModelPurpose::Response)
-                        .await?;
+                row.replay_key = step_replay_key(
+                    journal,
+                    operation,
+                    step,
+                    super::ModelPurpose::Response,
+                    None,
+                )
+                .await?;
                 row.call_id = Some(call_id);
                 tools.push(row);
             }
@@ -562,6 +578,7 @@ async fn step_replay_key(
     operation: OperationId,
     step: u32,
     purpose: super::ModelPurpose,
+    request_digest: Option<[u8; 32]>,
 ) -> Result<Option<String>> {
     let select = |event: &ExecutionEvent| {
         matches!(event,
@@ -595,8 +612,9 @@ async fn step_replay_key(
     let record = &records[0];
     if record.operation_id != operation
         || !matches!(&record.event,
-        ExecutionEvent::ModelStarted { step: recorded, purpose: recorded_purpose, .. }
-        if *recorded == step && *recorded_purpose == purpose)
+        ExecutionEvent::ModelStarted { step: recorded, purpose: recorded_purpose, request_digest: recorded_digest, .. }
+        if *recorded == step && *recorded_purpose == purpose
+            && request_digest.is_none_or(|expected| expected == *recorded_digest))
     {
         return Err(export_error(
             "step replay key admission has a foreign binding",
