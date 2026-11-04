@@ -285,7 +285,8 @@ async fn a_dropped_root_reopens_while_a_forked_copy_of_its_lock_lives()
 
 /// Fails selected operations: bit 0 makes creates ambiguous, bit 1 fails root
 /// reads, and bit 2 loses one replacement reply. Bit 3 applies that replacement
-/// before losing its reply; otherwise the original value remains.
+/// before losing its reply; otherwise the original value remains. Bit 4 loses a
+/// root removal reply; bit 5 applies that removal before losing its reply.
 #[derive(Default)]
 pub(crate) struct Faulty {
     inner: MemoryMedium,
@@ -298,6 +299,7 @@ pub(crate) struct Faulty {
 pub(crate) async fn failed_release(
     client: &dyn Blobs,
     server: &Faulty,
+    faults: u8,
 ) -> Result<crate::Error, Box<dyn std::error::Error + Send + Sync>> {
     let root = RootId::new(*b"cause")?;
     let body = OwnedBytes::from(b"server cause".to_vec());
@@ -308,14 +310,21 @@ pub(crate) async fn failed_release(
         .ok_or("put was not acknowledged")?
         .digest;
     client.retain(&root, vec![digest]).await?;
-    server.faults.store(2, Ordering::SeqCst);
+    server.faults.store(faults, Ordering::SeqCst);
     let error = client
         .release(&root)
         .await
         .err()
         .ok_or("release succeeded over a failed medium")?;
     server.faults.store(0, Ordering::SeqCst);
-    assert_eq!(error.code, ErrorCode::Unavailable);
+    assert_eq!(
+        error.code,
+        if faults == 2 {
+            ErrorCode::Unavailable
+        } else {
+            ErrorCode::OutcomeUnknown
+        }
+    );
     Ok(error)
 }
 
@@ -339,6 +348,13 @@ impl Medium for Faulty {
         self.inner.read(key, range).await
     }
     async fn remove(&self, key: &str) -> Result<bool, MediumError> {
+        let faults = self.faults.load(Ordering::SeqCst);
+        if faults & 16 != 0 && key.contains("/r/") {
+            if faults & 32 != 0 {
+                self.inner.remove(key).await?;
+            }
+            return Err(MediumError::Ambiguous(std::io::ErrorKind::TimedOut.into()));
+        }
         self.inner.remove(key).await
     }
     async fn observe(&self, key: String) -> Result<Option<Observed<'_>>, MediumError> {

@@ -346,21 +346,27 @@ async fn a_servers_cause_reaches_the_http_client() -> TestResult {
     let server = tokio::spawn(async move { axum::serve(listener, router).await });
     let _stop = Stop(server.abort_handle());
     let client = HttpObjects::new(&endpoint, "first", 1024 * 1024, None)?;
-    let error = crate::tests::failed_release(&client, service.store.medium())
-        .await
-        .map_err(|error| error as Box<dyn std::error::Error>)?;
-    let cause = acyclic_auth::refusal::Cause {
-        request_id: GATEWAY_REQUEST.into(),
-        ..acyclic_auth::refusal::Cause::new("objects.medium", "failed")
-    };
-    assert_eq!(
-        std::error::Error::source(&error)
-            .and_then(|source| source.downcast_ref::<acyclic_auth::refusal::Cause>()),
-        Some(&cause)
-    );
-    assert_eq!(
-        error.to_string(),
-        "Objects operation failed (Unavailable): objects.medium: failed, request gateway-request"
-    );
+    for faults in [2, 16, 48] {
+        let error = crate::tests::failed_release(&client, service.store.medium(), faults)
+            .await
+            .map_err(|error| error as Box<dyn std::error::Error>)?;
+        let cause = acyclic_auth::refusal::Cause {
+            request_id: GATEWAY_REQUEST.into(),
+            ..acyclic_auth::refusal::Cause::new(
+                "objects.medium",
+                if faults == 2 {
+                    "failed"
+                } else {
+                    "outcome_unknown"
+                },
+            )
+        };
+        assert_eq!(
+            std::error::Error::source(&error)
+                .and_then(|source| source.downcast_ref::<acyclic_auth::refusal::Cause>()),
+            Some(&cause)
+        );
+        assert!(error.to_string().contains(&cause.to_string()));
+    }
     Ok(())
 }

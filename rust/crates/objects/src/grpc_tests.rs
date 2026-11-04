@@ -684,16 +684,22 @@ async fn a_servers_cause_reaches_the_grpc_client() -> TestResult {
     let account: Arc<dyn Blobs> = Arc::new(store.account(b"cause")?);
     let resolve: AccountResolver = Arc::new(move |_| Ok(Arc::clone(&account)));
     let client = resolved_client(resolve, "cause");
-    let error = crate::tests::failed_release(&client, store.medium()).await?;
-    let cause = acyclic_auth::refusal::Cause::new("objects.medium", "failed");
-    assert_eq!(
-        std::error::Error::source(&error)
-            .and_then(|source| source.downcast_ref::<acyclic_auth::refusal::Cause>()),
-        Some(&cause)
-    );
-    assert_eq!(
-        error.to_string(),
-        "Objects operation failed (Unavailable): objects.medium: failed"
-    );
+    for faults in [2, 16, 48] {
+        let error = crate::tests::failed_release(&client, store.medium(), faults).await?;
+        let cause = acyclic_auth::refusal::Cause::new(
+            "objects.medium",
+            if faults == 2 {
+                "failed"
+            } else {
+                "outcome_unknown"
+            },
+        );
+        assert_eq!(
+            std::error::Error::source(&error)
+                .and_then(|source| source.downcast_ref::<acyclic_auth::refusal::Cause>()),
+            Some(&cause)
+        );
+        assert!(error.to_string().contains(&cause.to_string()));
+    }
     Ok(())
 }
