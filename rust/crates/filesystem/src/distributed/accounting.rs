@@ -15,29 +15,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         authority: AuthorityId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<Head, AuthorityStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if work.original.is_some() {
-            return Err(AuthorityStoreError::NativeOriginalUnsupported);
-        }
-        work.cancellation
-            .check()
-            .map_err(|_| AuthorityStoreError::Cancelled)?;
-        let cancellation = CancellationToken::new();
-        let mut historical = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let head = self
-            .0
-            .snapshot(authority, &mut historical)
-            .await
-            .map_err(|error| match error {
-                AuthorityStoreError::CorruptStatic(message) => {
-                    AuthorityStoreError::Corrupt(message.to_owned())
-                }
-                error => error,
-            })?
-            .head;
-        work.record(authority_read_work(2))?;
-        work.work.verify(work.budget)?;
-        Ok(head)
+        let mut scope = work.scope()?;
+        let snapshot = self.0.snapshot(authority, &mut scope).await?;
+        scope.finish(snapshot.head)
     }
 
     async fn replay(
@@ -47,36 +27,12 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         limit: ReplayLimit,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(Vec<DurableCommit>, AuthorityAllocation), AuthorityStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if work.original.is_some() {
-            return Err(AuthorityStoreError::NativeOriginalUnsupported);
-        }
-        work.check()?;
-        if limit.records == 0 || limit.payload_bytes == 0 {
-            return Err(AuthorityStoreError::InvalidReplayLimit);
-        }
-        work.admit(WorkCounters {
-            authority_records_read: u64::from(limit.records),
-            authority_bytes_read: STREAM_RECORD_LIMIT.saturating_mul(u64::from(limit.records)),
-            backend_read_operations: 1,
-            ..WorkCounters::UNCHARGED
-        })?;
-        // Historical accounting retains main's record/read costs, excluding codec work.
-        let mut historical = AuthorityWork::new(WorkBudget::UNBOUNDED, work.cancellation);
-        let result = self
+        let mut scope = work.scope()?;
+        let value = self
             .0
-            .read_records(authority, after, limit, &mut historical)
-            .await;
-        let spent = historical.spent();
-        work.record(WorkCounters {
-            authority_records_read: spent.authority_records_read,
-            authority_bytes_read: spent.authority_bytes_read,
-            backend_read_operations: spent.backend_read_operations,
-            ..WorkCounters::UNCHARGED
-        })?;
-        let result = result?;
-        work.work.verify(work.budget)?;
-        Ok(result)
+            .read_records(authority, after, limit, &mut scope)
+            .await?;
+        scope.finish(value)
     }
 }
 
@@ -118,3 +74,6 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         Ok(page)
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;

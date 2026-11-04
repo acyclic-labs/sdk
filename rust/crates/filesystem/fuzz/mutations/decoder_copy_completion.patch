@@ -1,0 +1,14 @@
+--- a/rust/crates/filesystem/src/kernel/file_read/accounting.rs
++++ b/rust/crates/filesystem/src/kernel/file_read/accounting.rs
+@@ -67,9 +67,9 @@
+                     ..WorkCounters::UNCHARGED
+                 })?;
+             }
+-            ReadAllocationStep::Copied(bytes) => {
++            ReadAllocationStep::Copied(_bytes) => {
+                 self.record_completed(WorkCounters {
+-                    bytes_copied: bytes,
++                    bytes_copied: 0,
+                     ..WorkCounters::UNCHARGED
+                 })?;
+             }

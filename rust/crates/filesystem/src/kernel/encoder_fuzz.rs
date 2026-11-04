@@ -355,11 +355,7 @@ fn check_inner<const MUTANT: u8, const ASSERT_PREFIX: bool>(input: &[u8]) {
             if current == at && fault & 2 != 0 {
                 cancellation.cancel();
             }
-            let result = if MUTANT == 1 && actual.is_some() {
-                Ok(())
-            } else {
-                observer.observe(&step)
-            };
+            let result = observer.observe(&step);
             if result.is_err() {
                 failure = Some((current, actual.is_some()));
             }
