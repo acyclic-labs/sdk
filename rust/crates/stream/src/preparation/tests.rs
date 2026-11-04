@@ -291,9 +291,17 @@ fn settling_copies_only_admitted_skipped_paths_and_views_the_rest_in_place()
             let anchor = StreamPath::new(if mixed { "anchor" } else { "zz-anchor" })?;
             let mut request = CommitRequest {
                 deadline_unix_millis: None,
-                conditions: vec![CommitCondition::Absent {
-                    path: anchor.clone(),
-                }],
+                conditions: vec![
+                    CommitCondition::Absent {
+                        path: anchor.clone(),
+                    },
+                    CommitCondition::Present {
+                        path: StreamPath::new("a-unused")?,
+                    },
+                    CommitCondition::Present {
+                        path: StreamPath::new("unused")?,
+                    },
+                ],
                 mutations: vec![CommitMutation::Append {
                     path: anchor,
                     records: vec![AppendRecord::from(vec![1])],
