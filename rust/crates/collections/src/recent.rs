@@ -32,8 +32,9 @@ impl<V, A, const N: usize, const WINDOW: usize> RecentIndex<V, A, N, WINDOW> {
         self.complete
     }
 
-    /// Reads either retained window with the original cumulative work.
-    pub fn get<W: IndexWork<Allocation = A>>(
+    /// Reads either retained window with the original cumulative work, without
+    /// allocation capability. Refusal from either window remains an error.
+    pub fn get<W: IndexReadWork>(
         &self,
         key: [u8; N],
         accounting: &mut W,
