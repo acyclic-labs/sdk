@@ -13,21 +13,7 @@ pub fn check(input: &[u8]) {
         maximum_items: 1_048_576,
         maximum_depth: 256,
     };
-    let Ok(raw) = serde_json::from_slice::<&serde_json::value::RawValue>(input) else {
-        assert!(
-            json_from_slice_bounded(
-                std::marker::PhantomData::<&serde_json::value::RawValue>,
-                input,
-                bounds,
-                None,
-                None,
-                &mut |_| Ok(()),
-            )
-            .is_err(),
-            "typed JSON must refuse malformed original input"
-        );
-        return;
-    };
+    let raw = serde_json::from_slice::<&serde_json::value::RawValue>(input);
     let mut admissions = 0;
     let mut scratch = 0_u64;
     let decoded = json_from_slice_bounded(
@@ -45,11 +31,25 @@ pub fn check(input: &[u8]) {
             }
             Ok(())
         },
-    )
-    .expect("typed raw JSON must admit independently valid raw input");
+    );
+    assert_eq!(scratch, 0, "typed JSON admission must release its scratch");
+    let Ok(raw) = raw else {
+        assert!(
+            decoded.is_err(),
+            "typed JSON must refuse malformed original input"
+        );
+        return;
+    };
+    if exceeds_depth(raw.get().as_bytes(), bounds.maximum_depth) {
+        assert!(
+            decoded.is_err(),
+            "typed raw JSON must refuse documents beyond the declared depth"
+        );
+        return;
+    }
+    let decoded = decoded.expect("typed raw JSON must admit independently valid raw input");
     assert_eq!(decoded.get(), raw.get());
     assert_eq!(admissions, 1, "typed JSON decode must request admission");
-    assert_eq!(scratch, 0, "typed JSON admission must release its scratch");
     for frontier in 0..5 {
         check_refusal(input, bounds, frontier);
     }
@@ -69,6 +69,40 @@ pub fn check(input: &[u8]) {
     // independently of which malformed inputs a byte campaign discovers.
     compact.extend_from_slice(b" null");
     check_refusal(&compact, bounds, 5);
+}
+
+// RawValue has already checked syntax. Count only unquoted structural depth,
+// independently of the production admission walk. Depth is zero-based: an
+// empty container at the limit has no child whose depth could exceed it.
+fn exceeds_depth(source: &[u8], maximum: u32) -> bool {
+    let (mut depth, mut quoted, mut escaped) = (0_u32, false, false);
+    for &byte in source {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = false;
+            }
+        } else {
+            if depth > maximum
+                && !matches!(
+                    byte,
+                    b']' | b'}' | b',' | b':' | b' ' | b'\n' | b'\r' | b'\t'
+                )
+            {
+                return true;
+            }
+            match byte {
+                b'"' => quoted = true,
+                b'[' | b'{' => depth += 1,
+                b']' | b'}' => depth -= 1,
+                _ => {}
+            }
+        }
+    }
+    false
 }
 
 fn check_refusal(source: &[u8], bounds: JsonBounds, frontier: usize) {

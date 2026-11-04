@@ -17,8 +17,11 @@ class ControlArguments(argparse.ArgumentParser):
 
 
 parser = ControlArguments(description=__doc__)
-parser.add_argument('--raw-domain-prior', metavar='REVISION',
-                    help='compare the prior shared oracle before checking borrowed raw JSON admission')
+selection = parser.add_mutually_exclusive_group()
+selection.add_argument('--raw-domain-prior', metavar='REVISION',
+                       help='compare the prior shared oracle before checking borrowed raw JSON admission')
+selection.add_argument('--depth-prior', metavar='REVISION',
+                       help='check the prior depth false positive, actual depth omission and exact restored corpus')
 args = parser.parse_args()
 source = root / 'rust/crates/harness-core/src/executor/json/records.rs'
 oracle = root / 'rust/crates/harness/tests/support/bounded_json.rs'
@@ -28,9 +31,17 @@ if args.raw_domain_prior:
     source = root / 'rust/crates/harness-core/src/executor/json/admission.rs'
     patch = root / 'rust/crates/harness-fuzz/negative-controls/typed-json-expand-borrowed-raw.patch'
     out = root / 'target/typed-json-raw-domain-control'
+if args.depth_prior:
+    source = root / 'rust/crates/harness-core/src/executor/json/admission.rs'
+    patch = root / 'rust/crates/harness-fuzz/negative-controls/typed-json-ignore-depth.patch'
+    out = root / 'target/typed-json-depth-control'
 command = ['cargo', 'test', '--locked', '-p', 'acyclic-harness-core', '--lib',
            'executor::json::tests::object_work::checked_codec_fuzz_corpus',
            '--', '--exact', '--nocapture']
+if args.depth_prior:
+    command = ['cargo', 'nextest', 'run', '--locked', '--profile', 'ci', '--retries', '0',
+               '-p', 'acyclic-harness-core', '--lib', '-E',
+               'test(=executor::json::tests::object_work::checked_codec_fuzz_corpus)']
 step = 'read original typed JSON source'
 
 def digest(data):
@@ -49,9 +60,10 @@ try:
                          for path in sorted((root / 'rust/crates/harness-fuzz/corpus/bounded_json').iterdir())
                          if path.is_file()]}
     try:
-        step = 'apply original diagnostic-admission mutation'
+        step = 'apply selected typed JSON production mutation'
         subprocess.run(['git', 'apply', '--check', str(patch)], cwd=root, check=True)
         subprocess.run(['git', 'apply', str(patch)], cwd=root, check=True)
+        mutated = source.read_bytes()
         phases = [
             ('diagnostic-admission-refusal-red', 101,
              'typed JSON decode must preserve caller charge refusal at frontier 5'),
@@ -65,10 +77,17 @@ try:
             phases = [('prior-oracle-mutant-miss', 0, 'test result: ok. 1 passed; 0 failed'),
                       ('raw-domain-red', 101, 'typed raw JSON must admit independently valid raw input'),
                       ('restored-original-corpus', 0, 'test result: ok. 1 passed; 0 failed')]
+        if args.depth_prior:
+            step = 'read prior shared oracle for the actual depth false positive'
+            prior = subprocess.check_output(['git', 'show', args.depth_prior + ':'
+                                             + oracle.relative_to(root).as_posix()], cwd=root)
+            result['prior_oracle'] = {'revision': args.depth_prior, 'sha256': digest(prior)}
+            phases = [('prior-depth-false-positive', 100, 'typed raw JSON must admit independently valid raw input'),
+                      ('depth-omission-red', 100, 'typed raw JSON must refuse documents beyond the declared depth'),
+                      ('restored-original-corpus', 0, '1 test run: 1 passed')]
         for name, expected, assertion in phases:
-            if name == 'restored-original-corpus':
-                source.write_bytes(original)
-            oracle.write_bytes(prior if name == 'prior-oracle-mutant-miss' else original_oracle)
+            source.write_bytes(original if name in ['prior-depth-false-positive', 'restored-original-corpus'] else mutated)
+            oracle.write_bytes(prior if name in ['prior-oracle-mutant-miss', 'prior-depth-false-positive'] else original_oracle)
             step = name
             log = out / (name + '.log')
             with log.open('wb') as stream:
@@ -79,21 +98,26 @@ try:
                      'source': digest(source.read_bytes()), 'oracle': digest(oracle.read_bytes()),
                      'log': digest(log.read_bytes())}
             executables = re.findall(r'Running unittests .*? \(([^)]+)\)', output)
+            if args.depth_prior:
+                executables = re.findall(r'command:.*?(/[^\s]+/acyclic_harness_core-[a-f0-9]+)', output)
             if executables:
                 executable = root / executables[-1]
                 if executable.is_file():
                     phase['executable'] = {'path': str(executable), 'sha256': digest(executable.read_bytes()),
                                            'bytes': executable.stat().st_size, 'exported': False}
+            if 'executable' not in phase:
+                phase['executable_identity'] = 'not emitted by the test runner; no binary hash inferred'
             result['phases'].append(phase)
             (out / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
             if completed.returncode != expected or assertion not in output:
                 raise RuntimeError('expected semantic assertion absent; inspect ' + str(log))
-            if expected == 101 and ('panicked at ' not in output or 'test result: FAILED.' not in output):
+            if expected in [100, 101] and ('panicked at ' not in output or 'test result: FAILED.' not in output):
                 raise RuntimeError('mutation did not reach the runtime assertion; inspect ' + str(log))
     finally:
         source.write_bytes(original)
         oracle.write_bytes(original_oracle)
         result['restored_source'] = digest(source.read_bytes()) == digest(original)
+        result['restored_oracle'] = digest(oracle.read_bytes()) == oracle_hash
         (out / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
         if digest(oracle.read_bytes()) != oracle_hash or digest(lock.read_bytes()) != lock_hash:
             raise RuntimeError('oracle or Cargo.lock changed during the control')

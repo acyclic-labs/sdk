@@ -917,3 +917,14 @@ walk. `typed-json-reject-unknown-borrowed.patch` restores the old missing-schema
 refusal for the same retained raw operands. The existing nested-container
 allocation property also checks an out-of-range numeric token, retaining its
 physical skip-stack bound and zero-scratch negative control.
+
+Valid raw JSON can still exceed the declared zero-based depth bound. The same
+oracle counts unquoted structural depth after RawValue validates syntax and
+requires refusal beyond the bound, preserving admitted boundary documents and
+escaped structural characters inside strings. Three authored depth operands
+extend the seven retained inputs without replacing their bytes or provenance.
+Run `python3 rust/crates/harness-fuzz/typed-json-negative-control.py --depth-prior
+<prior-oracle-revision>` to require the old oracle's false failure, rejection of
+the actual depth-guard omission, and the exact restored ten-input positive.
+The existing malformed-input and valid-input paths now share one typed decode
+and scratch observation. No production decoder or input-size bound changes.
