@@ -320,37 +320,12 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
     let (store, _provider) = open_staged(directory.path()).await?;
     let token = CancellationToken::new();
     let (first, first_bytes) = spill_fixture(&store, &token).await?;
-    let (second, second_bytes) = blob(OwnedBytes::from_static(b"second spill bytes"));
-    {
-        let __object_args = (second, second_bytes.clone(), WorkBudget::UNBOUNDED, &token);
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result = store
-            .put(__object_args.0, __object_args.1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    }?;
-    {
-        let mut spill_file = store.spill_io.write().await;
-        let offset = store.index().spill_end;
-        let spill_bytes = second_bytes.clone();
-        store
-            .spill_file(&mut spill_file, None)
-            .await?
-            .control_async(
-                move |file, _| {
-                    acyclic_native_runtime::write_all_at(file, offset, spill_bytes.as_slice(), None)
-                },
-                None,
-            )
-            .expect("unmetered control construction cannot fail")
-            .await?;
-        let mut index = store.index_mut();
-        if let Some(Staged::Resident { order, .. }) = index.objects.get(&second) {
-            let order = *order;
-            index.order.remove(&order);
-        }
-        index.mark_spilled(&[(second, second_bytes.clone())], offset);
-    }
+    let (second, second_bytes) = spill_bytes_fixture(
+        &store,
+        &token,
+        OwnedBytes::from_static(b"second spill bytes"),
+    )
+    .await?;
     // Unrelated staged objects must not turn a durable provider batch into
     // scalar reads. Exercise both representations on the actual local medium.
     let durable = [
@@ -391,9 +366,26 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
     let mixed_values = [&durable[0].1, &resident.1, &durable[1].1];
     for native in [false, true] {
         for stored in [false, true] {
+            let (draining, draining_bytes) = spill_bytes_fixture(
+                &store,
+                &token,
+                OwnedBytes::from(format!("draining spill {native} {stored}")),
+            )
+            .await?;
+            let draining_requests = [
+                durable_requests[0],
+                ObjectReadRequest {
+                    object_id: draining,
+                    maximum_bytes: draining_bytes.len() as u64,
+                },
+                mixed_requests[1],
+                durable_requests[1],
+            ];
+            let draining_values = [&durable[0].1, &draining_bytes, &resident.1, &durable[1].1];
             for (requests, expected) in [
                 (durable_requests.as_slice(), durable_values.as_slice()),
                 (mixed_requests.as_slice(), mixed_values.as_slice()),
+                (draining_requests.as_slice(), draining_values.as_slice()),
             ] {
                 let original = NativeMaterializationWork::new(native_read_budget(), &token)
                     .map_err(|(cause, _)| cause)?;
@@ -437,6 +429,25 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
                 // Both original LocalMedium persistence jobs must be accepted
                 // before the driver releases any native execution boundary.
                 let admitted = schedule.pending_native_work();
+                if requests.len() == draining_requests.len() {
+                    // The read has classified this identity as private. Drain it
+                    // through the real publication path while its independent
+                    // durable reads are still held before physical execution.
+                    assert!(matches!(store.lookup(draining), Lookup::Spilled { .. }));
+                    let closure = [draining];
+                    let mut publication =
+                        AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &token);
+                    store
+                        .flush_before_publish(
+                            PublicationScope {
+                                objects: &closure,
+                                proven_at: store.collection.sweeps(),
+                            },
+                            &mut publication,
+                        )
+                        .await?;
+                    assert!(matches!(store.lookup(draining), Lookup::Absent));
+                }
                 for boundary in held {
                     boundary.release();
                 }
@@ -455,11 +466,12 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
                 for (read, bytes) in values.iter().zip(expected) {
                     assert_eq!(&read.bytes, *bytes);
                 }
-                assert_eq!(work.spent().object_probes, 2);
+                let drained = u64::from(requests.len() == draining_requests.len());
+                assert_eq!(work.spent().object_probes, 2 + drained);
                 if !native {
                     assert_eq!(
                         work.spent().backend_read_operations,
-                        1,
+                        1 + drained,
                         "durable reads must preserve the provider batch"
                     );
                 }
