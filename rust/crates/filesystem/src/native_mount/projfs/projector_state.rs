@@ -70,6 +70,27 @@ impl MaterializeQueue {
         }
     }
 
+    pub(super) fn run(
+        &self,
+        mut materialize: impl FnMut(MountPath) -> Result<Vec<MountPath>, String>,
+    ) {
+        while let Some(directory) = self.next() {
+            // Complete the accepted queue item even if its source panics:
+            // other workers wait for this item's completion before retiring.
+            let written =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| materialize(directory)))
+                    .unwrap_or_else(|payload| {
+                        let message = payload
+                            .downcast_ref::<String>()
+                            .map(String::as_str)
+                            .or_else(|| payload.downcast_ref::<&str>().copied())
+                            .unwrap_or("non-string panic payload");
+                        Err(format!("projection source panicked: {message}"))
+                    });
+            self.done(written);
+        }
+    }
+
     pub(super) fn next(&self) -> Option<MountPath> {
         let mut state = lock_recover(&self.state);
         loop {

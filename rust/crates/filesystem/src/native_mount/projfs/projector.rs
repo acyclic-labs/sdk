@@ -90,33 +90,15 @@ impl Projector {
         // never hold more than its size in extra threads between them.
         let helpers = MaterializeHelpers::acquire(wanted.saturating_sub(1));
         let queue = MaterializeQueue::new(directories);
+        let materialize = |directory| self.materialize_directory(projection, directory);
         std::thread::scope(|scope| {
             for _ in 0..helpers.count() {
-                scope.spawn(|| self.materialize_from(&projection, &queue));
+                scope.spawn(|| queue.run(materialize));
             }
-            self.materialize_from(&projection, &queue);
+            queue.run(materialize);
         });
         drop(helpers);
         queue.finish()
-    }
-
-    pub(super) fn materialize_from(&self, projection: &Projection<'_>, queue: &MaterializeQueue) {
-        while let Some(directory) = queue.next() {
-            // Complete the accepted queue item even if its source panics:
-            // other workers wait for this item's completion before retiring.
-            let written = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.materialize_directory(*projection, directory)
-            }))
-            .unwrap_or_else(|payload| {
-                let message = payload
-                    .downcast_ref::<String>()
-                    .map(String::as_str)
-                    .or_else(|| payload.downcast_ref::<&str>().copied())
-                    .unwrap_or("non-string panic payload");
-                Err(format!("projection source panicked: {message}"))
-            });
-            queue.done(written);
-        }
     }
 
     pub(super) fn materialize_directory(
