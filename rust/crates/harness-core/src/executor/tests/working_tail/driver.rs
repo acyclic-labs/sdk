@@ -3,17 +3,10 @@ use super::*;
 #[tokio::test]
 async fn stock_driver_retires_only_settled_history_and_restarts_its_offset_on_reentry() -> Result<()>
 {
-    let mut journal = Journal::default();
-    let issuer = crate::core::AuthorityRoot::new(
-        "driver-working-cut",
-        [23; 32],
-        crate::core::Authority {
-            kind: crate::core::AggregateKind::Conversation,
-            id: crate::ConversationId::new().to_string(),
-        },
-    );
-    journal.8 = Some(issuer.verifier(&mut None)?);
-    let (provider, _) = counted_model(
+    let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let journal = storage.journal();
+    let journal = journal.as_ref();
+    let (provider, accounting_calls) = counted_model(
         65_536,
         None,
         [
@@ -58,7 +51,7 @@ async fn stock_driver_retires_only_settled_history_and_restarts_its_offset_on_re
     };
     let execution = StockExecution::ordinary(&executor);
     assert!(matches!(
-        execution.execute_progress(&input, &journal).await?,
+        execution.execute_progress(&input, journal).await?,
         ExecutionProgress::Ready(_)
     ));
     assert!(
@@ -72,7 +65,7 @@ async fn stock_driver_retires_only_settled_history_and_restarts_its_offset_on_re
     );
     let dispatched = provider.requests().len();
     assert!(matches!(
-        execution.execute_progress(&input, &journal).await?,
+        execution.execute_progress(&input, journal).await?,
         ExecutionProgress::Ready(_)
     ));
     assert_eq!(
@@ -81,6 +74,14 @@ async fn stock_driver_retires_only_settled_history_and_restarts_its_offset_on_re
         "reentry dispatched a settled step twice"
     );
     assert_eq!(tool.0.load(Ordering::SeqCst), 3);
+    // Four dispatched requests, one base-pressure probe, one mandatory subset
+    // and one compacted request. Budgeting consumes the probe's validated count.
+    assert_eq!(dispatched, 4);
+    assert_eq!(
+        accounting_calls.load(Ordering::SeqCst),
+        7,
+        "working-base budgeting recounted its already validated source"
+    );
     Ok(())
 }
 
