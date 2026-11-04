@@ -14,14 +14,17 @@ async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
     let mut requests = Vec::new();
     for bytes in [b"first".as_slice(), b"second".as_slice()] {
         requests.push(ObjectReadRequest {
-            object_id: crate::test_support::put_object(&store, crate::ObjectKind::Blob, bytes)
+            object_id: crate::test_support::put_object(&store, crate::ObjectKind::BlobChunk, bytes)
                 .await?,
             maximum_bytes: bytes.len() as u64,
         });
     }
     requests.push(requests[0]);
+    let page =
+        crate::test_support::put_tree_page(&store, &crate::kernel::TreePage::Leaf(Vec::new()), 8)
+            .await?;
     let cancellation = CancellationToken::new();
-    for capacity in [0, 1, 2] {
+    for capacity in [0, 1, 2, 3] {
         let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let independent = RetainedAllocation::claim(73, 1, &mut work.accounting())?;
         let baseline = work.allocations.live_bytes();
@@ -42,7 +45,7 @@ async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
             .iter()
             .filter(|read| matches!(read.retention, ObjectReadRetention::Owned { .. }))
             .count();
-        assert_eq!(owned, [3, 1, 0][capacity]);
+        assert_eq!(owned, [3, 1, 0, 0][capacity]);
         let retained = crate::kernel::file_read::retained_object_reads_bytes(
             &reads.value,
             reads.value.capacity(),
@@ -61,9 +64,39 @@ async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
             &mut work.accounting(),
         )?;
         assert_eq!(work.allocations.live_bytes(), baseline + resident);
-        drop_cache(cache, &mut work.accounting())?;
+        let before = work.spent().backend_read_operations;
+        for _ in 0..2 {
+            let (decoded, allocation) = crate::kernel::persistent_io::read_page_with_accounting::<
+                _,
+                crate::kernel::tree_mutation::TreeFormat,
+            >(
+                &cache,
+                page,
+                DecodeLimits::default(),
+                &mut work.accounting(),
+                &cancellation,
+                None,
+            )
+            .await?;
+            let retained = decoded.logical_bytes;
+            drop(decoded);
+            crate::kernel::file_read::release_read_allocation(
+                retained,
+                allocation,
+                &mut work.accounting(),
+            )?;
+            let state = cache.lock_state();
+            let resident =
+                OperationReadCache::<()>::slot_bytes(&state)? + state.retained_owned_bytes;
+            assert_eq!(work.allocations.live_bytes(), baseline + resident);
+            assert_eq!(work.allocations.scratch_bytes(), 0);
+        }
+        assert_eq!(
+            work.spent().backend_read_operations - before,
+            [2, 2, 2, 1][capacity]
+        );
+        drop(cache);
         assert_eq!(work.allocations.live_bytes(), baseline);
-        assert_eq!(work.allocations.scratch_bytes(), 0);
         drop(independent);
         assert_eq!(work.allocations.live_bytes(), baseline - 73);
     }
