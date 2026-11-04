@@ -1,5 +1,3 @@
-use crate::AsyncObjectStore as _;
-
 #[tokio::test]
 async fn minimal_generation_has_a_complete_authenticated_closure()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -39,6 +37,14 @@ struct OriginalReadTrace<'a> {
 }
 
 impl crate::AsyncObjectStore for OriginalReadTrace<'_> {
+    async fn read_many(
+        &self,
+        requests: &[crate::storage::ObjectReadRequest],
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
+        self.inner.read_many(requests, work).await
+    }
+
     async fn put(
         &self,
         id: ObjectId,
