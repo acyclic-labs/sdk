@@ -503,7 +503,6 @@ pub(super) fn root_parent_buffer(
     let result = (|| {
         accounting.check()?;
         accounting.claim_owned(live_owned_bytes, 0)?;
-        let mut values = Owned::<Vec<GenerationId>>::allocate(parents.len(), &mut accounting)?;
         let copied = WorkCounters {
             bytes_copied: usize_to_u64(
                 parents
@@ -514,6 +513,7 @@ pub(super) fn root_parent_buffer(
             ..WorkCounters::UNCHARGED
         };
         accounting.admit(copied)?;
+        let mut values = Owned::<Vec<GenerationId>>::allocate(parents.len(), &mut accounting)?;
         values.value.extend_from_slice(parents);
         accounting.record_completed(copied)?;
         Ok(values.value)
