@@ -393,6 +393,12 @@ pub(crate) fn clone_messages(
     messages: &[ModelMessage],
     io: Option<&PreparationIo>,
 ) -> Result<Vec<ModelMessage>> {
+    #[cfg(all(
+        any(test, feature = "test-support"),
+        feature = "filesystem",
+        not(target_arch = "wasm32")
+    ))]
+    acyclic_differential::record(("clone request messages", messages.len() as u64));
     #[cfg(not(target_arch = "wasm32"))]
     let _span = tracing::debug_span!("acyclic.harness.context.clone_messages").entered();
     if io.is_none() {

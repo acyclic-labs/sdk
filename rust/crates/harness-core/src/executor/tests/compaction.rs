@@ -240,12 +240,28 @@ fn default_threshold_evicts_into_the_backstop_marker_without_a_model_call() -> R
     Ok(())
 }
 
-#[tokio::test]
-async fn compacted_projection_recovers_before_response_admission() -> Result<()> {
-    let journal = Journal::default();
-    let (provider, accounting_calls) = counted_model(65_536, None, [], []);
-    let source = crate::context::Context {
-        messages: vec![
+#[test]
+fn compacted_projection_recovers_before_response_admission() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    for source in ["projected", "selected", "working"] {
+        #[cfg(feature = "filesystem")]
+        let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
+            AgentId::new(),
+            65_536,
+        ))?;
+        #[cfg(feature = "filesystem")]
+        let journal = storage.journal();
+        #[cfg(feature = "filesystem")]
+        let journal = journal.as_ref();
+        #[cfg(not(feature = "filesystem"))]
+        let journal = Journal::default();
+        #[cfg(not(feature = "filesystem"))]
+        let journal = &journal;
+        let (provider, accounting_calls) = counted_model(65_536, None, [], []);
+        let history = vec![
             ModelMessage {
                 role: ModelRole::User,
                 content: ModelContent::Text("o".repeat(27_000)),
@@ -254,57 +270,111 @@ async fn compacted_projection_recovers_before_response_admission() -> Result<()>
                 role: ModelRole::Assistant,
                 content: ModelContent::Text("a".repeat(27_000)),
             },
-        ],
-        ..crate::context::Context::default()
-    };
-    let executor = StockExecutor::new(
-        Model::new("synthetic".into(), "byte-counter".into(), "1".into())?,
-        provider.clone(),
-        ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
-            "history",
-            "1",
-            Arc::new(source),
-            crate::context::ContextPlacement::Prepend,
-        )) as Arc<dyn crate::context::ContextStage>]),
-        ToolRegistry::default(),
-    );
-    let input = TurnInput {
-        max_steps: None,
-        operation_id: OperationId::new(),
-        input: ModelContent::Text("current".into()),
-        selected_context: None,
-    };
-    StockExecution::ordinary(&executor)
-        .ensure_started(&journal, &input)
-        .await?;
-    let original = StockExecution::ordinary(&executor)
-        .prepared_response(&journal, &input, 0, &[], None)
-        .await?;
-    let counted = accounting_calls.load(Ordering::SeqCst);
-    let recovered = StockExecution::ordinary(&executor.clone())
-        .prepared_response(&journal, &input, 0, &[], None)
-        .await?;
-    assert_eq!(original.bytes(), recovered.bytes());
-    assert_eq!(accounting_calls.load(Ordering::SeqCst), counted);
-    assert!(provider.requests().is_empty());
-    let records = journal.0.lock().unwrap();
-    assert_eq!(
-        records
-            .iter()
-            .filter(|record| matches!(record.event, ExecutionEvent::ContextCompacted { .. }))
-            .count(),
-        1
-    );
-    assert!(!records.iter().any(|record| matches!(
-        record.event,
-        ExecutionEvent::ModelStarted {
-            purpose: ModelPurpose::Response,
-            ..
+        ];
+        let pipeline = if source == "projected" {
+            ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
+                "history",
+                "1",
+                Arc::new(crate::context::Context {
+                    messages: history.clone(),
+                    ..Default::default()
+                }),
+                crate::context::ContextPlacement::Prepend,
+            )) as Arc<dyn crate::context::ContextStage>])
+        } else {
+            ContextPipeline::default()
+        };
+        let executor = StockExecutor::new(
+            Model::new("synthetic".into(), "byte-counter".into(), "1".into())?,
+            provider.clone(),
+            pipeline,
+            ToolRegistry::default(),
+        )
+        .with_compaction_policy(crate::context::CompactionPolicy::Threshold(
+            crate::context::ThresholdCompaction {
+                recent_tokens: 1,
+                ..Default::default()
+            },
+        ));
+        let mut input = TurnInput {
+            max_steps: None,
+            operation_id: OperationId::new(),
+            input: ModelContent::Text("current".into()),
+            selected_context: None,
+        };
+        if source == "selected" {
+            let mut messages = history.clone();
+            messages.push(ModelMessage {
+                role: ModelRole::User,
+                content: input.input.clone(),
+            });
+            input.selected_context = Some(SelectedModelContext {
+                selection: crate::conversation::ModelContextSelection {
+                    conversation_revision: messages.len() as u64,
+                    message_ids: (1..=messages.len())
+                        .map(|index| uuid::Uuid::from_u128(index as u128))
+                        .collect(),
+                    checkpoint: None,
+                },
+                messages,
+            });
         }
-    )));
+        let (step, prior) = if source == "working" {
+            (1, history)
+        } else {
+            (0, Vec::new())
+        };
+        let execution = StockExecution::ordinary(&executor);
+        runtime.block_on(execution.ensure_started(journal, &input))?;
+        let original =
+            runtime.block_on(execution.prepared_response(journal, &input, step, &prior, None))?;
+        let counted = accounting_calls.load(Ordering::SeqCst);
+        let restarted_executor = executor.clone();
+        let restarted = StockExecution::ordinary(&restarted_executor);
+        let (recovered, _trace) = acyclic_test_support::differential::observe::<
+            _,
+            _,
+            (&'static str, u64),
+        >(
+            || (),
+            |()| runtime.block_on(restarted.prepared_response(journal, &input, step, &prior, None)),
+        );
+        let recovered = recovered?;
+        assert_eq!(original.bytes(), recovered.bytes(), "{source}");
+        assert_eq!(accounting_calls.load(Ordering::SeqCst), counted);
+        assert!(provider.requests().is_empty());
+        let (_, records) = runtime.block_on(execution.model_records(
+            journal,
+            input.operation_id,
+            step,
+            ModelPurpose::Response,
+        ))?;
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record.event, ExecutionEvent::ContextCompacted { .. }))
+                .count(),
+            1
+        );
+        assert!(!records.iter().any(|record| matches!(
+            record.event,
+            ExecutionEvent::ModelStarted {
+                purpose: ModelPurpose::Response,
+                ..
+            }
+        )));
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        assert_eq!(
+            _trace
+                .iter()
+                .filter(|(kind, _)| *kind == "clone request messages")
+                .count(),
+            if source == "projected" { 2 } else { 0 },
+            "{source}: recovery copied messages unused by its checkpoint proof"
+        );
+    }
     Ok(())
 }
-
 #[tokio::test]
 async fn impossible_default_capacity_fails_before_turn_admission() -> Result<()> {
     let journal = Journal::default();
