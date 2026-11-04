@@ -111,7 +111,17 @@ async fn historical_reads_preserve_the_complete_original_receipt() -> TestResult
             expected.spent(),
             "historical replay lost original completed work"
         );
+        let container_bytes = (records.capacity() * std::mem::size_of::<DurableCommit>()) as u64;
+        let allocation = allocation.map_or(
+            crate::kernel::allocation::KernelOwnedAllocation::Standalone,
+            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal,
+        );
+        let records = crate::kernel::allocation::retained::Retained::from_owned(
+            crate::kernel::Owned::new(records, allocation, container_bytes),
+            &mut actual.accounting(),
+        )?;
         let alias = records
+            .value
             .first()
             .ok_or("historical replay omitted its physical record")?
             .payload
@@ -120,8 +130,13 @@ async fn historical_reads_preserve_the_complete_original_receipt() -> TestResult
             live(&actual) >= before_replay + alias.len() as u64,
             "historical replay retired funding before its returned payload"
         );
-        drop((records, expected_records));
-        drop((allocation, expected_allocation));
+        let before_container_retirement = live(&actual);
+        drop((records, expected_records, expected_allocation));
+        assert_eq!(
+            live(&actual),
+            before_container_retirement - container_bytes,
+            "replay container did not retire its exact original capacity"
+        );
         actual.spent().verify(BUDGET)?;
         cancel.cancel();
         assert!(
