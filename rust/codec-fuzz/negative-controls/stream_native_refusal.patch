@@ -1,7 +1,7 @@
 diff --git a/rust/crates/stream-napi/src/lib.rs b/rust/crates/stream-napi/src/lib.rs
 --- a/rust/crates/stream-napi/src/lib.rs
 +++ b/rust/crates/stream-napi/src/lib.rs
-@@ -159,7 +159,7 @@ fn stream_error(error: &StreamError) -> NativeStreamErrorMetadata {
+@@ -159,6 +159,6 @@ fn stream_error(error: &StreamError) -> NativeStreamErrorMetadata {
          message: error.to_string(),
          refusal: match error {
 -            StreamError::Refused(refusal) => refusal.original().map(NativeRefusal::from_parts),
