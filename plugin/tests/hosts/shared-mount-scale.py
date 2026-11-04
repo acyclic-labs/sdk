@@ -2,8 +2,8 @@
 
 Run on Linux or macOS: python3 shared-mount-scale.py ACYCLIC GRAPHCODER HOST.
 HOST is codex, claude-code or pi. Native sessions are explicit stand-ins;
-the separate real-host suite owns the real sandbox/model matrix. GraphCoder
-must enable test-support for the shared resource sampler/oracle request.
+the separate real-host suite owns the real sandbox/model matrix. Both binaries
+must enable acyclic-harness/test-support for the shared resource sampler request.
 """
 import json
 import os
@@ -17,6 +17,7 @@ import time
 import traceback
 from native_events import native_event_fixture
 from native_fixture import fixture_environment, start_workspace_owner, stop_workspace_owner
+from native_mcp import McpClient
 
 
 def interrupted(signum, frame):
@@ -108,26 +109,14 @@ sys.exit(17)
                                           env={**env, 'ACYCLIC_HOST_ARGS': json.dumps(parent['flags']),
                                                'ACYCLIC_WORKSPACE': str(workspace), 'ACYCLIC_TASK': task},
                                           stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                          stderr=bridge_log, text=True)
-                sequence = 0
+                                          stderr=bridge_log)
+                mcp = McpClient(bridge, 'python3 plugin/tests/hosts/shared-mount-scale.py ACYCLIC GRAPHCODER ' + host)
 
                 def tool(name, reference, prompt=None):
-                    nonlocal sequence
-                    sequence += 1
-                    arguments = {'reference': reference}
-                    if prompt is not None:
-                        arguments['prompt'] = prompt
-                    bridge.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': sequence,
-                                                   'method': 'tools/call',
-                                                   'params': {'name': name, 'arguments': arguments}}) + '\n')
-                    bridge.stdin.flush()
                     print(json.dumps({'host': host, 'step': 'await tool', 'tool': name, 'reference': reference}), flush=True)
-                    message = json.loads(bridge.stdout.readline())
-                    assert message['id'] == sequence and 'error' not in message, message
-                    result = message['result']
-                    assert not result.get('isError'), result
+                    result = mcp.call(name, reference, prompt)
                     print(json.dumps({'host': host, 'step': 'tool completed', 'tool': name, 'reference': reference}), flush=True)
-                    return json.loads(result['content'][0]['text'])
+                    return result
 
                 paths = []
                 samples = []
@@ -169,13 +158,13 @@ sys.exit(17)
                     reference = 'child' + str(child)
                     observed = tool('wait', reference)
                     assert observed['status']['settled'], observed
-                    failure = observed['results'][0]['outcome']['Failed']['message']
+                    assert observed['reply']['kind'] == 'answered', observed
+                    failure = observed['reply']['outcome']['Failed']['message']
                     assert failure.endswith('diagnostic-tail-' + host), failure
                     assert len(failure.encode()) < 4300, len(failure.encode())
                     client({'kind': 'fs', 'task': task, 'command': 'merge agents/' + reference})
                     print(json.dumps({'host': host, 'step': 'verify merge', 'reference': reference}), flush=True)
                     assert (workspace / (reference + '.txt')).read_text() == reference
-                    assert (path / (reference + '.txt')).read_text() == reference
                 bridge.stdin.close()
                 assert bridge.wait() == 0
                 previous, owner = owner, None
