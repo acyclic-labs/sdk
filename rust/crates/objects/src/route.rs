@@ -397,7 +397,7 @@ pub fn verify(route: &str, input: Bytes, output: Bytes) -> Result<(), Error> {
                 .iter()
                 .map(|put| Ok((convert::digest(put.digest.as_ref())?, put.body.len() as u64)))
                 .collect::<Result<Vec<_>, Error>>()?;
-            convert::verified_puts(&reply(output)?, &expected, None).map(drop)
+            convert::verified_puts(reply(output)?, &expected, None).map(drop)
         }
         "blobs/put-manifest" => {
             let request: wire::PutManifestRequest = decode(input)?;

@@ -409,7 +409,7 @@ impl Blobs for HttpObjects {
                     let (request, expected) = convert::put_blobs(chunk);
                     let reply: wire::PutBlobsResponse =
                         self.call("blobs/put-batch", &request).await?;
-                    convert::verified_puts(&reply, &expected, None)
+                    convert::verified_puts(reply, &expected, None)
                 })
                 .await
                 .unwrap_or_else(|error| vec![Err(error); members]),

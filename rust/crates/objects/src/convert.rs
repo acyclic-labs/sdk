@@ -305,7 +305,7 @@ pub(crate) fn put_blobs(
 /// each member was for, stamping each durable member with the revision
 /// covering the batch. A reply that misanswers any member answers none.
 pub(crate) fn verified_puts(
-    value: &wire::PutBlobsResponse,
+    value: wire::PutBlobsResponse,
     expected: &[(Digest, u64)],
     revision: Option<&acyclic_stream::Revision>,
 ) -> Result<Vec<Result<Put, Error>>, Error> {
@@ -314,13 +314,14 @@ pub(crate) fn verified_puts(
     }
     value
         .results
-        .iter()
+        .into_iter()
         .zip(expected)
-        .map(|(result, &(digest, length))| match &result.outcome {
-            Some(wire::put_result::Outcome::Put(put)) => Ok(Ok(
-                verified_put(put, digest, length)?.committed_at(revision.cloned())
-            )),
-            Some(wire::put_result::Outcome::Error(detail)) => Error::from_detail(detail.clone())
+        .map(|(result, &(digest, length))| match result.outcome {
+            Some(wire::put_result::Outcome::Put(put)) => Ok(Ok(verified_put(
+                &put, digest, length,
+            )?
+            .committed_at(revision.cloned()))),
+            Some(wire::put_result::Outcome::Error(detail)) => Error::from_detail(detail)
                 .map(Err)
                 .ok_or_else(|| wire::ErrorCode::Unavailable.into()),
             None => Err(wire::ErrorCode::Unavailable.into()),

@@ -427,7 +427,7 @@ impl Blobs for GrpcObjects {
         crate::operation::admit(self.context.as_ref(), async {
             let (request, expected) = convert::put_blobs(requests);
             let (reply, revision) = call!(self, put_blobs, request, self.transfer_timeout)?;
-            convert::verified_puts(&reply, &expected, revision.as_ref())
+            convert::verified_puts(reply, &expected, revision.as_ref())
         })
         .await
         .unwrap_or_else(|error| vec![Err(error); members])
