@@ -211,7 +211,7 @@ impl IndexWork for CursorWork<'_> {
         let _ = (self.0, items);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(original) = self.0 {
-            original.admit(acyclic_fs::WorkCounters {
+            original.charge(acyclic_fs::WorkCounters {
                 items_examined: items,
                 ..Default::default()
             })?;
@@ -1234,6 +1234,38 @@ mod tests {
         drop(custody);
         assert_eq!(trial.unused(), 0);
         assert!(!trial.diverged());
+
+        // Measure the same production hash, then allow each individual index
+        // check but insufficient cumulative traversal and full-ID work. Merely
+        // checking admission would incorrectly consume this settlement.
+        let hash_work =
+            NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+                .map_err(|(error, _)| error)?;
+        let hash_items = {
+            let io = crate::filesystem::PreparationIo::from_native_work(&hash_work)?;
+            let before = hash_work.receipt().items_examined;
+            tool_key(dispatch.operation_id, "original-0", Some(&io))?;
+            hash_work.receipt().items_examined - before
+        };
+        let mut budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+        budget.items_examined = hash_items + 48 + "original-0".len() as u64 + 2;
+        let limited =
+            NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
+        assert!(
+            matches!(
+                trial.recorded_tool_result(dispatch.operation_id, "original-0", Some(&limited)),
+                Err(Error::NativeWork {
+                    cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                        acyclic_fs::WorkError::BudgetExceeded {
+                            counter: "items_examined",
+                            ..
+                        }
+                    ),
+                    ..
+                })
+            ),
+            "replay tool index checks did not spend original work"
+        );
 
         // A digest is only an index coordinate. Inject a colliding source
         // identity and require the public entrance to refuse before consuming.

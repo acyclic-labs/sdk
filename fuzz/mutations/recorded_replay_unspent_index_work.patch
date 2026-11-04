@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-core/src/model/recorded.rs
++++ b/rust/crates/harness-core/src/model/recorded.rs
+@@ -204,7 +204,7 @@
+         let _ = (self.0, items);
+         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+         if let Some(original) = self.0 {
+-            original.charge(acyclic_fs::WorkCounters {
++            original.admit(acyclic_fs::WorkCounters {
+                 items_examined: items,
+                 ..Default::default()
+             })?;
