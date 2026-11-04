@@ -1,0 +1,18 @@
+diff --git a/rust/crates/filesystem/src/kernel/allocation.rs b/rust/crates/filesystem/src/kernel/allocation.rs
+--- a/rust/crates/filesystem/src/kernel/allocation.rs
++++ b/rust/crates/filesystem/src/kernel/allocation.rs
+@@ -63,14 +63,6 @@ impl SharedAllocationBytes {
+     }
+ 
+     fn release_scratch_bytes(&mut self, bytes: u64) -> Result<(), AllocationError> {
+-        if self
+-            .allocations
+-            .live_bytes
+-            .checked_sub(bytes)
+-            .is_none_or(|live| live < self.retained_bytes)
+-        {
+-            return Err(AllocationError::ReleaseInvariant);
+-        }
+         self.allocations.release(bytes)
+     }
+ }

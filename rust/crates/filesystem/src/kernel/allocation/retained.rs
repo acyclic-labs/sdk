@@ -451,6 +451,7 @@ impl<T> Retained<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
@@ -788,43 +789,66 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn retained_standalone_lease_and_caller_share_one_live_peak() -> Result<(), crate::FsError> {
-        let cancel = crate::CancellationToken::new();
-        let mut accounting =
-            KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancel);
-        let first = RetainedAllocation::claim(73, 1, &mut accounting)?;
-        let baseline = accounting
-            .standalone_parts()
-            .ok_or(WorkError::Overflow)?
-            .0
-            .live_bytes();
-        let second = RetainedAllocation::claim(127, 1, &mut accounting)?;
-        assert_eq!(accounting.spent().peak_allocation_bytes, baseline + 127);
-        assert_eq!(
-            accounting.spent().allocation_operations,
-            3,
-            "the ledger control is funded exactly once"
-        );
-        drop(first);
-        assert_eq!(
-            accounting
-                .standalone_parts()
-                .ok_or(WorkError::Overflow)?
-                .0
-                .live_bytes(),
-            baseline + 127 - 73
-        );
-        drop(second);
-        assert_eq!(
-            accounting
-                .standalone_parts()
-                .ok_or(WorkError::Overflow)?
-                .0
-                .live_bytes(),
-            baseline - 73
-        );
-        Ok(())
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+        #[test]
+        fn retained_credit_conserves_full_width_ownership_transitions(
+            retained in any::<u64>(), scratch in any::<u64>(), split in any::<u64>(),
+            caller_first in any::<bool>(),
+        ) {
+            let cancel = crate::CancellationToken::new();
+            let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
+            // Promote through the production admission path before selecting
+            // arbitrary amounts within the remaining representable capacity.
+            let anchor = RetainedAllocation::claim(0, 0, &mut accounting).unwrap();
+            let ledger = anchor.standalone_ledger().unwrap().upgrade().unwrap();
+            let live = || ledger.lock().unwrap().allocations.live_bytes;
+            let control = live();
+            let retained = retained % (u64::MAX - control + 1);
+            let scratch = scratch % (u64::MAX - control - retained + 1);
+            let mut first = RetainedAllocation::claim(retained, 1, &mut accounting).unwrap();
+            let mut temporary = accounting.claim_owned(scratch, 1).unwrap();
+            let funded = control + retained + scratch;
+            prop_assert_eq!(live(), funded);
+            prop_assert_eq!(accounting.spent().peak_allocation_bytes, funded);
+            prop_assert_eq!(accounting.spent().allocation_operations, 3);
+
+            // A scratch owner cannot retire even one byte of retained backing.
+            // Reject the former live-byte-delta release before it can corrupt
+            // the original guard's later Drop.
+            let before = accounting.spent();
+            let allocations = accounting.standalone_parts().unwrap().0;
+            prop_assert!(matches!(allocations.release_owned(scratch + 1),
+                Err(crate::FsError::Work(WorkError::Overflow))),
+                "scratch retirement accepted retained credit");
+            prop_assert_eq!(live(), funded);
+            prop_assert!(matches!(allocations.release_owned(u64::MAX),
+                Err(crate::FsError::Work(WorkError::Overflow))));
+            prop_assert_eq!(live(), funded);
+            accounting.release_owned(&mut temporary, scratch).unwrap();
+            prop_assert_eq!(live(), control + retained);
+
+            prop_assert!(matches!(first.split_off(retained + 1),
+                Err(crate::FsError::Work(WorkError::Overflow))));
+            let split = split.min(retained);
+            let mut second = first.split_off(split).unwrap();
+            prop_assert_eq!(live(), control + retained);
+            first.absorb(&mut second).unwrap();
+            drop(second);
+            let second = first.split_off(split).unwrap();
+            prop_assert_eq!(accounting.spent(), before,
+                "ownership transfer must neither admit nor copy backing");
+            cancel.cancel();
+            prop_assert!(matches!(accounting.check(), Err(crate::FsError::Cancelled(_))));
+            drop(anchor);
+            if caller_first { drop(accounting); }
+            // The caller and cancellation can leave before either owner.
+            // Both guard retirements must still refund this same ledger.
+            drop(first);
+            prop_assert_eq!(live(), control + split);
+            drop(second);
+            prop_assert_eq!(live(), control);
+        }
     }
 
     #[test]
