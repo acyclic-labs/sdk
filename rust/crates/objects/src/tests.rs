@@ -425,6 +425,14 @@ async fn ambiguous_publication_is_unknown_and_retry_safe() -> Result<(), Box<dyn
     ));
     let root = RootId::new(*b"uncertain")?;
     let cause = acyclic_auth::refusal::Cause::new("objects.medium", "outcome_unknown");
+    // Delete before an uncertain retain protects this object's index.
+    store.medium().faults.store(4, Ordering::SeqCst);
+    let error = blobs
+        .delete(Digest::of(&body))
+        .await
+        .expect_err("an ambiguous conditional removal cannot be acknowledged");
+    assert_eq!(error.code, ErrorCode::OutcomeUnknown);
+    assert_eq!(error.cause(), Some(&cause));
     for faults in [1, 64] {
         store.medium().faults.store(faults, Ordering::SeqCst);
         let error = blobs
@@ -441,14 +449,8 @@ async fn ambiguous_publication_is_unknown_and_retry_safe() -> Result<(), Box<dyn
         .expect_err("an ambiguous epoch cannot be acknowledged");
     assert_eq!(error.code, ErrorCode::OutcomeUnknown);
     assert_eq!(error.cause(), Some(&cause));
-    store.medium().faults.store(4, Ordering::SeqCst);
-    let error = blobs
-        .delete(Digest::of(&body))
-        .await
-        .expect_err("an ambiguous conditional removal cannot be acknowledged");
-    assert_eq!(error.code, ErrorCode::OutcomeUnknown);
-    assert_eq!(error.cause(), Some(&cause));
     store.medium().faults.store(0, Ordering::SeqCst);
+    assert_eq!(blobs.delete(Digest::of(&body)).await?, Delete::Referenced);
     Ok(())
 }
 
