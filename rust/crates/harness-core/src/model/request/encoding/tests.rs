@@ -460,7 +460,14 @@ fn measure_suffix(
     prepared.bytes = buffer.freeze();
     let mut continuation = prepared.into_continuation();
     push(continuation.messages(), 0, Some(io))?;
-    let encoded_suffix = crate::contract::canonical_json_bytes(&*continuation.messages())?;
+    // Compare against the same canonical codec's complete work, including its
+    // admission and ordered-output passes, rather than only its final length.
+    let suffix_encoding = {
+        let before = io.receipt().bytes_encoded;
+        let encoded = encode(&continuation.messages(), Some(io))?;
+        let _hold = io.guard_bytes(&encoded)?;
+        io.receipt().bytes_encoded - before
+    };
     let before = io.receipt();
     let prepared = continuation.finish(Limits::default(), Some(io))?;
     let after = io.receipt();
@@ -471,8 +478,7 @@ fn measure_suffix(
         after.items_examined - before.items_examined,
     );
     assert_eq!(
-        suffix.0,
-        encoded_suffix.len() as u64,
+        suffix.0, suffix_encoding,
         "warm continuation reserialized immutable request configuration"
     );
     let expected = crate::contract::canonical_json_bytes(prepared.request())?;
