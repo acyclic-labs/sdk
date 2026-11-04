@@ -16,8 +16,6 @@ fn every_pair_cut_is_durable(
     }
     let _reset = Reset;
     let mut safe = true;
-    let directory = tempfile::tempdir()?;
-    let root = HostRoot::open(directory.path(), &mut ordinary_work())?;
     for first in 0..5 {
         for second in 0..5 {
             let leaves = ["first", "second"].map(|leaf| format!("{first}-{second}-{leaf}"));
