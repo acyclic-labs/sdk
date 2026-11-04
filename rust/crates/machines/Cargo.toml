@@ -45,7 +45,6 @@ tonic-prost = { workspace = true, optional = true }
 uuid.workspace = true
 
 [dev-dependencies]
-acyclic-actors = { version = "=0.2.0", path = "../actors", default-features = false, features = ["conformance"] }
 proptest.workspace = true
 rcgen = "0.14.10"
 tokio-stream.workspace = true
