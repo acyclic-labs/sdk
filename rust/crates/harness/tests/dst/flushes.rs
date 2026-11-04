@@ -24,7 +24,7 @@ fn flushes(writes: &[DurableWrite]) -> (usize, usize) {
     })
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 struct Windows {
     open: (usize, usize),
     first: (usize, usize),
@@ -111,7 +111,7 @@ fn turns(
 
 /// Observe open, settled replies, the independent commit and reopen. Teardown
 /// drains every accepted worker outside those windows.
-fn measure(replies: [ScriptedTurn; 6]) -> Result<Windows> {
+fn measure(replies: [ScriptedTurn; 6]) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -139,25 +139,28 @@ fn measure(replies: [ScriptedTurn; 6]) -> Result<Windows> {
             reopened_first: window(8, 9),
         };
         assert_eq!(
-            (observed.open, observed.reopen),
+            observed,
             // The project volume already has a journal before this open.
             // Both opens must publish its recovered name before serving it;
             // reopen also rotates the deferred-publication incarnation.
-            ((7, 12), (1, 6)),
-            "durability windows: {observed:?}; open trace: {:?}; reopen trace: {:?}",
+            Windows {
+                open: (7, 12),
+                // Includes root policy, creation, placement and runtime startup
+                // through its first committed reply, not just policy staging.
+                first: (12, 18),
+                // Equal streamed text in 2 or 32 parts adds ordering barriers,
+                // while the independent final commit adds one device drain.
+                replies: [(8, 11), (8, 11), (9, 11), (39, 11), (0, 1)],
+                reopen: (1, 6),
+                // A reopened root restores placement before its first reply.
+                reopened_first: (9, 12),
+            },
+            "open trace: {:?}; first trace: {:?}; reopen trace: {:?}",
             &writes[cuts[0]..cuts[1]],
+            &writes[cuts[1]..cuts[2]],
             &writes[cuts[7]..cuts[8]]
         );
-        // This window includes the first call to agents(), which creates and
-        // starts the root before its first reply is committed.
-        let steady = observed.replies[0];
-        assert_eq!(
-            observed.first.0,
-            steady.0 + 1,
-            "first-turn policy barrier changed: {observed:?}; trace: {:?}",
-            &writes[cuts[1]..cuts[2]]
-        );
-        Ok(observed)
+        Ok(())
     })
 }
 
@@ -186,35 +189,14 @@ fn reply_publication_drains_follow_commits_and_not_history_or_event_count() -> R
         }));
         ScriptedTurn::Events(events)
     };
-    let observed = measure([
+    measure([
         text("one"),
         text("two"),
         text("three"),
         streamed(2),
         streamed(32),
         text("four"),
-    ])?;
-    // Cold root creation adds its policy barrier and may share its one drain
-    // with the first reply. A reopened root needs only the settled reply work.
-    let steady = observed.replies[0];
-    assert!(
-        (steady.1..=steady.1 + 1).contains(&observed.first.1),
-        "first-turn drains changed: {:?}",
-        observed.first
-    );
-    assert_eq!(
-        observed.reopened_first, steady,
-        "first turn after reopen flushes changed"
-    );
-    // Includes input publication through committed actor settlement. This
-    // absolute budget also rejects uniform added or missing reply drains.
-    // Thirty extra content parts need thirty extra ordering barriers.
-    assert_eq!(
-        observed.replies,
-        [(8, 11), (8, 11), (9, 11), (39, 11), (0, 1)],
-        "settled reply publication budget changed"
-    );
-    Ok(())
+    ])
 }
 
 #[test]
