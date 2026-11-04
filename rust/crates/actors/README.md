@@ -369,6 +369,11 @@ It also checks the Actors tests for `x86_64-pc-windows-gnu`. The command restore
 the original source after each mutation; cross-compilation does not execute the
 Windows runtime.
 
+Pass `premature-ack`, `extra-tail` or `unpolled-host` after `--completion` to
+select only those mutations plus the restored controls and cross-target checks.
+The last control drops the original host future before its first poll: pending
+and late completion observers must receive `CompletionStopped` immediately.
+
 `python3 scripts/qualify-actors-ready.py --restart-completion` advances that same
 host clock after the restarted input commits and before output observation. It
 checks that an intermediate absence assertion rejects this valid interleaving,

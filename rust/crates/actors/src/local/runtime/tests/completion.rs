@@ -4,7 +4,7 @@ use super::*;
 /// spilled across cooperative batches, cancellation and failed deliveries.
 #[tokio::test]
 async fn completion_joins_discovery_delivery_and_producer_lifetime() -> TestResult {
-    for stopped in [false, true] {
+    for (stop_before_poll, stopped) in [(true, false), (false, false), (false, true)] {
         let provider = Arc::new(Counted::new(MemoryStream::default()));
         let store = Store::new(Arc::clone(&provider), root()?);
         let handler = Arc::new(Gated {
@@ -21,6 +21,21 @@ async fn completion_joins_discovery_delivery_and_producer_lifetime() -> TestResu
             "completion escaped before its dispatcher"
         );
         let mut serving = Box::pin(runtime.run(|_, error| panic!("unexpected delivery: {error}")));
+        if stop_before_poll {
+            drop(serving);
+            assert!(
+                matches!(
+                    futures::poll!(completed.as_mut()),
+                    Poll::Ready(Err(Error::CompletionStopped))
+                ),
+                "completion producer survived its unpolled host"
+            );
+            assert!(matches!(
+                runtime.complete().await,
+                Err(Error::CompletionStopped)
+            ));
+            continue;
+        }
         // The dispatcher has already restored an EMPTY root. Creation must
         // arrive through its original follow, not a second placement path.
         observe_while_running(serving.as_mut(), async {

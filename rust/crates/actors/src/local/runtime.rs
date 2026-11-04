@@ -461,17 +461,31 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// Host forever: follow the root's activation log to discover actors
     /// created by any commit, deliver concurrently across actors, and fire
     /// alarms from one timer. Per-actor failures go to `report`; the input
-    /// stays queued.
-    pub async fn run(&self, report: impl Fn(&ActorReference, &Error)) -> Result<Infallible, Error> {
-        // The running future exclusively owns acknowledgement producers,
-        // including while restoring or opening the activation cursor.
-        let mut completions = self
+    /// stays queued. Creating this future claims its completion producer;
+    /// dropping it, including before the first poll, refuses pending and late
+    /// completion requests with [`Error::CompletionStopped`].
+    pub fn run(
+        &self,
+        report: impl Fn(&ActorReference, &Error),
+    ) -> impl std::future::Future<Output = Result<Infallible, Error>> {
+        // Transfer acknowledgement custody when the future is CREATED: dropping
+        // it must refuse observers even if the executor never polls it.
+        let completions = self
             .completions()
             .receive
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
-            .ok_or(Error::CompletionStopped)?;
+            .ok_or(Error::CompletionStopped);
+        self.run_owned(report, completions)
+    }
+
+    async fn run_owned(
+        &self,
+        report: impl Fn(&ActorReference, &Error),
+        completions: Result<tokio::sync::mpsc::UnboundedReceiver<Completion>, Error>,
+    ) -> Result<Infallible, Error> {
+        let mut completions = completions?;
         let mut completing: Vec<Completion> = Vec::new();
         let mut completion_tail = 0;
         let mut failure = None;

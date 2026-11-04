@@ -97,24 +97,37 @@ def observation():
         source.write_bytes(original)
 
 
-def completion(*, restored_only=False):
+def completion(selected=None):
     """Qualify the real dispatcher cut, its output oracle and operation cost."""
     source = ROOT / "rust/crates/actors/src/local/runtime.rs"
     original = source.read_bytes()
     normalized = original.replace(b"\r\n", b"\n")
     name = "local::runtime::tests::completion::completion_joins_discovery_delivery_and_producer_lifetime"
-    controls = [
-        (b"receive\n            .await\n            .map_err(|_| Error::CompletionStopped)?\n            .map_err(Error::CompletionFailed)",
+    custody = (b"        let completions = self\n"
+               b"            .completions()\n            .receive\n            .lock()\n"
+               b"            .unwrap_or_else(std::sync::PoisonError::into_inner)\n"
+               b"            .take()\n            .ok_or(Error::CompletionStopped);\n")
+    controls = {
+        "premature-ack": (b"receive\n            .await\n            .map_err(|_| Error::CompletionStopped)?\n            .map_err(Error::CompletionFailed)",
          b"let _ = receive;\n        Ok(())",
          "completion escaped"),
-        (b"completion_tail = match provider.tail(self.store.root().clone()).await {",
+        "extra-tail": (b"completion_tail = match provider.tail(self.store.root().clone()).await {",
          b"let _ = provider.tail(self.store.root().clone()).await;\n"
          b"completion_tail = match provider.tail(self.store.root().clone()).await {",
          "assertion `left == right` failed"),
-    ]
+        "unpolled-host": (custody + b"        self.run_owned(report, completions)\n",
+         b"        async move {\n" + custody
+         + b"        self.run_owned(report, completions).await\n        }\n",
+         "completion producer survived its unpolled host"),
+    }
+    chosen = list(controls) if selected is None else list(selected)
+    if len(chosen) != len(set(chosen)) or any(control not in controls for control in chosen):
+        raise RuntimeError("select distinct completion controls from " + ", ".join(controls)
+                           + "; recovery: " + RECOVERY + " --completion")
     print("Completion producer sha256=" + hashlib.sha256(original).hexdigest(), flush=True)
     try:
-        for anchor, plant, diagnostic in ([] if restored_only else controls):
+        for control in chosen:
+            anchor, plant, diagnostic = controls[control]
             if normalized.count(anchor) != 1:
                 raise RuntimeError("completion producer anchor changed; recovery: " + RECOVERY + " --completion")
             source.write_bytes(normalized.replace(anchor, plant))
@@ -134,7 +147,7 @@ def completion(*, restored_only=False):
         print("STEP restored Actor completion controls: " + repr(command), flush=True)
         if subprocess.run(command, cwd=ROOT).returncode:
             raise RuntimeError("restored Actor completion controls failed; recovery: " + RECOVERY + " --completion")
-        if not restored_only:
+        if selected is None:
             observation()
         command = ["cargo", "check", "--locked", "-p", "acyclic-actors", "--tests",
                    "--all-features", "--target", "x86_64-pc-windows-gnu"]
@@ -177,7 +190,7 @@ def restart_completion():
         source.write_bytes(probe)
         run([name], "positive", model=False, recovery="--restart-completion")
         source.write_bytes(original)
-        completion(restored_only=True)
+        completion(())
     finally:
         source.write_bytes(original)
 
@@ -186,8 +199,8 @@ def main():
     if sys.argv[1:] == ["--restart-completion"]:
         restart_completion()
         return
-    if sys.argv[1:] == ["--completion"]:
-        completion()
+    if sys.argv[1:2] == ["--completion"]:
+        completion(None if len(sys.argv) == 2 else sys.argv[2:])
         return
     if sys.argv[1:] == ["--observation"]:
         observation()
