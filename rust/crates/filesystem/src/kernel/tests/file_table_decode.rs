@@ -1,82 +1,7 @@
 use super::*;
 use proptest::prelude::*;
 
-#[path = "file_table_decode/reference.rs"]
-mod reference;
-
-#[derive(Clone, Debug, PartialEq)]
-enum Failure {
-    Decode(CanonicalDecodeError),
-    Denied,
-}
-
-impl From<CanonicalDecodeError> for Failure {
-    fn from(error: CanonicalDecodeError) -> Self {
-        Self::Decode(error)
-    }
-}
-
-fn event(step: ReadAllocationStep) -> (u8, u64, u64) {
-    match step {
-        ReadAllocationStep::Allocate { bytes, operations } => (0, bytes, operations),
-        ReadAllocationStep::ReserveFailed(_) => (1, 0, 0),
-        ReadAllocationStep::Capacity {
-            admitted_bytes,
-            actual_bytes,
-        } => (2, admitted_bytes, actual_bytes),
-        ReadAllocationStep::CheckCopy(bytes) => (9, bytes, 0),
-        ReadAllocationStep::BeforeCopy(bytes) => (3, bytes, 0),
-        ReadAllocationStep::Copied(bytes) => (4, bytes, 0),
-        ReadAllocationStep::BeforeHash(bytes) => (5, bytes, 0),
-        ReadAllocationStep::Hashed(bytes) => (6, bytes, 0),
-        ReadAllocationStep::BeforeItem => (7, 0, 0),
-        ReadAllocationStep::Item => (8, 0, 0),
-    }
-}
-
-fn observed<const ORDER: bool, const LEGACY: bool>(
-    bytes: &[u8],
-    limits: DecodeLimits,
-    deny_at: usize,
-) -> (Result<FileTablePage, Failure>, Vec<(u8, u64, u64)>) {
-    let mut events = Vec::new();
-    let mut observe = |step| {
-        events.push(event(step));
-        if events.len() > deny_at {
-            Err(Failure::Denied)
-        } else {
-            Ok(())
-        }
-    };
-    let result = if LEGACY {
-        reference::decode(bytes, limits, &mut observe)
-    } else if ORDER {
-        decode_file_table_page(bytes, limits, &mut observe)
-    } else {
-        decode_page::<false, Failure>(bytes, limits, &mut observe)
-    };
-    (result, events)
-}
-
-fn compare<const ORDER: bool>(
-    bytes: &[u8],
-    limits: DecodeLimits,
-) -> proptest::test_runner::TestCaseResult {
-    // Independently derive every denied prefix from the complete legacy trace:
-    // denial at event k must return Denied with exactly events [0..=k].
-    let (complete, tape) = observed::<false, true>(bytes, limits, usize::MAX);
-    for denied in 0..=tape.len() {
-        let (actual, events) = observed::<ORDER, false>(bytes, limits, denied);
-        let expected = if denied < tape.len() {
-            Err(Failure::Denied)
-        } else {
-            complete.clone()
-        };
-        prop_assert_eq!(actual, expected);
-        prop_assert_eq!(events.as_slice(), &tape[..(denied + 1).min(tape.len())]);
-    }
-    Ok(())
-}
+use super::fuzz::{Failure, compare, observed};
 
 fn record(key: u8) -> FileRecord {
     let object = |kind| digest_object(kind, [key; 32]);
@@ -84,7 +9,7 @@ fn record(key: u8) -> FileRecord {
         0 => (
             FileKind::Regular,
             FilePayload::Regular {
-                logical_bytes: 1,
+                logical_bytes: u64::from(key) + 1,
                 extents: object(ObjectKind::ExtentPage),
             },
         ),
@@ -122,7 +47,7 @@ fn record(key: u8) -> FileRecord {
         bindings: (key % 2 != 0).then(|| object(ObjectKind::BindingPage)),
         file_id: FileId::from_bytes([key; 16]),
         kind,
-        link_count: 1,
+        link_count: u64::from(key) + 1,
         metadata: object(ObjectKind::Metadata),
         payload,
     }
@@ -191,8 +116,8 @@ proptest! {
             bytes[index % length] = value;
         }
         let limits = DecodeLimits { maximum_page_items: maximum, ..DecodeLimits::default() };
-        compare::<true>(&bytes, limits)?;
-        compare::<true>(&raw, limits)?;
+        compare::<true>(&bytes, limits).map_err(proptest::test_runner::TestCaseError::fail)?;
+        compare::<true>(&raw, limits).map_err(proptest::test_runner::TestCaseError::fail)?;
     }
 }
 
@@ -210,7 +135,10 @@ fn oracle_detects_missing_order_check_and_keeps_error_precedence() {
     let bytes = encoder.finish();
     let limits = DecodeLimits::default();
     compare::<true>(&bytes, limits).unwrap();
-    assert!(compare::<false>(&bytes, limits).is_err());
+    let rejected = std::panic::catch_unwind(|| super::fuzz::check::<false>(&bytes, limits, 0));
+    let message = rejected.unwrap_err();
+    let message = message.downcast_ref::<String>().unwrap();
+    assert!(message.contains("decoder result differs"), "{message}");
     for length in 0..bytes.len() {
         compare::<true>(&bytes[..length], limits).unwrap();
     }
@@ -239,30 +167,58 @@ fn oracle_detects_missing_order_check_and_keeps_error_precedence() {
 
 #[test]
 fn independent_reference_matches_crafted_malformed_pages_and_every_denied_prefix() {
+    let header_bytes = encode(&FileTablePage::Leaf(Vec::new())).len();
+    let kind_offset = header_bytes + 16;
+    let bindings_offset = kind_offset + 1 + 8 + record(6).metadata.encoded_len();
     let bytes = encode(&FileTablePage::Leaf(vec![record(6), record(13)]));
     let mut cases = Vec::new();
-    // Version, page tag, leaf kind, zero links and payload tag failures.
-    for (offset, value) in [(8, 255), (10, 255), (31, 255), (73, 255), (31, 1)] {
+    // Version, page, kind, bindings and payload tags, plus mismatched kind.
+    for (offset, value) in [
+        (DOMAIN.len(), 255),
+        (DOMAIN.len() + 2, 255),
+        (kind_offset, 255),
+        (bindings_offset, 255),
+        (bindings_offset + 1, 255),
+        (kind_offset, 1),
+    ] {
         let mut malformed = bytes.clone();
         malformed[offset] = value;
         cases.push(malformed);
     }
     let mut no_links = bytes.clone();
-    no_links[32..40].fill(0);
+    no_links[kind_offset + 1..kind_offset + 9].fill(0);
     cases.push(no_links);
     let mut excessive = bytes.clone();
-    excessive[11..15].copy_from_slice(&u32::MAX.to_le_bytes());
+    excessive[DOMAIN.len() + 3..header_bytes].copy_from_slice(&u32::MAX.to_le_bytes());
     cases.push(excessive);
     let mut duplicate = bytes.clone();
-    duplicate[74..90].copy_from_slice(&bytes[15..31]);
+    let second_record = encode(&FileTablePage::Leaf(vec![record(6)])).len();
+    duplicate[second_record..second_record + 16]
+        .copy_from_slice(&bytes[header_bytes..header_bytes + 16]);
+    assert_eq!(
+        observed::<true, false>(&duplicate, DecodeLimits::default(), usize::MAX).0,
+        Err(Failure::Decode(invariant(
+            FileTableError::NotStrictlyOrdered
+        )))
+    );
     cases.push(duplicate);
-    let mut empty_internal = bytes[..15].to_vec();
-    empty_internal[10] = 2;
-    empty_internal[11..15].fill(0);
+    let mut empty_internal = bytes[..header_bytes].to_vec();
+    empty_internal[DOMAIN.len() + 2] = 2;
+    empty_internal[DOMAIN.len() + 3..header_bytes].fill(0);
     cases.push(empty_internal);
-    let inline = encode(&FileTablePage::Leaf(vec![record(5)]));
+    let inline_record = record(5);
+    let inline = encode(&FileTablePage::Leaf(vec![inline_record]));
     let mut large_inline = inline.clone();
-    large_inline[74 + 33] = 65;
+    let inline_length = usize::try_from(inline_record.logical_file_bytes()).unwrap();
+    let length_offset = inline.len() - inline_length - 1;
+    large_inline[length_offset] = 65;
+    assert_eq!(
+        observed::<true, false>(&large_inline, DecodeLimits::default(), usize::MAX).0,
+        Err(Failure::Decode(CanonicalDecodeError::FieldTooLarge {
+            observed: 65,
+            maximum: u32::try_from(MAXIMUM_INLINE_FILE_BYTES).unwrap(),
+        }))
+    );
     cases.push(large_inline);
     let internal = encode(&FileTablePage::Internal(vec![
         Child {
@@ -275,7 +231,19 @@ fn independent_reference_matches_crafted_malformed_pages_and_every_denied_prefix
         },
     ]));
     let mut unordered_internal = internal.clone();
-    unordered_internal[63..79].copy_from_slice(&internal[15..31]);
+    let second_child = encode(&FileTablePage::Internal(vec![Child {
+        first: FileId::from_bytes([1; 16]),
+        page: digest_object(ObjectKind::FileTablePage, [1; 32]),
+    }]))
+    .len();
+    unordered_internal[second_child..second_child + 16]
+        .copy_from_slice(&internal[header_bytes..header_bytes + 16]);
+    assert_eq!(
+        observed::<true, false>(&unordered_internal, DecodeLimits::default(), usize::MAX).0,
+        Err(Failure::Decode(invariant(
+            FileTableError::InvalidInternalPage
+        )))
+    );
     cases.push(unordered_internal);
     cases.extend([bytes, inline, internal]);
     for bytes in cases {

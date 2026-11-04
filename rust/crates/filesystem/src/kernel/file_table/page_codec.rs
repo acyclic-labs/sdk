@@ -618,6 +618,10 @@ pub fn file_table_page_id(
     })
 }
 
+#[cfg(any(test, feature = "fuzzing"))]
+#[path = "page_codec_fuzz.rs"]
+pub(super) mod fuzz;
+
 #[cfg(test)]
 #[cfg(not(loom))]
 #[path = "../tests/file_table_decode.rs"]

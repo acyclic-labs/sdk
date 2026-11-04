@@ -1,0 +1,33 @@
+--- a/rust/crates/filesystem/src/kernel/extent_mutation/patches.rs
++++ b/rust/crates/filesystem/src/kernel/extent_mutation/patches.rs
+@@ -17,12 +17,12 @@
+                 extend,
+             } => {
+                 if *length == 0 {
+-                    return Err(extent_error(ExtentMutationError::EmptyRange));
++                    return Err(extent_error(ExtentMutationError::OutsideFile));
+                 }
+                 validate_kind(kind, *length).map_err(extent_error)?;
+                 let end = offset
+                     .checked_add(*length)
+-                    .ok_or_else(|| extent_error(ExtentMutationError::RangeOverflow))?;
++                    .ok_or_else(|| extent_error(ExtentMutationError::OutsideFile))?;
+                 if end > size && !extend {
+                     return Err(extent_error(ExtentMutationError::OutsideFile));
+                 }
+--- a/rust/crates/filesystem/src/kernel/extent_mutation.rs
++++ b/rust/crates/filesystem/src/kernel/extent_mutation.rs
+@@ -297,11 +297,11 @@
+     } = kind
+     {
+         if object.kind != ObjectKind::Blob {
+-            return Err(ExtentMutationError::WrongContentKind);
++            return Err(ExtentMutationError::RangeOverflow);
+         }
+         object_offset
+             .checked_add(length)
+-            .ok_or(ExtentMutationError::RangeOverflow)?;
++            .ok_or(ExtentMutationError::OutsideFile)?;
+     }
+     Ok(())
+ }

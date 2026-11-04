@@ -118,7 +118,10 @@ async fn flatten_extent_tree(
     )
 }
 
-fn apply_reference(bytes: &mut Vec<ByteKind>, mutation: &ExtentMutation) {
+fn apply_reference(
+    bytes: &mut Vec<ByteKind>,
+    mutation: &ExtentMutation,
+) -> Result<(), ExtentMutationError> {
     match mutation {
         ExtentMutation::Resize { logical_bytes } => {
             bytes.resize(
@@ -130,10 +133,31 @@ fn apply_reference(bytes: &mut Vec<ByteKind>, mutation: &ExtentMutation) {
             offset,
             length,
             kind,
-            ..
+            extend,
         } => {
-            let start = usize::try_from(*offset).unwrap_or(usize::MAX);
-            let end = usize::try_from(offset.saturating_add(*length)).unwrap_or(usize::MAX);
+            if *length == 0 {
+                return Err(ExtentMutationError::EmptyRange);
+            }
+            if let ExtentKind::Content {
+                object,
+                object_offset,
+            } = kind
+            {
+                if object.kind != ObjectKind::Blob {
+                    return Err(ExtentMutationError::WrongContentKind);
+                }
+                object_offset
+                    .checked_add(*length)
+                    .ok_or(ExtentMutationError::RangeOverflow)?;
+            }
+            let end = offset
+                .checked_add(*length)
+                .ok_or(ExtentMutationError::RangeOverflow)?;
+            let start = usize::try_from(*offset).map_err(|_| ExtentMutationError::RangeOverflow)?;
+            let end = usize::try_from(end).map_err(|_| ExtentMutationError::RangeOverflow)?;
+            if !extend && end > bytes.len() {
+                return Err(ExtentMutationError::OutsideFile);
+            }
             if start > bytes.len() {
                 bytes.resize(start, ByteKind::Hole);
             }
@@ -148,12 +172,17 @@ fn apply_reference(bytes: &mut Vec<ByteKind>, mutation: &ExtentMutation) {
                     } => ByteKind::Content {
                         object: *object,
                         offset: object_offset
-                            .saturating_add(u64::try_from(relative).unwrap_or(u64::MAX)),
+                            .checked_add(
+                                u64::try_from(relative)
+                                    .map_err(|_| ExtentMutationError::RangeOverflow)?,
+                            )
+                            .ok_or(ExtentMutationError::RangeOverflow)?,
                     },
                 };
             }
         }
     }
+    Ok(())
 }
 
 fn next(seed: &mut u64) -> u64 {
@@ -171,6 +200,7 @@ async fn generated_sparse_histories_match_independent_byte_model()
         kind: ObjectKind::Blob,
         digest: Digest::from_bytes([9; 32]),
     };
+    let mut refusal_mismatches = [false; 5];
     for history in 0..256_u64 {
         let store = MemoryObjectStore::default();
         let mut seed = history.saturating_add(1);
@@ -196,8 +226,11 @@ async fn generated_sparse_histories_match_independent_byte_model()
                     logical_bytes: next(&mut seed) % 65,
                 }
             } else {
-                let offset = next(&mut seed) % 65;
-                let length = next(&mut seed) % 16 + 1;
+                let extend = expected.is_empty() || next(&mut seed) >> 63 != 0;
+                let size = u64::try_from(expected.len())?;
+                let offset = next(&mut seed) % if extend { 65 } else { size };
+                let length =
+                    next(&mut seed) % if extend { 16 } else { (size - offset).min(16) } + 1;
                 let kind = match next(&mut seed) % 3 {
                     0 => ExtentKind::Hole,
                     1 => ExtentKind::AllocatedZero,
@@ -210,79 +243,99 @@ async fn generated_sparse_histories_match_independent_byte_model()
                     offset,
                     length,
                     kind,
-                    extend: true,
+                    extend,
                 }
             };
-            apply_reference(&mut expected, &mutation);
+            apply_reference(&mut expected, &mutation)?;
             mutations.push(mutation);
         }
-        let limits = DecodeLimits {
-            maximum_page_items: 4,
-            ..DecodeLimits::default()
-        };
-        let receipt = apply_extent_mutations(
-            &store,
-            (root, old_size),
-            &mutations,
-            8,
-            limits,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await?;
-        assert_eq!(receipt.logical_bytes, u64::try_from(expected.len())?);
-        assert_eq!(
-            extents_to_bytes(&flatten_extent_tree(&store, receipt.root).await?)?,
-            expected,
-            "history {history} diverged"
-        );
+        for reject in [false, true] {
+            // Refused variants exercise each admission cause before storage.
+            let refusal = usize::try_from(history % 5)?;
+            let expected_admission = if reject {
+                let (offset, length, kind, extend) = match refusal {
+                    0 => (
+                        u64::try_from(expected.len())?,
+                        1,
+                        ExtentKind::AllocatedZero,
+                        false,
+                    ),
+                    1 => (u64::MAX, 0, ExtentKind::Hole, false),
+                    2 => (u64::MAX, 1, ExtentKind::AllocatedZero, true),
+                    3 => (
+                        0,
+                        1,
+                        ExtentKind::Content {
+                            object: ObjectId {
+                                kind: ObjectKind::Metadata,
+                                ..blob
+                            },
+                            object_offset: u64::MAX,
+                        },
+                        false,
+                    ),
+                    _ => (
+                        0,
+                        1,
+                        ExtentKind::Content {
+                            object: blob,
+                            object_offset: u64::MAX,
+                        },
+                        true,
+                    ),
+                };
+                let mutation = ExtentMutation::Replace {
+                    offset,
+                    length,
+                    kind,
+                    extend,
+                };
+                let outcome = apply_reference(&mut expected, &mutation);
+                mutations.push(mutation);
+                outcome
+            } else {
+                Ok(())
+            };
+            let limits = DecodeLimits {
+                maximum_page_items: 4,
+                ..DecodeLimits::default()
+            };
+            let result = apply_extent_mutations(
+                &store,
+                (root, old_size),
+                &mutations,
+                u32::try_from(mutations.len())?,
+                limits,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await;
+            if let Err(expected_error) = expected_admission {
+                let failure = result.expect_err("extent admission differs from byte model");
+                refusal_mismatches[refusal] |= std::mem::discriminant(&failure.error)
+                    != std::mem::discriminant(&expected_error);
+                assert_eq!(failure.work.items_examined, u64::try_from(mutations.len())?);
+                assert_eq!(failure.work.allocation_operations, 0);
+                assert_eq!(failure.work.peak_allocation_bytes, 0);
+                assert_eq!(failure.work.backend_read_operations, 0);
+                assert_eq!(failure.work.backend_write_operations, 0);
+                assert_eq!(failure.work.object_bytes_read, 0);
+                assert_eq!(failure.work.object_bytes_written, 0);
+                continue;
+            }
+            let receipt = result?;
+            assert_eq!(receipt.logical_bytes, u64::try_from(expected.len())?);
+            assert_eq!(
+                extents_to_bytes(&flatten_extent_tree(&store, receipt.root).await?)?,
+                expected,
+                "history {history} diverged"
+            );
+        }
     }
-    Ok(())
-}
-
-#[test]
-fn patch_admission_and_coalescing_reject_every_boundary_before_storage()
--> Result<(), Box<dyn std::error::Error>> {
-    let cancellation = CancellationToken::new();
-    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-    let empty = admit_patch_plan(
-        8,
-        &[ExtentMutation::Replace {
-            offset: 0,
-            length: 0,
-            kind: ExtentKind::Hole,
-            extend: false,
-        }],
-        &mut accounting,
-    )
-    .err()
-    .ok_or("empty replacement unexpectedly admitted")?;
-    assert!(matches!(
-        project_extent_error(empty),
-        ExtentMutationError::EmptyRange
-    ));
-
-    let overflow = admit_patch_plan(
-        u64::MAX,
-        &[ExtentMutation::Replace {
-            offset: u64::MAX,
-            length: 1,
-            kind: ExtentKind::AllocatedZero,
-            extend: true,
-        }],
-        &mut accounting,
-    )
-    .err()
-    .ok_or("overflowing replacement unexpectedly admitted")?;
-    assert!(matches!(
-        project_extent_error(overflow),
-        ExtentMutationError::RangeOverflow
-    ));
-
-    assert!(!equivalent_continuation(&hole(0, 1), &hole(2, 1))?);
-    assert!(equivalent_continuation(&hole(0, 1), &hole(1, 1))?);
-    assert!(equivalent_continuation(&allocated(0, 1), &allocated(1, 1))?);
-    assert!(!equivalent_continuation(&hole(0, 1), &allocated(1, 1))?);
+    assert_eq!(
+        refusal_mismatches, [false; 5],
+        "extent refusal causes differ from byte model"
+    );
     Ok(())
 }
 

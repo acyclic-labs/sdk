@@ -1,0 +1,19 @@
+--- a/rust/crates/filesystem/src/kernel/extent.rs
++++ b/rust/crates/filesystem/src/kernel/extent.rs
+@@ -187,7 +187,7 @@
+                 match decoder.u8(&mut observe)? {
+                     1 | 2 => {}
+                     3 => {
+-                        decoder.object(ObjectKind::Blob, &mut observe)?;
++                        decoder.any_object(&mut observe)?;
+                         decoder.u64(&mut observe)?;
+                     }
+                     tag => {
+@@ -211,7 +211,6 @@
+             });
+         }
+     };
+-    decoder.finish()?;
+     Ok(DecodedPageShape {
+         kind,
+         items: usize::try_from(count).map_err(|_| CanonicalDecodeError::LengthOverflow)?,

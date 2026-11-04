@@ -1,6 +1,6 @@
 //! Shared byte-input oracle for the real canonical decoder accounting boundary.
 use super::allocation::KernelAccounting;
-use super::codec::ReadAllocationStep;
+use super::codec::{CanonicalInvariant, DecodedPageKind, DecodedPageShape, ReadAllocationStep};
 use super::file_read::OriginalReadAccounting;
 use super::*;
 use crate::{CancellationToken, FsError, WorkBudget, WorkCounters};
@@ -31,6 +31,7 @@ fn decode<const PLANTED: bool>(
     kind: u8,
     bytes: &[u8],
     limits: DecodeLimits,
+    prefix: usize,
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), FsError>,
 ) -> Result<Vec<u8>, FsError> {
     let allocation_error = |_| CanonicalDecodeError::AllocationFailed.into();
@@ -69,7 +70,66 @@ fn decode<const PLANTED: bool>(
             )
         }
         4 => {
-            let value = decode_extent_page(bytes, limits, observe)?;
+            // Shape admission is a separate production entry point. Exercise
+            // arbitrary bytes even when full decoding or its admission fails.
+            let shape = super::extent::decode_extent_page_shape(bytes, limits);
+            let decoded = decode_extent_page(bytes, limits, observe);
+            if let Err(FsError::Decode(error)) = &decoded
+                && matches!(
+                    error,
+                    CanonicalDecodeError::WrongDomain
+                        | CanonicalDecodeError::UnsupportedVersion { .. }
+                        | CanonicalDecodeError::ObjectTooLarge { .. }
+                        | CanonicalDecodeError::FieldTooLarge { .. }
+                        | CanonicalDecodeError::UnknownTag { .. }
+                        | CanonicalDecodeError::TrailingBytes
+                        | CanonicalDecodeError::Invariant(CanonicalInvariant::Static(_))
+                )
+            {
+                // Full-only extent semantics and injected Truncated refusals
+                // do not establish a structural shape-decoder error.
+                assert_eq!(
+                    shape,
+                    Err(error.clone()),
+                    "extent shape refusal differs from the full decoder"
+                );
+            }
+            let value = decoded?;
+            let (kind, count) = match &value {
+                ExtentPage::Leaf(items) => (DecodedPageKind::Leaf, items.len()),
+                ExtentPage::Internal(items) => (DecodedPageKind::Internal, items.len()),
+            };
+            assert_eq!(
+                shape,
+                Ok(DecodedPageShape {
+                    kind,
+                    items: count,
+                    nested_bytes: 0,
+                }),
+                "extent shape differs from the fully validated page"
+            );
+            assert!(
+                super::extent::decode_extent_page_shape(&bytes[..prefix % bytes.len()], limits)
+                    .is_err(),
+                "extent shape admitted a truncated frame"
+            );
+            let mut trailing = bytes.to_vec();
+            trailing.push(0);
+            assert!(
+                super::extent::decode_extent_page_shape(&trailing, limits).is_err(),
+                "extent shape admitted trailing bytes"
+            );
+            let version = [0_u16, 2, u16::MAX][prefix % 3];
+            let mut header = bytes[..10].to_vec();
+            header[8..10].copy_from_slice(&version.to_le_bytes());
+            assert_eq!(
+                super::extent::decode_extent_page_shape(&header, limits),
+                Err(CanonicalDecodeError::UnsupportedVersion {
+                    found: version,
+                    expected: 1,
+                }),
+                "extent shape did not retain version refusal"
+            );
             canonical::<_, PLANTED>(
                 &value,
                 encode_extent_page(&value, items, |_| Ok::<_, FsError>(()), allocation_error),
@@ -103,12 +163,14 @@ pub fn check(input: &[u8]) {
     let _ = check_inner::<false, false>(input);
 }
 
-fn check_inner<const OMIT_COMPLETION: bool, const PLANTED: bool>(input: &[u8]) -> bool {
+fn check_inner<const OMIT_COMPLETION: bool, const PLANTED: bool>(
+    input: &[u8],
+) -> Result<(), FsError> {
     let Some((&kind, input)) = input.split_first() else {
-        return false;
+        return Err(CanonicalDecodeError::Truncated.into());
     };
     let Some(controls) = input.get(..5) else {
-        return false;
+        return Err(CanonicalDecodeError::Truncated.into());
     };
     let bytes = &input[5..];
     let maximum = u64::from(u16::from_le_bytes([controls[0], controls[1]]));
@@ -161,7 +223,11 @@ fn check_inner<const OMIT_COMPLETION: bool, const PLANTED: bool>(input: &[u8]) -
         maximum_name_bytes: 256,
         ..DecodeLimits::default()
     };
-    let decoded = decode::<PLANTED>(kind % KINDS, bytes, limits, &mut |step| {
+    let prefix = usize::from(u16::from_le_bytes([controls[3], controls[4]]));
+    if kind % KINDS == 2 {
+        super::file_table::check_fuzz::<true>(bytes, limits, prefix);
+    }
+    let decoded = decode::<PLANTED>(kind % KINDS, bytes, limits, prefix, &mut |step| {
         let before = matches!(
             step,
             ReadAllocationStep::BeforeCopy(_)
@@ -223,8 +289,7 @@ fn check_inner<const OMIT_COMPLETION: bool, const PLANTED: bool>(input: &[u8]) -
             "all canonical body bytes must have completion callbacks"
         );
     }
-    let succeeded = decoded.is_ok();
-    drop(decoded);
+    let result = decoded.map(|_| ());
     observed.release_failed().unwrap();
     let receipt = accounting.spent();
     assert_eq!(
@@ -248,7 +313,7 @@ fn check_inner<const OMIT_COMPLETION: bool, const PLANTED: bool>(input: &[u8]) -
     if OMIT_COMPLETION {
         assert!(omitted, "negative control did not reach a completion")
     }
-    succeeded
+    result
 }
 
 #[cfg(test)]
@@ -393,7 +458,8 @@ mod tests {
             ] {
                 let mut input = vec![kind, 255, 255, mode, 0, 0];
                 input.extend_from_slice(&bytes);
-                prop_assert!(check_inner::<false, false>(&input));
+                let result = check_inner::<false, false>(&input);
+                prop_assert!(result.is_ok(), "{result:?}");
                 input[1..3].copy_from_slice(&maximum.to_le_bytes());
                 input[4] = fault; input[5] = index;
                 check(&input);
@@ -402,6 +468,53 @@ mod tests {
                 input[1..3].fill(255); input[4] = 0;
                 for length in 0..bytes.len() { check(&input[..6 + length]); }
             }
+        }
+    }
+
+    #[test]
+    fn canonical_writer_corpus_reaches_the_shared_differential_oracles() {
+        for (index, bytes) in [
+            include_bytes!("../../fuzz/corpus/decoder_work/file-table-empty-leaf").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/file-table-plain-internal").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/file-table-sealed-internal").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/file-table-plain-leaf").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/file-table-sealed-leaf").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/extents-empty").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/extents-populated").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/extents-populated-sealed").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/extents-internal-lower-bounds")
+                .as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/extents-internal-lower-bounds-sealed")
+                .as_slice(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let result = check_inner::<false, false>(bytes);
+            assert!(
+                result.is_ok(),
+                "writer-derived seed {index} refused: {result:?}"
+            );
+        }
+        // Preserve old producer bytes as rejected inputs after format changes.
+        // Positive seeds above reuse the registered canonical writer captures.
+        for bytes in [
+            include_bytes!("../../fuzz/corpus/decoder_work/file-table-internal").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/file-table-single-fifo").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/inline-file-table").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/file-table-trailing").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/file-table-unordered").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/truncated-inline-payload").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/extents-unknown-page-kind").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/extents-unknown-extent-kind").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/extents-wrong-blob-kind").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/extents-internal").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/extents-internal-sealed").as_slice(),
+        ] {
+            assert!(
+                check_inner::<false, false>(bytes).is_err(),
+                "malformed seed admitted"
+            );
         }
     }
 
@@ -438,7 +551,7 @@ mod tests {
                 name.as_ref(),
                 "binding-leaf" | "binding-internal" | "binding-sealed-internal"
             ) {
-                assert!(admitted, "{name}");
+                assert!(admitted.is_ok(), "{name}: {admitted:?}");
             }
         }
     }
@@ -449,7 +562,7 @@ mod tests {
             for number in [0, 1] {
                 let mut input = vec![kind, 255, 255, 0, 0, 0];
                 input.extend_from_slice(&fixture(kind, b"a", number));
-                assert!(check_inner::<false, false>(&input));
+                assert!(check_inner::<false, false>(&input).is_ok());
                 let panic =
                     std::panic::catch_unwind(|| check_inner::<false, true>(&input)).unwrap_err();
                 let message = panic
