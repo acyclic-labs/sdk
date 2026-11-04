@@ -1073,9 +1073,6 @@ mod tests {
             lease.custody(),
         )
         .unwrap();
-        super::super::tests::ready(root.path(), "partial-ready", || {
-            tree.try_wait(None).map_or(true, |status| status.is_some())
-        });
         let records = root.path().join("trees");
         let path = std::fs::read_dir(&records)
             .unwrap()
@@ -1111,9 +1108,6 @@ mod tests {
                 &custody,
             )
             .unwrap();
-            super::super::tests::ready(root.path(), "partial-ready", || {
-                tree.try_wait(None).map_or(true, |status| status.is_some())
-            });
             let child = tree.child.take().unwrap();
             tree.cleanup_on_drop = false;
             let admission = io::Error::from(io::ErrorKind::WouldBlock);
@@ -1147,9 +1141,6 @@ mod tests {
             &custody,
         )
         .unwrap();
-        super::super::tests::ready(root.path(), "partial-ready", || {
-            tree.try_wait(None).map_or(true, |status| status.is_some())
-        });
         let record = std::fs::read_dir(&records)
             .unwrap()
             .next()
@@ -1210,9 +1201,6 @@ mod tests {
                 &custody,
             )
             .unwrap();
-            super::super::tests::ready(root.path(), "partial-ready", || {
-                tree.try_wait(None).map_or(true, |status| status.is_some())
-            });
             let record = std::fs::read_dir(&records)
                 .unwrap()
                 .next()
@@ -1306,9 +1294,6 @@ mod tests {
                 &custody,
             )
             .unwrap();
-            super::super::tests::ready(root.path(), "partial-ready", || {
-                tree.try_wait(None).map_or(true, |status| status.is_some())
-            });
             let child = tree.child.take().unwrap();
             let observed = Err(io::ErrorKind::Interrupted.into());
             let failure = if former_order {

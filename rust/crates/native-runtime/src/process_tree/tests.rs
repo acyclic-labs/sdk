@@ -823,9 +823,6 @@ fn queued_stdin_backpressure_keeps_cancellation_and_exclusive_custody() {
     let mut command = command("stdin-stall", temporary.path());
     command.stdin(ProcessStdio::piped());
     let mut tree = ProcessTree::spawn(&mut command).expect("spawn stalled reader");
-    ready(temporary.path(), "stdin-stall-ready", || {
-        tree_exited(&mut tree)
-    });
     tree.queue_stdin(vec![b'x'; BULK_BYTES])
         .expect("queue blocked prompt");
     assert!(!tree.pump_stdin().expect("one bounded nonblocking write"));
