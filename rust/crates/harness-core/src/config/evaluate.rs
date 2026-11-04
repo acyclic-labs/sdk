@@ -423,15 +423,16 @@ fn run(
             // Settings are pure: no clock or randomness, and no host
             // function, loader, tool or I/O is installed.
             let finish: Function = ctx.eval(FINISH)?;
-            // Dependencies come first, so each import resolves to a
-            // declared module; the root is last.
-            let mut declared = modules
-                .iter()
-                .map(|(name, module)| {
-                    rquickjs::Module::declare(ctx.clone(), name.as_str(), module.script.as_str())
-                })
-                .collect::<rquickjs::Result<Vec<_>>>()?;
-            let (module, promise) = declared.pop().ok_or(rquickjs::Error::Unknown)?.eval()?;
+            // The context owns declared dependencies; only the root needs
+            // a Rust handle for evaluation.
+            let (root, dependencies) = modules.split_last().ok_or(rquickjs::Error::Unknown)?;
+            for (name, module) in dependencies {
+                rquickjs::Module::declare(ctx.clone(), name.as_str(), module.script.as_str())?;
+            }
+            let (name, module) = root;
+            let (module, promise) =
+                rquickjs::Module::declare(ctx.clone(), name.as_str(), module.script.as_str())?
+                    .eval()?;
             promise.finish::<()>()?;
             let result: Object =
                 finish.call((module.namespace()?, base, surface == Surface::Data))?;
