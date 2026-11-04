@@ -24,6 +24,8 @@ selection.add_argument('--depth-prior', metavar='REVISION',
                        help='check the prior depth false positive, actual depth omission and exact restored corpus')
 selection.add_argument('--first-cause-prior', metavar='REVISION',
                        help='check prior-oracle miss, actual first-cause loss and exact restored corpus')
+selection.add_argument('--hidden-items', action='store_true',
+                       help='check the actual hidden raw item-bound omission with the retained native property')
 args = parser.parse_args()
 source = root / 'rust/crates/harness-core/src/executor/json/records.rs'
 oracle = root / 'rust/crates/harness/tests/support/bounded_json.rs'
@@ -41,6 +43,11 @@ if args.first_cause_prior:
     source = root / 'rust/crates/harness-core/src/executor/json/admission.rs'
     patch = root / 'rust/crates/harness-fuzz/negative-controls/typed-json-drop-first-cause.patch'
     out = root / 'target/typed-json-first-cause-control'
+if args.hidden_items:
+    source = root / 'rust/crates/harness-core/src/executor/json/admission.rs'
+    oracle = root / 'rust/crates/harness-core/src/executor/json/value_shape_tests.rs'
+    patch = root / 'rust/crates/harness-fuzz/negative-controls/typed-json-ignore-hidden-items.patch'
+    out = root / 'target/typed-json-hidden-items-control'
 command = ['cargo', 'test', '--locked', '-p', 'acyclic-harness-core', '--lib',
            'executor::json::tests::object_work::checked_codec_fuzz_corpus',
            '--', '--exact', '--nocapture']
@@ -48,6 +55,10 @@ if args.depth_prior or args.first_cause_prior:
     command = ['cargo', 'nextest', 'run', '--locked', '--profile', 'ci', '--retries', '0',
                '-p', 'acyclic-harness-core', '--lib', '-E',
                'test(=executor::json::tests::object_work::checked_codec_fuzz_corpus)']
+if args.hidden_items:
+    command = ['cargo', 'nextest', 'run', '--locked', '--profile', 'ci', '--retries', '0',
+               '-p', 'acyclic-harness-core', '--lib', '--features', 'filesystem', '-E',
+               'test(=executor::json::value_shape_tests::hidden_raw_values_are_bounded_before_decode)']
 step = 'read original typed JSON source'
 
 def digest(data):
@@ -65,6 +76,9 @@ try:
               'corpus': [{'name': path.name, 'sha256': digest(path.read_bytes())}
                          for path in sorted((root / 'rust/crates/harness-fuzz/corpus/bounded_json').iterdir())
                          if path.is_file()]}
+    if args.hidden_items:
+        result['corpus'] = []
+        result['operand_source'] = oracle.relative_to(root).as_posix()
     try:
         step = 'apply selected typed JSON production mutation'
         subprocess.run(['git', 'apply', '--check', str(patch)], cwd=root, check=True)
@@ -99,8 +113,12 @@ try:
             phases = [('prior-oracle-mutant-miss', 0, '1 test run: 1 passed'),
                       ('first-cause-loss-red', 100, 'materialized JSON admission must preserve the first caller cause'),
                       ('restored-original-corpus', 0, '1 test run: 1 passed')]
+        if args.hidden_items:
+            phases = [('hidden-item-omission-red', 100,
+                       'assertion failed: !admitted && inspected <= maximum_inspected'),
+                      ('restored-original-property', 0, '1 test run: 1 passed')]
         for name, expected, assertion in phases:
-            source.write_bytes(original if name in ['prior-depth-false-positive', 'restored-original-corpus'] else mutated)
+            source.write_bytes(original if name in ['prior-depth-false-positive', 'restored-original-corpus', 'restored-original-property'] else mutated)
             oracle.write_bytes(prior if name in ['prior-oracle-mutant-miss', 'prior-depth-false-positive'] else original_oracle)
             step = name
             log = out / (name + '.log')
@@ -112,7 +130,7 @@ try:
                      'source': digest(source.read_bytes()), 'oracle': digest(oracle.read_bytes()),
                      'log': digest(log.read_bytes())}
             executables = re.findall(r'Running unittests .*? \(([^)]+)\)', output)
-            if args.depth_prior or args.first_cause_prior:
+            if args.depth_prior or args.first_cause_prior or args.hidden_items:
                 executables = re.findall(r'command:.*?(/[^\s]+/acyclic_harness_core-[a-f0-9]+)', output)
             if executables:
                 executable = root / executables[-1]

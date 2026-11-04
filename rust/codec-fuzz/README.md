@@ -937,3 +937,8 @@ reused. Run `python3 rust/crates/harness-fuzz/typed-json-negative-control.py
 --first-cause-prior <prior-oracle-revision>` to check the prior oracle's miss,
 the actual stored-error omission, and the exact restored corpus. No input or
 test count is added.
+
+The retained native hidden-raw property crosses its 64-item limit with 65
+elements. Run `python3 rust/crates/harness-fuzz/typed-json-negative-control.py
+--hidden-items` to omit the actual final item guard, require the unchanged
+no-admission assertion to fail, and restore the original passing property.
