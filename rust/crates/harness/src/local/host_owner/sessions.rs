@@ -279,7 +279,7 @@ impl HostWorkspaceOwner {
             turn: session.settled + 1,
         };
         Ok(
-            json!({"task":child,"cwd":self.view(child)?.path(),"turn":claim.turn,
+            json!({"task":child,"cwd":self.view(child)?.host_cwd(),"turn":claim.turn,
             "claim":claim,"prompt":prompt,"session":session.native}),
         )
     }
@@ -375,7 +375,7 @@ impl HostWorkspaceOwner {
     ) -> Result<Value> {
         let (state, session) = self.native.session(child).await?;
         let pending = session.pending(&state);
-        let mut value = json!({"task":child,"cwd":self.view(child)?.path(),
+        let mut value = json!({"task":child,"cwd":self.view(child)?.host_cwd(),
             "status":{"settled":session.claimed().is_none(),"turn":session.settled},
             "control":session.control,"events":session.events,"pending":pending});
         if include_result {
