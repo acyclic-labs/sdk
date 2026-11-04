@@ -158,12 +158,7 @@ impl Drop for Output {
                 tracing::error!(?cause, "tool output timer cleanup failed");
             }
             let mut writer = writer.lock().await;
-            let result = async {
-                writer.flush(false).await?;
-                writer.flush(true).await
-            }
-            .await;
-            if let Err(cause) = result {
+            if let Err(cause) = writer.flush_pending().await {
                 tracing::error!(?cause, "captured tool output cleanup failed");
             }
         });
@@ -191,12 +186,7 @@ async fn flush_ready(
             () = tokio::time::sleep(OUTPUT_FLUSH_INTERVAL) => {},
         }
         let mut writer = writer.lock().await;
-        let result = async {
-            writer.flush(false).await?;
-            writer.flush(true).await
-        }
-        .await;
-        if let Err(cause) = result {
+        if let Err(cause) = writer.flush_pending().await {
             health.fail(cause);
             return;
         }
