@@ -544,15 +544,6 @@ impl StockExecution<'_> {
                     )
                 })?;
                 admission.observe(event, self.stock.limits, io)?;
-                // Reconciliation already supplied its complete continuation.
-                // Reject a supplied suffix before committing its terminal event;
-                // an open provider transport settles without waiting for EOF.
-                if admission.completed
-                    && let Either::Left(continuation) = &mut stream
-                    && let Some(trailing) = continuation.next().await
-                {
-                    admission.observe(&trailing?, self.stock.limits, io)?;
-                }
                 if let Some(text) = text.as_mut() {
                     text.observe(event);
                 }
