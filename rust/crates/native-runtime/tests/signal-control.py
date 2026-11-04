@@ -1,7 +1,7 @@
 """Check production signal/wake/owner models against actual source defects.
 
 Run in a disposable checkout: python3 rust/crates/native-runtime/tests/signal-control.py /tmp/native-signal-control
-Select a retained control with --wake, --owners, --host, --host-source, --host-events, --ownership, --claim, --descriptor, --owner-envelope, --durability, --durability-io, --native-terminal, --native-capacity, --native-funding --native-tracker, --executor-source, --executor-rounds, --executor-retirement, --clock, --core-source, --process-admission, --native-flush, --exit-owner, --capture-bound, --drain-conformance, --file-fail-stop, --private-publication or --wait-report.
+Select a retained control with --wake, --owners, --host, --host-source, --host-events, --ownership, --claim, --descriptor, --owner-envelope, --durability, --durability-io, --native-terminal, --native-capacity, --native-funding --native-tracker, --executor-source, --executor-rounds, --executor-retirement, --clock, --core-source, --process-admission, --native-flush, --exit-owner, --capture-bound, --descendant-retirement, --drain-conformance, --file-fail-stop, --private-publication or --wait-report.
 An optional comma-separated mutation selection shares one restored positive run.
 """
 import hashlib
@@ -13,8 +13,8 @@ import sys
 
 
 def main():
-    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--host-source", "--host-events", "--ownership", "--claim", "--descriptor", "--owner-envelope", "--durability", "--durability-io", "--native-terminal", "--native-capacity", "--native-funding", "--native-tracker", "--executor-source", "--executor-rounds", "--executor-retirement", "--clock", "--core-source", "--process-admission", "--native-flush", "--exit-owner", "--capture-bound", "--drain-conformance", "--file-fail-stop", "--private-publication", "--wait-report")):
-        raise RuntimeError("arguments: expected evidence directory, optional control and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--host-source|--host-events|--ownership|--claim|--descriptor|--owner-envelope|--durability|--durability-io|--native-terminal|--native-capacity|--native-funding|--native-tracker|--executor-source|--executor-rounds|--executor-retirement|--clock|--core-source|--process-admission|--native-flush|--exit-owner|--capture-bound|--drain-conformance|--file-fail-stop|--private-publication|--wait-report [mutation]]")
+    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--host-source", "--host-events", "--ownership", "--claim", "--descriptor", "--owner-envelope", "--durability", "--durability-io", "--native-terminal", "--native-capacity", "--native-funding", "--native-tracker", "--executor-source", "--executor-rounds", "--executor-retirement", "--clock", "--core-source", "--process-admission", "--native-flush", "--exit-owner", "--capture-bound", "--descendant-retirement", "--drain-conformance", "--file-fail-stop", "--private-publication", "--wait-report")):
+        raise RuntimeError("arguments: expected evidence directory, optional control and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--host-source|--host-events|--ownership|--claim|--descriptor|--owner-envelope|--durability|--durability-io|--native-terminal|--native-capacity|--native-funding|--native-tracker|--executor-source|--executor-rounds|--executor-retirement|--clock|--core-source|--process-admission|--native-flush|--exit-owner|--capture-bound|--descendant-retirement|--drain-conformance|--file-fail-stop|--private-publication|--wait-report [mutation]]")
     mode = sys.argv[2] if len(sys.argv) >= 3 else "--signal"
     root = Path(__file__).resolve().parents[4]
     output = Path(sys.argv[1]).resolve()
@@ -71,6 +71,7 @@ def main():
         "--native-flush": ("../src/held_sync.rs", (native_flush,), None),
         "--exit-owner": ("../src/process_tree/exit_wait/tests.rs", (exit_owner,), None),
         "--capture-bound": ("../src/process_tree/tests.rs", (capture,), None),
+        "--descendant-retirement": ("../src/process_tree/tests.rs", (tracker.parent / "process_tree/tests.rs",), None),
         "--drain-conformance": ("../src/device_flush.rs", (drain,), None),
         "--file-fail-stop": ("../src/tests/completion.rs", (file_completion,), None),
         "--private-publication": ("../src/private_file/tests.rs", (private_file,), None),
@@ -87,6 +88,7 @@ def main():
             "--native-flush": "held_sync::tests::full_flush_supports_regular_files_and_directories_and_preserves_errors",
             "--exit-owner": "process_tree::exit_wait::tests::quiet_wait_observes_exit_without_periodic_wakeups_or_reaping",
             "--capture-bound": "process_tree::tests::collection_closes_stdin_and_preserves_explicit_environment",
+            "--descendant-retirement": "process_tree::tests::cleanup_is_idempotent_and_drop_contains_descendants",
             "--drain-conformance": "device_flush::tests::concurrent_requests_share_the_next_covering_drain",
             "--file-fail-stop": "tests::completion::accepted_callback_cannot_disappear_without_terminal_completion",
             "--private-publication": "private_file::tests::every_publication_cut_exposes_only_complete_private_records",
@@ -102,6 +104,19 @@ def main():
         command = [
             "cargo", "nextest", "run", "--locked", "-p", "acyclic-native-runtime",
             "--lib", "--all-features", "-E", f"test(={test})", "--test-threads", "1",
+        ]
+    if mode == "--descendant-retirement":
+        tests = (
+            "cleanup_is_idempotent_and_drop_contains_descendants",
+            "capture_check_failure_cleans_up_the_owned_tree",
+            "graceful_cleanup_handles_an_exited_leader_and_its_descendants",
+            "capture_timeout_and_output_overflow_reap_owned_tree",
+            "exited_parent_does_not_leave_descendant_holding_output_open",
+        )
+        command = [
+            "cargo", "nextest", "run", "--locked", "-p", "acyclic-native-runtime",
+            "--lib", "--all-features", "-E",
+            " | ".join(f"test(=process_tree::tests::{test})" for test in tests),
         ]
     report = {"inputs": {str(path.relative_to(root)): digest(data) for path, data in originals.items()}, "steps": []}
 
@@ -363,6 +378,13 @@ qualificationMain([process.argv[1]], (command, args, options) => spawnSync(comma
              b"            if retained != read {",
              b"            if false && retained != read {",
              "combined pipes exceed budget"),
+        ]
+    elif mode == "--descendant-retirement":
+        mutations = [
+            ("observation-before-retirement", oracle,
+             b"        drop(tree);\n        assert_descendant_retired(temporary.path());",
+             b"        assert_descendant_retired(temporary.path());\n        drop(tree);",
+             "original descendant outlived tree cleanup"),
         ]
     elif mode == "--drain-conformance":
         mutations = [
