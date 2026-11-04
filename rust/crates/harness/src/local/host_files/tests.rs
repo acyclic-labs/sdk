@@ -915,6 +915,30 @@ async fn saved_command_result_follows_its_original_request_directory() -> Result
         committed
     );
     assert_eq!(owner.dispatch(operation, action).await?, committed);
+    // The same notification owner must still answer through its admitted
+    // directories after both names are occupied by unrelated replacements.
+    let original_status = directory.join("retained-status");
+    std::fs::rename(files.status.path(), &original_status).map_err(storage)?;
+    std::fs::create_dir(files.status.path()).map_err(storage)?;
+    let replacement_reply = files.status.path().join(&leaf);
+    std::fs::write(&replacement_reply, b"replacement reply").map_err(storage)?;
+    files.served.touch(
+        &files.requests,
+        session,
+        Touched {
+            names: BTreeSet::new(),
+            rescan: true,
+            failure: None,
+        },
+    )?;
+    files
+        .served
+        .answer(&files.status, operation, Ok(committed.clone()))?;
+    let original_reply = original_status.join(&leaf);
+    assert_eq!(
+        std::fs::read(&original_reply).map_err(storage)?,
+        crate::client::encode_command_result(0, &Ok(committed.clone()), MAXIMUM_BYTES)?
+    );
     // An invalid leaf cannot prove that the client withdrew its request.
     let parked = retained.join("pending.json");
     std::fs::rename(retained.join(&leaf), &parked).map_err(storage)?;
@@ -933,6 +957,20 @@ async fn saved_command_result_follows_its_original_request_directory() -> Result
     requests
         .remove_file(Path::new(&leaf), acyclic_fs::NativeDurability::Durable)
         .map_err(native_file_error)?;
+    files.served.touch(
+        &files.requests,
+        session,
+        Touched {
+            names: BTreeSet::from([OsString::from(&leaf)]),
+            rescan: false,
+            failure: None,
+        },
+    )?;
+    assert!(!original_reply.exists());
+    assert_eq!(
+        std::fs::read(&replacement_reply).map_err(storage)?,
+        b"replacement reply"
+    );
     owner
         .dispatch(OperationId::new(), command("tag answered"))
         .await?;
