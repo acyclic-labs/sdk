@@ -21,8 +21,10 @@ pub const DIFF_FILE_BYTES: u64 = 64 * 1024;
 
 /// The one retained projection a platform pages an agent's diff from: the
 /// last requested volume, fork base, current generation and work credit.
-/// Replacing it on any change bounds what is retained to one projection,
-/// itself bounded by its credit. A later generation is a new projection whose
+/// Replacing it on any change retains only one projection. Its complete path
+/// set is retained even when byte credit omits expensive comparisons; that
+/// credit does not bound path enumeration or retention. A later generation
+/// is a new projection whose
 /// digest refuses the older cursors with [`crate::Error::Conflict`].
 /// A platform keeps one per reader authority it pages with, so a projection
 /// is only ever paged under the authority whose listing it holds.
