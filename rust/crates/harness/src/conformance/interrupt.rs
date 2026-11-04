@@ -1,5 +1,9 @@
 //! The same in-flight interrupt vector for every public AgentHost backend.
-use super::{Backend, Result, fixtures, observe::Observed, vectors};
+use super::{
+    Backend, Result, fixtures,
+    observe::{Fault, Observed},
+    vectors,
+};
 use acyclic_actors::guest::CancellationToken;
 use acyclic_harness_core::agent::*;
 use futures::channel::oneshot;
@@ -53,6 +57,32 @@ impl TurnDriver for Waiting {
 }
 
 pub(crate) async fn verify(backend: &dyn Backend) -> Result {
+    let error = interrupted(backend, Some(Fault::Before))
+        .await
+        .expect_err("pre-turn provider loss did not terminate the interrupt vector");
+    if !matches!(
+        error.downcast_ref::<acyclic_actors::local::Error>(),
+        Some(acyclic_actors::local::Error::Stream(
+            acyclic_stream::StreamError::Unavailable
+        ))
+    ) {
+        return Err(format!("pre-turn provider loss changed its original cause: {error}").into());
+    }
+    interrupted(backend, None).await
+}
+
+async fn interrupted(backend: &dyn Backend, fault: Option<Fault>) -> Result {
+    use acyclic_stream::runtime::{Executor as _, PlatformExecutor};
+    let work = drive(backend, fault);
+    let timeout = PlatformExecutor.sleep(5_000);
+    futures::pin_mut!(work, timeout);
+    match futures::future::select(work, timeout).await {
+        futures::future::Either::Left((result, _)) => result,
+        futures::future::Either::Right(_) => Err("runtime interrupt timed out".into()),
+    }
+}
+
+async fn drive(backend: &dyn Backend, fault: Option<Fault>) -> Result {
     let storage = backend.fresh().await?;
     let provider = Arc::new(Observed::new(storage.open().await?));
     let (started, running) = oneshot::channel();
@@ -69,6 +99,9 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     let send = |id: &str| -> Result<InboxRecord> { fixtures::request(id) };
     host.send(&agent, &fixtures::sender(), &send("running")?)
         .await?;
+    if let Some(fault) = fault {
+        provider.crash_at(provider.calls(), fault);
+    }
     let controls = async {
         running.await?;
         host.send(&agent, &fixtures::sender(), &send("queued")?)
@@ -86,18 +119,9 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
             .await?;
         Result::Ok(())
     };
-    let draining = vectors::drain(&host);
-    futures::pin_mut!(controls, draining);
-    match futures::future::select(controls, draining).await {
-        futures::future::Either::Left((result, draining)) => {
-            result?;
-            draining.await?;
-        }
-        futures::future::Either::Right((result, _)) => {
-            result?;
-            return Err("runtime drain ended before interrupt controls completed".into());
-        }
-    }
+    let (drained, controls) = futures::join!(vectors::drain(&host), controls);
+    drained?;
+    controls?;
     let outputs = vectors::values(&*provider, agent.conversation()?).await?;
     if outputs != [b"cancelled".to_vec(), b"queued".to_vec(), b"after".to_vec()] {
         return Err(format!("interrupt lost or repeated committed inputs: {outputs:?}").into());
