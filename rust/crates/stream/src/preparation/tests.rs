@@ -284,5 +284,91 @@ fn settling_copies_only_admitted_skipped_paths_and_views_the_rest_in_place()
         .map(crate::CommitMutation::path)
         .collect();
     assert_eq!(applied, [&live]);
+    for count in [0, 1, 2, 7, 31, 127] {
+        for pattern in 0..64_u32 {
+            let anchor = StreamPath::new("anchor")?;
+            let mut request = CommitRequest {
+                deadline_unix_millis: None,
+                conditions: vec![CommitCondition::Absent {
+                    path: anchor.clone(),
+                }],
+                mutations: vec![CommitMutation::Append {
+                    path: anchor,
+                    records: vec![AppendRecord::from(vec![1])],
+                }],
+                idempotency_key: crate::IdempotencyKey::new(vec![1])?,
+            };
+            for index in 0..count {
+                let path = StreamPath::new(format!("item/{index:03}"))?;
+                let record = vec![AppendRecord::from(vec![1])];
+                request.mutations.push(if index % 5 == 1 {
+                    CommitMutation::Append {
+                        path,
+                        records: record,
+                    }
+                } else if index % 5 == 3 {
+                    request
+                        .conditions
+                        .push(CommitCondition::Absent { path: path.clone() });
+                    CommitMutation::Fork {
+                        source: StreamPath::new("source")?,
+                        destination: path,
+                        at_tail: 0,
+                        records: record,
+                        exclude: Vec::new(),
+                    }
+                } else {
+                    CommitMutation::SoftAppend {
+                        path,
+                        records: record,
+                        closed: None,
+                    }
+                });
+            }
+            crate::request::normalize_commit(&mut request)?;
+            crate::request::validate_commit_shape(&request)?;
+            let skipped = settle(
+                &request,
+                |path| {
+                    let index = path.as_str().strip_prefix("item/").unwrap();
+                    let index: u32 = index.parse().unwrap();
+                    Ok((pattern & (1 << (index % 6)) == 0).then_some(0))
+                },
+                Vec::with_capacity(soft(&request)),
+            )?;
+            let expected: Vec<_> = request
+                .mutations
+                .iter()
+                .filter(|mutation| {
+                    !matches!(mutation, CommitMutation::SoftAppend { path, .. } if skipped.contains(path))
+                })
+                .collect();
+            assert!(super::applied(&request, &skipped).eq(expected.iter().copied()));
+            let mut selected = super::applied(&request, &skipped);
+            for (position, mutation) in expected.iter().copied().enumerate() {
+                if position == expected.len() / 2 {
+                    assert!(selected.clone().eq(expected[position..].iter().copied()));
+                }
+                let actual = selected.next().unwrap();
+                assert!(std::ptr::eq(actual, mutation));
+            }
+            assert!(selected.next().is_none());
+            assert!(selected.next().is_none());
+            // A repeated search grows with the skipped population. Selection
+            // may compare at most once per soft append across its whole walk.
+            let comparisons = Cell::new(0_usize);
+            let selected = applied_with(&request, &skipped, |left, right| {
+                comparisons.set(comparisons.get() + 1);
+                left.cmp(right)
+            });
+            assert_eq!(comparisons.get(), 0, "selection must stay lazy");
+            assert!(selected.eq(super::applied(&request, &skipped)));
+            assert!(
+                comparisons.get() <= soft(&request),
+                "selection searched settled history again: {count} mutations, {} comparisons",
+                comparisons.get()
+            );
+        }
+    }
     Ok(())
 }
