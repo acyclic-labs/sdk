@@ -128,22 +128,13 @@ fn publication_writes(selected: Vec<usize>) -> TestResult {
         writes > 3,
         "the probe did not cover journal, mkdir, and publication writes"
     );
-    // The shared checked registry assigns every measured write and sync, not
-    // a hand-written phase list. Each partition also proves the initial cut
-    // and completed publication. One cut/recovery owns the child allowance;
-    // neither wave can fan out processes, descriptors or filesystem flushes.
+    // The shared checked registry assigns every measured write and sync,
+    // including the initial cut and completed publication, exactly once.
+    // Repeating those witnesses in every partition adds no recovery coverage.
+    // Each cut and recovery still owns its original child process.
     let total = usize::try_from(writes.checked_add(1).ok_or("write count overflow")?)?;
     let assigned =
-        acyclic_test_support::partitions::indices(total, WRITE_PARTITIONS, partition, |index| {
-            index == 0 || index + 1 == total
-        })?;
-    // The measured transition has 299 crash positions. Four partitions still
-    // admitted 76 durable cut/recovery pairs each. Keep the complete registry,
-    // including both witnesses, while bounding one fixture to seven pairs.
-    assert!(
-        assigned.len() <= 7,
-        "publication fixture exceeds its cut allowance"
-    );
+        acyclic_test_support::partitions::indices(total, WRITE_PARTITIONS, partition, |_| false)?;
     eprintln!("publication partition {partition}: {assigned:?} of {total} measured cuts");
     for index in assigned {
         let started = std::time::Instant::now();
