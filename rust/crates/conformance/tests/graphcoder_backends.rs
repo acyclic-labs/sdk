@@ -689,18 +689,25 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
         server.kill().await;
         endpoint["principal"].as_str().unwrap().to_owned()
     };
-    let policy = directory.path().join("policy.json");
-    std::fs::write(
-        &policy,
-        serde_json::to_vec(&json!({"approvers": [
-            {"kind": "rules", "principal": "policy:conformance",
-             "rules": [{"tool": "shell", "arguments": null, "verdict": "ask"}],
-             "fallback": "allow"},
-            {"kind": "human", "principal": principal},
-        ]}))
-        .unwrap(),
-    )
-    .unwrap();
+    let policy = |name: &str, principal: &str| {
+        let path = directory.path().join(format!("{name}-policy.json"));
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&json!({"approvers": [
+                {"kind": "rules", "principal": "policy:conformance",
+                 "rules": [{"tool": "shell", "arguments": null, "verdict": "ask"}],
+                 "fallback": "allow"},
+                {"kind": "human", "principal": principal},
+            ]}))
+            .unwrap(),
+        )
+        .unwrap();
+        path
+    };
+    // LocalUser authenticates decisions as its one human. Served clients
+    // authenticate as the principal in their minted session credential.
+    let local_policy = policy("local", acyclic_harness::approvals::HUMAN_APPROVER);
+    let endpoint_policy = policy("endpoint", &principal);
     let mut shapes = Vec::new();
     // The seams' server: the same entry point with this package's own
     // verifier injected.
@@ -708,6 +715,11 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
     for name in ["local", "endpoint", "seams"] {
         let model = model(&directory.path().join(name)).await;
         let home = Home::new(directory.path(), name);
+        let policy = if name == "local" {
+            &local_policy
+        } else {
+            &endpoint_policy
+        };
         let (backend, server) = if name == "local" {
             (Backend::Local, None)
         } else {
@@ -719,7 +731,7 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
             let mut server = Running::start(home.command_of(
                 &binary,
                 &model,
-                Some(&policy),
+                Some(policy),
                 &["serve", "127.0.0.1:0"],
             ));
             let endpoint = served(&mut server).await;
@@ -730,7 +742,7 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
             };
             (backend, Some(server))
         };
-        let answer = scenario(&home, &model, &policy, &backend).await;
+        let answer = scenario(&home, &model, policy, &backend).await;
         if let Some(mut server) = server {
             // The injected seam admitted the tree.
             if name == "seams" {
@@ -753,15 +765,6 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
     );
     assert!(local.steps.contains(&("child", 0)), "{:?}", local.steps);
     for (name, shape) in &shapes[1..] {
-        assert_eq!(shape.answer, local.answer, "{name} answered otherwise");
-        assert_eq!(shape.steps, local.steps, "{name} took other steps");
-        for (index, (theirs, ours)) in shape.results.iter().zip(&local.results).enumerate() {
-            assert_eq!(
-                theirs.to_string(),
-                ours.to_string(),
-                "{name} result {index}"
-            );
-        }
         assert_eq!(shape, local, "{name} committed another history");
     }
 }
