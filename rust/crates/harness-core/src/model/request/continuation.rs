@@ -119,6 +119,7 @@ impl RequestContinuation {
         let same_limits = self.prepared.admitted_limits == limits;
         let bytes = std::mem::take(&mut self.prepared.bytes);
         let encoding = std::mem::take(&mut self.prepared.encoding);
+        let input = std::mem::take(&mut self.prepared.input);
         let content_admission = self.prepared.content_admission.take();
         let (request, remaining) = self.validate(limits, io)?;
         if !same_limits {
@@ -152,6 +153,7 @@ impl RequestContinuation {
             io,
             &mut projection_nodes,
         )?;
+        let input = input.extend(&request.messages[old_count..], io)?;
         Ok(PreparedModelRequest {
             request,
             bytes,
@@ -161,6 +163,7 @@ impl RequestContinuation {
             admitted_limits: limits,
             instruction_remaining: remaining,
             encoding,
+            input,
             content_admission,
             #[cfg(feature = "filesystem")]
             resident_payload,

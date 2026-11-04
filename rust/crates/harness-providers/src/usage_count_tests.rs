@@ -27,16 +27,13 @@ proptest! {
         // of the output-token count from the response which produced it.
         request.messages.push(ModelMessage { role: ModelRole::Assistant, content: ModelContent::Text(delta) });
         let next = PreparedModelRequest::prepare(request.clone(), Default::default(), None).unwrap();
-        let (_, before) = footprint(&first, 1).unwrap();
-        let (_, after) = footprint(&next, 1).unwrap();
+        let before = first.input_bytes().unwrap();
+        let after = next.input_bytes().unwrap();
         prop_assert_eq!(counter.codex_estimate(&next).unwrap(), tokens + (after-before).div_ceil(3));
         request.messages[0].content = ModelContent::Text("unrelated resume".into());
         let resumed = PreparedModelRequest::prepare(request, Default::default(), None).unwrap();
-        let (prefix, total) = footprint(&resumed, 1).unwrap();
-        let anchor = counter.0.get().unwrap();
-        if anchor.unwrap().digest != prefix {
-            prop_assert_eq!(counter.codex_estimate(&resumed).unwrap(), total.div_ceil(3));
-        }
+        let total = resumed.input_bytes().unwrap();
+        prop_assert_eq!(counter.codex_estimate(&resumed).unwrap(), total.div_ceil(3));
     }
     #[test]
     fn usage_bound_charges_every_appended_byte_and_never_anchors_a_changed_prefix(
@@ -61,10 +58,22 @@ proptest! {
         counter.observe(crate::Adapter::Anthropic, &first,
             &json!({"usage":{"input_tokens":tokens,"cache_read_input_tokens":cache_read}})).unwrap();
         prop_assert_eq!(counter.bound(&first).unwrap(), Some(tokens + cache_read));
+        // Every render option belongs to the observed input identity.
+        for variant in 0..4 {
+            let mut changed = request.clone();
+            match variant {
+                0 => changed.max_output_tokens = Some(7),
+                1 => changed.sampling.temperature = Some(0.5),
+                2 => changed.summary = true,
+                _ => changed.tools[0].description.push_str(" changed"),
+            }
+            let changed = PreparedModelRequest::prepare(changed, Default::default(), None).unwrap();
+            prop_assert_eq!(counter.bound(&changed).unwrap(), None, "changed configuration reused observed input");
+        }
         request.messages.push(ModelMessage { role: ModelRole::Assistant, content: ModelContent::Text(delta) });
         let next = PreparedModelRequest::prepare(request.clone(), Default::default(), None).unwrap();
-        let (_, before) = footprint(&first, 1).unwrap();
-        let (_, after) = footprint(&next, 1).unwrap();
+        let before = first.input_bytes().unwrap();
+        let after = next.input_bytes().unwrap();
         prop_assert_eq!(counter.bound(&next).unwrap(), Some(tokens + cache_read + (after - before)));
         // The same registered catalog exposes more native schemas when code
         // composition is disabled. Its old, smaller usage cannot admit it.
@@ -81,11 +90,24 @@ proptest! {
     }
     #[test]
     fn local_delta_never_rounds_down_or_discards_authoritative_usage(
-        bytes in 0u64..u64::MAX/2, delta in 0u64..u64::MAX/2, tokens in 0u64..u64::MAX/2,
+        input in "\\S.{0,63}", delta in "\\S.{0,63}", tokens in any::<u64>(),
     ) {
-        let snapshot = Usage { digest:[1;32], messages:1, bytes, tokens };
-        let counted = estimate(Some(snapshot), [1;32], bytes+delta);
+        let mut request = ModelRequest {
+            summary: false, compose_tools: false,
+            model: Model::new("openai".into(), "fixture".into(), "1".into()).unwrap(),
+            messages: vec![ModelMessage { role: ModelRole::User, content: ModelContent::Text(input) }],
+            tools: Vec::new(), sampling: Default::default(), max_output_tokens: None,
+        };
+        let first = PreparedModelRequest::prepare(request.clone(), Default::default(), None).unwrap();
+        let counter = Counter::default();
+        prop_assert_eq!(counter.codex_estimate(&first).unwrap(), first.input_bytes().unwrap().div_ceil(3));
+        counter.observe(crate::Adapter::Responses, &first, &json!({"usage":{"input_tokens":tokens}})).unwrap();
+        request.messages.push(ModelMessage { role: ModelRole::Assistant, content: ModelContent::Text(delta) });
+        let next = PreparedModelRequest::prepare(request, Default::default(), None).unwrap();
+        let added = next.input_bytes().unwrap() - first.input_bytes().unwrap();
+        let counted = counter.codex_estimate(&next).unwrap();
+        prop_assert_eq!(counted, tokens.saturating_add(added.div_ceil(3)));
         prop_assert!(counted >= tokens);
-        prop_assert!(counted.saturating_sub(tokens).saturating_mul(3) >= delta);
+        prop_assert!(counted == u64::MAX || counted.saturating_sub(tokens).saturating_mul(3) >= added);
     }
 }

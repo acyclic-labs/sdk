@@ -1,10 +1,8 @@
 use crate::sync::Mutex;
 
-#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Usage {
-    pub(crate) digest: [u8; 32],
-    pub(crate) messages: usize,
-    pub(crate) bytes: u64,
+    pub(crate) input: acyclic_harness_core::model::InputAnchor,
     pub(crate) tokens: u64,
 }
 

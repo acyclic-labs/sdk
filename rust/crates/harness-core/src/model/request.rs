@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 mod admission;
 mod continuation;
 mod encoding;
+pub use encoding::InputAnchor;
 
 /// Complete immutable provider-neutral model request.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
@@ -356,6 +357,7 @@ pub struct PreparedModelRequest {
     admitted_limits: Limits,
     instruction_remaining: u64,
     encoding: Vec<encoding::EncodingPrefix>,
+    input: encoding::Input,
     content_admission: Option<admission::ContentAdmission>,
     #[cfg(feature = "filesystem")]
     resident_payload: Option<u64>,
@@ -372,6 +374,7 @@ impl Clone for PreparedModelRequest {
             admitted_limits: self.admitted_limits,
             instruction_remaining: self.instruction_remaining,
             encoding: self.encoding.clone(),
+            input: self.input.clone(),
             content_admission: None,
             // Vec and String clones need not retain the producer's capacity.
             // The next continuation inventories its new storage once.
@@ -517,6 +520,7 @@ impl PreparedModelRequest {
                 admitted_limits: limits,
                 instruction_remaining,
                 encoding: Vec::new(),
+                input: Default::default(),
                 content_admission: None,
                 resident_payload,
             });
@@ -588,6 +592,7 @@ impl PreparedModelRequest {
             admitted_limits: limits,
             instruction_remaining,
             encoding: Vec::new(),
+            input: Default::default(),
             content_admission: None,
             #[cfg(feature = "filesystem")]
             resident_payload,

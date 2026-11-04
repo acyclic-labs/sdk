@@ -1,9 +1,5 @@
 //! Provider-reported usage anchors later admission without a count request.
-use acyclic_harness_core::{
-    Result,
-    model::{ModelContent, ModelContentPart, PreparedModelRequest},
-};
-use serde::Serialize as _;
+use acyclic_harness_core::{Result, model::PreparedModelRequest};
 
 use crate::usage_snapshot::{Snapshot, Usage};
 
@@ -16,8 +12,14 @@ impl Counter {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn codex_estimate(&self, request: &PreparedModelRequest) -> Result<u64> {
         let snapshot = self.snapshot()?;
-        let (prefix, total) = footprint(request, snapshot.map_or(0, |s| s.messages))?;
-        Ok(estimate(snapshot, prefix, total))
+        let (tokens, bytes) = match snapshot {
+            Some(snapshot) => match request.input_since(snapshot.input)? {
+                Some(delta) => (snapshot.tokens, delta),
+                None => (0, request.input_bytes()?),
+            },
+            None => (0, request.input_bytes()?),
+        };
+        Ok(estimate(tokens, bytes))
     }
 
     /// An upper bound on the request's input with no count request: the
@@ -30,24 +32,12 @@ impl Counter {
         let Some(snapshot) = self.snapshot()? else {
             return Ok(None);
         };
-        if !byte_bound_eligible(request)
-            || request.request().messages.iter().any(|message| {
-                matches!(&message.content, ModelContent::Text(text) if text.trim().is_empty())
-                    || message.content.parts().iter().any(|part| match part {
-                        ModelContentPart::Notices { .. } | ModelContentPart::File { .. } => true,
-                        ModelContentPart::Text { text, .. } => text.trim().is_empty(),
-                        _ => false,
-                    })
-            })
-        {
-            // Notices expand escaping; joining later text can restore a blank
-            // run dropped from the observation, including unresolved text files.
-            // The existing count-body path measures the actual representation.
+        if !request.input_has_byte_bound()? {
             return Ok(None);
         }
-        let (prefix, total) = footprint(request, snapshot.messages)?;
-        Ok((snapshot.digest == prefix && snapshot.bytes <= total)
-            .then(|| snapshot.tokens.saturating_add(total - snapshot.bytes)))
+        Ok(request
+            .input_since(snapshot.input)?
+            .map(|delta| snapshot.tokens.saturating_add(delta)))
     }
 
     pub(crate) fn observe(
@@ -59,15 +49,9 @@ impl Counter {
         // The footprint covers the request input, not the generated response.
         // Its output is charged once when it becomes input on a later request.
         if let Some(tokens) = crate::accounting::input_tokens(adapter, metadata) {
-            let messages = request.request().messages.len();
-            let (digest, bytes) = footprint(request, messages)?;
+            let input = request.observe_input()?;
             self.0
-                .set(Usage {
-                    digest,
-                    messages,
-                    bytes,
-                    tokens,
-                })
+                .set(Usage { input, tokens })
                 .map_err(|_| crate::invalid("usage lock poisoned"))?;
         }
         Ok(())
@@ -80,68 +64,9 @@ impl Counter {
     }
 }
 
-/// Native media tokenization can expand compressed bytes independently of the
-/// wire size. Both local shortcuts must defer to verified counting for it.
-pub(crate) fn byte_bound_eligible(request: &PreparedModelRequest) -> bool {
-    request
-        .request()
-        .messages
-        .iter()
-        .all(|message| !message.content.contains_native_media())
-}
-
-// If a resume, compaction or catalog change replaced the prefix, estimate the
-// complete input. Never subtract an unrelated request's byte count.
 #[cfg(not(target_arch = "wasm32"))]
-fn estimate(snapshot: Option<Usage>, prefix: [u8; 32], total: u64) -> u64 {
-    let (tokens, bytes) = snapshot
-        .filter(|s| s.digest == prefix && s.bytes <= total)
-        .map_or((0, 0), |s| (s.tokens, s.bytes));
-    tokens.saturating_add(total.saturating_sub(bytes).div_ceil(3))
-}
-
-fn footprint(request: &PreparedModelRequest, prefix: usize) -> Result<([u8; 32], u64)> {
-    struct Writer {
-        hash: blake3::Hasher,
-        bytes: u64,
-    }
-    impl std::io::Write for Writer {
-        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-            self.hash.update(data);
-            self.bytes = self
-                .bytes
-                .checked_add(data.len() as u64)
-                .ok_or_else(|| std::io::Error::other("usage footprint size overflow"))?;
-            Ok(data.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let input = request.request();
-    let mut writer = Writer {
-        hash: blake3::Hasher::new(),
-        bytes: 0,
-    };
-    serde_json::to_writer(
-        &mut writer,
-        &(&input.model, input.compose_tools, &input.tools),
-    )
-    .map_err(|_| crate::invalid("usage footprint encoding failed"))?;
-    let mut digest = *writer.hash.finalize().as_bytes();
-    for (index, message) in input.messages.iter().enumerate() {
-        message
-            .serialize(&mut serde_json::Serializer::new(&mut writer))
-            .map_err(|_| crate::invalid("usage footprint encoding failed"))?;
-        writer.bytes = writer
-            .bytes
-            .checked_add(crate::files::extra_bytes(&message.content, u64::MAX)? as u64)
-            .ok_or_else(|| crate::invalid("usage footprint size overflow"))?;
-        if index + 1 == prefix {
-            digest = *writer.hash.finalize().as_bytes();
-        }
-    }
-    Ok((digest, writer.bytes))
+fn estimate(tokens: u64, bytes: u64) -> u64 {
+    tokens.saturating_add(bytes.div_ceil(3))
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

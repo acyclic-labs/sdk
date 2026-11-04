@@ -186,14 +186,29 @@ fn continuation_finish_keeps_the_hash_cut_bound_to_its_canonical_bytes() -> Resu
             )
         );
         assert_eq!(shape_work(|| prepared.projection_shape()), (shape, 0));
+        let (anchor, cold_input_work) = input_work(|| prepared.observe_input());
+        let anchor = anchor?;
+        assert_eq!(cold_input_work, (count as u64, 0));
+        let anchored_bytes = prepared.input_bytes()?;
         for added in 0..5 {
             let previous = prepared.request().messages.len();
             let mut continued = prepared.into_continuation();
             continued.messages().push(message(added));
             let suffix_bytes =
                 crate::contract::canonical_json_bytes(&*continued.messages())?.len() - 2;
-            let (next, scanned) = shape_work(|| continued.finish(Limits::default(), None));
+            let ((next, scanned), work) =
+                input_work(|| shape_work(|| continued.finish(Limits::default(), None)));
             prepared = next?;
+            assert_eq!(
+                work,
+                (1, 0),
+                "input footprint rescanned historical messages"
+            );
+            let (delta, work) = input_work(|| prepared.input_since(anchor));
+            assert_eq!(work, (0, 0), "retained input rebuilt its observed prefix");
+            assert_eq!(delta?, Some(prepared.input_bytes()? - anchored_bytes));
+            assert!(prepared.input_has_byte_bound()?);
+            assert!(!prepared.input_has_native_media()?);
             assert_eq!(
                 scanned, suffix_bytes as u64,
                 "projection shape rescanned history"
@@ -239,6 +254,11 @@ fn continuation_finish_keeps_the_hash_cut_bound_to_its_canonical_bytes() -> Resu
         let mut continued = prepared.into_continuation();
         continued.messages().push(message(7));
         let prepared = continued.finish(Limits::default(), None)?;
+        for branch in [&peer, &prepared] {
+            let (delta, work) = input_work(|| branch.input_since(anchor));
+            assert_eq!(work, (0, 0), "fork lost its immutable observed cut");
+            assert_eq!(delta?, Some(branch.input_bytes()? - anchored_bytes));
+        }
         assert_eq!(shape_work(|| prepared.projection_shape()).1, 0);
         assert_eq!(
             prepared.projection_shape().1,
@@ -266,6 +286,11 @@ fn continuation_finish_keeps_the_hash_cut_bound_to_its_canonical_bytes() -> Resu
             prepared.bytes().len() as u64
         );
         let recovered = PreparedModelRequest::decode(prepared.bytes(), changed, None)?;
+        assert_eq!(
+            recovered.input_since(anchor)?,
+            Some(recovered.input_bytes()? - anchored_bytes),
+            "recovery must verify the original prefix without lineage"
+        );
         assert_eq!(recovered.projection_shape(), prepared.projection_shape());
         assert!(
             prepared.encoding.is_empty(),
@@ -277,6 +302,21 @@ fn continuation_finish_keeps_the_hash_cut_bound_to_its_canonical_bytes() -> Resu
         );
     }
     Ok(())
+}
+
+fn input_work<T>(run: impl FnOnce() -> T) -> (T, (u64, u64)) {
+    let (result, trace) =
+        acyclic_test_support::differential::observe::<_, _, (&'static str, u64)>(|| (), |()| run());
+    let mut messages = 0;
+    let mut rebuilds = 0;
+    for (kind, count) in trace {
+        match kind {
+            "input footprint messages" => messages += count,
+            "input prefix rebuilds" => rebuilds += count,
+            _ => {}
+        }
+    }
+    (result, (messages, rebuilds))
 }
 
 fn shape_work<T>(run: impl FnOnce() -> T) -> (T, u64) {
