@@ -219,28 +219,13 @@ pub(crate) fn durable_rename_observed(
                 )
             } != 0;
             #[cfg(windows)]
-            // SAFETY: both owned paths remain live through MoveFileExW.
-            let failed = unsafe {
-                use windows_sys::Win32::Storage::FileSystem::{
-                    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-                };
-                MoveFileExW(
-                    from_path.0.as_ptr(),
-                    to_path.0.as_ptr(),
-                    MOVEFILE_WRITE_THROUGH
-                        | if mode == RenameMode::Replace {
-                            MOVEFILE_REPLACE_EXISTING
-                        } else {
-                            0
-                        },
-                )
-            } == 0;
+            windows::rename(&from_path.0, &to_path.0, mode, meter)?;
+            #[cfg(unix)]
             if failed {
-                Err(io::Error::last_os_error())
-            } else {
-                renamed();
-                Ok(())
+                return Err(io::Error::last_os_error());
             }
+            renamed();
+            Ok(())
         };
         #[cfg(feature = "test-support")]
         let result = testing::durable_operation("namespace:rename", rename);
