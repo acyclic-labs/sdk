@@ -24,7 +24,6 @@ struct Endpoint {
 }
 struct Writing {
     channel: wire::SessionChannel,
-    subscription: bool,
     controller: web_sys::AbortController,
     abort: AbortHandle,
 }
@@ -34,7 +33,7 @@ impl Writing {
         self.abort.abort();
     }
 }
-fn owner(frame: &wire::SessionFrame) -> (wire::SessionChannel, bool) {
+fn owner(frame: &wire::SessionFrame) -> wire::SessionChannel {
     use wire::session_frame::Body;
     let interest = match &frame.body {
         Some(Body::Hello(hello)) => hello.interest.as_ref(),
@@ -47,15 +46,12 @@ fn owner(frame: &wire::SessionFrame) -> (wire::SessionChannel, bool) {
         && interest.remove.is_empty()
         && let Some(channel) = interest.upsert[0].channel
     {
-        return (channel, true);
+        return channel;
     }
-    (
-        wire::SessionChannel {
-            channel_id: frame.channel_id,
-            generation: frame.generation,
-        },
-        false,
-    )
+    wire::SessionChannel {
+        channel_id: frame.channel_id,
+        generation: frame.generation,
+    }
 }
 struct Connection {
     controller: web_sys::AbortController,
@@ -116,26 +112,10 @@ impl Responses {
                 match Pin::new(write).poll(cx) {
                     Poll::Pending => break,
                     Poll::Ready(result) => {
-                        let writing = self.writing.borrow_mut().take();
+                        self.writing.borrow_mut().take();
                         self.write = None;
                         if let Ok(Err(error)) = result {
-                            let error = failure(error);
-                            if let Some(writing) = writing.filter(|writing| writing.subscription) {
-                                // A rejected interest never installed its channel. Surface
-                                // that local failure through the engine's terminal path;
-                                // sibling interests keep their physical connection.
-                                return Poll::Ready(Some(Ok(wire::SessionFrame {
-                                    channel_id: writing.channel.channel_id,
-                                    generation: writing.channel.generation,
-                                    body: Some(wire::session_frame::Body::Closed(
-                                        wire::SessionClosed {
-                                            code: error.code().into(),
-                                            ..Default::default()
-                                        },
-                                    )),
-                                })));
-                            }
-                            return Poll::Ready(Some(Err(error)));
+                            return Poll::Ready(Some(Err(failure(error))));
                         }
                     }
                 }
@@ -148,10 +128,8 @@ impl Responses {
                     let controller = web_sys::AbortController::new().map_err(failure)?;
                     let signal = controller.signal();
                     let (abort, registration) = AbortHandle::new_pair();
-                    let (channel, subscription) = owner(&frame);
                     *self.writing.borrow_mut() = Some(Writing {
-                        channel,
-                        subscription,
+                        channel: owner(&frame),
                         controller,
                         abort,
                     });

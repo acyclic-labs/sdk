@@ -13,7 +13,7 @@ import { openWasmCursor, wasmRecords } from "./wasm-records.js";
 export interface SessionTransport {
   /** Canonical v1 frames; the Rust session admits each untrusted message. */
   readonly incoming: AsyncIterable<Uint8Array>;
-  /** Abort withdraws a write that has not yet entered the transport queue. */
+  /** Abort withdraws a queued write; rejection fails the physical session. Subscription refusals arrive in incoming frames. */
   send(frame: Uint8Array<ArrayBuffer>, signal?: AbortSignal): Promise<void>;
   close(): void;
 }
