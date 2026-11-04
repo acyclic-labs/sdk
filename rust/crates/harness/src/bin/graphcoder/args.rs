@@ -23,6 +23,7 @@ pub enum OutputFormat {
 )]
 pub struct Args {
     /// Own workspace files for native coding hosts, without a provider or agent loop.
+    /// Emits a `workspace-owner-ready` JSONL event on stdout after request events are installed.
     #[arg(long, requires = "host_state_directory", conflicts_with_all = ["prompt", "model", "catalog", "credentials", "operation", "settings_root", "default_config", "usage_jsonl", "resume", "agent"])]
     pub host_workspace: bool,
     /// Explicit durable storage, opened only by this trusted harness owner.

@@ -273,12 +273,22 @@ async fn run(
             .await?,
         );
         phase(|| {
-            acyclic_harness::local::host_files::serve_until(local, async {
-                shutdown
-                    .await
-                    .map(|_| ())
-                    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))
-            })
+            acyclic_harness::local::host_files::serve_until(
+                local,
+                || {
+                    use std::io::Write as _;
+                    std::io::stdout()
+                        .lock()
+                        .write_all(b"{\"type\":\"workspace-owner-ready\"}\n")
+                        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))
+                },
+                async {
+                    shutdown
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))
+                },
+            )
         })
         .await?;
         return Ok(0);

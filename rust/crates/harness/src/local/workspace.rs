@@ -217,19 +217,6 @@ impl LocalWorkspace {
         Ok(Arc::new(mounts))
     }
 
-    #[cfg(test)]
-    #[cfg(all(any(test, feature = "native-execution"), unix))]
-    pub(super) async fn current(
-        &self,
-    ) -> acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend> {
-        let state = lock_owned(StateArc::clone(&self.state)).await;
-        state
-            .active
-            .as_ref()
-            .unwrap_or(&self.view)
-            .workspace()
-            .clone()
-    }
     pub(super) fn context_line(&self) -> &str {
         &self.context_line
     }

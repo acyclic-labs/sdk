@@ -694,13 +694,17 @@ fn discover(cwd: &Path) -> Result<(PathBuf, Endpoint)> {
 /// Each request dispatches once into the native agent runtime, whose commits
 /// it keys by the request operation, then publishes its immutable reply.
 pub async fn serve(local: Arc<LocalHarness>) -> Result<()> {
-    serve_until(local, std::future::pending()).await
+    serve_until(local, || Ok(()), std::future::pending()).await
 }
 
 /// Stops accepting requests, joins view retirement and disconnects the shared
 /// harness before reporting shutdown. Native callbacks keep their runtime.
+/// Calls `ready` once after acquiring ownership and installing request events.
+/// A retained descriptor only discovers this endpoint; it cannot announce a
+/// new serving lifetime. Readiness failure joins the same owner retirement.
 pub async fn serve_until(
     local: Arc<LocalHarness>,
+    ready: impl FnOnce() -> Result<()>,
     shutdown: impl std::future::Future<Output = Result<()>>,
 ) -> Result<()> {
     let workspace = local
@@ -761,7 +765,10 @@ pub async fn serve_until(
         status,
         _ownership: Arc::clone(&ownership),
     };
-    let result = serve_requests(&owner, files, session, &notices, shutdown).await;
+    let result = match ready() {
+        Ok(()) => serve_requests(&owner, files, session, &notices, shutdown).await,
+        Err(error) => Err(error),
+    };
     drop(watcher);
     drop(local);
     Error::after_cleanup(result, owner.retire().await)
