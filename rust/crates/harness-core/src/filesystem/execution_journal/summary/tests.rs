@@ -93,6 +93,7 @@ proptest! {
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
         prop_assert_eq!(before - io.remaining().unwrap().peak_allocation_bytes, retained);
         prop_assert_eq!(state.tools.len(), count);
+        let untransferred = io.owned_bytes().unwrap();
         let mut rebuilt = SummaryMap::<[u8; 32], bool>::default();
         for (index, entry) in state.tools.entries(Some(&io)).enumerate() {
             use super::super::summary_map::SummaryKey;
@@ -110,7 +111,9 @@ proptest! {
                 "summary insertion copied prior backing");
             prop_assert_eq!(rebuilt.get_digest(&digest, Some(&io)).unwrap(), Some(settled));
         }
+        let rebuilt_hold = io.guard_owned(io.owned_since(untransferred).unwrap()).unwrap();
         drop(rebuilt);
+        drop(rebuilt_hold);
         let pending = io.guard_owned(io.owned_bytes().unwrap()).unwrap();
         drop(state);
         drop(pending);
