@@ -14,13 +14,13 @@ const quoted = args.includes("--quoted");
 const metadata = args.includes("--metadata");
 const array = args.includes("--array");
 const number = args.includes("--number");
-const intrinsicArgument = args.find(arg => arg.startsWith("--intrinsic="))?.slice("--intrinsic=".length);
-const intrinsics = intrinsicArgument === undefined ? ["keys"] : intrinsicArgument.split(",");
+const sourceArgument = args.find(arg => arg.startsWith("--source="))?.slice("--source=".length);
+const sources = sourceArgument === undefined ? ["keys"] : sourceArgument.split(",");
 const selectedControl = retirement || bytes || metadata || array || number;
 const reuse = args.find(arg => arg.startsWith("--reuse="))?.slice("--reuse=".length);
-const recovery = `node scripts/qualify-js-json.mjs${retirement ? " --retirement" : bytes ? " --bytes" : metadata ? " --metadata" : array ? " --array" : number ? " --number" : ""}${red ? " --red" : ""}${quoted ? " --quoted" : ""}${intrinsicArgument === undefined ? "" : ` --intrinsic=${intrinsicArgument}`}${reuse ? ` --reuse=${JSON.stringify(reuse)}` : ""}`;
+const recovery = `node scripts/qualify-js-json.mjs${retirement ? " --retirement" : bytes ? " --bytes" : metadata ? " --metadata" : array ? " --array" : number ? " --number" : ""}${red ? " --red" : ""}${quoted ? " --quoted" : ""}${sourceArgument === undefined ? "" : ` --source=${sourceArgument}`}${reuse ? ` --reuse=${JSON.stringify(reuse)}` : ""}`;
 const test = bytes ? "external JSON bytes preserve engine tokens or refuse before rounding"
-  : retirement ? "canonical admission releases JavaScript references after intrinsic failures"
+  : retirement ? "canonical admission releases JavaScript references after admission failures"
   : "canonical admission selects entries before evaluating their values";
 const testFile = `typescript/packages/harness/test/${bytes ? "json-bytes" : retirement ? "json-retirement" : "json-admission"}.test.ts`;
 const fail = (step, detail, command = recovery) => {
@@ -32,19 +32,19 @@ const run = (step, command, parameters, options = {}) => {
   if (result.error) fail(step, result.error.message);
   return result;
 };
-if (args.some(arg => !["--red", "--retirement", "--bytes", "--quoted", "--metadata", "--array", "--number"].includes(arg) && !arg.startsWith("--reuse=") && !arg.startsWith("--intrinsic="))
+if (args.some(arg => !["--red", "--retirement", "--bytes", "--quoted", "--metadata", "--array", "--number"].includes(arg) && !arg.startsWith("--reuse=") && !arg.startsWith("--source="))
   || new Set(args).size !== args.length || Number(retirement) + Number(bytes) + Number(metadata) + Number(array) + Number(number) > 1 || quoted && !(bytes && red)
   || args.filter(arg => arg.startsWith("--reuse=")).length > 1 || args.includes("--reuse=") || reuse && red
-  || args.filter(arg => arg.startsWith("--intrinsic=")).length > 1 || intrinsicArgument !== undefined && !(retirement && red)
-  || new Set(intrinsics).size !== intrinsics.length || intrinsics.some(name => !/^(?:keys|array|prototype|iterator|callback|getter)$/u.test(name))
+  || args.filter(arg => arg.startsWith("--source=")).length > 1 || sourceArgument !== undefined && !(retirement && red)
+  || new Set(sources).size !== sources.length || sources.some(name => !/^(?:keys|array|prototype|iterator|callback|getter|number)$/u.test(name))
   || red && !selectedControl) {
-  fail("arguments", "expected at most one control (--retirement, --bytes, --metadata, --array or --number); --red requires a control, --quoted requires --bytes --red, --intrinsic=<keys,array,prototype,iterator,callback,getter> selects distinct sources and requires --retirement --red, and --reuse=<receipt> excludes --red",
+  fail("arguments", "expected at most one control (--retirement, --bytes, --metadata, --array or --number); --red requires a control, --quoted requires --bytes --red, --source=<keys,array,prototype,iterator,callback,getter,number> selects distinct sources and requires --retirement --red, and --reuse=<receipt> excludes --red",
     "node scripts/qualify-js-json.mjs --array --red");
 }
 
 const production = new URL("../rust/crates/harness/src/wasm/json.rs", import.meta.url);
 const generated = "typescript/packages/harness/generated/wasm";
-function qualify(intrinsic) {
+function qualify(source) {
   let original;
   let mutation;
   let artifactsCustody;
@@ -65,7 +65,9 @@ function qualify(intrinsic) {
           "        map.try_for_each(&mut |child, key| {\n            entries.push((key, child));\n            Ok(())\n        }).unwrap_or_else(|error| wasm_bindgen::throw_val(error));"],
         getter: ["            let child = js_sys::Reflect::get(value, &key)?;",
           "            let child = js_sys::Reflect::get(value, &key).unwrap_or_else(|error| wasm_bindgen::throw_val(error));"],
-      }[intrinsic] : undefined;
+        number: ["            return Err(JsValue::from_str(\n                \"JSON contains an unsafe JavaScript Number\",\n            ));",
+          "            wasm_bindgen::throw_val(JsValue::from_str(\"JSON contains an unsafe JavaScript Number\"));"],
+      }[source] : undefined;
       const entrance = retirement ? selected[0]
         : number ? "        if !crate::conversation::is_exact_js_number(number) {"
         : array ? "        let items = js_sys::Array::from_iterable(value.unchecked_ref::<js_sys::Array>())?;"
@@ -154,7 +156,7 @@ function qualify(intrinsic) {
     const restoredBoundary = (metadata || array) && !red;
     const parameters = ["test", `./${testFile}`, ...(restoredBoundary ? [`./${retirementFile}`] : []),
       "--test-name-pattern", restoredBoundary
-        ? `^(?:${test}|canonical admission releases JavaScript references after intrinsic failures)$` : `^${test}$`];
+        ? `^(?:${test}|canonical admission releases JavaScript references after admission failures)$` : `^${test}$`];
     const result = run("JSON admission", "bun", parameters);
     const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
     process.stdout.write(output);
@@ -209,7 +211,7 @@ function qualify(intrinsic) {
       : array ? `javascript-json-array-${red ? "red" : "fixed"}.json`
       : metadata ? `javascript-json-metadata-${red ? "red" : "fixed"}.json`
       : bytes ? `javascript-json-bytes-${quoted ? "quoted-" : ""}${red ? "red" : "fixed"}.json`
-      : retirement ? `javascript-json-retirement-${red ? `${intrinsic}-red` : "fixed"}.json`
+      : retirement ? `javascript-json-retirement-${red ? `${source}-red` : "fixed"}.json`
       : red ? "javascript-json-qualification.json" : "javascript-json-fixed-qualification.json";
     try { writeFileSync(new URL(`../${receiptName}`, import.meta.url), receipt); }
     catch (error) { fail("qualification receipt", String(error)); }
@@ -228,4 +230,4 @@ function qualify(intrinsic) {
     } finally { artifactsCustody?.restore(); }
   }
 }
-for (const intrinsic of intrinsics) qualify(intrinsic);
+for (const source of sources) qualify(source);

@@ -6,7 +6,7 @@ import { ensureModelWasm } from "../src/wasm-runtime.js";
 await ensureModelWasm();
 const exports = await contracts.default();
 
-test("canonical admission releases JavaScript references after intrinsic failures", () => {
+test("canonical admission releases JavaScript references after admission failures", () => {
   const table = exports.__wbindgen_externrefs;
   const reason = new Error("original JavaScript intrinsic refusal");
   const refuse = () => { throw reason; };
@@ -18,6 +18,12 @@ test("canonical admission releases JavaScript references after intrinsic failure
   try { Array.isArray(revoked.proxy); }
   catch (caught) { revokedReason = caught; }
   const child = Object.defineProperty({}, "value", { enumerable: true, get: refuse });
+  const objectCycle: { child?: unknown } = {};
+  objectCycle.child = objectCycle;
+  const arrayCycle: unknown[] = [];
+  arrayCycle.push(arrayCycle);
+  const mapCycle = new Map<string, unknown>();
+  mapCycle.set("child", mapCycle);
   const sources = [
     ["prototype", new Proxy({}, { getPrototypeOf: refuse }), reason],
     ["keys", new Proxy({}, { ownKeys: refuse }), reason],
@@ -25,6 +31,21 @@ test("canonical admission releases JavaScript references after intrinsic failure
     ["Map callback", map, reason],
     ["revoked array", revoked.proxy, revokedReason],
     ["child getter", child, reason],
+    // These return through Rust's own refusal exits, rather than a caught
+    // JavaScript intrinsic. Their errors are strings; wording is not pinned.
+    ["undefined", undefined, null],
+    ["symbol", Symbol("unsupported JSON value"), null],
+    ["function", () => {}, null],
+    ["negative zero", -0, null],
+    ["nonfinite Number", Number.NaN, null],
+    ["unsafe Number", 2 ** 53, null],
+    ["out-of-range BigInt", 2n ** 64n, null],
+    ["invalid UTF-16", "\ud800", null],
+    ["nonplain object", new Date(0), null],
+    ["nonstring Map key", new Map([[7, "value"]]), null],
+    ["object cycle", objectCycle, null],
+    ["array cycle", arrayCycle, null],
+    ["Map cycle", mapCycle, null],
   ] as const;
   const inputs = sources.flatMap(([step, child, expected]) => [
     [step, [child], expected],
@@ -41,9 +62,11 @@ test("canonical admission releases JavaScript references after intrinsic failure
     let retained = 0;
     for (let index = 0; index < table.length; ++index) {
       const reference = table.get(index);
-      if (owned.some(value => Object.is(reference, value))) ++retained;
+      // Undefined and null have permanent reserved entries in this table.
+      if (owned.some(value => value != null && Object.is(reference, value))) ++retained;
     }
-    const originalReason = expected === reason ? error === reason
+    const originalReason = expected === null ? typeof error === "string"
+      : expected === reason ? error === reason
       : error instanceof TypeError && expected instanceof TypeError && error.message === expected.message;
     return { step, originalReason, retained };
   });
