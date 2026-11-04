@@ -20,6 +20,7 @@
 use super::host_owner::{HostAction, HostWorkspaceOwner};
 use super::*;
 use futures::StreamExt as _;
+#[cfg(test)]
 use notify::{RecursiveMode, Watcher as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -166,7 +167,12 @@ struct Shared {
 }
 
 impl Shared {
+    #[cfg(test)]
     fn note(&self, event: notify::Result<notify::Event>) {
+        self.note_at(event, self.status.path(), self.requests.path());
+    }
+
+    fn note_at(&self, event: notify::Result<notify::Event>, status: &Path, requests: &Path) {
         if let Err(error) = &event {
             lock(&self.waiters).failed(|| notification_failure(error));
             return;
@@ -174,7 +180,7 @@ impl Shared {
         if !projection_changed(&event) {
             return;
         }
-        let replies = match notified_operations(&event, self.status.path(), self.requests.path()) {
+        let replies = match notified_operations(&event, status, requests) {
             Some(replies) => replies,
             // Overflow: revisit only active replies, never a directory listing.
             None => lock(&self.waiters).waiting.keys().copied().collect(),
@@ -254,8 +260,7 @@ struct Bridge {
 }
 
 struct Watching {
-    watcher: notify::RecommendedWatcher,
-    watched: bool,
+    watches: Option<[acyclic_fs::HeldRootWatch; 2]>,
 }
 
 impl Bridge {
@@ -288,11 +293,6 @@ impl Bridge {
                 .map_err(native_file_error)?,
             waiters: Mutex::default(),
         });
-        let notified = Arc::clone(&shared);
-        let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-            notified.note(event);
-        })
-        .map_err(storage)?;
         let exited = Arc::clone(&shared);
         let observer = std::thread::Builder::new()
             .name("acyclic-host-files-owner".into())
@@ -310,10 +310,7 @@ impl Bridge {
             session: endpoint.session,
             workspace: endpoint.workspace,
             shared,
-            watching: Mutex::new(Watching {
-                watcher,
-                watched: false,
-            }),
+            watching: Mutex::new(Watching { watches: None }),
             #[cfg(test)]
             observer: Mutex::new(Some(observer)),
         })
@@ -365,24 +362,18 @@ impl Bridge {
     fn watch(&self) -> Result<()> {
         let mut watching = lock(&self.watching);
         let wanted = lock(&self.shared.waiters).registered != 0;
-        if wanted && !watching.watched {
-            watching
-                .watcher
-                .watch(self.shared.status.path(), RecursiveMode::NonRecursive)
-                .map_err(storage)?;
-            if let Err(error) = watching
-                .watcher
-                .watch(self.shared.requests.path(), RecursiveMode::NonRecursive)
-            {
-                let _ = watching.watcher.unwatch(self.shared.status.path());
-                return Err(storage(error));
-            }
-            watching.watched = true;
-        } else if !wanted && watching.watched {
-            // A directory the watcher already lost needs no unwatch.
-            let _ = watching.watcher.unwatch(self.shared.status.path());
-            let _ = watching.watcher.unwatch(self.shared.requests.path());
-            watching.watched = false;
+        if wanted && watching.watches.is_none() {
+            let observe = |root: &acyclic_fs::HeldRoot| {
+                let shared = Arc::clone(&self.shared);
+                root.watch_changes(move |event| shared.note_at(event, Path::new(""), Path::new("")))
+                    .map_err(native_file_error)
+            };
+            watching.watches = Some([
+                observe(&self.shared.status)?,
+                observe(&self.shared.requests)?,
+            ]);
+        } else if !wanted {
+            watching.watches = None;
         }
         Ok(())
     }
@@ -767,18 +758,11 @@ pub async fn serve_until(
         .map_err(native_file_error)?;
     let owner =
         HostWorkspaceOwner::new(Arc::clone(&local))?.with_requests(Arc::clone(&request_root));
-    // Notifications name the canonical paths; a non-canonical root would
-    // turn every one into an overflow rescan.
-    let requests = std::fs::canonicalize(directory.path().join("requests")).map_err(storage)?;
-    let notices = Arc::new(Notices::new(requests.clone()));
+    let notices = Arc::new(Notices::new(PathBuf::new()));
     let notified = Arc::clone(&notices);
-    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        notified.note(&event);
-    })
-    .map_err(storage)?;
-    watcher
-        .watch(&requests, RecursiveMode::NonRecursive)
-        .map_err(storage)?;
+    let watcher = request_root
+        .watch_changes(move |event| notified.note(&event))
+        .map_err(native_file_error)?;
     let files = CarrierIo {
         served: Served::default(),
         requests: request_root,

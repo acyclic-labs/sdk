@@ -480,7 +480,7 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
     assert!(matches!(failed.wait(OperationId::new(), delivery),
         Err(Error::Storage(error)) if error == failure));
     drop(waiting);
-    assert!(!lock(&failed.watching).watched);
+    assert!(lock(&failed.watching).watches.is_none());
     // This is a new caller's admission, not a retry of the failed operation.
     let fresh = Registry::bridge(&registry, &failed_cwd, Bridge::open)?;
     let fresh_alias = Registry::bridge(&registry, &failed_child, Bridge::open)?;
@@ -660,7 +660,7 @@ fn rejected_requests_end_without_owner_exit() -> Result<()> {
         drop(late);
         assert!(lock(&bridge.shared.waiters).waiting.is_empty());
         assert_eq!(lock(&bridge.shared.waiters).registered, 0);
-        assert!(!lock(&bridge.watching).watched);
+        assert!(lock(&bridge.watching).watches.is_none());
     }
     // Exercise caller cleanup, not just delivery: the rejecting owner has
     // already removed the input when request_operation withdraws it again.
@@ -1571,7 +1571,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         .ok_or_else(|| Error::Conflict("client bridge absent".into()))?;
     assert!(lock(&bridge.shared.waiters).waiting.is_empty());
     assert!(
-        !lock(&bridge.watching).watched,
+        lock(&bridge.watching).watches.is_none(),
         "a connection nothing awaits must not stay watched"
     );
     // The real connection has completed ordinary requests. Lose its
@@ -1635,7 +1635,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         "a refused connection must not publish a request with no response producer"
     );
     assert!(lock(&bridge.shared.waiters).waiting.is_empty());
-    assert!(!lock(&bridge.watching).watched);
+    assert!(lock(&bridge.watching).watches.is_none());
     assert!(
         !owner.is_finished(),
         "client failure must not kill the workspace owner"
@@ -1671,7 +1671,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         Err(Error::Storage(error)) if error == failure
     ));
     assert!(lock(&observed.shared.waiters).waiting.is_empty());
-    assert!(!lock(&observed.watching).watched);
+    assert!(lock(&observed.watching).watches.is_none());
     let (producer, mut ended) = tokio::sync::mpsc::unbounded_channel();
     drop(producer);
     assert!(matches!(

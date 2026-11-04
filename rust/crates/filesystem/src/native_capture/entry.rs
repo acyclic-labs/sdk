@@ -16,6 +16,18 @@ pub struct HeldRoot {
 }
 
 impl HeldRoot {
+    /// Reports changes in this original held directory through the shared
+    /// native notification service. Event paths are relative to this directory;
+    /// registration never reopens its original label. Source loss reports an
+    /// error, and dropping the watch retires its registration.
+    #[cfg(feature = "native-watch")]
+    pub fn watch_changes(
+        &self,
+        changed: impl Fn(notify::Result<notify::Event>) + Send + Sync + 'static,
+    ) -> Result<crate::HeldRootWatch, DemandError> {
+        crate::source_watch::HeldRootWatch::open(&self.root, changed)
+    }
+
     /// Lazily reads names from this held directory, without following its
     /// original path or querying the named entries' metadata. The cursor owns
     /// one bounded native buffer and ends when the directory query ends.
