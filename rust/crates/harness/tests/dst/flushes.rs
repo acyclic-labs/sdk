@@ -131,13 +131,21 @@ fn measure(replies: [ScriptedTurn; 6]) -> Result<Windows> {
         releaser.abort();
         let writes = schedule.durable_writes();
         let window = |from: usize, to: usize| flushes(&writes[cuts[from]..cuts[to]]);
-        Ok(Windows {
+        let observed = Windows {
             open: window(0, 1),
             first: window(1, 2),
             replies: std::array::from_fn(|index| window(index + 2, index + 3)),
             reopen: window(7, 8),
             reopened_first: window(8, 9),
-        })
+        };
+        assert_eq!(
+            (observed.open, observed.reopen),
+            ((7, 11), (1, 5)),
+            "open flushes changed: {:?}; reopen: {:?}",
+            &writes[cuts[0]..cuts[1]],
+            &writes[cuts[7]..cuts[8]]
+        );
+        Ok(observed)
     })
 }
 
@@ -174,12 +182,6 @@ fn reply_publication_drains_follow_commits_and_not_history_or_event_count() -> R
         streamed(32),
         text("four"),
     ])?;
-    assert_eq!(
-        observed.open,
-        (7, 11),
-        "fresh open flushes changed: {observed:?}"
-    );
-    assert_eq!(observed.reopen, (1, 5), "reopen flushes changed");
     // Cold root creation adds its policy barrier and may share its one drain
     // with the first reply. A reopened root needs only the settled reply work.
     let steady = observed.replies[0];
