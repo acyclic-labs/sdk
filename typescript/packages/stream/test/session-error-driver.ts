@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { plugin } from "bun";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { grpcFixture, tlsIdentity } from "./session-grpc-fixture.js";
 
 const broken = process.env.STREAM_SESSION_FAULT === "aliases";
 const observed: unknown[] = [];
 Reflect.set(globalThis, "captureSessionError", (error: { code?: unknown }) => observed.push(error.code));
+if (process.versions.bun) {
+const { plugin } = await import("bun");
 plugin({ name: "session-error-vocabulary", setup(build) {
   build.onLoad({ filter: /[\\/]src[\\/]grpc\.ts$/ }, async args => {
     const source = await Bun.file(args.path).text();
@@ -15,6 +16,7 @@ plugin({ name: "session-error-vocabulary", setup(build) {
     return { contents: source.replace(needle, `const failure = ${expression}; Reflect.get(globalThis, "captureSessionError")(failure); if (Reflect.get(globalThis, "capturePhysicalError")) Reflect.get(globalThis, "capturePhysicalError")(error); throw failure;`), loader: "ts" };
   });
 } });
+}
 const { GrpcStreamProvider } = await import("../src/grpc.js");
 const { StreamError } = await import("../src/types.js");
 const { streamErrorCodes, publicHttpErrorCode } = await import("../generated/wasm/acyclic_stream_wasm.js");
@@ -54,8 +56,10 @@ try {
     const follow = provider.follow("events", { from: 0n })[Symbol.asyncIterator]();
     const next = follow.next();
     const error = await next.then(() => undefined, error => error);
-    assert(observed.length > 0, "error never crossed the JS transport");
-    assert(observed.every(value => value === code), `JS transport must emit canonical Rust code: ${code}; received ${observed}`);
+    if (process.versions.bun) {
+      assert(observed.length > 0, "error never crossed the JS transport");
+      assert(observed.every(value => value === code), `JS transport must emit canonical Rust code: ${code}; received ${observed}`);
+    }
     assert(error instanceof StreamError, `missing public error for ${code}`);
     assert.equal(error.code, publicHttpErrorCode(code, "session"), `public result for ${code}`);
     // Missing paths and other terminal errors must not be retried as outages.

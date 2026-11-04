@@ -55,7 +55,7 @@
     "stage:native": "node ../../../scripts/build-stream-native.mjs stage",
     "check:native": "node ../../../scripts/build-stream-native.mjs check",
     "test": "bun run build && bun test test",
-    "test:session-errors": "bun run generate && bun run build:wasm && bun test test/session-errors.test.ts",
+    "test:session-errors": "bun run generate && bun run build:wasm && tsc -b --pretty false && bun test test/session-errors.test.ts",
     "test:grpc:node": "node test/grpc-provider-conformance.mjs --node-only",
     "test:grpc:bun": "node test/grpc-provider-conformance.mjs --bun-only",
     "example": "bun run build && tsc --ignoreConfig --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --pretty false examples/quickstart.ts && bun examples/quickstart.ts",

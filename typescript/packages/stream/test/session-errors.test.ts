@@ -1,6 +1,28 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { unlink } from "node:fs/promises";
+import { resolve } from "node:path";
+
+test("Node gRPC resumes original follows after physical HTTP/2 loss", async () => {
+  const entry = new URL("./session-error-driver.ts", import.meta.url);
+  const output = new URL("./session-error-driver.node.mjs", import.meta.url);
+  try {
+    // Compile only the existing fixture. Node loads the shipped product modules.
+    const built = await Bun.build({ entrypoints: [fileURLToPath(entry)], outfile: fileURLToPath(output),
+      target: "node", packages: "external", plugins: [{ name: "shipped-stream", setup(build) {
+        build.onResolve({ filter: /(?:^|\/)\.\.\/(?:src|generated)\// }, args => ({
+          path: resolve(args.resolveDir, args.path.replace("/src/", "/dist/")), external: true,
+        }));
+      } }],
+    });
+    if (!built.success) throw new AggregateError(built.logs, "Node fixture compilation failed");
+    const child = spawnSync("node", [fileURLToPath(output)], { encoding: "utf8", windowsHide: true });
+    if (child.error) throw child.error;
+    if (child.status !== 0) throw new Error(child.stderr || child.stdout);
+    expect(JSON.parse(child.stdout).recoveredConnections).toBe(2);
+  } finally { await unlink(output).catch(error => { if (error.code !== "ENOENT") throw error; }); }
+});
 
 for (const broken of [false, true]) {
   test(broken ? "negative control rejects public aliases entering Rust Session I/O" : "every Rust error code round-trips through TLS gRPC and WASM Session I/O", () => {
