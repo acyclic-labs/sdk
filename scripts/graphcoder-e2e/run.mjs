@@ -72,6 +72,8 @@ function expand(value, fixture) {
 // GraphCoder's headless outcome: `-p` prints the answer text and exits 0;
 // JSONL prints one `{"id", "inbox", "text"}` (or `"error"`) line per prompt.
 function outcome(input, result, id) {
+  const failure = result.termination?.startup_rejection ?? result.termination?.execution_failure;
+  if (failure) return { completion: "failed", error: failure.cause };
   if (input.mode !== "jsonl") {
     return result.code === 0 ? { completion: "completed", ok: { text: result.stdout.replace(/\r?\n$/, "") } }
       : { completion: "failed", error: result.stderr.trim() };
