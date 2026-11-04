@@ -55,7 +55,7 @@
       "exit": 1,
       "outcome": {
         "completion": "failed",
-        "error": "tool was interrupted before its outcome was recorded; it may have run, partly or fully"
+        "error": "operation outcome is indeterminate:"
       }
     }
   ],

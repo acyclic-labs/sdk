@@ -233,7 +233,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> acyclic_fs::VolumeInitialization<'static> {
         acyclic_fs::VolumeInitialization {
             config: acyclic_fs::VolumeConfig {
-                concurrency: acyclic_fs::ConcurrencyMode::SerializedAuthority,
+                concurrency: acyclic_fs::model::ConcurrencyMode::SerializedAuthority,
                 ..acyclic_fs::VolumeConfig::portable(if self.filesystem.capabilities().durable {
                     acyclic_fs::Lifecycle::Durable
                 } else {
