@@ -742,10 +742,14 @@ fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled() -> Re
     assert_eq!(
         _preparations
             .iter()
-            .filter(|(operation, _)| *operation == "prepare request")
-            .count(),
-        1,
-        "summary admission must dispatch its original prepared request"
+            .filter_map(|(operation, _)| {
+                matches!(*operation, "prepare request" | "count tokens").then_some(*operation)
+            })
+            .collect::<Vec<_>>(),
+        // The second preparation is the real journal's canonical request
+        // verification at ModelStarted. Dispatch reuses capacity admission.
+        ["prepare request", "count tokens", "prepare request"],
+        "summary dispatch must reuse admission and retain journal verification"
     );
     assert_eq!(
         runtime
