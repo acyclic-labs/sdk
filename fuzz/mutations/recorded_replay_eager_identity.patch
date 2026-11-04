@@ -1,0 +1,10 @@
+--- a/rust/crates/harness-core/src/model/recorded.rs
++++ b/rust/crates/harness-core/src/model/recorded.rs
+@@ -383,6 +383,7 @@
+         work: crate::NativeWork<'_>,
+         build: impl FnOnce(&'a RecordedCall) -> Result<T>,
+     ) -> Result<ReplayPreparation<'a, T>> {
++        let _ = request.replay_key()?;
+         let mut replay = self.lock();
+         let Replay {
+             cursor,

@@ -281,7 +281,7 @@ fn dispatch_key(dispatch: ModelDispatch) -> [u8; 52] {
 struct ReplayAdmission<'a> {
     owner: &'a RecordedModel,
     dispatch: ModelDispatch,
-    key: [u8; 32],
+    key: Option<[u8; 32]>,
     accepted: bool,
 }
 
@@ -304,7 +304,9 @@ impl ReplayAdmission<'_> {
         if first {
             self.owner.sink.diverged(Divergence {
                 dispatch: self.dispatch,
-                key: self.key,
+                key: self
+                    .key
+                    .expect("first live admission retains its replay key"),
             });
         }
     }
@@ -381,7 +383,6 @@ impl RecordedModel {
         work: crate::NativeWork<'_>,
         build: impl FnOnce(&'a RecordedCall) -> Result<T>,
     ) -> Result<ReplayPreparation<'a, T>> {
-        let key = request.replay_key()?;
         let mut replay = self.lock();
         let Replay {
             cursor,
@@ -412,9 +413,14 @@ impl RecordedModel {
             }
             None => {}
         }
-        let output = if live.contains(&dispatch.operation_id) {
+        // Retained dispatches and live turns cannot select another recording.
+        // Only a new replay candidate needs the request's semantic identity.
+        let key = if live.contains(&dispatch.operation_id) {
             None
         } else {
+            Some(request.replay_key()?)
+        };
+        let output = if let Some(key) = key {
             cursor.select(&self.recording, key, &mut CursorWork(work), |candidate| {
                 let Some((index, call)) = candidate else {
                     return Ok(None);
@@ -429,6 +435,8 @@ impl RecordedModel {
                 *selection = Some(ReplaySelection::Recorded { key, index });
                 Ok(Some(output))
             })?
+        } else {
+            None
         };
         match output {
             Some(output) => Ok(ReplayPreparation::Recorded(output)),
@@ -771,6 +779,9 @@ mod tests {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn refused_generation_funding_preserves_replay_and_tool_coordinates() -> Result<()> {
+        use crate::executor::json::CodecOperation;
+        use acyclic_test_support::differential::observe;
+
         // Generated canonical SDK inputs, not a captured provider response.
         let request = PreparedModelRequest::prepare(
             ModelRequest {
@@ -975,20 +986,63 @@ mod tests {
             trial.reconcile(dispatch, &events[1..]).await,
             Err(Error::Conflict(_))
         ));
-        let mut portable = trial.generate(&request, dispatch);
+        let fresh = PreparedModelRequest::prepare(
+            request.request().clone(),
+            crate::conversation::Limits::default(),
+            None,
+        )?;
+        let (mut portable, trace) =
+            observe::<_, _, CodecOperation>(|| (), |()| trial.generate(&fresh, dispatch));
+        assert!(
+            trace.is_empty(),
+            "retained dispatch recomputed replay identity"
+        );
         assert_eq!(
             futures::StreamExt::next(&mut portable).await.unwrap()?,
             events[0]
         );
         assert_eq!(trial.unused(), 0);
+        let (identity, cold) = observe::<_, _, CodecOperation>(|| (), |()| fresh.replay_key());
+        assert_eq!(identity?, key);
+        assert_eq!(
+            cold,
+            [CodecOperation::Serialize],
+            "cold identity negative control"
+        );
+        let fresh = PreparedModelRequest::prepare(
+            request.request().clone(),
+            crate::conversation::Limits::default(),
+            None,
+        )?;
+        let (resumed, trace) = observe::<_, _, CodecOperation>(
+            || (),
+            |()| trial.generate_with_native_work(&fresh, dispatch, &funded),
+        );
+        assert!(
+            trace.is_empty(),
+            "native retained dispatch recomputed replay identity"
+        );
+        let mut resumed = resumed?.await?;
+        let (actual, custody) = futures::StreamExt::next(&mut resumed).await.unwrap()?;
+        assert_eq!(actual, events[0]);
+        drop(custody);
+        drop(resumed);
 
         // The real trait's unsupported-native refusal must not pin live mode.
         // The scripted producer is only the subsequent fallthrough observer.
+        #[derive(Default)]
+        struct Divergences(Mutex<Vec<Divergence>>);
+        impl DivergenceSink for Divergences {
+            fn diverged(&self, divergence: Divergence) {
+                self.0.lock().unwrap().push(divergence);
+            }
+        }
         let live = Arc::new(crate::test_support::ScriptedModelProvider::new([]));
+        let divergences = Arc::new(Divergences::default());
         let live_trial = RecordedModel::new(
             live.clone(),
             Arc::new(Recording::default()),
-            Arc::new(Quiet),
+            divergences.clone(),
         );
         assert!(matches!(
             live_trial.generate_with_native_work(&request, dispatch, &funded),
@@ -1026,6 +1080,41 @@ mod tests {
             1,
             "accepted live failure was dispatched again"
         );
+        for count in [1, 1024] {
+            let mut input = request.request().clone();
+            input.messages = vec![input.messages[0].clone(); count];
+            let fresh =
+                PreparedModelRequest::prepare(input, crate::conversation::Limits::default(), None)?;
+            let next = ModelDispatch {
+                step: count as u32,
+                request_digest: fresh.request_digest(),
+                ..dispatch
+            };
+            let (refused, trace) = observe::<_, _, CodecOperation>(
+                || (),
+                |()| live_trial.generate_with_native_work(&fresh, next, &funded),
+            );
+            assert!(matches!(refused, Err(Error::NativeBoundary { .. })));
+            assert!(trace.is_empty(), "live turn recomputed replay identity");
+            let (mut stream, trace) =
+                observe::<_, _, CodecOperation>(|| (), |()| live_trial.generate(&fresh, next));
+            assert!(
+                trace.is_empty(),
+                "portable live turn recomputed replay identity"
+            );
+            assert!(
+                futures::StreamExt::next(&mut stream)
+                    .await
+                    .unwrap()
+                    .is_err()
+            );
+            assert!(live_trial.diverged());
+        }
+        assert_eq!(
+            *divergences.0.lock().unwrap(),
+            [Divergence { dispatch, key }]
+        );
+        assert_eq!(live.dispatches().len(), 3);
         Ok(())
     }
 
