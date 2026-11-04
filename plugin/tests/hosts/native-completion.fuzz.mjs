@@ -5,7 +5,7 @@ import {assertCodexPairTools} from './native-pairs.mjs';
 
 const namespace=JSON.parse(readFileSync(new URL('./fixtures/native-codex-namespace.json',import.meta.url),'utf8')).tool;
 
-const answers=JSON.parse(readFileSync(new URL('./fixtures/native-completion.json',import.meta.url),'utf8')).records;
+export const answers=JSON.parse(readFileSync(new URL('./fixtures/native-completion.json',import.meta.url),'utf8')).records;
 
 // Change only the authoritative answer of an original successful capture.
 // The same production admission must reject every byte difference.
@@ -81,13 +81,29 @@ export function checkTransitions(decode=assertNativeCompletion) {
  for(const record of [...answers,...seeds.filter(record=>record.selection)]) {
   const events=record.stdout.trim().split('\n').map(JSON.parse);
   const run=changed=>decode(record.host,{...record,stdout:changed.map(event=>JSON.stringify(event)).join('\n')},record.answer,record.selection);
+  run(events);
+  for(const line of [JSON.stringify(events[0]).slice(0,-1),'null','[]',JSON.stringify({...events[0],type:null})])
+   assert.throws(()=>decode(record.host,{...record,stdout:line+'\n'+record.stdout},record.answer,record.selection),error=>{
+    assert.equal(error.code,'NATIVE_HOST_EVENT_INVALID');
+    assert.match(error.message,/step=validate native .* completion:.*recovery=node --test/);
+    return true;
+   });
+  const terminalType=record.host==='codex'?'turn.completed':'result';
+  const missing=events.filter(event=>event.type!==terminalType);
+  if(!record.selection)assert.ok(JSON.stringify(missing).includes(record.answer),'original assistant output still contains the answer');
+  assert.throws(()=>run(missing),/native .* terminal missing/);
+  assert.throws(()=>decode(record.host,record,'UNOBSERVED_NATIVE_ANSWER',record.selection),/native answer missing/);
+  assert.throws(()=>decode(record.host,{...record,code:1},record.answer,record.selection));
   if(record.host==='codex'&&record.answer) {
    const start=events.find(event=>event.type==='turn.started');
-   if(!start)continue;
+   assert.ok(start,'original native turn start is missing');
    run([warning,...events]);
    assert.throws(()=>run(events.filter(event=>event!==start)),{code:'NATIVE_HOST_TERMINAL_ORDER'});
    const index=events.indexOf(start);
    assert.throws(()=>run([...events.slice(0,index),start,...events.slice(index)]),{code:'NATIVE_HOST_TERMINAL_ORDER'});
+   const messages=events.filter(event=>event.item?.type==='agent_message');
+   assert.throws(()=>run([...events.filter(event=>!messages.includes(event)),...messages]),{code:'NATIVE_HOST_TERMINAL_ORDER'});
+   assert.throws(()=>run([...events,...events.filter(event=>event.type===terminalType)]),{code:'NATIVE_HOST_TERMINAL_ORDER'});
   } else if(record.selection) {
    const terminal=events.find(event=>event.type==='result');
    for(const changed of [{...terminal,session_id:terminal.session_id+'0'},
