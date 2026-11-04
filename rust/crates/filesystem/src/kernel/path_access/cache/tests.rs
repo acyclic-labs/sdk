@@ -10,7 +10,8 @@ async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
     let provider =
         acyclic_objects::local::LocalObjects::open(directory.path(), Default::default(), None)
             .await?;
-    let store = crate::LogicalObjectStore::new(std::sync::Arc::new(provider));
+    let provider = std::sync::Arc::new(provider);
+    let store = crate::LogicalObjectStore::new(std::sync::Arc::clone(&provider));
     let mut requests = Vec::new();
     for bytes in [b"first".as_slice(), b"second".as_slice()] {
         requests.push(ObjectReadRequest {
@@ -25,6 +26,7 @@ async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
             .await?;
     let cancellation = CancellationToken::new();
     for capacity in [0, 1, 2, 3] {
+        let store = crate::LogicalObjectStore::new(std::sync::Arc::clone(&provider));
         let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let independent = RetainedAllocation::claim(73, 1, &mut work.accounting())?;
         let baseline = work.allocations.live_bytes();
@@ -65,14 +67,19 @@ async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
         )?;
         assert_eq!(work.allocations.live_bytes(), baseline + resident);
         let before = work.spent().backend_read_operations;
-        for _ in 0..2 {
+        // Distinct decode bounds miss the decoded cache while sharing the
+        // operation cache's original encoded object.
+        for maximum_page_items in [1, 2] {
             let (decoded, allocation) = crate::kernel::persistent_io::read_page_with_accounting::<
                 _,
                 crate::kernel::tree_mutation::TreeFormat,
             >(
                 &cache,
                 page,
-                DecodeLimits::default(),
+                DecodeLimits {
+                    maximum_page_items,
+                    ..DecodeLimits::default()
+                },
                 &mut work.accounting(),
                 &cancellation,
                 None,

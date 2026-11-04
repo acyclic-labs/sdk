@@ -300,7 +300,7 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
             };
             let read = self.reads.next().ok_or_else(invalid_batch_result)?;
             let retained = match self.read_allocation {
-                KernelOwnedAllocation::Standalone => retained_bytes(&read),
+                KernelOwnedAllocation::Standalone => read.retention.owned_bytes(),
                 #[cfg(not(target_arch = "wasm32"))]
                 KernelOwnedAllocation::NativeOriginal(_) => 0,
             };
