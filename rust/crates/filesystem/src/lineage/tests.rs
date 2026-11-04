@@ -116,7 +116,40 @@ async fn direct_parent_authorization_and_recursive_walk_are_durable() {
 
 #[tokio::test]
 async fn descendant_authorization_stops_at_the_authenticated_anchor() {
-    let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
+    struct ObservedStore {
+        inner: MemoryWorkspaceLineageStore,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+    impl ObservedStore {
+        fn take_reads(&self) -> usize {
+            self.reads.swap(0, std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+    impl WorkspaceLineageStore for ObservedStore {
+        type Error = MemoryWorkspaceLineageStoreError;
+
+        async fn load(
+            &self,
+            id: WorkspaceId,
+        ) -> Result<Option<WorkspaceLineageRecord>, Self::Error> {
+            self.reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.inner.load(id).await
+        }
+
+        async fn compare_and_swap(
+            &self,
+            id: WorkspaceId,
+            revision: u64,
+            replacement: WorkspaceLineageRecord,
+        ) -> Result<bool, Self::Error> {
+            self.inner.compare_and_swap(id, revision, replacement).await
+        }
+    }
+    let graph = WorkspaceGraph::new(ObservedStore {
+        inner: MemoryWorkspaceLineageStore::new(),
+        reads: std::sync::atomic::AtomicUsize::new(0),
+    });
     let root = workspace("unregistered-anchor");
     let child = workspace("registered-child");
     graph
@@ -133,18 +166,28 @@ async fn descendant_authorization_stops_at_the_authenticated_anchor() {
         })
         .await
         .unwrap();
+    graph.store().take_reads();
+    graph.authorize_descendant(root, root).await.unwrap();
+    assert_eq!(graph.store().take_reads(), 0, "the anchor needs no lookup");
     graph.authorize_descendant(child, root).await.unwrap();
+    assert_eq!(graph.store().take_reads(), 1, "one observed child edge");
     // The former complete-history walk reads beyond the authenticated anchor.
     assert!(matches!(
         graph.ancestors(child, u32::MAX).await,
         Err(WorkspaceLineageError::IncompatibleState)
     ));
+    assert_eq!(
+        graph.store().take_reads(),
+        2,
+        "the absent parent is observed once"
+    );
     assert!(
         graph
             .authorize_descendant(child, workspace("foreign"))
             .await
             .is_err()
     );
+    assert_eq!(graph.store().take_reads(), 2);
     // A workspace this lineage never registered is refused, not corrupt.
     assert!(matches!(
         graph
@@ -152,6 +195,45 @@ async fn descendant_authorization_stops_at_the_authenticated_anchor() {
             .await,
         Err(WorkspaceLineageError::UnauthorizedJoin)
     ));
+    assert_eq!(
+        graph.store().take_reads(),
+        1,
+        "an absent workspace is classified from its original observation"
+    );
+    // A stored but incompatible or unfinished record is never treated as absent.
+    for (name, version, ready) in [("invalid", 2, true), ("planned", 1, false)] {
+        let id = workspace(name);
+        assert!(
+            graph
+                .store()
+                .compare_and_swap(
+                    id,
+                    0,
+                    WorkspaceLineageRecord {
+                        version,
+                        revision: 1,
+                        ready,
+                        workspace_id: id,
+                        workspace_name: name.into(),
+                        parent_workspace_id: Some(root),
+                        parent_workspace_name: Some("unregistered-anchor".into()),
+                        fork_generation: generation(1),
+                        initial_generation: generation(2),
+                    }
+                )
+                .await
+                .unwrap()
+        );
+        assert!(matches!(
+            graph.authorize_descendant(id, root).await,
+            Err(WorkspaceLineageError::IncompatibleState)
+        ));
+        assert_eq!(
+            graph.store().take_reads(),
+            1,
+            "one original refusal for {name}"
+        );
+    }
 }
 
 #[tokio::test]
