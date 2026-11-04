@@ -91,7 +91,7 @@ async fn historical_reads_preserve_the_complete_original_receipt() -> TestResult
             let value = store
                 .read_records(AUTHORITY, Sequence::GENESIS, limit, &mut scope)
                 .await?;
-            scope.finish(value)?
+            crate::async_storage::authority_parts(scope.finish_owned(value)?)
         };
         let before = provider.requests();
         let (records, allocation) = historical

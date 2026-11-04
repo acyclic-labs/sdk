@@ -32,7 +32,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
             .0
             .read_records(authority, after, limit, &mut scope)
             .await?;
-        scope.finish(value)
+        Ok(crate::async_storage::authority_parts(
+            scope.finish_owned(value).map_err(authority_error)?,
+        ))
     }
 }
 

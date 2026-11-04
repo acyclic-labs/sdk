@@ -143,3 +143,14 @@ Kernel publication and record durability also borrow the original proof frame.
 Combined publication moves that proof guard unchanged; record durability keeps
 the closure guard until its flush completes. Neither path rebuilds proof funding
 from a receipt or releases the proof's backing before its physical output.
+
+Authority replay carries the original owned record vector to both live and
+historical adapter scopes. Each scope transfers that container before retiring
+its temporary scratch. The existing historical-read relation retains the actual
+returned vector on its caller's original ledger, then checks exact capacity
+retirement while the physical payload alias remains live. The kept
+`mutations/replay_container_custody.patch` omits the historical adapter's scope
+transfer and must fail that relation. Payload funding remains independent; no
+payload scan, receipt merge, replacement admission or new wait is needed. This
+container transfer does not establish the separate public accounting-page facts
+or historical decoder allocation contract.
