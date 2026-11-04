@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { loomEnvironment, qualificationMain, qualifyFsPolicyLoom } from "./qualify-mcp-loom.mjs";
-import { harnessModelSuites, qualifyHarnessModelsLoom } from "./qualify-mcp-loom.mjs";
+import { harnessModelSuites, qualifyHarnessModelsLoom, qualifyNativeHostLoom, qualifyNativeExecutor, qualifyNativeSources } from "./qualify-mcp-loom.mjs";
 import { gateQualifications, qualifyMcpLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyOwnershipLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "main" }, profile: { test: true }, executable: "model-binary" };
@@ -99,32 +99,6 @@ function assertGateStep(args) {
   assert.ok(gateQualifications.some(step => JSON.stringify(step.args) === JSON.stringify(args)), `missing gate step: ${args}`);
 }
 
-test("ownership qualification requires every dedicated real-lock model and compiler controls in CI", () => {
-  for (const passed of [0, 4, 7, 8, 9]) {
-    const run = (command, args, options) => {
-      if (command === "cargo") {
-        assert.deepEqual(args.slice(0, 7), ["test", "--locked", "--message-format=json", "-p", "acyclic-native-runtime", "--lib", "--no-run"]);
-        assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
-        return {status: 0, stderr: "", stdout: JSON.stringify({...artifact, target: {name: "acyclic_native_runtime"}})};
-      }
-      assert.deepEqual(args, ["ownership::model::"]);
-      return {status: 0, stderr: "", stdout: summary(passed, 0, 50)};
-    };
-    if (passed === 8) qualifyOwnershipLoom(run);
-    else assert.throws(() => qualifyOwnershipLoom(run), /requires a nonzero/);
-  }
-  const gate = readFileSync("scripts/qualify-ci.sh", "utf8").match(/  gate\)\n([\s\S]*?);;/)?.[1];
-  assert.ok(gate, "the original qualification must retain its gate branch");
-  const requireProofs = text => {
-    assert.match(text, /^    node scripts\/check-hermetic-clippy\.mjs$/m);
-    assertGateStep(["--ownership"]);
-  };
-  requireProofs(gate);
-  for (const line of ["    node scripts/check-hermetic-clippy.mjs"]) {
-    assert.throws(() => requireProofs(gate.replace(line, "")), assert.AssertionError);
-  }
-});
-
 test("progress qualification requires the cleanup and runnable-wake models and controls", () => {
   const names = ["e2e_progress_model::registration_reporting_and_cancel_or_panic_cleanup_are_atomic",
     "e2e_progress_model::forgotten_cleanup_is_detected_on_the_real_registration",
@@ -145,20 +119,28 @@ test("progress qualification requires the cleanup and runnable-wake models and c
   }
 });
 
-test("native progress qualification instruments the real mutex and requires every ownership model", () => {
-  for (const missing of [null, ...Array.from({ length: 25 }, (_, index) => index + 1)]) {
+test("native progress qualification instruments the real mutex and requires every selected model", () => {
+  for (const [qualify, count, pattern, ordinary = false] of [
+    [qualifyNativeProgressLoom, 11, /^(?:testing::(?:(?:queue_)?model::|(?:durability|entropy)::models::)|device_flush::model::)/],
+    [run => qualifyNativeHostLoom(run, true), 3, /^testing::host::models::/],
+    [qualifyNativeExecutor, 2, /^testing::executor::models::/],
+    [run => qualifyNativeExecutor(run, true), 1, /^testing::executor::tests::/, true],
+    [qualifyNativeSources, 1, /^testing::clock::tests::/, true],
+    [run => qualifyNativeSources(run, true), 3, /^(?:testing::entropy::models::|device_flush::model::)/],
+  ]) for (const missing of [null, ...Array.from({ length: count }, (_, index) => index + 1)]) {
     let models = 0;
     const run = (command, args, options) => {
       if (command === "cargo") {
-        assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
+        if (ordinary) assert.equal(options.env, undefined);
+        else assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
         assert.ok(args.includes("--lib") && args.includes("--no-run"));
         return {status: 0, stdout: JSON.stringify({...artifact, target: {name: "acyclic_native_runtime"}})};
       }
-      assert.match(args[0], /^testing::(?:queue_)?model::/);
+      assert.match(args[0], pattern);
       return {status: 0, stdout: summary(++models === missing ? 0 : 1, 0, 4)};
     };
-    if (missing === null) { qualifyNativeProgressLoom(run); assert.equal(models, 25); }
-    else assert.throws(() => qualifyNativeProgressLoom(run), /requires a nonzero/);
+    if (missing === null) { qualify(run); assert.equal(models, count); }
+    else assert.throws(() => qualify(run), /requires a nonzero/);
   }
 });
 

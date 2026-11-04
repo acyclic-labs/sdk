@@ -588,7 +588,7 @@ fn prepared_read_panic_preserves_original_payload_and_actual_work() -> io::Resul
 
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 #[test]
-fn bounded_read_byte_and_memory_refusals_precede_io() -> io::Result<()> {
+fn bounded_read_admission_refuses_unfunded_io_but_accepts_empty_reads() -> io::Result<()> {
     let temporary = tempfile::tempdir()?;
     let path = temporary.path().join("admission");
     std::fs::write(&path, b"abc")?;
@@ -599,6 +599,14 @@ fn bounded_read_byte_and_memory_refusals_precede_io() -> io::Result<()> {
     limits.memory_limit = 0;
     let memory_meter = Arc::new(limits);
     assert!(file.read_bounded_async(0, 3, memory_meter, false).is_err());
+
+    let mut limits = ReadBudgetMeter::new(0, 0);
+    limits.memory_limit = 0;
+    limits.allocation_limit = 0;
+    let meter = Arc::new(limits);
+    let output = complete(file.read_bounded_async(u64::MAX, 0, meter.clone(), false)?)?;
+    assert!(output.0.is_empty());
+    assert_eq!(meter.memory.load(Ordering::Acquire), 0);
     Ok(())
 }
 
@@ -635,20 +643,6 @@ fn allocation_reconciliation_retains_capacity_on_refusal_and_cancellation() -> i
         drop(allocation);
         assert_eq!(observer.memory.load(Ordering::Acquire), 0);
     }
-    Ok(())
-}
-
-#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-#[test]
-fn zero_bounded_read_needs_no_quota() -> io::Result<()> {
-    let file = NativeFile::from_file(tempfile::tempfile()?, None).map_err(|(error, _)| error)?;
-    let mut limits = ReadBudgetMeter::new(0, 0);
-    limits.memory_limit = 0;
-    limits.allocation_limit = 0;
-    let meter = Arc::new(limits);
-    let output = complete(file.read_bounded_async(u64::MAX, 0, meter.clone(), false)?)?;
-    assert!(output.0.is_empty());
-    assert_eq!(meter.memory.load(Ordering::Acquire), 0);
     Ok(())
 }
 

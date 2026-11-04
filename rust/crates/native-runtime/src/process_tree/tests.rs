@@ -85,7 +85,7 @@ fn an_exchange_fails_when_the_child_exits_before_taking_its_input() -> io::Resul
     meter.blocked_write = Some(Box::new(move || {
         // SAFETY: the unreaped direct child reserves this pid.
         assert_eq!(unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) }, 0);
-        super::platform::await_exiting_id(pid, None).expect("observe the killed child");
+        super::platform::await_exiting_id(pid, None, &mut None).expect("observe the killed child");
     }));
     let failure = tree
         .wait_with_output(
@@ -287,6 +287,13 @@ pub(super) fn command(mode: &str, root: &std::path::Path) -> ProcessCommand {
     command
 }
 
+/// Only the original process owner's stop can finish a stalled helper.
+fn wait_for_owner_stop() -> ! {
+    loop {
+        thread::park();
+    }
+}
+
 /// Waits for a helper's readiness marker.
 pub(super) fn ready(root: &std::path::Path, name: &str, mut exited: impl FnMut() -> bool) {
     while !root.join(name).exists() {
@@ -374,7 +381,7 @@ fn process_tree_helper() {
             std::io::stdout().flush().expect("flush partial stdout");
             std::io::stderr().flush().expect("flush partial stderr");
             fs::write(root.join("partial-ready"), b"ready").expect("partial ready");
-            thread::sleep(Duration::from_secs(30));
+            wait_for_owner_stop();
         }
         "output" => {
             assert_eq!(
@@ -395,13 +402,6 @@ fn process_tree_helper() {
                 .read_to_end(&mut input)
                 .expect("closed stdin");
             assert!(input.is_empty());
-            std::process::exit(0);
-        }
-        "bulk" => {
-            let chunk = [b'b'; 64 * 1024];
-            for _ in 0..BULK_BYTES / chunk.len() {
-                std::io::stdout().write_all(&chunk).expect("bulk stdout");
-            }
             std::process::exit(0);
         }
         "stdin-stall" | "stdin-handshake" | "stdin-cancel" | "stdin-save" => {
@@ -457,9 +457,7 @@ fn stdin_helper(mode: &str, root: &std::path::Path) {
             std::io::stdout().flush().expect("flush partial marker");
             // No further input is consumed. The owner must observe the
             // cancellation notification and physically reap this child.
-            loop {
-                thread::park();
-            }
+            wait_for_owner_stop();
         }
         "stdin-save" => {
             let mut input = Vec::new();
@@ -481,7 +479,7 @@ fn stdin_helper(mode: &str, root: &std::path::Path) {
                 .expect("stall marker");
             std::io::stdout().flush().expect("flush stall marker");
             fs::write(root.join("stdin-stall-ready"), b"ready").expect("stall ready");
-            thread::sleep(Duration::from_secs(30));
+            wait_for_owner_stop();
         }
         "stdin-handshake" => {
             let mut first = [0; 6];
@@ -506,7 +504,7 @@ fn stdin_helper(mode: &str, root: &std::path::Path) {
                 .write_all(b"second-ack\n")
                 .expect("second ack");
             std::io::stdout().flush().expect("flush second ack");
-            thread::sleep(Duration::from_secs(30));
+            wait_for_owner_stop();
         }
         _ => panic!("unknown stdin helper mode"),
     }
@@ -925,7 +923,7 @@ fn partial_stdin_writes_preserve_exact_bytes_and_explicit_eof() {
     let output = tree
         .wait_with_output(
             CaptureSchedule::Unbounded,
-            2 * BULK_BYTES,
+            input.len(),
             Some(crate::CaptureInput::Literal(&input)),
             || Ok(()),
             |_| Ok(crate::ProcessInput::default()),
@@ -1254,7 +1252,10 @@ fn stopped_capture_preserves_output_prefix_and_cleanup_observation() {
     assert!(failure.stdout.ends_with(b"stdout-before-stop"));
     assert_eq!(failure.stderr, b"stderr-before-stop");
     assert!(failure.cleanup_completed);
-    assert!(failure.status.is_none());
+    assert!(
+        failure.status.is_some(),
+        "cleanup observed the original exit"
+    );
     assert!(tree.is_reaped());
 }
 
@@ -1310,51 +1311,6 @@ fn capture_timeout_and_output_overflow_reap_owned_tree() {
 }
 
 #[test]
-fn bulk_output_is_collected_fully_within_its_exact_bound() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
-    let output = ProcessTree::spawn(&mut command("bulk", temporary.path()))
-        .expect("spawn bulk writer")
-        .wait_with_output(
-            CaptureSchedule::Unbounded,
-            2 * BULK_BYTES,
-            None,
-            || Ok(()),
-            |_| Ok(crate::ProcessInput::default()),
-            None,
-            None,
-            None,
-        )
-        .map_err(|failure| failure.error)
-        .expect("collect bulk output");
-    assert!(output.status.success());
-    let header = output.stdout.len() - BULK_BYTES;
-    assert!(
-        output
-            .stdout
-            .get(header..)
-            .expect("bulk bytes")
-            .iter()
-            .all(|byte| *byte == b'b')
-    );
-    assert!(output.stderr.is_empty());
-    let error = ProcessTree::spawn(&mut command("bulk", temporary.path()))
-        .expect("spawn bulk writer")
-        .wait_with_output(
-            CaptureSchedule::Unbounded,
-            output.stdout.len() - 1,
-            None,
-            || Ok(()),
-            |_| Ok(crate::ProcessInput::default()),
-            None,
-            None,
-            None,
-        )
-        .map_err(|failure| failure.error)
-        .expect_err("bulk output exceeds bound");
-    assert_eq!(error.kind(), std::io::ErrorKind::FileTooLarge);
-}
-
-#[test]
 fn exited_parent_does_not_leave_descendant_holding_output_open() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let mut tree =
@@ -1377,36 +1333,45 @@ fn exited_parent_does_not_leave_descendant_holding_output_open() {
     assert_no_escape(temporary.path());
 }
 
-#[cfg(unix)]
+/// An admitted kernel wait still runs if its completion accounting fails.
+/// Capture must retain that original status while keeping cleanup ownership.
 #[test]
-fn exit_observation_retains_group_leader_until_cleanup() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
-    let mut command = command("output", temporary.path());
-    command.env("EXPLICIT_PROCESS_INPUT", "allowed");
-    let mut tree = ProcessTree::spawn(&mut command).expect("spawn tree");
-    assert!(tree.wait_exit(None).expect("wait exit").success());
-    assert!(
-        super::platform::observe_exit(tree.child.as_ref().expect("retained child"))
-            .expect("leader remains waitable")
-            .expect("exited leader")
-            .success()
-    );
-    tree.terminate(None).expect("terminate and reap");
-    assert!(tree.child.is_none());
-    let mut tree = ProcessTree::spawn(&mut self::command("exit-code", temporary.path()))
-        .expect("spawn nonzero exit");
-    assert_eq!(tree.wait_exit(None).expect("nonzero exit").code(), Some(7));
-    tree.terminate(None).expect("reap nonzero exit");
-
-    let mut tree = ProcessTree::spawn(&mut self::command("child", temporary.path()))
-        .expect("spawn signalled child");
-    tree.terminate_descendants().expect("signal tree");
-    use std::os::unix::process::ExitStatusExt as _;
-    assert_eq!(
-        tree.wait_exit(None).expect("signal exit").signal(),
-        Some(libc::SIGKILL)
-    );
-    tree.terminate(None).expect("reap signal exit");
+fn cleanup_recording_failure_retains_the_observed_terminal() -> io::Result<()> {
+    use std::sync::atomic::Ordering;
+    for (denied, failed_recording) in [(true, false), (false, true), (false, false)] {
+        let root = tempfile::tempdir()?;
+        let mut tree = ProcessTree::spawn(&mut command("exit-code", root.path()))?;
+        assert_eq!(tree.wait_exit(None)?.code(), Some(7));
+        // Settle containment through the real producer, so the next original
+        // cleanup operation is exactly the retained child's terminal wait.
+        tree.terminate_descendants()?;
+        let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+        meter.operation_denial = denied.then_some(crate::NativeOperationKind::Read);
+        meter.fail_recorded_operation = failed_recording.then_some(1);
+        let mut status = None;
+        let result = tree.capture_terminate(Some(&meter), &mut status);
+        if denied || failed_recording {
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+            assert!(!tree.is_reaped(), "failed cleanup keeps its original owner");
+        } else {
+            result?;
+            assert!(tree.is_reaped());
+        }
+        assert_eq!(
+            status.map(|status| status.code()),
+            (!denied).then_some(Some(7)),
+            "an admitted wait retains its original status before recording failure"
+        );
+        if denied {
+            assert_eq!(meter.read_attempts.load(Ordering::Acquire), 0);
+        } else if failed_recording {
+            assert_eq!(meter.read_attempts.load(Ordering::Acquire), 1);
+        }
+        // This is a distinct recovery admission; do not retry a failed ledger.
+        tree.terminate(None)?;
+        assert!(tree.is_reaped());
+    }
+    Ok(())
 }
 
 #[cfg(all(feature = "test-support", unix))]

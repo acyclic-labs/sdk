@@ -264,7 +264,7 @@ fn native_control_fault(fault: DurableFault, forget_context: bool) {
         file.as_file().metadata().unwrap().len(),
         if fault == DurableFault::After { 3 } else { 8 }
     );
-    assert_eq!(schedule.durable_writes().len(), 1);
+    assert_eq!(schedule.durable_write_count(), 1);
 }
 
 #[test]

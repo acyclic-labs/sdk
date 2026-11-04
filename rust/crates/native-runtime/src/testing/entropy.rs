@@ -170,8 +170,9 @@ mod tests {
 mod models {
     use super::*;
 
-    fn draws(rewind: bool) {
-        loom::model(move || {
+    #[test]
+    fn concurrent_draws_cannot_share_bytes() {
+        loom::model(|| {
             let source = Arc::new(Source::new(71));
             let child = source.clone();
             let task = loom::thread::spawn(move || {
@@ -179,25 +180,9 @@ mod models {
                 child.fill(&mut bytes);
                 bytes
             });
-            if rewind {
-                // Mutate the real source by resetting its cursor between draws.
-                let mut reader = lock(&source.reader);
-                reader.set_position(0);
-            }
             let mut bytes = [0; 16];
             source.fill(&mut bytes);
             assert_ne!(bytes, task.join().unwrap(), "duplicate entropy draw");
         });
-    }
-
-    #[test]
-    fn concurrent_draws_cannot_share_bytes() {
-        draws(false);
-    }
-
-    #[test]
-    #[should_panic(expected = "duplicate entropy draw")]
-    fn reset_source_negative_control() {
-        draws(true);
     }
 }

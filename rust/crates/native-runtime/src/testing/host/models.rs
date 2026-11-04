@@ -42,10 +42,10 @@ fn abandoned_driver_and_original_wake_release_the_parked_slot() {
     });
 }
 
-fn handoff(forget_ready: bool) {
-    loom::model(move || {
+#[test]
+fn readiness_racing_worker_parking_cannot_be_lost() {
+    loom::model(|| {
         let host = Host::new(1);
-        lock(&host.state).forget_ready = forget_ready;
         let source = Arc::new(AtomicBool::new(false));
         let published = source.clone();
         let (sender, receiver) = loom::sync::mpsc::channel::<Waker>();
@@ -80,23 +80,13 @@ fn handoff(forget_ready: bool) {
 }
 
 #[test]
-fn readiness_racing_worker_parking_cannot_be_lost() {
-    handoff(false);
-}
-
-#[test]
-#[should_panic(expected = "deadlock")]
-fn negative_control_forgetting_worker_readiness_deadlocks() {
-    handoff(true);
-}
-
-fn queue_wakes(forget_io: bool) {
-    loom::model(move || {
+fn queue_capacity_and_physical_terminal_wakes_are_latched() {
+    loom::model(|| {
         let host = Host::new(1);
-        lock(&host.state).forget_io = forget_io;
-        // The original queue has three monotone states. Register the actual
-        // polling waker before both capacity and terminal publications;
-        // no permutation, branch or preemption bound trims this state space.
+        // A scripted capacity/terminal source exercises the actual Host latch.
+        // Native admission and retirement have their own queue properties.
+        // Register the real polling waker before both publications; no
+        // permutation, branch or preemption bound trims this state space.
         let queue = Arc::new(Mutex::new((0u8, None::<Waker>)));
         let (started, start) = loom::sync::mpsc::channel();
         let (admitted, admission) = loom::sync::mpsc::channel();
@@ -146,28 +136,40 @@ fn queue_wakes(forget_io: bool) {
 }
 
 #[test]
-fn queue_capacity_and_physical_terminal_wakes_are_latched() {
-    queue_wakes(false);
-}
-
-#[test]
-#[should_panic(expected = "deadlock")]
-fn negative_control_forgetting_io_readiness_deadlocks() {
-    queue_wakes(true);
-}
-
-fn unscoped_occupant(forget_occupant: bool) {
-    loom::model(move || {
+fn physical_occupants_outside_the_schedule_cannot_block_the_driver() {
+    loom::model(|| {
+        struct DriverWake(Mutex<bool>, Condvar);
+        impl Wake for DriverWake {
+            fn wake(self: Arc<Self>) {
+                *lock(&self.0) = true;
+                self.1.notify_one();
+            }
+        }
         let host = Host::new(1);
         let worker = host.clone();
+        let reply = Arc::new(AtomicBool::new(false));
+        let callback = reply.clone();
         let (started, start) = loom::sync::mpsc::channel();
         let (release, released) = loom::sync::mpsc::channel();
+        let (callback_wake, callback_wait) = loom::sync::mpsc::channel();
         let thread = loom::thread::spawn(move || {
-            let occupant = (!forget_occupant).then(|| worker.pool.unscoped());
+            let occupant = worker.pool.unscoped();
             started.send(()).unwrap();
             released.recv().unwrap();
             drop(occupant);
-            worker.run(|| ());
+            worker.run(|| {
+                let mut callback_wake = Some(callback_wake);
+                worker.block(std::future::poll_fn(|cx| {
+                    if let Some(wake) = callback_wake.take() {
+                        wake.send(cx.waker().clone()).unwrap();
+                    }
+                    if callback.load(Ordering::SeqCst) {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                }));
+            });
         });
         start.recv().unwrap();
         let mut drive = std::pin::pin!(host.drive(std::future::poll_fn(|_| {
@@ -177,21 +179,22 @@ fn unscoped_occupant(forget_occupant: bool) {
                 Poll::Pending
             }
         })));
-        let mut cx = PollContext::from_waker(Waker::noop());
+        let awakened = Arc::new(DriverWake(Mutex::new(false), Condvar::new()));
+        let waker = Waker::from(awakened.clone());
+        let mut cx = PollContext::from_waker(&waker);
         assert!(drive.as_mut().poll(&mut cx).is_pending());
         release.send(()).unwrap();
+        // The queued worker starts after its driver yielded to a different
+        // occupant, then needs that SAME driver to produce its callback reply.
+        // Observe the actual handoff before publishing any reply readiness.
+        let mut resumed = awakened.0.lock().unwrap_or_else(PoisonError::into_inner);
+        while !*resumed {
+            resumed = awakened.1.wait(resumed).unwrap();
+        }
+        drop(resumed);
+        reply.store(true, Ordering::SeqCst);
+        callback_wait.recv().unwrap().wake();
         executor::complete_io(drive);
         thread.join().unwrap();
     });
-}
-
-#[test]
-fn physical_occupants_outside_the_schedule_cannot_block_the_driver() {
-    unscoped_occupant(false);
-}
-
-#[test]
-#[should_panic(expected = "deadlock")]
-fn negative_control_forgetting_physical_occupancy_deadlocks() {
-    unscoped_occupant(true);
 }

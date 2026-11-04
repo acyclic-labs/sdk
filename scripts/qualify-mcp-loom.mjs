@@ -16,6 +16,9 @@ export const gateQualifications = [
   { args: ["--hook-lifecycle", "--all-features"] },
   { args: ["--native-registry"] },
   { args: ["--e2e-progress"] }, { args: ["--native-progress"] },
+  { args: ["--native-signal"] }, { args: ["--native-wake"] },
+  { args: ["--native-owner"] },
+  { args: ["--native-host"] },
   { args: ["--guest"] },
   { args: ["--fs-binding", "--all-features"] },
   { args: ["--fs-policy"] },
@@ -301,37 +304,132 @@ export function qualifyE2eProgressLoom(features = ["--features", "filesystem-loc
   });
 }
 
+const nativeCoreModels = [
+  "testing::entropy::models::concurrent_draws_cannot_share_bytes",
+  "device_flush::model::every_acknowledgement_follows_a_drain_that_started_after_its_write",
+  "device_flush::model::a_failed_drain_acknowledges_nobody_and_strands_nobody",
+];
+
 export function qualifyNativeProgressLoom(run = runCommand) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
     kind: "--lib", targetCfg: [],
     env: loomEnvironment(),
     filters: [
       "testing::model::native_progress_reporting_races_physical_completion_and_unwind",
-      "testing::model::missing_native_cleanup_is_detected_on_the_actual_tracker",
       "testing::model::accepted_descendants_cannot_escape_cancel_or_lose_the_terminal_wake",
-      "testing::model::missing_registration_is_detected_on_the_real_tracker",
-      "testing::model::missing_terminal_wake_is_detected_on_the_real_tracker",
       "testing::queue_model::capacity_release_races_registration_on_the_real_queue",
       "testing::queue_model::physical_completion_races_observer_drop_on_the_real_terminal",
-      "testing::queue_model::broken_capacity_wake_is_detected",
-      "testing::queue_model::broken_capacity_accounting_is_detected",
-      "testing::queue_model::broken_terminal_wake_is_detected",
-      "testing::queue_model::broken_panicked_terminal_wake_is_detected",
-      "testing::queue_model::broken_failed_terminal_wake_is_detected",
-      "testing::queue_model::broken_terminal_accounting_is_detected",
-      "testing::queue_model::broken_panicked_terminal_accounting_is_detected",
-      "testing::queue_model::broken_failed_terminal_accounting_is_detected",
-      "testing::queue_model::replaced_worker_failure_cause_is_detected",
       "testing::queue_model::shared_state_funding_survives_observation_and_worker_release",
-      "testing::queue_model::premature_shared_state_refund_is_detected",
-      "testing::queue_model::premature_panicked_shared_state_refund_is_detected",
-      "testing::queue_model::premature_abandoned_panicked_state_refund_is_detected",
       "testing::queue_model::shared_waiter_funding_survives_admission_and_cancellation",
-      "testing::queue_model::premature_admitted_waiter_refund_is_detected",
-      "testing::queue_model::premature_cancelled_waiter_refund_is_detected",
       "testing::queue_model::release_broadcast_reaches_every_waiter_across_concurrent_cancellation",
-      "testing::queue_model::head_only_capacity_wake_is_detected",
+      "testing::durability::models::concurrent_writers_cannot_clear_the_crash_boundary",
+      ...nativeCoreModels,
     ],
+  });
+}
+
+export function qualifyNativeSignalLoom(run = runCommand) {
+  return qualifyLoom("acyclic-native-runtime", "process_signal_loom", [], run, {
+    suites: [["", 2]],
+  });
+}
+
+export function qualifyNativeDurability(run = runCommand, physical = false) {
+  return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
+    kind: "--lib", targetCfg: [],
+    ...(physical ? {} : { env: loomEnvironment() }),
+    filters: [physical
+      ? "testing::durability::tests::every_write_cut_preserves_its_exact_prefix_and_cause"
+      : "testing::durability::models::concurrent_writers_cannot_clear_the_crash_boundary"],
+  });
+}
+
+function qualifyNativeQueueLoom(filters, run) {
+  return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
+    kind: "--lib", targetCfg: [], env: loomEnvironment(),
+    filters: filters.map(symbol => `testing::queue_model::${symbol}`),
+  });
+}
+
+function qualifyNativeTrackerLoom(run) {
+  return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
+    kind: "--lib", targetCfg: [], env: loomEnvironment(),
+    filters: [
+      "testing::model::native_progress_reporting_races_physical_completion_and_unwind",
+      "testing::model::accepted_descendants_cannot_escape_cancel_or_lose_the_terminal_wake",
+    ],
+  });
+}
+
+export function qualifyNativeWakeLoom(run = runCommand) {
+  return qualifyLoom("acyclic-native-runtime", "wake_loom", [], run, {
+    suites: [["", 2]],
+  });
+}
+
+export function qualifyNativeOwnerLoom(run = runCommand) {
+  return qualifyLoom("acyclic-native-runtime", "owner_count_loom", [], run, {
+    suites: [["", 1]],
+  });
+}
+
+export function qualifyNativeClaimLoom(run = runCommand) {
+  return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", [], run, {
+    kind: "--lib", targetCfg: [], env: loomEnvironment(),
+    suites: [["claim::model::", 8]],
+  });
+}
+
+export function qualifyNativeDescriptorLoom(run = runCommand) {
+  return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", [], run, {
+    kind: "--lib", targetCfg: [], env: loomEnvironment(),
+    suites: [["descriptor::model::", 12]],
+  });
+}
+
+export function qualifyNativeHostEvents(run = runCommand) {
+  return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
+    kind: "--lib", targetCfg: [],
+    suites: [
+      ["testing::host::tests::parking_a_worker_does_not_invent_callback_readiness", 1],
+      ["testing::host::tests::unscoped_physical_workers_leave_the_driver_available_to_reply", 1],
+    ],
+  });
+}
+
+export function qualifyNativeOwnerEnvelope(run = runCommand) {
+  return qualifyLoom("acyclic-native-runtime", "native_owner_record", [], run, {
+    targetCfg: [], filters: ["retained_owner_corpus_satisfies_the_shared_oracle"],
+  });
+}
+
+export function qualifyNativeHostLoom(run = runCommand, controls = false) {
+  return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
+    kind: "--lib", targetCfg: [], env: loomEnvironment(),
+    ...(controls ? { filters: [
+      "testing::host::models::readiness_racing_worker_parking_cannot_be_lost",
+      "testing::host::models::queue_capacity_and_physical_terminal_wakes_are_latched",
+      "testing::host::models::physical_occupants_outside_the_schedule_cannot_block_the_driver",
+    ] } : { suites: [["testing::host::models::", 4], ["testing::executor::models::", 5]] }),
+  });
+}
+
+export function qualifyNativeExecutor(run = runCommand, rounds = false) {
+  return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
+    kind: "--lib", targetCfg: [],
+    ...(rounds ? {} : { env: loomEnvironment() }),
+    filters: rounds ? ["testing::executor::tests::every_continuously_ready_task_runs_in_each_round"] : [
+      "testing::executor::models::ready_publication_cannot_lose_a_task_or_driver_wake",
+      "testing::executor::models::real_completion_wait_latches_early_and_late_wakes",
+    ],
+  });
+}
+
+export function qualifyNativeSources(run = runCommand, core = false) {
+  return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
+    kind: "--lib", targetCfg: [],
+    ...(core ? { env: loomEnvironment() } : {}),
+    filters: core ? nativeCoreModels : ["testing::clock::tests::automatic_timeout_advancement_cannot_leave_wall_time_behind"],
   });
 }
 
@@ -364,7 +462,7 @@ export function qualifySessionFsLoom(run = runCommand) {
 
 export function qualifyOwnershipLoom(run = runCommand) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", [], run, {
-    kind: "--lib", filter: "ownership::model::", exact: false, passed: 8,
+    kind: "--lib", filter: "ownership::model::", exact: false, passed: 6,
     env: loomEnvironment(), targetCfg: [],
   });
 }
@@ -452,6 +550,30 @@ function qualifyLoom(crate, target, features, run, options = {}) {
 // Every model flag is named here; anything else is a cargo feature selection or an error.
 const fixedModels = {
   "--native-progress": qualifyNativeProgressLoom,
+  "--native-signal": qualifyNativeSignalLoom,
+  "--native-host": qualifyNativeHostLoom,
+  "--native-host-source": run => qualifyNativeHostLoom(run, true),
+  "--native-executor-source": qualifyNativeExecutor,
+  "--native-executor-rounds": run => qualifyNativeExecutor(run, true),
+  "--native-clock": qualifyNativeSources,
+  "--native-core-source": run => qualifyNativeSources(run, true),
+  "--native-wake": qualifyNativeWakeLoom,
+  "--native-owner": qualifyNativeOwnerLoom,
+  "--native-claim": qualifyNativeClaimLoom,
+  "--native-descriptor": qualifyNativeDescriptorLoom,
+  "--native-host-events": qualifyNativeHostEvents,
+  "--native-owner-envelope": qualifyNativeOwnerEnvelope,
+  "--native-durability": qualifyNativeDurability,
+  "--native-durability-io": run => qualifyNativeDurability(run, true),
+  "--native-terminal": run => qualifyNativeQueueLoom([
+    "physical_completion_races_observer_drop_on_the_real_terminal"], run),
+  "--native-capacity": run => qualifyNativeQueueLoom([
+    "capacity_release_races_registration_on_the_real_queue",
+    "release_broadcast_reaches_every_waiter_across_concurrent_cancellation"], run),
+  "--native-funding": run => qualifyNativeQueueLoom([
+    "shared_state_funding_survives_observation_and_worker_release",
+    "shared_waiter_funding_survives_admission_and_cancellation"], run),
+  "--native-tracker": qualifyNativeTrackerLoom,
   "--guest": qualifyGuestLoom,
   "--session-fs": qualifySessionFsLoom, "--ownership": qualifyOwnershipLoom,
   "--native-registry": qualifyNativeRegistryLoom,

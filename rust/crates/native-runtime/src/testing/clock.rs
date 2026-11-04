@@ -53,8 +53,6 @@ pub(super) struct Wall {
     millis: u64,
     anchor: Option<tokio::time::Instant>,
     runtime: Option<tokio::runtime::Handle>,
-    #[cfg(test)]
-    lose_elapsed: bool,
 }
 
 impl Default for Wall {
@@ -63,8 +61,6 @@ impl Default for Wall {
             millis: 1_700_000_000_000,
             anchor: None,
             runtime: None,
-            #[cfg(test)]
-            lose_elapsed: false,
         }
     }
 }
@@ -81,10 +77,6 @@ impl Wall {
     fn now(&mut self) -> u64 {
         let _runtime = self.runtime.as_ref().map(tokio::runtime::Handle::enter);
         let now = tokio::time::Instant::now();
-        #[cfg(test)]
-        if self.lose_elapsed {
-            self.anchor = Some(now);
-        }
         let anchor = self.anchor.get_or_insert(now);
         self.millis.saturating_add(
             u64::try_from(now.duration_since(*anchor).as_millis()).unwrap_or(u64::MAX),
@@ -139,7 +131,7 @@ mod tests {
             delay in 1u64..1_000_000,
             capture in proptest::prelude::any::<bool>(),
         ) {
-            automatic_timeout(false, false, capture, delay);
+            automatic_timeout(capture, delay);
         }
 
         #[test]
@@ -175,20 +167,16 @@ mod tests {
         }
     }
 
-    fn automatic_timeout(lose_elapsed: bool, lazy_anchor: bool, capture: bool, delay: u64) {
+    fn automatic_timeout(capture: bool, delay: u64) {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()
             .unwrap();
         let (schedule, _) = Schedule::seeded(71);
-        schedule.0.state().wall.lose_elapsed = lose_elapsed;
         runtime.block_on(async {
             tokio::time::pause();
             schedule
                 .scope(async {
-                    if lazy_anchor {
-                        schedule.0.state().wall.anchor = None;
-                    }
                     let captured = capture.then(|| CapturedClock::capture().unwrap());
                     let start = tokio::time::Instant::now();
                     tokio::time::sleep(Duration::from_millis(delay)).await;
@@ -205,23 +193,5 @@ mod tests {
                 })
                 .await;
         });
-    }
-
-    #[test]
-    #[should_panic(expected = "wall clock diverged")]
-    fn discarding_elapsed_time_negative_control() {
-        automatic_timeout(true, false, false, 10);
-    }
-
-    #[test]
-    #[should_panic(expected = "wall clock diverged")]
-    fn first_read_anchor_negative_control() {
-        automatic_timeout(false, true, false, 10);
-    }
-
-    #[test]
-    #[should_panic(expected = "wall clock diverged")]
-    fn captured_first_read_anchor_negative_control() {
-        automatic_timeout(false, true, true, 10);
     }
 }

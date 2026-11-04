@@ -23,10 +23,14 @@ struct State {
     waiting_start: bool,
     detached: bool,
     driver: Option<Waker>,
-    #[cfg(test)]
-    forget_ready: bool,
-    #[cfg(test)]
-    forget_io: bool,
+}
+
+impl State {
+    fn take_start_waiter(&mut self) -> Option<Waker> {
+        std::mem::take(&mut self.waiting_start)
+            .then(|| self.driver.clone())
+            .flatten()
+    }
 }
 
 // Sole handoff lock. Never nested with executor, schedule, channel or provider
@@ -96,10 +100,6 @@ impl Host {
                 waiting_start: false,
                 detached: false,
                 driver: None,
-                #[cfg(test)]
-                forget_ready: false,
-                #[cfg(test)]
-                forget_io: false,
             }),
             changed: Condvar::new(),
             pool,
@@ -134,9 +134,10 @@ impl Host {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             state.phase = Phase::Parked;
             let saturated = self.pool.park();
-            // Parking is not readiness: only the original future's wake or
-            // physical terminal may enqueue the next seeded task poll.
-            state.waiting_start = false;
+            // Parking does not make the callback ready.
+            // A driver that yielded before startup must now produce this
+            // callback's reply. Wake it once at the original parking event.
+            let parked_driver = state.take_start_waiter();
             if state.detached && state.ready {
                 state.ready = false;
                 self.pool.resume();
@@ -146,6 +147,9 @@ impl Host {
             drop(state);
             if saturated {
                 self.pool.changed();
+            }
+            if let Some(driver) = parked_driver {
+                driver.wake();
             }
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             while state.phase == Phase::Parked {
@@ -246,10 +250,6 @@ impl Wake for IoWake {
     fn wake_by_ref(self: &Arc<Self>) {
         let driver = {
             let mut state = lock(&self.0.state);
-            #[cfg(test)]
-            if state.forget_io {
-                return;
-            }
             state.io_ready = true;
             (
                 state.phase == Phase::Starting,
@@ -273,9 +273,7 @@ impl Drop for Finished {
         let driver = {
             let mut state = lock(&self.0.state);
             state.phase = Phase::Finished;
-            let driver = state.waiting_start.then(|| state.driver.clone()).flatten();
-            state.waiting_start = false;
-            driver
+            state.take_start_waiter()
         };
         self.0.changed.notify_one();
         if let Some(driver) = driver {
@@ -291,10 +289,6 @@ impl Wake for Host {
     fn wake_by_ref(self: &Arc<Self>) {
         let driver = {
             let mut state = lock(&self.state);
-            #[cfg(test)]
-            if state.forget_ready {
-                return;
-            }
             state.ready = true;
             if state.detached && state.phase == Phase::Parked {
                 state.ready = false;

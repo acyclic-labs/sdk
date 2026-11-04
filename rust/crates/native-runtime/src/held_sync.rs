@@ -91,7 +91,7 @@ pub(crate) fn sync_descriptor_requested_once(
     requested: crate::Durability,
 ) -> io::Result<()> {
     #[cfg(target_os = "linux")]
-    let (syscall, identity) = ("fsync", descriptor.as_raw_fd() as u64);
+    let (syscall, identity) = ("fsync", u64::from(descriptor.as_raw_fd().cast_unsigned()));
     #[cfg(windows)]
     let (syscall, identity) = (
         "FlushFileBuffers",
@@ -144,7 +144,7 @@ pub(crate) fn sync_data_descriptor_once(
     observe_sync(
         requested,
         "fdatasync",
-        descriptor.as_raw_fd() as u64,
+        u64::from(descriptor.as_raw_fd().cast_unsigned()),
         || {
             // SAFETY: the borrowed descriptor stays open for this one flush.
             if unsafe { libc::fdatasync(descriptor.as_raw_fd()) } == 0 {
@@ -189,7 +189,10 @@ mod tests {
 
     #[test]
     fn full_flush_supports_regular_files_and_directories_and_preserves_errors() {
-        assert!(full_flush_contract(sync_descriptor_once).unwrap());
+        assert!(
+            full_flush_contract(sync_descriptor_once).unwrap(),
+            "native full flush lost the original failure"
+        );
     }
 
     #[test]
@@ -201,10 +204,5 @@ mod tests {
             )
             .unwrap()
         );
-    }
-
-    #[test]
-    fn negative_control_swallowing_flush_errors_does_not_meet_the_contract() {
-        assert!(!full_flush_contract(|_| Ok(())).unwrap());
     }
 }

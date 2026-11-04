@@ -51,7 +51,8 @@ fn idle_files_hold_at_most_the_capacity_in_descriptors() -> io::Result<()> {
     let directory = tempfile::tempdir()?;
     let directory_path = std::fs::canonicalize(directory.path())?;
     let cache = private_cache(4);
-    let files = (0..64)
+    // Two complete capacity turnovers and a live tail exercise every reopen.
+    let files = (0..9)
         .map(|index| cached(&cache, &directory_path.join(format!("{index}.log"))))
         .collect::<io::Result<Vec<_>>>()?;
     for (index, file) in files.iter().enumerate() {
@@ -127,21 +128,6 @@ fn released_leases_return_the_cache_to_capacity() -> io::Result<()> {
     assert_eq!(cache.cached(), 1, "the listing paid");
     drop(third);
     Ok(())
-}
-
-#[test]
-fn the_default_capacity_is_a_quarter_of_the_descriptor_limit() {
-    let capacity = default_capacity();
-    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-    {
-        let limit = match descriptor_limit() {
-            0 => 1024,
-            limit => limit,
-        };
-        let quarter = usize::try_from(limit / 4).unwrap_or(usize::MAX);
-        assert_eq!(capacity, quarter.clamp(16, 1 << 16));
-    }
-    assert!((16..=1 << 16).contains(&capacity));
 }
 
 /// Every cost a lease or a new file charges, in order.

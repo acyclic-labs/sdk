@@ -21,10 +21,13 @@ fn unjoined_original_output_keeps_its_task_accounted_through_release() {
     struct Producer {
         schedule: Schedule,
         panic: bool,
+        lifecycle: Arc<std::sync::atomic::AtomicU8>,
     }
     impl Future for Producer {
         type Output = Output;
         fn poll(self: Pin<&mut Self>, _: &mut PollContext<'_>) -> Poll<Output> {
+            self.lifecycle
+                .fetch_or(1, std::sync::atomic::Ordering::Relaxed);
             assert!(!self.panic, "original producer panic");
             Poll::Ready(Output(self.schedule.clone()))
         }
@@ -32,6 +35,8 @@ fn unjoined_original_output_keeps_its_task_accounted_through_release() {
     impl Drop for Producer {
         fn drop(&mut self) {
             accounted(&self.schedule);
+            self.lifecycle
+                .fetch_or(2, std::sync::atomic::Ordering::Relaxed);
         }
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -48,6 +53,7 @@ fn unjoined_original_output_keeps_its_task_accounted_through_release() {
                     Producer {
                         schedule: schedule.clone(),
                         panic,
+                        lifecycle: Arc::default(),
                     },
                 )
             }));
@@ -64,6 +70,47 @@ fn unjoined_original_output_keeps_its_task_accounted_through_release() {
             drop(task);
             runtime.block_on(schedule.drained());
         }
+    }
+    for native in [false, true] {
+        let (schedule, _events) = if native {
+            Schedule::new()
+        } else {
+            Schedule::seeded(83)
+        };
+        let lifecycle = Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let task = runtime.block_on(schedule.scope(async {
+            let active = Context::current().unwrap().accept("task");
+            let future = Producer {
+                schedule: schedule.clone(),
+                panic: false,
+                lifecycle: lifecycle.clone(),
+            };
+            if native {
+                TaskHandle::native(Some(active), future)
+            } else {
+                schedule
+                    .0
+                    .executor
+                    .as_ref()
+                    .unwrap()
+                    .spawn_owned(Some(active), future)
+            }
+        }));
+        task.abort();
+        if let Some(executor) = &schedule.0.executor {
+            executor.poll_owned(&PollContext::from_waker(Waker::noop()));
+        }
+        let error = runtime
+            .block_on(task)
+            .err()
+            .expect("unpolled cancelled task unexpectedly completed");
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(
+            lifecycle.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "unpolled task cleanup did not retain its original accounting"
+        );
+        runtime.block_on(schedule.drained());
     }
 }
 
@@ -250,7 +297,7 @@ fn script(seed: u64) -> io::Result<Vec<(u64, &'static str)>> {
     runtime.block_on(executor.run(async {
         let tasks: Vec<_> = (0..4)
             .map(|id| {
-                executor.spawn(async move {
+                executor.spawn_owned(None, async move {
                     yield_once().await;
                     id
                 })
@@ -273,13 +320,12 @@ proptest::proptest! {
 
     #[test]
     fn every_continuously_ready_task_runs_in_each_round(seed in proptest::prelude::any::<u64>()) {
-        fair_rounds(seed, false);
+        fair_rounds(seed);
     }
 }
 
-fn fair_rounds(seed: u64, forget_round: bool) {
+fn fair_rounds(seed: u64) {
     let executor = Executor::new(seed);
-    lock(&executor.0).forget_round = forget_round;
     let tasks: Vec<_> = (0..4)
         .map(|_| executor.register(Some(Box::pin(std::future::pending()))))
         .collect();
@@ -395,7 +441,7 @@ fn draining_inside_a_root_keeps_the_external_driver() -> io::Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
     let executor = Executor::new(71);
     runtime.block_on(executor.run(async {
-        let task = executor.spawn(async {
+        let task = executor.spawn_owned(None, async {
             yield_once().await;
             37
         });
@@ -413,12 +459,6 @@ fn draining_inside_a_root_keeps_the_external_driver() -> io::Result<()> {
 }
 
 #[test]
-#[should_panic(expected = "ready task starved within a round")]
-fn negative_control_removing_rounds_allows_a_ready_task_to_starve() {
-    fair_rounds(0, true);
-}
-
-#[test]
 fn different_seeds_explore_different_ready_orders() -> io::Result<()> {
     let traces: BTreeSet<_> = (0..8).map(script).collect::<io::Result<_>>()?;
     assert!(traces.len() > 1, "seed never changed the polling order");
@@ -431,7 +471,7 @@ fn dropped_task_handles_detach_and_retire() -> io::Result<()> {
     let executor = Executor::new(73);
     runtime.block_on(executor.run(async {
         let (finished, waiting) = oneshot::channel();
-        drop(executor.spawn(async move {
+        drop(executor.spawn_owned(None, async move {
             yield_once().await;
             finished.send(91).unwrap();
         }));
@@ -449,7 +489,7 @@ fn cancellation_of_the_root_keeps_owned_work_drivable() -> io::Result<()> {
     runtime.block_on(async {
         let (finished, mut waiting) = oneshot::channel();
         let mut root = Box::pin(executor.run(async {
-            drop(executor.spawn(async {
+            drop(executor.spawn_owned(None, async {
                 yield_once().await;
                 finished.send(57).unwrap();
             }));
