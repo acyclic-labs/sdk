@@ -60,6 +60,14 @@ fn scoped_publication_keeps_the_original_root_and_restores_after_unwind() -> Res
     use std::cell::Cell;
     use std::rc::Rc;
 
+    let fixture = tempfile::tempdir()?;
+    let path = fixture.path().join("workspace");
+    let moved = fixture.path().join("retained");
+    std::fs::create_dir(&path)?;
+    let held = hold_root(&path)?;
+    std::fs::rename(&path, &moved)?;
+    std::fs::create_dir(&path)?;
+    let mut case = 0;
     for durability in [NativeDurability::Visibility, NativeDurability::Durable] {
         for step in [
             PublicationStep::Created,
@@ -68,13 +76,9 @@ fn scoped_publication_keeps_the_original_root_and_restores_after_unwind() -> Res
             PublicationStep::Renamed,
         ] {
             for unwind in [false, true] {
-                let fixture = tempfile::tempdir()?;
-                let path = fixture.path().join("workspace");
-                let moved = fixture.path().join("retained");
-                std::fs::create_dir(&path)?;
-                let held = hold_root(&path)?;
-                std::fs::rename(&path, &moved)?;
-                std::fs::create_dir(&path)?;
+                let names = ["inner", "outer", "after-scope"].map(|leaf| format!("{leaf}-{case}"));
+                let [inner_leaf, leaf, after_leaf] = names.each_ref().map(Path::new);
+                case += 1;
                 let bytes = br#"{"request":"complete"}"#;
                 let outer_calls = Rc::new(Cell::new(0));
                 let outer = Rc::clone(&outer_calls);
@@ -92,7 +96,7 @@ fn scoped_publication_keeps_the_original_root_and_restores_after_unwind() -> Res
                                 Configuration::default(),
                                 Some(Box::new(move || inner.set(inner.get() + 1))),
                                 || -> Result<(), DemandError> {
-                                    held.publish_immutable(Path::new("inner"), bytes, durability)?;
+                                    held.publish_immutable(inner_leaf, bytes, durability)?;
                                     if unwind {
                                         std::panic::resume_unwind(Box::new(()));
                                     }
@@ -107,7 +111,6 @@ fn scoped_publication_keeps_the_original_root_and_restores_after_unwind() -> Res
                         }
                         assert_eq!(inner_calls.get(), 1);
                         assert_eq!(outer_calls.get(), 0, "inner scope consumed outer callback");
-                        let leaf = Path::new("outer");
                         assert!(
                             matches!(
                                 held.publish_immutable(leaf, bytes, durability),
@@ -131,9 +134,9 @@ fn scoped_publication_keeps_the_original_root_and_restores_after_unwind() -> Res
                         Ok(())
                     },
                 )?;
-                held.publish_immutable(Path::new("after-scope"), bytes, durability)?;
+                held.publish_immutable(after_leaf, bytes, durability)?;
                 assert_eq!(outer_calls.get(), 1, "callback escaped its original scope");
-                for leaf in ["inner", "outer", "after-scope"] {
+                for leaf in [inner_leaf, leaf, after_leaf] {
                     assert_eq!(std::fs::read(moved.join(leaf))?, bytes);
                     assert!(!path.join(leaf).try_exists()?);
                 }

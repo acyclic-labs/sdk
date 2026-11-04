@@ -201,7 +201,7 @@ fn killed_then_published(
     torn: bool,
 ) -> Result<[u8; 16], DemandError> {
     use crate::native_host::publish_probe;
-    let name = format!("token-{step}");
+    let name = format!("token-{step}-{torn}");
     let leaf = std::path::Path::new(&name);
     publish_probe::tear(torn);
     publish_probe::kill_at(Some(step));
@@ -227,14 +227,7 @@ fn a_kill_at_any_publication_step_leaves_no_record_or_the_complete_one() {
             "step {step}"
         );
     }
-}
-
-/// Negative control: a record written in place is torn by a kill mid-write,
-/// and every later read refuses it.
-#[test]
-fn negative_control_a_record_published_in_place_is_torn_by_a_kill() {
-    let directory = tempfile::tempdir().unwrap();
-    let held = hold_root(directory.path()).unwrap();
+    // The in-place mutation must leave a torn record that later reads refuse.
     assert!(killed_then_published(&held, 1, true).is_err());
 }
 
@@ -372,10 +365,13 @@ fn a_returned_record_has_a_durable_name_through_every_held_parent() {
 #[test]
 fn held_directory_traversal_borrows_parents_without_duplicating_handles() {
     use crate::native_host::{publish_probe, stat_probe::take_directory_clones};
+    let directory = tempfile::tempdir().unwrap();
+    let root = hold_root(directory.path()).unwrap();
     for depth in 1..=4 {
-        let directory = tempfile::tempdir().unwrap();
-        let root = hold_root(directory.path()).unwrap();
-        let relative: PathBuf = (0..depth).map(|_| "child").collect();
+        let first = format!("depth-{depth}");
+        let relative: PathBuf = std::iter::once(first.as_str())
+            .chain((1..depth).map(|_| "child"))
+            .collect();
         for duplicate in [false, true] {
             take_directory_clones();
             publish_probe::duplicate_parent_handles(duplicate);
