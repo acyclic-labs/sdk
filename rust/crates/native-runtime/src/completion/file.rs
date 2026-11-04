@@ -1,7 +1,7 @@
 use crate::*;
 
 pub(crate) struct FileCompletion<T> {
-    state: Option<Arc<CompletionMutex<CompletionState<T>>>>,
+    producer: Option<NativeCompletionProducer<T>>,
     fence: Option<Arc<OperationFence>>,
     health: Option<HealthOwner>,
     file: Option<Arc<HeldFile>>,
@@ -17,7 +17,7 @@ impl<T> FileCompletion<T> {
         span: obs::OperationSpan,
     ) -> Self {
         Self {
-            state: Some(state),
+            producer: Some(NativeCompletionProducer::new(state)),
             fence,
             health,
             file,
@@ -27,7 +27,7 @@ impl<T> FileCompletion<T> {
 
     pub(crate) fn finish(mut self, result: io::Result<T>) -> Option<Waker> {
         let Self {
-            state,
+            producer,
             fence,
             health,
             file,
@@ -42,18 +42,14 @@ impl<T> FileCompletion<T> {
                 poison_file_health(file, health);
             }
             drop(file.take());
-            let mut outcome = state
-                .as_ref()
+            let (state, waker) = producer
+                .take()
                 .unwrap_or_else(|| std::process::abort())
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            outcome.result = Some(result);
-            let waker = outcome.waker.take();
-            drop(outcome);
+                .finish(result);
             if let Some(fence) = fence.take() {
                 fence.complete();
             }
-            drop(state.take());
+            drop(state);
             waker
         })
     }
@@ -61,7 +57,7 @@ impl<T> FileCompletion<T> {
 
 impl<T> Drop for FileCompletion<T> {
     fn drop(&mut self) {
-        if self.state.is_some() {
+        if self.producer.is_some() {
             std::process::abort();
         }
     }
