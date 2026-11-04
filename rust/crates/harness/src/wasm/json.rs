@@ -18,6 +18,8 @@ const Ancestors = WeakSet;
 const hasAncestor = Function.prototype.call.bind(Ancestors.prototype.has);
 const addAncestor = Function.prototype.call.bind(Ancestors.prototype.add);
 const deleteAncestor = Function.prototype.call.bind(Ancestors.prototype.delete);
+const jsonPrototype = Object.getPrototypeOf;
+const ordinaryJsonPrototype = Object.prototype;
 export function newJsonAncestors() { return new Ancestors(); }
 export function enterJsonAncestor(ancestors, value) {
     if (hasAncestor(ancestors, value)) return false;
@@ -25,6 +27,10 @@ export function enterJsonAncestor(ancestors, value) {
     return true;
 }
 export function leaveJsonAncestor(ancestors, value) { deleteAncestor(ancestors, value); }
+export function isPlainJsonObject(value) {
+    const prototype = jsonPrototype(value);
+    return prototype === null || prototype === ordinaryJsonPrototype;
+}
 ")]
 extern "C" {
     #[wasm_bindgen(catch, js_name = newJsonAncestors)]
@@ -33,6 +39,8 @@ extern "C" {
     fn enter_json_ancestor(ancestors: &JsValue, value: &JsValue) -> Result<bool, JsValue>;
     #[wasm_bindgen(catch, js_name = leaveJsonAncestor)]
     fn leave_json_ancestor(ancestors: &JsValue, value: &JsValue) -> Result<(), JsValue>;
+    #[wasm_bindgen(catch, js_name = isPlainJsonObject)]
+    fn is_plain_json_object(value: &JsValue) -> Result<bool, JsValue>;
 }
 
 /// Parses canonical JSON without passing full-width integer literals through
@@ -244,13 +252,8 @@ fn snapshot_js_json(
     }
     let array = is_array(value)?;
     let is_map = value.is_instance_of::<js_sys::Map>();
-    if !array && !is_map {
-        let prototype: JsValue = js_sys::Reflect::get_prototype_of(value)?.into();
-        let ordinary: JsValue =
-            js_sys::Reflect::get_prototype_of(&js_sys::Object::new().into())?.into();
-        if !prototype.is_null() && !js_sys::Object::is(&prototype, &ordinary) {
-            return Err(JsValue::from_str("only plain objects are canonical JSON"));
-        }
+    if !array && !is_map && !is_plain_json_object(value)? {
+        return Err(JsValue::from_str("only plain objects are canonical JSON"));
     }
     let snapshot = if array {
         let items = js_sys::Array::from_iterable(value.unchecked_ref::<js_sys::Array>())?;

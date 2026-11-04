@@ -57,9 +57,12 @@ test("canonical admission selects entries before evaluating their values", () =>
   const constructor = Object.getOwnPropertyDescriptor(globalThis, "WeakSet")!;
   const methods = Object.getOwnPropertyDescriptors(WeakSet.prototype);
   const prototype = WeakSet.prototype;
+  const readers = [Object, Reflect].map(owner =>
+    [owner, Object.getOwnPropertyDescriptor(owner, "getPrototypeOf")!] as const);
   const input = Object.defineProperty({}, "child", { enumerable: true, get() {
     const poison = () => { throw new Error("JSON called a replaced identity primitive"); };
     for (const name of ["has", "add", "delete"]) Object.defineProperty(prototype, name, { value: poison });
+    for (const [owner] of readers) Object.defineProperty(owner, "getPrototypeOf", { value: poison });
     Object.defineProperty(globalThis, "WeakSet", { value: poison });
     // Reentry must also use the captured constructor, with independent custody.
     contracts.encodeCanonicalJson(shared);
@@ -70,6 +73,7 @@ test("canonical admission selects entries before evaluating their values", () =>
   } finally {
     Object.defineProperties(prototype, methods);
     Object.defineProperty(globalThis, "WeakSet", constructor);
+    for (const [owner, descriptor] of readers) Object.defineProperty(owner, "getPrototypeOf", descriptor);
   }
 
   for (const selected of [new Map<string, unknown>(), [] as unknown[]]) {
