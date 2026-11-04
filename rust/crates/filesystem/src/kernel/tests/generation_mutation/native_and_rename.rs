@@ -115,6 +115,24 @@ async fn original_root_clone_denial_releases_parents_without_copy()
     root.parents
         .push(GenerationId::new(Digest::from_bytes([17; 32])));
     let cancellation = CancellationToken::new();
+    let mut standalone = KernelAccounting::standalone(
+        WorkBudget {
+            bytes_copied: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    );
+    let held = crate::kernel::Owned::<Vec<u8>>::allocate(4096, &mut standalone)?;
+    let baseline = standalone.standalone_parts().unwrap().0.live_bytes();
+    assert!(clone_generation_root_with_accounting(&root, &mut standalone).is_err());
+    assert_eq!(standalone.spent().bytes_copied, 0);
+    assert_eq!(
+        standalone.standalone_parts().unwrap().0.live_bytes(),
+        baseline,
+        "denied parent copy retained standalone scratch"
+    );
+    held.retire(&mut standalone)?;
+    assert_eq!(standalone.standalone_parts().unwrap().0.live_bytes(), 0);
     let original = crate::NativeMaterializationWork::new(
         WorkBudget {
             bytes_copied: 0,
