@@ -418,9 +418,32 @@ async fn ambiguous_publication_is_unknown_and_retry_safe() -> Result<(), Box<dyn
     assert_eq!(blobs.put(body.clone(), Vec::new()).await?, Put::Unknown);
     store.medium().faults.store(0, Ordering::SeqCst);
     assert!(matches!(
-        blobs.put(body, Vec::new()).await?,
+        blobs.put(body.clone(), Vec::new()).await?,
         Put::Created { .. }
     ));
+    let root = RootId::new(*b"uncertain")?;
+    let cause = acyclic_auth::refusal::Cause::new("objects.medium", "outcome_unknown");
+    store.medium().faults.store(1, Ordering::SeqCst);
+    for failure in [
+        blobs.retain(&root, Vec::new()).await.map(|_| ()),
+        blobs
+            .retain(&root, vec![Digest::of(&body)])
+            .await
+            .map(|_| ()),
+        blobs.collect().await.map(|_| ()),
+    ] {
+        let error = failure.expect_err("an ambiguous mutation cannot be acknowledged");
+        assert_eq!(error.code, ErrorCode::OutcomeUnknown);
+        assert_eq!(error.cause(), Some(&cause));
+    }
+    store.medium().faults.store(4, Ordering::SeqCst);
+    let error = blobs
+        .delete(Digest::of(&body))
+        .await
+        .expect_err("an ambiguous conditional removal cannot be acknowledged");
+    assert_eq!(error.code, ErrorCode::OutcomeUnknown);
+    assert_eq!(error.cause(), Some(&cause));
+    store.medium().faults.store(0, Ordering::SeqCst);
     Ok(())
 }
 
@@ -1356,8 +1379,17 @@ async fn stalled_delete_then_reput(
     release
         .send(())
         .expect("parked medium operation remains alive");
-    let deleted = stalled
-        .await
+    let deleted = stalled.await;
+    if let Err(error) = &deleted {
+        assert_eq!(
+            error.cause(),
+            Some(&acyclic_auth::refusal::Cause::new(
+                "objects.store",
+                "concurrent_change"
+            ))
+        );
+    }
+    let deleted = deleted
         .map(|deletion| deletion.outcome)
         .map_err(|error| error.code);
     let readable = others.get(digest, ByteRange::FULL, 32).await.is_ok();
