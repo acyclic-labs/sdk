@@ -257,7 +257,7 @@ struct Replay {
     // Original source coordinates: copy the outcome only if it is requested.
     tools: HashMap<(OperationId, String), ([u8; 32], usize, usize)>,
     /// Turns that went live; each stays live.
-    live: std::collections::HashSet<OperationId>,
+    live: FixedIndex<bool, crate::NativeCustody, 16>,
     diverged: bool,
 }
 
@@ -297,7 +297,10 @@ impl ReplayAdmission<'_> {
             )
             .expect("original replay admission owns its registration");
         *selection = Some(ReplaySelection::Live);
-        replay.live.insert(self.dispatch.operation_id);
+        *replay
+            .live
+            .get_retained_mut(self.dispatch.operation_id.into_bytes(), |_| true, |_| {})
+            .expect("original live admission retains its funded turn slot") = true;
         let first = !std::mem::replace(&mut replay.diverged, true);
         self.accepted = true;
         drop(replay);
@@ -332,6 +335,9 @@ enum ReplayPreparation<'a, T> {
 }
 
 /// Serves a [`Recording`] while requests match it, then the live provider.
+/// Native live-turn storage is admitted before calling that provider. Accepting
+/// its returned generation object only publishes into the retained turn slot;
+/// it never grows or resizes a membership table.
 pub struct RecordedModel {
     live: Arc<dyn ModelProvider>,
     recording: Arc<Recording>,
@@ -415,7 +421,11 @@ impl RecordedModel {
         }
         // Retained dispatches and live turns cannot select another recording.
         // Only a new replay candidate needs the request's semantic identity.
-        let key = if live.contains(&dispatch.operation_id) {
+        let key = if live
+            .get(dispatch.operation_id.into_bytes(), &mut CursorWork(work))?
+            .copied()
+            .unwrap_or(false)
+        {
             None
         } else {
             Some(request.replay_key()?)
@@ -441,6 +451,14 @@ impl RecordedModel {
         match output {
             Some(output) => Ok(ReplayPreparation::Recorded(output)),
             None => {
+                // Fund the permanent live-turn slot before invoking the live
+                // provider. Acceptance only publishes into retained storage;
+                // a refused builder leaves the original turn non-live.
+                live.get_or_try_insert_with(
+                    dispatch.operation_id.into_bytes(),
+                    &mut CursorWork(work),
+                    |_| Ok(false),
+                )?;
                 *selection = Some(ReplaySelection::Pending);
                 Ok(ReplayPreparation::Live(ReplayAdmission {
                     owner: self,
@@ -773,6 +791,116 @@ mod tests {
             retained,
             "the original ledger retains and refunds cursor storage"
         );
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn live_turn_storage_is_funded_before_allocation_free_acceptance() -> Result<()> {
+        let request = PreparedModelRequest::prepare(
+            ModelRequest {
+                summary: false,
+                compose_tools: false,
+                model: Model::new("recorded-control".into(), "admission".into(), "1".into())?,
+                messages: Vec::new(),
+                tools: Vec::new(),
+                sampling: Default::default(),
+                max_output_tokens: None,
+            },
+            crate::conversation::Limits::default(),
+            None,
+        )?;
+        let key = request.replay_key()?;
+        let event = ModelEvent::Completed {
+            metadata: Value::Null,
+        };
+        let bound = FixedIndex::<bool, crate::NativeCustody, 16>::insertion_bound(1).unwrap();
+        let dispatch_bound =
+            FixedIndex::<Option<ReplaySelection>, crate::NativeCustody, 52>::insertion_bound(1)
+                .unwrap();
+        for population in [1u128, 1024] {
+            let mut source = Recording::default();
+            source.insert(
+                key,
+                RecordedCall {
+                    events: vec![crate::contract::canonical_json_bytes(&event)?],
+                    ..Default::default()
+                },
+            );
+            // Both layers are the shipped recording adapter. The outer live
+            // path must deliver the inner source's original canonical event.
+            let live = Arc::new(RecordedModel::new(
+                Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+                Arc::new(source),
+                Arc::new(Quiet),
+            ));
+            let trial = RecordedModel::new(live.clone(), Arc::default(), Arc::new(Quiet));
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let mut budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+            budget.allocation_operations = 1;
+            let refused = NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(error, _)| error)?;
+            let dispatch = |operation: u128| ModelDispatch {
+                operation_id: OperationId::from_bytes(operation.to_be_bytes()),
+                step: 0,
+                request_digest: request.request_digest(),
+            };
+            assert!(
+                matches!(
+                    trial.generate_with_native_work(&request, dispatch(0), &refused),
+                    Err(Error::NativeWork { .. })
+                ),
+                "live turn storage escaped original allocation admission"
+            );
+            assert!(!trial.diverged());
+            assert_eq!(live.unused(), 1, "refusal reached the live producer");
+            let funded = NativeMaterializationWork::new(
+                acyclic_fs::performance::BOUNDARY_BUDGET,
+                &cancellation,
+            )
+            .map_err(|(error, _)| error)?;
+            let retained = funded.live_allocation_bytes();
+            for operation in 0..population {
+                let before = funded.receipt();
+                let ReplayPreparation::Live(admission) =
+                    trial.prepare(&request, dispatch(operation), Some(&funded), |_| Ok(()))?
+                else {
+                    return Err(Error::Invalid("empty recording selected an answer".into()));
+                };
+                let prepared = funded.receipt();
+                assert!(
+                    prepared.items_examined - before.items_examined
+                        <= dispatch_bound.examined_items + 2 * bound.examined_items
+                );
+                assert!(prepared.allocation_operations - before.allocation_operations <= 4);
+                assert_eq!(
+                    acyclic_test_support::measure(|| admission.accept()).count_total,
+                    0,
+                    "live acceptance allocated after admission"
+                );
+                assert_eq!(funded.receipt(), prepared, "acceptance spent new work");
+            }
+            assert!(funded.live_allocation_bytes() > retained);
+            assert_eq!(
+                live.unused(),
+                1,
+                "admission control consumed the live source"
+            );
+            let mut stream = trial
+                .generate_with_native_work(&request, dispatch(population), &funded)?
+                .await?;
+            let (actual, custody) = futures::StreamExt::next(&mut stream).await.unwrap()?;
+            assert_eq!(actual, event);
+            drop(custody);
+            assert!(futures::StreamExt::next(&mut stream).await.is_none());
+            drop(stream);
+            assert_eq!(live.unused(), 0);
+            assert!(trial.diverged());
+            drop(trial);
+            // The independently retained downstream adapter owns its nodes.
+            drop(live);
+            assert_eq!(funded.live_allocation_bytes(), retained);
+        }
         Ok(())
     }
 
