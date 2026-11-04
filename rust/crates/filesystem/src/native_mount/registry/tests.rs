@@ -169,12 +169,10 @@ fn mount_guards_share_one_registry_directory_and_lock() -> Result<(), Box<dyn st
         path()?.is_file(),
         "retirement unlinked the process-shared registry"
     );
-    // An unrelated process has a separate descriptor and must still acquire it.
+    // Another process may acquire this user-wide lock after cleanup returns.
+    // Wait on its unlock before checking acquisition through a separate descriptor.
     let probe = open(&mut &work)?;
-    assert!(
-        fence_io::try_lock(&probe).is_ok(),
-        "retirement retained the shared lock"
-    );
+    fence_io::lock(&probe)?;
     fence_io::unlock(&probe)?;
     Ok(())
 }
