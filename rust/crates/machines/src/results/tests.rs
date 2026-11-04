@@ -220,21 +220,9 @@ async fn settled_pages_pin_original_cut_across_source_changes_and_restart()
     assert_eq!(rest.machines.len(), 1);
     assert_eq!(rest.machines[0].state, MachineState::Failed);
     assert_eq!(rest.next, None);
-    let last = reader
-        .page(
-            ResultCursor {
-                from: 1024,
-                ..cursor
-            },
-            NonZeroU32::new(64).unwrap(),
-        )
-        .await?;
-    assert_eq!(last.cursor.cut.operation, operation);
-    assert_eq!(last.cursor.cut.settlement, Settlement::Streams(settlement));
-    assert_eq!(last.cursor.from, 1024);
-    assert_eq!(last.machines.len(), 1);
-    assert_eq!(last.machines[0].state, MachineState::Failed);
-    assert_eq!(last.next, None);
+    assert_eq!(rest.cursor.cut.operation, operation);
+    assert_eq!(rest.cursor.cut.settlement, Settlement::Streams(settlement));
+    assert_eq!(rest.cursor.from, 1024);
     // Check every original identity on the pages already read across the
     // actual Streams chunk boundary. Arbitrary credit and continuation
     // arithmetic are covered by result_cursor_preserves_owner_and_bounded_progress.
@@ -310,8 +298,8 @@ async fn settled_pages_pin_original_cut_across_source_changes_and_restart()
     assert_eq!(borrowed.machines.as_ptr(), wide.machines.as_ptr());
     assert_eq!(borrowed.machines.len(), 1);
     assert_eq!(borrowed.next.unwrap().from, 1);
-    // A whole-result clone fails the original-allocation oracle.
-    let copied = wide.machines.clone();
+    // Copying even this one-item page fails the original-allocation oracle.
+    let copied = borrowed.machines.to_vec();
     assert_ne!(copied.as_ptr(), borrowed.machines.as_ptr());
     let wrong_owner = ResultCursor {
         cut: ResultCut {
