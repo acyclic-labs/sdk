@@ -1,15 +1,73 @@
 use super::*;
 
-#[test]
-fn operation_cache_preserves_the_providers_decoded_cache_capability() {
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::allocation::retained::RetainedAllocation;
+    crate::initialize_test_native_io();
+    let directory = tempfile::tempdir()?;
+    let provider =
+        acyclic_objects::local::LocalObjects::open(directory.path(), Default::default(), None)
+            .await?;
+    let store = crate::LogicalObjectStore::new(std::sync::Arc::new(provider));
+    let mut requests = Vec::new();
+    for bytes in [b"first".as_slice(), b"second".as_slice()] {
+        requests.push(ObjectReadRequest {
+            object_id: crate::test_support::put_object(&store, crate::ObjectKind::Blob, bytes)
+                .await?,
+            maximum_bytes: bytes.len() as u64,
+        });
+    }
+    requests.push(requests[0]);
     let cancellation = CancellationToken::new();
-    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-    let plain = crate::memory::MemoryObjectStore::default();
-    let cache = OperationReadCache::new(&plain, 1, &mut accounting, None).unwrap();
-    assert!(!crate::AsyncObjectStore::supports_decoded_cache(&cache));
-    let hooks = crate::test_support::OwnedReadObjectStore::default();
-    let cache = OperationReadCache::new(&hooks, 1, &mut accounting, None).unwrap();
-    assert!(crate::AsyncObjectStore::supports_decoded_cache(&cache));
+    for capacity in [0, 1, 2] {
+        let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let independent = RetainedAllocation::claim(73, 1, &mut work.accounting())?;
+        let baseline = work.allocations.live_bytes();
+        let cache = OperationReadCache::new(&store, capacity, &mut work.accounting(), None)?;
+        let reads = crate::kernel::read_objects_with_accounting(
+            &cache,
+            &requests,
+            &mut work.accounting(),
+            &cancellation,
+        )
+        .await?;
+        assert_eq!(reads.value.len(), requests.len());
+        assert_eq!(reads.value[0].bytes.as_ref(), b"first");
+        assert_eq!(reads.value[1].bytes.as_ref(), b"second");
+        assert_eq!(reads.value[2].bytes.as_ref(), b"first");
+        let owned = reads
+            .value
+            .iter()
+            .filter(|read| matches!(read.retention, ObjectReadRetention::Owned { .. }))
+            .count();
+        assert_eq!(owned, [3, 1, 0][capacity]);
+        let retained = crate::kernel::file_read::retained_object_reads_bytes(
+            &reads.value,
+            reads.value.capacity(),
+        )?;
+        let state = cache.lock_state();
+        let resident = OperationReadCache::<()>::slot_bytes(&state)? + state.retained_owned_bytes;
+        drop(state);
+        assert_eq!(
+            work.allocations.live_bytes(),
+            baseline + resident + retained
+        );
+        drop(reads.value);
+        crate::kernel::file_read::release_read_allocation(
+            retained,
+            reads.custody,
+            &mut work.accounting(),
+        )?;
+        assert_eq!(work.allocations.live_bytes(), baseline + resident);
+        drop_cache(cache, &mut work.accounting())?;
+        assert_eq!(work.allocations.live_bytes(), baseline);
+        assert_eq!(work.allocations.scratch_bytes(), 0);
+        drop(independent);
+        assert_eq!(work.allocations.live_bytes(), baseline - 73);
+    }
+    Ok(())
 }
 use proptest::prelude::*;
 
