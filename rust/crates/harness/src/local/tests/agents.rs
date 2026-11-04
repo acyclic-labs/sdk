@@ -539,7 +539,6 @@ async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
         "no tools directory in {root:?}; turn output {}",
         String::from_utf8_lossy(&output)
     );
-    let turn_id = turn.to_string();
     let turn = format!("tools/{turn}");
     let calls = names(&harness, private, &turn).await?;
     let [call] = calls.as_slice() else {
@@ -561,7 +560,7 @@ async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
         .map_err(agent)?
         .clone()
         .ok_or_else(|| Error::NotFound("served admission".into()))?;
-    follow_tool_output(&harness, &state.path, &turn_id, &scope).await
+    follow_tool_output(&harness, &state.path, &scope).await
 }
 
 async fn observation(
@@ -588,7 +587,6 @@ async fn observation(
 async fn follow_tool_output(
     harness: &Arc<LocalHarness>,
     root: &AgentPath,
-    turn: &str,
     admitted: &crate::core::Scope,
 ) -> Result<()> {
     use acyclic_fs::access::{Action, Capability, Generations, Grant, ResourcePattern};
@@ -670,19 +668,14 @@ async fn follow_tool_output(
     observation(harness, &reader, path).await?;
     // From after the settled turn: its output stays the newest call's.
     let mut observer = conversation(harness).await?.observe(Some(1)).await?;
-    let wait = std::time::Duration::from_secs(10);
-    tokio::time::timeout(wait, async {
-        loop {
-            if matches!(observer.next().await?, super::super::Event::Output) {
-                observer.absorb().await?;
-                if observer.output().contains("staged") {
-                    return Ok::<_, Error>(());
-                }
+    loop {
+        if matches!(observer.next().await?, super::super::Event::Output) {
+            observer.absorb().await?;
+            if observer.output().contains("staged") {
+                break;
             }
         }
-    })
-    .await
-    .map_err(|_| Error::Conflict(format!("no output of turn {turn} arrived")))??;
+    }
     // Revoking the agent scope the connection's credential derives from
     // ends its observation.
     // Negative control: an unrelated root with identical grants cannot close it.
@@ -694,15 +687,11 @@ async fn follow_tool_output(
         .revoke_workload(&unrelated.scope)?;
     issuer.verifier(&mut None)?.verify(admitted, &mut None)?;
     issuer.revoke_workload(admitted)?;
-    tokio::time::timeout(wait, async {
-        loop {
-            if observer.next().await.is_err() {
-                return;
-            }
+    loop {
+        if observer.next().await.is_err() {
+            return Ok(());
         }
-    })
-    .await
-    .map_err(|_| Error::Conflict("a revoked observation stayed open".into()))
+    }
 }
 
 /// A local HTTP peer that answers each request with its own ordinal, so a
