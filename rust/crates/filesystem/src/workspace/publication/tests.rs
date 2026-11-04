@@ -92,10 +92,19 @@ async fn reservation_preserves_original_live_peak_and_refuses_before_publication
                 )
                 .await?
                 .work;
-            // The Streams-backed reservation is durable in the authority and
-            // its request scratch is scoped, so the caller's ledger returns to
-            // exactly its original live bytes while the peak includes them.
-            assert_eq!(live, baseline, "reservation leaked caller backing");
+            // The actual provider retains committed keys and record bodies.
+            // Their original funding must survive the request, then retire
+            // with that physical provider state rather than as scratch.
+            let (reserved_backing, reserved_baseline) = source.held.lock().unwrap().take().unwrap();
+            assert_eq!(reserved_baseline, baseline);
+            assert_eq!(
+                reserved_backing.allocation.standalone_live_bytes(),
+                Some(live)
+            );
+            assert!(
+                live > baseline,
+                "resident reservation backing lost its funding"
+            );
             assert!(spent.peak_allocation_bytes > baseline);
             let (result, released, release_live, release_baseline) = workspace
                 .release_publication(reservation, &source, &cancellation)
@@ -109,7 +118,28 @@ async fn reservation_preserves_original_live_peak_and_refuses_before_publication
             );
             assert_eq!(released.backend_write_operations, 1);
             assert_eq!(plain_release.backend_write_operations, 1);
-            assert_eq!(release_live, release_baseline);
+            let (release_backing, released_baseline) = source.held.lock().unwrap().take().unwrap();
+            assert_eq!(released_baseline, release_baseline);
+            assert_eq!(
+                release_backing.allocation.standalone_live_bytes(),
+                Some(release_live)
+            );
+            assert!(
+                release_live > release_baseline,
+                "resident release backing lost its funding"
+            );
+            drop(workspace);
+            drop(fs);
+            assert_eq!(
+                reserved_backing.allocation.standalone_live_bytes(),
+                Some(baseline),
+                "reservation backing survived its physical provider"
+            );
+            assert_eq!(
+                release_backing.allocation.standalone_live_bytes(),
+                Some(release_baseline),
+                "release backing survived its physical provider"
+            );
         }
     }
     Ok(())
