@@ -14,17 +14,19 @@ const scenario = process.env.STREAM_SESSION_SCENARIO ?? "deadline";
 plugin({ name: "raw-follow-deadline-model", setup(build) {
   build.onLoad({ filter: /[\\/]src[\\/]session\.ts$/ }, async args => {
     let source = await Bun.file(args.path).text();
-    if (fault === "write") {
-      const cancellation = "const abort = (): void => cursor?.close();";
-      if (!source.includes(cancellation)) throw new Error("blocked-write negative control no longer matches");
-      source = source.replace(cancellation, "const abort = (): void => {}; ");
-    }
     if (fault === "writeSignal") {
       const forwarding = "transport.send(bytes, writeSignal)";
       if (!source.includes(forwarding)) throw new Error("write signal negative control no longer matches");
       source = source.replace(forwarding, "transport.send(bytes)");
     }
     return { contents: source, loader: "ts" };
+  });
+  build.onLoad({ filter: /[\\/]src[\\/]wasm-records\.ts$/ }, async args => {
+    const source = await Bun.file(args.path).text();
+    if (fault !== "write") return { contents: source, loader: "ts" };
+    const cancellation = "const abort = (): void => { pending?.close(); handle?.close(); };";
+    if (!source.includes(cancellation)) throw new Error("blocked-write negative control no longer matches");
+    return { contents: source.replace(cancellation, "const abort = (): void => {};"), loader: "ts" };
   });
   build.onLoad({ filter: /[\\/]src[\\/]grpc\.ts$/ }, async args => {
     let source = await Bun.file(args.path).text();

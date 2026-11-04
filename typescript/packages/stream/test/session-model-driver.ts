@@ -12,7 +12,7 @@ if (fault === "followSelect") {
   plugin({ name: "selection-negative-control", setup(build) {
     build.onLoad({ filter: /[\\/]src[\\/]default\.ts$/ }, async args => {
       const source = await Bun.file(args.path).text();
-      const old = "this.acquireProvider(options.signal)";
+      const old = "this.acquireProvider(signal)";
       if (!source.includes(old)) throw new Error("follow selection negative control no longer matches");
       return { contents: source.replace(old, "this.acquireProvider(undefined)"), loader: "ts" };
     });
