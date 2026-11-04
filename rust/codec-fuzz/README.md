@@ -826,6 +826,15 @@ must respectively fail the same property at `original Actors cause` and
 positive writer. Source-generated writer packets do not represent a deployed
 service capture.
 
+The native bridge retains the same canonical Cause in its N-API field
+projection. Its existing
+`tests::service_metadata_preserves_original_message_unknown_code_and_bytes`
+property also checks the three original attribution allocations and serialized
+Cause, alongside the unknown service code and raw details. The retained
+`actors_native_cause.patch` and `actors_native_cause_copy.patch` mutations must
+reject dropped attribution and an extra component copy respectively. This
+component property does not replace qualification through the real Node ABI.
+
 The Objects controls below extend the same semantic writer property or persisted
 writer property. Each uses the production entry point and independently held
 writer/request operands. Mutated packets are derived adversarial inputs, not
