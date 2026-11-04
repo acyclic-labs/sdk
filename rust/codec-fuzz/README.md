@@ -763,6 +763,16 @@ conversion and must fail at `unique member projection moves all original
 diagnostic allocations`. These checks reuse the retained mixed-batch writer
 and its derived known/unknown attribution operands; they add no captured wire.
 
+Actors uses the same canonical `refusal::Cause`. Its original code, message
+and raw detail envelope survive the public client metadata projection, including
+unknown service codes and partial attribution. The protobuf and protobuf JSON
+targets check that projection after their original decoder. The kept
+`negative-controls/actors_cause_metadata.patch` discards only the projected cause;
+`actors_cause_copy.patch` copies the attributed strings. The
+`canonical_error_writers_preserve_original_attribution` property must reject
+them at `original Actors cause` and `original Actors attribution backing`.
+Restore each patch before positive qualification.
+
 The Objects writer admission also opens the real account's availability feed
 through its public binary client and the shared production cursor writer. It
 requires that original opening cursor to decode, and refuses a zero incarnation

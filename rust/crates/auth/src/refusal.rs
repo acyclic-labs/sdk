@@ -27,7 +27,9 @@ pub const METADATA_PREFIX: &str = "acyclic-";
 /// `request_id` names the server's request. An empty part was not reported.
 /// A service error exposes its cause through [`std::error::Error::source`],
 /// so a consumer needs no service crate.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "auth/Cause.ts", rename_all = "camelCase")]
 pub struct Cause {
     /// Server component that failed.
     pub component: String,

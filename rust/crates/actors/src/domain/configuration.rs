@@ -562,12 +562,33 @@ pub struct ServiceError {
     code: ErrorCode,
     #[wire(tag = 2)]
     message: String,
+    #[wire(tag = 3)]
+    component: String,
+    #[wire(tag = 4)]
+    reason: String,
+    #[wire(tag = 5)]
+    request_id: String,
 }
 
 impl ServiceError {
     /// Creates a service error with its typed code and lossless message.
     pub fn new(code: ErrorCode, message: String) -> Self {
-        Self { code, message }
+        Self {
+            code,
+            message,
+            component: String::new(),
+            reason: String::new(),
+            request_id: String::new(),
+        }
+    }
+
+    /// Retains the producer's attribution without inferring it from the message.
+    #[must_use]
+    pub fn with_cause(mut self, cause: acyclic_auth::refusal::Cause) -> Self {
+        self.component = cause.component;
+        self.reason = cause.reason;
+        self.request_id = cause.request_id;
+        self
     }
 
     /// Returns the typed service error code.

@@ -2,6 +2,108 @@
 use acyclic_actors::{domain as d, wire};
 use prost::Message;
 
+pub(super) fn check(name: &str, bytes: &[u8]) {
+    if name != "acyclic.actors.v1.Error" {
+        return;
+    }
+    let detail = if bytes.is_empty() {
+        None
+    } else {
+        wire::Error::decode(bytes).ok()
+    };
+    // Enter the same owned status conversion and diagnostic projection used by
+    // native and browser clients, including future codes and malformed details.
+    for (code, category) in [
+        (tonic::Code::PermissionDenied, "permission_denied"),
+        (tonic::Code::Unknown, "unknown"),
+    ] {
+        let error = acyclic_actors::client::Error::from(tonic::Status::with_details(
+            code,
+            "original status",
+            bytes.to_vec().into(),
+        ));
+        let original_backing = match &error {
+            acyclic_actors::client::Error::Service {
+                grpc_code,
+                message,
+                raw_details,
+                detail: actual,
+            } => {
+                assert_eq!(*grpc_code, code as i32);
+                assert_eq!(message, "original status");
+                assert_eq!(raw_details, bytes);
+                assert_eq!(actual, &detail);
+                actual.as_ref().map(|value| {
+                    [
+                        value.component.as_ptr(),
+                        value.reason.as_ptr(),
+                        value.request_id.as_ptr(),
+                    ]
+                })
+            }
+            other => panic!("expected original service failure, got {other:?}"),
+        };
+        let metadata = error.metadata();
+        assert_eq!(metadata.code, category);
+        assert_eq!(metadata.message, "original status");
+        assert_eq!(metadata.grpc_code, Some(code as i32));
+        assert_eq!(metadata.raw_details.as_deref(), Some(bytes));
+        assert_eq!(
+            metadata.service_code,
+            detail.as_ref().map(|value| value.code)
+        );
+        assert_eq!(
+            metadata.service_message.as_deref(),
+            detail.as_ref().map(|value| value.message.as_str())
+        );
+        let expected = detail.as_ref().filter(|value| {
+            !(value.component.is_empty() && value.reason.is_empty() && value.request_id.is_empty())
+        });
+        assert_eq!(
+            metadata.cause.is_some(),
+            expected.is_some(),
+            "original Actors cause"
+        );
+        if let Some(cause) = &metadata.cause {
+            let original = expected.expect("original attribution present");
+            assert_eq!(cause.component, original.component);
+            assert_eq!(cause.reason, original.reason);
+            assert_eq!(cause.request_id, original.request_id);
+            assert_eq!(
+                Some([
+                    cause.component.as_ptr(),
+                    cause.reason.as_ptr(),
+                    cause.request_id.as_ptr()
+                ]),
+                original_backing,
+                "original Actors attribution backing"
+            );
+        }
+        let projected = serde_json::to_value(metadata).expect("original diagnostic projection");
+        let expected = expected.map_or(serde_json::Value::Null, |value| {
+            serde_json::json!({
+                "component":value.component, "reason":value.reason, "requestId":value.request_id,
+            })
+        });
+        assert_eq!(projected["cause"], expected);
+    }
+    if let Some(detail) = detail
+        && let Ok(code) = wire::ErrorCode::try_from(detail.code)
+    {
+        let expected = acyclic_auth::refusal::Cause::reported(
+            detail.component,
+            detail.reason,
+            detail.request_id,
+        );
+        let status = acyclic_actors::grpc::error_status(code, expected.clone());
+        let original = status.details().to_vec();
+        let metadata = acyclic_actors::client::Error::from(status).metadata();
+        assert_eq!(metadata.raw_details, Some(original));
+        assert_eq!(metadata.service_code, Some(code as i32));
+        assert_eq!(metadata.cause, expected, "original Actors writer cause");
+    }
+}
+
 pub(super) fn seeds() -> Result<Vec<(&'static str, &'static str, Vec<u8>)>, d::DomainError> {
     let mut seeds = Vec::new();
     macro_rules! seed {
@@ -72,6 +174,31 @@ pub(super) fn seeds() -> Result<Vec<(&'static str, &'static str, Vec<u8>)>, d::D
         "semantic",
         d::ServiceError::new(d::ErrorCode::InvalidArgument, "refused".into())
     );
+    seed!(
+        Error,
+        ServiceError,
+        "attributed",
+        d::ServiceError::new(d::ErrorCode::DependencyUnavailable, "refused".into()).with_cause(
+            acyclic_auth::refusal::Cause {
+                component: "actors.checkpoint".into(),
+                reason: "dependency_failed".into(),
+                request_id: "original-request".into(),
+            }
+        )
+    );
+    let status = acyclic_actors::grpc::error_status(
+        d::ErrorCode::DependencyUnavailable,
+        Some(acyclic_auth::refusal::Cause {
+            component: "actors.checkpoint".into(),
+            reason: "dependency_failed".into(),
+            request_id: "original-request".into(),
+        }),
+    );
+    seeds.push((
+        "acyclic.actors.v1.Error",
+        "status-attributed",
+        status.details().to_vec(),
+    ));
     seed!(
         DeploymentRequest,
         d::DeploymentRequest::new(
@@ -158,4 +285,93 @@ pub(super) fn seeds() -> Result<Vec<(&'static str, &'static str, Vec<u8>)>, d::D
         )?
     );
     Ok(seeds)
+}
+
+#[cfg(test)]
+mod tests {
+    use prost::Message;
+
+    #[test]
+    fn canonical_error_writers_preserve_original_attribution() {
+        use super::wire::ErrorCode as E;
+        use tonic::Code as C;
+        // Preserve the deployed transport contract as the writer moves into
+        // the shared library. These are protocol values, not provider fixtures.
+        for (code, transport, name) in [
+            (E::Unspecified, C::Internal, "ERROR_CODE_UNSPECIFIED"),
+            (
+                E::InvalidArgument,
+                C::InvalidArgument,
+                "ERROR_CODE_INVALID_ARGUMENT",
+            ),
+            (
+                E::CapabilityDenied,
+                C::PermissionDenied,
+                "ERROR_CODE_CAPABILITY_DENIED",
+            ),
+            (
+                E::CapabilityExpired,
+                C::Unauthenticated,
+                "ERROR_CODE_CAPABILITY_EXPIRED",
+            ),
+            (E::ActorNotFound, C::NotFound, "ERROR_CODE_ACTOR_NOT_FOUND"),
+            (
+                E::SubscriptionNotFound,
+                C::NotFound,
+                "ERROR_CODE_SUBSCRIPTION_NOT_FOUND",
+            ),
+            (
+                E::IdempotencyMismatch,
+                C::FailedPrecondition,
+                "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+            ),
+            (E::Conflict, C::FailedPrecondition, "ERROR_CODE_CONFLICT"),
+            (
+                E::AdmissionDenied,
+                C::PermissionDenied,
+                "ERROR_CODE_ADMISSION_DENIED",
+            ),
+            (
+                E::CheckpointFailed,
+                C::Aborted,
+                "ERROR_CODE_CHECKPOINT_FAILED",
+            ),
+            (
+                E::DependencyUnavailable,
+                C::Unavailable,
+                "ERROR_CODE_DEPENDENCY_UNAVAILABLE",
+            ),
+        ] {
+            let status = acyclic_actors::grpc::error_status(code, None);
+            assert_eq!(status.code(), transport);
+            assert_eq!(status.message(), name);
+            let detail = super::wire::Error::decode(status.details()).expect("canonical writer");
+            assert_eq!(detail.code, code as i32);
+            assert_eq!(detail.message, name);
+            super::check("acyclic.actors.v1.Error", status.details());
+        }
+        for bytes in [Vec::new(), vec![255, 0]] {
+            super::check("acyclic.actors.v1.Error", &bytes);
+        }
+        for (name, _, bytes) in super::seeds().expect("canonical Actors writers") {
+            if name != "acyclic.actors.v1.Error" {
+                continue;
+            }
+            super::check(name, &bytes);
+            let mut detail = super::wire::Error::decode(bytes.as_slice())
+                .expect("canonical Actors error writer");
+            for code in [i32::MIN, 0, 10, i32::MAX] {
+                detail.code = code;
+                super::check(name, &detail.encode_to_vec());
+                let mut partial = detail.clone();
+                partial.reason.clear();
+                partial.request_id.clear();
+                super::check(name, &partial.encode_to_vec());
+                partial.component.clear();
+                partial.reason = "future_dependency_reason".into();
+                partial.request_id = "original-request".into();
+                super::check(name, &partial.encode_to_vec());
+            }
+        }
+    }
 }
