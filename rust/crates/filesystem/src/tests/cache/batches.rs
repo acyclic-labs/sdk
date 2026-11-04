@@ -241,10 +241,9 @@ async fn sequential_batch_retains_original_prefix_on_withdrawal_and_producer_los
         };
         let mut batch = Box::pin(async {
             if stored {
-                crate::async_storage::read_many_stored_sequential(&store, &requests, &mut work)
-                    .await
+                store.read_many_stored(&requests, &mut work).await
             } else {
-                crate::async_storage::read_many_sequential(&store, &requests, &mut work).await
+                store.read_many(&requests, &mut work).await
             }
         });
         assert!(futures::poll!(batch.as_mut()).is_pending());
