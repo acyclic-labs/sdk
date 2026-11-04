@@ -128,3 +128,10 @@ layer-fold example, including its named static and erased type imports. The
 upper callback imports the named JSON value through the existing shared graph,
 without introducing a separate reader. Three kept
 patches mutate actual composition data flow and generation/digest publication.
+
+
+The `json-invalid-utf8` corpus operand is the three bytes `22 ff 22`, derived
+from the invalid-string case reported in review. It is an authored malformed
+internal input, not a captured external-tool fixture. The existing property
+passes these exact bytes to production source admission; replacement characters
+must not turn its expected refusal into a reference value.

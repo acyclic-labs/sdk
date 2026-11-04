@@ -571,6 +571,8 @@ mod tests {
                 .as_slice(),
             include_bytes!("../../../../harness-fuzz/corpus/config_evaluation/malformed-json")
                 .as_slice(),
+            include_bytes!("../../../../harness-fuzz/corpus/config_evaluation/json-invalid-utf8")
+                .as_slice(),
         ] {
             check(source).await.unwrap();
         }
