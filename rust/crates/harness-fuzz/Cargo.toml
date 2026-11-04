@@ -101,7 +101,6 @@ native-execution = []
 
 
 [dependencies]
-acyclic-harness-client = { path = "../harness-client", default-features = false, optional = true }
 acyclic-harness-core = { path = "../harness-core", default-features = false, features = ["hooks", "test-support"], optional = true }
 acyclic-native-runtime = { path = "../native-runtime", optional = true }
 harness-mock-model = { path = "../harness-mock-model" }
