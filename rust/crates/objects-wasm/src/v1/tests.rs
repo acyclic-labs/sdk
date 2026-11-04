@@ -79,6 +79,7 @@ export function corruptRefusal(error, cut) {
     }
     return error;
 }
+export function detailError(code, detailBytes) { return {code, detailBytes}; }
 ")]
 extern "C" {
     #[wasm_bindgen(js_name = accountPort)]
@@ -97,6 +98,8 @@ extern "C" {
     fn refusal_port(error: JsValue) -> JsValue;
     #[wasm_bindgen(js_name = corruptRefusal)]
     fn corrupt_refusal(error: JsValue, cut: u32) -> JsValue;
+    #[wasm_bindgen(js_name = detailError)]
+    fn detail_error(code: i32, detail_bytes: &[u8]) -> JsValue;
 }
 
 #[wasm_bindgen_test::wasm_bindgen_test]
@@ -290,5 +293,24 @@ async fn original_javascript_account_preserves_results_and_cancellation() {
             "malformed diagnostic terminates with a typed failure at cut {cut}",
         );
         assert!(owners_balanced(&port));
+    }
+    // HTTP preserves its status category even when a peer's detail has no
+    // supported semantic code. Derive these operands from the same writer.
+    for code in 1..=wire::ErrorCode::OutcomeUnknown as i32 {
+        let Ok(code) = wire::ErrorCode::try_from(code) else {
+            continue;
+        };
+        for detail_code in [wire::ErrorCode::Unspecified as i32, i32::MAX] {
+            let mut detail = wire::ErrorDetail::from(&expected);
+            detail.code = detail_code;
+            let port = refusal_port(detail_error(code as i32, &detail.encode_to_vec()));
+            let client = BinaryObjects::new(JavaScriptTransport::new(port.clone()).unwrap());
+            assert_eq!(
+                client.head(digest).await.unwrap_err().code,
+                code,
+                "unsupported detail code {detail_code} preserves category {code:?}",
+            );
+            assert!(owners_balanced(&port));
+        }
     }
 }
