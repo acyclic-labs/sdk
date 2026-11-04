@@ -42,13 +42,15 @@ async fn native_fixture(objects: &MemoryObjectStore, volume_id: VolumeId) -> Tes
     )
     .await?;
     let child = FileId::from_bytes([2; 16]);
-    let [_, _, generation] = generation(
+    let ([_, _, generation], _) = generation(
         objects,
         volume_id,
-        FileId::from_bytes([1; 16]),
+        ROOT_FILE_ID,
         metadata,
-        vec![entry(b"content", child)?],
-        vec![regular(child, metadata, logical_bytes, extents)],
+        vec![(
+            entry(b"content", child)?,
+            regular(child, metadata, logical_bytes, extents),
+        )],
         vec![crate::GenerationId::new(Digest::from_bytes([7; 32]))],
     )
     .await?;
@@ -280,12 +282,15 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
     .await
     .err()
     .ok_or("acknowledgement loss unexpectedly returned success")?;
-    assert!(matches!(
-        failure,
-        NativePublicationTestError::Fs(crate::FsError::Authority(
-            AuthorityStoreError::Indeterminate { .. }
-        ))
-    ));
+    assert!(
+        matches!(
+            failure,
+            NativePublicationTestError::Fs(crate::FsError::Authority(
+                AuthorityStoreError::Indeterminate { .. }
+            ))
+        ),
+        "unexpected publication failure: {failure:?}"
+    );
     assert_eq!(original.receipt().authority_records_appended, 1);
     let reopened = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;

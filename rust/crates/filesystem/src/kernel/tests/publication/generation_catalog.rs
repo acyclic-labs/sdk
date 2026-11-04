@@ -161,6 +161,15 @@ mod probe {
 
     #[cfg(not(target_arch = "wasm32"))]
     impl acyclic_stream::NativeStreamProvider for Provider {
+        fn native_heads(
+            &self,
+            request: HeadsRequest,
+            meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+        ) -> NativeProviderFuture<'_, Heads> {
+            self.read_request();
+            self.inner.native_heads(request, meter)
+        }
+
         fn native_inspect_idempotency(
             &self,
             key: IdempotencyKey,

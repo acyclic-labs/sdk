@@ -95,9 +95,12 @@ impl Commands<'_> {
                 ));
             }
         }
-        if !relative.is_empty() && !read_only && command != "merge" {
+        if !relative.is_empty()
+            && !read_only
+            && !matches!(command.as_str(), "merge" | "add" | "discard")
+        {
             return Err(Error::Unsupported(
-                "--volume supports diff, log, show, status and merge".into(),
+                "--volume supports diff, log, show, status, merge, add and discard".into(),
             ));
         }
         if !relative.is_empty() && mount.view.source.is_none() {

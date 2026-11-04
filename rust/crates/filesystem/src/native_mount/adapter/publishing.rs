@@ -67,7 +67,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             let submitted = publication_flag(work, force).map_err(early)?;
             let operation = state.retained_operation_id();
             let projected = state
-                .publication_candidate(operation, work, cancellation)
+                .publication_candidate(force.then_some(operation), work, cancellation)
                 .map_err(early)?;
             carrier.check(cancellation, lifetime).map_err(early)?;
             self.publishing.store(true, Ordering::Release);
@@ -181,9 +181,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckoutState<A, O> {
         Ok(())
     }
 
+    /// The view observers read while a publication is in flight: the prior
+    /// checkout with the prior resolution. An in-flight publication is not an
+    /// unresolved one, so observers of unrelated files keep their answers and
+    /// mutators wait on the publication fence; only an operation retained
+    /// from an earlier indeterminate outcome stays unresolved.
     fn publication_candidate(
         &self,
-        operation: OperationId,
+        retained: Option<OperationId>,
         work: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
     ) -> Result<Self, MountSourceError> {
@@ -197,7 +202,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckoutState<A, O> {
         Ok(SharedCheckoutState {
             recorded_view: projection.root().file_table,
             checkout: projection,
-            publication_operation: Some(operation),
+            publication_operation: retained,
             publication_evidence: None,
             publication: self.publication,
             pending_deadline: None,

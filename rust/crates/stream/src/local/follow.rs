@@ -10,7 +10,7 @@ impl LocalStream {
         until: Option<u64>,
     ) -> Result<crate::FollowStream, StreamError> {
         let span = obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.stream.follow",
+            "acyclic.stream.follow.cursor",
             rev = from,
             terminal = Empty,
             outcome = Empty,
