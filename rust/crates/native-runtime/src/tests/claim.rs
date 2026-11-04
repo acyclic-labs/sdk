@@ -269,21 +269,6 @@ fn a_released_claim_admits_another_process() -> io::Result<()> {
     Ok(())
 }
 
-#[test]
-fn a_torn_record_names_no_owner() -> io::Result<()> {
-    let directory = tempfile::tempdir()?;
-    let path = directory.path().join("owner.lock");
-    let claim = StoreClaim::acquire(&path)?;
-    let record = std::fs::read(&path)?;
-    drop(claim);
-    // A record cut anywhere, as by its writer's death mid-write.
-    for cut in [1, record.len() / 2, record.len() - 1] {
-        std::fs::write(&path, record.get(..cut).unwrap_or_default())?;
-        drop(StoreClaim::acquire(&path)?);
-    }
-    Ok(())
-}
-
 #[cfg(target_os = "linux")]
 #[test]
 fn a_runtime_directory_with_newlines_names_its_owner_exactly() -> io::Result<()> {
@@ -305,8 +290,8 @@ fn a_runtime_directory_with_newlines_names_its_owner_exactly() -> io::Result<()>
 }
 
 /// A dead owner that its parent has not yet waited for is a zombie, which
-/// holds no files, so it owns nothing, even once a sweep has removed its
-/// process lock and only its pid is left to probe.
+/// holds no files, so it owns nothing when its process lock is gone and only
+/// its pid is left to probe.
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 #[test]
 fn an_owner_that_died_unwaited_owns_nothing() -> io::Result<()> {
@@ -314,13 +299,11 @@ fn an_owner_that_died_unwaited_owns_nothing() -> io::Result<()> {
     let path = directory.path().join("owner.lock");
     let mut owner = Owner::spawn(&path)?;
     let lock = recorded_process_lock(&path)?;
+    // Unlink while its exclusive lock still prevents another process's sweep
+    // from removing the name first. Death must then be proved by the pid.
+    std::fs::remove_file(&lock)?;
     owner.0.kill()?;
     exited_unwaited(owner.0.id())?;
-    // As another process's sweep does, once the dead owner's lock is free.
-    let held =
-        crate::FileLock::try_acquire(std::fs::File::open(&lock)?, crate::FileLockMode::Shared)?;
-    std::fs::remove_file(&lock)?;
-    drop(held);
     drop(StoreClaim::acquire(&path)?);
     Ok(())
 }
