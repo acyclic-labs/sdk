@@ -368,3 +368,10 @@ then runs the memory/durable conformance and retained alarm/lifetime controls.
 It also checks the Actors tests for `x86_64-pc-windows-gnu`. The command restores
 the original source after each mutation; cross-compilation does not execute the
 Windows runtime.
+
+`python3 scripts/qualify-actors-ready.py --restart-completion` advances that same
+host clock after the restarted input commits and before output observation. It
+checks that an intermediate absence assertion rejects this valid interleaving,
+then verifies the unchanged exact final output with and without the interleaving.
+The restored completion controls and cross-target checks run once; unchanged
+dispatcher and socket mutations are not repeated.

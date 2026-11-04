@@ -97,7 +97,7 @@ def observation():
         source.write_bytes(original)
 
 
-def completion():
+def completion(*, restored_only=False):
     """Qualify the real dispatcher cut, its output oracle and operation cost."""
     source = ROOT / "rust/crates/actors/src/local/runtime.rs"
     original = source.read_bytes()
@@ -114,7 +114,7 @@ def completion():
     ]
     print("Completion producer sha256=" + hashlib.sha256(original).hexdigest(), flush=True)
     try:
-        for anchor, plant, diagnostic in controls:
+        for anchor, plant, diagnostic in ([] if restored_only else controls):
             if normalized.count(anchor) != 1:
                 raise RuntimeError("completion producer anchor changed; recovery: " + RECOVERY + " --completion")
             source.write_bytes(normalized.replace(anchor, plant))
@@ -134,7 +134,8 @@ def completion():
         print("STEP restored Actor completion controls: " + repr(command), flush=True)
         if subprocess.run(command, cwd=ROOT).returncode:
             raise RuntimeError("restored Actor completion controls failed; recovery: " + RECOVERY + " --completion")
-        observation()
+        if not restored_only:
+            observation()
         command = ["cargo", "check", "--locked", "-p", "acyclic-actors", "--tests",
                    "--all-features", "--target", "x86_64-pc-windows-gnu"]
         print("STEP Windows Actor cross-check: " + repr(command), flush=True)
@@ -149,7 +150,42 @@ def completion():
         source.write_bytes(original)
 
 
+def restart_completion():
+    """Cross the real alarm deadline between restarted delivery and observation."""
+    source = ROOT / "rust/crates/actors/src/conformance.rs"
+    original = source.read_bytes()
+    normalized = original.replace(b"\r\n", b"\n")
+    anchor = (b'    restarted.send("emit").await?;\n'
+              b'    target.complete(&restarted.actor).await?;\n')
+    if normalized.count(anchor) != 1:
+        raise RuntimeError("restart completion anchor changed; recovery: "
+                           + RECOVERY + " --restart-completion")
+    # Run the original dispatcher and SAME clock, with r2 already committed.
+    # This is a valid wall-clock interleaving, not a fabricated output fixture.
+    crossed = anchor + (b'    target.advance_to(target.clock().now_unix_ms()'
+                        b'.saturating_add(2 * ALARM_MS)).await?;\n'
+                        b'    target.complete(&restarted.actor).await?;\n')
+    name = "local::runtime::tests::conformance_suite_passes_on_memory_runtime"
+    print("Restart completion source sha256=" + hashlib.sha256(original).hexdigest(), flush=True)
+    try:
+        probe = normalized.replace(anchor, crossed)
+        source.write_bytes(probe.replace(crossed, crossed
+                           + b'    restarted.expect(&["r0", "r2"]).await?;\n'))
+        run([name], "original deadline-crossing rejection",
+            'Error: Violation { case: "restarted"', model=False,
+            recovery="--restart-completion")
+        source.write_bytes(probe)
+        run([name], "positive", model=False, recovery="--restart-completion")
+        source.write_bytes(original)
+        completion(restored_only=True)
+    finally:
+        source.write_bytes(original)
+
+
 def main():
+    if sys.argv[1:] == ["--restart-completion"]:
+        restart_completion()
+        return
     if sys.argv[1:] == ["--completion"]:
         completion()
         return
