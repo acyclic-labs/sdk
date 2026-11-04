@@ -181,18 +181,28 @@ not json naming a session_id
     )
     .map_err(storage)?;
     native_write(&view.join("child.txt"), b"native")?;
+    // The original scale child emits a full retained stderr tail after its
+    // exit description. Settlement must preserve both through the owner.
+    let diagnostic = format!(
+        "native failed after write\n{}\ndiagnostic-tail-{host}",
+        "e".repeat(4096)
+    );
     let failed = fixture
         .session(
             "child",
             SessionAction::Complete {
                 claim: claim(&first)?,
                 outcome: crate::Outcome::Failed {
-                    message: "native failed after write".into(),
+                    message: diagnostic.clone(),
                 },
             },
         )
         .await?;
     assert_eq!(failed.pointer("/status/settled"), Some(&json!(true)));
+    assert_eq!(
+        failed.pointer("/results/0/outcome/Failed/message"),
+        Some(&json!(diagnostic))
+    );
     // A new owner over the same harness reopens the same agent and view.
     let local = Arc::clone(&fixture.owner.local);
     let previous = std::mem::replace(&mut fixture.owner, HostWorkspaceOwner::new(local)?);
@@ -206,6 +216,15 @@ not json naming a session_id
             },
         )
         .await?;
+    assert_eq!(
+        fixture
+            .owner
+            .session_value(&child)
+            .await?
+            .pointer("/results/0/outcome/Failed/message"),
+        Some(&json!(diagnostic)),
+        "owner restart must preserve the complete native outcome"
+    );
     let next = fixture.session("child", SessionAction::Next).await?;
     assert_eq!(next["turn"], 2);
     assert_eq!(next["prompt"], "follow-up");
