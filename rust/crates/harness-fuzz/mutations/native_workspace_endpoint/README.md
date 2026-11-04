@@ -21,10 +21,11 @@ pass. Canonicalisation is compared only for lossless typed parses within both
 physical byte limits, so duplicate members and oversized inputs retain their
 original rejection semantics.
 
-From the repository root:
+From the repository root on Linux x86_64, isolate target coverage from build
+scripts and proc macros by selecting the target explicitly:
 
 ```sh
-cargo run --locked -p acyclic-harness-fuzz --no-default-features --features runtime --bin native_workspace_endpoint -- rust/crates/harness-fuzz/corpus/native_workspace_endpoint -runs=0 -seed=1
+RUSTFLAGS="${RUSTFLAGS:-} -Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=4 -Cllvm-args=-sanitizer-coverage-inline-8bit-counters -Cllvm-args=-sanitizer-coverage-pc-table -Cllvm-args=-sanitizer-coverage-trace-compares" cargo run --locked --target x86_64-unknown-linux-gnu -p acyclic-harness-fuzz --no-default-features --features runtime --bin native_workspace_endpoint -- rust/crates/harness-fuzz/corpus/native_workspace_endpoint -runs=0 -seed=1
 ```
 
 Apply each retained production mutation separately and run that SAME command
@@ -41,9 +42,10 @@ Corpus execution does not establish source branch completeness or installed
 host qualification; retain matching-toolchain branch exports separately.
 
 Cold admission reuses its two required directory opens and cached identities,
-with no added syscalls, barriers, round trips or allocations. The descriptor
-adds 32 fixed bytes of identity before JSON encoding; admission compares those
-32 bytes. Retained connections pay no added request cost. Validation performs
+with no added syscalls, barriers or round trips. The descriptor adds 32 fixed
+bytes of identity to its existing JSON serialization; its backing storage grows
+with those encoded bytes. The admission guard compares 32 bytes without
+allocating. Retained connections pay no added request cost. Validation performs
 a fixed number of keyed file writes, reads and root opens per input, with JSON
 work proportional to input bytes. It has no wait, poll,
 background producer, directory scan or growth in history/agents. Filesystem
