@@ -295,7 +295,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         paths: &[NamespacePath],
         budget: W,
         cancellation: &CancellationToken,
-    ) -> W::OwnedOutput<PathBatchLookup> {
+    ) -> W::OwnedOutput<PathBatchLookup, crate::FsError> {
         let mut accounting = budget.accounting(cancellation);
         let result = self
             .lookup_batch_no_follow_with_accounting::<true>(
@@ -310,7 +310,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             lookup.work = work;
             (lookup, allocation)
         });
-        budget.finish_owned(result, &accounting)
+        budget.finish_owned::<_, crate::FsError>(result, &accounting)
     }
 
     /// `TERMINAL` observes each resolved file record. Callers that consume only

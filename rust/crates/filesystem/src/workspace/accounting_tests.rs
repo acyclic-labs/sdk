@@ -94,13 +94,13 @@ pub(crate) struct Prefunded {
 
 impl FsWork for &Prefunded {
     type Output<T, E> = (Result<T, E>, WorkCounters, u64, u64);
-    type OwnedOutput<T> = Self::Output<(T, KernelOwnedAllocation), FsError>;
+    type OwnedOutput<T, E> = Self::Output<(T, KernelOwnedAllocation), E>;
 
-    fn finish_owned<T>(
+    fn finish_owned<T, E: From<FsError>>(
         &self,
-        result: Result<(T, KernelOwnedAllocation), FsError>,
+        result: Result<(T, KernelOwnedAllocation), E>,
         accounting: &KernelAccounting<'_>,
-    ) -> Self::OwnedOutput<T> {
+    ) -> Self::OwnedOutput<T, E> {
         self.finish(result, accounting)
     }
 

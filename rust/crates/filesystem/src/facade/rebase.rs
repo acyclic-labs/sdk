@@ -195,7 +195,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         maximum_conflicts: u32,
         budget: W,
         cancellation: &CancellationToken,
-    ) -> W::OwnedOutput<RebaseDecision> {
+    ) -> W::OwnedOutput<RebaseDecision, crate::FsError> {
         let mut accounting = budget.accounting(cancellation);
         let result = async {
             accounting.check()?;
@@ -206,7 +206,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 .await
         }
         .await;
-        budget.finish_owned(result, &accounting)
+        budget.finish_owned::<_, crate::FsError>(result, &accounting)
     }
 
     /// The one rebase phase of explicit rebases and live synchronization. It

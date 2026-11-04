@@ -12,12 +12,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         binding: AccessBinding<'_>,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::OwnedOutput<PathTrie> {
+    ) -> W::OwnedOutput<PathTrie, crate::FsError> {
         let mut accounting = work.accounting(cancellation);
         let result = self
             .bind_access_accounted(binding, &mut accounting, cancellation)
             .await;
-        work.finish_owned(result, &accounting)
+        work.finish_owned::<_, crate::FsError>(result, &accounting)
     }
 
     async fn bind_access_accounted(

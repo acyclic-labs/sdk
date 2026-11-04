@@ -243,7 +243,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         root: ObjectId,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::OwnedOutput<Vec<(AttributeName, acyclic_stream::OwnedBytes)>> {
+    ) -> W::OwnedOutput<Vec<(AttributeName, acyclic_stream::OwnedBytes)>, crate::FsError> {
         let mut accounting = work.accounting(cancellation);
         let result = async {
             #[cfg(not(target_arch = "wasm32"))]
@@ -316,7 +316,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
             Ok((attributes.value, attributes.allocation))
         }
         .await;
-        work.finish_owned(result, &accounting)
+        work.finish_owned::<_, crate::FsError>(result, &accounting)
     }
 }
 
