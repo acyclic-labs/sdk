@@ -267,6 +267,14 @@ enum Buffer {
 }
 
 impl Buffer {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Unique(bytes) => bytes.as_slice(),
+            #[cfg(feature = "filesystem")]
+            Self::Finite(bytes) => bytes,
+        }
+    }
+
     fn new(
         bytes: acyclic_stream::OwnedBytes,
         io: Option<&PreparationIo>,
@@ -307,20 +315,26 @@ impl Buffer {
         }
     }
 
-    fn replace(&mut self, prefix: usize, suffix: &[u8], io: Option<&PreparationIo>) -> Result<()> {
+    fn insert(
+        &mut self,
+        prefix: usize,
+        separator: &[u8],
+        appended: &[u8],
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
         match self {
             Self::Unique(bytes) => bytes
-                .replace_suffix(prefix, suffix)
+                .replace_range(prefix..prefix, &[separator, appended])
                 .map_err(|error| storage_error(error, io)),
             #[cfg(feature = "filesystem")]
             Self::Finite(bytes) => with_history_io(io, |work| {
+                let copied = bytes.len() - prefix + separator.len() + appended.len();
                 if let Some(work) = work.as_deref_mut() {
-                    work.admit_copy(suffix.len() as u64)?;
+                    work.admit_copy(copied as u64)?;
                 }
-                bytes.truncate(prefix);
-                bytes.extend_from_slice(suffix);
+                drop(bytes.splice(prefix..prefix, separator.iter().chain(appended).copied()));
                 if let Some(work) = work.as_deref_mut() {
-                    work.copy_bytes(suffix.len() as u64)?;
+                    work.copy_bytes(copied as u64)?;
                 }
                 Ok(())
             }),
@@ -347,16 +361,13 @@ impl EncodingPrefix {
         io: Option<&PreparationIo>,
         projection_nodes: &mut usize,
     ) -> Result<Encoded> {
-        let (envelope, open) = envelope(request, io)?;
-        #[cfg(feature = "filesystem")]
-        let _envelope_hold = io
-            .map(|io| io.guard_bytes(&envelope))
-            .transpose()?
-            .flatten();
-        let trailer = envelope
-            .get(open..)
-            .ok_or_else(|| invalid(io, "canonical request envelope is truncated"))?;
         if state.is_empty() {
+            let (envelope, open) = envelope(request, io)?;
+            #[cfg(feature = "filesystem")]
+            let _envelope_hold = io
+                .map(|io| io.guard_bytes(&envelope))
+                .transpose()?
+                .flatten();
             let prefix = Self::capture(&old_bytes, old_count, open, &envelope, io)?;
             crate::executor::stock_vec_push(&mut state, prefix, io)?;
         }
@@ -370,7 +381,7 @@ impl EncodingPrefix {
             .ok_or_else(|| invalid(io, "canonical request prefix exceeds messages"))?;
         if suffix.is_empty() {
             let mut complete = prefix.request.clone();
-            hash(&mut complete, trailer, io)?;
+            hash(&mut complete, &old_bytes[prefix.end..], io)?;
             return Ok((old_bytes, *complete.finalize().as_bytes(), state));
         }
         prefix.previous = Some((old_count, prefix.messages_digest(io)?));
@@ -394,8 +405,7 @@ impl EncodingPrefix {
             // encoding. Give the clone new storage; never mutate its peer.
             return fresh(request, io);
         };
-        let (bytes, digest) =
-            prefix.extend(bytes, appended, trailer, request.messages.len(), io)?;
+        let (bytes, digest) = prefix.extend(bytes, appended, request.messages.len(), io)?;
         Ok((bytes, digest, state))
     }
 
@@ -445,7 +455,6 @@ impl EncodingPrefix {
         &mut self,
         mut bytes: Buffer,
         appended: &[u8],
-        trailer: &[u8],
         count: usize,
         io: Option<&PreparationIo>,
     ) -> Result<(acyclic_stream::OwnedBytes, [u8; 32])> {
@@ -456,7 +465,7 @@ impl EncodingPrefix {
             .and_then(|end| end.checked_add(appended.len()))
             .ok_or_else(|| invalid(io, "canonical request size overflows"))?;
         let length = end
-            .checked_add(trailer.len())
+            .checked_add(bytes.as_slice().len() - self.end)
             .ok_or_else(|| invalid(io, "canonical request size overflows"))?;
         if length > bytes.capacity() {
             let capacity = bytes
@@ -466,17 +475,15 @@ impl EncodingPrefix {
                 .max(length);
             bytes.reserve(capacity, io)?;
         }
-        bytes.replace(self.end, separator, io)?;
-        bytes.replace(self.end + separator.len(), appended, io)?;
-        bytes.replace(end, trailer, io)?;
         hash(&mut self.request, separator, io)?;
         hash(&mut self.request, appended, io)?;
         hash(&mut self.messages, separator, io)?;
         hash(&mut self.messages, appended, io)?;
+        let mut complete = self.request.clone();
+        hash(&mut complete, &bytes.as_slice()[self.end..], io)?;
+        bytes.insert(self.end, separator, appended, io)?;
         self.end = end;
         self.count = count;
-        let mut complete = self.request.clone();
-        hash(&mut complete, trailer, io)?;
         Ok((bytes.freeze(), *complete.finalize().as_bytes()))
     }
 

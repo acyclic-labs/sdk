@@ -30,11 +30,22 @@ fn exclusive_edits_preserve_pointers_and_original_custody_without_allocating()
         let mut unique = bytes
             .try_into_unique()
             .map_err(|_| "fixture storage must be exclusive")?;
-        unique.reserve_capacity(64)?;
-        unique.replace_suffix(7, b"new")?;
-        unique.replace_suffix(10, b",more")?;
+        let mut result = Ok(());
+        let allocation = acyclic_test_support::measure(|| {
+            result = (|| {
+                unique.reserve_capacity(64)?;
+                unique.replace_suffix(7, b"new")?;
+                unique.replace_suffix(10, b",more")?;
+                unique.replace_range(7..10, &[b"<", b"", b"new", b">"])
+            })();
+        });
+        result?;
+        assert_eq!(
+            allocation.count_total, 0,
+            "range edit allocated temporary storage"
+        );
         let bytes = unique.freeze();
-        assert_eq!(bytes.as_slice(), b"prefix,new,more");
+        assert_eq!(bytes.as_slice(), b"prefix,<new>,more");
         assert_eq!(
             bytes.as_slice().as_ptr(),
             pointer,
@@ -157,12 +168,14 @@ fn suffix_edits_copy_only_new_bytes_at_one_to_one_thousand_prefix_bytes()
             .try_into_unique()
             .map_err(|_| "fixture storage must be exclusive")?;
         bytes.replace_suffix(length, b"new suffix")?;
+        bytes.replace_range(length..length, &[b"<", b"", b">"])?;
+        bytes.replace_range(length + 1..length + 2, &[])?;
         assert_eq!(
             bytes.as_slice().as_ptr(),
             pointer,
             "suffix edit copied historical bytes at {length}"
         );
-        assert_eq!(meter.copied.load(Ordering::SeqCst) - before, 10);
+        assert_eq!(meter.copied.load(Ordering::SeqCst) - before, 32);
         assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
         assert_eq!(
             bytes.as_slice().get(..length),
@@ -170,7 +183,7 @@ fn suffix_edits_copy_only_new_bytes_at_one_to_one_thousand_prefix_bytes()
         );
         assert_eq!(
             bytes.as_slice().get(length..),
-            Some(b"new suffix".as_slice())
+            Some(b"<new suffix".as_slice())
         );
         drop(bytes.freeze());
         assert_eq!(meter.held.load(Ordering::SeqCst), 0);
@@ -181,7 +194,7 @@ fn suffix_edits_copy_only_new_bytes_at_one_to_one_thousand_prefix_bytes()
 #[test]
 fn denied_growth_and_edits_preserve_initialized_bytes_and_their_owner()
 -> Result<(), Box<dyn std::error::Error>> {
-    for cancelled in [false, true] {
+    for (cancelled, codec) in [(false, false), (true, false), (false, true)] {
         let meter = Arc::new(Meter::default());
         let mut bytes = native(&meter, 32)?
             .try_into_unique()
@@ -190,6 +203,8 @@ fn denied_growth_and_edits_preserve_initialized_bytes_and_their_owner()
         let held = meter.held.load(Ordering::SeqCst);
         if cancelled {
             meter.cancelled.store(true, Ordering::SeqCst);
+        } else if codec {
+            meter.deny_codec.store(true, Ordering::SeqCst);
         } else {
             meter
                 .limit
@@ -203,6 +218,8 @@ fn denied_growth_and_edits_preserve_initialized_bytes_and_their_owner()
             error.kind(),
             if cancelled {
                 io::ErrorKind::Interrupted
+            } else if codec {
+                io::ErrorKind::Other
             } else {
                 io::ErrorKind::OutOfMemory
             }
@@ -212,9 +229,13 @@ fn denied_growth_and_edits_preserve_initialized_bytes_and_their_owner()
         assert_eq!(meter.held.load(Ordering::SeqCst), held);
         assert!(bytes.replace_suffix(11, b"bad").is_err());
         assert!(bytes.replace_suffix(7, &[0; 33]).is_err());
-        if cancelled {
+        assert!(bytes.replace_range(7..11, &[b"bad"]).is_err());
+        assert!(bytes.replace_range(7..7, &[&[0; 33]]).is_err());
+        if cancelled || codec {
             assert!(bytes.replace_suffix(7, b"new").is_err());
+            assert!(bytes.replace_range(7..7, &[b"new"]).is_err());
         }
+        assert_eq!(bytes.as_slice(), b"prefix,old");
         // Freezing and retirement never need fresh admission after cancellation.
         drop(bytes.freeze());
         assert_eq!(meter.held.load(Ordering::SeqCst), 0);
@@ -236,14 +257,14 @@ fn a_late_copy_failure_keeps_completed_bytes_funded_until_retirement()
     meter.cancel_on_copy.store(true, Ordering::SeqCst);
     assert_eq!(
         bytes
-            .replace_suffix(7, b"completed")
+            .replace_range(7..7, &[b"com", b"pleted"])
             .err()
             .ok_or("copy cancellation was lost")?
             .kind(),
         io::ErrorKind::Interrupted
     );
-    assert_eq!(bytes.as_slice(), b"prefix,completed");
-    assert_eq!(meter.copied.load(Ordering::SeqCst), 9);
+    assert_eq!(bytes.as_slice(), b"prefix,completedold");
+    assert_eq!(meter.copied.load(Ordering::SeqCst), 12);
     assert_eq!(meter.held.load(Ordering::SeqCst), held);
     let bytes = bytes.freeze();
     assert!(bytes.matches_meter(&meter.original()));
