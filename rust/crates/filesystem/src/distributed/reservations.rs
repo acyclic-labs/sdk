@@ -258,13 +258,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         ),
         AuthorityStoreError,
     > {
-        let baseline = work.allocations.live_bytes();
         let key = work.key(self.placement.key_scope(), domain, parts)?;
-        let key_bytes = work
-            .allocations
-            .live_bytes()
-            .checked_sub(baseline)
-            .ok_or(crate::WorkError::Overflow)?;
         work.admit(WorkCounters {
             backend_read_operations: u64::from(!work.is_native()),
             ..WorkCounters::UNCHARGED
@@ -302,7 +296,6 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         if output.0.is_some() {
             work.hold_opaque(actual.authority_bytes_read)?;
         }
-        work.release(key_bytes)?;
         Ok(output)
     }
 
