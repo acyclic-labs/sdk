@@ -134,7 +134,7 @@ def completion(selected=None):
             run([name], "unchanged-oracle rejection", diagnostic,
                 model=False, recovery="--completion")
         source.write_bytes(original)
-        selected = [
+        restored_tests = [
             name,
             "local::runtime::tests::conformance_suite_passes_on_memory_runtime",
             "local::runtime::tests::conformance_suite_passes_on_durable_local_runtime",
@@ -142,7 +142,7 @@ def completion(selected=None):
             "local::runtime::tests::clock::controlled_clock_drives_original_alarms_and_reports_producer_loss",
         ]
         command = ["cargo", "nextest", "run", "--locked", "-p", "acyclic-actors",
-                   "--all-features", "--lib", "-E", " | ".join(f"test(={test})" for test in selected),
+                   "--all-features", "--lib", "-E", " | ".join(f"test(={test})" for test in restored_tests),
                    "--no-capture", "--no-tests=fail"]
         print("STEP restored Actor completion controls: " + repr(command), flush=True)
         if subprocess.run(command, cwd=ROOT).returncode:
