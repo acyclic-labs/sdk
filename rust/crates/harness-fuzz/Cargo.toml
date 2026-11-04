@@ -37,6 +37,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(fuzzing)", 'c
 [features]
 default = ["runtime"]
 core = ["dep:acyclic-harness-core", "dep:futures"]
+code-mode = ["core", "acyclic-harness-core/filesystem", "dep:tokio"]
 runtime = ["core", "filesystem-local", "native-execution", "dep:acyclic-harness", "dep:acyclic-native-runtime", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:tempfile", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
 # Harness sources included by `#[path]` gate native helpers on these features;
 # the fuzz runtime compiles them as the native harness it depends on does.
@@ -68,6 +69,14 @@ uuid = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["test-util"], optional = true }
 tokio-util = { workspace = true, features = ["codec"], optional = true }
 which = { version = "=8.0.6", optional = true }
+
+[[bin]]
+name = "code_mode"
+path = "fuzz_targets/code_mode.rs"
+required-features = ["code-mode"]
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "mock_model_script"

@@ -213,41 +213,58 @@ mod tests {
             budget.peak_allocation_bytes =
                 acyclic_fs::NativeMaterializationWork::accounting_state_bytes();
         }
+        work_with_budget(budget)
+    }
+
+    fn work_with_budget(
+        budget: acyclic_fs::WorkBudget,
+    ) -> crate::Result<acyclic_fs::NativeMaterializationWork> {
         acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new())
             .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })
     }
 
     #[tokio::test]
-    async fn bridge_text_keeps_original_credit_and_refuses_an_unfunded_copy() -> crate::Result<()> {
-        let runtime = rquickjs::AsyncRuntime::new().unwrap();
-        let context = rquickjs::AsyncContext::full(&runtime).await.unwrap();
-        for deny_allocation in [true, false] {
-            let work = work(deny_allocation)?;
-            let baseline = work.live_allocation_bytes();
-            let allocator = EngineAllocator::new(Some(&work));
-            context
-                .with(|ctx| {
-                    let text = rquickjs::String::from_str(ctx, &"x".repeat(4096)).unwrap();
-                    let copy = allocator.copy_text(&text);
-                    if deny_allocation {
-                        assert!(copy.is_err());
-                        assert!(allocator.failure().lock().unwrap().is_some());
-                    } else {
-                        let copy = copy.unwrap();
-                        assert_eq!(copy.value.len(), 4096);
-                        assert_eq!(work.live_allocation_bytes(), baseline + 4096);
-                        drop(copy);
-                    }
-                    assert_eq!(work.live_allocation_bytes(), baseline);
-                })
-                .await;
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn real_engine_releases_native_memory_and_preserves_ledger_refusal() -> crate::Result<()>
     {
+        let original = work(false)?;
+        let baseline = original.live_allocation_bytes();
+        let ledger_operations = original.receipt().allocation_operations;
+        let runtime = rquickjs::AsyncRuntime::new_with_alloc(EngineAllocator::new(Some(&original)))
+            .expect("funded runtime construction");
+        let startup_operations = original.receipt().allocation_operations - ledger_operations;
+        drop(runtime);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert!(startup_operations > 0);
+        for admitted in 0..startup_operations {
+            let original = work_with_budget(acyclic_fs::WorkBudget {
+                allocation_operations: ledger_operations + admitted,
+                ..acyclic_fs::WorkBudget::UNBOUNDED
+            })?;
+            let baseline = original.live_allocation_bytes();
+            let allocator = EngineAllocator::new(Some(&original));
+            let failure = allocator.failure();
+            let runtime = rquickjs::AsyncRuntime::new_with_alloc(allocator);
+            // QuickJS can recover an optional allocation failure. Both a
+            // returned runtime and a refused startup must retire their bytes.
+            let refused = runtime.is_err();
+            drop(runtime);
+            assert_eq!(
+                original.live_allocation_bytes(),
+                baseline,
+                "runtime allocation prefix {admitted}/{startup_operations}"
+            );
+            if refused {
+                assert!(matches!(
+                    failure.lock().unwrap().as_ref(),
+                    Some(acyclic_fs::NativeTreeMaterializationError::Work(
+                        acyclic_fs::WorkError::BudgetExceeded {
+                            counter: "allocation_operations",
+                            ..
+                        }
+                    ))
+                ));
+            }
+        }
         for deny_allocation in [true, false] {
             let work = work(deny_allocation)?;
             let baseline = work.live_allocation_bytes();
