@@ -4,7 +4,7 @@ use super::*;
 /// Process-owned native mount over a sparse workspace.
 pub struct LazyMount<A: 'static, O: 'static, D, S> {
     pub(super) source: Arc<LazyMountSource<A, O, D, S>>,
-    pub(super) session: Mutex<Option<NativeMountSession>>,
+    pub(super) session: Arc<SessionOwner>,
     pub(super) destination: PathBuf,
     pub(super) _destination_custody: NativeAllocation,
 }
@@ -365,17 +365,26 @@ where
     /// Publishes and detaches, retaining the owner on any failure.
     pub async fn unmount(&self) -> Result<(), MountLifecycleError> {
         self.sync().await?;
-        self.prepare_unmount_cleanup()?;
-        self.retire(&crate::CancellationToken::new())?.into_result()
+        let source = Arc::clone(&self.source);
+        self.session
+            .run(move |session| {
+                Self::prepare_session_cleanup(session)?;
+                Self::retire_session(session, &source, &crate::CancellationToken::new())?
+                    .into_result()
+            })
+            .await
     }
 
     /// Prepares namespace cleanup while every route's publication owner is live.
     /// Publish all routes before calling this; retire only after every preparation succeeds.
     pub fn prepare_unmount_cleanup(&self) -> Result<(), MountLifecycleError> {
+        Self::prepare_session_cleanup(&self.session)
+    }
+
+    fn prepare_session_cleanup(_session: &SessionOwner) -> Result<(), MountLifecycleError> {
         #[cfg(windows)]
         {
-            let mut owner = self
-                .session
+            let mut owner = _session
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(session) = owner.as_mut() {
@@ -390,8 +399,15 @@ where
         &self,
         wait: &crate::CancellationToken,
     ) -> Result<NativeMountDrainProof, MountLifecycleError> {
-        let mut owner = self
-            .session
+        Self::retire_session(&self.session, &self.source, wait)
+    }
+
+    fn retire_session(
+        session: &SessionOwner,
+        source: &Arc<LazyMountSource<A, O, D, S>>,
+        wait: &crate::CancellationToken,
+    ) -> Result<NativeMountDrainProof, MountLifecycleError> {
+        let mut owner = session
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let result = (|| {
@@ -403,13 +419,13 @@ where
                     return Err(NativeMountError::ControlPending.into());
                 }
             } else {
-                self.source.cancel_with_cleanup_wait(wait)?;
+                source.cancel_with_cleanup_wait(wait)?;
             }
-            if !self.source.physically_retired()? {
+            if !source.physically_retired()? {
                 return Err(NativeMountError::ControlPending.into());
             }
             let proof = NativeMountDrainProof {
-                _source: self.source.clone(),
+                _source: source.clone(),
                 failures: owner
                     .as_mut()
                     .and_then(NativeMountSession::take_retired_failures)

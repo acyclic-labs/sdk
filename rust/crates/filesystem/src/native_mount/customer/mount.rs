@@ -4,10 +4,9 @@ use super::*;
 /// One process-owned customer mount over a canonical workspace checkout.
 pub struct Mount<A: 'static, O: 'static> {
     pub(crate) source: Arc<CheckoutMountSource<A, O>>,
-    pub(crate) session: Mutex<Option<NativeMountSession>>,
+    pub(crate) session: Arc<SessionOwner>,
     pub(crate) destination: PathBuf,
     pub(super) _destination_custody: NativeAllocation,
-    pub(super) retiring: std::sync::atomic::AtomicBool,
 }
 
 impl<A, O> Mount<A, O> {
@@ -20,7 +19,13 @@ impl<A, O> Mount<A, O> {
     /// Retirement has started; the existing cleanup owner must finish before reuse.
     #[must_use]
     pub fn is_retiring(&self) -> bool {
-        self.retiring.load(std::sync::atomic::Ordering::Acquire)
+        self.session.is_retiring()
+    }
+
+    /// Physical retirement has completed and no session remains to detach.
+    #[must_use]
+    pub fn is_retired(&self) -> bool {
+        self.session.is_retired()
     }
 }
 
@@ -75,13 +80,12 @@ where
     /// The filesystem owns both destination cleanup and namespace-fence release.
     pub async fn complete_command(&self, retire: bool) -> Result<(), MountLifecycleError> {
         if self.is_retiring() {
-            return self.detach();
+            return self.detach_async(false).await;
         }
         self.sync().await?;
         self.advance_to_head().await?;
         if retire {
-            self.prepare_command_cleanup()?;
-            self.detach()?;
+            self.detach_async(true).await?;
         }
         Ok(())
     }
@@ -89,10 +93,10 @@ where
     /// Publishes pending effects and detaches the native namespace exactly once.
     pub async fn unmount(&self) -> Result<(), MountLifecycleError> {
         if self.is_retiring() {
-            return self.detach();
+            return self.detach_async(false).await;
         }
         self.sync().await?;
-        self.detach()
+        self.detach_async(false).await
     }
 
     /// Detaches and cancels this mount without publishing pending callbacks.
@@ -106,6 +110,26 @@ where
             self.prepare_command_cleanup()?;
         }
         self.detach()
+    }
+
+    /// Retires an unverified command without blocking its async runtime.
+    /// Cancellation drops only the observer; the physical owner keeps retiring.
+    pub async fn abandon_command_async(&self) -> Result<(), MountLifecycleError> {
+        self.detach_async(true).await
+    }
+
+    async fn detach_async(&self, command: bool) -> Result<(), MountLifecycleError> {
+        #[cfg(all(test, not(loom)))]
+        super::command_tests::record("detach");
+        let source = Arc::clone(&self.source);
+        self.session
+            .run(move |session| {
+                if command && !session.is_retiring() {
+                    prepare_destination_cleanup(session, source.as_ref())?;
+                }
+                Self::detach_session(session, source.as_ref())
+            })
+            .await
     }
 
     fn prepare_command_cleanup(&self) -> Result<(), MountLifecycleError> {
@@ -124,22 +148,30 @@ where
     pub(crate) fn detach(&self) -> Result<(), MountLifecycleError> {
         #[cfg(all(test, not(loom)))]
         super::command_tests::record("detach");
-        let mut owner = match self.session.lock() {
+        Self::detach_session(&self.session, self.source.as_ref())
+    }
+
+    fn detach_session(
+        session: &SessionOwner,
+        source: &CheckoutMountSource<A, O>,
+    ) -> Result<(), MountLifecycleError> {
+        let mut owner = match session.lock() {
             Ok(owner) => owner,
             Err(poisoned) => poisoned.into_inner(),
         };
-        let Some(session) = owner.as_mut() else {
+        let Some(native) = owner.as_mut() else {
+            session.finish_retirement();
             return Ok(());
         };
         let wait = crate::CancellationToken::new();
         let cleanup = super::super::session::NativeSessionStopWork::AcceptedWait(&wait);
         #[cfg(windows)]
-        session.prepare_projection_cleanup()?;
-        self.retiring
-            .store(true, std::sync::atomic::Ordering::Release);
-        session.stop_with_context(&cleanup)?;
+        native.prepare_projection_cleanup()?;
+        session.begin_retirement();
+        native.stop_with_context(&cleanup)?;
         owner.take();
-        self.source.cancel();
+        source.cancel();
+        session.finish_retirement();
         Ok(())
     }
 }
@@ -227,6 +259,7 @@ where
         let options = options.native_context(&work, guard, original.as_ref());
         let source = self.native_source(&options).await?;
         let session_destination = work.path(&destination, None)?;
+        let owner = SessionOwner::new(&work)?;
         let prepared = super::super::prepare_native_mount_start(&work)
             .map_err(NativeMountError::from)?
             .with_view_destination(issued);
@@ -242,12 +275,14 @@ where
             &work,
             Some(session_destination.1),
         )?;
+        *owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(session);
         Ok(Mount {
             source,
-            session: Mutex::new(Some(session)),
+            session: owner,
             destination,
             _destination_custody: destination_custody,
-            retiring: std::sync::atomic::AtomicBool::new(false),
         })
     }
 }

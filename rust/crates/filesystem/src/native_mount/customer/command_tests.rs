@@ -51,10 +51,9 @@ async fn publish_command(
         .await?;
     let mount = Mount {
         source: working.source.clone(),
-        session: Mutex::new(None),
+        session: SessionOwner::new(&work)?,
         destination: destination.path().to_owned(),
         _destination_custody: work.path(destination.path(), None)?.1,
-        retiring: std::sync::atomic::AtomicBool::new(false),
     };
     let path = {
         #[cfg(unix)]
@@ -122,6 +121,41 @@ async fn command_completion_publishes_once_with_an_independent_duplicate_sync_co
 #[tokio::test]
 async fn view_completion_unmount_and_abandon_retire_only_their_view()
 -> Result<(), Box<dyn std::error::Error>> {
+    view_retirement(None).await?;
+    for seeded in [false, true] {
+        let (schedule, mut boundaries) = if seeded {
+            acyclic_native_runtime::testing::Schedule::seeded(17)
+        } else {
+            acyclic_native_runtime::testing::Schedule::new()
+        };
+        let driver = async {
+            while let Some(boundary) = boundaries.recv().await {
+                boundary.release();
+            }
+        };
+        tokio::select! {
+            result = view_retirement(Some(&schedule)) => result?,
+            () = driver => panic!("native retirement lost its boundary producer"),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn retirement_scope<T>(
+    schedule: Option<&acyclic_native_runtime::testing::Schedule>,
+    retirement: impl Future<Output = T>,
+) -> T {
+    match schedule {
+        Some(schedule) => schedule.scope(retirement).await,
+        None => retirement.await,
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn view_retirement(
+    schedule: Option<&acyclic_native_runtime::testing::Schedule>,
+) -> Result<(), Box<dyn std::error::Error>> {
     crate::initialize_native_mount_services()?;
     let cancellation = crate::CancellationToken::new();
     let work = test_work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
@@ -170,7 +204,7 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
         driver.prepare_destination_cleanup(completed.path(), &work)?;
         assert!(completed.path().exists());
     }
-    completed.complete_command(true).await?;
+    retirement_scope(schedule, completed.complete_command(true)).await?;
     assert!(!completed.path().exists());
     assert_eq!(
         workspace
@@ -187,8 +221,34 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
     let abandoned = workspace.mount_view(options.clone()).await?;
     assert_eq!(retained.path().parent(), abandoned.path().parent());
     std::fs::write(abandoned.path().join("result.txt"), b"unverified")?;
-    abandoned.abandon_command()?;
-    assert!(!abandoned.path().exists());
+    let abandoned_path = abandoned.path().to_owned();
+    if let Some(schedule) = schedule {
+        schedule
+            .scope(async {
+                // An unsubmitted future is the negative control for admission. Once
+                // accepted, losing both observer and customer must not lose retirement.
+                drop(abandoned.abandon_command_async());
+                assert!(abandoned_path.exists());
+                let owner = Arc::downgrade(&abandoned.session);
+                let mut observer = Box::pin(abandoned.abandon_command_async());
+                assert!(futures::poll!(&mut observer).is_pending());
+                drop(observer);
+                drop(abandoned);
+                assert!(
+                    owner.upgrade().is_some(),
+                    "accepted retirement lost its owner"
+                );
+                schedule.drained().await;
+                assert!(
+                    owner.upgrade().is_none(),
+                    "completed retirement retained its owner"
+                );
+            })
+            .await;
+    } else {
+        abandoned.abandon_command_async().await?;
+    }
+    assert!(!abandoned_path.exists());
     assert_eq!(
         workspace
             .read("/result.txt", 64, &work, &cancellation)
@@ -203,9 +263,9 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
     let unmounted = workspace.mount_view(options).await?;
     assert_eq!(retained.path().parent(), unmounted.path().parent());
     assert!(unmounted.path().is_dir());
-    unmounted.unmount().await?;
+    retirement_scope(schedule, unmounted.unmount()).await?;
     assert!(!unmounted.path().exists());
-    retained.abandon_command()?;
+    retirement_scope(schedule, retained.abandon_command_async()).await?;
     assert!(!retained.path().exists());
     Ok(())
 }

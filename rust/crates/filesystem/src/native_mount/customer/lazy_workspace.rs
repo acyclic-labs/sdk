@@ -142,15 +142,19 @@ where
                 }
             },
         );
+        let owner = SessionOwner::new(work)?;
         let session = prepared.start(
             request,
             source.clone() as Arc<dyn MountFilesystem>,
             work,
             Some(session_destination.1),
         )?;
+        *owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(session);
         Ok(LazyMount {
             source,
-            session: Mutex::new(Some(session)),
+            session: owner,
             destination,
             _destination_custody: destination_custody,
         })

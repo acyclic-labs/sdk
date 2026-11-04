@@ -4,7 +4,7 @@ use crate::sync::SyncMutex;
 use crate::sync::owned::{OwnedMutexGuard, lock_owned};
 
 pub(in crate::local) struct Native {
-    mount: acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>,
+    mount: Option<acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>>,
     discard: bool,
     binding: Option<(PathBuf, PathBuf)>,
 }
@@ -12,21 +12,38 @@ pub(in crate::local) struct Native {
 impl std::ops::Deref for Native {
     type Target = acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>;
     fn deref(&self) -> &Self::Target {
-        &self.mount
+        self.mount
+            .as_ref()
+            .expect("native mount is present until retirement transfers it")
     }
 }
 
 impl Drop for Native {
     fn drop(&mut self) {
-        // Keep callbacks and the destination fence inside the last owner.
-        if let Err(error) = self.mount.abandon() {
-            tracing::error!(?error, "workspace mount retirement failed");
+        let Some(mount) = self.mount.take() else {
+            return;
+        };
+        let binding = self.binding.take();
+        let unlink = move || {
+            if let Some((destination, view)) = binding
+                && let Err(error) = volumes::unlink_binding(&destination, &view)
+            {
+                tracing::error!(?error, "volume binding retirement failed");
+            }
+        };
+        if mount.is_retired() {
+            unlink();
+            return;
         }
-        if let Some((destination, view)) = &self.binding
-            && let Err(error) = volumes::unlink_binding(destination, view)
-        {
-            tracing::error!(?error, "volume binding retirement failed");
-        }
+        // The worker retains callbacks, destination custody and alias cleanup
+        // through physical retirement, including cancellation of the caller.
+        drop(acyclic_native_runtime::spawn_blocking(move || {
+            if let Err(error) = mount.abandon() {
+                tracing::error!(?error, "workspace mount retirement failed");
+                return;
+            }
+            unlink();
+        }));
     }
 }
 
@@ -133,7 +150,7 @@ impl MountedVolume {
                 .map_err(Error::from)?;
             let path = mount.path().to_path_buf();
             let mut native = Native {
-                mount,
+                mount: Some(mount),
                 discard: false,
                 binding: None,
             };
@@ -170,7 +187,7 @@ impl MountedVolume {
         let mut slot = self.native().await;
         if let Some(native) = slot.as_ref() {
             if native.discard {
-                native.abandon_command()?;
+                native.abandon_command_async().await?;
             } else if native.is_retiring() {
                 native.complete_command(true).await?;
             } else {
@@ -192,7 +209,7 @@ impl MountedVolume {
                 // Retain this decision if physical retirement fails. A later
                 // entry must retry abandonment before exposing this projection.
                 native.discard = true;
-                native.abandon_command()?;
+                native.abandon_command_async().await?;
             }
             *slot = None;
             Ok(())
@@ -220,7 +237,7 @@ impl MountedVolume {
     async fn publish_locked(&self, slot: &mut Option<Native>, retire: bool) -> Result<()> {
         if let Some(native) = slot.as_ref() {
             if native.discard {
-                native.abandon_command()?;
+                native.abandon_command_async().await?;
             } else {
                 native.complete_command(retire).await?;
             }

@@ -1,6 +1,70 @@
 use super::super::session::NativeSessionControl;
 use super::*;
 
+/// The original session stays owned until an accepted physical control finishes,
+/// even when its async observer is cancelled.
+pub(crate) struct SessionOwner {
+    session: Mutex<Option<NativeMountSession>>,
+    state: std::sync::atomic::AtomicU8,
+    allocation: NativeAllocation,
+}
+
+impl SessionOwner {
+    const ACTIVE: u8 = 0;
+    const RETIRING: u8 = 1;
+    const RETIRED: u8 = 2;
+
+    pub(super) fn new(work: &NativeMaterializationWork) -> Result<Arc<Self>, MountLifecycleError> {
+        let allocation = work.claim(
+            (std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64,
+            1,
+            crate::WorkCounters::UNCHARGED,
+        )?;
+        Ok(Arc::new(Self {
+            session: Mutex::new(None),
+            state: std::sync::atomic::AtomicU8::new(Self::ACTIVE),
+            allocation,
+        }))
+    }
+
+    pub(super) fn is_retiring(&self) -> bool {
+        self.state.load(std::sync::atomic::Ordering::Acquire) != Self::ACTIVE
+    }
+
+    pub(super) fn is_retired(&self) -> bool {
+        self.state.load(std::sync::atomic::Ordering::Acquire) == Self::RETIRED
+    }
+
+    pub(super) fn begin_retirement(&self) {
+        self.state
+            .store(Self::RETIRING, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(super) fn finish_retirement(&self) {
+        self.state
+            .store(Self::RETIRED, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(super) async fn run<T: Send + 'static>(
+        self: &Arc<Self>,
+        operation: impl FnOnce(&Self) -> Result<T, MountLifecycleError> + Send + 'static,
+    ) -> Result<T, MountLifecycleError> {
+        let owner = Arc::clone(self);
+        let work = self.allocation.work().clone();
+        acyclic_native_runtime::spawn_blocking(move || operation(&owner))
+            .await
+            .map_err(|cause| NativeMountError::from(work.runtime_error(cause)))?
+    }
+}
+
+impl std::ops::Deref for SessionOwner {
+    type Target = Mutex<Option<NativeMountSession>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.session
+    }
+}
+
 /// Runs one session control on the source's original meter, which its
 /// callbacks share. A control on any other meter cannot run the invalidator,
 /// so it could never see its changes settle.
@@ -132,9 +196,7 @@ pub(in crate::native_mount) async fn with_live_session_async(
     control: NativeSessionControl,
 ) -> Result<(), MountLifecycleError> {
     let completion = {
-        let owner = session
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let owner = try_session(session)?;
         owner
             .as_ref()
             .map(|session| session.start_control(work, control))
@@ -155,9 +217,7 @@ pub(in crate::native_mount) async fn with_session_work_async(
     control: NativeSessionControl,
 ) -> Result<(), MountLifecycleError> {
     let completion = {
-        let owner = session
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let owner = try_session(session)?;
         if let Some(session) = owner.as_ref() {
             let work = source
                 .native_original_work()?
@@ -177,4 +237,16 @@ pub(in crate::native_mount) async fn with_session_work_async(
             .map_err(|cause| NativeMountError::from(work.runtime_error(cause)))??;
     }
     Ok(())
+}
+
+// A cancelled observer may leave physical retirement holding this lock. Async
+// controls must disclose that owner instead of blocking its runtime worker.
+fn try_session(
+    session: &Mutex<Option<NativeMountSession>>,
+) -> Result<std::sync::MutexGuard<'_, Option<NativeMountSession>>, MountLifecycleError> {
+    match session.try_lock() {
+        Ok(owner) => Ok(owner),
+        Err(std::sync::TryLockError::Poisoned(error)) => Ok(error.into_inner()),
+        Err(std::sync::TryLockError::WouldBlock) => Err(NativeMountError::ControlPending.into()),
+    }
 }

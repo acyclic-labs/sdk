@@ -113,9 +113,13 @@ async fn retired_mount_proof_preserves_both_terminal_causes_on_every_os()
     };
     session.retained_source = Some(source.clone());
     assert!(session.take_retired_failures().is_none());
+    let owner = SessionOwner::new(&work)?;
+    *owner
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(session);
     let mount = LazyMount {
         source,
-        session: Mutex::new(Some(session)),
+        session: owner,
         destination: root.path().join("retired-mount"),
         _destination_custody: work.path(root.path(), None)?.1,
     };
