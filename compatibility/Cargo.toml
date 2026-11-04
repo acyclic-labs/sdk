@@ -13,6 +13,7 @@ include = ["Cargo.toml", "src/**", "proto/**", "descriptors/*.bin", "frames/*.he
 acyclic-auth-action = { version = "=0.2.0", path = "../rust/crates/auth-action" }
 prost.workspace = true
 prost-reflect.workspace = true
+serde_json.workspace = true
 protoc-bin-vendored.workspace = true
 tonic-prost-build.workspace = true
 

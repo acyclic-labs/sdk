@@ -6,6 +6,12 @@
 
 /// Shared canonical account-relative resource addressing.
 pub use acyclic_auth::addressing;
+/// Compiler-linked public method admission.
+pub mod authorization {
+    use acyclic_auth::action as auth_action;
+    include!(concat!(env!("OUT_DIR"), "/authorization.rs"));
+}
+pub use authorization::{AUTHORIZATION, MachinesMethod};
 /// Shared source and inherited-state metadata for every fork.
 pub use acyclic_stream::Provenance;
 use async_trait::async_trait;

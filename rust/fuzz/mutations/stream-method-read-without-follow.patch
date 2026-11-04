@@ -1,0 +1,11 @@
+diff --git a/rust/crates/stream/src/authorization.rs b/rust/crates/stream/src/authorization.rs
+--- a/rust/crates/stream/src/authorization.rs
++++ b/rust/crates/stream/src/authorization.rs
+@@ -74,7 +74,7 @@
+ methods! {
+     /// Read a bounded range through Session Follow.
+-    Read => FOLLOW, Follow;
++    Read => rpc::StreamRpc::Read.authorization(), Follow;
+     /// Subscribe to future records.
+     Follow => FOLLOW, Follow;
+     /// Seek through the same bounded Session Follow.

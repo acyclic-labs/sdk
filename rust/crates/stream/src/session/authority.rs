@@ -3,6 +3,7 @@
 #[path = "testing.rs"]
 pub mod testing;
 use super::*;
+use crate::StreamMethod;
 use acyclic_auth::{
     authority::{PolicyDecision, Request, Scope, Target},
     trust::{ChangeSource, Changed, SourceClosed},
@@ -230,10 +231,10 @@ impl Authority {
             .2
             .as_ref()
             .map_err(|error| *error)?;
-        let action = binding
-            .resource_authorization
-            .as_ref()
-            .map_or("streams/follow", |authorization| authorization.action);
+        let action = binding.resource_authorization.as_ref().map_or(
+            crate::authorization::FOLLOW_ACTION.as_str(),
+            |authorization| authorization.action,
+        );
         let target = binding
             .resource
             .as_deref()
@@ -339,7 +340,7 @@ impl Authority {
             credential_revision: slots.entries.get(&slot).ok_or(Rejection::Forbidden)?.0,
             slot,
             resource: Some(stream_resource(Some(path))),
-            scope: Scope::Follow,
+            scope: StreamMethod::Follow.authorization().scope,
             requested,
             filter_digest: [0; 32],
             resource_authorization: None,
@@ -368,7 +369,7 @@ impl Authority {
             credential_revision: *revision,
             slot,
             resource: Some(resource),
-            scope: Scope::ResourceFollow,
+            scope: StreamMethod::FollowResource.authorization().scope,
             requested,
             filter_digest: [0; 32],
             resource_authorization: Some(authorization.clone()),
@@ -454,12 +455,17 @@ impl Authority {
         let resource = stream_resource(parent);
         let mut authorization =
             ResourceAuthorization::new(Arc::clone(self), resource.clone(), Arc::clone(capability));
-        authorization.action = "streams/list";
+        authorization.action = StreamMethod::ChildrenPage
+            .authorization()
+            .admitted
+            .first()
+            .ok_or(Rejection::Unavailable)?
+            .as_str();
         let mut binding = Binding {
             credential_revision: *revision,
             slot,
             resource: Some(resource),
-            scope: Scope::Children,
+            scope: StreamMethod::ChildrenPage.authorization().scope,
             requested: wire::SessionFilter::default(),
             filter_digest: [0; 32],
             resource_authorization: Some(authorization.clone()),
@@ -507,7 +513,12 @@ impl Authority {
                 resource.clone(),
                 Arc::clone(capability),
             );
-            authorization.action = "streams/read";
+            authorization.action = StreamMethod::Head
+                .authorization()
+                .admitted
+                .first()
+                .ok_or(Rejection::Unavailable)?
+                .as_str();
             let binding = Binding {
                 credential_revision: *revision,
                 slot,
@@ -520,13 +531,19 @@ impl Authority {
             };
             (binding, authorization, None)
         };
+        let read_action = StreamMethod::Head
+            .authorization()
+            .admitted
+            .first()
+            .ok_or(Rejection::Unavailable)?
+            .as_str();
         binding.additional = request
             .paths
             .iter()
             .chain(request.retained.iter().map(|selected| &selected.path))
             // Without a child page, the primary binding already checks path one.
             .skip(usize::from(request.children.is_none()))
-            .map(|path| ("streams/read", stream_resource(Some(path))))
+            .map(|path| (read_action, stream_resource(Some(path))))
             .collect();
         if visibility.is_some() {
             // bind_list already derived this immutable filter. Recheck the

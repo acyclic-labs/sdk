@@ -5,6 +5,19 @@ acyclic_test_support::counting_allocator!();
 /// Shared canonical account-relative resource addressing.
 pub use acyclic_auth::addressing;
 
+/// Compiler-linked public method admission.
+pub mod authorization {
+    use acyclic_auth::action as auth_action;
+    include!(concat!(env!("OUT_DIR"), "/authorization.rs"));
+}
+pub use authorization::{AUTHORIZATION, ActorsMethod};
+
+/// Worker methods served by the same canonical Actors service.
+pub mod workers_authorization {
+    use acyclic_auth::action as auth_action;
+    include!(concat!(env!("OUT_DIR"), "/workers_authorization.rs"));
+}
+
 /// Rust-owned semantic projections for generated SDK metadata.
 pub use contract::{
     ContractError, domain, validate_add_subscription, validate_delete, validate_deployment,

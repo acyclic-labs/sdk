@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 mod authorization;
 mod descriptor;
+mod method;
 pub use descriptor::canonicalize;
+pub use method::{authorization, product_authorization, typescript_authorization, write_authorization};
 
 pub use tonic_prost_build::{Builder, Config};
 

@@ -8,6 +8,12 @@ import { workspaceManifests } from "./package-closure.mjs";
 // targets it reads as [package, kind, name] and renders their stdout into
 // repository-relative files.
 const availableModules = [
+  "generate-stream-authorization.mjs",
+  "generate-objects-authorization.mjs",
+  "generate-actors-authorization.mjs",
+  "generate-machines-authorization.mjs",
+  "generate-workers-authorization.mjs",
+  "generate-filesystem-authorization.mjs",
   "generate-actors-routes.mjs",
   "generate-actors-rpc-inventory.mjs",
   "generate-stream-rpc-inventory.mjs",

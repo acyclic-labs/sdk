@@ -1,6 +1,13 @@
 #![deny(unsafe_code)]
 //! Filesystem wire messages, services and canonical protocol descriptor.
 
+/// Compiler-linked public method admission, independent of the filesystem engine.
+pub mod authorization {
+    use acyclic_auth_action as auth_action;
+    include!(concat!(env!("OUT_DIR"), "/authorization.rs"));
+}
+pub use authorization::{AUTHORIZATION, FsMethod};
+
 /// Generated public gRPC schema and client/server bindings.
 #[allow(
     missing_docs,

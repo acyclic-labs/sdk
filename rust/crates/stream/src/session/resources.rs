@@ -27,7 +27,7 @@ impl ResourceAuthorization {
                 prefix: true,
             }),
             capability: Arc::new(std::sync::Mutex::new(capability)),
-            action: "fs/list",
+            action: crate::authorization::RESOURCE_FOLLOW_ACTION.as_str(),
         }
     }
     /// The channel's current credential; `renew` replaces it in place.
@@ -137,7 +137,11 @@ impl ResourceAuthorization {
                     GrantKind::Filesystem(grant) => &grant.grant,
                     GrantKind::WebsocketConnect(_) => continue,
                 };
-                if !resource.actions.iter().any(|action| action == "fs/list") {
+                if !resource
+                    .actions
+                    .iter()
+                    .any(|action| action == crate::authorization::RESOURCE_FOLLOW_ACTION.as_str())
+                {
                     continue;
                 }
                 if resource.resource.prefix
