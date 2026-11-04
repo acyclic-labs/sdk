@@ -310,6 +310,11 @@ fn original_root_factory_keeps_completed_copy_and_retires_buffers_on_unwind()
     let original =
         crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, _)| cause)?;
+    let initial_live = original.live_allocation_bytes();
+    let held = crate::kernel::allocation::retained::Retained::<Vec<u8>>::allocate(
+        4096,
+        &mut KernelAccounting::native(&original, &cancellation),
+    )?;
     let baseline = original.live_allocation_bytes();
     let before = original.receipt();
     let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -350,6 +355,9 @@ fn original_root_factory_keeps_completed_copy_and_retires_buffers_on_unwind()
         Err(crate::FsError::Cancelled(_))
     ));
     assert_eq!(original.receipt(), before);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    drop(held);
+    assert_eq!(original.live_allocation_bytes(), initial_live);
     Ok(())
 }
 
