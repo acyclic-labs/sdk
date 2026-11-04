@@ -8,6 +8,29 @@ pub(crate) struct AuthorityScope<'w, 'a> {
     previous_request: Option<crate::NativeAllocation>,
 }
 
+impl AuthorityScope<'_, '_> {
+    /// Transfers already admitted output to the caller's scratch. The scope
+    /// retires temporary backing, without re-admission or a receipt merge.
+    pub(crate) fn finish_owned<T>(
+        self,
+        owned: crate::kernel::Owned<T>,
+    ) -> Result<crate::kernel::Owned<T>, crate::FsError> {
+        if !self.work.is_native() {
+            let Some(retained) = self.work.scratch_floor.checked_add(owned.bytes) else {
+                drop(owned);
+                return Err(crate::WorkError::Overflow.into());
+            };
+            if retained > self.work.allocations.scratch_bytes() {
+                drop(owned);
+                return Err(crate::kernel::allocation::AllocationError::ReleaseInvariant
+                    .into_work_or(crate::FsError::PendingMutationAllocationFailed));
+            }
+            self.work.scratch_floor = retained;
+        }
+        Ok(owned)
+    }
+}
+
 impl<'a> AuthorityWork<'a> {
     pub(crate) fn scope(&mut self) -> Result<AuthorityScope<'_, 'a>, AuthorityStoreError> {
         self.check()?;

@@ -1,19 +1,18 @@
 use super::*;
 
-pub(crate) struct StandaloneProofState {
-    allocations: crate::kernel::allocation::AllocationLedger,
-    work: WorkCounters,
-    budget: WorkBudget,
-}
-
+#[cfg(test)]
 pub(super) fn proof_standalone_control_bytes() -> u64 {
-    usize_to_u64(size_of::<std::sync::Mutex<StandaloneProofState>>() + 2 * size_of::<usize>())
+    let cancellation = CancellationToken::new();
+    ProofMeter::standalone(WorkBudget::UNBOUNDED, &cancellation)
+        .unwrap_or_else(|_| unreachable!("unbounded proof meter admission"))
+        .work()
+        .peak_allocation_bytes
 }
 
 #[derive(Clone)]
 pub(crate) enum ProofMeter<'a> {
     Standalone {
-        state: std::sync::Arc<std::sync::Mutex<StandaloneProofState>>,
+        state: RetainedArc<futures::lock::Mutex<crate::kernel::allocation::KernelAccounting<'a>>>,
         cancellation: &'a CancellationToken,
     },
     #[cfg(not(target_arch = "wasm32"))]
@@ -28,18 +27,28 @@ impl<'a> ProofMeter<'a> {
         budget: WorkBudget,
         cancellation: &'a CancellationToken,
     ) -> Result<Self, crate::FsError> {
-        cancellation.check()?;
-        let mut state = StandaloneProofState {
-            allocations: crate::kernel::allocation::AllocationLedger::default(),
-            work: WorkCounters::UNCHARGED,
+        Self::from_accounting(crate::kernel::allocation::KernelAccounting::standalone(
             budget,
-        };
-        state
-            .allocations
-            .claim_bytes(proof_standalone_control_bytes(), 1, &mut state.work, budget)
-            .map_err(proof_allocation_error)?;
+            cancellation,
+        ))
+    }
+
+    pub(crate) fn from_accounting(
+        mut accounting: crate::kernel::allocation::KernelAccounting<'a>,
+    ) -> Result<Self, crate::FsError> {
+        accounting.check()?;
+        let cancellation = accounting.cancellation();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let crate::kernel::allocation::KernelAccounting::NativeOriginal { work, .. } = accounting
+        {
+            return Ok(Self::Native {
+                original: work,
+                cancellation,
+            });
+        }
+        let admission = RetainedArc::admit(&mut accounting)?;
         Ok(Self::Standalone {
-            state: std::sync::Arc::new(std::sync::Mutex::new(state)),
+            state: admission.into_value(futures::lock::Mutex::new(accounting)),
             cancellation,
         })
     }
@@ -52,24 +61,11 @@ impl<'a> ProofMeter<'a> {
         ) -> Result<T, crate::FsError>,
     ) -> Result<T, crate::FsError> {
         match self {
-            Self::Standalone {
-                state,
-                cancellation,
-            } => {
-                let mut state = state.lock().map_err(|_| WorkError::Overflow)?;
-                let StandaloneProofState {
-                    allocations,
-                    work,
-                    budget,
-                } = &mut *state;
-                operation(
-                    &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(
-                        allocations,
-                        work,
-                        *budget,
-                        cancellation,
-                    ),
-                )
+            Self::Standalone { state, .. } => {
+                let mut accounting = state
+                    .try_lock()
+                    .ok_or(crate::FsError::AccountingHandoffActive)?;
+                operation(&mut accounting)
             }
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native {
@@ -91,23 +87,28 @@ impl<'a> ProofMeter<'a> {
             crate::FsError,
         >,
     ) -> Result<(T, ProofGuard), crate::FsError> {
-        let (value, allocation, bytes) = self.with_accounting(operation)?;
-        let guard = match (self, allocation) {
-            (Self::Standalone { state, .. }, _) => ProofGuard::Standalone {
-                state: state.clone(),
-                bytes,
-            },
-            #[cfg(not(target_arch = "wasm32"))]
-            (
-                Self::Native { .. },
-                crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(guard),
-            ) => ProofGuard::Native(guard),
-            #[cfg(not(target_arch = "wasm32"))]
-            (Self::Native { .. }, _) => {
-                return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
+        self.with_accounting(|accounting| {
+            let (value, allocation, bytes) = operation(accounting)?;
+            match allocation {
+                crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
+                    let retained = crate::kernel::allocation::retained::Retained::from_owned(
+                        crate::kernel::Owned::new(value, allocation, bytes),
+                        accounting,
+                    )?;
+                    Ok((
+                        retained.value,
+                        ProofGuard::Standalone {
+                            allocation: retained.allocation,
+                            bytes,
+                        },
+                    ))
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(guard) => {
+                    Ok((value, ProofGuard::Native(guard)))
+                }
             }
-        };
-        Ok((value, guard))
+        })
     }
 
     fn empty_guard(&self) -> Result<ProofGuard, crate::FsError> {
@@ -117,12 +118,12 @@ impl<'a> ProofMeter<'a> {
 
     pub(crate) fn work(&self) -> WorkCounters {
         match self {
-            Self::Standalone { state, .. } => {
-                state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .work
-            }
+            Self::Standalone { state, .. } => state
+                .try_lock()
+                .unwrap_or_else(|| {
+                    unreachable!("proof work is observed outside its accounting call")
+                })
+                .spent(),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { original, .. } => original.receipt(),
         }
@@ -160,24 +161,42 @@ impl<'a> ProofMeter<'a> {
                     .map_err(crate::kernel::file_read::read_store_error)?;
                 Ok((read, self.empty_guard()?))
             }
-            Self::Standalone { cancellation, .. } => {
+            Self::Standalone {
+                state,
+                cancellation,
+            } => {
                 cancellation.check()?;
-                let remaining = self.with_accounting(|accounting| accounting.remaining())?;
-                let mut work = crate::AuthorityWork::new(remaining, cancellation);
-                let result = store.read(object, maximum, &mut work).await;
-                self.owned(|accounting| {
-                    crate::kernel::file_read::accept_standalone_object_read(
-                        work.receipt(result),
-                        accounting,
-                    )
-                    .map(|(read, bytes)| {
-                        (
-                            read,
-                            crate::kernel::allocation::KernelOwnedAllocation::Standalone,
-                            bytes,
-                        )
-                    })
-                })
+                let mut accounting = state
+                    .try_lock()
+                    .ok_or(crate::FsError::AccountingHandoffActive)?;
+                let mut frame = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
+                let mut work = frame
+                    .scope()
+                    .map_err(crate::ObjectStoreError::from)
+                    .map_err(crate::kernel::file_read::read_store_error)?;
+                let read = store
+                    .read(object, maximum, &mut work)
+                    .await
+                    .map_err(crate::kernel::file_read::read_store_error)?;
+                let bytes = match read.retention {
+                    crate::storage::ObjectReadRetention::Shared => 0,
+                    crate::storage::ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
+                };
+                let retained = crate::kernel::allocation::retained::Retained::from_owned(
+                    crate::kernel::Owned::new(
+                        read,
+                        crate::kernel::allocation::KernelOwnedAllocation::Standalone,
+                        bytes,
+                    ),
+                    &mut work.accounting(),
+                )?;
+                Ok((
+                    retained.value,
+                    ProofGuard::Standalone {
+                        allocation: retained.allocation,
+                        bytes,
+                    },
+                ))
             }
         }
     }
@@ -212,12 +231,6 @@ impl<'a> ProofMeter<'a> {
     }
 }
 
-fn proof_allocation_error(error: crate::kernel::allocation::AllocationError) -> crate::FsError {
-    error.into_work_or(crate::FsError::Decode(
-        crate::kernel::CanonicalDecodeError::AllocationFailed,
-    ))
-}
-
 fn proof_capacity_bytes<T>(capacity: usize) -> Result<u64, crate::FsError> {
     capacity
         .checked_mul(size_of::<T>())
@@ -227,7 +240,7 @@ fn proof_capacity_bytes<T>(capacity: usize) -> Result<u64, crate::FsError> {
 
 pub(crate) enum ProofGuard {
     Standalone {
-        state: std::sync::Arc<std::sync::Mutex<StandaloneProofState>>,
+        allocation: crate::kernel::allocation::retained::RetainedAllocation,
         bytes: u64,
     },
     #[cfg(not(target_arch = "wasm32"))]
@@ -235,17 +248,9 @@ pub(crate) enum ProofGuard {
 }
 
 impl ProofGuard {
-    // A retained standalone result also keeps this proof's shared meter alive.
-    // Count its one admitted Arc body, never the original native root state.
-    #[allow(
-        clippy::expect_used,
-        reason = "These guards retire only the allocation bytes admitted by their constructors."
-    )]
     pub(crate) fn retained_bytes(&self) -> u64 {
         match self {
-            ProofGuard::Standalone { bytes, .. } => bytes
-                .checked_add(proof_standalone_control_bytes())
-                .expect("retained proof control ownership invariant"),
+            ProofGuard::Standalone { bytes, .. } => *bytes,
             #[cfg(not(target_arch = "wasm32"))]
             ProofGuard::Native(guard) => guard.bytes(),
         }
@@ -254,13 +259,15 @@ impl ProofGuard {
     pub(super) fn absorb(&mut self, incoming: &mut Self) -> Result<(), crate::FsError> {
         match (self, incoming) {
             (
-                ProofGuard::Standalone { state, bytes },
+                ProofGuard::Standalone { allocation, bytes },
                 ProofGuard::Standalone {
-                    state: source,
+                    allocation: source,
                     bytes: added,
                 },
-            ) if std::sync::Arc::ptr_eq(state, source) => {
-                *bytes = bytes.checked_add(*added).ok_or(WorkError::Overflow)?;
+            ) => {
+                let total = bytes.checked_add(*added).ok_or(WorkError::Overflow)?;
+                allocation.absorb(source)?;
+                *bytes = total;
                 *added = 0;
                 Ok(())
             }
@@ -279,29 +286,6 @@ impl ProofGuard {
             ProofGuard::Standalone { .. } => {
                 Err(crate::NativeTreeMaterializationError::InvalidLayout.into())
             }
-        }
-    }
-}
-
-impl Drop for ProofGuard {
-    #[allow(
-        clippy::expect_used,
-        reason = "These guards retire only the allocation bytes admitted by their constructors."
-    )]
-    fn drop(&mut self) {
-        match self {
-            Self::Standalone { state, bytes } => {
-                if *bytes != 0 {
-                    state
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .allocations
-                        .release(*bytes)
-                        .expect("proof allocation ownership invariant");
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Native(_) => {}
         }
     }
 }

@@ -7,7 +7,7 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
         after: ObjectId,
     ) -> Result<(crate::GenerationDiff, ProofGuard), crate::FsError> {
         let maximum = u32::try_from(self.limits.maximum_files).unwrap_or(u32::MAX);
-        let (diff, _allocation) = match &self.meter {
+        match &self.meter {
             #[cfg(not(target_arch = "wasm32"))]
             ProofMeter::Native {
                 original,
@@ -32,42 +32,42 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
                 };
                 return Ok((diff, ProofGuard::Native(allocation)));
             }
-            ProofMeter::Standalone { cancellation, .. } => {
-                let remaining = self
-                    .meter
-                    .with_accounting(|accounting| accounting.remaining())?;
-                let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
-                    remaining,
-                    cancellation,
-                );
-                let result = crate::kernel::diff_generation_file_tables(
+            ProofMeter::Standalone {
+                state,
+                cancellation,
+            } => {
+                let mut accounting = state
+                    .try_lock()
+                    .ok_or(crate::FsError::AccountingHandoffActive)?;
+                let mut frame = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
+                let mut work = frame
+                    .scope()
+                    .map_err(crate::ObjectStoreError::from)
+                    .map_err(crate::kernel::file_read::read_store_error)?;
+                let (diff, allocation) = crate::kernel::diff_generation_file_tables(
                     self.store,
                     before,
                     after,
                     maximum,
                     self.limits.decode,
-                    &mut accounting,
+                    &mut work.accounting(),
                     cancellation,
                 )
-                .await;
-                self.meter.with_accounting(|parent| {
-                    let (allocations, work, budget, _) = parent
-                        .standalone_parts()
-                        .ok_or(crate::FsError::HandleAllocationFailed)?;
-                    *work = work.with_backend(accounting.spent(), allocations.live_bytes())?;
-                    work.verify(budget)?;
-                    Ok(())
-                })?;
-                result?
+                .await?;
+                let bytes = diff.retained_bytes()?;
+                let retained = crate::kernel::allocation::retained::Retained::from_owned(
+                    crate::kernel::Owned::new(diff, allocation, bytes),
+                    &mut work.accounting(),
+                )?;
+                Ok((
+                    retained.value,
+                    ProofGuard::Standalone {
+                        allocation: retained.allocation,
+                        bytes,
+                    },
+                ))
             }
-        };
-        #[cfg(not(target_arch = "wasm32"))]
-        drop(_allocation);
-        let bytes = diff.retained_bytes()?;
-        self.meter.owned(|accounting| {
-            let allocation = accounting.claim_owned(bytes, 0)?;
-            Ok((diff, allocation, bytes))
-        })
+        }
     }
 
     pub(super) async fn prove_increment(

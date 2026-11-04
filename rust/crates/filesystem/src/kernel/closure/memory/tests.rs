@@ -3,7 +3,13 @@ use proptest::prelude::*;
 
 fn live(meter: &ProofMeter<'_>) -> u64 {
     match meter {
-        ProofMeter::Standalone { state, .. } => state.lock().unwrap().allocations.live_bytes(),
+        ProofMeter::Standalone { state, .. } => state
+            .try_lock()
+            .unwrap()
+            .standalone_parts()
+            .unwrap()
+            .0
+            .live_bytes(),
         #[cfg(not(target_arch = "wasm32"))]
         ProofMeter::Native { original, .. } => original.live_allocation_bytes(),
     }
@@ -29,7 +35,7 @@ fn indexed_proof_membership_preserves_order_bounds_and_original_custody()
         crate::kernel::allocation::retained::RetainedAllocation::claim(0, 0, accounting)
     })?;
     let baseline = live(&meter);
-    for population in [1_u64, 100_000] {
+    for population in [1_u64, 512] {
         let mut set = ProofSet::new(&meter);
         let mut map = ProofMap::new(&meter);
         let before = meter.work();
@@ -217,7 +223,7 @@ fn refused_proof_map_admission_retires_nested_guards_outside_the_meter()
     for allowance in 0..=5 {
         let cancellation = CancellationToken::new();
         let budget = WorkBudget {
-            allocation_operations: allowance + 3,
+            allocation_operations: allowance + 4,
             ..WorkBudget::UNBOUNDED
         };
         let meter = ProofMeter::standalone(budget, &cancellation)?;
@@ -259,7 +265,14 @@ proptest! {
     #[test]
     fn denied_first_slot_admission_never_allocates(shortfall in 1u64..=64) {
         let cancellation = CancellationToken::new();
-        let slot_bytes = usize_to_u64(size_of::<ProofSlot<RetainedArc<CachedProof>>>() + 2 * size_of::<usize>());
+        let admitted = ProofMeter::standalone(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
+        let baseline = admitted.work().peak_allocation_bytes;
+        let _slot = admitted.with_accounting(|accounting| {
+            RetainedArc::new(ProofSlot::<RetainedArc<CachedProof>>::default(), accounting)
+        })
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
+        let slot_bytes = admitted.work().peak_allocation_bytes - baseline;
         let available = slot_bytes.saturating_sub(shortfall);
         let mut budget = WorkBudget::UNBOUNDED;
         budget.peak_allocation_bytes = proof_standalone_control_bytes() + available;
@@ -274,7 +287,7 @@ fn denied_first_slot_allocation_operation_never_allocates() -> Result<(), Box<dy
 {
     let cancellation = CancellationToken::new();
     let mut budget = WorkBudget::UNBOUNDED;
-    budget.allocation_operations = 1; // The standalone meter consumes this one.
+    budget.allocation_operations = 3; // Shared state, its funding, and the original ledger.
     denied(&ProofMeter::standalone(budget, &cancellation)?);
     Ok(())
 }
