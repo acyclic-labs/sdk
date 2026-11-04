@@ -1,12 +1,9 @@
 //! Tool output is staged on the agent's private volume while the command runs.
 use super::*;
 use acyclic_native_runtime::ProcessOutput;
-use std::time::Duration;
 use tokio::sync::{Mutex, Notify, oneshot};
 
 mod writer;
-
-const OUTPUT_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Waits, from a native capture worker, for one output publication. It
 /// completes when the volume answers, never on a wall-clock deadline.
@@ -21,7 +18,7 @@ pub(super) struct Output {
     writer: Arc<Mutex<writer::Writer>>,
     ready: Arc<Notify>,
     stop: Option<oneshot::Sender<()>>,
-    timer: Option<acyclic_native_runtime::TaskHandle<()>>,
+    publisher: Option<acyclic_native_runtime::TaskHandle<()>>,
     tasks: acyclic_native_runtime::TaskSpawner,
     finished: bool,
     pub(super) health: Health,
@@ -89,7 +86,7 @@ impl Output {
         let health = Health::default();
         let (stop, stopped) = oneshot::channel();
         let tasks = acyclic_native_runtime::TaskSpawner::current();
-        let timer = tasks.spawn(flush_ready(
+        let publisher = tasks.spawn(flush_ready(
             writer.clone(),
             ready.clone(),
             health.clone(),
@@ -99,7 +96,7 @@ impl Output {
             writer,
             ready,
             stop: Some(stop),
-            timer: Some(timer),
+            publisher: Some(publisher),
             tasks,
             finished: false,
             health,
@@ -127,10 +124,10 @@ impl Output {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
-        if let Some(timer) = self.timer.take() {
-            timer.await.map_err(storage)?;
+        if let Some(publisher) = self.publisher.take() {
+            publisher.await.map_err(storage)?;
         }
-        // Joining the timer closes its last failure publication. A command
+        // Joining the publisher closes its last failure publication. A command
         // that ended before its wake was consumed cannot publish success.
         self.health.check().map_err(storage)?;
         self.writer.lock().await.finish(result).await?;
@@ -147,16 +144,16 @@ impl Drop for Output {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
-        let timer = self.timer.take();
+        let publisher = self.publisher.take();
         let writer = Arc::clone(&self.writer);
         // Capture owns Output until the physical worker has drained and reaped
         // its process tree. If the awaiting caller disappears, that worker's
         // final drop still stages the accepted bytes.
         self.tasks.spawn(async move {
-            if let Some(timer) = timer
-                && let Err(cause) = timer.await
+            if let Some(publisher) = publisher
+                && let Err(cause) = publisher.await
             {
-                tracing::error!(?cause, "tool output timer cleanup failed");
+                tracing::error!(?cause, "tool output publisher cleanup failed");
             }
             let mut writer = writer.lock().await;
             if let Err(cause) = writer.flush_pending().await {
@@ -177,14 +174,6 @@ async fn flush_ready(
             biased;
             _ = &mut stopped => return,
             () = ready.notified() => {},
-        }
-        if !writer.lock().await.pending() {
-            continue;
-        }
-        tokio::select! {
-            biased;
-            _ = &mut stopped => return,
-            () = tokio::time::sleep(OUTPUT_FLUSH_INTERVAL) => {},
         }
         let mut writer = writer.lock().await;
         if let Err(cause) = writer.flush_pending().await {
