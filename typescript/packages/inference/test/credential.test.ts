@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { create, toJsonString } from "@bufbuild/protobuf";
 import { CredentialCache, CredentialSnapshot, resolveCredential } from "@acyclic-labs/actors/credential";
 import {
-  HttpInferenceTransport, InferenceTransportError, InspectRunRequestSchema,
-  ListModelsResponseSchema, RunEventSchema, WatchRunRequestSchema,
+  HttpInferenceTransport, InferenceClient, InferenceTransportError, InspectRunRequestSchema,
+  ListModelsResponseSchema, RunEventSchema, RunTerminal, RunViewSchema, WatchRunRequestSchema,
 } from "../src/index.js";
 
 const endpoint = "https://inference.example";
@@ -232,6 +232,83 @@ test("cancelled credential resolution aborts its original producer before HTTP d
   expect(await result).toBeInstanceOf(Error);
   expect(stopped).toBe(true);
   expect(calls).toBe(0);
+});
+
+test.each([false, true].flatMap(final =>
+  (["credential", "headers", "body"] as const).map(cut => [final, cut] as const),
+))("result recovery cancels the original inspection (final=%s, cut=%s)", async (final, cut) => {
+  const id = new Uint8Array(16).fill(4);
+  // SDK-generated protobuf JSON exercises the shipped HTTP decoder and Rust
+  // watch contract. Only the scheduling cuts and loopback routing are injected.
+  const view = (completed: boolean) => toJsonString(RunViewSchema, create(RunViewSchema, {
+    runId: id, input: new Uint8Array(32).fill(1), model: "model",
+    ...(completed ? { result: { terminal: RunTerminal.COMPLETED } } : {}),
+  }));
+  const terminal = toJsonString(RunEventSchema, create(RunEventSchema, {
+    event: { case: "terminal", value: RunTerminal.COMPLETED },
+  }));
+  const admitted = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const parent = new AbortController();
+  let inspections = 0;
+  let watches = 0;
+  let original: AbortSignal | null | undefined;
+  let bodyCancelled = 0;
+  let bodyController: ReadableStreamDefaultController<Uint8Array> | undefined;
+  const selected = () => final ? watches === 1 : inspections === 0;
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+    if (new URL(request.url).pathname.endsWith("/watch")) {
+      watches += 1;
+      return new Response(terminal + "\n");
+    }
+    const held = selected();
+    inspections += 1;
+    if (held && cut === "headers") { admitted.resolve(); await release.promise; }
+    return new Response(view(!final || watches === 1));
+  } });
+  const fetcher = localFetch(server.url.origin);
+  const transport = new HttpInferenceTransport(endpoint, async signal => {
+    if (selected() && cut === "credential") {
+      original = signal;
+      const cancelled = Promise.withResolvers<void>();
+      const abort = () => cancelled.reject(signal?.reason);
+      signal?.addEventListener("abort", abort, { once: true });
+      admitted.resolve();
+      try { await Promise.race([release.promise, cancelled.promise]); }
+      finally { signal?.removeEventListener("abort", abort); }
+    }
+    return {};
+  }, async (input, init) => {
+    if (selected() && cut !== "credential") {
+      original = init?.signal;
+      if (cut === "body") {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) { bodyController = controller; },
+          pull() { admitted.resolve(); },
+          cancel() { bodyCancelled += 1; },
+        }, { highWaterMark: 0 });
+        return new Response(body);
+      }
+    }
+    return fetcher(input, init);
+  });
+  const result = rejected(new InferenceClient(transport).resultRun(id, parent.signal));
+  try {
+    await dispatched(admitted.promise, result);
+    parent.abort(new Error("original caller cancelled"));
+    expect(original?.aborted).toBe(true);
+    if (cut === "body") expect(bodyCancelled).toBe(1);
+    expect(await result).toBeInstanceOf(Error);
+    expect(watches).toBe(final ? 1 : 0);
+  } finally {
+    release.resolve();
+    if (bodyController && !bodyCancelled) {
+      bodyController.enqueue(new TextEncoder().encode(view(true)));
+      bodyController.close();
+    }
+    await result;
+    await server.stop(true);
+  }
 });
 
 test("authorization remains callable without erasing the transport's exact lease", async () => {

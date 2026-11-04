@@ -296,6 +296,7 @@ test("prepared requests preserve context, run, and warm identities", async () =>
 test("run recovery rejects substituted or malformed streams and observes an inclusive zero cursor", async () => {
   const id = runIdentity(4);
   let inspectCount = 0;
+  let watchCount = 0;
   const transport: InferenceTransport = {
     async listModels() { return create(ListModelsResponseSchema); }, async createContext() { return create(MutationReceiptSchema); },
     async inspectContext() { return create(ContextViewSchema); }, async mutateContext() { return create(MutationReceiptSchema); },
@@ -303,13 +304,15 @@ test("run recovery rejects substituted or malformed streams and observes an incl
     async renewWarm() { return create(WarmViewSchema); }, async releaseWarm() { return create(WarmViewSchema); },
     async generateRun() { return create(GenerateRunResponseSchema); },
     async inspectRun(request) { inspectCount += 1; return create(RunViewSchema, { runId: request.runId, input: revision(1), model: "model", lastSequence: 0n, ...(inspectCount > 1 ? { result: create(RunResultSchema, { terminal: RunTerminal.COMPLETED }) } : {}) }); },
-    async *watchRun(request) { expect(request.fromSequence).toBe(0n); yield create(RunEventSchema, { sequence: 0n, event: { case: "terminal", value: RunTerminal.COMPLETED } }); },
+    async *watchRun(request) { watchCount += 1; expect(request.fromSequence).toBe(0n); yield create(RunEventSchema, { sequence: 0n, event: { case: "terminal", value: RunTerminal.COMPLETED } }); },
     async cancelRun(request) { return create(RunViewSchema, { runId: request.runId, input: revision(1), model: "model" }); },
     async createEvaluation(request) { return evaluationView(request.identity!.requestId, request.spec!.specDigest); },
     async inspectEvaluation(request) { return evaluationView(request.evaluationId); },
   };
   const result = await new InferenceClient(transport).resultRun(runId(id));
   expect(result.terminal).toBe("completed");
+  expect(inspectCount).toBe(2);
+  expect(watchCount).toBe(1);
 
   let reopened = false;
   const completed = new InferenceClient({

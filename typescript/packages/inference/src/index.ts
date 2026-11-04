@@ -196,6 +196,9 @@ export class InferenceClient {
     requireFixed(runId, INFERENCE_FIXED_WIDTHS.watchRunId, "run ID");
     if (fromSequence < 0n) throw new InferenceProtocolError("run cursor must be non-negative");
     const view = await this.inspectRun(runId, signal);
+    yield* this.#watchObservedRun(view, runId, fromSequence, signal);
+  }
+  async *#watchObservedRun(view: RunView, runId: Uint8Array, fromSequence: bigint, signal?: AbortSignal): AsyncIterable<RunEvent> {
     const state = await watchRunStart(toBinary(RunViewSchema, view), runId, fromSequence);
     try {
       if (state.terminal) return;
@@ -209,12 +212,12 @@ export class InferenceClient {
     }
   }
   async resultRun(runId: Uint8Array, signal?: AbortSignal): Promise<RunOutcome> {
-    let view = await this.inspectRun(runId);
+    let view = await this.inspectRun(runId, signal);
     if (view.result === undefined) {
-      for await (const event of this.watchRun(runId, view.lastSequence, signal)) {
+      for await (const event of this.#watchObservedRun(view, runId, view.lastSequence, signal)) {
         if (event.event.case === "terminal") break;
       }
-      view = await this.inspectRun(runId);
+      view = await this.inspectRun(runId, signal);
     }
     if (view.result === undefined) throw new InferenceProtocolError("run observation ended without a terminal result");
     const result = view.result;
