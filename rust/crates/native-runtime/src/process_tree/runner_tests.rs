@@ -173,7 +173,7 @@ fn hammered_owner() {
 }
 
 /// Execs the runner image at `image`, with no control socket: it exits at
-/// once. Returns the spawn's error.
+/// once. Returns an error if it cannot exec or exits unsuccessfully.
 fn exec_image(image: &std::os::fd::OwnedFd) -> Option<std::io::Error> {
     use std::os::fd::AsRawFd as _;
     match Command::new(format!("/proc/self/fd/{}", image.as_raw_fd()))
@@ -183,8 +183,8 @@ fn exec_image(image: &std::os::fd::OwnedFd) -> Option<std::io::Error> {
         .spawn()
     {
         Ok(mut runner) => {
-            runner.wait().expect("runner exit");
-            None
+            let status = runner.wait().expect("runner exit");
+            (!status.success()).then(|| std::io::Error::other(status.to_string()))
         }
         Err(error) => Some(error),
     }
@@ -197,6 +197,15 @@ fn exec_image(image: &std::os::fd::OwnedFd) -> Option<std::io::Error> {
 fn a_runner_image_made_while_another_thread_forks_always_execs() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    // A successful exec is insufficient: the image must also reach its normal
+    // no-control exit. This real executable exposes a status-blind oracle.
+    let unsuccessful: std::os::fd::OwnedFd = fs::File::open("/bin/false")
+        .expect("unsuccessful native program")
+        .into();
+    assert!(
+        exec_image(&unsuccessful).is_some(),
+        "an image that execs but fails was accepted"
+    );
     // Control: on this kernel, does a writable description fail the exec?
     let image = make_image().expect("image");
     let writable = std::fs::OpenOptions::new().write(true).open(format!(
