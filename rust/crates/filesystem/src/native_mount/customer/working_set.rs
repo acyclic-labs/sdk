@@ -171,7 +171,7 @@ where
                 ));
             }
             let cancellation = work.cancellation();
-            let current = super::super::adapter::await_lock(
+            let current = super::super::adapter::await_with_cancellation(
                 self.source.shared_checkout().lock(),
                 &mut super::super::adapter::NativeDemandCarrier::Native(work),
                 cancellation,
@@ -221,7 +221,7 @@ where
         work: &NativeMaterializationWork,
     ) -> Result<crate::NativePublicationSnapshot, MountLifecycleError> {
         self.capture_host_subtree(&MountPath::root(), work).await?;
-        let pending = super::super::adapter::await_lock(
+        let pending = super::super::adapter::await_with_cancellation(
             self.source.shared_checkout().lock(),
             &mut super::super::adapter::NativeDemandCarrier::Native(work),
             work.cancellation(),

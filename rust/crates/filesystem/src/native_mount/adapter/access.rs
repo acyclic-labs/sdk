@@ -7,14 +7,18 @@ pub(super) async fn observe_current_policy<A: AsyncAuthorityStore, O: AsyncObjec
     work: &crate::NativeMaterializationWork,
 ) -> Result<(crate::GenerationId, crate::kernel::MetadataField<ObjectId>), MountSourceError> {
     crate::access::observe_policy(work.cancellation(), cancellation, || async {
-        let observed = checkout
-            .volume
-            .current_access_policy_revision_accounted(
-                &mut crate::kernel::KernelAccounting::native(work, work.cancellation()),
-                work.cancellation(),
-            )
-            .await
-            .map_err(MountSourceError::from)?;
+        let mut carrier = NativeDemandCarrier::Native(work);
+        let mut accounting = crate::kernel::KernelAccounting::native(work, work.cancellation());
+        let observed = await_with_cancellation(
+            checkout
+                .volume
+                .current_access_policy_revision_accounted(&mut accounting, work.cancellation()),
+            &mut carrier,
+            work.cancellation(),
+            Some(cancellation),
+        )
+        .await?
+        .map_err(MountSourceError::from)?;
         #[cfg(test)]
         if super::tests::return_fence::skip_retry() && observed.is_none() {
             return Err(MountSourceError::AccessDenied);

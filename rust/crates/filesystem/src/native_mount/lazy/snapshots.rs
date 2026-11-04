@@ -69,7 +69,7 @@ where
                     return Err(MountSourceError::Stale);
                 }
             }
-            let checkout = adapter::await_lock(
+            let checkout = adapter::await_with_cancellation(
                 self.authored.shared_checkout().lock(),
                 &mut carrier,
                 cancellation,
@@ -92,7 +92,7 @@ where
                 .lazy_snapshot(&mut accounting)
                 .map_err(mount_engine_error)?
                 .ok_or(MountSourceError::OriginalSnapshotUnavailable)?;
-            let checkout = adapter::await_lock(
+            let checkout = adapter::await_with_cancellation(
                 self.authored.shared_checkout().lock(),
                 &mut carrier,
                 cancellation,
@@ -212,7 +212,7 @@ where
             .original_native_work()
             .ok_or(MountSourceError::OriginalSnapshotUnavailable)?;
         let retained = {
-            let mut checkout = adapter::await_lock(
+            let mut checkout = adapter::await_with_cancellation(
                 self.authored.shared_checkout().lock(),
                 carrier,
                 cancellation,

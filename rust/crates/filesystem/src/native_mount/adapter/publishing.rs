@@ -50,7 +50,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         // future and charge its frame to the same invocation before building it.
         native_future(work, || async move {
             let mut carrier = NativeDemandCarrier::Native(work);
-            let _publication = await_lock(
+            let _publication = await_with_cancellation(
                 self.publication_fence.write(),
                 &mut carrier,
                 cancellation,
@@ -58,9 +58,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             )
             .await
             .map_err(|error| (E::from(error), None))?;
-            let mut state = await_lock(self.lock(), &mut carrier, cancellation, lifetime)
-                .await
-                .map_err(|error| (E::from(error), None))?;
+            let mut state =
+                await_with_cancellation(self.lock(), &mut carrier, cancellation, lifetime)
+                    .await
+                    .map_err(|error| (E::from(error), None))?;
             let force = state.has_retained_operation();
             let early = |error: MountSourceError| (E::from(error), None);
             let submitted = publication_flag(work, force).map_err(early)?;
