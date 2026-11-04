@@ -60,13 +60,7 @@ pub(super) async fn prove_bytes<O: AsyncObjectStore>(
     work: &mut crate::AuthorityWork<'_>,
 ) -> Result<u128, AccountingError> {
     let (volume_id, config) = volume;
-    // Borrowed canonical fields, decoded manifest/root, exact payload, and
-    // canonical re-encoding are bounded together before any archive decode.
-    // Eight source lengths cover both representations and the retained source.
-    let evidence_bound = config
-        .limits
-        .maximum_generation_bytes
-        .min(work.remaining()?.peak_allocation_bytes / 8);
+    let evidence_bound = config.limits.maximum_generation_bytes;
     let archived = objects
         .historical_generation_evidence(
             authority_id,
@@ -77,21 +71,30 @@ pub(super) async fn prove_bytes<O: AsyncObjectStore>(
         )
         .await?;
     if let Some(evidence) = archived {
-        let original = crate::kernel::decode_historical_generation_evidence(
+        let mut accounting = work.accounting();
+        let mut observed = crate::kernel::OriginalReadAccounting::new(&mut accounting)?;
+        let decoded = crate::kernel::decode_historical_generation_evidence_observed(
             &evidence,
             authority_id,
             record,
             evidence_bound,
             config.limits.maximum_objects_per_generation,
-        )
-        .map_err(AccountingError::Proof)?;
-        if original.manifest.generation_root != root
-            || original.root.volume_id != volume_id
-            || original.manifest.config != config
-        {
-            return Err(AccountingError::InvalidHistory);
-        }
-        return Ok(original.logical_file_bytes);
+            &mut |step| observed.observe(step).map_err(AccountingError::from),
+        );
+        let result = decoded.and_then(|original| {
+            if original.manifest.generation_root != root
+                || original.root.volume_id != volume_id
+                || original.manifest.config != config
+            {
+                Err(AccountingError::InvalidHistory)
+            } else {
+                Ok(original.logical_file_bytes)
+            }
+        });
+        // The projection and every partially decoded value have been dropped.
+        // Retire only their original backing, including on a typed refusal.
+        observed.retire()?;
+        return result;
     }
     let limits = ClosureLimits {
         decode: DecodeLimits::for_volume(config),

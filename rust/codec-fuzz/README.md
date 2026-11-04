@@ -474,6 +474,22 @@ also reject a retained corpus input with that mutation. Reverse the patch before
 running the positive check or other work. Corpus readmission does not establish
 branch coverage, an instrumented campaign, or physical storage recovery.
 
+The `filesystem_pages` oracle projects historical inputs through the production
+parser and binds their original append to the exact original record context.
+Accepted original evidence must round-trip through its writer unchanged, and
+selected observer refusals must end parsing immediately. Retained original
+creation, checkpoint, pin and fork inputs have writer provenance in `SOURCES.tsv`.
+Apply `negative-controls/historical_projection_value.patch` from the repository
+root to change the actual decoder's logical byte count. The same corpus must
+reject the writer mismatch:
+
+```sh
+cargo run --locked --example replay -- filesystem_pages/historical-
+```
+
+Run from `rust/codec-fuzz`, then reverse the patch and require the same replay to
+pass. Corpus readmission alone does not establish instrumented branch coverage.
+
 The per-format `object_manifest_admission.patch`,
 `object_envelope_admission.patch`, `object_batch_admission.patch` and
 `object_incarnation_admission.patch` refuse valid inputs in their actual

@@ -102,6 +102,19 @@ pub fn retention_authority_id(
     AuthorityId::from_bytes(bytes)
 }
 
+pub(crate) fn retention_authority_id_observed<E>(
+    volume_id: VolumeId,
+    kind: RetentionKind,
+    label: &str,
+    observe: &mut impl FnMut(super::ReadAllocationStep) -> Result<(), E>,
+) -> Result<AuthorityId, E> {
+    let bytes = (ID_DOMAIN.len() + 16 + 1 + 8 + label.len()) as u64;
+    observe(super::ReadAllocationStep::BeforeHash(bytes))?;
+    let id = retention_authority_id(volume_id, kind, label);
+    observe(super::ReadAllocationStep::Hashed(bytes))?;
+    Ok(id)
+}
+
 /// Encodes one canonical object with before-effect admission.
 pub fn encode_retention_created<E: From<CanonicalDecodeError> + From<RetentionCreatedError>>(
     value: &RetentionCreated,
@@ -158,36 +171,57 @@ pub fn decode_retention_created(
     bytes: &[u8],
     maximum_payload_bytes: u64,
 ) -> Result<RetentionCreated, RetentionCreatedError> {
-    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, maximum_payload_bytes, &mut |_| {
-        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    let value = decode_retention_created_ref(bytes, maximum_payload_bytes, &mut |_| {
+        Ok::<_, RetentionCreatedError>(())
     })?;
-    let volume_id = VolumeId::from_bytes(
-        decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-    );
-    let kind = RetentionKind::from_tag(
-        decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-    )?;
-    let label = String::from_utf8(decoder.bounded_bytes(MAXIMUM_LABEL_BYTES, &mut |_| {
-        Ok::<_, crate::kernel::CanonicalDecodeError>(())
-    })?)
-    .map_err(|_| RetentionCreatedError::InvalidLabel)?;
-    let generation_root = decoder.object(ObjectKind::GenerationRoot, &mut |_| {
-        Ok::<_, CanonicalDecodeError>(())
-    })?;
-    let config = decode_config(&mut decoder, &mut |_| {
-        Ok::<_, crate::kernel::CanonicalDecodeError>(())
-    })?
-    .validate()?;
+    Ok(RetentionCreated {
+        volume_id: value.volume_id,
+        kind: value.kind,
+        label: String::from_utf8(super::codec::copy_bytes(
+            value.label.as_bytes(),
+            1,
+            &mut |_| Ok::<_, RetentionCreatedError>(()),
+        )?)
+        .map_err(|_| RetentionCreatedError::InvalidLabel)?,
+        generation_root: value.generation_root,
+        config: value.config,
+    })
+}
+
+pub(crate) struct RetentionCreatedRef<'a> {
+    pub(crate) volume_id: VolumeId,
+    pub(crate) kind: RetentionKind,
+    pub(crate) label: &'a str,
+    pub(crate) generation_root: ObjectId,
+    pub(crate) config: VolumeConfig,
+}
+
+pub(crate) fn decode_retention_created_ref<'a, E>(
+    bytes: &'a [u8],
+    maximum_payload_bytes: u64,
+    observe: &mut impl FnMut(super::ReadAllocationStep) -> Result<(), E>,
+) -> Result<RetentionCreatedRef<'a>, E>
+where
+    E: From<CanonicalDecodeError> + From<RetentionCreatedError>,
+{
+    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, maximum_payload_bytes, observe)?;
+    let volume_id = VolumeId::from_bytes(decoder.fixed(observe)?);
+    let kind = RetentionKind::from_tag(decoder.u8(observe)?)?;
+    let label = std::str::from_utf8(decoder.bounded_slice(MAXIMUM_LABEL_BYTES, observe)?)
+        .map_err(|_| RetentionCreatedError::InvalidLabel)?;
+    let generation_root = decoder.object(ObjectKind::GenerationRoot, observe)?;
+    let config = decode_config(&mut decoder, observe)?
+        .validate()
+        .map_err(RetentionCreatedError::from)?;
     decoder.finish()?;
-    let value = RetentionCreated {
+    validate_fields(label, generation_root, config)?;
+    Ok(RetentionCreatedRef {
         volume_id,
         kind,
         label,
         generation_root,
         config,
-    };
-    validate(&value)?;
-    Ok(value)
+    })
 }
 
 /// Decodes one terminal workspace deletion fact.
@@ -210,14 +244,21 @@ pub fn decode_workspace_deleted(
 }
 
 fn validate(value: &RetentionCreated) -> Result<(), RetentionCreatedError> {
-    value.config.validate()?;
-    if value.generation_root.kind != ObjectKind::GenerationRoot {
+    validate_fields(&value.label, value.generation_root, value.config)
+}
+
+fn validate_fields(
+    label: &str,
+    generation_root: ObjectId,
+    config: VolumeConfig,
+) -> Result<(), RetentionCreatedError> {
+    config.validate()?;
+    if generation_root.kind != ObjectKind::GenerationRoot {
         return Err(RetentionCreatedError::WrongObjectKind);
     }
-    if value.label.is_empty()
-        || u32::try_from(value.label.len()).unwrap_or(u32::MAX) > MAXIMUM_LABEL_BYTES
-        || value
-            .label
+    if label.is_empty()
+        || u32::try_from(label.len()).unwrap_or(u32::MAX) > MAXIMUM_LABEL_BYTES
+        || label
             .chars()
             .any(|character| character.is_control() || matches!(character, '/' | '\\'))
     {
