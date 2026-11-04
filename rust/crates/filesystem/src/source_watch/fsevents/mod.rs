@@ -1,7 +1,7 @@
 //! macOS source notifications with bounded delivery and funded shutdown.
 #![allow(unsafe_code, reason = "reads the held-root path with fcntl")]
 
-use super::{Delivery, HostChange};
+use super::{Delivery, HostChange, check_wait};
 use crate::cancellation::custody::Custody;
 use crate::demand::{SourceDemandReadWork, SourcePayloadOwnership};
 use crate::fsevents::{
@@ -176,18 +176,10 @@ impl NativeSourceWatch {
         result
     }
 
-    pub(crate) fn stop_with_cleanup_wait(
+    pub(super) fn cleanup(
         &self,
-        wait: &crate::CancellationToken,
+        wait: Option<&crate::CancellationToken>,
     ) -> Result<(), DemandError> {
-        self.cleanup(Some(wait))
-    }
-
-    pub(crate) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
-        self.cleanup(None)
-    }
-
-    fn cleanup(&self, wait: Option<&crate::CancellationToken>) -> Result<(), DemandError> {
         check_wait(wait)?;
         let mut work = self
             .delivery()
@@ -267,12 +259,6 @@ impl crate::fsevents::StreamTerminal for Shared {
         self.stream_bytes.store(0, Ordering::Release);
         self.delivery.sink.delivery_lost();
     }
-}
-
-fn check_wait(wait: Option<&crate::CancellationToken>) -> Result<(), DemandError> {
-    wait.map_or(Ok(()), |wait| {
-        wait.check().map_err(|_| DemandError::Cancelled)
-    })
 }
 
 fn held_path<W: SourceDemandReadWork>(

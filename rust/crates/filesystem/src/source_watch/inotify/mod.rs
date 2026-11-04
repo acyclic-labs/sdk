@@ -4,8 +4,8 @@
 //! watch owns its registrations, its inbox of routed records and its held root.
 #![allow(unsafe_code, reason = "watches through the Linux inotify API")]
 use super::{
-    Delivery, HostChange, arc_control_bytes, cancel_cleanup_credits, record_cleanup_credits,
-    reserve_cleanup_credits,
+    Delivery, HostChange, arc_control_bytes, cancel_cleanup_credits, check_wait,
+    record_cleanup_credits, reserve_cleanup_credits,
 };
 use crate::demand::{DemandError, DemandWork, SourceDemandReadWork, SourcePayloadOwnership};
 use crate::native_host::NativeHostWork;

@@ -239,6 +239,7 @@ pub struct SourceWatchStartupFailure {
 }
 
 mod api;
+use api::check_wait;
 mod callback;
 mod delivery;
 mod observer;

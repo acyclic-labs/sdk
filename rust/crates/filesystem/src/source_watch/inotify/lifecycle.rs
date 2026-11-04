@@ -316,43 +316,26 @@ impl NativeSourceWatch {
         self.stop(work, None, false)
     }
 
-    pub(crate) fn stop_with_cleanup_wait(
+    pub(in crate::source_watch) fn cleanup(
         &self,
-        wait: &crate::CancellationToken,
+        wait: Option<&crate::CancellationToken>,
     ) -> Result<(), DemandError> {
+        if wait.is_none() {
+            self.shared.delivery.ensure_stop_available()?;
+        }
         let original = self
             .shared
             .delivery
             .original
             .as_ref()
             .ok_or(DemandError::NativeWorkUnavailable)?;
-        if wait.is_cancelled() {
-            return Err(DemandError::Cancelled);
-        }
+        check_wait(wait)?;
         self.stop(
             &mut crate::NativeMaterializationWork::clone(original),
-            Some(wait),
+            wait,
             true,
         )?;
-        if wait.is_cancelled() {
-            return Err(DemandError::Cancelled);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
-        self.shared.delivery.ensure_stop_available()?;
-        let original = self
-            .shared
-            .delivery
-            .original
-            .as_ref()
-            .ok_or(DemandError::NativeWorkUnavailable)?;
-        self.stop(
-            &mut crate::NativeMaterializationWork::clone(original),
-            None,
-            true,
-        )
+        check_wait(wait)
     }
 
     pub(super) fn stop<W: SourceDemandReadWork>(
