@@ -1,0 +1,14 @@
+--- a/rust/crates/filesystem/src/kernel/file_read.rs
++++ b/rust/crates/filesystem/src/kernel/file_read.rs
+@@ -399,9 +399,6 @@
+         crate::storage::ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
+     };
+-    let owned = work.finish_owned(crate::kernel::Owned::new(
+-        read,
+-        KernelOwnedAllocation::Standalone,
+-        bytes,
+-    ))?;
++    let owned = crate::kernel::Owned::new(read, KernelOwnedAllocation::Standalone, bytes);
++    drop(work);
+     Ok((owned.value, bytes))
+ }

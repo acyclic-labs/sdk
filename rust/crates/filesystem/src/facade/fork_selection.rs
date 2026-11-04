@@ -75,7 +75,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     cancellation,
                 )
                 .await?;
-            Ok(expected.value.generation_root.digest == initial.id.digest())
+            Ok(expected.generation_root.digest == initial.id.digest())
         }
         .await;
         let result = readonly_cleanup_standalone(&mut accounting, baseline, 0)

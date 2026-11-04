@@ -248,6 +248,19 @@ pub(crate) enum ProofGuard {
 }
 
 impl ProofGuard {
+    /// Moves the producer's original lease without reconstructing its funding.
+    pub(crate) fn into_allocation(self) -> crate::kernel::allocation::retained::RetainedAllocation {
+        match self {
+            Self::Standalone { allocation, .. } => allocation,
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native(allocation) => {
+                crate::kernel::allocation::retained::RetainedAllocation::Native {
+                    _allocation: allocation,
+                }
+            }
+        }
+    }
+
     pub(crate) fn retained_bytes(&self) -> u64 {
         match self {
             ProofGuard::Standalone { bytes, .. } => *bytes,
@@ -276,16 +289,6 @@ impl ProofGuard {
                 target.absorb(source).map_err(Into::into)
             }
             _ => Err(WorkError::Overflow.into()),
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn take_native(&mut self) -> Result<crate::NativeAllocation, crate::FsError> {
-        match self {
-            ProofGuard::Native(guard) => guard.split_off(guard.bytes()).map_err(Into::into),
-            ProofGuard::Standalone { .. } => {
-                Err(crate::NativeTreeMaterializationError::InvalidLayout.into())
-            }
         }
     }
 }

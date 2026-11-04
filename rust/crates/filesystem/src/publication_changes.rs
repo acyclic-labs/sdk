@@ -232,9 +232,6 @@ impl PublicationChanges {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Self, FsError> {
-        let before = accounting
-            .standalone_parts()
-            .map(|(a, _, _, _)| a.live_bytes());
         let volume = endpoints
             .last()
             .and_then(Option::as_ref)
@@ -242,22 +239,11 @@ impl PublicationChanges {
             .root
             .volume_id;
         let maximum = u32::try_from(accounting.remaining()?.items_examined).unwrap_or(u32::MAX);
-        let (paths, allocation) =
+        let paths =
             crate::workspace::complete_changed_paths(endpoints, maximum, accounting, cancellation)
                 .await
                 .map_err(change_error)?;
-        let standalone_bytes = if let Some(before) = before {
-            let (allocations, _, _, _) =
-                accounting.standalone_parts().ok_or(WorkError::Overflow)?;
-            allocations
-                .live_bytes()
-                .checked_sub(before)
-                .ok_or(WorkError::Overflow)?
-        } else {
-            0
-        };
-        let paths =
-            Retained::from_owned(Owned::new(paths, allocation, standalone_bytes), accounting)?;
+        let paths = Retained::from_owned(paths, accounting)?;
         Self::sealed(volume, config, paths, None, base, root, accounting)
     }
 

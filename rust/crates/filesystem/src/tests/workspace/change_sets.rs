@@ -21,7 +21,7 @@ async fn raw_endpoint_paths<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
     maximum_entries: u32,
     original: &crate::NativeMaterializationWork,
     cancellation: &CancellationToken,
-) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
+) -> Result<crate::kernel::Owned<Vec<ChangedPath>>, WorkspaceError> {
     raw_endpoint_paths_mode(changes, maximum_entries, original, cancellation, false).await
 }
 
@@ -35,7 +35,7 @@ async fn raw_endpoint_paths_mode<
     original: &crate::NativeMaterializationWork,
     cancellation: &CancellationToken,
     full_scan: bool,
-) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
+) -> Result<crate::kernel::Owned<Vec<ChangedPath>>, WorkspaceError> {
     let mut accounting = KernelAccounting::native(original, cancellation);
     let from = changes
         .from
@@ -131,17 +131,18 @@ async fn small_directory_move_does_not_materialize_unrelated_file_records()
         let original =
             crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
                 .map_err(|(error, _)| error)?;
-        let (paths, guard) =
+        let paths =
             raw_endpoint_paths_mode(&changes, u32::MAX, &original, &cancellation, full_scan)
                 .await?;
-        assert_eq!(paths.len(), 6);
+        assert_eq!(paths.value.len(), 6);
         let names = paths
+            .value
             .iter()
             .map(|entry| namespace_path_text(&entry.path))
             .collect::<Result<Vec<_>, _>>()?;
         assert!(names.iter().all(|path| !path.starts_with("/unrelated")));
         observed.push(original.journal_work()?);
-        drop((paths, guard));
+        drop(paths);
     }
     // The eager real-store counterfactual adds unrelated records.
     // Adding that traversal to the producer makes both strict inequalities fail.
@@ -303,18 +304,18 @@ async fn complete_creation_delta_matches_full_path_resolution_and_bounds()
         let original =
             crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
                 .map_err(|(error, _)| error)?;
-        let (complete, complete_guard) =
-            raw_endpoint_paths(&changes, 64, &original, &cancellation).await?;
+        let complete = raw_endpoint_paths(&changes, 64, &original, &cancellation).await?;
         let (resolved, resolved_guard) =
             raw_changed_paths(&changes, 64, &original, &cancellation).await?;
-        assert_eq!(complete, resolved);
-        assert_eq!(complete.len(), if linked { 2 } else { 3 });
+        assert_eq!(complete.value, resolved);
+        assert_eq!(complete.value.len(), if linked { 2 } else { 3 });
         assert!(
             complete
+                .value
                 .iter()
                 .all(|path| path.before.is_none() && path.after.is_some())
         );
-        drop((complete, complete_guard, resolved, resolved_guard));
+        drop((complete, resolved, resolved_guard));
         assert!(matches!(
             raw_endpoint_paths(&changes, 1, &original, &cancellation).await,
             Err(WorkspaceError::ChangedPathLimit)
@@ -352,8 +353,9 @@ async fn complete_publication_delta_includes_unchanged_descendants_of_a_rename()
     let original =
         crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
             .map_err(|(error, _)| error)?;
-    let (paths, guard) = raw_endpoint_paths(&changes, 64, &original, &cancellation).await?;
+    let paths = raw_endpoint_paths(&changes, 64, &original, &cancellation).await?;
     let names: Vec<_> = paths
+        .value
         .iter()
         .map(|change| super::namespace_path_text(&change.path))
         .collect::<Result<_, _>>()?;
@@ -370,14 +372,14 @@ async fn complete_publication_delta_includes_unchanged_descendants_of_a_rename()
     );
     assert!(
         paths
+            .value
             .iter()
             .all(|change| change.before.is_some() != change.after.is_some())
     );
-    drop(guard);
     // The public retained delta and live publication must expose the same
     // unchanged descendants, including narrow-prefix watch notifications.
     let (retained, guard) = raw_changed_paths(&changes, 64, &original, &cancellation).await?;
-    assert_eq!(retained, paths);
+    assert_eq!(retained, paths.value);
     drop(paths);
     drop(retained);
     drop(guard);

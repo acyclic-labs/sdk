@@ -58,9 +58,9 @@ pub(crate) async fn complete_changed_paths<O: AsyncObjectStore>(
     maximum_entries: u32,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
+) -> Result<crate::kernel::Owned<Vec<ChangedPath>>, WorkspaceError> {
     let Some(view) = endpoints.iter().flatten().next() else {
-        return Ok((Vec::new(), accounting.claim_owned(0, 0)?));
+        return Ok(crate::kernel::Owned::allocate(0, accounting)?);
     };
     let roots = endpoints
         .each_ref()
@@ -84,7 +84,7 @@ async fn collect_paths<O: AsyncObjectStore>(
     maximum_entries: u32,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
+) -> Result<crate::kernel::Owned<Vec<ChangedPath>>, WorkspaceError> {
     let mut paths = match crate::kernel::Owned::<Vec<ChangedPath>>::allocate(0, accounting) {
         Ok(paths) => paths,
         Err(error) => {
@@ -135,7 +135,7 @@ async fn collect_paths<O: AsyncObjectStore>(
     .await;
     let retirement = cursor.retire(accounting);
     match result.and_then(|()| retirement.map_err(Into::into)) {
-        Ok(()) => Ok((paths.value, paths.allocation)),
+        Ok(()) => Ok(paths),
         Err(error) => {
             paths.retire(accounting)?;
             Err(error)
@@ -160,11 +160,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ChangeSet<
                     .claim_bytes(self.retained_bytes(), 0, spent, budget)
                     .map_err(workspace_allocation_error)?;
             }
-            let (paths, allocation) = self
+            let paths = self
                 .changed_paths_with_accounting(maximum_entries, &mut accounting, cancellation)
                 .await?;
-            let allocation = workspace_allocation(allocation, &accounting)?;
-            Ok::<_, WorkspaceError>((paths, allocation))
+            let allocation = workspace_allocation(paths.allocation, &accounting)?;
+            Ok::<_, WorkspaceError>((paths.value, allocation))
         }
         .await;
         work.finish(result, &accounting)
@@ -175,7 +175,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ChangeSet<
         maximum_entries: u32,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &crate::CancellationToken,
-    ) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
+    ) -> Result<crate::kernel::Owned<Vec<ChangedPath>>, WorkspaceError> {
         if self.changes.truncated {
             return Err(WorkspaceError::ChangedPathLimit);
         }
@@ -229,13 +229,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ChangeSet<
         match (result, to.and(from)) {
             (Ok(paths), Ok(())) => Ok(paths),
             (Ok(paths), Err(error)) => {
-                let bytes = workspace_vec_bytes(&paths.0)
-                    + paths
-                        .0
-                        .iter()
-                        .map(|row| row.path.retained_bytes())
-                        .sum::<u64>();
-                reverse_drop(paths, bytes, accounting)?;
+                paths.retire(accounting)?;
                 Err(error.into())
             }
             (Err(error), _) => Err(error),

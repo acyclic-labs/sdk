@@ -4,6 +4,8 @@ use super::*;
 enum Damage {
     Digest,
     Operation,
+    SequenceGap,
+    Payload,
     MissingTime,
     ZeroTime,
     RegressingTime(u64),
@@ -41,12 +43,24 @@ impl AsyncAuthorityStore for DamagedReplay<'_> {
             match self.damage {
                 Damage::Digest => record.digest = Digest::ZERO,
                 Damage::Operation => record.operation_id = OperationId::from_bytes([121; 16]),
+                Damage::SequenceGap if limit.records > 1 => {
+                    record.sequence = record
+                        .sequence
+                        .checked_next()
+                        .map_err(|_| crate::WorkError::Overflow)?;
+                }
+                Damage::Payload if limit.records > 1 => {
+                    let mut payload = record.payload.to_vec();
+                    payload[0] ^= 1;
+                    record.payload = payload.into();
+                }
                 Damage::MissingTime => record.settled_at_micros = None,
                 Damage::ZeroTime => record.settled_at_micros = Some(0),
                 Damage::RegressingTime(later) if record.sequence == Sequence::new(1) => {
                     record.settled_at_micros = Some(later)
                 }
                 Damage::RegressingTime(_) => (),
+                Damage::SequenceGap | Damage::Payload => (),
             }
         }
         Ok((records, allocation))
@@ -134,6 +148,8 @@ async fn cursor_history_time_and_admission_fail_closed() -> Result<(), Box<dyn E
     for damage in [
         Damage::Digest,
         Damage::Operation,
+        Damage::SequenceGap,
+        Damage::Payload,
         Damage::RegressingTime(later),
         Damage::MissingTime,
         Damage::ZeroTime,
