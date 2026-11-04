@@ -1,0 +1,13 @@
+diff --git a/rust/crates/filesystem/src/native_mount/projfs/callback_path.rs b/rust/crates/filesystem/src/native_mount/projfs/callback_path.rs
+--- a/rust/crates/filesystem/src/native_mount/projfs/callback_path.rs
++++ b/rust/crates/filesystem/src/native_mount/projfs/callback_path.rs
+@@ -39,6 +39,9 @@
+ }
+ 
+ pub(super) fn wide_components(parts: &[Vec<u8>]) -> Option<impl Iterator<Item = u16> + Clone + '_> {
++    if !parts.is_empty() {
++        return None;
++    }
+     for part in parts {
+         if part.is_empty()
+             || part.len() % 2 != 0
