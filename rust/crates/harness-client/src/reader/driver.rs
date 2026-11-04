@@ -50,11 +50,16 @@ impl Stream for FollowSource {
         let source = self.get_mut();
         match source.records.poll_next_unpin(cx) {
             Poll::Ready(record) => {
-                let record = record.unwrap_or(Err(StreamError::Unavailable));
-                if let Ok(record) = &record {
-                    source.position = record.sequence + 1;
-                    source.accepted = source.accepted.max(source.position);
-                }
+                let record = record
+                    .unwrap_or(Err(StreamError::Unavailable))
+                    .and_then(|record| {
+                        source.position = record
+                            .sequence
+                            .checked_add(1)
+                            .ok_or(StreamError::InvalidResponse)?;
+                        source.accepted = source.accepted.max(source.position);
+                        Ok(record)
+                    });
                 Poll::Ready(Some((source.path.clone(), source.accepted, record)))
             }
             Poll::Pending => Poll::Pending,
@@ -194,7 +199,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
                     let accepted = head.tail.max(reader.cache().tail(&stream).unwrap_or(0));
                     match reader.observed_head(&stream, head, observed) {
                         HeadObservation::Invalid => {
-                            reader.follow_failed(Failure::Refused, now);
+                            reader.refuse_follow(&stream, StreamError::InvalidResponse);
                             self.queue(&stream, reader);
                             continue;
                         }
@@ -212,7 +217,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
                     }
                     reader.follow_opened(&stream, from);
                     if let Err(error) = self.opened(stream.clone(), from, accepted, records) {
-                        reader.follow_failed(Failure::of(&error), now);
+                        failed(reader, &stream, &error, now);
                         self.queue(&stream, reader);
                     }
                 }
@@ -261,7 +266,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
         self.aborts.insert(id, abort);
         let work = async move {
             if !access.check().await {
-                return Some((id, Outcome::Failed(Failure::Unavailable)));
+                return Some((id, Outcome::Failed(StreamError::Unavailable)));
             }
             let outcome = execute(provider.as_ref(), op).await;
             Some((
@@ -269,7 +274,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
                 if access.check().await {
                     outcome
                 } else {
-                    Outcome::Failed(Failure::Unavailable)
+                    Outcome::Failed(StreamError::Unavailable)
                 },
             ))
         };
@@ -407,8 +412,15 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
             let (path, accepted, record) = match self.ready.poll_next(cx) {
                 Poll::Ready(Ok(Some(record))) => record,
                 Poll::Ready(Err(error)) => {
-                    reader.follow_failed(Failure::of(&error), now);
+                    let failure = Failure::of(&error);
+                    let transient = matches!(failure, Failure::Unavailable | Failure::Overloaded);
+                    if transient {
+                        reader.follow_failed(failure, now);
+                    }
                     for (path, _) in std::mem::take(&mut self.follows) {
+                        if !transient {
+                            failed(reader, &path, &error, now);
+                        }
                         self.queue(&path, reader);
                     }
                     self.ready = ReadySources::new();
@@ -430,14 +442,15 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
     }
 }
 
-/// A changed anchor replaced the provisional suffix; anything else backs off.
+/// Retire definite failures; only transient transport failures back off.
 fn failed(reader: &mut Reader, stream: &StreamPath, error: &StreamError, now: u64) {
-    if matches!(error, StreamError::PrefixNotRetained) {
-        reader.replaced(stream);
-    } else if matches!(error, StreamError::AccessDenied) {
-        reader.denied(stream);
-    } else {
-        reader.follow_failed(Failure::of(error), now);
+    match Failure::of(error) {
+        Failure::RetentionLost => reader.replaced(stream),
+        Failure::Denied => reader.denied(stream),
+        Failure::Refused | Failure::Changed => reader.refuse_follow(stream, error.clone()),
+        failure @ (Failure::Unavailable | Failure::Overloaded) => {
+            reader.follow_failed(failure, now)
+        }
     }
 }
 
@@ -490,7 +503,7 @@ pub(super) async fn execute<P: StreamProvider + ?Sized>(provider: &P, op: Op) ->
                     .collect(),
             }),
     };
-    result.unwrap_or_else(|error| Outcome::Failed(Failure::of(&error)))
+    result.unwrap_or_else(Outcome::Failed)
 }
 
 async fn read<P: StreamProvider + ?Sized>(
@@ -524,6 +537,337 @@ mod tests {
     use super::*;
     use acyclic_stream::{AppendRequest, ForkRequest, IdempotencyKey, MemoryStream};
 
+    #[test]
+    fn record_coordinates_refuse_unrepresentable_ends_before_retaining_bytes() {
+        use super::super::{Priority, ReadIssue, ReaderPolicy, Want};
+
+        futures::executor::block_on(async {
+            let provider = MemoryStream::default();
+            let path = StreamPath::new("coordinates/child/body").unwrap();
+            provider
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: vec![b"original body".as_slice().into()],
+                    if_tail: Some(0),
+                    idempotency_key: IdempotencyKey::new(b"coordinates".to_vec()).unwrap(),
+                })
+                .await
+                .unwrap();
+            let original = provider.head(path.clone()).await.unwrap().last.unwrap();
+            // Generate boundary coordinates on the actual provider row. This
+            // preserves its original allocation and commit, without claiming
+            // the provider has produced a history of this length.
+            let row = |sequence| Record {
+                sequence,
+                ..original.clone()
+            };
+            let want = Want::Range {
+                stream: path.clone(),
+                from: u64::MAX - 2,
+                to: u64::MAX,
+            };
+            for invalid in [true, false] {
+                let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+                reader.cache.observe_origin(&path, None);
+                reader.begin_frame(0);
+                reader.plan([(want.clone(), Priority::Visible)]);
+                let [op]: [Op; 1] = reader.poll(0).try_into().unwrap();
+                let rows = if invalid {
+                    vec![row(u64::MAX - 2), row(u64::MAX - 1), row(u64::MAX), row(0)]
+                } else {
+                    vec![row(u64::MAX - 2), row(u64::MAX - 1)]
+                };
+                reader.complete(
+                    op.id(),
+                    Outcome::Records(rows.into_iter().map(fetched).collect()),
+                    1,
+                );
+                assert_eq!(reader.cache.record(&path, u64::MAX - 2).is_none(), invalid);
+                assert!(reader.cache.record(&path, u64::MAX).is_none());
+                assert_eq!(
+                    reader.issues.get(&path),
+                    invalid.then_some(&ReadIssue::Refused(StreamError::InvalidResponse))
+                );
+                if !invalid {
+                    assert_eq!(
+                        reader.cache.record(&path, u64::MAX - 1).unwrap().as_ptr(),
+                        original.value.as_slice().as_ptr()
+                    );
+                }
+                reader.plan([(want.clone(), Priority::Visible)]);
+                assert!(
+                    reader.poll(1).is_empty(),
+                    "accepted or refused work was repeated"
+                );
+                assert!(reader.inflight.is_empty());
+            }
+
+            let parent = StreamPath::new("coordinates").unwrap();
+            let child = StreamPath::new("coordinates/child").unwrap();
+            let listing = Want::Listing {
+                parent: parent.clone(),
+                index: 0,
+                tail: Some(StreamPath::new("body").unwrap()),
+                witness: None,
+            };
+            for sequence in [u64::MAX, u64::MAX - 1] {
+                let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+                reader.begin_frame(0);
+                reader.plan([(listing.clone(), Priority::Visible)]);
+                let [op]: [Op; 1] = reader.poll(0).try_into().unwrap();
+                reader.complete(
+                    op.id(),
+                    Outcome::Children {
+                        children: vec![ListedChild {
+                            path: child.clone(),
+                            origin: None,
+                            tail: Some(fetched(row(sequence))),
+                        }],
+                        next: None,
+                        version: original.commit_id,
+                    },
+                    1,
+                );
+                let invalid = sequence == u64::MAX;
+                assert_eq!(reader.cache.listing(&parent, 0).is_none(), invalid);
+                assert_eq!(
+                    reader.cache.tail(&path),
+                    if invalid { None } else { Some(u64::MAX) }
+                );
+                assert_eq!(reader.cache.record(&path, sequence).is_none(), invalid);
+                assert_eq!(
+                    reader.issues.get(&parent),
+                    invalid.then_some(&ReadIssue::Refused(StreamError::InvalidResponse))
+                );
+                reader.plan([(listing.clone(), Priority::Visible)]);
+                assert!(reader.poll(1).is_empty());
+            }
+
+            let mut source = FollowSource {
+                path: path.clone(),
+                position: u64::MAX - 1,
+                accepted: u64::MAX - 1,
+                records: acyclic_stream::records_only(
+                    provider
+                        .follow(acyclic_stream::FollowRequest::new(path.clone(), 0))
+                        .await
+                        .unwrap(),
+                )
+                .map_cursor(|_| {
+                    Box::pin(futures::stream::iter([
+                        Ok(row(u64::MAX - 1)),
+                        Ok(row(u64::MAX)),
+                    ]))
+                }),
+            };
+            let (_, accepted, record) = source.next().await.unwrap();
+            assert_eq!(accepted, u64::MAX);
+            assert_eq!(
+                record.unwrap().value.as_slice().as_ptr(),
+                original.value.as_slice().as_ptr()
+            );
+            let (_, accepted, record) = source.next().await.unwrap();
+            assert_eq!(record.unwrap_err(), StreamError::InvalidResponse);
+            assert_eq!(accepted, u64::MAX);
+            assert_eq!(source.position, u64::MAX);
+
+            for (sequence, accepted, invalid) in [
+                (u64::MAX, u64::MAX, true),
+                (u64::MAX - 1, u64::MAX - 1, true),
+                (u64::MAX - 1, u64::MAX, false),
+            ] {
+                let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+                reader.cache.observe_tail(&path, u64::MAX - 1);
+                reader.set_follows([path.clone()]);
+                reader.deliver(&path, fetched(row(sequence)), accepted);
+                assert_eq!(
+                    reader.cache.tail(&path),
+                    Some(if invalid { u64::MAX - 1 } else { accepted })
+                );
+                assert_eq!(reader.cache.record(&path, sequence).is_none(), invalid);
+                assert_eq!(
+                    reader.follows().next().map(|(_, from)| from),
+                    (!invalid).then_some(u64::MAX)
+                );
+                assert_eq!(
+                    reader.next_deadline(),
+                    None,
+                    "definite refusal scheduled a retry"
+                );
+                if invalid {
+                    reader.set_follows([path.clone()]);
+                    assert!(reader.follows().next().is_none());
+                    reader.acknowledge_issue(&path);
+                    reader.set_follows([path.clone()]);
+                    assert_eq!(reader.follows().next().unwrap().1, u64::MAX - 1);
+                }
+            }
+
+            let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+            reader.cache.observe_tail(&path, u64::MAX - 1);
+            reader.set_follows([path.clone()]);
+            let records = acyclic_stream::records_only(
+                provider
+                    .follow(acyclic_stream::FollowRequest::new(path.clone(), 0))
+                    .await
+                    .unwrap(),
+            )
+            .map_cursor(|_| {
+                Box::pin(futures::stream::iter([
+                    Ok(row(u64::MAX - 1)),
+                    Ok(row(u64::MAX)),
+                ]))
+            });
+            let mut driver = Driver::new(Arc::new(provider));
+            driver
+                .opened(path.clone(), u64::MAX - 1, u64::MAX - 1, records)
+                .unwrap();
+            let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+            driver.drain(&mut reader, 1, &mut cx);
+            assert!(driver.follows.is_empty());
+            assert!(driver.waiting.is_empty(), "refused source was requeued");
+            assert_eq!(reader.next_deadline(), None);
+            assert_eq!(
+                reader.issues.get(&path),
+                Some(&ReadIssue::Refused(StreamError::InvalidResponse))
+            );
+            assert_eq!(
+                reader.cache.record(&path, u64::MAX - 1).unwrap().as_ptr(),
+                original.value.as_slice().as_ptr()
+            );
+            reader.set_follows([path.clone()]);
+            assert!(reader.follows().next().is_none());
+            reader.acknowledge_issue(&path);
+            reader.set_follows([path.clone()]);
+            driver.queue(&path, &reader);
+            assert_eq!(driver.waiting[&path].from, u64::MAX);
+
+            // The same owner must still retain a transient source failure for
+            // transport recovery, rather than treating every error as final.
+            failed(&mut reader, &path, &StreamError::Unavailable, 2);
+            assert_eq!(reader.follows().next().unwrap().1, u64::MAX);
+            assert!(reader.next_deadline().is_some());
+        });
+    }
+
+    #[test]
+    fn definite_read_refusal_is_visible_without_another_request() {
+        use super::super::{Connectivity, Priority, ReadIssue, ReaderPolicy, Want};
+
+        futures::executor::block_on(async {
+            let provider = Arc::new(MemoryStream::default());
+            let path = StreamPath::new("missing/original-source").unwrap();
+            let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+            let mut driver = Driver::new(Arc::clone(&provider));
+            driver.attach(&mut reader, 0);
+            reader.plan([(
+                Want::Range {
+                    stream: path.clone(),
+                    from: 0,
+                    to: 1,
+                },
+                Priority::Visible,
+            )]);
+            let wake = futures::task::noop_waker();
+            let mut cx = Context::from_waker(&wake);
+            driver.step(&mut reader, 0, &mut cx);
+            assert_eq!(reader.residency().requests, 0);
+            assert!(reader.cache().record(&path, 0).is_none());
+            assert!(
+                reader.poll(0).is_empty(),
+                "a definite refusal is not retried"
+            );
+            assert_eq!(
+                reader.issues().map(|(path, _)| path).collect::<Vec<_>>(),
+                vec![&path],
+                "a refused read must become observable rather than stay pending"
+            );
+            assert_eq!(
+                reader.issue(&path),
+                Some(&ReadIssue::Refused(StreamError::NotFound))
+            );
+            assert!(std::ptr::eq(
+                reader.issue(&path).unwrap(),
+                reader.issues.get(&path).unwrap()
+            ));
+            assert_eq!(reader.connectivity(), Connectivity::Online);
+            assert_eq!(reader.next_deadline(), None);
+
+            #[cfg(any(feature = "agents", feature = "wasm"))]
+            {
+                use super::super::live::{Error, Source};
+                use std::num::NonZeroU32;
+
+                let source = Source::new(path.clone());
+                let original_issue = reader.issue(&path).unwrap();
+                let Err(Error::Source(latest_issue)) = source.latest(&reader) else {
+                    panic!("a refused live value must retain its original cause");
+                };
+                let Err(Error::Source(page_issue)) =
+                    source.page(&reader, 0, NonZeroU32::new(1).unwrap())
+                else {
+                    panic!("a refused live page must retain its original cause");
+                };
+                assert!(std::ptr::eq(latest_issue, original_issue));
+                assert!(std::ptr::eq(page_issue, original_issue));
+            }
+
+            let available = StreamPath::new("available/original-source").unwrap();
+            provider
+                .append(AppendRequest {
+                    path: available.clone(),
+                    records: vec![b"unrelated committed row".as_slice().into()],
+                    if_tail: Some(0),
+                    idempotency_key: IdempotencyKey::new(b"publish-available-source".to_vec())
+                        .unwrap(),
+                })
+                .await
+                .unwrap();
+            reader.plan([path.clone(), available.clone()].map(|stream| {
+                (
+                    Want::Range {
+                        stream,
+                        from: 0,
+                        to: 1,
+                    },
+                    Priority::Visible,
+                )
+            }));
+            driver.step(&mut reader, 0, &mut cx);
+            assert_eq!(
+                reader.cache().record(&available, 0).unwrap().as_ref(),
+                b"unrelated committed row",
+                "a definite refusal cannot delay another stream"
+            );
+            assert_eq!(
+                reader.issue(&path),
+                Some(&ReadIssue::Refused(StreamError::NotFound))
+            );
+
+            provider
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: vec![b"original committed row".as_slice().into()],
+                    if_tail: Some(0),
+                    idempotency_key: IdempotencyKey::new(b"publish-refused-source".to_vec())
+                        .unwrap(),
+                })
+                .await
+                .unwrap();
+            driver.step(&mut reader, 1, &mut cx);
+            assert!(
+                reader.cache().record(&path, 0).is_none(),
+                "publication does not acknowledge a refusal"
+            );
+            reader.acknowledge_issue(&path);
+            assert!(reader.issue(&path).is_none());
+            driver.step(&mut reader, 2, &mut cx);
+            assert_eq!(
+                reader.cache().record(&path, 0).unwrap().as_ref(),
+                b"original committed row"
+            );
+        });
+    }
     #[test]
     fn listing_views_keep_original_projection_witness_and_cut() {
         use super::super::{ListingProjection, Priority, ReaderPolicy, Want};
@@ -701,7 +1045,7 @@ mod tests {
             // Returning request custody on transient failure preserves the
             // original observations without a second plan or copied map.
             for op in &ops {
-                reader.complete(op.id(), Outcome::Failed(Failure::Unavailable), 1);
+                reader.complete(op.id(), Outcome::Failed(StreamError::Unavailable), 1);
             }
             let retry_at = reader.next_deadline().unwrap();
             assert!(reader.poll(retry_at - 1).is_empty());
@@ -994,11 +1338,20 @@ mod tests {
             reader.set_follows(paths.clone());
             assert_eq!(reader.follows().count(), 5);
             let inserted = reader.follow_insertions;
+            reader.follow_selection_visits = 0;
             reader.set_follows(paths.iter().rev().chain(&paths).cloned());
+            let replacement_visits = reader.follow_selection_visits;
+            assert_eq!(replacement_visits, 15);
             assert_eq!(
                 reader.follow_insertions, inserted,
                 "unchanged selection rebuilt retained follow entries"
             );
+            reader.follow_selection_visits = 0;
+            reader.set_follow(paths[4].clone(), true);
+            reader.set_follow(paths[4].clone(), true);
+            assert_eq!(reader.follow_selection_visits, 2);
+            assert_eq!(reader.follow_insertions, inserted);
+            assert_eq!(reader.follow_changes.len(), 5);
             eprintln!("follow membership: selected=5 duplicate_inputs=10 new_entries=0");
             let woken = Arc::new(Woken(AtomicBool::new(true)));
             let waker = Waker::from(woken.clone());
@@ -1024,8 +1377,10 @@ mod tests {
                         .await
                         .unwrap();
                     reader.observed_head(&path, provider.head(path.clone()).await.unwrap(), None);
+                    reader.follow_selection_visits = 0;
+                    reader.set_follow(path.clone(), true);
+                    assert_eq!(reader.follow_selection_visits, 1);
                     paths.push(path);
-                    reader.set_follows(paths.clone());
                     assert_eq!(reader.follow_insertions, paths.len());
                 }
             }
@@ -1068,7 +1423,12 @@ mod tests {
             reader.set_follows(paths[..4].iter().cloned());
             driver.step(&mut reader, 0, &mut cx);
             assert_eq!(driver.waiting.len(), 4);
-            reader.set_follows([paths[1].clone()]);
+            reader.follow_selection_visits = 0;
+            for index in [0, 2, 3, 0] {
+                reader.set_follow(paths[index].clone(), false);
+            }
+            assert_eq!(reader.follow_selection_visits, 4);
+            assert_eq!(reader.follow_changes.len(), 3);
             driver.step(&mut reader, 0, &mut cx);
             assert_eq!(driver.waiting.len(), 1);
             assert_eq!(driver.first_waiting.as_ref(), Some(&paths[1]));
@@ -1080,6 +1440,24 @@ mod tests {
             assert!(driver.waiting.is_empty());
             assert!(driver.first_waiting.is_none());
             assert!(driver.last_waiting.is_none());
+            reader.set_follow(paths[1].clone(), true);
+            driver.step(&mut reader, 0, &mut cx);
+            assert_eq!(driver.open_follows(), 1);
+            assert!(reader.follow_changes.is_empty());
+            reader.set_follow(paths[1].clone(), false);
+            reader.set_follow(paths[1].clone(), false);
+            assert_eq!(reader.follow_changes.len(), 1);
+            driver.step(&mut reader, 0, &mut cx);
+            assert_eq!(driver.open_follows(), 0);
+            reader.denied(&paths[1]);
+            reader.set_follow(paths[1].clone(), true);
+            reader.set_follow(StreamPath::new("opening/unknown").unwrap(), true);
+            driver.step(&mut reader, 0, &mut cx);
+            assert_eq!(driver.open_follows(), 0);
+            assert!(reader.follows.is_empty());
+            eprintln!(
+                "follow selection visits: full_replacement={replacement_visits} point_update=1 duplicate_removals=4 retired_sources=3"
+            );
             assert_eq!(reader.issued(), 0);
             assert_eq!(reader.next_deadline(), None);
         });
@@ -1424,7 +1802,10 @@ mod tests {
                 .unwrap();
             let changed_id = changed.id();
             let outcome = execute(&provider, changed).await;
-            assert!(matches!(&outcome, Outcome::Failed(Failure::Changed)));
+            assert!(matches!(
+                &outcome,
+                Outcome::Failed(StreamError::HierarchyChanged)
+            ));
             reader.complete(changed_id, outcome, 0);
             assert_eq!(reader.take_cancelled(), vec![late_id]);
             reader.complete(late_id, old_page, 0);

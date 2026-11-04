@@ -23,7 +23,9 @@ pub mod live;
 mod requests;
 
 pub use backing::RecordBytes;
-pub use cache::{Listing, ListingProjection, ListingProjections, RecordCache, SnapshotError};
+pub use cache::{
+    Listing, ListingProjection, ListingProjections, RecordCache, RecordSegment, SnapshotError,
+};
 pub use credential::CredentialStatus;
 use credential::{Access, Credentials};
 use demand::Demands;
@@ -264,8 +266,8 @@ pub enum Outcome {
         /// Hierarchy version the page was read at.
         version: CommitId,
     },
-    /// The op failed.
-    Failed(Failure),
+    /// The original provider failure; scheduling is derived with [`Failure::of`].
+    Failed(StreamError),
 }
 
 /// Failure classes the scheduler reacts to.
@@ -275,7 +277,7 @@ pub enum Failure {
     Unavailable,
     /// The server shed load: back off longer and pause prefetch.
     Overloaded,
-    /// A definite refusal: do not retry this read.
+    /// A definite refusal: do not retry this operation without acknowledgment.
     Refused,
     /// The credential cannot read this stream; surface it and discard its cache.
     Denied,
@@ -304,7 +306,7 @@ impl Failure {
 }
 
 /// A reader discontinuity that applications must show separately from outages.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReadIssue {
     /// Authorization failed; cached bytes for the stream were discarded.
     AccessDenied,
@@ -312,6 +314,8 @@ pub enum ReadIssue {
     RetentionLost,
     /// A directory continuation observed concurrent hierarchy changes.
     HierarchyChanged,
+    /// The original definite provider refusal; acknowledge before following again.
+    Refused(StreamError),
 }
 
 /// What the client can promise about freshness.
@@ -495,6 +499,8 @@ pub struct Reader {
     follow_mark: bool,
     #[cfg(test)]
     follow_insertions: usize,
+    #[cfg(test)]
+    follow_selection_visits: usize,
     follow_changes: BTreeSet<StreamPath>,
     delivered: usize,
     next_id: u64,
@@ -537,6 +543,8 @@ impl Reader {
             follow_mark: false,
             #[cfg(test)]
             follow_insertions: 0,
+            #[cfg(test)]
+            follow_selection_visits: 0,
             follow_changes: BTreeSet::new(),
             delivered: 0,
             next_id: 1,
@@ -1070,7 +1078,7 @@ impl Reader {
         };
         let protect = Some(self.frame_mark);
         let accepted = match (&flight.key, outcome) {
-            (_, Outcome::Failed(Failure::Changed)) => {
+            (_, Outcome::Failed(StreamError::HierarchyChanged)) => {
                 // This witness covers the whole hierarchy, not just the page
                 // reporting it. Old continuations cannot be rebound to a new
                 // version by an intervening reply or another driver wake.
@@ -1086,11 +1094,12 @@ impl Reader {
                 self.report_issue(flight.key.path(), ReadIssue::HierarchyChanged);
                 return;
             }
-            (_, Outcome::Failed(Failure::RetentionLost)) => {
+            (_, Outcome::Failed(StreamError::PrefixNotRetained)) => {
                 self.replaced(flight.key.path());
                 return;
             }
-            (_, Outcome::Failed(failure)) => {
+            (_, Outcome::Failed(error)) => {
+                let failure = Failure::of(&error);
                 if failure != Failure::Denied {
                     self.demand.restore_paging(
                         &flight.key,
@@ -1100,6 +1109,8 @@ impl Reader {
                 }
                 if failure == Failure::Denied {
                     self.denied(flight.key.path());
+                } else if failure == Failure::Refused {
+                    self.report_issue(flight.key.path(), ReadIssue::Refused(error));
                 }
                 if matches!(failure, Failure::Refused | Failure::Denied) {
                     self.refused.insert(flight.key.clone(), flight.ticket);
@@ -1109,6 +1120,9 @@ impl Reader {
             }
             (OpKey::Read(stream, from), Outcome::Records(records)) => {
                 let valid = records.len() <= self.policy.read_limit as usize
+                    // Validate the exclusive end once before per-row arithmetic
+                    // or mutation. The admitted count also bounds each offset.
+                    && from.checked_add(records.len() as u64).is_some()
                     && records
                         .iter()
                         .enumerate()
@@ -1138,9 +1152,13 @@ impl Reader {
                 let valid = children.len() <= self.policy.listing_limit as usize
                     && children.iter().all(|child| {
                         child
-                            .origin
+                            .tail
                             .as_ref()
-                            .is_none_or(|origin| origin.source != child.path)
+                            .is_none_or(|row| row.sequence < u64::MAX)
+                            && child
+                                .origin
+                                .as_ref()
+                                .is_none_or(|origin| origin.source != child.path)
                     })
                     && children
                         .windows(2)
@@ -1168,6 +1186,10 @@ impl Reader {
         } else {
             self.demand
                 .restore_paging(&flight.key, flight.paging, false);
+            self.report_issue(
+                flight.key.path(),
+                ReadIssue::Refused(StreamError::InvalidResponse),
+            );
             self.refused.insert(flight.key, flight.ticket);
         }
     }
@@ -1365,7 +1387,14 @@ impl Reader {
         }
     }
 
-    fn fail(&mut self, failure: Failure, now: u64) {
+    fn fail(&mut self, failure: Failure, now: u64) -> bool {
+        let overloaded = match failure {
+            Failure::Unavailable => false,
+            Failure::Overloaded => true,
+            Failure::Refused | Failure::Denied | Failure::RetentionLost | Failure::Changed => {
+                return false;
+            }
+        };
         self.failures = self.failures.saturating_add(1);
         self.since.get_or_insert(now);
         let shift = (self.failures - 1).min(20);
@@ -1377,9 +1406,10 @@ impl Reader {
         // Deterministic jitter spreads reconnecting clients apart.
         let jitter = self.next_id.wrapping_mul(0x9E37_79B9) % (backoff / 4 + 1);
         self.retry_at = now.saturating_add(backoff + jitter);
-        if failure == Failure::Overloaded {
+        if overloaded {
             self.prefetch_paused_until = now.saturating_add(backoff.saturating_mul(4));
         }
+        true
     }
 
     fn recovered(&mut self) -> bool {
@@ -1397,46 +1427,15 @@ impl Reader {
     /// whose stream tail ran more than `lag` ahead jumps to the last records;
     /// nothing is dropped, earlier records remain readable on demand.
     pub fn set_follows(&mut self, streams: impl IntoIterator<Item = StreamPath>) {
-        use std::collections::btree_map::Entry;
         self.follow_mark = !self.follow_mark;
         for stream in streams {
-            if self.issues.get(&stream) == Some(&ReadIssue::AccessDenied) {
-                continue;
-            }
-            let Some(tail) = self.cache.tail(&stream) else {
-                continue;
-            };
-            let resume = self.cache.resume_from(&stream);
-            match self.follows.entry(stream) {
-                Entry::Occupied(mut entry) => {
-                    let intent = entry.get_mut();
-                    let from = resume.unwrap_or_else(|| {
-                        if tail.saturating_sub(intent.from) <= self.policy.lag {
-                            intent.from
-                        } else {
-                            tail
-                        }
-                    });
-                    intent.selected = self.follow_mark;
-                    if intent.from != from {
-                        intent.from = from;
-                        self.follow_changes.insert(entry.key().clone());
-                    }
-                }
-                Entry::Vacant(entry) => {
-                    #[cfg(test)]
-                    {
-                        self.follow_insertions += 1;
-                    }
-                    self.follow_changes.insert(entry.key().clone());
-                    entry.insert(FollowIntent {
-                        from: resume.unwrap_or(tail),
-                        selected: self.follow_mark,
-                    });
-                }
-            }
+            self.set_follow(stream, true);
         }
         self.follows.retain(|path, intent| {
+            #[cfg(test)]
+            {
+                self.follow_selection_visits += 1;
+            }
             if intent.selected == self.follow_mark {
                 true
             } else {
@@ -1446,11 +1445,77 @@ impl Reader {
         });
     }
 
+    /// Update one live-tail selection without visiting unrelated selections.
+    /// Selecting uses the same observed tail, resume position and lag rule as
+    /// [`Self::set_follows`]; a missing or denied tail is not admitted. Repeating
+    /// an unchanged selection neither reopens its source nor consumes credit.
+    /// Removing it releases its original pending or open source when the driver
+    /// next runs, including while delivery or opening credit is exhausted.
+    ///
+    /// Work is keyed O(log selected streams), plus the original cache lookups.
+    /// Full replacement still examines every supplied and retained selection.
+    pub fn set_follow(&mut self, stream: StreamPath, selected: bool) {
+        use std::collections::btree_map::Entry;
+        #[cfg(test)]
+        {
+            self.follow_selection_visits += 1;
+        }
+        if !selected {
+            if self.follows.remove(&stream).is_some() {
+                self.follow_changes.insert(stream);
+            }
+            return;
+        }
+        if matches!(
+            self.issues.get(&stream),
+            Some(ReadIssue::AccessDenied | ReadIssue::Refused(_))
+        ) {
+            return;
+        }
+        let Some(tail) = self.cache.tail(&stream) else {
+            return;
+        };
+        let resume = self.cache.resume_from(&stream);
+        match self.follows.entry(stream) {
+            Entry::Occupied(mut entry) => {
+                let intent = entry.get_mut();
+                let from = resume.unwrap_or_else(|| {
+                    if tail.saturating_sub(intent.from) <= self.policy.lag {
+                        intent.from
+                    } else {
+                        tail
+                    }
+                });
+                intent.selected = self.follow_mark;
+                if intent.from != from {
+                    intent.from = from;
+                    self.follow_changes.insert(entry.key().clone());
+                }
+            }
+            Entry::Vacant(entry) => {
+                #[cfg(test)]
+                {
+                    self.follow_insertions += 1;
+                }
+                self.follow_changes.insert(entry.key().clone());
+                entry.insert(FollowIntent {
+                    from: resume.unwrap_or(tail),
+                    selected: self.follow_mark,
+                });
+            }
+        }
+    }
+
     /// Wanted follows and their current start positions.
     pub fn follows(&self) -> impl Iterator<Item = (&StreamPath, u64)> {
         self.follows
             .iter()
             .map(|(path, intent)| (path, intent.from))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_follow_selection_visits(&mut self) -> usize {
+        std::mem::take(&mut self.follow_selection_visits)
     }
 
     /// Whether this frame still folds follow deliveries. When false the
@@ -1466,13 +1531,21 @@ impl Reader {
         if !self.readable() {
             return;
         }
+        let Some(next) = record
+            .sequence
+            .checked_add(1)
+            .filter(|next| *next <= accepted)
+        else {
+            self.refuse_follow(stream, StreamError::InvalidResponse);
+            return;
+        };
         self.delivered += 1;
         self.generation += 1;
         self.follow_backoff = false;
         self.recovered();
         self.cache.observe_tail(stream, accepted);
         if let Some(intent) = self.follows.get_mut(stream) {
-            intent.from = intent.from.max(record.sequence + 1);
+            intent.from = intent.from.max(next);
             self.keep(stream, record, Some(self.frame_mark));
         }
     }
@@ -1497,7 +1570,15 @@ impl Reader {
     /// Unacknowledged read failures and cursor discontinuities. Source replacement
     /// retires its issues; unrelated failures cannot acknowledge them.
     pub fn issues(&self) -> impl Iterator<Item = (&StreamPath, ReadIssue)> {
-        self.issues.iter().map(|(path, issue)| (path, *issue))
+        self.issues
+            .iter()
+            .map(|(path, issue)| (path, issue.clone()))
+    }
+
+    /// The latest unacknowledged issue for one selected source, borrowed from
+    /// the existing keyed issue index. Operation retry custody remains separate.
+    pub fn issue(&self, stream: &StreamPath) -> Option<&ReadIssue> {
+        self.issues.get(stream)
     }
 
     /// Acknowledge a displayed issue. Retry a denial only after renewing authority.
@@ -1513,6 +1594,14 @@ impl Reader {
 
     fn report_issue(&mut self, stream: &StreamPath, issue: ReadIssue) {
         self.issues.insert(stream.clone(), issue);
+    }
+
+    fn refuse_follow(&mut self, stream: &StreamPath, error: StreamError) {
+        self.generation += 1;
+        self.report_issue(stream, ReadIssue::Refused(error));
+        if self.follows.remove(stream).is_some() {
+            self.follow_changes.insert(stream.clone());
+        }
     }
 
     /// Refuse further delivery under a denied stream's old authority.
@@ -1557,11 +1646,13 @@ impl Reader {
         self.readable() && now >= self.retry_at
     }
 
-    /// A live follow failed to open or ended: back off like a read.
+    /// A live follow failed to open or ended: only transient failures back off,
+    /// as with finite reads. Definite failures retain their source disposition.
     pub fn follow_failed(&mut self, failure: Failure, now: u64) {
-        self.generation += 1;
-        self.follow_backoff = true;
-        self.fail(failure, now);
+        if self.fail(failure, now) {
+            self.generation += 1;
+            self.follow_backoff = true;
+        }
     }
 
     /// A wanted follow opened: it no longer waits on the retry deadline.
@@ -2232,7 +2323,7 @@ mod reader_tests {
         ] {
             want(&mut reader, key);
         }
-        reader.complete(ops[0].id(), Outcome::Failed(Failure::Denied), 0);
+        reader.complete(ops[0].id(), Outcome::Failed(StreamError::AccessDenied), 0);
         assert_eq!(
             reader.demand.take_invalidation_visits(),
             10,
@@ -2530,7 +2621,11 @@ mod reader_tests {
             retry.begin_frame(0);
             retry.plan([want(0, Priority::Visible)]);
             let original = retry.poll(0);
-            retry.complete(original[0].id(), Outcome::Failed(Failure::Unavailable), 0);
+            retry.complete(
+                original[0].id(),
+                Outcome::Failed(StreamError::Unavailable),
+                0,
+            );
             assert!(retry.poll(0).is_empty());
             let at = retry.next_deadline().expect("original retry timer");
             retry.begin_frame(at);
@@ -2571,7 +2666,7 @@ mod reader_tests {
             let refused_ops = refused.poll(0);
             assert_eq!(refused_ops.len(), heads.len());
             for op in &refused_ops {
-                refused.complete(op.id(), Outcome::Failed(Failure::Refused), 0);
+                refused.complete(op.id(), Outcome::Failed(StreamError::Unsupported), 0);
             }
             refused.network_changed(true, 1);
             refused.demand.take_visits();
@@ -2629,7 +2724,7 @@ mod reader_tests {
             assert_eq!(first.len(), 1);
             withdrawn.plan([]);
             withdrawn.plan(wants().skip(1).take(1));
-            withdrawn.complete(first[0].id(), Outcome::Failed(Failure::Refused), 1);
+            withdrawn.complete(first[0].id(), Outcome::Failed(StreamError::Unsupported), 1);
             withdrawn.network_changed(true, 1);
             withdrawn.plan(wants().take(2).rev());
             withdrawn.acknowledge_issue(&denied);

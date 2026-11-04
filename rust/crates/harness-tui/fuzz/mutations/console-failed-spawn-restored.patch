@@ -1,0 +1,6 @@
+--- a/rust/crates/harness-tui/src/term/console_owner.rs
++++ b/rust/crates/harness-tui/src/term/console_owner.rs
+@@ -289,2 +289,3 @@
+             Err(error) => {
++                state.restored = true;
+                 state.phase = Phase::Cancelled;

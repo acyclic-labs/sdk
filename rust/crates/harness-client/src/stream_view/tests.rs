@@ -196,6 +196,23 @@ async fn metadata_retention_counts_one_pass_and_refuses_uncharged_backing()
         }
         let mut exact = view(&path, expected);
         exact.apply(&frame, 1)?;
+        // A caller may authorize more display credit than the selected data
+        // needs. Admission must not reserve that unused credit or change the
+        // original row's charge; retention remains lazy under both budgets.
+        let mut wide = StreamView::new(
+            StreamViewPolicy::new(usize::MAX, usize::MAX)?,
+            0,
+            0,
+            false,
+            Some(path.clone()),
+            BackingPool::default(),
+        );
+        METADATA_VISITS.set(0);
+        wide.apply(&frame, 1)?;
+        assert_eq!(wide.record(0), exact.record(0));
+        assert_eq!(wide.retained_bytes(), expected);
+        assert_eq!(wide.records.capacity(), exact.records.capacity());
+        assert_eq!(METADATA_VISITS.get(), count * 2);
         let mut short = view(&path, expected - 1);
         assert!(matches!(
             short.apply(&frame, 1),

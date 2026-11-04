@@ -1,0 +1,10 @@
+--- a/rust/crates/harness-tui/src/term/frame.rs
++++ b/rust/crates/harness-tui/src/term/frame.rs
+@@ -457,7 +457,6 @@
+         backend.output.frame.clear();
+         // Restate every device assumption before repainting: attributes,
+         // margins, cells, then the requested cursor at the checked boundary.
+-        backend.output.frame.extend_from_slice(b"\x1b[0m");
+         if self.scroll_regions {
+             backend.output.reset_margins();
+         }

@@ -72,9 +72,6 @@ impl Write for Screen {
 
 struct Output<W: Write> {
     state: Arc<Mutex<State<W>>>,
-    broken: bool,
-    strip_attribute_reset: bool,
-    strip_cell_repaint: bool,
 }
 impl<W: Write> Present for Output<W> {
     fn present(&mut self, frame: &mut Vec<u8>, effects: FrameEffects) -> io::Result<()> {
@@ -91,17 +88,6 @@ impl<W: Write> Present for Output<W> {
         effects: FrameEffects,
         expected: Option<u64>,
     ) -> io::Result<Option<u64>> {
-        if self.broken && frame.is_empty() {
-            // Old commit returned before touching the lifecycle boundary.
-            return Ok(expected);
-        }
-        if self.strip_attribute_reset && expected.is_none() && frame.starts_with(b"\x1b[0m") {
-            // Keep the real checked lifecycle path and omit only its repair.
-            frame.drain(..4);
-        }
-        if self.strip_cell_repaint && expected.is_none() {
-            frame.retain(|&byte| byte != b'Z');
-        }
         lifecycle::present_if_current(&self.state, frame, effects, expected)
     }
 }
@@ -111,7 +97,7 @@ fn resume(state: &Mutex<State<Screen>>) {
     lifecycle::resume(state, |_| Ok(())).unwrap();
 }
 
-fn model(broken: bool, during_render: bool) {
+fn model(during_render: bool) {
     // State is the actual production lifecycle mutex through its loom shim.
     // Rendering and worker joins happen outside that state lock.
     loom::model(move || {
@@ -119,9 +105,6 @@ fn model(broken: bool, during_render: bool) {
         let mut terminal = FrameTerminal::new(
             Output {
                 state: Arc::clone(&state),
-                broken,
-                strip_attribute_reset: false,
-                strip_cell_repaint: false,
             },
             Size::new(2, 2),
         )
@@ -173,19 +156,14 @@ fn model(broken: bool, during_render: bool) {
 
 #[test]
 fn presentation_and_resume_use_the_real_lifecycle_mutex() {
-    model(false, false);
+    model(false);
 }
 #[test]
 fn resume_after_the_render_snapshot_is_repaired() {
-    model(false, true);
-}
-#[test]
-#[should_panic(expected = "resume before commit must not leave the cursor shown")]
-fn negative_control_empty_frames_cannot_skip_the_lifecycle_boundary() {
-    model(true, true);
+    model(true);
 }
 
-fn attributes_model(broken: bool) {
+fn attributes_model() {
     // The production state lock serializes the actual outside write and frame
     // presentation. Device state is private to that lock. No secondary lock is
     // taken by the device or while joining workers.
@@ -195,9 +173,6 @@ fn attributes_model(broken: bool) {
         let mut terminal = FrameTerminal::new(
             Output {
                 state: Arc::clone(&state),
-                broken: false,
-                strip_attribute_reset: broken,
-                strip_cell_repaint: false,
             },
             size,
         )
@@ -237,15 +212,10 @@ fn attributes_model(broken: bool) {
 
 #[test]
 fn checked_presentation_recovers_attributes_under_the_real_lock() {
-    attributes_model(false);
-}
-#[test]
-#[should_panic(expected = "checked recovery must reset attributes before cells")]
-fn negative_control_checked_recovery_cannot_omit_attributes() {
-    attributes_model(true);
+    attributes_model();
 }
 
-fn contents_model(broken: bool, during_render: bool) {
+fn contents_model(during_render: bool) {
     // State is the real lifecycle mutex. Both writers use that same lock;
     // worker joins occur outside the lock.
     loom::model(move || {
@@ -254,9 +224,6 @@ fn contents_model(broken: bool, during_render: bool) {
         let mut terminal = FrameTerminal::new(
             Output {
                 state: Arc::clone(&state),
-                broken: false,
-                strip_attribute_reset: false,
-                strip_cell_repaint: broken,
             },
             size,
         )
@@ -298,11 +265,6 @@ fn contents_model(broken: bool, during_render: bool) {
 #[test]
 fn retained_cells_recover_under_the_real_lifecycle_lock() {
     for during_render in [false, true] {
-        contents_model(false, during_render);
+        contents_model(during_render);
     }
-}
-#[test]
-#[should_panic(expected = "retained contents must follow lifecycle invalidation")]
-fn negative_control_checked_recovery_cannot_omit_retained_cells() {
-    contents_model(true, false);
 }

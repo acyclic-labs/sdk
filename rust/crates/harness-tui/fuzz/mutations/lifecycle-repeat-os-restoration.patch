@@ -1,0 +1,8 @@
+--- a/rust/crates/harness-tui/src/term/lifecycle.rs
++++ b/rust/crates/harness-tui/src/term/lifecycle.rs
+@@ -148,5 +148,2 @@
+     let changed = state.notify();
+-    if state.restored {
+-        return changed;
+-    }
+     let dec = state.guard.restore();

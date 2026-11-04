@@ -297,46 +297,48 @@ impl<W: Write + Send + 'static, N: CloseWake + 'static> Owner<W, N> {
     }
 
     fn quiesce(&self, wait_for_ack: bool) -> io::Result<()> {
-        self.quiesce_generation::<true>(wait_for_ack, None)
+        self.quiesce_generation(wait_for_ack, None)
     }
 
     fn cancel_background(this: &Arc<Self>, generation: u64) {
         let owner = Arc::clone(this);
         #[cfg(loom)]
         let _worker = thread::spawn(move || {
-            let _ = owner.quiesce_generation::<true>(true, Some(generation));
+            let _ = owner.quiesce_generation(true, Some(generation));
         });
         #[cfg(not(loom))]
         let _worker = thread::Builder::new()
             .name("terminal-cancel".into())
             .spawn(move || {
-                let _ = owner.quiesce_generation::<true>(true, Some(generation));
+                let _ = owner.quiesce_generation(true, Some(generation));
             });
     }
 
-    fn quiesce_generation<const FENCE_WAKE: bool>(
-        &self,
-        wait_for_ack: bool,
-        generation: Option<u64>,
-    ) -> io::Result<()> {
+    fn quiesce_generation(&self, wait_for_ack: bool, generation: Option<u64>) -> io::Result<()> {
         let mut state = self.state.lock().map_err(|_| io::ErrorKind::Other)?;
         if generation.is_some_and(|value| value != state.generation) {
             return Ok(());
         }
         state.phase = Phase::Cancelled;
+        let current = state.generation;
+        // A cancellation owns the original worker handle across every wait.
+        // Reacquiring owner state must never select replacement work.
+        let worker = if wait_for_ack && !state.acknowledged {
+            state.worker.clone()
+        } else {
+            None
+        };
         while wait_for_ack && !state.acknowledged {
             // A notified waiter may reacquire after replacement. Cancellation
             // still belongs to its original operation, never the new worker.
-            if FENCE_WAKE && generation.is_some_and(|value| value != state.generation) {
+            if current != state.generation {
                 return Ok(());
             }
             // Repeat cancellation across the pre-submission race. An idle
             // worker skips the action; a submitted worker must finish/abort.
-            let worker = state.worker.clone();
-            let current = state.generation;
             drop(state);
-            if let Some(worker) = worker {
-                (self.cancel)(&worker);
+            if let Some(worker) = &worker {
+                (self.cancel)(worker);
             }
             state = self.state.lock().map_err(|_| io::ErrorKind::Other)?;
             if current != state.generation {
@@ -400,85 +402,48 @@ mod tests {
     use crate::term::{Capabilities, ModeState};
     use loom::sync::atomic::{AtomicBool, Ordering};
 
-    fn profile_model(broken: bool) {
-        loom::model(move || {
-            let caps = crate::term::Capabilities {
+    #[test]
+    fn metadata_and_io_follow_the_original_guard_handoff() {
+        loom::model(|| {
+            let caps = Capabilities {
                 scroll_regions: true,
-                ..crate::term::Capabilities::default()
+                ..Capabilities::default()
             };
             let owner = Owner::new(RestoreGuard::new(Vec::<u8>::new(), &caps), |_| {});
             assert!(owner.supports_scroll_regions());
-            let borrowing = Arc::clone(&owner);
-            let worker = thread::spawn(move || {
-                Owner::run(&borrowing, Instant::now() + Duration::from_secs(10), |_| {
-                    Ok(())
-                })
-                .unwrap()
-            });
-            let _ = owner.supports_scroll_regions();
-            worker.join().unwrap();
-            assert!(owner.supports_scroll_regions());
-            let guard = owner.state.lock().unwrap().guard.take().unwrap();
-            let supported = broken || owner.supports_scroll_regions();
-            assert!(!supported, "borrowed profile must be unknown");
-            owner.state.lock().unwrap().guard = Some(guard);
-        });
-    }
-    #[test]
-    fn scroll_profile_observation_follows_guard_ownership() {
-        profile_model(false);
-    }
-    #[test]
-    fn negative_control_scroll_profile_cannot_outlive_guard_ownership() {
-        assert!(std::panic::catch_unwind(|| profile_model(true)).is_err());
-    }
-
-    fn counter_model(broken: bool) {
-        loom::model(move || {
-            let owner = Owner::new(
-                RestoreGuard::new(Vec::<u8>::new(), &Capabilities::default()),
-                |_| {},
-            );
             assert_eq!(owner.outside_writes(), Some(0));
             assert_eq!(owner.empty_if_current(Some(0)).unwrap(), Some(0));
             assert!(owner.state.lock().unwrap().worker.is_none());
-            let writing = Arc::clone(&owner);
-            let worker = thread::spawn(move || {
-                Owner::run(
-                    &writing,
-                    Instant::now() + Duration::from_secs(10),
-                    |guard| guard.writer().write_all(b"outside"),
-                )
-                .unwrap();
-            });
-            // During the handoff the worker owns the guard, so None is valid.
-            assert!(matches!(owner.outside_writes(), None | Some(0 | 1)));
-            worker.join().unwrap();
+
+            let checking = Arc::clone(&owner);
+            let (free, profile, generation, empty) = Owner::run(
+                &owner,
+                Instant::now() + Duration::from_secs(10),
+                move |guard| {
+                    // The production worker owns the guard here. Observe the
+                    // original owner before the same worker returns it and
+                    // acknowledges completion; no borrowed state is seeded.
+                    let free = checking.state.try_lock().is_ok();
+                    let profile = checking.supports_scroll_regions();
+                    let generation = checking.outside_writes();
+                    let empty = checking.empty_if_current(Some(0))?;
+                    guard.writer().write_all(b"outside")?;
+                    Ok((free, profile, generation, empty))
+                },
+            )
+            .expect("console I/O action must complete");
+            assert!(free, "console I/O retained owner state");
+            assert!(!profile, "borrowed profile must be unknown");
+            assert!(generation.is_none(), "borrowed guard must be unknown");
+            assert!(
+                empty.is_none(),
+                "borrowed guard acknowledged an empty frame"
+            );
+            assert!(owner.supports_scroll_regions());
             assert_eq!(owner.outside_writes(), Some(1));
             assert_eq!(owner.empty_if_current(Some(0)).unwrap(), None);
             assert_eq!(owner.empty_if_current(Some(1)).unwrap(), Some(1));
-            let mut state = owner.state.lock().unwrap();
-            let guard = state.guard.take().unwrap();
-            drop(state);
-            assert_eq!(owner.empty_if_current(Some(1)).unwrap(), None);
-            let observed = if broken {
-                Some(1)
-            } else {
-                owner.outside_writes()
-            };
-            assert_eq!(observed, None, "borrowed guard must be unknown");
-            owner.state.lock().unwrap().guard = Some(guard);
         });
-    }
-
-    #[test]
-    fn counter_observation_follows_the_guard_handoff() {
-        counter_model(false);
-    }
-
-    #[test]
-    fn negative_control_counter_cannot_reuse_a_borrowed_guard() {
-        assert!(std::panic::catch_unwind(|| counter_model(true)).is_err());
     }
 
     struct Console {
@@ -503,8 +468,9 @@ mod tests {
             Ok(())
         }
     }
-    fn model(broken: bool) {
-        loom::model(move || {
+    #[test]
+    fn console_worker_acknowledges_before_restoration() {
+        loom::model(|| {
             let restored = Arc::new(AtomicBool::new(false));
             let late = Arc::new(AtomicBool::new(false));
             let (submitting, submitted) = loom::sync::mpsc::channel();
@@ -528,158 +494,95 @@ mod tests {
             // check and may pause immediately before the native write. This
             // removes unrelated open/close-before-submit permutations.
             submitted.recv().unwrap_or_else(|error| panic!("{error}"));
-            if broken {
-                owner
-                    .state
-                    .lock()
-                    .unwrap_or_else(|error| panic!("{error:?}"))
-                    .closed = true;
-                owner
-                    .quiesce(false)
-                    .unwrap_or_else(|error| panic!("{error}"));
-                restored.store(true, Ordering::SeqCst);
-            } else {
-                Owner::close(&owner, |writer| {
-                    writer.restored.store(true, Ordering::SeqCst);
-                    Ok(())
-                })
-                .unwrap_or_else(|error| panic!("{error}"));
-            }
+            Owner::close(&owner, |writer| {
+                writer.restored.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+            .unwrap_or_else(|error| panic!("{error}"));
             assert!(
                 !late.load(Ordering::SeqCst),
                 "write after acknowledged restoration"
             );
         });
     }
-    #[test]
-    fn console_worker_acknowledges_before_restoration() {
-        model(false);
+    struct Cancellation {
+        original: Option<thread::ThreadId>,
+        started: Option<loom::sync::mpsc::Sender<()>>,
     }
-    #[test]
-    fn negative_control_detects_unfenced_native_submission() {
-        assert!(std::panic::catch_unwind(|| model(true)).is_err());
-    }
-
-    fn lock_model(broken: bool) {
-        loom::model(move || {
-            let owner = Owner::new(
-                RestoreGuard::new(Vec::new(), &Capabilities::default()),
-                |_| {},
-            );
-            let checking = Arc::clone(&owner);
-            let free = Owner::run(
-                &owner,
-                Instant::now() + Duration::from_secs(10),
-                move |_| {
-                    if broken {
-                        // Negative control: the old driver path retained owner
-                        // state while waiting for its setup/restoration I/O.
-                        let _held = checking
-                            .state
-                            .lock()
-                            .unwrap_or_else(|error| panic!("{error:?}"));
-                        Ok(checking.state.try_lock().is_ok())
-                    } else {
-                        Ok(checking.state.try_lock().is_ok())
-                    }
-                },
-            );
-            assert_eq!(free.ok(), Some(true));
-        });
-    }
-    #[test]
-    fn console_setup_and_restore_io_release_owner_state() {
-        lock_model(false);
-    }
-    #[test]
-    fn negative_control_detects_io_wait_under_owner_state() {
-        assert!(std::panic::catch_unwind(|| lock_model(true)).is_err());
-    }
-
     loom::lazy_static! {
-        static ref CANCELLATIONS: Mutex<(Vec<thread::ThreadId>, Option<loom::sync::mpsc::Sender<()>>)> =
-            Mutex::new((Vec::new(), None));
+        static ref CANCELLATIONS: Mutex<Cancellation> = Mutex::new(Cancellation {
+            original: None,
+            started: None,
+        });
     }
 
     fn record_cancel(worker: &JoinHandle<()>) {
         let mut calls = CANCELLATIONS.lock().unwrap_or_else(|e| panic!("{e}"));
-        calls.0.push(worker.thread().id());
-        if let Some(started) = calls.1.take() {
+        assert_eq!(
+            calls.original.as_ref(),
+            Some(&worker.thread().id()),
+            "cancel reached replacement worker"
+        );
+        if let Some(started) = calls.started.take() {
             started.send(()).unwrap_or_else(|e| panic!("{e}"));
         }
     }
 
-    fn handoff_model<const FENCE_WAKE: bool>() {
+    #[test]
+    fn cancellation_wakeup_cannot_target_replacement_generation() {
         loom::model(|| {
-            let (started, cancelling) = loom::sync::mpsc::channel();
-            CANCELLATIONS.lock().unwrap_or_else(|e| panic!("{e}")).1 = Some(started);
+            let (started, cancelled) = loom::sync::mpsc::channel();
+            CANCELLATIONS
+                .lock()
+                .unwrap_or_else(|e| panic!("{e}"))
+                .started = Some(started);
             let owner = Owner::new(
                 RestoreGuard::new(Vec::new(), &Capabilities::default()),
                 record_cancel,
             );
-            // Cut at an in-flight native write: its guard is outside owner
-            // state. The full worker/ack model above covers reaching this cut.
-            let original = Arc::new(thread::spawn(|| {}));
-            let original_id = original.thread().id();
-            let guard = {
+            let (entered, submitted) = loom::sync::mpsc::channel();
+            let generation = {
                 let mut state = owner.state.lock().unwrap_or_else(|e| panic!("{e}"));
-                state.generation = 1;
-                state.phase = Phase::Submitted;
-                state.acknowledged = false;
-                state.worker = Some(original);
-                state.guard.take()
+                Owner::submit(&owner, &mut state, false, move |_| {
+                    entered.send(thread::current().id()).unwrap();
+                    // The cancellation callback is the event that completes
+                    // the original action; no observer relays that event.
+                    cancelled.recv().unwrap();
+                    Ok(())
+                })
+                .unwrap();
+                state.generation
             };
+            let original_id = submitted.recv().unwrap();
+            CANCELLATIONS
+                .lock()
+                .unwrap_or_else(|e| panic!("{e}"))
+                .original = Some(original_id);
             let cancelling_owner = Arc::clone(&owner);
             let canceller = thread::spawn(move || {
                 cancelling_owner
-                    .quiesce_generation::<FENCE_WAKE>(true, Some(1))
+                    .quiesce_generation(true, Some(generation))
                     .unwrap_or_else(|e| panic!("{e}"));
             });
-            cancelling.recv().unwrap_or_else(|e| panic!("{e}"));
-            // The old native write acknowledges. Publish a new operation before
-            // the cancelled generation's waiter necessarily reacquires state.
-            {
-                let mut state = owner.state.lock().unwrap_or_else(|e| panic!("{e}"));
-                state.guard = guard;
-                state.acknowledged = true;
-                owner.wake.notify_all();
-            }
+            // The original worker's acknowledgement races replacement with the
+            // cancellation waiter's lock reacquisition.
             {
                 let mut state = owner.state.lock().unwrap_or_else(|e| panic!("{e}"));
                 while !state.acknowledged {
                     state = owner.wake.wait(state).unwrap_or_else(|e| panic!("{e}"));
                 }
+                // The replacement completes on its own, even if a defective
+                // canceller waits for its acknowledgement.
                 Owner::submit(&owner, &mut state, false, |_| Ok(()))
                     .unwrap_or_else(|e| panic!("{e}"));
             }
+            // Retire the callback before Loom drops its lazy cancellation state.
+            // Each call checks its target directly; another acknowledgement wait
+            // and an observer-state read add no cancellation claim.
             canceller
                 .join()
                 .unwrap_or_else(|e| std::panic::resume_unwind(e));
-            let mut state = owner.state.lock().unwrap_or_else(|e| panic!("{e}"));
-            while !state.acknowledged {
-                state = owner.wake.wait(state).unwrap_or_else(|e| panic!("{e}"));
-            }
-            drop(state);
-            assert!(
-                CANCELLATIONS
-                    .lock()
-                    .unwrap_or_else(|e| panic!("{e}"))
-                    .0
-                    .iter()
-                    .all(|worker| *worker == original_id),
-                "cancel reached replacement worker"
-            );
         });
-    }
-
-    #[test]
-    fn cancellation_wakeup_cannot_target_replacement_generation() {
-        handoff_model::<true>();
-    }
-
-    #[test]
-    fn negative_control_detects_cancellation_after_generation_handoff() {
-        assert!(std::panic::catch_unwind(handoff_model::<false>).is_err());
     }
 
     fn retry_owner() -> Arc<Owner<Vec<u8>>> {
@@ -710,38 +613,27 @@ mod tests {
         assert!(bytes.ends_with(b"OS restored"));
     }
 
-    fn retry_model(broken: bool) {
-        loom::model(move || {
+    #[test]
+    fn failed_teardown_spawn_can_be_retried_by_close_or_drop() {
+        loom::model(|| {
             let owner = retry_owner();
             assert!(Owner::close(&owner, restore_os).is_err());
             {
                 let mut state = owner.state.lock().unwrap_or_else(|e| panic!("{e}"));
-                assert!(!state.restored);
+                assert!(
+                    !state.restored,
+                    "failed console spawn cannot publish restoration"
+                );
                 assert!(!state.closing);
                 assert_eq!(
                     state.guard.as_mut().expect("writer retained").writer(),
                     b"\x1b[?1049h"
                 );
-                if broken {
-                    // Negative control: the old close marked a failed spawn as
-                    // restored even though its action never executed.
-                    state.restored = true;
-                }
             }
             // Tty::drop calls this same close even after explicit restore failed.
             Owner::close(&owner, restore_os).unwrap_or_else(|e| panic!("{e}"));
             assert_restored(&owner);
         });
-    }
-
-    #[test]
-    fn failed_teardown_spawn_can_be_retried_by_close_or_drop() {
-        retry_model(false);
-    }
-
-    #[test]
-    fn negative_control_detects_restore_completion_without_action() {
-        assert!(std::panic::catch_unwind(|| retry_model(true)).is_err());
     }
 
     #[test]
@@ -770,7 +662,6 @@ mod tests {
     struct InputClose {
         state: Mutex<InputState>,
         changed: Condvar,
-        late: bool,
     }
     impl InputClose {
         fn publish(&self) -> io::Result<()> {
@@ -782,7 +673,7 @@ mod tests {
 
     impl CloseWake for Arc<InputClose> {
         fn close(&self) -> io::Result<()> {
-            if self.late { Ok(()) } else { self.publish() }
+            self.publish()
         }
     }
 
@@ -802,12 +693,6 @@ mod tests {
                         .map_err(|_| io::ErrorKind::Other)?;
                 }
             }
-            drop(state);
-            // Counterfactual: withhold only close publication until the held
-            // restoration is released. The reader still eventually finishes.
-            if first && self.0.late {
-                self.0.publish()?;
-            }
             Ok(bytes.len())
         }
         fn flush(&mut self) -> io::Result<()> {
@@ -815,8 +700,9 @@ mod tests {
         }
     }
 
-    fn input_close_model(broken: bool) {
-        loom::model(move || {
+    #[test]
+    fn input_observes_output_close_before_its_next_bounded_read() {
+        loom::model(|| {
             let input = Arc::new(InputClose {
                 state: Mutex::new(InputState {
                     armed: false,
@@ -825,7 +711,6 @@ mod tests {
                     release: false,
                 }),
                 changed: Condvar::new(),
-                late: broken,
             });
             let owner = Owner::notifying(
                 RestoreGuard::new(HeldRestore(Arc::clone(&input)), &Capabilities::default()),
@@ -889,10 +774,5 @@ mod tests {
             );
             assert!(owner.check_open().is_err());
         });
-    }
-    #[test]
-    fn input_observes_output_close_before_its_next_bounded_read() {
-        input_close_model(false);
-        assert!(std::panic::catch_unwind(|| input_close_model(true)).is_err());
     }
 }

@@ -1,0 +1,10 @@
+--- a/rust/crates/harness-tui/src/term/console_owner.rs
++++ b/rust/crates/harness-tui/src/term/console_owner.rs
+@@ -80,3 +80,6 @@
+         let mut state = self.state.try_lock().ok()?;
+-        super::Present::outside_writes(state.guard.as_mut()?)
++        let Some(guard) = state.guard.as_mut() else {
++            return Some(state.generation);
++        };
++        super::Present::outside_writes(guard)
+     }

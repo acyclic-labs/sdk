@@ -34,7 +34,8 @@ export interface ExplorerHealth {
   /** Milliseconds until the reader's next deadline (a read timeout or retry). */
   wakeIn: bigint | null;
   /** Discontinuities that must remain visible independently of connectivity. */
-  issues: { stream: string; kind: "accessDenied" | "retentionLost" | "hierarchyChanged" }[];
+  issues: ({ stream: string; kind: "accessDenied" | "retentionLost" | "hierarchyChanged" }
+    | { stream: string; kind: "refused"; code: string })[];
 }
 
 export interface ExplorerOptions {
@@ -153,6 +154,9 @@ export class AgentExplorer {
   closeHistory(): void { this.#core.close(); this.schedule(); }
   seek(sequence: bigint): void { this.#core.seek(sequence); this.schedule(); }
   jumpEnd(): void { this.#core.jumpEnd(); this.schedule(); }
+
+  /** Retries a displayed source issue; renew authority first for an access denial. */
+  acknowledgeIssue(stream: string): void { this.#core.acknowledgeIssue(stream); this.schedule(); }
 
   /** Persists admitted state; pending source admission preserves the saved cache. */
   save(): void {

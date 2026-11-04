@@ -85,7 +85,8 @@ pub fn edit_external(text: &str, path: &Path, command: Option<&str>) -> io::Resu
     let mut file = acyclic_native_runtime::private_file::create(path)?;
     let result = (|| {
         file.write_all(text.as_bytes())?;
-        file.sync_all()?;
+        // Closing publishes the scratch bytes to the child. Crash durability is
+        // required when the accepted edit is committed, not for this handoff.
         drop(file);
         let status = std::process::Command::new(program)
             .args(arguments)

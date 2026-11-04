@@ -304,6 +304,10 @@ opt-level = 3
 [profile.dev.package.blake3]
 opt-level = 3
 
+# Exhaustive concurrency checks spend their time in the shared model checker.
+[profile.dev.package.loom]
+opt-level = 3
+
 [patch.crates-io]
 napi = { path = "rust/vendor/napi-3.15.0" }
 rquickjs-core = { path = "rust/vendor/rquickjs-core-0.14.0" }

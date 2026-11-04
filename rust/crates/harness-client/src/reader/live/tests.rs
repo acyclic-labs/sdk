@@ -1,5 +1,5 @@
 use super::*;
-use crate::reader::{Failure, Op, Outcome, Priority, ReaderPolicy};
+use crate::reader::{Op, Outcome, Priority, ReaderPolicy};
 use acyclic_harness_core::{
     OperationId,
     agent::{AgentRecord as _, Phase, StatusRecord},
@@ -456,10 +456,14 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
         reader.cache_mut().forget(&stream);
         reader.plan([(source.want(), Priority::Visible)]);
         let [head]: [Op; 1] = reader.poll(0).try_into().unwrap();
-        reader.complete(head.id(), Outcome::Failed(Failure::Denied), 0);
+        reader.complete(
+            head.id(),
+            Outcome::Failed(acyclic_stream::StreamError::AccessDenied),
+            0,
+        );
         assert_eq!(
             source.latest(&reader),
-            Err(Error::Source(super::super::ReadIssue::AccessDenied))
+            Err(Error::Source(&super::super::ReadIssue::AccessDenied))
         );
     });
 }
