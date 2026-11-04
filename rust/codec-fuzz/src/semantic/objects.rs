@@ -314,8 +314,10 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
         let mut ended = Availability::new(initial, futures::stream::empty());
         assert_eq!(ready(ended.changed()), unavailable);
         let cause = Error::from(wire::ErrorCode::OutcomeUnknown);
-        let mut failed =
-            Availability::new(initial, futures::stream::iter([Err(cause.clone()), Ok(initial)]));
+        let mut failed = Availability::new(
+            initial,
+            futures::stream::iter([Err(cause.clone()), Ok(initial)]),
+        );
         assert_eq!(
             ready(failed.changed()),
             Err(cause),
