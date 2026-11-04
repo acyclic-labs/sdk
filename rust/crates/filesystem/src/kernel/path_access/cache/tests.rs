@@ -128,6 +128,17 @@ async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
                 &mut work.accounting(),
             )?;
             assert_eq!(work.allocations.live_bytes(), baseline + resident);
+            // Keep a physical buffer larger than the earlier batch high-water
+            // mark alive, so that history cannot hide a duplicate cache charge.
+            let mut independent_peak = Retained::<Vec<u8>>::allocate(
+                usize::try_from(work.spent().peak_allocation_bytes)?,
+                &mut work.accounting(),
+            )?;
+            let peak_bytes = independent_peak.value.capacity() as u64;
+            independent_peak
+                .value
+                .resize(usize::try_from(peak_bytes)?, 0x5a);
+            let baseline = baseline + peak_bytes;
             let before = work.spent().backend_read_operations;
             // Distinct decode bounds miss the decoded cache while sharing the
             // operation cache's original encoded object.
@@ -165,12 +176,42 @@ async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
                 work.spent().backend_read_operations - before,
                 expected_page_reads
             );
+            if observed && capacity == 3 {
+                // A different ledger still owes the simultaneously resident
+                // cache. Excluding every cache byte would make this succeed.
+                let resident = custody.operation_cache_bytes();
+                let mut foreign = KernelAccounting::standalone(
+                    WorkBudget {
+                        peak_allocation_bytes: resident - 1,
+                        ..WorkBudget::UNBOUNDED
+                    },
+                    &cancellation,
+                );
+                let read = cache
+                    .probe(page, &mut foreign)?
+                    .ok_or("encoded page was not cached")?;
+                let failure = crate::kernel::persistent_io::decode_read_with_accounting::<
+                    crate::kernel::tree_mutation::TreeFormat,
+                >(&read, DecodeLimits::default(), &mut foreign, owner)
+                .err()
+                .ok_or("foreign cache residency was not admitted")?;
+                assert!(
+                    matches!(failure, crate::FsError::Work(WorkError::BudgetExceeded {
+                    counter: "peak_allocation_bytes", observed, maximum,
+                }) if observed == resident && maximum == resident - 1)
+                );
+            }
             drop(cache);
             assert_eq!(custody.operation_cache_bytes(), 0);
             assert_eq!(work.allocations.live_bytes(), baseline);
             assert!(independent.value.iter().all(|byte| *byte == 0xa5));
+            assert!(independent_peak.value.iter().all(|byte| *byte == 0x5a));
+            drop(independent_peak);
             drop(independent);
-            assert_eq!(work.allocations.live_bytes(), baseline - independent_bytes);
+            assert_eq!(
+                work.allocations.live_bytes(),
+                baseline - peak_bytes - independent_bytes
+            );
             if observed {
                 assert_eq!(work.spent().peak_allocation_bytes, measured_peak);
             } else {
