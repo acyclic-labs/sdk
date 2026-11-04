@@ -25,7 +25,7 @@ pub(super) fn resident_read(
 }
 
 impl<S: AsyncObjectStore> StagedObjects<S> {
-    fn unstaged(&self, requests: &[ObjectReadRequest]) -> bool {
+    pub(super) fn unstaged(&self, requests: &[ObjectReadRequest]) -> bool {
         let index = self.index();
         index.objects.is_empty()
             || requests
