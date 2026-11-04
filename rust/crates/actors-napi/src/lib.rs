@@ -216,6 +216,9 @@ mod tests {
             detail: Some(wire::Error {
                 code: 99,
                 message: String::from("future detail"),
+                component: String::from("actors.authority"),
+                reason: String::from("future_refusal"),
+                request_id: String::from("original-request"),
             }),
         });
         assert_eq!(metadata.message, "original grpc diagnostic");
@@ -227,6 +230,15 @@ mod tests {
         );
         let json = serde_json::to_value(&metadata).expect("metadata must serialize");
         assert_eq!(json.get("rawDetails"), Some(&serde_json::json!([255, 0])));
+        assert_eq!(
+            json.get("cause"),
+            Some(&serde_json::json!({
+                "component": "actors.authority",
+                "reason": "future_refusal",
+                "requestId": "original-request",
+            })),
+            "native bridge retains the canonical producer cause",
+        );
         assert_eq!(
             json.get("credentialRejected"),
             Some(&serde_json::json!(false))
