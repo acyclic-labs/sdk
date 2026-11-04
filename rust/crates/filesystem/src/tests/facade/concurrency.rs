@@ -289,12 +289,14 @@ async fn disjoint_native_rebase_retains_original_custody_and_rejects_unfunded_wo
 async fn disjoint_rebase_preserves_observed_content_without_blob_reads() -> TestResult {
     let cancel = CancellationToken::new();
     let unreadable = Arc::new(Mutex::new(None));
+    let tracked = Arc::default();
+    let reads = Arc::new(AtomicUsize::new(0));
     let fs = Fs::new(
         crate::MemoryAuthorityStore::default(),
         CountingObjectStore {
             inner: crate::MemoryObjectStore::default(),
-            tracked: Arc::default(),
-            reads: Arc::default(),
+            tracked: Arc::clone(&tracked),
+            reads: Arc::clone(&reads),
             unreadable: unreadable.clone(),
         },
         EmbeddedCapabilities::MEMORY,
@@ -360,8 +362,16 @@ async fn disjoint_rebase_preserves_observed_content_without_blob_reads() -> Test
             "full replay unexpectedly avoided the unavailable content"
         );
     }
+    *tracked.lock().map_err(|_| "fixture lock poisoned")? = Some(remote.generation_root);
+    reads.store(0, Ordering::Relaxed);
     let rebased = local.rebase_head(8, B, &cancel).await?;
     assert!(matches!(rebased.value, RebaseDecision::Safe { .. }));
+    let candidate_reads = reads.load(Ordering::Relaxed);
+    println!("disjoint candidate root reads={candidate_reads}");
+    assert_eq!(
+        candidate_reads, 2,
+        "disjoint preparation reread the already authenticated candidate"
+    );
     *unreadable.lock().map_err(|_| "fixture lock poisoned")? = None;
     commit(&mut local, &cancel).await?;
     for value in ["local", "remote"] {
