@@ -149,10 +149,26 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
         )
         .await?;
     assert_eq!(sent["pending"], 2);
-    let first = fixture.session("child", SessionAction::Next).await?;
+    let operation = OperationId::new();
+    let next = || HostAction::Session {
+        parent: fixture.parent.clone(),
+        reference: "child".into(),
+        action: SessionAction::Next,
+        next: false,
+    };
+    let first = fixture.owner.dispatch(operation, next()).await?;
     assert_eq!(first["prompt"], "initial");
     assert_eq!(first["turn"], 1);
-    assert!(fixture.session("child", SessionAction::Next).await.is_err());
+    // Recover an accepted claim whose reply was lost, using its original
+    // operation after the workspace owner has been replaced.
+    let local = Arc::clone(&fixture.owner.local);
+    let previous = std::mem::replace(&mut fixture.owner, HostWorkspaceOwner::new(local)?);
+    drop(previous);
+    assert_eq!(fixture.owner.dispatch(operation, next()).await?, first);
+    assert!(matches!(
+        fixture.session("child", SessionAction::Next).await,
+        Err(Error::Conflict(_))
+    ));
     assert!(
         fixture.merge("child").await.is_err(),
         "a running session cannot merge"
