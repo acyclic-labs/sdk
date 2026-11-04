@@ -48,6 +48,7 @@ impl ExecutableSearch {
     }
 
     /// Resolves exact or PATH-relative names, including Windows batch launchers.
+    /// File associations in PATHEXT do not make scripts directly executable.
     pub fn resolve(&self, program: impl AsRef<OsStr>) -> io::Result<PathBuf> {
         self.find(program.as_ref(), |candidate| {
             runnable(candidate).then(|| candidate.to_owned())
@@ -131,6 +132,16 @@ impl ExecutableSearch {
 }
 
 fn runnable(candidate: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        if candidate.extension().is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+        }) {
+            return candidate.is_file();
+        }
+        crate::executable::resolve_native_executable(candidate).is_ok()
+    }
+    #[cfg(not(windows))]
     std::fs::metadata(candidate).is_ok_and(|metadata| {
         if !metadata.is_file() {
             return false;
@@ -152,6 +163,13 @@ mod tests {
     use super::*;
 
     fn fixture_executable(path: &Path) {
+        #[cfg(windows)]
+        if path.extension().is_some_and(|extension| extension == "cmd") {
+            std::fs::write(path, []).unwrap();
+        } else {
+            std::fs::hard_link(std::env::current_exe().unwrap(), path).unwrap();
+        }
+        #[cfg(not(windows))]
         std::fs::write(path, []).unwrap();
         #[cfg(unix)]
         {
@@ -216,22 +234,39 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn native_search_rejects_an_activation_alias_before_a_later_direct_image() {
+    fn search_rejects_file_associations_and_aliases_without_hiding_runnable_images() {
         let root = tempfile::tempdir().unwrap();
         let first = root.path().join("first");
         let second = root.path().join("second");
         std::fs::create_dir(&first).unwrap();
         std::fs::create_dir(&second).unwrap();
+        std::fs::write(first.join("shell.js"), []).unwrap();
         std::fs::write(first.join("shell.exe"), []).unwrap();
-        std::fs::hard_link(std::env::current_exe().unwrap(), second.join("shell.exe")).unwrap();
+        fixture_executable(&second.join("shell.exe"));
         let search = ExecutableSearch::new(
             root.path(),
             Some(std::env::join_paths([&first, &second]).unwrap()),
-            Some(OsStr::new(".EXE")),
+            Some(OsStr::new(".JS;.EXE;.CMD;.NATIVE")),
         );
+        assert_eq!(search.resolve("shell").unwrap(), second.join("shell.exe"));
         assert_eq!(
             search.resolve_native("shell").unwrap(),
             second.join("shell.exe").canonicalize().unwrap()
+        );
+        assert!(search.resolve(first.join("shell.js")).is_err());
+        assert!(search.resolve(first.join("shell.exe")).is_err());
+
+        std::fs::remove_file(second.join("shell.exe")).unwrap();
+        std::fs::write(second.join("shell.cmd"), []).unwrap();
+        fixture_executable(&second.join("shell.native"));
+        assert_eq!(search.resolve("shell").unwrap(), second.join("shell.cmd"));
+        assert_eq!(
+            search.resolve_native("shell").unwrap(),
+            second.join("shell.native").canonicalize().unwrap()
+        );
+        assert_eq!(
+            search.resolve(second.join("shell.native")).unwrap(),
+            second.join("shell.native")
         );
     }
 }
