@@ -384,6 +384,19 @@ fn original_cleanup_wait_precancel_and_contention_preserve_cleanup_custody()
         Err(DemandError::Cancelled)
     ));
     super::super::tests::cancel_contended_cleanup(&watch)?;
+    // Give the queued cleanup its permit while it is between registration
+    // and observation. The actual nonblocking service path then finds that
+    // permit held. Cancelling its observer must hand the owed service back,
+    // even though no ReadingGuard was ever constructed for that permit.
+    super::super::tests::cancel_contended_cleanup_after(&watch, || {
+        drop(paused);
+        assert!(watch.shared.service_reading().is_none());
+        assert!(watch.shared.reading.owed.load(Ordering::SeqCst));
+    })?;
+    assert!(
+        !watch.shared.reading.owed.load(Ordering::SeqCst),
+        "cancelled acquisition must hand back the owed service"
+    );
     assert_eq!(original.lock().receipt(), prefix);
     assert!(!watch.shared.stopping.load(Ordering::Acquire));
     assert!(!watch.is_stopped());
@@ -392,7 +405,6 @@ fn original_cleanup_wait_precancel_and_contention_preserve_cleanup_custody()
     for descriptor in [&watch.shared.inotify, &watch.shared.root] {
         assert!(descriptor.load(Ordering::Acquire) >= 0);
     }
-    drop(paused);
     // Withhold the already-owned join cursor, then restore that exact cursor.
     // Neither refusal nor the explicit cleanup join creates native credit.
     let reads = {

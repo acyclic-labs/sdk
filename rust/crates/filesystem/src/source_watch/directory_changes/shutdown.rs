@@ -336,9 +336,13 @@ impl Shared {
         &self,
         wait: Option<&crate::CancellationToken>,
     ) -> Result<ReadsGuard<'_>, DemandError> {
-        Ok(ReadsGuard {
+        // Retain the handoff even if cancellation returns a permit before a
+        // held read guard exists: the port may have missed that queue entry.
+        let mut reads = ReadsGuard {
             shared: self,
-            reads: Some(self.reads.lock_with_wait(wait)?),
-        })
+            reads: None,
+        };
+        reads.reads = Some(self.reads.lock_with_wait(wait)?);
+        Ok(reads)
     }
 }

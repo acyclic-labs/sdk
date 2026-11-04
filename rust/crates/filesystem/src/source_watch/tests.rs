@@ -424,6 +424,13 @@ fn original_watch_budget() -> Result<crate::WorkBudget, Box<dyn std::error::Erro
 
 /// Called with physical read/stream custody held by the real native fixture.
 pub(super) fn cancel_contended_cleanup(watch: &NativeSourceWatch) -> TestResult {
+    cancel_contended_cleanup_after(watch, || {})
+}
+
+pub(super) fn cancel_contended_cleanup_after(
+    watch: &NativeSourceWatch,
+    registered: impl FnOnce(),
+) -> TestResult {
     std::thread::scope(|threads| {
         enum Event {
             Waiting,
@@ -432,6 +439,7 @@ pub(super) fn cancel_contended_cleanup(watch: &NativeSourceWatch) -> TestResult 
         let (events, received) = std::sync::mpsc::channel();
         let observer = crate::CancellationToken::new();
         let waiting = observer.clone();
+        let (resume, resumed) = std::sync::mpsc::channel();
         let stopper = threads.spawn(move || {
             let entering = events.clone();
             crate::cancellation::custody::BEFORE_WAIT.with(|hook| {
@@ -439,6 +447,7 @@ pub(super) fn cancel_contended_cleanup(watch: &NativeSourceWatch) -> TestResult 
                     entering
                         .send(Event::Waiting)
                         .expect("live custody observer");
+                    resumed.recv().expect("live custody controller");
                 }));
             });
             events
@@ -446,8 +455,12 @@ pub(super) fn cancel_contended_cleanup(watch: &NativeSourceWatch) -> TestResult 
                 .expect("live cleanup observer");
         });
         let entered = matches!(received.recv(), Ok(Event::Waiting));
+        if entered {
+            registered();
+        }
         observer.cancel();
         if entered {
+            resume.send(()).expect("registered cleanup resumes");
             assert!(matches!(
                 received.recv(),
                 Ok(Event::Finished(Err(DemandError::Cancelled)))

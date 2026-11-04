@@ -386,9 +386,13 @@ impl NativeSourceWatch {
             }
             return result;
         }
+        // A cancelled queue entry may already own the released permit. Retain
+        // the service handoff while acquiring, so its return also serves a
+        // pass that found that permit held before a ReadingGuard existed.
+        let served = OwedService(&self.shared);
         let reading = ReadingGuard {
             raw: self.shared.reading.raw.lock_with_wait(wait)?,
-            _served: OwedService(&self.shared),
+            _served: served,
         };
         let watches = self.shared.watches.lock_with_wait(wait)?;
         let ancestors = self.shared.ancestors.lock_with_wait(wait)?;
