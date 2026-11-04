@@ -4856,47 +4856,6 @@ mod demand_admission_tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_fence_retires_a_directory_replaced_by_a_file_and_requires_rescan()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir()?;
-        std::fs::create_dir(root.path().join("folder"))?;
-        std::fs::write(root.path().join("folder/child"), b"before")?;
-        let watch = watcher(root.path())?;
-        watch
-            .lock()
-            .map_err(|_| NativeWatchError::StatePoisoned)?
-            .accept_lazy_baseline()?;
-        observed(
-            &watch,
-            &namespace("/folder")?,
-            windows_budget(),
-            &CancellationToken::new(),
-        )?;
-        std::fs::remove_file(root.path().join("folder/child"))?;
-        std::fs::remove_dir(root.path().join("folder"))?;
-        std::fs::write(root.path().join("folder"), b"replacement")?;
-        let mut held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
-        let cancellation = CancellationToken::new();
-        let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        held.fence_with_work(&mut work)?;
-        assert_eq!(
-            held.windows_registered(),
-            0,
-            "the replaced directory is no longer observed"
-        );
-        assert_eq!(
-            held.invalidation()?,
-            Some(WatchInvalidationReason::NativeRescanRequired)
-        );
-        assert_eq!(std::fs::read(root.path().join("folder"))?, b"replacement");
-        held.accept_lazy_baseline()?;
-        held.fence_with_work(&mut work)?;
-        assert_eq!(held.invalidation()?, None);
-        Ok(())
-    }
-
-    #[cfg(windows)]
-    #[test]
     fn windows_native_child_notifications_reach_the_existing_hint_queue_and_rescan_cleanup()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
@@ -4949,19 +4908,12 @@ mod demand_admission_tests {
                     "queued event erased a current binding"
                 );
             }
-            std::fs::remove_file(root.path().join("old/f"))?;
-            std::fs::remove_dir(root.path().join("old"))?;
-            held.forget_removed_directories_with_work(
-                &[WatchChange::Removed(namespace("/old")?)],
-                &mut work,
-                None,
-            )?;
-            assert_eq!(
-                held.windows_registered(),
-                1,
-                "removed binding was not retired"
-            );
         }
+        // A fence delivers hints; consuming the real removal retires its
+        // binding. An exact replacement does not require losing the source cut.
+        std::fs::remove_file(root.path().join("old/f"))?;
+        std::fs::remove_dir(root.path().join("old"))?;
+        std::fs::write(root.path().join("old"), b"replacement")?;
         std::fs::write(root.path().join("a/f"), b"after")?;
         let expected = namespace("/a/f")?;
         let seen = settled_changes(&watch, &expected)?;
@@ -4969,7 +4921,19 @@ mod demand_admission_tests {
             seen.iter().any(|change| matches!(change,
             WatchChange::Modified(path) | WatchChange::MetadataChanged(path) if path == &expected))
         );
+        let replaced = namespace("/old")?;
+        assert!(
+            seen.iter().any(|change| {
+                matches!(change, WatchChange::Removed(path) if path == &replaced)
+            })
+        );
+        assert_eq!(std::fs::read(root.path().join("old"))?, b"replacement");
         let mut held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
+        assert_eq!(
+            held.windows_registered(),
+            1,
+            "replaced binding retired; unrelated current binding retained"
+        );
         held.begin_rescan()?;
         assert_eq!(held.windows_registered(), 0);
         Ok(())
