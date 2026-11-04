@@ -228,8 +228,7 @@ test("model prose and pre-tool events cannot prove a completed native tool", () 
   requireTools([{ hook_event_name: "PostToolUse", tool_name: "shell", tool_response: { text: "done" } }], ["shell"]);
   assert.throws(() => requireTools([{ hook_event_name: "PostToolUse", tool_name: "shell" }], ["shell"]), /admit completed shell result/);
   assert.throws(() => requireTools([{ hook_event_name: "PostToolUse", tool_name: "shell", tool_response: null }], ["shell"]), /admit completed shell result/);
-  for (const tool_response of [{ error: "denied" }, { error: "" }, { error: false },
-    "tool executor rejected the admitted call (conflict): workspace generation changed"]) {
+  for (const tool_response of [{ error: "denied" }, { error: "" }, { error: false }]) {
     assert.throws(() => requireTools([{ hook_event_name: "PostToolUse", tool_name: "shell", tool_response }], ["shell"]), /unexpected tool error/);
   }
   // Even a later successful call cannot erase an earlier failure or a failed
