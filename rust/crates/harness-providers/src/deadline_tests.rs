@@ -68,30 +68,6 @@ impl HttpTransport for Script {
         self.clock_reads.fetch_add(1, Ordering::SeqCst);
         tokio::time::Instant::now().saturating_duration_since(self.origin)
     }
-
-    fn delay_with_native_work(
-        &self,
-        wait: Duration,
-        work: &Work,
-    ) -> Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
-        let timer = self.timer;
-        let arms = Arc::clone(&self.arms);
-        acyclic_harness_core::NativeFutureBundle::new(work, move || {
-            arms.fetch_add(1, Ordering::SeqCst);
-            timer_event(timer, wait)
-        })
-    }
-
-    fn send_with_native_work<'a>(
-        &'a self,
-        request: HttpRequest,
-        work: &'a Work,
-    ) -> Result<acyclic_harness_core::NativeFutureBundle<'a, HttpResponse>> {
-        acyclic_harness_core::NativeFutureBundle::new(work, || async move {
-            let response = self.send(request).await?;
-            HttpResponse::with_native_body(response.status, response.body, work)
-        })
-    }
 }
 
 fn script(timer: Timer) -> (Arc<Script>, oneshot::Sender<Result<HttpResponse>>) {
@@ -305,43 +281,50 @@ fn native_timeout_does_not_allocate_a_discarded_diagnostic() {
 #[test]
 fn native_deadline_timer_is_admitted_once_on_the_original_ledger() {
     runtime().block_on(async {
+        let transport = crate::http::platform().unwrap();
         let work = Work::new(
             acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
             &acyclic_fs::CancellationToken::new(),
         )
         .unwrap_or_else(|_| panic!("ledger"));
         let before = work.live_allocation_bytes();
-        let (script, headers) = script(Timer::Clock);
-        let transport = Bounded::new(
-            script.clone(),
-            TimeoutSpec {
-                total_ms: Some(100),
-            },
-        );
-        let (chunks, body) = mpsc::unbounded();
-        assert!(headers.send(Ok(response(Box::pin(body)))).is_ok());
-        let mut body = transport
-            .send_with_native_work(request(), &work)
-            .unwrap()
-            .await
-            .unwrap()
-            .body;
+        let mut deadline = Deadline::start(transport, 100, true);
         let mut context = Context::from_waker(futures::task::noop_waker_ref());
-        let admitted = work.live_allocation_bytes();
         let allocated = acyclic_test_support::measure(|| {
-            assert!(body.poll_next_unpin(&mut context).is_pending());
+            assert!(deadline.poll_wake(&mut context, Some(&work)).is_pending());
         });
-        let claimed = work.live_allocation_bytes() - admitted;
+        let claimed = work.live_allocation_bytes() - before;
         assert_eq!(allocated.count_total, 1);
         assert!(claimed > 0);
         assert_eq!(allocated.bytes_total, claimed);
         let again = acyclic_test_support::measure(|| {
-            assert!(body.poll_next_unpin(&mut context).is_pending());
+            assert!(deadline.poll_wake(&mut context, Some(&work)).is_pending());
         });
         assert_eq!(again.count_total, 0);
-        assert_eq!(script.arms.load(Ordering::SeqCst), 1);
-        drop(body);
-        drop(chunks);
+        assert_eq!(work.live_allocation_bytes() - before, claimed);
+        // Restoring per-poll timer creation must be visible to the allocator,
+        // even though the replacement retains the same amount of credit.
+        drop(deadline.wake.take());
+        assert_eq!(work.live_allocation_bytes(), before);
+        let recreated = acyclic_test_support::measure(|| {
+            assert!(deadline.poll_wake(&mut context, Some(&work)).is_pending());
+        });
+        assert_eq!(recreated.count_total, 1);
+        assert_eq!(recreated.bytes_total, claimed);
+        tokio::time::advance(Duration::from_millis(100)).await;
+        deadline.wake.as_mut().unwrap().await.unwrap();
+        assert!(matches!(
+            deadline.poll_wake(&mut context, Some(&work)),
+            Poll::Ready(Ok(()))
+        ));
+        assert!(matches!(
+            deadline.timeout(),
+            Error::ModelUnavailable {
+                failure: ModelTransportFailure::Timeout,
+                excerpt,
+            } if excerpt.is_empty()
+        ));
+        drop(deadline);
         assert_eq!(work.live_allocation_bytes(), before);
     });
 }
