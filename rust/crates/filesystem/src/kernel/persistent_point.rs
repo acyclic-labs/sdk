@@ -111,35 +111,25 @@ impl<T> Owned<Vec<T>> {
             return Ok(());
         }
         let next = self.value.capacity().saturating_mul(2).max(1).min(maximum);
-        let previous = self.value.capacity();
-        let requested = crate::foundation::usize_to_u64(
-            (next - previous)
-                .checked_mul(std::mem::size_of::<T>())
-                .ok_or(crate::WorkError::Overflow)?,
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = accounting.native_work().is_some();
+        let result = super::allocation::reserve_vec_with_accounting(
+            &mut self.value,
+            next,
+            &mut self.allocation,
+            accounting,
+            |error| {
+                #[cfg(not(target_arch = "wasm32"))]
+                if native {
+                    return crate::NativeTreeMaterializationError::AllocationFailed(error).into();
+                }
+                let _ = error;
+                super::CanonicalDecodeError::AllocationFailed.into()
+            },
         );
-        let mut allocation = accounting.claim_owned(requested, u64::from(requested != 0))?;
-        if let Err(_error) = self.value.try_reserve_exact(next - self.value.len()) {
-            #[cfg(not(target_arch = "wasm32"))]
-            let native = matches!(&allocation, KernelOwnedAllocation::NativeOriginal(_));
-            retire_allocation(allocation, requested, accounting)?;
-            #[cfg(not(target_arch = "wasm32"))]
-            if native {
-                return Err(crate::FsError::NativeKernel(
-                    crate::NativeTreeMaterializationError::AllocationFailed(_error),
-                ));
-            }
-            return Err(super::CanonicalDecodeError::AllocationFailed.into());
-        }
-        let actual = crate::foundation::usize_to_u64(
-            (self.value.capacity() - previous) * std::mem::size_of::<T>(),
-        );
-        let checked = accounting.reconcile_owned(&mut allocation, requested, actual);
-        self.allocation.absorb(&mut allocation)?;
-        self.bytes = self
-            .bytes
-            .checked_add(actual)
-            .ok_or(crate::WorkError::Overflow)?;
-        checked
+        self.bytes =
+            crate::foundation::usize_to_u64(self.value.capacity() * std::mem::size_of::<T>());
+        result
     }
 }
 
