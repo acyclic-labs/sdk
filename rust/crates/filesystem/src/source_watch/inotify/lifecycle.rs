@@ -6,13 +6,22 @@ impl NativeSourceWatch {
         &self.shared.drop_complete
     }
 
+    pub(crate) fn start_driver<W: SourceDemandReadWork>(
+        directory: &crate::native_host::HostRoot,
+        delivery: Arc<Delivery>,
+        work: &mut W,
+    ) -> Result<Self, DemandError> {
+        Self::start_bound_driver(directory, delivery, true, work)
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "Startup retains every cleanup slot until worker ownership transfers or rollback completes."
     )]
-    pub(crate) fn start_driver<W: SourceDemandReadWork>(
+    pub(in crate::source_watch) fn start_bound_driver<W: SourceDemandReadWork>(
         directory: &crate::native_host::HostRoot,
         delivery: Arc<Delivery>,
+        pin_name: bool,
         work: &mut W,
     ) -> Result<Self, DemandError> {
         let mut cleanup = StartupCleanup::reserve(work)?;
@@ -92,14 +101,16 @@ impl NativeSourceWatch {
                 Some(root) => root.as_fd(),
                 None => directory_view.as_fd(),
             };
-            watch_ancestors(
-                initialized,
-                held_root,
-                &mut ancestors,
-                &mut retained,
-                &mut cleanup,
-                work,
-            )?;
+            if pin_name {
+                watch_ancestors(
+                    initialized,
+                    held_root,
+                    &mut ancestors,
+                    &mut retained,
+                    &mut cleanup,
+                    work,
+                )?;
+            }
             // The read buffer and the inbox are reserved here and allocated
             // only while records are pending.
             let bytes = (READ_BUFFER_BYTES + hub::INBOX_BYTES) as u64;

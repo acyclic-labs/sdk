@@ -37,7 +37,9 @@ fn mount_shared(
 /// their own writes and refuse renames into each other; retiring one leaves
 /// the other intact and no trace of itself, and retiring the last detaches
 /// the instance's root.
-#[tokio::test(flavor = "multi_thread")]
+// Synchronous startup must use its projector, leaving no pending callback
+// future on the calling current-thread executor.
+#[tokio::test]
 #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn shared_views_serve_their_own_sources_and_retire_without_trace()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -77,7 +79,23 @@ async fn shared_views_serve_their_own_sources_and_retire_without_trace()
     assert!(first.lookup(&windows_path("f0.txt"))?.is_none());
     assert!(second.lookup(&windows_path("new.txt"))?.is_none());
     assert!(second.lookup(&windows_path("f2.txt"))?.is_some());
+    let retired_projector = Arc::clone(
+        &one_session
+            .driver
+            .as_ref()
+            .and_then(|driver| driver.runtime.as_ref())
+            .ok_or("live view has no runtime")?
+            .projector,
+    );
     one_session.stop()?;
+    assert!(matches!(
+        retired_projector.settle(),
+        Err(NativeMountError::Io(error)) if error.kind() == std::io::ErrorKind::NotConnected
+    ));
+    assert!(matches!(
+        retired_projector.initialize(&work),
+        Err(NativeMountError::Io(error)) if error.kind() == std::io::ErrorKind::NotConnected
+    ));
     assert_eq!(
         std::fs::symlink_metadata(&one)
             .map_err(|error| error.kind())

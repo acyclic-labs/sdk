@@ -184,7 +184,7 @@ fn recovery_ownership_receipts_are_exact_and_durable() -> Result<(), Box<dyn std
     guard.publish_root_ownership(identity, volume, &work)?;
     assert_eq!(
         work.receipt().durability_operations - before.durability_operations,
-        2
+        3
     );
     assert_eq!(work.receipt().bytes_encoded - before.bytes_encoded, 124);
     assert_eq!(guard.owned_root(&work)?, Some(identity));
@@ -295,13 +295,15 @@ fn copied_or_malformed_receipts_cannot_substitute_physical_custody()
 }
 
 #[test]
-fn ownership_publication_requires_encoding_and_both_durable_flushes()
+fn ownership_publication_requires_encoding_and_every_durable_flush()
 -> Result<(), Box<dyn std::error::Error>> {
     let volume = crate::VolumeId::new();
     let root = tempfile::tempdir()?;
     let work = setup_work()?;
     let (parent, _) = crate::native_host::open_root_directory(root.path(), &mut &work)?;
-    for (encoded, flushes) in [(0, 2), (124, 0), (124, 1), (124, 2)] {
+    // Receipt contents, its registry name, and the destination name each
+    // need their own durable cut before recovery ownership can be published.
+    for (encoded, flushes) in [(0, 3), (124, 0), (124, 1), (124, 2), (124, 3)] {
         let name = format!("projection-{encoded}-{flushes}");
         let destination = root.path().join(&name);
         std::fs::create_dir(&destination)?;
@@ -326,7 +328,7 @@ fn ownership_publication_requires_encoding_and_both_durable_flushes()
         .map_err(|(error, _)| error)?;
         let before = limited.receipt();
         let result = guard.publish_root_ownership(identity, volume, &limited);
-        assert_eq!(result.is_ok(), encoded == 124 && flushes == 2);
+        assert_eq!(result.is_ok(), encoded == 124 && flushes == 3);
         assert_eq!(
             limited.receipt().durability_operations - before.durability_operations,
             if encoded == 0 { 0 } else { flushes }

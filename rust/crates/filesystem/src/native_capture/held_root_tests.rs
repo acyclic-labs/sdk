@@ -30,6 +30,33 @@ fn immutable_publication_cannot_follow_a_replaced_directory_or_leaf() -> Result<
         .is_err()
     );
     assert_eq!(std::fs::read(outside.join("target"))?, b"unchanged");
+    let probe = Probe::rescan(false);
+    let names = held
+        .read_names()?
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+    assert_eq!(
+        names,
+        std::collections::BTreeSet::from(["request".into(), "link".into()])
+    );
+    assert_eq!(events(), ["openat", "getdents64", "getdents64"]);
+    drop(probe);
+    // The original facts reader performs extra metadata work on these same
+    // entries; the name-only cost oracle must distinguish that mechanism.
+    let probe = Probe::rescan(false);
+    let mut work = crate::native_host::ordinary_work();
+    let (mut facts, _allocation) = held.root.read_dir_stats(Path::new(""), &mut work)?;
+    while let Some((entry, allocation)) = facts.next(&mut work)? {
+        assert!(names.contains(&entry.name));
+        drop(entry);
+        work.release(allocation)?;
+    }
+    assert!(events().contains(&"statx"), "metadata negative control");
+    drop(probe);
+    let fault = Fault::inject("openat", libc::EINTR);
+    assert!(matches!(held.read_names(), Err(DemandError::Io(error))
+        if error.raw_os_error() == Some(libc::EINTR)));
+    assert!(fault.fired());
+    drop(fault);
     held.remove_file(
         std::path::Path::new("request"),
         crate::NativeDurability::Durable,

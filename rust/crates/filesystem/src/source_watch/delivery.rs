@@ -115,11 +115,21 @@ impl Delivery {
             .is_some_and(|current| birth.shares_allocation_context(&current))
     }
 
+    pub(super) fn report_failure(&self, error: &DemandError) {
+        // The cause remains owned here until it is installed in the failure
+        // slot. Invoke outside that slot's lock so observers can retire or
+        // inspect their original source without waiting on this callback.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.callback(|| self.sink.delivery_failed(error));
+        }));
+    }
+
     pub(super) fn failed_with_work<W: SourceDemandReadWork>(
         &self,
         error: DemandError,
         work: &mut W,
     ) {
+        self.report_failure(&error);
         let prior = if work.is_native_original() {
             None
         } else {

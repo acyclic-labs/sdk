@@ -34,6 +34,17 @@ const HOST: &str = "native";
 /// Bound of one session event, prompt or native resume reference.
 pub(super) const MAXIMUM_BYTES: u64 = 65_536;
 
+pub(super) fn request_id(operation: OperationId) -> Result<IntentId> {
+    IntentId::try_from(format!("native:{operation}")).map_err(storage)
+}
+
+pub(super) fn claim_id(request: &IntentId) -> OperationId {
+    crate::local::context::publication_operation(
+        b"acyclic.native-claim/v1\0",
+        request.as_str().as_bytes(),
+    )
+}
+
 /// Requested lifecycle of a native session.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -725,7 +736,7 @@ impl NativeAgents {
             agent,
             InboxRecord::Hook(Hook {
                 host: HOST.into(),
-                id: IntentId::try_from(format!("native:{operation}")).map_err(storage)?,
+                id: request_id(operation)?,
                 event: Box::new(file),
             }),
         )

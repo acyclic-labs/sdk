@@ -1,5 +1,48 @@
 use super::*;
 
+#[test]
+fn materialization_queue_retains_original_errors_and_retires_panicking_items() {
+    for terminal in 0..5 {
+        let queue = MaterializeQueue::new(vec![MountPath::root()]);
+        let mut completed = 0;
+        let returned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            queue.run(|path| {
+                if path.components().is_empty() {
+                    return Ok(vec![windows_path("child"), windows_path("sibling")]);
+                }
+                completed += 1;
+                match terminal {
+                    0 => Ok(Vec::new()),
+                    1 => Err("original source refusal".to_owned()),
+                    2 => panic!("original source panic"),
+                    3 => std::panic::panic_any("owned source panic".to_owned()),
+                    _ => std::panic::panic_any(17_u8),
+                }
+            });
+        }));
+        assert!(returned.is_ok(), "an item cannot abandon its queue custody");
+        assert_eq!(lock_recover(&queue.state).writing, 0);
+        assert!(
+            queue.next().is_none(),
+            "a retired queue cannot strand a reader"
+        );
+        let result = queue.finish();
+        if terminal == 0 {
+            assert_eq!(completed, 2);
+            assert_eq!(result, Ok(()));
+        } else {
+            assert_eq!(completed, 1, "a failed source cannot dispatch another item");
+            let cause = result.expect_err("original failure was lost");
+            match terminal {
+                1 => assert_eq!(cause, "original source refusal"),
+                2 => assert!(cause.contains("original source panic")),
+                3 => assert!(cause.contains("owned source panic")),
+                _ => assert!(!cause.is_empty()),
+            }
+        }
+    }
+}
+
 #[tokio::test]
 async fn directory_link_projection_has_no_target_sized_conversion()
 -> Result<(), Box<dyn std::error::Error>> {

@@ -26,8 +26,9 @@ pub enum SessionAction {
         /// Message body.
         prompt: String,
     },
-    /// Claim the next input, after the preceding process is quiescent. A
-    /// claimed input is refused: only a fenced handoff hands it out again.
+    /// Claim the next input, after the preceding process is quiescent. The
+    /// accepting request may replay its claim; another request requires a
+    /// fenced handoff. A reply always names the current physical view.
     Next,
     /// Capture and settle a process that has exited, including failed writes.
     /// The native resume id is derived from the turn's own custodied event
@@ -154,7 +155,7 @@ impl HostWorkspaceOwner {
             }
             SessionAction::Send { prompt } => {
                 prompt_bound(&prompt)?;
-                let id = IntentId::try_from(format!("native:{operation}")).map_err(storage)?;
+                let id = agents::request_id(operation)?;
                 let inbox = self.native.message(&child, &id, &prompt).await?;
                 accepted = Some(json!({"id": id, "inbox": inbox}));
             }
@@ -238,9 +239,9 @@ impl HostWorkspaceOwner {
         }
     }
 
-    /// Claims the child's next input as request `operation`. A claimed input
-    /// is refused unless `fenced`: its caller then holds the physical fence,
-    /// which proves no process runs it, and receives it under its exact claim.
+    /// Claims the child's next input as request `operation`. Its own replay
+    /// receives the accepted claim. Another request requires the physical
+    /// fence, which proves no process runs the existing claim.
     async fn claim(
         &self,
         operation: OperationId,
@@ -248,8 +249,8 @@ impl HostWorkspaceOwner {
         fenced: bool,
     ) -> Result<Value> {
         let (_, session) = self.native.session(child).await?;
-        if session.claimed().is_some() {
-            if !fenced {
+        if let Some(claimed) = session.claimed() {
+            if !fenced && claimed != agents::claim_id(&agents::request_id(operation)?) {
                 return Err(Error::Conflict("native turn is already claimed".into()));
             }
         } else if session.control != Control::Resume || session.running.is_none() {

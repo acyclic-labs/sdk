@@ -11,8 +11,9 @@ pub struct GitCompatRepository<S> {
     pub(super) request: Option<GitRequest>,
 }
 
-/// Whether a request still awaits its durable reply; its saved result is
-/// kept exactly as long, after which the reply answers any replay.
+/// Whether custody of a request's saved result is still required. Return
+/// `false` only after proving the client withdrew the original request;
+/// uncertainty must retain the result.
 pub type GitRequestUnanswered = std::sync::Arc<dyn Fn(OperationId) -> bool + Send + Sync>;
 
 /// The request a command runs as.
@@ -20,7 +21,7 @@ pub type GitRequestUnanswered = std::sync::Arc<dyn Fn(OperationId) -> bool + Sen
 pub struct GitRequest {
     /// The request's operation, which keys its saved result.
     pub operation: OperationId,
-    /// Whether a request still awaits its durable reply.
+    /// Whether custody is still required under [`GitRequestUnanswered`].
     pub unanswered: GitRequestUnanswered,
 }
 

@@ -1,6 +1,26 @@
 use super::*;
 
 impl Projector {
+    /// The existing projector owns the initial listing, just as it owns
+    /// subsequent listings. Its original startup ledger remains live until
+    /// the pass publishes its result and wakes the startup waiter.
+    pub(super) fn initialize(
+        &self,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
+        let mut state = lock_recover(&self.state);
+        if state.stopping {
+            return Err(std::io::Error::from(std::io::ErrorKind::NotConnected).into());
+        }
+        if state.startup.is_some() {
+            return Err(NativeMountError::ControlPending);
+        }
+        state.startup = Some(work.clone());
+        self.wake();
+        drop(state);
+        self.settle()
+    }
+
     pub(super) fn new() -> Self {
         Self {
             clock: super::super::clock::Clock::capture(),
@@ -73,21 +93,15 @@ impl Projector {
         // never hold more than its size in extra threads between them.
         let helpers = MaterializeHelpers::acquire(wanted.saturating_sub(1));
         let queue = MaterializeQueue::new(directories);
+        let materialize = |directory| self.materialize_directory(projection, directory);
         std::thread::scope(|scope| {
             for _ in 0..helpers.count() {
-                scope.spawn(|| self.materialize_from(&projection, &queue));
+                scope.spawn(|| queue.run(materialize));
             }
-            self.materialize_from(&projection, &queue);
+            queue.run(materialize);
         });
         drop(helpers);
         queue.finish()
-    }
-
-    pub(super) fn materialize_from(&self, projection: &Projection<'_>, queue: &MaterializeQueue) {
-        while let Some(directory) = queue.next() {
-            let written = self.materialize_directory(*projection, directory);
-            queue.done(written);
-        }
     }
 
     pub(super) fn materialize_directory(
@@ -490,6 +504,26 @@ impl Projector {
         context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
         mut state: MutexGuard<'a, ProjectorState>,
     ) -> (MutexGuard<'a, ProjectorState>, bool) {
+        if let Some(work) = state.startup.take() {
+            state.relisting = true;
+            drop(state);
+            let result = self.materialize(
+                Projection {
+                    runtime,
+                    work: &work,
+                    context,
+                    starting: true,
+                },
+                MountPath::root(),
+            );
+            state = lock_recover(&self.state);
+            state.relisting = false;
+            if let Err(failure) = result {
+                state.failure.get_or_insert(failure);
+            }
+            self.changed.notify_all();
+            return (state, true);
+        }
         let source = runtime.source.as_ref();
         let work = match runtime.native_work(false) {
             Ok(work) => work,
@@ -649,13 +683,21 @@ impl Projector {
         let target = state.notified;
         let mut deadline = None;
         while !state.stopping
-            && (state.processed < target
+            && (state.startup.is_some()
+                || state.processed < target
                 || state.relisting
                 || !state.stale.is_empty()
                 || !state.pending.is_empty()
                 || !state.vacated.is_empty())
         {
-            if state.processed < target || state.relisting || !state.stale.is_empty() {
+            if let Some(failure) = state.failure.take() {
+                return Err(NativeMountError::Driver(failure));
+            }
+            if state.startup.is_some()
+                || state.processed < target
+                || state.relisting
+                || !state.stale.is_empty()
+            {
                 state = self
                     .changed
                     .wait(state)
@@ -677,9 +719,12 @@ impl Projector {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .0;
         }
-        state
-            .failure
-            .take()
-            .map_or(Ok(()), |failure| Err(NativeMountError::Driver(failure)))
+        if let Some(failure) = state.failure.take() {
+            return Err(NativeMountError::Driver(failure));
+        }
+        if state.stopping {
+            return Err(std::io::Error::from(std::io::ErrorKind::NotConnected).into());
+        }
+        Ok(())
     }
 }

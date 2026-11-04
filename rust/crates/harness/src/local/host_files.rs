@@ -20,6 +20,7 @@
 use super::host_owner::{HostAction, HostWorkspaceOwner};
 use super::*;
 use futures::StreamExt as _;
+#[cfg(test)]
 use notify::{RecursiveMode, Watcher as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -160,13 +161,18 @@ impl Waiters {
 /// The waiters of one running owner, shared by its watcher callback and its
 /// liveness thread. Each lock is held only to change or read the index.
 struct Shared {
-    status: PathBuf,
-    requests: PathBuf,
+    status: acyclic_fs::HeldRoot,
+    requests: acyclic_fs::HeldRoot,
     waiters: Mutex<Waiters>,
 }
 
 impl Shared {
+    #[cfg(test)]
     fn note(&self, event: notify::Result<notify::Event>) {
+        self.note_at(event, self.status.path(), self.requests.path());
+    }
+
+    fn note_at(&self, event: notify::Result<notify::Event>, status: &Path, requests: &Path) {
         if let Err(error) = &event {
             lock(&self.waiters).failed(|| notification_failure(error));
             return;
@@ -174,7 +180,7 @@ impl Shared {
         if !projection_changed(&event) {
             return;
         }
-        let replies = match notified_operations(&event, &self.status, &self.requests) {
+        let replies = match notified_operations(&event, status, requests) {
             Some(replies) => replies,
             // Overflow: revisit only active replies, never a directory listing.
             None => lock(&self.waiters).waiting.keys().copied().collect(),
@@ -202,14 +208,17 @@ impl Shared {
             return;
         }
         let leaf = format!("{operation}.json");
-        let reply = match regular_bytes(&self.status.join(&leaf), u64::MAX) {
+        let leaf = Path::new(&leaf);
+        let reply = match held_bytes(&self.status, leaf, u64::MAX) {
             Ok(bytes) => crate::client::decode_command_result(operation, 0, &bytes),
-            Err(Error::NotFound(_)) => match std::fs::symlink_metadata(self.requests.join(&leaf)) {
+            Err(Error::NotFound(_)) => match self
+                .requests
+                .open_file(leaf, false)
+                .map_err(native_file_error)
+            {
                 Ok(_) => return,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    Err(Error::Indeterminate(operation))
-                }
-                Err(error) => Err(Error::reply_unavailable(operation, storage(error))),
+                Err(Error::NotFound(_)) => Err(Error::Indeterminate(operation)),
+                Err(error) => Err(Error::reply_unavailable(operation, error)),
             },
             Err(error) => Err(Error::reply_unavailable(operation, error)),
         };
@@ -243,7 +252,6 @@ impl Shared {
 /// the request and reply directories, retired when none waits, and one thread that observes the owner's
 /// lock release. Requests wait concurrently; none waits behind another.
 struct Bridge {
-    directory: PathBuf,
     session: uuid::Uuid,
     workspace: PathBuf,
     shared: Arc<Shared>,
@@ -254,13 +262,11 @@ struct Bridge {
 }
 
 struct Watching {
-    watcher: notify::RecommendedWatcher,
-    watched: bool,
+    watches: Option<[acyclic_fs::HeldRootWatch; 2]>,
 }
 
 impl Bridge {
-    fn open(directory: &Path, endpoint: Endpoint) -> Result<Self> {
-        let root = acyclic_fs::hold_root(directory).map_err(native_file_error)?;
+    fn open(root: acyclic_fs::HeldRoot, endpoint: Endpoint) -> Result<Self> {
         let open = || {
             root.open_file(Path::new("owner.lock"), false)
                 .map_err(native_file_error)
@@ -281,15 +287,14 @@ impl Bridge {
             }
         }
         let shared = Arc::new(Shared {
-            status: directory.join("status"),
-            requests: directory.join("requests"),
+            status: root
+                .open_directory(Path::new("status"))
+                .map_err(native_file_error)?,
+            requests: root
+                .open_directory(Path::new("requests"))
+                .map_err(native_file_error)?,
             waiters: Mutex::default(),
         });
-        let notified = Arc::clone(&shared);
-        let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-            notified.note(event);
-        })
-        .map_err(storage)?;
         let exited = Arc::clone(&shared);
         let observer = std::thread::Builder::new()
             .name("acyclic-host-files-owner".into())
@@ -304,14 +309,10 @@ impl Bridge {
         #[cfg(not(test))]
         drop(observer);
         Ok(Self {
-            directory: directory.to_path_buf(),
             session: endpoint.session,
             workspace: endpoint.workspace,
             shared,
-            watching: Mutex::new(Watching {
-                watcher,
-                watched: false,
-            }),
+            watching: Mutex::new(Watching { watches: None }),
             #[cfg(test)]
             observer: Mutex::new(Some(observer)),
         })
@@ -363,24 +364,18 @@ impl Bridge {
     fn watch(&self) -> Result<()> {
         let mut watching = lock(&self.watching);
         let wanted = lock(&self.shared.waiters).registered != 0;
-        if wanted && !watching.watched {
-            watching
-                .watcher
-                .watch(&self.shared.status, RecursiveMode::NonRecursive)
-                .map_err(storage)?;
-            if let Err(error) = watching
-                .watcher
-                .watch(&self.shared.requests, RecursiveMode::NonRecursive)
-            {
-                let _ = watching.watcher.unwatch(&self.shared.status);
-                return Err(storage(error));
-            }
-            watching.watched = true;
-        } else if !wanted && watching.watched {
-            // A directory the watcher already lost needs no unwatch.
-            let _ = watching.watcher.unwatch(&self.shared.status);
-            let _ = watching.watcher.unwatch(&self.shared.requests);
-            watching.watched = false;
+        if wanted && watching.watches.is_none() {
+            let observe = |root: &acyclic_fs::HeldRoot| {
+                let shared = Arc::clone(&self.shared);
+                root.watch_changes(move |event| shared.note_at(event, Path::new(""), Path::new("")))
+                    .map_err(native_file_error)
+            };
+            watching.watches = Some([
+                observe(&self.shared.status)?,
+                observe(&self.shared.requests)?,
+            ]);
+        } else if !wanted {
+            watching.watches = None;
         }
         Ok(())
     }
@@ -491,12 +486,13 @@ impl Registry {
     fn bridge(
         registry: &Arc<Mutex<Self>>,
         cwd: &Path,
-        open: impl FnOnce(&Path, Endpoint) -> Result<Bridge>,
+        open: impl FnOnce(acyclic_fs::HeldRoot, Endpoint) -> Result<Bridge>,
     ) -> Result<Arc<Bridge>> {
         if let Some(bridge) = Self::live(registry, cwd) {
             return Ok(bridge);
         }
-        let (directory, endpoint) = discover(cwd)?;
+        let (root, endpoint) = discover(cwd)?;
+        let directory = root.path().to_path_buf();
         let connection = Arc::clone(lock(registry).bridges.entry(directory.clone()).or_default());
         // Only callers connecting to this owner wait behind its native opens.
         // Discovery, watcher registration and owner-exit observation never hold
@@ -509,7 +505,7 @@ impl Registry {
             Some(bridge) if bridge.live() => Arc::clone(bridge),
             Some(_) => return Err(Error::NotFound(NO_OWNER.into())),
             None => {
-                let bridge = match open(&directory, endpoint) {
+                let bridge = match open(root, endpoint) {
                     Ok(bridge) => Arc::new(bridge),
                     Err(error) => {
                         connected.retired = true;
@@ -585,11 +581,13 @@ fn request_operation(
         let bytes = serde_json::to_vec(&request).map_err(storage)?;
         let (waiter, delivery) = mpsc::sync_channel(1);
         let waiting = bridge.wait(operation, waiter)?;
-        let request_path = bridge
-            .directory
-            .join("requests")
-            .join(format!("{operation}.json"));
-        immutable(&request_path, &bytes)?;
+        let leaf = format!("{operation}.json");
+        let leaf = Path::new(&leaf);
+        bridge
+            .shared
+            .requests
+            .publish_immutable(leaf, &bytes, acyclic_fs::NativeDurability::Durable)
+            .map_err(native_file_error)?;
         // A writable reply may predate registration. Watching before this read
         // covers both that case and publication concurrent with the read.
         bridge.shared.published(operation);
@@ -605,20 +603,19 @@ fn request_operation(
                 // Whatever the exited owner committed stays keyed by `operation`.
                 return Error::after_cleanup(
                     Err(Error::Indeterminate(operation)),
-                    remove_projection(&request_path),
+                    remove_held_projection(&bridge.shared.requests, leaf),
                 );
             }
         };
         drop(waiting);
         // Withdrawing the request retires its reply and any saved result. Every
         // effect is an agent commit keyed by this operation.
-        Error::after_cleanup(result, remove_projection(&request_path))
+        Error::after_cleanup(
+            result,
+            remove_held_projection(&bridge.shared.requests, leaf),
+        )
     })();
     result.map_err(|error: Error| error.for_request(operation))
-}
-
-fn reply_path(status: &Path, operation: OperationId) -> PathBuf {
-    status.join(format!("{operation}.json"))
 }
 
 fn operation_leaf(name: &std::ffi::OsStr) -> Option<OperationId> {
@@ -664,11 +661,18 @@ fn notified_operations(
     Some(replies)
 }
 
-fn discover(cwd: &Path) -> Result<(PathBuf, Endpoint)> {
+fn discover(cwd: &Path) -> Result<(acyclic_fs::HeldRoot, Endpoint)> {
     for ancestor in cwd.ancestors() {
-        let directory = ancestor.join(DIRECTORY);
-        match regular_bytes(&directory.join("owner.json"), MAXIMUM_REQUEST_BYTES) {
-            Ok(bytes) => {
+        let candidate = (|| {
+            let workspace = acyclic_fs::hold_root(ancestor).map_err(native_file_error)?;
+            let directory = workspace
+                .open_directory(Path::new(DIRECTORY))
+                .map_err(native_file_error)?;
+            let bytes = held_bytes(&directory, Path::new("owner.json"), MAXIMUM_REQUEST_BYTES)?;
+            Ok((directory, bytes))
+        })();
+        match candidate {
+            Ok((directory, bytes)) => {
                 let endpoint: Endpoint = serde_json::from_slice(&bytes).map_err(storage)?;
                 if endpoint.version != 3 {
                     return Err(Error::Unsupported(format!(
@@ -677,7 +681,7 @@ fn discover(cwd: &Path) -> Result<(PathBuf, Endpoint)> {
                     )));
                 }
                 if endpoint.workspace != ancestor
-                    || std::fs::canonicalize(&directory).map_err(storage)? != directory
+                    || std::fs::canonicalize(directory.path()).map_err(storage)? != directory.path()
                 {
                     return Err(Error::Unauthorized(
                         "native host endpoint is outside its admitted workspace".into(),
@@ -726,9 +730,11 @@ pub async fn serve_until(
         )
         .map_err(storage)?,
     );
-    directory
-        .create_directories(Path::new("requests"), acyclic_fs::NativeDurability::Durable)
-        .map_err(storage)?;
+    let request_root = Arc::new(
+        directory
+            .create_directories(Path::new("requests"), acyclic_fs::NativeDurability::Durable)
+            .map_err(storage)?,
+    );
     let status = directory
         .create_directories(Path::new("status"), acyclic_fs::NativeDurability::Durable)
         .map_err(storage)?;
@@ -745,25 +751,28 @@ pub async fn serve_until(
         workspace,
     };
     let bytes = serde_json::to_vec(&endpoint).map_err(storage)?;
-    let descriptor = directory.path().join("owner.json");
-    immutable(&descriptor, &bytes)?;
+    if bytes.len() as u64 > MAXIMUM_REQUEST_BYTES {
+        return Err(Error::Invalid(
+            "native file projection exceeds its bound".into(),
+        ));
+    }
+    directory
+        .publish_immutable(
+            Path::new("owner.json"),
+            &bytes,
+            acyclic_fs::NativeDurability::Durable,
+        )
+        .map_err(native_file_error)?;
     let owner =
-        HostWorkspaceOwner::new(Arc::clone(&local))?.with_requests(directory.path().to_path_buf());
-    // Notifications name the canonical paths; a non-canonical root would
-    // turn every one into an overflow rescan.
-    let requests = std::fs::canonicalize(directory.path().join("requests")).map_err(storage)?;
-    let notices = Arc::new(Notices::new(requests.clone()));
+        HostWorkspaceOwner::new(Arc::clone(&local))?.with_requests(Arc::clone(&request_root));
+    let notices = Arc::new(Notices::new(PathBuf::new()));
     let notified = Arc::clone(&notices);
-    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        notified.note(&event);
-    })
-    .map_err(storage)?;
-    watcher
-        .watch(&requests, RecursiveMode::NonRecursive)
-        .map_err(storage)?;
+    let watcher = request_root
+        .watch_changes(move |event| notified.note(&event))
+        .map_err(native_file_error)?;
     let files = CarrierIo {
         served: Served::default(),
-        requests,
+        requests: request_root,
         status,
         _ownership: Arc::clone(&ownership),
     };
@@ -861,7 +870,7 @@ struct Served {
 /// owner lock fences every accepted write even if its observer disappears.
 struct CarrierIo {
     served: Served,
-    requests: PathBuf,
+    requests: Arc<acyclic_fs::HeldRoot>,
     status: acyclic_fs::HeldRoot,
     _ownership: Arc<acyclic_native_runtime::FileLock>,
 }
@@ -889,7 +898,13 @@ impl CarrierIo {
 impl Served {
     /// Applies what notifications reported: each named request is admitted
     /// or withdrawn on its own; only an overflow lists the whole directory.
-    fn touch(&mut self, requests: &Path, session: uuid::Uuid, touched: Touched) -> Result<()> {
+    fn touch(
+        &mut self,
+        requests: &acyclic_fs::HeldRoot,
+        status: &acyclic_fs::HeldRoot,
+        session: uuid::Uuid,
+        touched: Touched,
+    ) -> Result<()> {
         if let Some(failure) = touched.failure {
             return Err(Error::Storage(failure));
         }
@@ -899,8 +914,8 @@ impl Served {
                 self.rescans += 1;
             }
             let mut names = touched.names;
-            for entry in std::fs::read_dir(requests).map_err(storage)? {
-                names.insert(entry.map_err(storage)?.file_name());
+            for name in requests.read_names().map_err(native_file_error)? {
+                names.insert(name.map_err(native_file_error)?);
             }
             // A known request absent from the listing was withdrawn.
             names.extend(
@@ -913,36 +928,39 @@ impl Served {
             touched.names
         };
         for name in names {
-            self.observe(requests, session, &name)?;
+            self.observe(requests, status, session, &name)?;
         }
         Ok(())
     }
 
     fn observe(
         &mut self,
-        requests: &Path,
+        requests: &acyclic_fs::HeldRoot,
+        status: &acyclic_fs::HeldRoot,
         session: uuid::Uuid,
         name: &std::ffi::OsStr,
     ) -> Result<()> {
-        let path = requests.join(name);
+        let path = Path::new(name);
         if path.extension().is_none_or(|extension| extension != "json") {
             return Ok(());
         }
         let Some(operation) = operation_leaf(name) else {
             // Not a request record; see the invalid-request case below.
-            let _ = remove_projection(&path);
+            let _ = remove_held_projection(requests, path);
             return Ok(());
         };
         if self.known.contains_key(&operation) {
             // A known request changes only by its withdrawal.
-            if std::fs::symlink_metadata(&path).is_err() {
-                self.withdraw(requests, operation)?;
+            match requests.open_file(path, false).map_err(native_file_error) {
+                Ok(_) => {}
+                Err(Error::NotFound(_)) => self.withdraw(status, operation)?,
+                Err(error) => return Err(error),
             }
             return Ok(());
         }
         // Request projections are writable by native tools. Invalid input
         // must not terminate the trusted owner or dispatch another action.
-        let request = regular_bytes(&path, MAXIMUM_REQUEST_BYTES).and_then(|bytes| {
+        let request = held_bytes(requests, path, MAXIMUM_REQUEST_BYTES).and_then(|bytes| {
             let request: Request = serde_json::from_slice(&bytes).map_err(storage)?;
             if request.session != session || request.operation != operation {
                 return Err(Error::Unauthorized(
@@ -961,7 +979,7 @@ impl Served {
             // Held-root removal unlinks the projection itself, never a
             // symlink target. Clients keep their durable command records.
             Err(admission) => {
-                if let Err(cleanup) = remove_projection(&path) {
+                if let Err(cleanup) = remove_held_projection(requests, path) {
                     // No withdrawal event can be produced. End the original
                     // owner with both causes instead of abandoning its waiter.
                     return Error::after_cleanup(Err(admission), Err(cleanup));
@@ -972,7 +990,7 @@ impl Served {
     }
 
     /// Withdrawal retires only this request's reply, if already published.
-    fn withdraw(&mut self, requests: &Path, operation: OperationId) -> Result<()> {
+    fn withdraw(&mut self, status: &acyclic_fs::HeldRoot, operation: OperationId) -> Result<()> {
         let std::collections::hash_map::Entry::Occupied(mut tracked) = self.known.entry(operation)
         else {
             return Ok(());
@@ -985,12 +1003,8 @@ impl Served {
                 return Ok(());
             }
             Tracked::Answered(cause) => {
-                let withdrawal = requests
-                    .parent()
-                    .ok_or_else(|| Error::Invalid("native request directory has no parent".into()))
-                    .and_then(|directory| {
-                        remove_projection(&reply_path(&directory.join("status"), operation))
-                    });
+                let withdrawal =
+                    remove_held_projection(status, Path::new(&format!("{operation}.json")));
                 match withdrawal {
                     Ok(()) | Err(Error::NotFound(_)) => {}
                     Err(error) => {
@@ -1080,7 +1094,9 @@ async fn serve_requests(
         if touched.rescan || !touched.names.is_empty() || touched.failure.is_some() {
             files = files
                 .apply(session, move |files| {
-                    files.served.touch(&files.requests, session, touched)
+                    files
+                        .served
+                        .touch(&files.requests, &files.status, session, touched)
                 })
                 .await?;
         }
@@ -1101,10 +1117,9 @@ async fn serve_requests(
     }
 }
 
-fn remove_projection(path: &Path) -> Result<()> {
-    let (parent, leaf) = projection_parent(path)?;
+fn remove_held_projection(parent: &acyclic_fs::HeldRoot, leaf: &Path) -> Result<()> {
     match parent
-        .remove_file(&leaf, acyclic_fs::NativeDurability::Durable)
+        .remove_file(leaf, acyclic_fs::NativeDurability::Durable)
         .map_err(native_file_error)
     {
         Ok(()) | Err(Error::NotFound(_)) => Ok(()),
@@ -1112,9 +1127,8 @@ fn remove_projection(path: &Path) -> Result<()> {
     }
 }
 
-fn regular_bytes(path: &Path, maximum: u64) -> Result<Vec<u8>> {
-    let (parent, leaf) = projection_parent(path)?;
-    let file = parent.open_file(&leaf, false).map_err(native_file_error)?;
+fn held_bytes(parent: &acyclic_fs::HeldRoot, leaf: &Path, maximum: u64) -> Result<Vec<u8>> {
+    let file = parent.open_file(leaf, false).map_err(native_file_error)?;
     let metadata = file.metadata().map_err(storage)?;
     if !metadata.is_file() {
         return Err(Error::Invalid(
@@ -1144,13 +1158,6 @@ fn regular_bytes(path: &Path, maximum: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn immutable(path: &Path, bytes: &[u8]) -> Result<()> {
-    let (parent, leaf) = projection_parent(path)?;
-    parent
-        .publish_immutable(&leaf, bytes, acyclic_fs::NativeDurability::Durable)
-        .map_err(native_file_error)
-}
-
 fn native_file_error(error: acyclic_fs::demand::DemandError) -> Error {
     match error {
         acyclic_fs::demand::DemandError::Absent => {
@@ -1163,27 +1170,4 @@ fn native_file_error(error: acyclic_fs::demand::DemandError) -> Error {
         }
         error => storage(error),
     }
-}
-
-fn projection_parent(path: &Path) -> Result<(acyclic_fs::HeldRoot, PathBuf)> {
-    let endpoint = path
-        .ancestors()
-        .find(|ancestor| ancestor.ends_with(DIRECTORY))
-        .ok_or_else(|| Error::Invalid("native projection is outside its workspace".into()))?;
-    let workspace = endpoint
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| Error::Invalid("native projection workspace absent".into()))?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| Error::Invalid("native projection parent absent".into()))?;
-    let leaf = PathBuf::from(
-        path.file_name()
-            .ok_or_else(|| Error::Invalid("native projection leaf absent".into()))?,
-    );
-    let root = acyclic_fs::hold_root(workspace).map_err(native_file_error)?;
-    let parent = root
-        .open_directory(parent.strip_prefix(workspace).map_err(storage)?)
-        .map_err(native_file_error)?;
-    Ok((parent, leaf))
 }

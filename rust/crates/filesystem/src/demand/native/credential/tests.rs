@@ -463,6 +463,7 @@ async fn native_source_fences_rotation_and_owner_loss_without_warm_reads() -> Te
     let follower = follower?;
     assert_eq!(reads.load(Ordering::Relaxed), 1, "one cold source read");
     assert_eq!(first.binding(), follower.binding());
+    let before_check = original.receipt();
     first.check().await?;
     let before_warm = original.receipt();
     let warm = source.resolve().await?;
@@ -470,8 +471,9 @@ async fn native_source_fences_rotation_and_owner_loss_without_warm_reads() -> Te
     assert_eq!(warm.binding(), first.binding());
     assert_eq!(after_warm.source_bytes_read, before_warm.source_bytes_read);
     assert_eq!(
-        after_warm.backend_write_operations,
-        before_warm.backend_write_operations
+        after_warm.backend_write_operations - before_warm.backend_write_operations,
+        before_warm.backend_write_operations - before_check.backend_write_operations,
+        "warm resolution does only the same physical fence as request admission"
     );
     assert_eq!(
         after_warm.durability_operations,

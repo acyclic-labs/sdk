@@ -16,6 +16,43 @@ pub struct HeldRoot {
 }
 
 impl HeldRoot {
+    /// Reports changes in this original held directory through the shared
+    /// native notification service. Event paths are relative to this directory;
+    /// registration never reopens its original label. Source loss reports an
+    /// error, and dropping the watch retires its registration.
+    #[cfg(feature = "native-watch")]
+    pub fn watch_changes(
+        &self,
+        changed: impl Fn(notify::Result<notify::Event>) + Send + Sync + 'static,
+    ) -> Result<crate::HeldRootWatch, DemandError> {
+        crate::source_watch::HeldRootWatch::open(&self.root, changed)
+    }
+
+    /// Lazily reads names from this held directory, without following its
+    /// original path or querying the named entries' metadata. The cursor owns
+    /// one bounded native buffer and ends when the directory query ends.
+    pub fn read_names(
+        &self,
+    ) -> Result<impl Iterator<Item = Result<std::ffi::OsString, DemandError>> + use<>, DemandError>
+    {
+        let mut work = crate::native_host::ordinary_work();
+        let (mut reader, _allocation) =
+            crate::native_host::read_names_held(&self.root.directory(), &mut work)?;
+        let mut ended = false;
+        Ok(std::iter::from_fn(move || {
+            if ended {
+                return None;
+            }
+            let entry = reader.next_name(&mut work);
+            ended = !matches!(entry, Ok(Some(_)));
+            entry.transpose().map(|entry| {
+                let (name, allocation) = entry?;
+                work.release(allocation)?;
+                Ok(name)
+            })
+        }))
+    }
+
     /// Removes a leaf relative to this held directory without following links.
     #[cfg(any(test, feature = "native-mount"))]
     pub fn remove_file(

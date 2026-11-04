@@ -429,7 +429,8 @@ impl Shared {
             }
         })();
         reading.blocked = !matches!(result, Ok(true));
-        if result.is_err() {
+        if let Err(error) = &result {
+            self.delivery.report_failure(error);
             self.delivery.notify_lost();
         }
         if !reading.blocked {

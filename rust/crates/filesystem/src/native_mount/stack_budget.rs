@@ -85,6 +85,9 @@ impl StackMeasurements {
         // Collect outside the painted callback so diagnostics do not change
         // its measured depth. Check all limits after exercising every entry.
         self.used[index] = Some(used);
+        if let Err(error) = &result {
+            eprintln!("stack {kind}: callback failed: {error}");
+        }
         result
     }
 

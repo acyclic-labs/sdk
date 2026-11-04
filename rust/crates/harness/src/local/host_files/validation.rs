@@ -5,7 +5,7 @@ use super::*;
 pub struct WorkspaceInput {
     workspace: PathBuf,
     directory: PathBuf,
-    requests: PathBuf,
+    requests: acyclic_fs::HeldRoot,
     status: acyclic_fs::HeldRoot,
     _checkout: tempfile::TempDir,
 }
@@ -18,6 +18,7 @@ impl WorkspaceInput {
         let directory = workspace.join(DIRECTORY);
         let requests = directory.join("requests");
         std::fs::create_dir_all(&requests).map_err(storage)?;
+        let requests = acyclic_fs::hold_root(&requests).map_err(native_file_error)?;
         let status = directory.join("status");
         std::fs::create_dir(&status).map_err(storage)?;
         let status = acyclic_fs::hold_root(&status).map_err(native_file_error)?;
@@ -32,19 +33,19 @@ impl WorkspaceInput {
         // can fund an allocation, then withdrawn without dispatching work.
         let operation = OperationId::from_bytes([0; 16]);
         let leaf = OsString::from(format!("{operation}.json"));
-        let path = input.requests.join(&leaf);
+        let path = input.requests.path().join(&leaf);
         std::fs::File::create(&path)
             .and_then(|file| file.set_len(MAXIMUM_REQUEST_BYTES + 1))
             .map_err(storage)?;
         assert!(
             matches!(
-                regular_bytes(&path, MAXIMUM_REQUEST_BYTES),
+                held_bytes(&input.requests, Path::new(&leaf), MAXIMUM_REQUEST_BYTES),
                 Err(Error::Invalid(_))
             ),
             "oversized input must be refused before reading"
         );
         let mut served = Served::default();
-        served.observe(&input.requests, uuid::Uuid::nil(), &leaf)?;
+        served.observe(&input.requests, &input.status, uuid::Uuid::nil(), &leaf)?;
         assert!(served.start().is_empty(), "oversized input dispatched");
         assert!(
             !path.try_exists().map_err(storage)?,
@@ -126,8 +127,8 @@ impl WorkspaceInput {
         request.operation = OperationId::from_bytes(foreign);
         let foreign_operation = serde_json::to_vec(&request).map_err(storage)?;
         let leaf = OsString::from(format!("{operation}.json"));
-        let path = self.requests.join(&leaf);
-        let reply = reply_path(self.status.path(), operation);
+        let path = self.requests.path().join(&leaf);
+        let reply = self.status.path().join(&leaf);
         let schedule = input.first().copied().unwrap_or_default();
         for (index, bytes) in [
             original.as_slice(),
@@ -145,7 +146,7 @@ impl WorkspaceInput {
             let mut served = Served::default();
             std::fs::write(&path, bytes).map_err(storage)?;
             for _ in 0..2 {
-                served.observe(&self.requests, session, &leaf)?;
+                served.observe(&self.requests, &self.status, session, &leaf)?;
             }
             assert!(served.ready.len() <= 1, "one operation dispatches once");
             for admitted in &served.ready {
@@ -158,8 +159,8 @@ impl WorkspaceInput {
                 _ => {}
             }
             if schedule & 1 != 0 {
-                remove_projection(&path)?;
-                served.observe(&self.requests, session, &leaf)?;
+                remove_held_projection(&self.requests, Path::new(&leaf))?;
+                served.observe(&self.requests, &self.status, session, &leaf)?;
                 assert!(
                     served.start().is_empty(),
                     "withdrawn queued request dispatched"
@@ -169,14 +170,14 @@ impl WorkspaceInput {
                 if !started.is_empty() {
                     // Replacing writable bytes cannot re-admit accepted work.
                     std::fs::write(&path, input).map_err(storage)?;
-                    served.observe(&self.requests, session, &leaf)?;
+                    served.observe(&self.requests, &self.status, session, &leaf)?;
                     assert!(
                         served.start().is_empty(),
                         "accepted request dispatched again"
                     );
                     if schedule & 2 != 0 {
-                        remove_projection(&path)?;
-                        served.observe(&self.requests, session, &leaf)?;
+                        remove_held_projection(&self.requests, Path::new(&leaf))?;
+                        served.observe(&self.requests, &self.status, session, &leaf)?;
                     }
                     // The file carrier must preserve the entire reply through
                     // the same encoder, opened-file reader and strict decoder.
@@ -192,14 +193,14 @@ impl WorkspaceInput {
                             crate::client::decode_command_result(
                                 operation,
                                 0,
-                                &regular_bytes(&reply, u64::MAX)?,
+                                &held_bytes(&self.status, Path::new(&leaf), u64::MAX)?,
                             )?,
                             outcome,
                         );
                     }
                 }
-                remove_projection(&path)?;
-                served.observe(&self.requests, session, &leaf)?;
+                remove_held_projection(&self.requests, Path::new(&leaf))?;
+                served.observe(&self.requests, &self.status, session, &leaf)?;
             }
             assert!(served.known.is_empty(), "original operation did not retire");
             assert!(!reply.try_exists().map_err(storage)?);
@@ -207,11 +208,11 @@ impl WorkspaceInput {
         Ok(())
     }
 
-    fn admit(&self, bytes: &[u8]) -> Result<(PathBuf, Endpoint)> {
+    fn admit(&self, bytes: &[u8]) -> Result<(acyclic_fs::HeldRoot, Endpoint)> {
         std::fs::write(self.directory.join("owner.json"), bytes).map_err(storage)?;
         let result = discover(&self.workspace);
         if let Ok((directory, endpoint)) = &result {
-            assert_eq!(directory, &self.directory);
+            assert_eq!(directory.path(), &self.directory);
             assert_eq!(endpoint.version, 3);
             assert_eq!(endpoint.workspace, self.workspace);
         }
