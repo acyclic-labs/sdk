@@ -802,7 +802,10 @@ mod tests {
                 summary: false,
                 compose_tools: false,
                 model: Model::new("recorded-control".into(), "admission".into(), "1".into())?,
-                messages: Vec::new(),
+                messages: vec![ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("source".into()),
+                }],
                 tools: Vec::new(),
                 sampling: Default::default(),
                 max_output_tokens: None,
