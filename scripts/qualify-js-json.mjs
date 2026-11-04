@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { cpSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { preserveWasmArtifacts } from "./archive-utils.mjs";
+import { isWasmArtifactPath, preserveWasmArtifacts } from "./archive-utils.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const args = process.argv.slice(2);
@@ -92,6 +92,7 @@ try {
       const receipt = JSON.parse(receiptBytes);
       if (receipt.result !== "pass" || !Array.isArray(receipt.artifacts)) fail("reuse receipt", "expected an original passing qualification");
       const hashes = new Map();
+      const modules = new Map();
       for (const artifact of receipt.artifacts) {
         const path = resolve(directory, artifact.path);
         const offset = relative(directory, path);
@@ -99,9 +100,19 @@ try {
         const sha256 = createHash("sha256").update(readFileSync(path)).digest("hex");
         if (sha256 !== artifact.sha256 || hashes.has(artifact.path)) fail("reuse artifact", `hash or uniqueness differs: ${artifact.path}`);
         hashes.set(artifact.path, sha256);
+        // Live artifacts name their module entry directly. Retained artifacts
+        // keep that identity separately from their saved physical location.
+        const modulePath = artifact.module_path ?? (artifact.path.startsWith(`${generated}/`)
+          ? artifact.path.slice(generated.length + 1) : undefined);
+        if (modulePath !== undefined) {
+          const destination = relative(join(root, generated), resolve(root, generated, modulePath));
+          if (!isWasmArtifactPath(modulePath) || isAbsolute(destination) || destination === ".."
+            || destination.startsWith(`..${sep}`) || modules.has(modulePath)) fail("reuse module", `unsafe or duplicate module entry: ${modulePath}`);
+          modules.set(modulePath, path);
+        }
       }
-      for (const path of [`${generated}/acyclic_harness_wasm.js`, `${generated}/acyclic_harness_wasm_bg.wasm`]) {
-        if (!hashes.has(path)) fail("reuse module", `missing artifact: ${path}`);
+      for (const path of ["acyclic_harness_wasm.js", "acyclic_harness_wasm_bg.wasm"]) {
+        if (!modules.has(path)) fail("reuse module", `missing artifact: ${path}`);
       }
       const sourceHash = createHash("sha256").update(readFileSync(production)).digest("hex");
       if (sourceHash !== hashes.get("rust/crates/harness/src/wasm/json.rs")) fail("reuse source", "defining admission source differs");
@@ -109,10 +120,10 @@ try {
         receipt_sha256: createHash("sha256").update(receiptBytes).digest("hex"),
         qualification: "retained shipping module; no current-tree build or complete dependency parity inferred" };
       artifactsCustody = preserveWasmArtifacts(join(root, generated), "node scripts/build-wasm.mjs harness");
-      for (const path of hashes.keys()) {
-        if (!path.startsWith(`${generated}/`)) continue;
-        mkdirSync(dirname(join(root, path)), { recursive: true });
-        cpSync(artifactsCustody.source(join(directory, path)), join(root, path));
+      for (const [modulePath, path] of modules) {
+        const destination = join(root, generated, modulePath);
+        mkdirSync(dirname(destination), { recursive: true });
+        cpSync(artifactsCustody.source(path), destination);
       }
     } catch (error) { fail("reuse retained module", String(error)); }
   } else {
@@ -172,6 +183,7 @@ try {
     result: red ? "expected semantic red" : "pass", mutation,
     artifacts: artifacts.map(path => ({
       path: retainedPath(path),
+      module_path: path.startsWith(`${generated}/`) ? path.slice(generated.length + 1) : undefined,
       sha256: hash(path),
     })),
   }, null, 2)}\n`;
