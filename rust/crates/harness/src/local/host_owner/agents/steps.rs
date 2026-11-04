@@ -103,7 +103,7 @@ pub(super) fn apply(
                 ));
             }
             session.settled += 1;
-            session.result = Some(bounded(outcome));
+            session.result = Some(outcome);
             session.events = events;
             return Ok(session.running.take());
         }
@@ -140,26 +140,4 @@ fn claim_bytes(agent: &AgentState, session: &Session) -> [u8; 16] {
     let mut bytes = [0; 16];
     hasher.finalize_xof().fill(&mut bytes);
     bytes
-}
-
-fn bounded(outcome: crate::Outcome<TurnOutput>) -> crate::Outcome<TurnOutput> {
-    let truncate = |text: String| -> String {
-        let mut end = text.len().min(MAXIMUM_MESSAGE);
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        text[..end].to_owned()
-    };
-    match outcome {
-        crate::Outcome::Succeeded(mut output) => {
-            output.text = truncate(output.text);
-            output.metadata = Value::Null;
-            output.attachments.clear();
-            crate::Outcome::Succeeded(output)
-        }
-        crate::Outcome::Failed { message } => crate::Outcome::Failed {
-            message: truncate(message),
-        },
-        other => other,
-    }
 }

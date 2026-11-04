@@ -31,8 +31,6 @@ use steps::{apply, idle, reject, start, waiting};
 const HOST: &str = "native";
 /// Bound of one session event, prompt or native resume reference.
 pub(super) const MAXIMUM_BYTES: u64 = 65_536;
-/// Bound of a recorded failure description.
-const MAXIMUM_MESSAGE: usize = 4096;
 
 /// Requested lifecycle of a native session.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
