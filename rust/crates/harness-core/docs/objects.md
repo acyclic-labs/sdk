@@ -12,6 +12,11 @@ two provider calls instead of three serial puts and a retain; physical requests
 and durability barriers depend on the provider. The borrowed input still needs
 one owned payload copy. Batching adds no task or separate flush.
 
+Reads overlap the binding record's HEAD with the immutable content query.
+Both original provider calls remain; no record body is downloaded. Binding
+refusals cancel the content query, and content results and failures are exposed
+only after the binding succeeds. Full, ranged and empty reads share this check.
+
 `ObjectContentMountResolver` routes references across registered owner-authorized
 stores. Durable services must retain accepted objects and reconcile pending
 intents; this adapter does not establish indefinite residency.

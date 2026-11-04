@@ -125,6 +125,29 @@ async fn an_upload_retry_naming_other_content_is_refused()
                     "the original binding and selected bytes survive collection and reopen"
                 );
             }
+            let forged = FileRef::new(
+                file.volume().clone(),
+                "notes/unpublished.txt".into(),
+                file.version().into(),
+                file.descriptor().clone(),
+                file.display_name().into(),
+                &mut None,
+            )?;
+            assert!(matches!(
+                binding
+                    .read(&forged, forged.descriptor().byte_length(), None, None)?
+                    .await,
+                Err(Error::Unauthorized(_))
+            ));
+            let (release, delivered) = tokio::sync::oneshot::channel();
+            *read_cut.delivery.lock().expect("read delivery") = Some(delivered);
+            drop(release);
+            assert!(matches!(
+                binding
+                    .read(&file, file.descriptor().byte_length(), None, None)?
+                    .await,
+                Err(Error::Storage(_))
+            ));
             if file.path() == "notes/uncertain.txt" {
                 let retry = |body: &'static [u8]| {
                     binding.stage(
