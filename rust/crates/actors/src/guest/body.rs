@@ -142,15 +142,54 @@ export type GuestFetchResponse = Response | GuestResponseStream;\n";
 impl GuestRequest {
     /// Convert the buffered portable projection to a native streaming request.
     pub fn into_streaming(self) -> Result<GuestStreamingRequest, http::Error> {
-        let mut builder = http::Request::builder()
-            .uri(self.url)
-            .method(self.method.as_str());
-        for (name, value) in self.headers {
-            builder = builder.header(name, value);
-        }
-        builder.body(GuestBody::Buffered(self.body))
+        streaming_request(
+            &self.method,
+            self.url,
+            self.headers,
+            GuestBody::Buffered(self.body),
+        )
     }
 }
+
+fn streaming_request(
+    method: &str,
+    url: String,
+    headers: impl IntoIterator<Item = (String, String)>,
+    body: GuestBody,
+) -> Result<GuestStreamingRequest, http::Error> {
+    let mut builder = http::Request::builder().uri(url).method(method);
+    for (name, value) in headers {
+        builder = builder.header(name, value);
+    }
+    builder.body(body)
+}
+
+macro_rules! invocation_fetch {
+    ($($header:ident),+ $(,)?) => {$(
+        impl crate::domain::$header {
+            /// Attach the original body after the serving host admits this
+            /// header's target, ordering, bindings and caller provenance.
+            ///
+            /// Consumes HTTP metadata through the same conversion as buffered
+            /// guest requests. It neither polls nor replaces the body. The
+            /// original invocation owner must retain authority and context;
+            /// this projection performs no admission or handler dispatch.
+            pub fn into_streaming(self, body: GuestBody) -> Result<GuestStreamingRequest, http::Error> {
+                let (method, url, headers) = self.into_http_parts();
+                streaming_request(
+                    &method,
+                    url,
+                    headers.into_iter().map(|header| {
+                        let header: crate::wire::Header = header.into();
+                        (header.name, header.value)
+                    }),
+                    body,
+                )
+            }
+        }
+    )+};
+}
+invocation_fetch!(InvokeActorHeader, InvokeWorkerHeader);
 
 impl GuestResponse {
     /// Convert buffered output without copying its Bytes allocation.

@@ -175,6 +175,92 @@ fn token(path: &str, change: impl Fn(&mut Block)) -> Vec<u8> {
         change(block);
     })
 }
+
+#[test]
+fn product_call_targets_retain_exact_action_resource_and_live_credential() {
+    let attributes = RecordAttributes::try_new(vec![]).unwrap();
+    for (resource, action, other_action) in [
+        ("actors:/fixture", "actors/invoke", "actors/delete"),
+        ("objects:/bucket/key", "objects/put", "objects/get"),
+        ("workers:/fixture", "workers/invoke", "workers/delete"),
+        ("fs:/fixture", "fs/list", "fs/read"),
+    ] {
+        let state = State::new();
+        let authority = Arc::new(authority(state.clone()));
+        let credential = testing::credential_with_grants(vec![ResourceGrant {
+            resource: ResourcePattern {
+                name: resource.into(),
+                prefix: false,
+            },
+            actions: vec![action.into()],
+        }]);
+        let mut slots = Slots::default();
+        authority.register(&mut slots, 0, &credential, 1).unwrap();
+        let target = CallTarget::new(resource.into(), action).unwrap();
+        let (mut binding, original) = authority.bind_call(&slots, 0, target, 1).unwrap();
+        original
+            .authorize(resource, &[], &attributes, PolicyDecision::Allow)
+            .unwrap();
+        assert!(matches!(
+            authority.bind_call(
+                &slots,
+                0,
+                CallTarget::new(resource.into(), other_action).unwrap(),
+                1,
+            ),
+            Err(Rejection::Forbidden)
+        ));
+        let foreign = format!("{resource}/foreign");
+        assert!(matches!(
+            authority.bind_call(
+                &slots,
+                0,
+                CallTarget::new(foreign.clone(), action).unwrap(),
+                1,
+            ),
+            Err(Rejection::Forbidden)
+        ));
+        assert_eq!(
+            original.authorize(&foreign, &[], &attributes, PolicyDecision::Allow),
+            Err(StreamError::AccessDenied)
+        );
+        assert_eq!(
+            original.authorize(resource, &[], &attributes, PolicyDecision::Deny),
+            Err(StreamError::AccessDenied)
+        );
+        // A slot replacement cannot substitute another action for the admitted
+        // operation, even while the original provider still holds its context.
+        let replacement = testing::credential_with_grants(vec![ResourceGrant {
+            resource: ResourcePattern {
+                name: resource.into(),
+                prefix: false,
+            },
+            actions: vec![other_action.into()],
+        }]);
+        authority.register(&mut slots, 0, &replacement, 1).unwrap();
+        assert!(matches!(
+            authority.validate(&slots, &mut binding, 1),
+            Err(Rejection::Forbidden)
+        ));
+        authority.register(&mut slots, 0, &credential, 1).unwrap();
+        authority.validate(&slots, &mut binding, 1).unwrap();
+        // Revalidation retained this same provider authorization, action and
+        // target. No new context can bypass the original owner's policy.
+        original
+            .authorize(resource, &[], &attributes, PolicyDecision::Allow)
+            .unwrap();
+        assert!(matches!(
+            CallTarget::new(resource.into(), "streams/follow"),
+            Err(StreamError::InvalidArgument)
+        ));
+        state.publish(signed::Snapshot::default(), u64::MAX);
+        assert_eq!(
+            original.authorize(resource, &[], &attributes, PolicyDecision::Allow),
+            Err(StreamError::AccessDenied)
+        );
+    }
+}
+
 fn bind(
     authority: &Authority,
     slots: &Slots,
