@@ -467,13 +467,30 @@ impl RecordedModel {
     }
 }
 
-fn retain_continuation(events: &mut Vec<ModelEvent>, observed: &[ModelEvent]) -> Result<()> {
-    if !events.starts_with(observed) {
-        return Err(Error::Conflict(
-            "recorded dispatch observed a different event prefix".into(),
-        ));
+fn replay_suffix<C>(
+    call: &RecordedCall,
+    observed: &[ModelEvent],
+    mut decode: impl FnMut(&[u8]) -> Result<(ModelEvent, C)>,
+    mut retain: impl FnMut(ModelEvent, C) -> Result<()>,
+) -> Result<()> {
+    let conflict = || Error::Conflict("recorded dispatch observed a different event prefix".into());
+    if observed.len() > call.events.len() {
+        return Err(conflict());
     }
-    events.drain(..observed.len());
+    for (index, bytes) in call.events.iter().enumerate() {
+        let (event, custody) = decode(bytes)?;
+        if let Some(expected) = observed.get(index) {
+            let matches = event == *expected;
+            // Destroy discarded storage before refunding its original owner.
+            drop(event);
+            drop(custody);
+            if !matches {
+                return Err(conflict());
+            }
+        } else {
+            retain(event, custody)?;
+        }
+    }
     Ok(())
 }
 
@@ -942,10 +959,17 @@ mod tests {
             .await?;
         assert_eq!(reconciled, Some(vec![events[0].clone()]));
         drop(custody);
+        let retained = funded.live_allocation_bytes();
         let (reconciled, custody) = trial
             .reconcile_with_native_work(dispatch, &events[..1], &funded)?
             .await?;
         assert_eq!(reconciled, Some(vec![]));
+        assert_eq!(
+            funded.live_allocation_bytes(),
+            retained,
+            "observed replay prefix retained discarded storage funding"
+        );
+        drop(reconciled);
         drop(custody);
         assert!(matches!(
             trial.reconcile(dispatch, &events[1..]).await,
@@ -1254,12 +1278,16 @@ impl ModelProvider for RecordedModel {
     ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         match self.selected_call(dispatch, None) {
             Ok(Some(call)) => Box::pin(async move {
-                let mut events = call
-                    .events
-                    .iter()
-                    .map(|bytes| decode(bytes))
-                    .collect::<Result<Vec<_>>>()?;
-                retain_continuation(&mut events, observed)?;
+                let mut events = Vec::new();
+                replay_suffix(
+                    call,
+                    observed,
+                    |bytes| decode(bytes).map(|event| (event, ())),
+                    |event, ()| {
+                        events.push(event);
+                        Ok(())
+                    },
+                )?;
                 Ok(Some(events))
             }),
             Ok(None) => self.live.reconcile(dispatch, observed),
@@ -1372,13 +1400,21 @@ impl ModelProvider for RecordedModel {
         crate::NativeFutureBundle::new(work, || async move {
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
             let mut events = Vec::new();
-            crate::executor::stock_vec_reserve(&mut events, call.events.len(), Some(&io))?;
-            for bytes in &call.events {
-                let (event, custody) = ModelEvent::decode_with_native_work(bytes, work)?;
-                io.absorb_native_custody(custody)?;
-                events.push(event);
-            }
-            retain_continuation(&mut events, observed)?;
+            crate::executor::stock_vec_reserve(
+                &mut events,
+                call.events.len().saturating_sub(observed.len()),
+                Some(&io),
+            )?;
+            replay_suffix(
+                call,
+                observed,
+                |bytes| ModelEvent::decode_with_native_work(bytes, work),
+                |event, custody| {
+                    io.absorb_native_custody(custody)?;
+                    events.push(event);
+                    Ok(())
+                },
+            )?;
             let retained = io.owned_bytes()?;
             Ok((Some(events), io.into_native_custody(retained)?))
         })
