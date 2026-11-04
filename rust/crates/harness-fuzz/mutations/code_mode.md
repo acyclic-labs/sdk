@@ -186,6 +186,14 @@ without a captured-host-fixture claim. Restore the patch before collecting
 original coverage. This uses the original reservation and ledger, with no
 additional decoder, charge callback model or public entry point.
 
+Apply `mutations/preparation_omit_diagnostic_credit.patch` to omit the original
+diagnostic reservation before typed admission. The same argument relation must
+reject a syntax refusal with zero custody at `native argument diagnostic must
+retain its owned storage`. The existing physical-storage property checks the
+closed diagnostic allowance against actual allocation; this relation checks
+that the native decoder retains that allowance through each fuzzed refusal.
+Restore the patch before collecting original coverage.
+
 The generated narrow and wide Unicode JSON seeds force temporary UTF-8 views
 through both production conversion branches. With no temporary-view credit,
 the shared QuickJS failure label must release its owned source reference.
