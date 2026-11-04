@@ -177,43 +177,6 @@ impl Cursor {
     }
 }
 
-/// The original invocation funds cursor nodes before allocation. Portable
-/// calls use the existing unbounded-work choice, not a second private ledger.
-struct CursorWork<'a>(crate::NativeWork<'a>);
-
-impl IndexWork for CursorWork<'_> {
-    type Error = Error;
-    type Allocation = crate::NativeCustody;
-
-    fn check(&mut self) -> Result<()> {
-        self.charge_items(0)
-    }
-
-    fn charge_items(&mut self, items: u64) -> Result<()> {
-        let _ = (self.0, items);
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(original) = self.0 {
-            original.admit(acyclic_fs::WorkCounters {
-                items_examined: items,
-                ..Default::default()
-            })?;
-        }
-        Ok(())
-    }
-
-    fn claim(&mut self, bytes: u64) -> Result<Self::Allocation> {
-        let _ = (self.0, bytes);
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(original) = self.0 {
-            return original
-                .claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)
-                .map(Some)
-                .map_err(Into::into);
-        }
-        Ok(None)
-    }
-}
-
 mod identity;
 
 /// Replay identity of an encoded provider-neutral request. Authored text,
@@ -399,7 +362,7 @@ impl RecordedModel {
         } = &mut *replay;
         let selection = dispatches.get_or_try_insert_with(
             dispatch_key(dispatch),
-            &mut CursorWork(work),
+            &mut crate::NativeIndexWork(work),
             |_| Ok(None),
         )?;
         match selection {
@@ -422,7 +385,10 @@ impl RecordedModel {
         // Retained dispatches and live turns cannot select another recording.
         // Only a new replay candidate needs the request's semantic identity.
         let key = if live
-            .get(dispatch.operation_id.into_bytes(), &mut CursorWork(work))?
+            .get(
+                dispatch.operation_id.into_bytes(),
+                &mut crate::NativeIndexWork(work),
+            )?
             .copied()
             .unwrap_or(false)
         {
@@ -431,20 +397,25 @@ impl RecordedModel {
             Some(request.replay_key()?)
         };
         let output = if let Some(key) = key {
-            cursor.select(&self.recording, key, &mut CursorWork(work), |candidate| {
-                let Some((index, call)) = candidate else {
-                    return Ok(None);
-                };
-                let output = build(call)?;
-                for (ordinal, (call_id, _)) in call.tools.iter().enumerate() {
-                    tools.insert(
-                        (dispatch.operation_id, call_id.clone()),
-                        (key, index, ordinal),
-                    );
-                }
-                *selection = Some(ReplaySelection::Recorded { key, index });
-                Ok(Some(output))
-            })?
+            cursor.select(
+                &self.recording,
+                key,
+                &mut crate::NativeIndexWork(work),
+                |candidate| {
+                    let Some((index, call)) = candidate else {
+                        return Ok(None);
+                    };
+                    let output = build(call)?;
+                    for (ordinal, (call_id, _)) in call.tools.iter().enumerate() {
+                        tools.insert(
+                            (dispatch.operation_id, call_id.clone()),
+                            (key, index, ordinal),
+                        );
+                    }
+                    *selection = Some(ReplaySelection::Recorded { key, index });
+                    Ok(Some(output))
+                },
+            )?
         } else {
             None
         };
@@ -456,7 +427,7 @@ impl RecordedModel {
                 // a refused builder leaves the original turn non-live.
                 live.get_or_try_insert_with(
                     dispatch.operation_id.into_bytes(),
-                    &mut CursorWork(work),
+                    &mut crate::NativeIndexWork(work),
                     |_| Ok(false),
                 )?;
                 *selection = Some(ReplaySelection::Pending);
@@ -478,7 +449,7 @@ impl RecordedModel {
         let replay = self.lock();
         match replay
             .dispatches
-            .get(dispatch_key(dispatch), &mut CursorWork(work))?
+            .get(dispatch_key(dispatch), &mut crate::NativeIndexWork(work))?
             .copied()
             .flatten()
         {
@@ -559,7 +530,7 @@ mod tests {
                 } else {
                     let expected = source.iter().position(|(candidate, _)| *candidate == key)
                         .map(|at| source.remove(at).1);
-                    let actual = cursor.take(&recording, key, &mut CursorWork(None))
+                    let actual = cursor.take(&recording, key, &mut crate::NativeIndexWork(None))
                         .map_err(|error| TestCaseError::fail(error.to_string()))?
                         .map(|(_, call)| call.clone());
                     prop_assert_eq!(actual, expected);
@@ -570,14 +541,14 @@ mod tests {
             }
             for (key, expected) in source {
                 prop_assert_eq!(
-                    cursor.take(&recording, key, &mut CursorWork(None))
+                    cursor.take(&recording, key, &mut crate::NativeIndexWork(None))
                         .map_err(|error| TestCaseError::fail(error.to_string()))?
                         .map(|(_, call)| call.clone()),
                     Some(expected)
                 );
             }
             prop_assert_eq!(cursor.used, recording.len());
-            prop_assert!(cursor.take(&recording, [0; 32], &mut CursorWork(None))
+            prop_assert!(cursor.take(&recording, [0; 32], &mut crate::NativeIndexWork(None))
                 .map_err(|error| TestCaseError::fail(error.to_string()))?.is_none());
             prop_assert_eq!(cursor.used, recording.len());
         }
@@ -731,7 +702,7 @@ mod tests {
         let retained = work.live_allocation_bytes();
         let mut cursor = Cursor::default();
         assert!(matches!(
-            cursor.take(&source, [0; 32], &mut CursorWork(Some(&work))),
+            cursor.take(&source, [0; 32], &mut crate::NativeIndexWork(Some(&work))),
             Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::Work(
                     acyclic_fs::WorkError::BudgetExceeded { .. }
@@ -748,14 +719,14 @@ mod tests {
         .map_err(|(error, _)| error)?;
         cancellation.cancel();
         assert!(matches!(
-            cursor.take(&source, [0; 32], &mut CursorWork(Some(&work))),
+            cursor.take(&source, [0; 32], &mut crate::NativeIndexWork(Some(&work))),
             Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
                 ..
             })
         ));
         assert!(matches!(
-            cursor.take(&source, [1; 32], &mut CursorWork(Some(&work))),
+            cursor.take(&source, [1; 32], &mut crate::NativeIndexWork(Some(&work))),
             Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
                 ..
@@ -764,7 +735,7 @@ mod tests {
         assert_eq!(cursor.used, 0);
         assert_eq!(
             cursor
-                .take(&source, [0; 32], &mut CursorWork(None))?
+                .take(&source, [0; 32], &mut crate::NativeIndexWork(None))?
                 .unwrap()
                 .0,
             0
@@ -779,7 +750,7 @@ mod tests {
         let mut funded = Cursor::default();
         assert_eq!(
             funded
-                .take(&source, [0; 32], &mut CursorWork(Some(&work)))?
+                .take(&source, [0; 32], &mut crate::NativeIndexWork(Some(&work)))?
                 .unwrap()
                 .0,
             0

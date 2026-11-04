@@ -15,9 +15,12 @@
 //! windows and checkpoints preserve this by appending a new announcement
 //! when needed; retained messages, system prompts and tool schemas stay fixed.
 
+use acyclic_collections::{BinaryKeyError, FixedIndex, IndexReadWork, binary_key};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+// Selection borrows an immutable admission without an invocation work issuer.
+// It allocates no index nodes and preserves this API's unbounded read policy.
 struct RosterRead;
 
 impl acyclic_collections::IndexReadWork for RosterRead {
@@ -159,7 +162,7 @@ fn check_name(name: &str) -> Result<(), super::Error> {
 /// Every target visible to an agent, in attach order, and its home.
 /// Clones retain this same immutable admission in constant time, without
 /// allocating or copying records or canonical announcement bytes.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(try_from = "RosterWire")]
 pub struct Roster {
@@ -171,7 +174,25 @@ pub struct Roster {
     admitted: std::sync::Arc<AdmittedRoster>,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+impl fmt::Debug for Roster {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Roster")
+            .field("home", &self.admitted.home)
+            .field("targets", &self.admitted.targets)
+            .finish()
+    }
+}
+
+impl PartialEq for Roster {
+    fn eq(&self, other: &Self) -> bool {
+        self.admitted.home == other.admitted.home && self.admitted.targets == other.admitted.targets
+    }
+}
+
+impl Eq for Roster {}
+
+#[derive(Serialize)]
 struct AdmittedRoster {
     home: String,
     targets: Vec<TargetRecord>,
@@ -181,6 +202,21 @@ struct AdmittedRoster {
     canonical: Vec<u8>,
     #[serde(skip)]
     digest: [u8; 32],
+    #[serde(skip)]
+    names: FixedIndex<usize, crate::NativeCustody, { MAX_TARGET_NAME_BYTES + 8 }>,
+    #[serde(skip)]
+    owners: FixedIndex<usize, crate::NativeCustody, { MAX_OWNER_BYTES + 8 }>,
+}
+
+fn exact_key<const N: usize, W: IndexReadWork>(
+    name: &str,
+    work: &mut W,
+) -> Result<Option<[u8; N]>, W::Error> {
+    match binary_key(name.as_bytes(), work) {
+        Ok(key) => Ok(Some(key)),
+        Err(BinaryKeyError::Work(error)) => Err(error),
+        Err(BinaryKeyError::Width(_) | BinaryKeyError::TooLong { .. }) => Ok(None),
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -252,13 +288,29 @@ impl Roster {
     /// # Errors
     /// When a record is malformed, a name repeats or the home is unlisted.
     pub fn new(home: &str, targets: Vec<TargetRecord>) -> Result<Self, super::Error> {
-        let mut names = std::collections::BTreeSet::new();
+        let mut names = FixedIndex::default();
+        let mut owners = FixedIndex::default();
+        let mut work = crate::NativeIndexWork(None);
+        let index_error = |error| super::Error::Turn(Box::new(error));
         let mut home_position = None;
         for (position, target) in targets.iter().enumerate() {
             super::AgentRecord::check(target)?;
-            if !names.insert(target.name.as_str()) {
+            let name = exact_key(&target.name, &mut work)
+                .map_err(index_error)?
+                .ok_or(super::Error::Record("target name exceeds its index width"))?;
+            if *names
+                .get_or_try_insert_with(name, &mut work, |_| Ok(position))
+                .map_err(index_error)?
+                != position
+            {
                 return Err(super::Error::Record("target name repeats in the roster"));
             }
+            let owner = exact_key(&target.owner, &mut work)
+                .map_err(index_error)?
+                .ok_or(super::Error::Record("target owner exceeds its index width"))?;
+            owners
+                .get_or_try_insert_with(owner, &mut work, |_| Ok(position))
+                .map_err(index_error)?;
             if target.name == home {
                 home_position = Some(position);
             }
@@ -280,6 +332,8 @@ impl Roster {
                 home_position,
                 canonical: bytes,
                 digest: *hasher.finalize().as_bytes(),
+                names,
+                owners,
             }),
         })
     }
@@ -319,6 +373,8 @@ impl Roster {
     /// The target a call names: its home when `target` is omitted, the
     /// owner's first-attached device for `user:<owner>`, else the device of
     /// that name; refused when none matches or it is offline.
+    /// Successful selection visits exact, fixed-width keys independently of
+    /// the roster's population. A refusal lists every online target.
     ///
     /// # Errors
     /// The refusal the call settles with.
@@ -354,14 +410,23 @@ impl Roster {
         if named == self.admitted.home {
             return Ok(Some(self.admitted.home_position));
         }
-        let owner = named.strip_prefix(USER_PREFIX);
-        for (position, record) in self.admitted.targets.iter().enumerate() {
-            work.examine(1)?;
-            if owner.map_or(record.name == named, |owner| record.owner == owner) {
-                return Ok(Some(position));
-            }
+        if let Some(owner) = named.strip_prefix(USER_PREFIX) {
+            let Some(key) = exact_key(owner, work)? else {
+                return Ok(None);
+            };
+            self.admitted
+                .owners
+                .get(key, work)
+                .map(|found| found.copied())
+        } else {
+            let Some(key) = exact_key(named, work)? else {
+                return Ok(None);
+            };
+            self.admitted
+                .names
+                .get(key, work)
+                .map(|found| found.copied())
         }
-        Ok(None)
     }
 
     /// Describe a refusal from this same admitted roster. A known-lost target
@@ -442,6 +507,25 @@ mod tests {
             alone.select(None).expect_err("offline").to_string(),
             "target 'pc' is offline; online: none"
         );
+        let name = "z".repeat(MAX_TARGET_NAME_BYTES);
+        let owner = format!("{}x", "é".repeat((MAX_OWNER_BYTES - 1) / 2));
+        let wide = Roster::new(
+            "pc",
+            vec![
+                device("pc", "root", TargetState::Online),
+                device(&name, &owner, TargetState::Online),
+            ],
+        )
+        .unwrap();
+        for selector in [&name, &format!("user:{owner}")] {
+            assert_eq!(wide.select(Some(selector)).unwrap().name, name);
+        }
+        for selector in [format!("{name}z"), format!("user:{owner}x")] {
+            assert_eq!(
+                wide.select(Some(&selector)).unwrap_err().refused,
+                Refused::Unknown
+            );
+        }
 
         struct Reads(u64);
         impl acyclic_collections::IndexReadWork for Reads {
@@ -475,6 +559,10 @@ mod tests {
             {
                 let mut reads = Reads(0);
                 assert_eq!(admitted.lookup(name, &mut reads), Ok(Some(count - 1)));
+                eprintln!(
+                    "roster lookup: records={count} selector={kind} examined={}",
+                    reads.0
+                );
                 assert_eq!(
                     admitted.select(Some(name)).unwrap().name,
                     format!("t{:02}", count - 1)

@@ -144,6 +144,43 @@ pub type NativeCustody = Option<acyclic_fs::NativeAllocation>;
 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
 pub type NativeCustody = Option<()>;
 
+/// Shared index adapter over the original native work and allocation custody.
+/// `None` preserves the caller's explicit unbounded-work choice.
+pub(crate) struct NativeIndexWork<'a>(pub(crate) NativeWork<'a>);
+
+impl acyclic_collections::IndexWork for NativeIndexWork<'_> {
+    type Error = Error;
+    type Allocation = NativeCustody;
+
+    fn check(&mut self) -> Result<()> {
+        self.charge_items(0)
+    }
+
+    fn charge_items(&mut self, items: u64) -> Result<()> {
+        let _ = (self.0, items);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(original) = self.0 {
+            original.admit(acyclic_fs::WorkCounters {
+                items_examined: items,
+                ..Default::default()
+            })?;
+        }
+        Ok(())
+    }
+
+    fn claim(&mut self, bytes: u64) -> Result<Self::Allocation> {
+        let _ = (self.0, bytes);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(original) = self.0 {
+            return original
+                .claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)
+                .map(Some)
+                .map_err(Into::into);
+        }
+        Ok(None)
+    }
+}
+
 use build_metadata::generated;
 
 /// Generated Protobuf envelopes shared by every transport: the harness contract and the protocol handshake it negotiates with.
