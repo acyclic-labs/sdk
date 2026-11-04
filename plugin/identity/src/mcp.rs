@@ -1273,18 +1273,21 @@ mod tests {
 
     #[tokio::test]
     async fn blocked_output_still_reads_login_cancellation() {
-        let _clock = crate::tests::poll_clock::Clock::start();
+        let clock = crate::tests::poll_clock::Clock::start();
         let (started, mut consumed) = tokio::sync::oneshot::channel();
-        let started = Arc::new(Mutex::new(Some(started)));
+        let (released, release) = tokio::sync::oneshot::channel();
+        let exchange = Arc::new(Mutex::new(Some((started, release))));
         let router = axum::Router::new().fallback(move || {
-            if let Some(started) = started.lock().expect("exchange entry").take() {
-                let _ = started.send(());
-            }
-            async {
-                (
+            let exchange = exchange.lock().expect("exchange entry").take();
+            async move {
+                if let Some((started, release)) = exchange {
+                    let _ = started.send(());
+                    release.await.map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+                }
+                Ok::<_, StatusCode>((
                     StatusCode::BAD_REQUEST,
                     axum::Json(json!({"error": "authorization_pending"})),
-                )
+                ))
             }
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1305,6 +1308,9 @@ mod tests {
             .exchange_entered(&mut consumed, &mut http)
             .await
             .expect("original login exchange entered");
+        // Advance only the first poll interval. Its held response prevents a
+        // retry from advancing approval expiry while the writer is scheduled.
+        drop(clock);
         let paused = output.pause();
         client.send(&json!({"jsonrpc": "2.0", "id": 2, "method": "ping"}));
         client
@@ -1315,6 +1321,7 @@ mod tests {
             &json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
             "params": {"requestId": 1}}),
         );
+        released.send(()).expect("release receiver retained");
         // The original exchange owns this mutex through operation completion.
         // Cancellation must release it while output remains blocked.
         let completed = client.server.lock().await;
