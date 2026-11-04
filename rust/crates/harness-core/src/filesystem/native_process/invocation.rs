@@ -55,7 +55,6 @@ pub struct Invocation {
     /// Original lifetime, fixed before submission. An unbounded schedule
     /// registers no deadline; authority and cancellation remain independent.
     pub schedule: acyclic_native_runtime::CaptureSchedule,
-    pub control_timeout_ms: u32,
     pub maximum_output_bytes: usize,
     /// The original owned literal, exchange or interactive input allowance.
     pub standard_input: Option<acyclic_native_runtime::OwnedCaptureInput>,
