@@ -1,3 +1,5 @@
-{"prompt":"Reject events after a recovered terminal event.","turns":[[{"type":"error","error":"offline"}]],
+{"prompt":"Settle at the recovered terminal without consuming trailing transport events.","turns":[[{"type":"error","error":"offline"}]],
   "recoveries":[{"observed":[],"continuation":[{"kind":"completed","metadata":null},{"kind":"content",
-  "delta":"trailing"}]}],"expect":{"error":"model emitted an event after completion"}}
+  "delta":"trailing"}]}],"replay":true,"expect":{"text":"",
+  "model_events":[{"kind":"completed","metadata":null}],
+  "not_events":[{"kind":"model","event":{"kind":"content","delta":"trailing"}}]}}

@@ -4,7 +4,7 @@ use crate::conformance::{Backend, Result, observe::Observed, vectors};
 use acyclic_harness_core::{
     Capabilities, OperationId,
     agent::*,
-    conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
+    conversation::VolumeOperation,
     core::{AggregateKind, Authority, AuthorityRoot, Scope},
     executor::Executor,
     filesystem::{
@@ -12,7 +12,6 @@ use acyclic_harness_core::{
         TurnExecutors, TurnLimits, agent_authority,
     },
     model::ModelContent,
-    resources::ProviderRef,
 };
 use acyclic_stream::{BoxProviderFuture, UnixMillisClock};
 use std::sync::{
@@ -21,6 +20,8 @@ use std::sync::{
 };
 
 pub(crate) mod fixture;
+
+pub(super) const EXECUTOR_SENTINEL: &str = "conformance executor sentinel";
 
 struct Executors(AtomicUsize);
 impl TurnExecutors for Executors {
@@ -34,7 +35,7 @@ impl TurnExecutors for Executors {
         self.0.fetch_add(1, Ordering::SeqCst);
         Box::pin(async {
             Err(acyclic_harness_core::Error::Invalid(
-                "conformance executor sentinel".into(),
+                EXECUTOR_SENTINEL.into(),
             ))
         })
     }
@@ -163,7 +164,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         .await?;
         clock.advance_to((clock.now_unix_millis() / 1000 + 1) * 1000);
     }
-    check_scope(&root, &admission, &fixture.path, &fixture.binding, case).await?;
+    let expected = check_scope(&root, &admission, &fixture.path, &fixture.binding, case).await?;
     fixture
         .check(
             backend,
@@ -171,6 +172,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
             admission,
             matches!(case, Case::LocalRoot | Case::Admitted),
             &format!("{case:?}"),
+            &expected,
         )
         .await
 }
@@ -180,7 +182,7 @@ async fn check_scope(
     path: &AgentPath,
     binding: &VolumeBinding,
     case: Case,
-) -> Result {
+) -> Result<String> {
     let authority = agent_authority(
         &root.clone().into(),
         admission,
@@ -195,7 +197,7 @@ async fn check_scope(
                 .grants
                 .contains(acyclic_harness_core::contract::capability::INTERACTION_ROUTE) =>
         {
-            Ok(())
+            Ok(acyclic_harness_core::Error::Invalid(EXECUTOR_SENTINEL.into()).to_string())
         }
         (Case::Admitted, Ok(authority)) => {
             let TurnAdmission::Admitted { scope, .. } = admission else {
@@ -209,12 +211,12 @@ async fn check_scope(
             {
                 return Err("delegated scope widened or lost its agent binding".into());
             }
-            Ok(())
+            Ok(acyclic_harness_core::Error::Invalid(EXECUTOR_SENTINEL.into()).to_string())
         }
         (Case::LocalRoot | Case::Admitted, _) => {
             Err("valid admission failed authority derivation".into())
         }
-        (_, Err(_)) => Ok(()),
+        (_, Err(error)) => Ok(error.to_string()),
         _ => Err("invalid admission acquired authority".into()),
     }
 }

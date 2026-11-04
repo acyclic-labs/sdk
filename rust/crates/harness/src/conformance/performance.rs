@@ -107,7 +107,7 @@ impl ScaleMeasurement {
     }
 }
 
-/// Run the shared checked turn workload. No CI or merge gate invokes this.
+/// Run the shared checked turn workload.
 /// Request counts are reported separately from timing, so control requests
 /// cannot disappear into a single throughput number.
 pub async fn bench(backend: &dyn Backend) -> Result<Measurement> {

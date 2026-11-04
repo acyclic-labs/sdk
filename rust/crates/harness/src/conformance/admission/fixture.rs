@@ -1,13 +1,25 @@
 //! Shared private host setup; identity vectors enter the same production host.
 use super::*;
+use acyclic_harness_core::{
+    context::CompactionPolicy,
+    conversation::Limits,
+    filesystem::{
+        Grants, StockExecutors,
+        hosting::{Bound, Placement, RootRequest, RootSubmission, Turns},
+    },
+    model::Model,
+    test_support::{ScriptedModelProvider, ScriptedTurn},
+    tool::ToolRegistry,
+};
 
 pub(crate) struct Fixture {
     pub path: AgentPath,
     pub binding: VolumeBinding,
     pub provider: Arc<Observed>,
     scheduler: Arc<Observed>,
-    filesystem:
-        Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>>,
+    filesystem: Arc<
+        FilesystemHost<acyclic_fs::StreamAuthorityStore<Observed>, crate::conformance::ObjectStore>,
+    >,
     _storage: Box<dyn crate::conformance::Storage>,
 }
 
@@ -17,39 +29,100 @@ impl Fixture {
         let raw = storage.open().await?;
         let scheduler = Arc::new(Observed::new(raw.clone()));
         let provider = Arc::new(Observed::new(raw));
-        let mut adopted = crate::conformance::fixtures::adopted();
-        let path = AgentPath::root(&adopted.agent);
-        let reference = ProviderRef::new(
-            "conformance".into(),
-            "filesystem".into(),
-            "1".into(),
-            &mut None,
+        let agent = crate::conformance::fixtures::adopted().agent;
+        let binding = crate::conformance::roots::volume(PRIVATE_VOLUME, agent.clone())?;
+        let objects = storage.objects().await?;
+        let capabilities = objects.capabilities;
+        let executors = StockExecutors::new(
+            (
+                Model::new("conformance".into(), "scripted".into(), "1".into())?,
+                Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
+                    "history".into(),
+                )])),
+            ),
+            ToolRegistry::default(),
+            (Limits::default(), CompactionPolicy::Disabled),
+            Arc::new(Grants(Vec::new())),
+        );
+        let bound = Bound::local_root(
+            AuthorityRoot::new(
+                "conformance",
+                [7; 32],
+                Authority {
+                    kind: AggregateKind::Conversation,
+                    id: "workload".into(),
+                },
+            ),
+            Placement {
+                filesystem: acyclic_fs::Fs::new(
+                    acyclic_fs::StreamAuthorityStore::new(scheduler.clone()),
+                    objects.into_store(storage.as_ref())?,
+                    capabilities,
+                ),
+                provider: binding.volume.provider().clone(),
+                within: acyclic_actors::addressing::ActorReference::new(
+                    b"conformance",
+                    b"agents",
+                    b"host",
+                )?,
+            },
+            Turns {
+                executors: Arc::new(executors),
+                limits: TurnLimits {
+                    maximum_bytes: 64 * 1024,
+                    history_turns: 8,
+                },
+                actors: vectors::limits()?,
+                clock: Arc::new(acyclic_actors::local::SystemClock),
+                approval_policy: Default::default(),
+            },
         )?;
-        let filesystem = FilesystemHost::new(acyclic_fs::Fs::memory(), &reference, None)?;
-        let binding = VolumeBinding {
-            name: PRIVATE_VOLUME.into(),
-            volume: VolumeRef::new(
-                reference,
-                "private".into(),
-                VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
-                    path.id().to_bytes(),
-                )),
-                &mut None,
-            )?,
+        let handler = backend.handler(bound.handler())?;
+        let bound = bound.hosting(handler)?;
+        let RootSubmission::Created(path) = bound
+            .create_root(
+                &vectors::intent("create")?,
+                RootRequest {
+                    agent,
+                    fresh: vec![binding.clone()],
+                    retained: Vec::new(),
+                    brief: None,
+                    policy: None,
+                },
+            )
+            .await?
+        else {
+            return Err("admission fixture root creation was uncertain".into());
         };
-        filesystem.create_volume(&binding.volume).await?;
-        adopted.volumes.push(binding.clone());
-        let host = vectors::host(backend, scheduler.clone())?;
-        host.create(&vectors::intent("create")?, adopted).await?;
-        host.send(
-            &path,
-            &crate::conformance::fixtures::sender(),
-            &crate::conformance::fixtures::request("history")?,
-        )
-        .await?;
-        vectors::drain(&host).await?;
-        drop(host);
+        let sender = crate::conformance::fixtures::sender();
+        let id = vectors::intent("history")?;
+        let body = bound
+            .stage_text(&path, "message", &sender, &id, ("history", "history"))
+            .await?;
+        bound
+            .agents()
+            .send(
+                &path,
+                &sender,
+                &InboxRecord::Message(Message {
+                    from: sender.clone(),
+                    id,
+                    body: Box::new(body),
+                    attachments: None,
+                }),
+            )
+            .await?;
+        // Seed the same indexed history and filesystem checkpoint a deployed
+        // turn commits, rather than arbitrary bytes in its conversation stream.
+        vectors::drain(bound.agents()).await?;
+        let state = bound.agents().state(&path).await?;
+        if !matches!(state.phase, Phase::Idle) || state.conversation_tail == 0 {
+            return Err(
+                format!("admission fixture did not commit its initial turn: {state:?}").into(),
+            );
+        }
+        let filesystem = bound.volumes().clone();
+        drop(bound);
         Ok(Self {
             path,
             binding,
@@ -72,6 +145,7 @@ impl Fixture {
         admission: TurnAdmission,
         allowed: bool,
         label: &str,
+        expected: &str,
     ) -> Result {
         let executors = Arc::new(Executors(AtomicUsize::new(0)));
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
@@ -100,8 +174,17 @@ impl Fixture {
             &crate::conformance::fixtures::request("next")?,
         )
         .await?;
-        if host.runtime().drain().await.is_empty() {
-            return Err(format!("{label} did not reach the admission/history sentinel").into());
+        vectors::drain(&host).await?;
+        // Decided turn failures settle through the original agent commit.
+        // Runtime errors represent unsettled deliveries, not admission refusals.
+        let Phase::Done {
+            outcome: AgentOutcome::Failed { message },
+        } = host.state(&self.path).await?.phase
+        else {
+            return Err(format!("{label} did not publish its terminal failure").into());
+        };
+        if message != expected {
+            return Err(format!("{label}: unexpected terminal failure: {message}").into());
         }
         if allowed && self.provider.history_reads.load(Ordering::SeqCst) == 0 {
             return Err(format!("{label}: valid admission did not read nonempty history").into());
