@@ -500,11 +500,6 @@ fn resident_copy_preserves_literal_raw_keys_and_enforces_bounds() -> Result<()> 
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 fn assert_encoding_needs_no_heap(value: &Value) -> Result<()> {
     let bytes = crate::contract::canonical_json_bytes(value)?;
     assert!(bytes.len() > 8 * 4096);
