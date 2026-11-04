@@ -69,6 +69,7 @@ mod restore;
 #[cfg(all(test, feature = "memory"))]
 mod retention_accounting_tests;
 mod reverse_paths;
+pub use reverse_paths::FileIdentityPaths;
 mod reverse_traversal;
 mod transaction;
 mod transaction_create;
