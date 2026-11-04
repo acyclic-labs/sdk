@@ -432,6 +432,22 @@ mod tests {
             misses, 0,
             "frequently read page was evicted by publication order"
         );
+        // Each cursor probe uses at most four 64-bit paths (including wrap),
+        // plus the initial lookup, extraction and one shared insertion.
+        let walk = 8 * 8 + 1;
+        let insertion = FixedIndex::<CachedNode, OwnedIndexAllocation, 8>::insertion_bound(1)
+            .expect("one fixed-width insertion")
+            .examined_items;
+        let maximum =
+            (HOT_PAGES as u64 + 1) * (1 + 4 * walk + 8) + 2 * (walk + 8) + 2 * walk + 8 + insertion;
+        assert!(
+            maximum_items <= maximum,
+            "cache insertion exceeded bounded key/credit work: {maximum_items} > {maximum}"
+        );
+        assert!(
+            maximum_allocations <= 2,
+            "cache insertion allocated more than its leaf and branch"
+        );
         drop(cache);
         assert_eq!(
             io.remaining()?.peak_allocation_bytes,
