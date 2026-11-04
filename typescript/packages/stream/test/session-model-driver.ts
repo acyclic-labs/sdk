@@ -2,6 +2,7 @@ import { create, equals, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
 import { acknowledge, serve, spend } from "./model-driver.js";
 import { SessionNode, checkpoint } from "./session-node.js";
+import { StreamError } from "../src/types.js";
 
 // Test-only fault injection changes the actual module loaded by Bun. Each
 // negative control must fail its stated invariant, not merely start a process.
@@ -12,9 +13,9 @@ if (fault === "followSelect") {
   plugin({ name: "selection-negative-control", setup(build) {
     build.onLoad({ filter: /[\\/]src[\\/]default\.ts$/ }, async args => {
       const source = await Bun.file(args.path).text();
-      const old = "this.acquireProvider(options.signal)";
+      const old = "this.acquireProvider(signal)";
       if (!source.includes(old)) throw new Error("follow selection negative control no longer matches");
-      return { contents: source.replace(old, "this.acquireProvider(undefined)"), loader: "ts" };
+      return { contents: source.replaceAll(old, "this.acquireProvider(undefined)"), loader: "ts" };
     });
   } });
 }
@@ -22,15 +23,19 @@ const { StreamSessions } = await import("../src/session.js");
 const peer = new SessionNode(spend);
 let rejectWrite = false;
 let observedRejection = false;
+let failedSends = 0;
 const sessions = new StreamSessions(async (node, signal) => {
   const transport = await peer.connect(node, signal);
   return { ...transport, async send(bytes, writeSignal) {
     const frame = fromBinary(wire.SessionFrameSchema, bytes);
-    if (rejectWrite && frame.body.case === "interest" && frame.body.value.upsert.some(item => item.kind.case === "follow" && item.kind.value.resource === "streams:/events")) {
+    const interest = frame.body.case === "hello" ? frame.body.value.interest
+      : frame.body.case === "interest" ? frame.body.value : undefined;
+    if (rejectWrite && interest?.upsert.some(item => item.kind.case === "follow" && item.kind.value.resource === "streams:/events")) {
+      if (failedSends++ === 0) throw new StreamError("unavailable", "Streams session is closed");
       observedRejection = true;
       for (const notify of peer.changed) notify();
       if (fault === "rejection") await new Promise<void>(() => {});
-      throw new Error("subscription rejected");
+      peer.refuse = "unavailable";
     }
     return transport.send(bytes, writeSignal);
   } };
@@ -44,14 +49,14 @@ Reflect.set(facade, "select", async () => {
   return { follow: (path: string, options: Parameters<StreamSessions["follow"]>[1]) => sessions.follow(path, options) };
 });
 const records = scenario === "rejection" ? sessions.follow("events", { from: 0n, signal: controller.signal })
-  : facade.follow("agents", { from: 0n, signal: controller.signal });
+  : scenario === "followSelect" ? facade.follow("agents", { from: 0n, signal: controller.signal }) : undefined;
 if (scenario === "rejection") {
-  peer.append("events", 2);
-  await records.next();
+  peer.append("events");
+  await records!.next();
 }
 let settled = false;
 let rejected: unknown;
-if (scenario === "followSelect") void records.next().then(() => { settled = true; }, error => { settled = true; rejected = error; });
+if (scenario === "followSelect") void records!.next().then(() => { settled = true; }, error => { settled = true; rejected = error; });
 async function command(action: string, hex?: string, path?: string,
   work?: { warm: number; samples: number; reverse: boolean; shared: boolean }, count?: number): Promise<unknown> {
   switch (action) {
@@ -83,8 +88,8 @@ async function command(action: string, hex?: string, path?: string,
       if (scenario === "rejection") {
         rejectWrite = true;
         peer.disconnect();
-        await peer.until(() => observedRejection);
-        void records.next().then(() => { settled = true; }, error => { settled = true; rejected = error; });
+        const terminal = records!.next().then(() => { settled = true; }, error => { settled = true; rejected = error; });
+        await Promise.race([peer.until(() => observedRejection), terminal]);
       }
       break;
     // Lifetime controls: a command that never settles while client work stays scheduled, a client that keeps
@@ -101,7 +106,10 @@ async function command(action: string, hex?: string, path?: string,
       return { connections: peer.connections.length - before };
     }
     case "releaseSelection": releaseSelection?.(); break;
-    case "drop": await records.return(undefined); break;
+    case "drop":
+      if (records === undefined) throw new Error("scenario has no cursor to drop");
+      await records.return(undefined);
+      break;
     case "abort": controller.abort(); break;
     case "decode": {
       let decoded: wire.SessionFrame;
@@ -138,7 +146,7 @@ async function command(action: string, hex?: string, path?: string,
   }
   await checkpoint();
   if (rejected !== undefined && scenario !== "rejection") throw rejected;
-  return { settled, code: (rejected as { code?: string } | undefined)?.code,
+  return { settled, failedSends, code: (rejected as { code?: string } | undefined)?.code,
     active: peer.active, outstanding: peer.outstandingFrames };
 }
 await serve((input: { action: string; hex?: string; path?: string; work?: Parameters<typeof command>[3]; count?: number }) =>

@@ -2,7 +2,7 @@
 // are deliberately outside the model's child-only diff/merge tool surface.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { startWorkspaceOwner } from "../../plugin/tests/hosts/workspace-owner.mjs";
 
@@ -27,7 +27,8 @@ export async function workspaceFs(processes, input, fixture, capture) {
     const opened = await run(["__workspace"], { kind: "open", host: "codex", session: randomUUID() });
     assert.equal(opened.code, 0, opened.stderr);
     const { task, cwd } = JSON.parse(opened.stdout);
-    assert.equal(cwd, workspace, "filesystem operations must use the original workspace view");
+    const [openedWorkspace, originalWorkspace] = await Promise.all([realpath(cwd), realpath(workspace)]);
+    assert.equal(openedWorkspace, originalWorkspace, "filesystem operations must use the original workspace view");
     for (const [index, operation] of input.steps.entries()) {
       step = `filesystem operation ${index}`;
       if (operation.write) {

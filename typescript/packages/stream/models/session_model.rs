@@ -228,6 +228,10 @@ fn rejected_subscription(fault: &str) {
         "a rejected resubscription must settle its real WASM cursor"
     );
     assert_eq!(state["code"], "unavailable");
+    assert_eq!(
+        state["failedSends"], 2,
+        "a failed transport send must retry before a wire refusal settles its cursor"
+    );
     assert_eq!(driver.call(json!({"action":"drop"}))["active"], 0);
 }
 #[test]

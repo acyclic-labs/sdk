@@ -35,6 +35,7 @@ export class SessionNode {
   }
   returned = 0;
   actorChannels = 0;
+  refuse: string | undefined;
   beforeConnect: ((node: string) => Promise<void>) | undefined;
   readonly connect: SessionConnect = async node => {
     this.spend();
@@ -117,6 +118,10 @@ export class SessionNode {
     for (const subscription of interest.upsert) {
       if (subscription.kind.case === "actorSocket" || subscription.kind.case === "actorCall") this.actorChannels += 1;
       if (subscription.kind.case !== "follow" || subscription.channel === undefined || subscription.resume === undefined) throw new Error("expected a Streams subscription");
+      if (this.refuse !== undefined) {
+        connection.output.push(frame(subscription.channel.channelId, subscription.channel.generation, { case: "closed", value: create(wire.SessionClosedSchema, { code: this.refuse }) }));
+        continue;
+      }
       const path = streamResourcePath(subscription.kind.value.resource);
       const follow = subscription.kind.value;
       const tail = BigInt(this.history.get(path)?.length ?? 0);
