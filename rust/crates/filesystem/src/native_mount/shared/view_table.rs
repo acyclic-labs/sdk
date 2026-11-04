@@ -278,11 +278,6 @@ impl<C> ViewOwner<C> {
         stop();
         retiring
     }
-
-    /// Unlists the view, runs `stop`, then drains callbacks and returns its core.
-    pub(crate) fn retire_after(self, stop: impl FnOnce()) -> C {
-        self.begin_retirement(stop).finish()
-    }
 }
 
 impl<C> Drop for ViewOwner<C> {
@@ -432,7 +427,7 @@ mod tests {
         let a = ViewTable::insert(&table, core(1, &drops)).unwrap();
         let b = ViewTable::insert(&table, core(2, &drops)).unwrap();
         let lease_b = table.enter(b.serial().get()).unwrap();
-        assert_eq!(a.retire_after(|| {}).id, 1);
+        assert_eq!(a.begin_retirement(|| {}).finish().id, 1);
         assert_eq!(lease_b.id, 2);
         assert_eq!(table.len(), 1);
         drop(lease_b);

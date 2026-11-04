@@ -8,10 +8,13 @@ use crate::sync;
 
 #[path = "../src/native_mount/shared/view_table.rs"]
 mod view_table;
+#[path = "../src/native_mount/shared/views.rs"]
+mod views;
 
 use loom::sync::Arc;
 use loom::sync::atomic::{AtomicBool, Ordering};
-use view_table::{ViewTable, faults::RETIRE_WITHOUT_DRAIN};
+use view_table::faults::RETIRE_WITHOUT_DRAIN;
+use views::NamedViews;
 
 struct Core {
     id: u32,
@@ -48,18 +51,17 @@ fn stop_unwind_without_draining_is_detected() {
 
 fn check_unwind(broken: bool) {
     loom::model(move || {
-        let table = Arc::new(ViewTable::new(u64::MAX));
+        let table = std::sync::Arc::new(NamedViews::new(u64::MAX));
         let dropped = Arc::new(AtomicBool::new(false));
-        let owner = ViewTable::insert(
-            &table,
-            Core {
-                id: 1,
-                dropped: Arc::clone(&dropped),
-            },
-        )
-        .unwrap();
-        let serial = owner.serial().get();
-        let lease = table.enter(serial).unwrap();
+        let mut owner = table
+            .insert(1, |_| {
+                Ok(Core {
+                    id: 1,
+                    dropped: Arc::clone(&dropped),
+                })
+            })
+            .unwrap();
+        let (serial, lease) = table.enter_name(&1).unwrap();
         let retired = Arc::new(AtomicBool::new(false));
         let callback = loom::thread::spawn({
             let retired = Arc::clone(&retired);
@@ -76,7 +78,11 @@ fn check_unwind(broken: bool) {
         RETIRE_WITHOUT_DRAIN.with(|fault| fault.set(broken));
         struct StopUnwind;
         let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            owner.retire_after(|| std::panic::resume_unwind(Box::new(StopUnwind)))
+            owner.retire_after(|| {
+                assert!(table.enter_name(&1).is_none());
+                assert!(table.enter(serial).is_none());
+                std::panic::resume_unwind(Box::new(StopUnwind))
+            })
         }));
         assert!(stopped.is_err_and(|error| error.is::<StopUnwind>()));
         if !broken {
@@ -89,28 +95,33 @@ fn check_unwind(broken: bool) {
         assert!(table.enter(serial).is_none(), "a retired serial stays gone");
         callback.join().unwrap();
         assert!(dropped.load(Ordering::SeqCst));
-        assert_eq!(table.len(), 0);
+        assert!(table.enter_name(&1).is_none());
     });
 }
 
 fn check(broken: bool) {
     loom::model(move || {
-        let table = Arc::new(ViewTable::new(u64::MAX));
+        let table = std::sync::Arc::new(NamedViews::new(u64::MAX));
         let dropped = Arc::new(AtomicBool::new(false));
-        let owner = ViewTable::insert(
-            &table,
-            Core {
-                id: 1,
-                dropped: Arc::clone(&dropped),
-            },
-        )
-        .unwrap();
-        let serial = owner.serial().get();
+        let mut owner = table
+            .insert(1, |_| {
+                Ok(Core {
+                    id: 1,
+                    dropped: Arc::clone(&dropped),
+                })
+            })
+            .unwrap();
+        let (serial, initial) = table.enter_name(&1).unwrap();
+        drop(initial);
+        assert!(matches!(
+            table.insert(1, |_| unreachable!()),
+            Err(crate::NativeMountError::InvalidDestination)
+        ));
         let retired = Arc::new(AtomicBool::new(false));
 
         // A kernel callback for the view, racing its retirement.
         let callback = loom::thread::spawn({
-            let (table, retired) = (Arc::clone(&table), Arc::clone(&retired));
+            let (table, retired) = (std::sync::Arc::clone(&table), Arc::clone(&retired));
             move || {
                 if let Some(lease) = table.enter(serial) {
                     assert_eq!(lease.id, 1, "a lease reaches only its own view");
@@ -123,7 +134,13 @@ fn check(broken: bool) {
             }
         });
 
-        let retiring = owner.begin_retirement(|| {});
+        let (name, retiring) = owner.begin_retirement(|| {}).unwrap();
+        assert_eq!(name, 1);
+        assert!(owner.begin_retirement(|| unreachable!()).is_none());
+        assert!(
+            table.enter_name(&1).is_none(),
+            "transfer closes name admission"
+        );
         assert!(table.enter(serial).is_none(), "transfer closes admission");
         let physical = loom::thread::spawn(move || {
             RETIRE_WITHOUT_DRAIN.with(|fault| fault.set(broken));
@@ -132,20 +149,19 @@ fn check(broken: bool) {
 
         // The observer creates the replacement while the physical owner
         // drains callbacks; a separate creator adds no ownership boundary.
-        let replacement = ViewTable::insert(
-            &table,
-            Core {
-                id: 2,
-                dropped: Arc::new(AtomicBool::new(false)),
-            },
-        )
-        .unwrap();
+        let replacement = table
+            .insert(1, |_| {
+                Ok(Core {
+                    id: 2,
+                    dropped: Arc::new(AtomicBool::new(false)),
+                })
+            })
+            .expect("retirement releases the original name");
+        let (replacement_serial, lease) = table.enter_name(&1).unwrap();
         assert_ne!(
-            replacement.serial().get(),
-            serial,
-            "serials are never reused"
+            replacement_serial, serial,
+            "a reused name receives a fresh serial"
         );
-        let lease = table.enter(replacement.serial().get()).unwrap();
         assert_eq!(lease.id, 2, "a lease reaches only its own view");
         drop(lease);
 
@@ -161,8 +177,8 @@ fn check(broken: bool) {
 
         callback.join().unwrap();
         assert!(table.enter(serial).is_none(), "a retired serial stays gone");
-        assert_eq!(table.len(), 1);
+        assert_eq!(table.enter_name(&1).unwrap().1.id, 2);
         drop(replacement);
-        assert_eq!(table.len(), 0);
+        assert!(table.enter_name(&1).is_none());
     });
 }

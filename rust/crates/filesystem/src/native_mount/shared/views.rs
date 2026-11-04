@@ -6,11 +6,12 @@
 //! view, so nothing is admitted to an instance that is tearing down.
 
 use super::view_table::{RetiringView, ViewLease, ViewOwner, ViewTable};
-use crate::native_mount::NativeMountError;
+use crate::NativeMountError;
+use crate::sync::native::RwLock;
 use std::borrow::Borrow;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, PoisonError};
 
 pub(crate) struct NamedViews<K, C> {
     table: crate::sync::native::Arc<ViewTable<C>>,
@@ -151,52 +152,5 @@ impl<K: Clone + Eq + Hash, C> NamedView<K, C> {
 impl<K: Clone + Eq + Hash, C> Drop for NamedView<K, C> {
     fn drop(&mut self) {
         drop(self.retire_after(|| {}));
-    }
-}
-
-#[cfg(all(test, not(loom)))]
-mod tests {
-    use super::*;
-
-    /// A retired view's name and serial both resolve to nothing, a name is
-    /// listed once, and a reused name gets a fresh serial; once closed, no
-    /// view is listed. Negative control: the live view stays reachable.
-    #[test]
-    fn names_and_serials_retire_together() -> Result<(), NativeMountError> {
-        let views = Arc::new(NamedViews::<Vec<u8>, u32>::new(8));
-        let mut first = views.insert(b"a".to_vec(), |_| Ok(1))?;
-        let second = views.insert(b"b".to_vec(), |_| Ok(2))?;
-        assert!(matches!(
-            views.insert(b"a".to_vec(), |_| Ok(3)),
-            Err(NativeMountError::InvalidDestination)
-        ));
-        let (serial, lease) = views.enter_name(b"a".as_slice()).expect("listed");
-        assert_eq!(*lease, 1);
-        let mut stopped = false;
-        let (name, retiring) = first
-            .begin_retirement(|| {
-                assert!(views.enter_name(b"a".as_slice()).is_none());
-                assert!(
-                    views.enter(serial).is_none(),
-                    "stop must close serial admission"
-                );
-                assert_eq!(*lease, 1, "an admitted callback retains its view");
-                stopped = true;
-            })
-            .expect("the listed view transfers its drain");
-        assert!(stopped);
-        assert_eq!(*lease, 1, "transfer retains the admitted callback");
-        drop(lease);
-        assert_eq!((name, retiring.finish()), (b"a".to_vec(), 1));
-        assert_eq!(first.retire_after(|| unreachable!()), None);
-        assert!(views.enter_name(b"a".as_slice()).is_none());
-        assert!(views.enter(serial).is_none(), "a retired serial is stale");
-        let again = views.insert(b"a".to_vec(), |issued| {
-            assert!(issued > serial, "serials are never reused");
-            Ok(4)
-        })?;
-        assert_eq!(*views.enter_name(b"b".as_slice()).expect("live").1, 2);
-        drop((second, again));
-        Ok(())
     }
 }
