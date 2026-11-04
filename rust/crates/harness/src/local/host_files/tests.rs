@@ -26,16 +26,19 @@ fn request_storage_cause(error: &Error, operation: OperationId) -> &str {
 }
 
 fn carrier_io() -> Result<(tempfile::TempDir, CarrierIo, std::fs::File)> {
+    use acyclic_fs::NativeDurability::Visibility;
+
     let checkout = tempfile::tempdir().map_err(storage)?;
     let root = acyclic_fs::hold_root(checkout.path()).map_err(native_file_error)?;
+    // The fixture is discarded after its live-handle ownership controls.
     let directory = root
-        .create_directories(Path::new(DIRECTORY), acyclic_fs::NativeDurability::Durable)
+        .create_directories(Path::new(DIRECTORY), Visibility)
         .map_err(native_file_error)?;
     let requests = directory
-        .create_directories(Path::new("requests"), acyclic_fs::NativeDurability::Durable)
+        .create_directories(Path::new("requests"), Visibility)
         .map_err(native_file_error)?;
     let status = directory
-        .create_directories(Path::new("status"), acyclic_fs::NativeDurability::Durable)
+        .create_directories(Path::new("status"), Visibility)
         .map_err(native_file_error)?;
     let lock_file = || {
         directory
