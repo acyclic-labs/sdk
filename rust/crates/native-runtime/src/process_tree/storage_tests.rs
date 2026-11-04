@@ -18,9 +18,37 @@ fn bounded_poll_scopes_preserve_original_storage_and_retirement_credit() {
         Some(&custody),
     )
     .unwrap();
-    super::super::tests::ready(root.path(), "partial-ready", || {
-        slot.try_wait().unwrap().is_some()
-    });
+    {
+        let mut io = slot.io(&observer).unwrap();
+        let mut stderr_bytes = 0;
+        loop {
+            let stdout = io.read_stdout(&mut [0; 1024]).unwrap();
+            assert_ne!(
+                stdout,
+                Some(0),
+                "original stdout producer ended before readiness"
+            );
+            let drained = io.drain_stderr().unwrap();
+            assert!(
+                !drained.closed,
+                "original stderr producer ended before readiness"
+            );
+            stderr_bytes += drained.read_bytes;
+            assert!(stderr_bytes <= b"stderr-before-stop".len());
+            if stderr_bytes == b"stderr-before-stop".len() {
+                break;
+            }
+            assert!(io.try_wait().unwrap().is_none());
+            if stdout.is_none() && drained.read_bytes == 0 {
+                io.readiness()
+                    .unwrap()
+                    .0
+                    .block()
+                    .into_result()
+                    .expect("original pipe readiness event");
+            }
+        }
+    }
     let before = original.used_operations.load(Ordering::Acquire);
     let memory = original.memory.load(Ordering::Acquire);
     // Initial and repeated borrowing must both leave lifetime credit untouched;
@@ -40,7 +68,11 @@ fn bounded_poll_scopes_preserve_original_storage_and_retirement_credit() {
         assert!(scope.used_operations.load(Ordering::Acquire) > 0);
         assert_eq!(original.memory.load(Ordering::Acquire), memory);
     }
-    assert_eq!(slot.stderr_tail(), b"stderr-before-stop");
+    assert_eq!(
+        slot.stderr_tail(),
+        b"stderr-before-stop",
+        "original stderr tail was lost"
+    );
     original.cancelled.store(true, Ordering::Release);
     drop(slot);
     custody.fence_stale().unwrap();
