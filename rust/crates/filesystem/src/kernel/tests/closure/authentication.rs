@@ -18,14 +18,14 @@ async fn minimal_generation_has_a_complete_authenticated_closure()
     let traced = OriginalReadTrace { inner: &store };
     let cancellation = CancellationToken::new();
     let mut ordinary = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-    original_closure_custody(&traced, generation, &mut ordinary).await?;
+    original_closure_custody(&traced, generation, &mut ordinary, false).await?;
     #[cfg(not(target_arch = "wasm32"))]
     {
         let cancellation = CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
         let mut native = crate::AuthorityWork::native(&original, &cancellation);
-        original_closure_custody(&traced, generation, &mut native).await?;
+        original_closure_custody(&traced, generation, &mut native, false).await?;
     }
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     {
@@ -39,20 +39,7 @@ async fn minimal_generation_has_a_complete_authenticated_closure()
         let traced = OriginalReadTrace { inner: &store };
         let cancellation = CancellationToken::new();
         let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        work.charge(WorkCounters {
-            bytes_encoded: 7,
-            ..WorkCounters::UNCHARGED
-        })?;
-        let independent = crate::kernel::allocation::retained::RetainedAllocation::claim(
-            73,
-            1,
-            &mut work.accounting(),
-        )?;
-        let baseline = original_live(&mut work);
-        original_single_read_custody(&traced, generation, &mut work, true).await?;
-        cancellation.cancel();
-        drop(independent);
-        assert_eq!(original_live(&mut work), baseline - 73);
+        original_closure_custody(&traced, generation, &mut work, true).await?;
     }
     Ok(())
 }
@@ -150,6 +137,7 @@ async fn original_closure_custody<S: crate::AsyncObjectStore>(
     store: &OriginalReadTrace<'_, S>,
     generation: ObjectId,
     work: &mut crate::AuthorityWork<'_>,
+    require_owned: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::kernel::allocation::retained::RetainedAllocation;
     let cancellation = work.cancellation;
@@ -158,7 +146,7 @@ async fn original_closure_custody<S: crate::AsyncObjectStore>(
         ..WorkCounters::UNCHARGED
     })?;
     let independent = RetainedAllocation::claim(73, 1, &mut work.accounting())?;
-    original_single_read_custody(store, generation, work, false).await?;
+    original_single_read_custody(store, generation, work, require_owned).await?;
     let requests = [crate::storage::ObjectReadRequest {
         object_id: generation,
         maximum_bytes: limits().maximum_object_bytes,

@@ -4,7 +4,6 @@ pub(super) struct PreparedForkCommit {
     pub(super) fork: crate::WorkspaceForkCommit,
     pub(super) changes: Option<crate::PublicationChanges>,
     pub(super) hold: crate::PublicationHold,
-    pub(super) payload_bytes: u64,
 }
 
 pub(super) struct ForkPublication<'a, A: 'static, O: 'static> {
@@ -378,7 +377,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .fork_workspace(prepared.fork, permit, &mut authority, guard)
             .await;
         let recorded = finish_authority_work(authority);
-        Self::retire_fork_commit(prepared.changes, prepared.payload_bytes, accounting)?;
+        if let Some(changes) = prepared.changes {
+            changes.retire(accounting)?;
+        }
         recorded?;
         drop(prepared.hold);
         let outcome = result.map_err(|error| match error {
@@ -415,7 +416,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let lineage = self
             .fork_lineage_with_accounting(source, accounting, cancellation)
             .await?;
-        let (retention, retained, mut creation, payload_bytes) = fork_records_with_accounting(
+        let (retention, retained, mut creation) = fork_records_with_accounting(
             source_volume,
             source_root,
             destination_id,
@@ -468,22 +469,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             fork,
             changes,
             hold,
-            payload_bytes,
         })
-    }
-
-    pub(super) fn retire_fork_commit(
-        changes: Option<crate::PublicationChanges>,
-        payload_bytes: u64,
-        accounting: &mut KernelAccounting<'_>,
-    ) -> Result<(), FsError> {
-        if let Some(changes) = changes {
-            changes.retire(accounting)?;
-        }
-        if readonly_standalone_live(accounting).is_some() {
-            accounting.release_owned(&mut KernelOwnedAllocation::Standalone, payload_bytes)?;
-        }
-        Ok(())
     }
 
     pub(super) async fn fork_lineage_with_accounting(
@@ -521,7 +507,7 @@ pub(super) fn fork_records_with_accounting<A, O>(
     fork_root: ObjectId,
     operation_id: OperationId,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-) -> Result<(crate::AuthorityId, ProposedCommit, ProposedCommit, u64), FsError> {
+) -> Result<(crate::AuthorityId, ProposedCommit, ProposedCommit), FsError> {
     let mut label = crate::kernel::Owned::<Vec<u8>>::allocate(32, accounting)?;
     let encoding = WorkCounters {
         bytes_encoded: 32,
@@ -559,7 +545,6 @@ pub(super) fn fork_records_with_accounting<A, O>(
     let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
         crate::kernel::encode_retention_created(&fact.value, observe, allocation_error)
     })?;
-    let retained_bytes = encoded.0.capacity() as u64;
     let retained = creation_commit(
         OperationId::from_bytes(retention.into_bytes()),
         encoded,
@@ -577,10 +562,6 @@ pub(super) fn fork_records_with_accounting<A, O>(
             allocation_error,
         )
     })?;
-    let creation_bytes = encoded.0.capacity() as u64;
     let creation = creation_commit(operation_id, encoded, accounting)?;
-    let payload_bytes = retained_bytes
-        .checked_add(creation_bytes)
-        .ok_or(WorkError::Overflow)?;
-    Ok((retention, retained, creation, payload_bytes))
+    Ok((retention, retained, creation))
 }
