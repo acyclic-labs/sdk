@@ -106,7 +106,7 @@ pub(crate) fn encode(state: &AgentState) -> Result<Vec<u8>, Error> {
         if !child.is_child_of(&state.path) {
             return Err(Error::Record("an open child is not a direct child"));
         }
-        ids.push(child.id().to_bytes().to_vec());
+        ids.push(child.id_bytes().to_vec());
         if archive_pending.contains(child) {
             bitmap[index / 8] |= 1 << (index % 8);
         }
