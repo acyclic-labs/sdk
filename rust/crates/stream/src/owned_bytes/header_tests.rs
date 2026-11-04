@@ -64,6 +64,17 @@ fn check<G: Send + Sync + 'static>(
         assert_eq!(bytes.as_slice(), &[42; 8]);
         assert_eq!(bytes.as_ptr(), pointer);
         assert!(bytes.matches_meter(&observed.original()));
+        let nested = bytes.slice(1..).with_guard((), observed.original())?;
+        let nested = nested.with_guard((), observed.original())?;
+        assert_eq!(nested.as_slice(), &[42; 7]);
+        assert_eq!(nested.as_ptr(), pointer.wrapping_add(1));
+        assert_eq!(nested.backing(), bytes.backing());
+        assert!(nested.matches_meter(&observed.original()));
+        drop(nested);
+        assert_eq!(
+            observed.held.load(Ordering::SeqCst),
+            capacity as u64 + header
+        );
         let selected = bytes.slice(1..3).slice(1..);
         let empty = bytes.slice(..0);
         drop(bytes);

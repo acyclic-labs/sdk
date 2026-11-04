@@ -34,7 +34,7 @@ enum Data {
 }
 #[cfg(not(target_arch = "wasm32"))]
 struct RetainedBytes {
-    bytes: OwnedBytes,
+    bytes: Bytes,
     identity: (u8, usize),
 }
 impl Data {
@@ -222,6 +222,18 @@ impl OwnedBytes {
             }
             Err(data) => data,
         };
+        let range = 0..data.len();
+        let retained_capacity = data.retained_capacity;
+        let identity = data.data.identity();
+        // Bytes caches the visible pointer and length. Repeated ownership
+        // transfers must not make byte access traverse earlier wrappers.
+        let data = match data.try_into_bytes() {
+            Ok(data) => data,
+            Err(error) => {
+                drop(guard);
+                return Err(error);
+            }
+        };
         let metadata = match ReadAllocation::new(
             &meter,
             acyclic_native_runtime::arc_allocation_bytes::<GuardBundle<G, RetainedBytes>>(),
@@ -234,11 +246,11 @@ impl OwnedBytes {
             }
         };
         Ok(Self {
-            range: 0..data.len(),
-            retained_capacity: data.retained_capacity,
+            range,
+            retained_capacity,
             data: Data::Retained(Arc::new(GuardBundle {
                 data: RetainedBytes {
-                    identity: data.data.identity(),
+                    identity,
                     bytes: data,
                 },
                 metadata,
@@ -315,7 +327,7 @@ impl OwnedBytes {
             #[cfg(not(target_arch = "wasm32"))]
             Data::Native(guard) => guard.data.as_slice(),
             #[cfg(not(target_arch = "wasm32"))]
-            Data::Retained(guard) => guard.data.bytes.as_slice(),
+            Data::Retained(guard) => guard.data.bytes.as_ref(),
         };
         checked_range(bytes, self.range.clone())
     }

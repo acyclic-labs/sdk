@@ -13,7 +13,8 @@ type Meter = Arc<dyn NativeReadMeter>;
 
 /// The caller's meter over every medium operation of one native call, batch
 /// members included: each physical operation is admitted before dispatch, and
-/// every buffer the medium or engine allocates stays charged until the call ends.
+/// returned payload backing keeps its charge through the final byte alias.
+/// Temporary engine allocations remain charged for the call.
 /// Canonical payload bytes belong to the caller's logical-object accounting;
 /// medium envelopes, index keys and listings are neither source nor output bytes.
 pub(crate) struct Metered<M> {
