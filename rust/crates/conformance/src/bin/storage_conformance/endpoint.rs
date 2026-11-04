@@ -262,7 +262,7 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
         let options = ConnectionOptions::from_env(Some(&endpoint), Some(&credential))?;
         let observed = async {
             let connection = checked(phase, "connect", Connection::connect(&options).await)?;
-            let conversation = checked(phase, "conversation", Conversation::open(connection))?;
+            let conversation = Conversation::open(connection);
             let mut observer = checked(phase, "observe", conversation.observe(Some(0)).await)?;
             let inbox = checked(
                 phase,
@@ -290,15 +290,11 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
             assert!(matches!(reply, Reply::Answered { sequence: 0, .. }));
             assert_eq!(checked(phase, "settled", conversation.settled().await)?, 1);
             assert!(conversation.send("once", "changed prompt").await.is_err());
-            let reconnected = checked(
+            let reconnected = Conversation::open(checked(
                 phase,
-                "reconnect",
-                Conversation::open(checked(
-                    phase,
-                    "reconnect-transport",
-                    Connection::connect(&options).await,
-                )?),
-            )?;
+                "reconnect-transport",
+                Connection::connect(&options).await,
+            )?);
             assert_eq!(
                 checked(
                     phase,

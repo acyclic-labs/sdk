@@ -14,7 +14,7 @@ use std::{path::Path, sync::Arc};
 
 /// The root conversation `harness` serves to its own in-process session.
 async fn conversation(harness: &Arc<LocalHarness>) -> Result<Arc<Conversation>> {
-    Conversation::open(harness.connect().await?)
+    Ok(Conversation::open(harness.connect().await?))
 }
 
 #[tokio::test]
@@ -261,7 +261,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
     let connection = harness.connect().await?;
-    let client = Conversation::open(connection.clone())?;
+    let client = Conversation::open(connection.clone());
     let mut usage = client.usage_query();
     while !usage.synchronized() {
         usage.advance().await?;
@@ -396,7 +396,7 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
                 .compaction(crate::context::CompactionPolicy::Disabled),
         ).await?);
         let connection = harness.connect().await?;
-        let client = Conversation::open(connection.clone())?;
+        let client = Conversation::open(connection.clone());
         let mut events = client.observe(Some(0)).await?;
         let inbox = client.send("lost-producer", "hello").await?;
         entering.await.map_err(agent)?;
@@ -1483,7 +1483,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
             "settlement mixed committed actor cuts"
         );
         if owner == &root {
-            let conversation = Conversation::open(connection.clone())?;
+            let conversation = Conversation::open(connection.clone());
             let before = head_reads.load(Ordering::Relaxed);
             let observer = conversation.observe(None).await?;
             assert_eq!(
@@ -1981,7 +1981,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
     let connection = harness.connect().await?;
-    let client = Conversation::open(connection.clone())?;
+    let client = Conversation::open(connection.clone());
     let mut observed = ObservedConversation::observe(Arc::clone(&client), Some(0)).await?;
     let runtime = &harness
         .agents
@@ -2299,7 +2299,7 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
     let connection = harness.connect().await?;
-    let client = Conversation::open(connection.clone())?;
+    let client = Conversation::open(connection.clone());
     for id in ["first", "second", "third"] {
         client.send(id, id).await?;
         settled(&agents, &root).await?;

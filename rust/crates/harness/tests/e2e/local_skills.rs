@@ -50,7 +50,7 @@ async fn open(config: LocalHarnessConfig) -> TestResult<Arc<LocalHarness>> {
 async fn turn(harness: &Arc<LocalHarness>, prompt: &str, settles: bool) -> TestResult {
     let (agents, root) = harness.agents().await?;
     let before = agents.state(root).await?.conversation_tail;
-    let conversation = Conversation::open(harness.connect().await?)?;
+    let conversation = Conversation::open(harness.connect().await?);
     let mut events = conversation.observe(Some(before)).await?;
     let inbox = match conversation
         .deliver(&format!("prompt-{before}"), prompt)

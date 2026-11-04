@@ -113,11 +113,9 @@ impl Conversation {
     }
 
     /// The conversation of `connection`'s root.
-    ///
-    /// # Errors
-    /// Never today; kept fallible for the endpoint handshake.
-    pub fn open(connection: Connection) -> Result<Arc<Self>> {
-        Ok(Arc::new(Self { connection }))
+    #[must_use]
+    pub fn open(connection: Connection) -> Arc<Self> {
+        Arc::new(Self { connection })
     }
 
     fn agent(&self) -> &AgentPath {

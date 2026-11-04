@@ -398,7 +398,7 @@ async fn connected(
         .await?;
         return Ok(0);
     }
-    drive(args, Conversation::open(connection)?, output, event_output).await
+    drive(args, Conversation::open(connection), output, event_output).await
 }
 
 /// Drives `conversation` headless (`-p`, JSONL) or through the terminal view.
