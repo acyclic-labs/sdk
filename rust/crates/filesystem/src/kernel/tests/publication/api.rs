@@ -129,7 +129,7 @@ async fn invalid_and_foreign_closures_never_mutate_authority() -> TestResult {
         match root_volume {
             None => assert!(matches!(
                 failure.error,
-                PublicationError::Closure(ClosureError::Storage(_))
+                PublicationError::Objects(crate::ObjectStoreError::Missing)
             )),
             Some(actual_volume) => {
                 assert!(

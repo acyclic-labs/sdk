@@ -261,7 +261,11 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
             )
             .await?;
         assert_eq!(replay.0.len(), 1);
+        let retained = (replay.0.capacity() * size_of::<DurableCommit>()) as u64;
+        assert_eq!(work.allocations.scratch_bytes(), 29 + retained);
+        assert!(replay.1.is_none());
         drop(replay);
+        work.allocations.release_owned(retained)?;
         assert_eq!(work.allocations.scratch_bytes(), 29);
         let reservation = store
             .reserve_publication(
@@ -1042,9 +1046,17 @@ impl ReleaseSpy {
         }
         Ok(())
     }
-    async fn finish_commit(&self, result: CommitOutcome) -> Result<CommitOutcome, StreamError> {
-        if matches!(&result, CommitOutcome::Conflict(_))
-            && let Some(next) = &self.after_conflict
+    async fn finish_commit(
+        &self,
+        result: acyclic_stream::WriteOutcome,
+    ) -> Result<acyclic_stream::WriteOutcome, StreamError> {
+        if matches!(
+            &result,
+            acyclic_stream::WriteOutcome::Commit(CommitOutcome::Conflict(_))
+                | acyclic_stream::WriteOutcome::CommitAccepted(
+                    acyclic_stream::AcceptedCommitOutcome::Conflict(_)
+                )
+        ) && let Some(next) = &self.after_conflict
         {
             let token = CancellationToken::new();
             let mut work = AuthorityWork::new(BUDGET, &token);
@@ -1180,19 +1192,12 @@ impl StreamProvider for ReleaseSpy {
         std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
     > {
         match request {
-            acyclic_stream::WriteRequest::CommitAccepted(_) => {
-                Box::pin(async { Err(acyclic_stream::StreamError::Unsupported) })
-            }
-            acyclic_stream::WriteRequest::Commit(request) => {
-                Box::pin(futures::TryFutureExt::map_ok(
-                    async move {
-                        self.interleave().await?;
-                        let result = self.inner.commit(request).await?;
-                        self.finish_commit(result).await
-                    },
-                    acyclic_stream::WriteOutcome::Commit,
-                ))
-            }
+            request @ (acyclic_stream::WriteRequest::Commit(_)
+            | acyclic_stream::WriteRequest::CommitAccepted(_)) => Box::pin(async move {
+                self.interleave().await?;
+                let result = self.inner.write(request).await?;
+                self.finish_commit(result).await
+            }),
             acyclic_stream::WriteRequest::Append(request) => {
                 Box::pin(futures::TryFutureExt::map_ok(
                     async move { self.inner.append(request).await },

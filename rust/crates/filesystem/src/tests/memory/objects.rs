@@ -206,8 +206,14 @@ async fn object_batch_preserves_order_and_duplicates() -> Result<(), Box<dyn std
                 earlier_bytes + result_bytes
             );
             assert_eq!(context.spent().backend_read_operations, 3);
+            assert_eq!(
+                context.allocations.live_bytes(),
+                earlier_bytes + result_bytes
+            );
+            assert!(allocation.is_none());
             drop(values);
             drop(allocation);
+            context.allocations.release_owned(result_bytes)?;
         } else {
             assert!(matches!(
                 result,

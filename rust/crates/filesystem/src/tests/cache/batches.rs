@@ -259,8 +259,12 @@ async fn sequential_batch_retains_original_prefix_on_withdrawal_and_producer_los
                 let (values, allocation) = batch.await?;
                 assert_eq!(values[0].bytes.as_ref(), b"first");
                 assert_eq!(values[1].bytes.as_ref(), b"second");
+                let retained = (values.capacity() * size_of::<ObjectRead>()) as u64;
+                assert_eq!(work.allocations.live_bytes(), live + retained);
+                assert!(allocation.is_none());
                 drop(values);
                 drop(allocation);
+                work.allocations.release_owned(retained)?;
             }
             1 => {
                 drop(producer);

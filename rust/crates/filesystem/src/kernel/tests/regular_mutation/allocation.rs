@@ -224,11 +224,8 @@ async fn preallocation_budget_rejections_report_only_completed_work()
     .await?;
     let mut scan_budget = WorkBudget::UNBOUNDED;
     scan_budget.items_examined = 5;
-    // The range planner consumes one visit before forwarding the remaining
-    // credit. The memory index then admits the complete fixed-width identity
-    // comparison atomically; a refused comparison is not completed work.
-    let backend_limit = scan_budget.items_examined - 1;
-    let comparison_attempt = backend_limit + ObjectId::ENCODED_LEN as u64;
+    // The planner and index share the original frame. A refused fixed-width
+    // comparison reports its complete attempted charge without completing it.
     let failure = (apply_regular_mutation_async(
         &store,
         sparse.payload,
@@ -251,7 +248,8 @@ async fn preallocation_budget_rejections_report_only_completed_work()
                 counter: "items_examined",
                 observed,
                 maximum,
-            }) if observed == comparison_attempt && maximum == backend_limit
+            }) if observed == failure.work.items_examined + ObjectId::ENCODED_LEN as u64
+                && maximum == scan_budget.items_examined
         ),
         "original failure: {:?}; completed work: {:?}",
         failure.error,

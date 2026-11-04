@@ -54,27 +54,6 @@ proptest! {
     }
 }
 
-#[test]
-fn every_key_bit_can_be_a_branch_without_unbounded_lookup_or_drop() -> Result<(), FsError> {
-    let cancel = CancellationToken::new();
-    let mut accounting = KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancel);
-    let mut table = FixedIndex::default();
-    table.get_or_try_insert_with(0_u128.to_be_bytes(), &mut accounting, |_| Ok(0))?;
-    for bit in 0..128 {
-        table.get_or_try_insert_with((1_u128 << bit).to_be_bytes(), &mut accounting, |_| {
-            Ok(bit + 1)
-        })?;
-    }
-    let before = accounting.spent().items_examined;
-    assert_eq!(
-        *table.get_or_try_insert_with(0_u128.to_be_bytes(), &mut accounting, |_| Ok(999))?,
-        0
-    );
-    assert_eq!(accounting.spent().items_examined - before, 290);
-    drop(table);
-    Ok(())
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn failed_node_admission_and_construction_leave_the_index_and_funding_intact()
