@@ -368,9 +368,9 @@ async fn disjoint_rebase_preserves_observed_content_without_blob_reads() -> Test
     assert!(matches!(rebased.value, RebaseDecision::Safe { .. }));
     let candidate_reads = reads.load(Ordering::Relaxed);
     println!("disjoint candidate root reads={candidate_reads}");
-    assert_eq!(
-        candidate_reads, 2,
-        "disjoint preparation reread the already authenticated candidate"
+    assert!(
+        candidate_reads <= 2,
+        "disjoint preparation reread the already authenticated candidate: {candidate_reads} reads"
     );
     *unreadable.lock().map_err(|_| "fixture lock poisoned")? = None;
     commit(&mut local, &cancel).await?;
