@@ -2,6 +2,7 @@
 *.lock text eol=lf
 *.md text eol=lf
 *.mjs text eol=lf
+*.patch text eol=lf
 *.proto text eol=lf
 *.rs text eol=lf
 *.toml text eol=lf

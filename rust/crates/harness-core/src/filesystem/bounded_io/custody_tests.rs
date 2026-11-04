@@ -4,12 +4,10 @@ use crate::store::history::{HistoryIo, HistoryWork};
 
 #[test]
 fn output_custody_outlives_preparation_observer() -> Result<()> {
-    output_custody_outlives_observer(false)
-}
-
-#[test]
-fn output_custody_outlives_measured_history_observer() -> Result<()> {
-    output_custody_outlives_observer(true)
+    for measured in [false, true] {
+        output_custody_outlives_observer(measured)?;
+    }
+    Ok(())
 }
 
 fn output_custody_outlives_observer(measured: bool) -> Result<()> {
