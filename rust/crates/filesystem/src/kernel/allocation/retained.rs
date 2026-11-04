@@ -285,6 +285,16 @@ impl Drop for StandaloneLease {
 }
 
 impl RetainedAllocation {
+    pub(crate) fn standalone_ledger(
+        &self,
+    ) -> Option<std::sync::Weak<Mutex<SharedAllocationBytes>>> {
+        match self {
+            Self::Standalone { _lease } => Some(Arc::downgrade(&_lease.ledger)),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native { .. } => None,
+        }
+    }
+
     /// Combines leases from the same original ledger without admitting work.
     pub(crate) fn absorb(&mut self, incoming: &mut Self) -> Result<(), crate::FsError> {
         match (self, incoming) {
@@ -348,7 +358,7 @@ impl RetainedAllocation {
         }
     }
 
-    fn transfer(
+    pub(crate) fn transfer(
         allocation: &mut KernelOwnedAllocation,
         bytes: u64,
         accounting: &mut KernelAccounting<'_>,

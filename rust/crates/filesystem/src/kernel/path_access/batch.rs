@@ -157,7 +157,6 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                             data_custody,
                         )
                         .await?;
-                    cache.reconcile(accounting)?;
                     root.ok_or(PathLookupError::MissingRootRecord)?
                 };
                 for index in 0..count {
@@ -280,7 +279,6 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                             value: bindings,
                             custody: bindings_guard,
                         };
-                        cache.reconcile(accounting)?;
                         for ((index, binding), name) in query_indices
                             .value
                             .iter()
@@ -352,7 +350,6 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                         value: records,
                         custody: records_guard,
                     };
-                    cache.reconcile(accounting)?;
                     for (binding, record) in pending.value.iter().zip(records.value.iter().copied())
                     {
                         let record = record.ok_or(PathLookupError::KindMismatch)?;
@@ -425,7 +422,7 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                     },
                     allocation,
                 );
-                drop_cache(cache, accounting)?;
+                drop(cache);
                 Ok(result)
             },
         )?;

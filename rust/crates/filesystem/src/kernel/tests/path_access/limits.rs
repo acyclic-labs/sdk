@@ -8,7 +8,7 @@ async fn observation_dependency_storage_is_admitted_with_cache_residency()
     let dependency_bytes = u64::try_from(path.depth().saturating_add(1))?
         .checked_mul(u64::try_from(size_of::<Dependency>())?)
         .ok_or("dependency byte count overflowed")?;
-    let cache_bytes = cache_resident(&cache)?;
+    let cache_bytes = cache_work.peak_allocation_bytes;
     drop(cache);
     // The same canonical path frame is a real simultaneous allocation too.
     let cancellation = CancellationToken::new();

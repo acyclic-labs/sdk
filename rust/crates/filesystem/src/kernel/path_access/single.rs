@@ -58,7 +58,6 @@ pub(super) async fn resolve_path_with_accounting<S: AsyncObjectStore>(
                             data_custody,
                         )
                         .await?;
-                    cache.reconcile(accounting)?;
                     root_record.ok_or(PathLookupError::MissingRootRecord)?
                 };
                 let mut parent = None;
@@ -106,7 +105,6 @@ pub(super) async fn resolve_path_with_accounting<S: AsyncObjectStore>(
                         value: entry,
                         custody: entry_guard,
                     };
-                    cache.reconcile(accounting)?;
                     if let Some(copied) = copied {
                         let expected = match &entry.value {
                             Some(entry) => {
@@ -168,7 +166,6 @@ pub(super) async fn resolve_path_with_accounting<S: AsyncObjectStore>(
                                 data_custody,
                             )
                             .await?;
-                        cache.reconcile(accounting)?;
                         record.ok_or(PathLookupError::KindMismatch)?
                     };
                     if current.kind != kind {
@@ -205,7 +202,7 @@ pub(super) async fn resolve_path_with_accounting<S: AsyncObjectStore>(
                     },
                     allocation,
                 );
-                drop_cache(cache, accounting)?;
+                drop(cache);
                 Ok(result)
             },
         )?;

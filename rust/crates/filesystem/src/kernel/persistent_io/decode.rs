@@ -94,7 +94,7 @@ pub(crate) fn decode_read_with_accounting<F: Format>(
     }
     let logical_bytes =
         logical_page_bytes::<F>(shape).ok_or(CanonicalDecodeError::AllocationFailed)?;
-    claim_read_allocation(
+    let cached_local_bytes = claim_read_allocation(
         logical_bytes,
         u64::from(logical_bytes != 0),
         allocations,
@@ -106,7 +106,10 @@ pub(crate) fn decode_read_with_accounting<F: Format>(
     if let Some(owner) = data_custody
         && let Err(error) = owner.record_completed_leaf_work(WorkCounters {
             allocation_operations: u64::from(logical_bytes != 0),
-            peak_allocation_bytes: allocations.live_bytes(),
+            peak_allocation_bytes: allocations
+                .live_bytes()
+                .checked_sub(cached_local_bytes)
+                .ok_or(WorkError::Overflow)?,
             ..WorkCounters::default()
         })
     {
@@ -238,7 +241,9 @@ pub(super) fn claim_read_allocation(
     budget: WorkBudget,
     data_custody: Option<&crate::kernel::ProofDataCustody>,
     cached_local_bytes: u64,
-) -> Result<(), FsError> {
+) -> Result<u64, FsError> {
+    let cached_local_bytes = cached_local_bytes
+        .max(data_custody.map_or(0, |owner| owner.local_operation_cache_bytes(allocations)));
     work.verify(budget)?;
     allocations
         .live_bytes()
@@ -272,7 +277,7 @@ pub(super) fn claim_read_allocation(
     );
     next.verify(budget)?;
     *work = next;
-    Ok(())
+    Ok(cached_local_bytes)
 }
 
 fn admit_clone(
@@ -290,7 +295,7 @@ fn admit_clone(
     work.admit(&copied, &budget)?;
     let prior_live = allocations.live_bytes();
     let mut next = *work;
-    claim_read_allocation(
+    let cached_local_bytes = claim_read_allocation(
         nested,
         u64::from(nested != 0),
         allocations,

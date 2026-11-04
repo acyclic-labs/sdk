@@ -70,90 +70,21 @@ async fn read_cold_object<S: AsyncObjectStore>(
     cancellation: &CancellationToken,
     data_custody: Option<&crate::kernel::ProofDataCustody>,
 ) -> Result<(ObjectRead, u64), FsError> {
-    let maximum = limits.maximum_object_bytes;
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(original) = accounting.native_work() {
-        let mut frame = super::batch::batch_in_heap(accounting, |_| async {
-            let mut work = crate::AuthorityWork::native(original, cancellation);
-            store.read(page, maximum, &mut work).await
-        })?;
-        let read = frame.value.as_mut().await;
-        drop(frame);
-        return read.map(|read| (read, 0)).map_err(read_store_error);
-    }
-    let (allocations, work, budget, _) = accounting
-        .standalone_parts()
-        .ok_or(crate::ObjectStoreError::Corrupt)?;
-    let prospective = *work;
-    let mut remaining = prospective.remaining(budget)?;
-    remaining.peak_allocation_bytes = budget
-        .peak_allocation_bytes
-        .checked_sub(allocations.live_bytes())
-        .ok_or(WorkError::Overflow)?;
-    let live = allocations.live_bytes();
-    let frame_observer = |event| -> Result<u64, WorkError> {
-        let Some(owner) = data_custody else {
-            return Ok(0);
-        };
-        let standing = owner.record_heap_future_event(event)?;
-        if matches!(event, crate::heap_future::HeapFutureEvent::Admitted(_)) {
-            owner.record_completed_leaf_work(WorkCounters {
-                peak_allocation_bytes: live,
-                ..WorkCounters::UNCHARGED
-            })?;
-        }
-        Ok(standing)
-    };
-    let read = crate::heap_future::in_heap_measured(
-        move |budget| async move {
-            cancellation
-                .check()
-                .map_err(|_| crate::ObjectFailure::before_work(ObjectStoreError::Cancelled))
-                .map_err(|failure| {
-                    failure.map_with_prior_work(WorkCounters::UNCHARGED, read_store_error)
-                })?;
-            let mut context = crate::AuthorityWork::new(budget, cancellation);
-            context.read_observation =
-                data_custody.map(|owner| (owner, owner.operation_cache_bytes()));
-            let result = store.read(page, maximum, &mut context).await;
-            context.read_receipt(result).map_err(|failure| {
-                failure.map_with_prior_work(WorkCounters::UNCHARGED, read_store_error)
-            })
-        },
-        remaining,
-        cancellation,
-        read_store_error(ObjectStoreError::Cancelled),
-        data_custody.map(|_| &frame_observer as &(dyn Fn(_) -> Result<u64, WorkError> + Sync)),
-    )
-    .await;
-    let nested = match &read {
-        Ok(receipt) => receipt.work,
-        Err(failure) => *failure.work,
-    };
-    *work = prospective.with_backend(nested, live)?;
-    if let Some(owner) = data_custody {
-        owner.record_data_work(WorkCounters {
-            peak_allocation_bytes: work.peak_allocation_bytes,
-            ..WorkCounters::UNCHARGED
-        })?;
-    }
-    let receipt = read.map_err(|failure| failure.error)?;
-    work.verify(budget)?;
-    let retained = retained_bytes(&receipt.value);
-    claim_read_allocation(retained, 0, allocations, work, budget, data_custody, 0)?;
-    if let Some(owner) = data_custody
-        && let Err(error) = owner.record_completed_leaf_work(WorkCounters {
-            peak_allocation_bytes: allocations.live_bytes(),
-            ..WorkCounters::UNCHARGED
-        })
-    {
-        drop(receipt.value);
-        allocations.release(retained).map_err(allocation_error)?;
-        return Err(error.into());
-    }
-    Ok((receipt.value, retained))
+    let mut owner = crate::heap_future::AdmittedFrame::new(accounting);
+    let mut frame = super::batch::batch_in_heap(&mut owner, data_custody, |accounting| {
+        crate::kernel::file_read::read_object_observed(
+            store,
+            page,
+            limits.maximum_object_bytes,
+            accounting,
+            cancellation,
+            data_custody,
+        )
+    })?;
+    let read = frame.as_mut().await;
+    drop(frame);
+    owner.finish(read)
 }
-
 #[allow(
     clippy::too_many_lines,
     reason = "This state transition keeps admission, effects and resource retirement in one frame."
@@ -262,17 +193,22 @@ pub(crate) fn admit_decoded_with_accounting<S: AsyncObjectStore, F: Format>(
     };
     let logical_bytes = decoded.logical_bytes;
     let control_bytes = usize_to_u64(size_of::<Page<F>>());
-    if let Err(error) =
-        claim_read_allocation(control_bytes, 1, allocations, work, budget, data_custody, 0)
-    {
-        drop(page);
-        allocations
-            .release(logical_bytes)
-            .map_err(allocation_error)?;
-        return Err(error);
-    }
+    let cached_local_bytes =
+        match claim_read_allocation(control_bytes, 1, allocations, work, budget, data_custody, 0) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                drop(page);
+                allocations
+                    .release(logical_bytes)
+                    .map_err(allocation_error)?;
+                return Err(error);
+            }
+        };
     if let Some(owner) = data_custody {
-        let local_peak = allocations.live_bytes();
+        let local_peak = allocations
+            .live_bytes()
+            .checked_sub(cached_local_bytes)
+            .ok_or(WorkError::Overflow)?;
         if let Err(error) = owner.record_completed_leaf_work(WorkCounters {
             allocation_operations: 1,
             peak_allocation_bytes: local_peak,

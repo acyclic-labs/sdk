@@ -992,10 +992,13 @@ pub(super) fn begin_custody_leaf(
     let Some(owner) = custody else {
         return Ok(None);
     };
-    let Some((_, work, budget)) = standalone_parts(accounting) else {
+    let Some((allocations, work, budget)) = standalone_parts(accounting) else {
         return Ok(None);
     };
-    let external = owner.operation_cache_bytes();
+    let external = owner
+        .operation_cache_bytes()
+        .checked_sub(owner.local_operation_cache_bytes(allocations))
+        .ok_or(WorkError::Overflow)?;
     let available =
         budget
             .peak_allocation_bytes
@@ -1045,7 +1048,13 @@ pub(super) fn finish_custody_leaf(
             .bytes_copied
             .checked_sub(prefix.before.bytes_copied)
             .ok_or(WorkError::Overflow)?,
-        peak_allocation_bytes: peak,
+        peak_allocation_bytes: peak
+            .checked_sub(
+                custody
+                    .ok_or(WorkError::Overflow)?
+                    .local_operation_cache_bytes(allocations),
+            )
+            .ok_or(WorkError::Overflow)?,
         ..WorkCounters::default()
     };
     custody

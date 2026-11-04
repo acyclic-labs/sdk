@@ -1,0 +1,12 @@
+diff --git a/rust/crates/filesystem/src/kernel/rebase/custody.rs b/rust/crates/filesystem/src/kernel/rebase/custody.rs
+--- a/rust/crates/filesystem/src/kernel/rebase/custody.rs
++++ b/rust/crates/filesystem/src/kernel/rebase/custody.rs
+@@ -232,7 +232,7 @@ impl ProofDataCustody {
+             .as_ref()
+             .is_some_and(|original| ledger.shares_retained_ledger(original))
+         {
+-            completed.original_cache_bytes
++            0
+         } else {
+             0
+         }

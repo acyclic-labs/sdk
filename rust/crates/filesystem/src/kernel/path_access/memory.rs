@@ -78,38 +78,7 @@ pub(super) fn examine_item<T>(
     Ok(value)
 }
 
-pub(super) struct FrameObservation<'a> {
-    pub(super) owner: Option<&'a crate::kernel::ProofDataCustody>,
-    pub(super) bytes: u64,
-}
-impl FrameObservation<'_> {
-    fn admitted(&mut self, bytes: u64) -> Result<(), crate::FsError> {
-        if let Some(owner) = self.owner {
-            owner.record_heap_future_event(crate::heap_future::HeapFutureEvent::Admitted(
-                WorkCounters {
-                    allocation_operations: u64::from(bytes != 0),
-                    peak_allocation_bytes: bytes,
-                    ..WorkCounters::UNCHARGED
-                },
-            ))?;
-            self.bytes = bytes;
-        }
-        Ok(())
-    }
-}
-impl Drop for FrameObservation<'_> {
-    #[allow(
-        clippy::expect_used,
-        reason = "The frame releases exactly the bytes admitted by its observer."
-    )]
-    fn drop(&mut self) {
-        if let Some(owner) = self.owner.filter(|_| self.bytes != 0) {
-            owner
-                .record_heap_future_event(crate::heap_future::HeapFutureEvent::Released(self.bytes))
-                .expect("the actual path frame dies before its observation retires");
-        }
-    }
-}
+use crate::heap_future::FrameObservation;
 
 pub(super) fn admit_path_frame(
     accounting: &mut KernelAccounting<'_>,
@@ -208,23 +177,6 @@ pub(super) fn drop_bindings(
         release_standalone(accounting, bytes)?;
     }
     Ok(())
-}
-pub(super) fn drop_cache<S>(
-    cache: OperationReadCache<'_, S>,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<(), crate::FsError> {
-    match accounting {
-        #[cfg(not(target_arch = "wasm32"))]
-        KernelAccounting::NativeOriginal { .. } => {
-            drop(cache);
-            Ok(())
-        }
-        _ => {
-            let retained = cache.lock_state().accounted_bytes;
-            drop(cache);
-            release_standalone(accounting, retained)
-        }
-    }
 }
 pub(super) fn copy_name(
     source: &LogicalName,

@@ -13,11 +13,8 @@ use crate::async_storage::{
 };
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
-use crate::heap_future::in_heap;
 use crate::performance::{WorkBudget, WorkCounters, WorkError};
-use crate::storage::{
-    ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError,
-};
+use crate::storage::{ObjectId, ObjectRead, ObjectReadRequest, ObjectStoreError};
 use std::future::Future;
 use std::marker::PhantomData;
 use std::mem::size_of;
@@ -87,13 +84,6 @@ fn allocation_error(error: AllocationError) -> FsError {
     error.into_work_or(CanonicalDecodeError::AllocationFailed.into())
 }
 
-fn retained_bytes(read: &ObjectRead) -> u64 {
-    match read.retention {
-        ObjectReadRetention::Shared => 0,
-        ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
-    }
-}
-
 fn invalid_batch_result() -> FsError {
     read_store_error(ObjectStoreError::Rejected(
         "object store returned an invalid page batch".to_owned(),
@@ -134,7 +124,6 @@ pub(crate) use batch::read_pages_with_accounting;
 use cache::admit_decoded_with_accounting;
 pub(crate) use cache::read_page_with_accounting;
 use decode::claim_read_allocation;
-#[cfg(not(target_arch = "wasm32"))]
 #[cfg(not(target_arch = "wasm32"))]
 use decode::clone_page;
 pub(crate) use decode::{clone_key, clone_value, decode_read_with_accounting};

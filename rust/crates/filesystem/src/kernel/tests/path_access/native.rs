@@ -19,7 +19,8 @@ async fn observer_cache_and_cold_frame_overlap_survives_unwind_without_phantom_r
 
     let store = MemoryObjectStore::default();
     let custody = super::super::ProofDataCustody::default();
-    let (cache, setup) = setup_cache(&store, 64, WorkBudget::UNBOUNDED, Some(&custody))?;
+    let (cache, _) = setup_cache(&store, 64, WorkBudget::UNBOUNDED, Some(&custody))?;
+    let cache_bytes = cache_resident(&cache)?;
     let dropped = AtomicBool::new(false);
     let observer = |event| {
         if matches!(event, crate::heap_future::HeapFutureEvent::Released(_)) {
@@ -46,10 +47,7 @@ async fn observer_cache_and_cold_frame_overlap_survives_unwind_without_phantom_r
     let frame_bytes = u64::try_from(size_of::<PanicAfterAdmission<'_>>())?;
     let completed = custody.take_completed_data_work();
     assert_eq!(completed.allocation_operations, 2);
-    assert_eq!(
-        completed.peak_allocation_bytes,
-        setup.peak_allocation_bytes + frame_bytes
-    );
+    assert_eq!(completed.peak_allocation_bytes, cache_bytes + frame_bytes);
     assert_eq!(
         custody.retained_bytes(),
         0,
