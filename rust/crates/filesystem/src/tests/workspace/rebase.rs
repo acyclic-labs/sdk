@@ -222,6 +222,7 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
     };
     assert!(spent.backend_read_operations > 2);
     assert!(spent.backend_write_operations > 0);
+    assert!(spent.authority_records_appended > 0);
     assert_eq!(live, baseline, "live rebase retained temporary scratch");
     assert_eq!(
         unbounded!(first, read("/agent", 16))?,
@@ -267,6 +268,7 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
         ));
         assert!(original.receipt().backend_read_operations > 2);
         assert!(original.receipt().backend_write_operations > 0);
+        assert!(original.receipt().authority_records_appended > 0);
         assert!(original.live_allocation_bytes() > baseline);
         (original, held, initial, baseline)
     };
