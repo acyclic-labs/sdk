@@ -92,7 +92,7 @@ fn crash_reopen(point: Cut) -> Result<()> {
         let mut crash = Driver::new(71, baseline.map(|(_, cut)| (cut, DurableFault::After)));
         let schedule = crash.schedule.clone();
         let marker = Cell::new(None);
-        let Outcome::Crashed(cause) = crash
+        let cause = match crash
             .run(local_turn(
                 directory.path(),
                 &schedule,
@@ -101,8 +101,12 @@ fn crash_reopen(point: Cut) -> Result<()> {
                 matches!(point, Cut::FirstTurnWrite),
             ))
             .await
-        else {
-            panic!("turn escaped its durable write cut");
+        {
+            Outcome::Crashed(cause) => cause,
+            Outcome::Completed(result) => {
+                result?;
+                panic!("turn escaped its durable write cut");
+            }
         };
         assert_eq!(cause.fault, DurableFault::After);
         if let Some((start, cut)) = baseline {

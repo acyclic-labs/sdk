@@ -214,6 +214,7 @@ fn negative_control_native_drains_are_counted() -> Result<()> {
 
     let directory = tempfile::tempdir().map_err(storage)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .map_err(storage)?;
     let workspace_id = acyclic_fs::WorkspaceId::from_bytes([1; 16]);
@@ -229,9 +230,10 @@ fn negative_control_native_drains_are_counted() -> Result<()> {
         fork_generation: generation,
         initial_generation: generation,
     };
-    let (schedule, _) = acyclic_native_runtime::testing::Schedule::seeded(71);
+    let mut driver = driver::Driver::new(71, None);
+    let schedule = driver.schedule.clone();
     let store = LocalCoreStateStore::new(directory.path());
-    runtime.block_on(schedule.scope(async {
+    let result = runtime.block_on(driver.run(entry(async {
         // Ordinary transactions checkpoint after their WAL commit is flushed.
         assert!(
             WorkspaceLineageStore::compare_and_swap(&store, workspace_id, 0, record.clone())
@@ -239,7 +241,11 @@ fn negative_control_native_drains_are_counted() -> Result<()> {
                 .map_err(storage)?
         );
         Ok::<_, Error>(())
-    }))?;
+    })));
+    match result {
+        driver::Outcome::Completed(result) => result?,
+        driver::Outcome::Crashed(cause) => panic!("uncut checkpoint crashed: {cause}"),
+    }
     assert_eq!(
         runtime
             .block_on(WorkspaceLineageStore::load(&store, workspace_id))
