@@ -560,9 +560,7 @@ fn custody_control(
     };
     if drop_owner {
         let before = work.receipt();
-        let shared = crate::sync::native::Arc::clone(&owner.shared);
-        drop(owner);
-        crate::native_mount::recovery::wait_for_retirement(&shared);
+        crate::native_mount::recovery::wait_for_retirement(owner)?;
         assert_eq!(
             work.receipt().durability_operations - before.durability_operations,
             2,
