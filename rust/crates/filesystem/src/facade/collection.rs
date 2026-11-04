@@ -318,9 +318,13 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 let object = acyclic_objects::Digest::from_bytes(digest.into_bytes());
                 collecting.sweeping(digest);
                 let deleted = provider.delete(object).await.map_err(object_error);
-                // Retire cached copies and the original fill epoch after this
-                // delete attempt, including an uncertain provider result.
-                self.inner.objects.inner().clear()?;
+                // A referenced refusal leaves the stored bytes unchanged.
+                // Retire cached copies and fills for every possible mutation,
+                // including an uncertain provider result.
+                if !matches!(&deleted, Ok(deletion) if deletion.outcome == acyclic_objects::Delete::Referenced)
+                {
+                    self.inner.objects.inner().clear()?;
+                }
                 let deleted = deleted?;
                 match deleted.outcome {
                     acyclic_objects::Delete::Deleted => {
