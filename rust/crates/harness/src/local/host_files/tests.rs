@@ -876,7 +876,6 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     std::fs::create_dir_all(debris.parent().expect("status parent")).map_err(storage)?;
     std::fs::write(&debris, b"unrelated status is not a reply").map_err(storage)?;
     std::fs::write(requests.join("malformed.json"), b"{not a request").map_err(storage)?;
-    std::fs::write(requests.join("oversized.json"), vec![b'x'; 65_537]).map_err(storage)?;
     let foreign = OperationId::new();
     std::fs::write(
         requests.join(format!("{foreign}.json")),
@@ -1145,6 +1144,32 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         // A replayed completion of the settled turn is idempotent.
         assert_eq!(complete(claim)?["status"]["turn"], 1);
         assert!(session(SessionAction::Next)?.is_null());
+        // A completion fits Event admission even when its real file request
+        // envelope and resulting session projection exceed that payload size.
+        let sent = session(SessionAction::Send { prompt: "near-bound outcome".into() })?;
+        let turn = session(SessionAction::Next)?;
+        let outcome = crate::Outcome::Succeeded(crate::executor::TurnOutput::new(
+            "x".repeat(65_336), Value::Null, 1,
+        ));
+        let expected = serde_json::to_value(&outcome).map_err(storage)?;
+        let operation = OperationId::new();
+        let action = HostAction::Session {
+            parent: parent.clone(), reference: "endpoint-boundary".into(), next: false,
+            action: SessionAction::Complete {
+                claim: serde_json::from_value(turn["claim"].clone()).map_err(storage)?,
+                outcome,
+            },
+        };
+        assert!(serde_json::to_vec(&Request {
+            session: connected.session, operation, action: action.clone(),
+        }).map_err(storage)?.len() > 65_536);
+        let settled = request_operation(&requests_registry, &cwd, operation, action)?;
+        assert_eq!(settled["results"][0]["outcome"], expected);
+        let reply = session(SessionAction::Reply {
+            id: serde_json::from_value(sent["id"].clone()).map_err(storage)?,
+            inbox: sent["inbox"].as_u64().unwrap(),
+        })?;
+        assert_eq!(reply["reply"]["outcome"], expected);
         request(&cwd, HostAction::Hook {
             host: "pi".into(), event: "NativeSession".into(),
             input: serde_json::json!({"task":parent,"native_session":{"id":"fixture","file":cwd.join("native")}}),

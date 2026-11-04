@@ -47,6 +47,7 @@ pub enum SessionAction {
     Observe,
     /// Where prompt `id`, accepted at inbox sequence `inbox`, stands: the
     /// shared committed reply, with the outcome its settled turn recorded.
+    /// The response carries that outcome once in `reply`, without `results`.
     Reply {
         /// The prompt's message identity, returned by Spawn or Send.
         id: IntentId,
