@@ -33,7 +33,7 @@ async fn run(local: &Arc<LocalHarness>, prompt: &str) -> Result<String> {
     }
 }
 
-fn assert_published_web_contract(name: &str, value: &Value) -> Result<()> {
+fn published_web_contract(name: &str) -> Result<impl Fn(&Value)> {
     let definition = crate::search::web::definitions(true)?
         .into_iter()
         .find(|tool| tool.name == name)
@@ -42,14 +42,6 @@ fn assert_published_web_contract(name: &str, value: &Value) -> Result<()> {
         .map_err(|error| Error::Invalid(error.to_string()))?;
     let projection = jsonschema::validator_for(&definition.projection_schema)
         .map_err(|error| Error::Invalid(error.to_string()))?;
-    assert!(
-        output.is_valid(value),
-        "actual web result violates its advertised output contract"
-    );
-    assert!(
-        projection.is_valid(&json!({"kind":"json","value":value})),
-        "actual web projection violates its advertised contract"
-    );
     for bad in [
         json!({"status":"rejected"}),
         json!({"status":"rejected","code":"unauthorized","reason":"denied"}),
@@ -64,7 +56,16 @@ fn assert_published_web_contract(name: &str, value: &Value) -> Result<()> {
         );
         assert!(!projection.is_valid(&json!({"kind":"json","value":bad})));
     }
-    Ok(())
+    Ok(move |value| {
+        assert!(
+            output.is_valid(value),
+            "actual web result violates its advertised output contract"
+        );
+        assert!(
+            projection.is_valid(&json!({"kind":"json","value":value})),
+            "actual web projection violates its advertised contract"
+        );
+    })
 }
 
 #[tokio::test]
@@ -149,6 +150,7 @@ async fn configured_web_tools_reach_their_action_guards() -> Result<()> {
 
 #[tokio::test]
 async fn model_consumer_receives_real_search_result_not_a_tool_name_or_echo() -> Result<()> {
+    let assert_contract = published_web_contract("web_search")?;
     let directory =
         tempfile::tempdir().map_err(|_| Error::Storage("fixture directory failed".into()))?;
     let marker = format!("model-source-{}", crate::OperationId::new());
@@ -213,12 +215,13 @@ async fn model_consumer_receives_real_search_result_not_a_tool_name_or_echo() ->
         "https://example.test/model-source"
     );
     assert_eq!(result["results"][0]["snippet"], marker);
-    assert_published_web_contract("web_search", result)?;
+    assert_contract(result);
     Ok(())
 }
 
 #[tokio::test]
 async fn expected_fetch_refusals_continue_the_model_turn() -> Result<()> {
+    let assert_contract = published_web_contract("url_fetch")?;
     let mut cases = Vec::new();
     for case in 0..5 {
         let (url, reason, server) = match case {
@@ -332,7 +335,7 @@ async fn expected_fetch_refusals_continue_the_model_turn() -> Result<()> {
             results,
             [&json!({"status":"rejected","code":"invalid","reason":reason})]
         );
-        assert_published_web_contract("url_fetch", results[0])?;
+        assert_contract(results[0]);
         let encoded = serde_json::to_string(results[0]).unwrap();
         for private in ["private-input", "private-provider-body", "private-redirect"] {
             assert!(
@@ -346,6 +349,7 @@ async fn expected_fetch_refusals_continue_the_model_turn() -> Result<()> {
 
 #[tokio::test]
 async fn model_fetch_preserves_exact_nonbmp_body_redirect_and_absent_search() -> Result<()> {
+    let assert_contract = published_web_contract("url_fetch")?;
     let body = "exact 東京 \u{10437} 🦀\r\n& raw source";
     let mut cases = Vec::new();
     for redirect in [false, true] {
@@ -419,13 +423,14 @@ async fn model_fetch_preserves_exact_nonbmp_body_redirect_and_absent_search() ->
         assert_eq!(value["source_url"], url.as_str());
         assert_eq!(value["final_url"], final_url.as_str());
         assert_eq!(value["status"], 200);
-        assert_published_web_contract("url_fetch", value)?;
+        assert_contract(value);
     }
     Ok(())
 }
 
 #[tokio::test]
 async fn search_provider_http_failure_is_a_schema_valid_refusal_for_the_next_model() -> Result<()> {
+    let assert_contract = published_web_contract("web_search")?;
     let (endpoint, server) =
         serve_web_response("POST", 503, "", "private-search-body".into()).await?;
     let search = Arc::new(crate::search::Exa::with_endpoint(
@@ -481,7 +486,7 @@ async fn search_provider_http_failure_is_a_schema_valid_refusal_for_the_next_mod
         result,
         &json!({"status":"rejected","code":"invalid","reason":"search HTTP request rejected"})
     );
-    assert_published_web_contract("web_search", result)?;
+    assert_contract(result);
     let encoded = serde_json::to_string(result).unwrap();
     assert!(!encoded.contains("private-search-body"));
     assert!(!encoded.contains("test-only-placeholder"));
