@@ -628,12 +628,25 @@ async fn oversized_summary_input_rejects_before_accounting_or_journal_publicatio
             ..Limits::default()
         };
         let executor = base.clone().with_limits(limits);
+        #[cfg(feature = "filesystem")]
+        let storage =
+            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+        #[cfg(feature = "filesystem")]
+        let (generation, _) = storage.list_private_directory("", None, None, 1).await?;
+        #[cfg(feature = "filesystem")]
+        let journal = storage.journal();
+        #[cfg(feature = "filesystem")]
+        let journal = journal.as_ref();
+        #[cfg(not(feature = "filesystem"))]
         let journal = Journal::default();
+        #[cfg(not(feature = "filesystem"))]
+        let journal = &journal;
+        let operation = OperationId::new();
         assert!(matches!(
             executor
                 .summarize(
-                    &journal,
-                    OperationId::new(),
+                    journal,
+                    operation,
                     crate::context::Context {
                         messages,
                         ..Default::default()
@@ -643,7 +656,13 @@ async fn oversized_summary_input_rejects_before_accounting_or_journal_publicatio
                 .await,
             Err(Error::Invalid(_))
         ));
-        assert!(journal.0.lock().unwrap().is_empty());
+        assert!(journal.replay(operation, 0, 1, None)?.await?.is_empty());
+        #[cfg(feature = "filesystem")]
+        assert_eq!(
+            storage.list_private_directory("", None, None, 1).await?.0,
+            generation,
+        );
+        #[cfg(not(feature = "filesystem"))]
         assert!(journal.1.lock().unwrap().is_empty());
     }
     assert_eq!(accounting_calls.load(Ordering::SeqCst), 0);
