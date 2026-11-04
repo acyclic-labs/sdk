@@ -10,7 +10,7 @@
 use super::shared::{SharedViewEntry, SharedViews, run_shared_invalidator};
 use super::*;
 use crate::NativeMaterializationWork;
-use crate::native_mount::shared::instances::{Instance, Instances};
+use crate::native_mount::shared::instances::{Instances, Registration};
 use crate::native_mount::{
     MountDestinationGuard, detach_native_mount_destination_after_crash, native_mount_control_paths,
 };
@@ -26,11 +26,22 @@ thread_local! {
 
 pub(in crate::native_mount) struct SharedFuseInstance {
     pub(super) views: Arc<SharedViews>,
+    invalidator: Option<std::thread::JoinHandle<()>>,
+    #[cfg(test)]
+    worker_lifetime: std::sync::Weak<()>,
+}
+
+/// The existing invalidator owns physical root cleanup after accepting startup.
+/// A partial constructor retains this same payload until that acceptance.
+struct SharedFuseRoot {
+    views: Arc<SharedViews>,
     root: PathBuf,
-    path: Vec<u8>,
-    state: Mutex<InstanceState>,
+    path: std::ffi::CString,
+    state: InstanceState,
     // The instance's own meter: it outlives the view that started it.
     work: NativeMaterializationWork,
+    // The physical owner releases the root only after its native teardown.
+    _registration: Registration<SharedFuseInstance>,
 }
 
 #[derive(Default)]
@@ -38,20 +49,23 @@ struct InstanceState {
     mount: super::mount::Mount,
     device: Option<Arc<std::fs::File>>,
     worker: Option<std::thread::JoinHandle<Result<(), NativeMountError>>>,
-    invalidator: Option<std::thread::JoinHandle<()>>,
+    transport: Option<Arc<super::host_io::HostIo>>,
     guard: Option<MountDestinationGuard>,
+    #[cfg(test)]
+    worker_lifetime: std::sync::Weak<()>,
 }
 
 impl InstanceState {
     fn detach(&mut self, path: &std::ffi::CStr, root: &Path) -> bool {
-        let mut detached = !self.mount.pending();
+        let mut detached = !self.mount.needs_unmount();
         if !detached {
             let device = self.device.as_ref().map(std::os::fd::AsFd::as_fd);
             match self.mount.stop(path, device) {
                 Ok(()) => {
-                    detached = device
-                        .is_none_or(|device| self.mount.device_detached(device).unwrap_or(false))
-                        || !self.mount.pending();
+                    // Namespace removal is accepted even while a held file
+                    // delays device acknowledgement. The transport stop and
+                    // worker join below own that remaining physical lifetime.
+                    detached = !self.mount.needs_unmount();
                 }
                 Err(error) => {
                     tracing::warn!(%error, root = %root.display(), "shared FUSE unmount failed");
@@ -59,20 +73,22 @@ impl InstanceState {
             }
         }
         if !detached {
-            // Busy: detach the namespace now; the kernel ends the connection,
-            // and with it the worker, once the last open file closes.
+            // Busy: detach the namespace. The physical owner still stops and
+            // joins the transport, including while an old file remains open.
             match nix::mount::umount2(path, nix::mount::MntFlags::MNT_DETACH) {
                 Ok(()) => detached = true,
                 Err(error) => {
                     tracing::warn!(%error, root = %root.display(), "shared FUSE detach failed");
                 }
             }
-            drop(self.worker.take());
         }
         detached
     }
 
     fn join_worker(&mut self) {
+        if let Some(transport) = self.transport.take() {
+            transport.stop();
+        }
         if let Some(worker) = self.worker.take() {
             match worker.join() {
                 Ok(Ok(())) => {}
@@ -90,11 +106,12 @@ impl InstanceState {
 pub(in crate::native_mount) struct SharedFuseView {
     // Field order: the view retires before its instance reference drops.
     pub(super) entry: SharedViewEntry,
-    pub(super) _instance: Arc<Instance<SharedFuseInstance>>,
+    pub(super) _instance: Arc<SharedFuseInstance>,
 }
 
 impl SharedFuseInstance {
-    fn start(root: &Path) -> Result<Self, NativeMountError> {
+    fn start(registration: Registration<Self>) -> Result<Self, NativeMountError> {
+        let root = registration.root();
         let cancellation = crate::CancellationToken::new();
         let work = NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, _)| NativeMountError::from(cause))?;
@@ -109,26 +126,25 @@ impl SharedFuseInstance {
             detach_native_mount_destination_after_crash(root)?;
         }
         let metadata = std::fs::metadata(root)?;
-        let mut path = root.as_os_str().as_bytes().to_vec();
-        path.push(0);
-        let mut instance = Self {
+        let path = std::ffi::CString::new(root.as_os_str().as_bytes())
+            .map_err(|_| NativeMountError::InvalidDestination)?;
+        let mut instance = SharedFuseRoot {
             views: SharedViews::new(
                 std::os::unix::fs::MetadataExt::uid(&metadata),
                 std::os::unix::fs::MetadataExt::gid(&metadata),
             ),
             root: root.to_path_buf(),
             path,
-            state: Mutex::new(InstanceState::default()),
+            state: InstanceState::default(),
             work,
+            _registration: registration,
         };
+        let root = &instance.root;
         // Every failure below drops `instance`, whose teardown undoes the
         // steps already taken.
         let views = Arc::clone(&instance.views);
         let work = instance.work.clone();
-        let state = instance
-            .state
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner);
+        let state = &mut instance.state;
         MountDestinationGuard::acquire_with_work(root, true, &work, &mut state.guard, false)?;
         super::session::map_read_buffers();
         let mut received = None;
@@ -153,34 +169,66 @@ impl SharedFuseInstance {
         )?;
         session.initialize()?;
         let notifier = session.notifier();
+        state.transport = Some(session.transport());
         views.set_notifier(notifier.clone());
+        #[cfg(test)]
+        let lifetime = Arc::new(());
+        #[cfg(test)]
+        {
+            state.worker_lifetime = Arc::downgrade(&lifetime);
+        }
         state.worker = Some(
             std::thread::Builder::new()
                 .name("acyclic-fuse".to_owned())
-                .spawn(move || session.run())?,
+                .spawn(move || {
+                    let result = session.run();
+                    #[cfg(test)]
+                    drop(lifetime);
+                    result
+                })?,
         );
-        state.invalidator = Some(
-            std::thread::Builder::new()
-                .name("acyclic-fuse-invalidator".to_owned())
-                .spawn(move || run_shared_invalidator(&views, &notifier))?,
-        );
-        Ok(instance)
+        #[cfg(test)]
+        let worker_lifetime = state.worker_lifetime.clone();
+        let invalidator = std::thread::Builder::new()
+            .name("acyclic-fuse-invalidator".to_owned())
+            .spawn(move || {
+                run_shared_invalidator(&instance.views, &notifier);
+                // Native stop, worker join, fence and registration disposal
+                // stay on this physical owner, including after a panic.
+                drop(instance);
+            })?;
+        Ok(Self {
+            views,
+            invalidator: Some(invalidator),
+            #[cfg(test)]
+            worker_lifetime,
+        })
     }
 
+    #[cfg(test)]
+    pub(super) fn physical_owner(&self) -> (std::sync::Weak<()>, std::thread::ThreadId) {
+        (
+            self.worker_lifetime.clone(),
+            self.invalidator
+                .as_ref()
+                .expect("live physical owner")
+                .thread()
+                .id(),
+        )
+    }
+}
+
+impl SharedFuseRoot {
     fn teardown(&mut self) {
+        #[cfg(test)]
+        let _ = self
+            .views
+            .retirement_thread
+            .set(std::thread::current().id());
         self.views.close();
-        let state = self.state.get_mut().unwrap_or_else(PoisonError::into_inner);
-        let Ok(path) = std::ffi::CStr::from_bytes_with_nul(&self.path) else {
-            return;
-        };
-        let detached = state.detach(path, &self.root);
+        let state = &mut self.state;
+        let detached = state.detach(&self.path, &self.root);
         state.join_worker();
-        self.views.stop_invalidator();
-        if let Some(invalidator) = state.invalidator.take()
-            && invalidator.join().is_err()
-        {
-            tracing::warn!("shared FUSE invalidator panicked");
-        }
         state.device.take();
         if let Some(mut guard) = state.guard.take() {
             if detached && let Err(error) = guard.release_cleanup(None) {
@@ -193,9 +241,20 @@ impl SharedFuseInstance {
     }
 }
 
-impl Drop for SharedFuseInstance {
+impl Drop for SharedFuseRoot {
     fn drop(&mut self) {
         self.teardown();
+    }
+}
+
+impl Drop for SharedFuseInstance {
+    fn drop(&mut self) {
+        self.views.stop_invalidator();
+        if let Some(invalidator) = self.invalidator.take()
+            && invalidator.join().is_err()
+        {
+            tracing::warn!("shared FUSE invalidator panicked");
+        }
     }
 }
 

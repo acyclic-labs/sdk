@@ -1,7 +1,7 @@
 """Check production signal/wake/owner models against actual source defects.
 
 Run in a disposable checkout: python3 rust/crates/native-runtime/tests/signal-control.py /tmp/native-signal-control
-Select a retained control with --wake, --owners, --host, --host-source, --host-events, --ownership, --claim, --descriptor, --owner-envelope, --durability, --durability-io, --native-terminal, --native-capacity, --native-funding --native-tracker, --executor-source, --executor-rounds, --executor-retirement, --clock, --core-source, --process-admission, --native-flush, --exit-owner, --capture-bound, --descendant-retirement, --drain-conformance, --file-fail-stop, --private-publication or --wait-report.
+Select a retained control with --wake, --owners, --host, --host-source, --host-events, --ownership, --claim, --descriptor, --owner-envelope, --durability, --durability-io, --native-terminal, --native-capacity, --native-funding --native-tracker, --executor-source, --executor-rounds, --executor-retirement, --clock, --core-source, --process-admission, --native-flush, --exit-owner, --capture-bound, --descendant-retirement, --storage-ready, --capture-readiness, --drain-conformance, --file-fail-stop, --private-publication or --wait-report.
 An optional comma-separated mutation selection shares one restored positive run.
 """
 import hashlib
@@ -13,8 +13,8 @@ import sys
 
 
 def main():
-    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--host-source", "--host-events", "--ownership", "--claim", "--descriptor", "--owner-envelope", "--durability", "--durability-io", "--native-terminal", "--native-capacity", "--native-funding", "--native-tracker", "--executor-source", "--executor-rounds", "--executor-retirement", "--clock", "--core-source", "--process-admission", "--native-flush", "--exit-owner", "--capture-bound", "--descendant-retirement", "--drain-conformance", "--file-fail-stop", "--private-publication", "--wait-report")):
-        raise RuntimeError("arguments: expected evidence directory, optional control and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--host-source|--host-events|--ownership|--claim|--descriptor|--owner-envelope|--durability|--durability-io|--native-terminal|--native-capacity|--native-funding|--native-tracker|--executor-source|--executor-rounds|--executor-retirement|--clock|--core-source|--process-admission|--native-flush|--exit-owner|--capture-bound|--descendant-retirement|--drain-conformance|--file-fail-stop|--private-publication|--wait-report [mutation]]")
+    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--host-source", "--host-events", "--ownership", "--claim", "--descriptor", "--owner-envelope", "--durability", "--durability-io", "--native-terminal", "--native-capacity", "--native-funding", "--native-tracker", "--executor-source", "--executor-rounds", "--executor-retirement", "--clock", "--core-source", "--process-admission", "--native-flush", "--exit-owner", "--capture-bound", "--descendant-retirement", "--storage-ready", "--capture-readiness", "--drain-conformance", "--file-fail-stop", "--private-publication", "--wait-report")):
+        raise RuntimeError("arguments: expected evidence directory, optional control and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--host-source|--host-events|--ownership|--claim|--descriptor|--owner-envelope|--durability|--durability-io|--native-terminal|--native-capacity|--native-funding|--native-tracker|--executor-source|--executor-rounds|--executor-retirement|--clock|--core-source|--process-admission|--native-flush|--exit-owner|--capture-bound|--descendant-retirement|--storage-ready|--capture-readiness|--drain-conformance|--file-fail-stop|--private-publication|--wait-report [mutation]]")
     mode = sys.argv[2] if len(sys.argv) >= 3 else "--signal"
     root = Path(__file__).resolve().parents[4]
     output = Path(sys.argv[1]).resolve()
@@ -44,6 +44,7 @@ def main():
     exit_owner = tracker.parent / "process_tree/unix.rs"
     capture = tracker.parent / "process_tree/capture.rs"
     private_file = tracker.parent / "private_file/mod.rs"
+    storage = tracker.parent / "process_tree/storage.rs"
     target, sources, selection = {
         "--signal": ("process_signal_loom.rs", (signal, outcome), "--native-signal"),
         "--wake": ("wake_loom.rs", (wake,), "--native-wake"),
@@ -72,6 +73,8 @@ def main():
         "--exit-owner": ("../src/process_tree/exit_wait/tests.rs", (exit_owner,), None),
         "--capture-bound": ("../src/process_tree/tests.rs", (capture,), None),
         "--descendant-retirement": ("../src/process_tree/tests.rs", (tracker.parent / "process_tree/tests.rs",), None),
+        "--capture-readiness": ("../src/process_tree/tests.rs", (tracker.parent / "process_tree/tests.rs",), None),
+        "--storage-ready": ("../src/process_tree/storage_tests.rs", (storage,), None),
         "--drain-conformance": ("../src/device_flush.rs", (drain,), None),
         "--file-fail-stop": ("../src/tests/completion.rs", (file_completion,), None),
         "--private-publication": ("../src/private_file/tests.rs", (private_file,), None),
@@ -89,6 +92,8 @@ def main():
             "--exit-owner": "process_tree::exit_wait::tests::quiet_wait_observes_exit_without_periodic_wakeups_or_reaping",
             "--capture-bound": "process_tree::tests::collection_closes_stdin_and_preserves_explicit_environment",
             "--descendant-retirement": "process_tree::tests::cleanup_is_idempotent_and_drop_contains_descendants",
+            "--capture-readiness": "process_tree::tests::streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup",
+            "--storage-ready": "process_tree::storage::tests::bounded_poll_scopes_preserve_original_storage_and_retirement_credit",
             "--drain-conformance": "device_flush::tests::concurrent_requests_share_the_next_covering_drain",
             "--file-fail-stop": "tests::completion::accepted_callback_cannot_disappear_without_terminal_completion",
             "--private-publication": "private_file::tests::every_publication_cut_exposes_only_complete_private_records",
@@ -100,10 +105,20 @@ def main():
         ]
     if mode in ("--exit-owner", "--capture-bound", "--drain-conformance", "--file-fail-stop"):
         command.insert(5, "--all-features")
-    if mode in ("--drain-conformance", "--file-fail-stop", "--private-publication", "--executor-retirement"):
+    if mode in ("--drain-conformance", "--file-fail-stop", "--private-publication", "--executor-retirement", "--storage-ready"):
         command = [
             "cargo", "nextest", "run", "--locked", "-p", "acyclic-native-runtime",
             "--lib", "--all-features", "-E", f"test(={test})", "--test-threads", "1",
+        ]
+    if mode == "--capture-readiness":
+        tests = (
+            "streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup",
+            "stopped_capture_preserves_output_prefix_and_cleanup_observation",
+        )
+        command = [
+            "cargo", "nextest", "run", "--locked", "-p", "acyclic-native-runtime",
+            "--lib", "--all-features", "-E",
+            " | ".join(f"test(=process_tree::tests::{test})" for test in tests),
         ]
     if mode == "--descendant-retirement":
         tests = (
@@ -123,6 +138,9 @@ def main():
                 "failed_observation_retains_recovery_authority_against_actual_former_order",
             )
         ]
+        tests.append("process_tree::storage::tests::dropping_cancelled_original_owner_stops_and_reaps_before_releasing_credit")
+        if sys.platform == "win32":
+            tests.append("process_tree::platform::denied_job_cleanup_retains_child_and_reports_failure")
         command = [
             "cargo", "nextest", "run", "--locked", "-p", "acyclic-native-runtime",
             "--lib", "--all-features", "-E",
@@ -395,6 +413,24 @@ qualificationMain([process.argv[1]], (command, args, options) => spawnSync(comma
              b'            .expect("original descendant lifetime lock");',
              b'            .expect("original descendant lifetime lock");\n            drop(_lifetime);',
              "live original descendant reported retirement"),
+            ("closed-readiness", oracle,
+             b'            std::io::stderr()\n                .write_all(b"R")\n                .expect("original descendant readiness write");',
+             b'            return;',
+             "original tree readiness"),
+        ]
+    elif mode == "--capture-readiness":
+        mutations = [
+            ("closed-capture-readiness", oracle,
+             b'            std::io::stderr()\n                .write_all(b"R")\n                .expect("original stalled input readiness write");',
+             b'            return;',
+             "original stalled input"),
+        ]
+    elif mode == "--storage-ready":
+        mutations = [
+            ("lost-original-tail", storage,
+             b"            let keep = chunk.len().min(capacity);",
+             b"            let keep = 0;",
+             "original stderr tail was lost"),
         ]
     elif mode == "--drain-conformance":
         mutations = [
