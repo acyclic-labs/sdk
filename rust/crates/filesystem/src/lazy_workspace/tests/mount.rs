@@ -615,13 +615,16 @@ async fn parent_read_work(published: bool, read: ParentRead, repeat: bool) -> Wo
             .create_dir_all("/d", WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
             .unwrap();
-        root.commit(
-            &mut transaction,
-            crate::PublicationPermit::Unrestricted,
-            accounting!(),
-        )
-        .await
-        .unwrap();
+        assert!(matches!(
+            root.commit(
+                &mut transaction,
+                crate::PublicationPermit::Unrestricted,
+                accounting!(),
+            )
+            .await
+            .unwrap(),
+            TransactionCommit::Committed(_)
+        ));
     }
     let mut spent = WorkCounters::UNCHARGED;
     for _ in 0..=usize::from(repeat) {
