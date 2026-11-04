@@ -21,10 +21,13 @@ fn unjoined_original_output_keeps_its_task_accounted_through_release() {
     struct Producer {
         schedule: Schedule,
         panic: bool,
+        lifecycle: Arc<std::sync::atomic::AtomicU8>,
     }
     impl Future for Producer {
         type Output = Output;
         fn poll(self: Pin<&mut Self>, _: &mut PollContext<'_>) -> Poll<Output> {
+            self.lifecycle
+                .fetch_or(1, std::sync::atomic::Ordering::Relaxed);
             assert!(!self.panic, "original producer panic");
             Poll::Ready(Output(self.schedule.clone()))
         }
@@ -32,6 +35,8 @@ fn unjoined_original_output_keeps_its_task_accounted_through_release() {
     impl Drop for Producer {
         fn drop(&mut self) {
             accounted(&self.schedule);
+            self.lifecycle
+                .fetch_or(2, std::sync::atomic::Ordering::Relaxed);
         }
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -48,6 +53,7 @@ fn unjoined_original_output_keeps_its_task_accounted_through_release() {
                     Producer {
                         schedule: schedule.clone(),
                         panic,
+                        lifecycle: Arc::default(),
                     },
                 )
             }));
@@ -64,6 +70,47 @@ fn unjoined_original_output_keeps_its_task_accounted_through_release() {
             drop(task);
             runtime.block_on(schedule.drained());
         }
+    }
+    for native in [false, true] {
+        let (schedule, _events) = if native {
+            Schedule::new()
+        } else {
+            Schedule::seeded(83)
+        };
+        let lifecycle = Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let task = runtime.block_on(schedule.scope(async {
+            let active = Context::current().unwrap().accept("task");
+            let future = Producer {
+                schedule: schedule.clone(),
+                panic: false,
+                lifecycle: lifecycle.clone(),
+            };
+            if native {
+                TaskHandle::native(Some(active), future)
+            } else {
+                schedule
+                    .0
+                    .executor
+                    .as_ref()
+                    .unwrap()
+                    .spawn_owned(Some(active), future)
+            }
+        }));
+        task.abort();
+        if let Some(executor) = &schedule.0.executor {
+            executor.poll_owned(&PollContext::from_waker(Waker::noop()));
+        }
+        let error = runtime
+            .block_on(task)
+            .err()
+            .expect("unpolled cancelled task unexpectedly completed");
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(
+            lifecycle.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "unpolled task cleanup did not retain its original accounting"
+        );
+        runtime.block_on(schedule.drained());
     }
 }
 

@@ -320,9 +320,17 @@ qualificationMain([process.argv[1]], (command, args, options) => spawnSync(comma
     elif mode == "--executor-retirement":
         mutations = [
             ("future-retirement", executor,
-             b"            let result = {\n                let mut future = std::pin::pin!(tokio::task::unconstrained(future));",
-             b"            let mut future = std::pin::pin!(tokio::task::unconstrained(future));\n            let result = {",
+             b"            let result = {\n                let mut future = std::pin::pin!(tokio::task::unconstrained(work.value));",
+             b"            let mut future = std::pin::pin!(tokio::task::unconstrained(work.value));\n            let result = {",
              "task accounting retired before its original cleanup"),
+            ("unpolled-seeded-owner", executor,
+             b"        let work = Accounted {\n            value: future,\n            _owner: owner,\n        };\n        let task = async move {\n            // Capture the aggregate, retaining its field drop order before polling.\n            let work = work;\n            let owner = work._owner;\n            let result = {\n                let mut future = std::pin::pin!(tokio::task::unconstrained(work.value));",
+             b"        let task = async move {\n            let owner = owner;\n            let result = {\n                let mut future = std::pin::pin!(tokio::task::unconstrained(future));",
+             "task accounting retired before its original cleanup"),
+            ("unpolled-native-owner", executor,
+             b"        let work = Accounted {\n            value: future,\n            _owner: owner,\n        };\n        Self(Handle::Tokio(tokio::spawn(async move {\n            let work = work;\n            let owner = work._owner;\n            let value = work.value.await;",
+             b"        Self(Handle::Tokio(tokio::spawn(async move {\n            let owner = owner;\n            let value = future.await;",
+             "unpolled task cleanup did not retain its original accounting"),
         ]
     elif mode == "--clock":
         mutations = [
