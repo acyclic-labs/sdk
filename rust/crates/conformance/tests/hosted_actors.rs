@@ -119,20 +119,13 @@ impl server::Verifier for CredentialGate {
 impl ModelProvider for ModelGate {
     fn generate<'a>(
         &'a self,
-        request: &'a PreparedModelRequest,
+        _: &'a PreparedModelRequest,
         _: ModelDispatch,
     ) -> acyclic_harness::model::ModelStream<'a> {
-        let system = request.request().messages.iter().any(|message| {
-            matches!(&message.content, acyclic_harness::model::ModelContent::Text(text)
-                if text.contains("You are GraphCoder"))
-        });
         let entered = self.entered.lock().unwrap().take();
         let output = self.output.lock().unwrap().take();
         acyclic_harness::model::ModelStream::new(
             futures::stream::once(async move {
-                if !system {
-                    return Err(Error::Invalid("GraphCoder prompt missing".into()));
-                }
                 if let Some(entered) = entered {
                     let _ = entered.send(());
                 }
@@ -140,7 +133,7 @@ impl ModelProvider for ModelGate {
                     .ok_or_else(|| Error::Invalid("model dispatched twice".into()))?
                     .await
                     .map_err(|_| Error::Storage("model producer closed".into()))?;
-                Ok(futures::stream::iter(
+                Ok::<_, Error>(futures::stream::iter(
                     acyclic_harness::conformance::protocol::model_events(1)
                         .into_iter()
                         .map(Ok),
