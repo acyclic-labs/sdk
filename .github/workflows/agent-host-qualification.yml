@@ -22,13 +22,13 @@ jobs:
       matrix:
         platform:
           - name: linux-fuse
-            runner: blacksmith-2vcpu-ubuntu-2404
+            runner: kaizen-linux
             cache_size: 448M
           - name: macos-nfs
-            runner: blacksmith-6vcpu-macos-15
+            runner: macos-15
             cache_size: 384M
           - name: windows-projfs
-            runner: blacksmith-4vcpu-windows-2025
+            runner: windows-2025
             cache_size: 576M
     name: ${{ matrix.platform.name }}
     runs-on: ${{ matrix.platform.runner }}
@@ -228,7 +228,7 @@ jobs:
   gate:
     if: always()
     needs: qualify
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: kaizen-linux
     timeout-minutes: 2
     steps:
       - name: Require host qualification on all three platforms

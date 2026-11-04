@@ -1,63 +1,63 @@
 [
   {
     "lane": "gate",
-    "runner": "blacksmith-16vcpu-ubuntu-2404",
-    "workers": 16,
+    "runner": "kaizen-linux",
+    "workers": 8,
     "artifact": "",
     "artifact_path": "",
     "cache_size": "1152M"
   },
   {
     "lane": "docs",
-    "runner": "blacksmith-2vcpu-ubuntu-2404",
-    "workers": 2,
+    "runner": "kaizen-linux",
+    "workers": 8,
     "artifact": "",
     "artifact_path": "",
     "cache_size": "64M"
   },
   {
     "lane": "generation",
-    "runner": "blacksmith-2vcpu-ubuntu-2404",
-    "workers": 2,
+    "runner": "kaizen-linux",
+    "workers": 8,
     "artifact": "",
     "artifact_path": "",
     "cache_size": "64M"
   },
   {
     "lane": "linux",
-    "runner": "blacksmith-16vcpu-ubuntu-2404",
-    "workers": 16,
+    "runner": "kaizen-linux",
+    "workers": 8,
     "artifact": "packages-linux",
     "artifact_path": "packages",
     "cache_size": "4096M"
   },
   {
     "lane": "linux-runtime",
-    "runner": "blacksmith-4vcpu-ubuntu-2404",
-    "workers": 4,
+    "runner": "kaizen-linux",
+    "workers": 8,
     "artifact": "",
     "artifact_path": "",
     "cache_size": "3776M"
   },
   {
     "lane": "web",
-    "runner": "blacksmith-4vcpu-ubuntu-2404",
-    "workers": 4,
+    "runner": "kaizen-linux",
+    "workers": 8,
     "artifact": "",
     "artifact_path": "",
     "cache_size": "960M"
   },
   {
     "lane": "linux-arm64",
-    "runner": "blacksmith-32vcpu-ubuntu-2404-arm",
-    "workers": 32,
+    "runner": "ubuntu-24.04-arm",
+    "workers": 4,
     "artifact": "",
     "artifact_path": "",
     "cache_size": "1088M"
   },
   {
     "lane": "linux-arm64-bindings",
-    "runner": "blacksmith-4vcpu-ubuntu-2404-arm",
+    "runner": "ubuntu-24.04-arm",
     "workers": 4,
     "artifact": "packages-linux-arm64",
     "artifact_path": "packages",
@@ -65,15 +65,15 @@
   },
   {
     "lane": "linux-musl",
-    "runner": "blacksmith-4vcpu-ubuntu-2404",
-    "workers": 4,
+    "runner": "kaizen-linux",
+    "workers": 8,
     "artifact": "",
     "artifact_path": "",
     "cache_size": "256M"
   },
   {
     "lane": "linux-arm64-musl",
-    "runner": "blacksmith-4vcpu-ubuntu-2404-arm",
+    "runner": "ubuntu-24.04-arm",
     "workers": 4,
     "artifact": "",
     "artifact_path": "",
@@ -81,31 +81,31 @@
   },
   {
     "lane": "windows",
-    "runner": "blacksmith-16vcpu-windows-2025",
-    "workers": 16,
+    "runner": "windows-2025",
+    "workers": 4,
     "artifact": "stream-native-windows",
     "artifact_path": "stream-native-bundle",
     "cache_size": "3072M"
   },
   {
     "lane": "windows-rust",
-    "runner": "blacksmith-32vcpu-windows-2025",
-    "workers": 32,
+    "runner": "windows-2025",
+    "workers": 4,
     "artifact": "",
     "artifact_path": "",
     "cache_size": "3072M"
   },
   {
     "lane": "windows-fork-join",
-    "runner": "blacksmith-16vcpu-windows-2025",
-    "workers": 16,
+    "runner": "windows-2025",
+    "workers": 4,
     "artifact": "",
     "artifact_path": "",
     "cache_size": "3072M"
   },
   {
     "lane": "windows-napi",
-    "runner": "blacksmith-4vcpu-windows-2025",
+    "runner": "windows-2025",
     "workers": 4,
     "artifact": "",
     "artifact_path": "",
@@ -113,7 +113,7 @@
   },
   {
     "lane": "windows-arm64",
-    "runner": "blacksmith-4vcpu-windows-2025",
+    "runner": "windows-2025",
     "workers": 4,
     "artifact": "",
     "artifact_path": "",
@@ -121,24 +121,24 @@
   },
   {
     "lane": "windows-clippy",
-    "runner": "blacksmith-16vcpu-windows-2025",
-    "workers": 16,
+    "runner": "windows-2025",
+    "workers": 4,
     "artifact": "",
     "artifact_path": "",
     "cache_size": "3072M"
   },
   {
     "lane": "macos",
-    "runner": "blacksmith-12vcpu-macos-15",
-    "workers": 12,
+    "runner": "macos-15",
+    "workers": 3,
     "artifact": "packages-macos",
     "artifact_path": "packages",
     "cache_size": "2496M"
   },
   {
     "lane": "policy",
-    "runner": "blacksmith-4vcpu-ubuntu-2404",
-    "workers": 4,
+    "runner": "kaizen-linux",
+    "workers": 8,
     "artifact": "",
     "artifact_path": "",
     "cache_size": "768M"

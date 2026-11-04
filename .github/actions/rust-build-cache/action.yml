@@ -1,5 +1,5 @@
 name: Rust build cache
-description: Restore dependency downloads and content-addressed compiler output on Blacksmith
+description: Restore dependency downloads and content-addressed compiler output
 inputs:
   scope:
     description: Target and profile boundary for compiler output
