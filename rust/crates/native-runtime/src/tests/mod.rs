@@ -563,3 +563,9 @@ fn prepared_metadata_task(
         Some((meter, true)),
     )
 }
+
+#[test]
+fn an_unselected_exclusive_test_cannot_report_success() {
+    let error = passed_in_exclusive_process("tests::missing_exclusive_test").unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::NotFound);
+}
