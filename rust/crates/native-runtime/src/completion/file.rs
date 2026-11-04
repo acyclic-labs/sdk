@@ -1,7 +1,7 @@
 use crate::*;
 
 pub(crate) struct FileCompletion<T> {
-    producer: Option<NativeCompletionProducer<T>>,
+    producer: NativeCompletionProducer<T>,
     fence: Option<Arc<OperationFence>>,
     health: Option<HealthOwner>,
     file: Option<Arc<HeldFile>>,
@@ -17,7 +17,7 @@ impl<T> FileCompletion<T> {
         span: obs::OperationSpan,
     ) -> Self {
         Self {
-            producer: Some(NativeCompletionProducer::new(state)),
+            producer: NativeCompletionProducer::new(state),
             fence,
             health,
             file,
@@ -42,10 +42,7 @@ impl<T> FileCompletion<T> {
                 poison_file_health(file, health);
             }
             drop(file.take());
-            let (state, waker) = producer
-                .take()
-                .unwrap_or_else(|| std::process::abort())
-                .finish(result);
+            let (state, waker) = producer.finish(result);
             if let Some(fence) = fence.take() {
                 fence.complete();
             }
@@ -57,7 +54,7 @@ impl<T> FileCompletion<T> {
 
 impl<T> Drop for FileCompletion<T> {
     fn drop(&mut self) {
-        if self.producer.is_some() {
+        if self.producer.state.is_some() {
             std::process::abort();
         }
     }

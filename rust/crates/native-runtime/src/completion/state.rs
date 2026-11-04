@@ -7,7 +7,7 @@ use crate::*;
 /// observer leaves this owner and its allocation custody intact.
 #[must_use]
 pub struct NativeCompletionProducer<T> {
-    state: Option<Arc<CompletionMutex<CompletionState<T>>>>,
+    pub(super) state: Option<Arc<CompletionMutex<CompletionState<T>>>>,
 }
 
 impl<T> NativeCompletionProducer<T> {
@@ -18,14 +18,14 @@ impl<T> NativeCompletionProducer<T> {
     /// Publishes the original driver's terminal result and wakes its observer.
     /// Call only after retiring the operation's physical resources. Publication
     /// and arbitrary observer wakes must run outside the driver's locks.
-    pub fn complete(self, result: io::Result<T>) {
+    pub fn complete(mut self, result: io::Result<T>) {
         let (state, waker) = self.finish(result);
         drop(state);
         wake_capacity_waiter(waker);
     }
 
     pub(super) fn finish(
-        mut self,
+        &mut self,
         result: io::Result<T>,
     ) -> (Arc<CompletionMutex<CompletionState<T>>>, Option<Waker>) {
         let state = self.state.take().unwrap_or_else(|| std::process::abort());
