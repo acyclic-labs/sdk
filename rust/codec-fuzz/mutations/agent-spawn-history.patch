@@ -1,0 +1,17 @@
+diff --git a/rust/crates/harness-core/src/agent/records.rs b/rust/crates/harness-core/src/agent/records.rs
+--- a/rust/crates/harness-core/src/agent/records.rs
++++ b/rust/crates/harness-core/src/agent/records.rs
+@@ -350,2 +350,3 @@
+     /// Select a retained prior turn instead of the current conversation head.
++    #[serde(deserialize_with = "drop_spawn_history")]
+     pub history: Option<super::HistorySelection>,
+@@ -354,3 +355,9 @@
++fn drop_spawn_history<'de, D: serde::Deserializer<'de>>(
++    decoder: D,
++) -> Result<Option<super::HistorySelection>, D::Error> {
++    Option::<super::HistorySelection>::deserialize(decoder).map(|_| None)
++}
++
+ /// A child delegates an approval request to this agent (the parent approver).
+ #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(deny_unknown_fields)]

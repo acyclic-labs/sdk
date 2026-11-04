@@ -732,7 +732,12 @@ async fn permission_prompts_gate_spawn_and_preserve_host_tool_decisions() -> Res
             },
             Some(json!("allow")),
         ),
-        (ApprovalPolicy { approvers: vec![] }, Some(json!("deny"))),
+        (
+            ApprovalPolicy {
+                approvers: vec![rules("spawn", RuleVerdict::Deny)],
+            },
+            Some(json!("deny")),
+        ),
         (ApprovalPolicy::default(), None),
     ] {
         let (owner, _checkout) = owner(policy).await?;

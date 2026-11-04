@@ -220,7 +220,7 @@ struct Claim {
 
 pub(in crate::local) struct Claims {
     entries: Vec<Claim>,
-    runtime: tokio::runtime::Handle,
+    tasks: acyclic_native_runtime::TaskSpawner,
 }
 
 impl Drop for Claims {
@@ -232,7 +232,7 @@ impl Drop for Claims {
         // The worker drops custody only after process-tree cleanup. Its owned
         // task now retains the execution guards through unpublished retirement;
         // dropping the awaiting caller cannot cancel this cleanup task.
-        self.runtime.spawn(async move {
+        self.tasks.spawn(async move {
             for claim in entries.into_iter().rev() {
                 if let Err(error) = claim.source.abandon(claim.entered).await {
                     tracing::error!(?error, "cancelled native scope retirement failed");
@@ -248,7 +248,7 @@ pub(in crate::local) async fn native_scope<T>(
 ) -> Result<T> {
     let mut claims = Claims {
         entries: Vec::new(),
-        runtime: tokio::runtime::Handle::current(),
+        tasks: acyclic_native_runtime::TaskSpawner::current(),
     };
     let mut projected = Ok(());
     for (relative, mount) in ordered_mounts(mounts)? {

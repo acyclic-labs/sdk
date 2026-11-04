@@ -216,6 +216,156 @@ Agent capture names include the shared record version. Previous captures and
 their provenance stay unchanged; waiting-status and checkpoint seeds retain
 both a retained action binding and an explicit absent binding for external hosts.
 
+The shared agent oracle checks record version and checkpoint codec refusals
+before payload decoding. Record checks alter original writer output, including
+short and foreign fixed headers, trailing values and truncated payloads.
+Struct record payloads additionally refuse an unknown field, including the
+payload within an externally tagged variant. This checks admission before a
+reader can silently discard data; it does not cover every nested object.
+Nested spawn history, restore generations and conversation records compare
+the admitted value with the original writer input. The arbitrary-input oracle
+also reads a spawn's original history selection through `HistorySelection`,
+independently of `SpawnRequest`'s field deserializer. This comparison preserves
+the optional selection and both conversation/checkpoint cuts; it does not
+establish independent preservation of every record field. Ordinary writer replay runs
+without a fuzzing toolchain:
+
+```sh
+cargo test --locked --manifest-path ../Cargo.toml -p acyclic-harness-core --lib agent::codec_fuzz::tests::writer_corpus_satisfies_the_shared_agent_oracle -- --exact
+```
+
+From the repository root, apply one production mutation with
+`git apply rust/codec-fuzz/mutations/PATCH` and run the same test. The unchanged
+oracle must fail at the corresponding assertion; a compilation failure does not
+qualify it. Restore with `git apply -R rust/codec-fuzz/mutations/PATCH`.
+
+| PATCH | Required runtime assertion |
+| --- | --- |
+| `agent-checkpoint-identity.patch` | `checkpoint codec refusal did not precede payload decoding` |
+| `agent-checkpoint-state.patch` | `checkpoint lost the writer's state` |
+| `agent-record-version.patch` | `agent record header refusal changed` |
+| `agent-record-trailing.patch` | `agent record header refusal changed` |
+| `agent-record-unknown-field.patch` | `agent record discarded an unknown payload field` |
+| `agent-spawn-history.patch` | `agent record lost the writer's input` |
+
+Replaying the retained `harness_codecs/agent-v13-spawn-history` input through
+`harness_codecs` with `agent-spawn-history.patch` must instead fail at
+`spawn record lost the input's history selection`. This exercises the same
+arbitrary-input oracle without invoking the separate writer assertion or
+regenerating captures.
+
+The same reader admits named and positional MessagePack structs. The original
+spawn-history seed and the retained `spawn-positional`,
+`spawn-history-positional` and `spawn-and-history-positional` seeds cover all
+four representations of the spawn and its history selection. The independent
+history projection accepts both field names and positional slots. Restoring its
+old map-only pointer makes the existing writer property reject a valid
+positional spawn; the production reader still retains the selected history.
+
+The state mutation changes the production checkpoint decoder. Replaying the
+retained `harness_codecs/agent-v13-state-wait` input through `harness_codecs`
+tests the arbitrary-input writer comparison without running the seed producer.
+The producer checks the same complete state separately; no simulated decoder
+or alternate field-loss implementation is used.
+
+The checkpoint's shared wire oracle uses its original prost type and writer
+to derive malformed variants of each admitted input. Short or long child IDs,
+duplicate children,
+incorrect archive/awaited bitmap widths and unmatched turn body/inbox fields
+must receive the original typed malformed-checkpoint refusal. No alternate
+protobuf parser or capture producer is needed. The following production
+guard mutations must fail when replaying the retained
+`harness_codecs/agent-v13-checkpoint-wait` input through `harness_codecs`:
+
+| PATCH | Required runtime assertion |
+| --- | --- |
+| `agent-checkpoint-duplicate-child.patch` | `checkpoint admitted a duplicate child` |
+| `agent-checkpoint-child-id.patch` | `checkpoint admitted an invalid child id width` |
+| `agent-checkpoint-bitmap-width.patch` | `checkpoint admitted an invalid bitmap width` |
+| `agent-checkpoint-short-archive.patch` | index-out-of-bounds panic while decoding the short archive bitmap |
+| `agent-checkpoint-short-awaited.patch` | `checkpoint admitted a short awaited bitmap` |
+| `agent-checkpoint-turn-pair.patch` | `checkpoint admitted an incomplete turn` |
+| `agent-checkpoint-embedded-parent.patch` | `checkpoint admitted an embedded parent` |
+| `agent-checkpoint-embedded-open-children.patch` | `checkpoint admitted embedded open children` |
+| `agent-checkpoint-embedded-archive-children.patch` | `checkpoint admitted embedded archive children` |
+| `agent-checkpoint-embedded-awaited-children.patch` | `checkpoint admitted embedded awaited children` |
+| `agent-checkpoint-embedded-turn.patch` | `checkpoint admitted an embedded turn` |
+| `agent-checkpoint-child-depth.patch` | `checkpoint reconstructed a child beyond its path boundary` |
+
+The child-depth relation places the original writer's payload at the public
+agent path boundary through the production path constructor and parser. The
+original child IDs then require the production checkpoint decoder to retain
+the typed path refusal. Its mutation removes the actual child-construction
+guard; no parallel path parser, capture producer or additional target is used.
+
+The embedded-field controls put one nonempty ownership field at a time back
+into the shared payload through the production writer. Each removes only
+that field's production guard. Use `agent-v13-checkpoint-archive` for the
+archive field, and `agent-v13-checkpoint-wait` for the other four fields.
+The original prost fields remain intact, so a second invalid field cannot
+mask an omitted guard.
+
+The existing round-trip check lives beside that same private wire type.
+Short bitmap derivatives retain the writer's child count and the awaited
+bitmap's valid empty representation. The archive-width mutation exposes the
+actual indexing hazard; the awaited-width mutation silently drops membership
+bits unless the shared refusal oracle rejects it.
+These finite refusal checks supplement the arbitrary-input target; they do
+not establish complete source-branch coverage or a fuzz campaign.
+
+`agent-checkpoint-parent-report.patch` instead removes the actual terminal
+report from `machine::shed`. Its component control uses the production
+`AgentHost`, native stream storage and a three-child fork tree, then reopens
+both the host and storage to compare the committed agent and actor tuples:
+
+```sh
+cargo test --locked --manifest-path rust/Cargo.toml --all-features -p acyclic-harness-core --test main agent_model::runtime::committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed -- --exact
+```
+
+With the mutation applied, the unchanged control must fail at
+`shed checkpoint lost its parent report`. The scripted turn driver supplies
+component outputs; this is neither a provider-driven restart nor a fuzz campaign
+or full shell-state refinement proof.
+
+The same control archives the completed child through `AgentHost::archive`
+after reopening storage. Its original terminal outcome and parent inbox must
+remain unchanged while the archive advances the child's actor cursor and
+retains a cleared alarm. `agent-terminal-archive-report.patch` changes the
+actual archive lowering to report an already reported child again; the
+unchanged assertion must reject it at
+`archive reported a completed child again`. Both checks inspect finite
+committed inputs rather than waiting for a missing report.
+
+The native deadline component property uses the production controlled clock,
+three child forks and two storage reopens. It checks the exact pending actor
+tuple before a deadline, replacement after delivery, and invalidation by both
+cancel and archive without running a stale continuation:
+
+```sh
+cargo test --locked --manifest-path rust/Cargo.toml --all-features -p acyclic-harness-core --test main agent_model::runtime::native_reopen_preserves_and_replaces_deadlines_until_control_clears_them -- --exact
+```
+
+`agent-alarm-set-omission.patch` and `agent-alarm-clear-omission.patch` each
+change the actual handler's alarm lowering. The unchanged finite-read property
+must reject them at `pending deadline lost` and `control retained deadline`,
+respectively. These are native storage component controls with a scripted
+driver; they do not establish provider-driven restart or formal refinement.
+
+The history descriptor oracle has a kept production version-admission defect at
+`mutations/history-version.patch`. From the repository root, apply it with
+`git apply rust/codec-fuzz/mutations/history-version.patch`, then run:
+
+```sh
+cargo run --locked -p acyclic-harness-core --no-default-features --features filesystem,test-support --example history-codec-corpus
+```
+
+The unchanged oracle must panic with
+`assertion failed: HistoryCheckpoint::decode(&bytes).is_err()`; a compilation or
+setup failure does not qualify the control. Restore the production source with
+`git apply -R rust/codec-fuzz/mutations/history-version.patch`. The same command
+must pass on the restored source. This syntax control establishes neither
+retained-root authority nor instrumented source branch completeness.
+
 After a reviewed protobuf schema change, refresh only the named protobuf
 producers and their table selectors:
 

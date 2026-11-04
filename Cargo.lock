@@ -3853,6 +3853,7 @@ name = "harness-mock-model"
 version = "0.0.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-test-support",
  "axum",
  "futures",
  "http-body-util",

@@ -5,7 +5,7 @@ use proptest::prelude::*;
 
 #[test]
 fn streaming_seed_corpus() {
-    let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/streaming");
+    let corpus = acyclic_test_support::crate_path!("fuzz/corpus/streaming");
     for entry in std::fs::read_dir(corpus).unwrap() {
         input::check(&std::fs::read(entry.unwrap().path()).unwrap());
     }

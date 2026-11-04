@@ -1,5 +1,5 @@
 //! [`TurnEffects`] as internal files on the agent's private volume: one file
-//! `effects/v3/<turn>/<segment>/<call>.json` per agent tool call, in the
+//! `effects/v4/<turn>/<segment>/<call>.msgpack` per agent tool call, in the
 //! internal interaction area, so no file tool can forge an effect past the
 //! call's approval. Each segment's effects commit together, so a segment's
 //! directory lists exactly the effects not yet committed.
@@ -33,7 +33,7 @@ impl<P: ?Sized, A, O> FilesystemTurnEffects<P, A, O> {
                 "agent effect call key is not a file name".into(),
             ));
         }
-        Ok(format!("{}/{call}.json", self.directory))
+        Ok(format!("{}/{call}.msgpack", self.directory))
     }
 
     pub(in crate::filesystem) fn new(
@@ -47,7 +47,7 @@ impl<P: ?Sized, A, O> FilesystemTurnEffects<P, A, O> {
             files,
             stream,
             agent,
-            directory: format!("effects/v3/{turn}/{segment}"),
+            directory: format!("effects/v4/{turn}/{segment}"),
             maximum_bytes,
         }
     }
@@ -146,7 +146,7 @@ where
             while let Some(page) = pages.next(&cancellation).await? {
                 for entry in &page.entries {
                     if !filename(entry.name.as_bytes())?
-                        .strip_suffix(".json")
+                        .strip_suffix(".msgpack")
                         .is_some_and(|call| crate::agent::is_call_of(call, operation))
                     {
                         return Ok(true);
@@ -279,11 +279,17 @@ mod tests {
             (OperationId::from_bytes([5; 16]), 2),
             4096,
         );
-        // A spawn effect of the headerless version 1, its brief a string.
-        let saved = br#"{"spawn":{"brief":"review the diff","intent":"first"}}"#;
+        // Change only the writer's version. Even a valid current payload must
+        // be refused before it can be replayed under another format.
+        let mut saved = crate::agent::records::seal(&first)?;
+        saved[..4].copy_from_slice(&1_u32.to_be_bytes());
         assert_eq!(
             files
-                .create(&format!("{}/0000000001-a.json", old.directory), saved, 4096)
+                .create(
+                    &format!("{}/0000000001-a.msgpack", old.directory),
+                    &saved,
+                    4096
+                )
                 .await?,
             None
         );
@@ -304,7 +310,7 @@ mod tests {
         // Preparing a body does not reserve the name. Two original absent
         // observations still arbitrate through the same create-once identity;
         // a stale observation cannot replace the first creator's effect.
-        let raced_path = "create-observation/race.json";
+        let raced_path = "create-observation/race.msgpack";
         let InternalFileCreation::Vacant(first_creation) =
             files.prepare_create(raced_path, 4096).await?
         else {
@@ -329,7 +335,7 @@ mod tests {
             panic!("published original is missing");
         };
         assert_eq!(decode(&existing)?, first);
-        let abandoned_path = "create-observation/abandoned.json";
+        let abandoned_path = "create-observation/abandoned.msgpack";
         {
             let InternalFileCreation::Vacant(_abandoned) =
                 files.prepare_create(abandoned_path, 4096).await?
@@ -342,7 +348,7 @@ mod tests {
         // Removing a file after selection changes a fresh read, but cannot
         // remove its body from the retained original generation.
         let reader = files.reader().await?;
-        let removed = format!("{}/0000000001-a.json", effects.directory);
+        let removed = format!("{}/0000000001-a.msgpack", effects.directory);
         let workspace = host
             .filesystem
             .open_workspace(
@@ -362,7 +368,7 @@ mod tests {
             .map_err(super::super::map_error)?;
         assert!(files.read(&removed, 4096).await?.is_none());
         let mut retained = Vec::new();
-        for name in ["0000000001-a.json", "0000000002-b.json"] {
+        for name in ["0000000001-a.msgpack", "0000000002-b.msgpack"] {
             let bytes = reader
                 .read(&format!("{}/{name}", effects.directory), 4096)
                 .await?
@@ -392,7 +398,7 @@ mod tests {
             let paths: Vec<_> = (0..257)
                 .map(|step| {
                     format!(
-                        "{prefix}/{}.json",
+                        "{prefix}/{}.msgpack",
                         crate::agent::call_key(step, if step == 256 { foreign } else { own }),
                     )
                 })
@@ -496,7 +502,7 @@ mod tests {
             assert!(page.entries.iter().all(|entry| {
                 filename(entry.name.as_bytes())
                     .unwrap()
-                    .strip_suffix(".json")
+                    .strip_suffix(".msgpack")
                     .is_some_and(|call| crate::agent::is_call_of(call, own))
             }));
             workspace
@@ -511,7 +517,7 @@ mod tests {
             assert_eq!(page.entries.len(), 1);
             assert_eq!(
                 filename(page.entries[0].name.as_bytes())?,
-                format!("{}.json", crate::agent::call_key(256, foreign)),
+                format!("{}.msgpack", crate::agent::call_key(256, foreign)),
             );
             // A completed cursor performs no further source work, even if the
             // next read would fail cancellation. An interrupted cursor is terminal.

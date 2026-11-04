@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/filesystem/history.rs b/rust/crates/harness-core/src/filesystem/history.rs
+--- a/rust/crates/harness-core/src/filesystem/history.rs
++++ b/rust/crates/harness-core/src/filesystem/history.rs
+@@ -349,7 +349,7 @@
+                     Some(head.id()),
+                 )
+                 .await
+-                .map_err(GuestError::from)?;
++                .map_err(guest)?;
+             }
+             let prepared = fs
+                 .prepare_fork_many(

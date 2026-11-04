@@ -120,7 +120,10 @@ fn fixture() -> Fixture {
 /// Runs the binary through the shared native capture, exit and physical-close
 /// owner, retaining the original outer deadline without readiness polling.
 async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &str) -> Output {
-    let mut command = Command::new(build_metadata::EXECUTABLE);
+    let mut command = Command::new(acyclic_test_support::binary_target(
+        "CARGO_BIN_EXE_graphcoder",
+        build_metadata::EXECUTABLE,
+    ));
     fixture.custody.configure(|key, value| {
         command.env(key, value);
     });

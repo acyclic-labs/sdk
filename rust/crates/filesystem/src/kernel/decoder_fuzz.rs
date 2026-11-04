@@ -511,7 +511,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn the_committed_corpus_replays_and_admits_its_canonical_binding_pages() {
-        let corpus = concat!(env!("CARGO_MANIFEST_DIR"), "/fuzz/corpus/decoder_work");
+        let corpus = acyclic_test_support::crate_path!("fuzz/corpus/decoder_work");
         for entry in std::fs::read_dir(corpus).unwrap() {
             let path = entry.unwrap().path();
             let input = std::fs::read(&path).unwrap();

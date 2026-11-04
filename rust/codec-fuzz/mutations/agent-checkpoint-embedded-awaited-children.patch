@@ -1,0 +1,11 @@
+diff --git a/rust/crates/harness-core/src/agent/checkpoint.rs b/rust/crates/harness-core/src/agent/checkpoint.rs
+--- a/rust/crates/harness-core/src/agent/checkpoint.rs
++++ b/rust/crates/harness-core/src/agent/checkpoint.rs
+@@ -145,7 +145,6 @@
+         super::records::decode_payload(&encoded.state).map_err(|_| malformed())?;
+     if !state.open_children.is_empty()
+         || !state.archive_pending.is_empty()
+-        || !state.awaiting.is_empty()
+         || state.turn.is_some()
+         || state.parent.is_some()
+     {

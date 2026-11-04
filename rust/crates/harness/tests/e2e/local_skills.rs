@@ -347,7 +347,7 @@ async fn volume_first_request_declares_skills_and_refreshes_after_generation_cha
     let root = super::local_workspace::temporary()?;
     let home = super::local_workspace::temporary()?;
     let state = super::local_workspace::temporary()?;
-    let (host, volume, workspace, _) =
+    let (host, volume, workspace, _, _authority) =
         super::local_workspace::seed(root.path(), &Default::default()).await?;
     host.apply(
         &workspace,

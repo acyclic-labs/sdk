@@ -1,0 +1,11 @@
+diff --git a/rust/crates/harness-core/src/agent/checkpoint.rs b/rust/crates/harness-core/src/agent/checkpoint.rs
+--- a/rust/crates/harness-core/src/agent/checkpoint.rs
++++ b/rust/crates/harness-core/src/agent/checkpoint.rs
+@@ -48,7 +48,5 @@ fn identity() -> &'static CodecIdentity {
+ /// The agent state a committed checkpoint carries.
+ pub(crate) fn checkpoint_state(checkpoint: &Checkpoint) -> Result<AgentState, Error> {
+-    acyclic_actors::guest::admit_checkpoint(Some(checkpoint), identity())
+-        .map_err(|_| Error::IncompatibleCheckpointCodec)?;
+     decode(&checkpoint.bytes)
+ }
+ 

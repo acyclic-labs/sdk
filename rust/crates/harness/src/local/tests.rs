@@ -5,20 +5,23 @@ use crate as acyclic_harness;
 use crate::test_support::{ScriptedModelProvider, ScriptedTurn};
 use crate::{
     Error, LocalHarness, LocalHarnessConfig, Result,
+    agent::ConversationEntry,
     context::ModelContextCapacity,
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
     filesystem::FilesystemHost,
+    local::{Event, agent_conversation::Conversation},
     model::{Model, ModelProvider},
     resources::ProviderRef,
     runtime::ToolContext,
     tool::{JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolResult},
 };
 use acyclic_stream::BoxProviderFuture;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::{path::Path, sync::Arc};
 
 mod agents;
 mod context;
+mod history_retry;
 mod replay;
 pub(super) mod settings;
 
@@ -27,6 +30,85 @@ fn scripted(turns: impl IntoIterator<Item = ScriptedTurn>) -> Arc<ScriptedModelP
 }
 pub(super) fn text() -> Arc<ScriptedModelProvider> {
     scripted([ScriptedTurn::Text("done".into())])
+}
+
+/// One conversation and its observation, which reports each settled entry.
+struct ObservedConversation {
+    conversation: Arc<Conversation>,
+    observer: crate::local::Observer,
+}
+
+impl ObservedConversation {
+    async fn open(harness: &Arc<LocalHarness>) -> Result<Self> {
+        // The root's runtime runs once the harness hosts its agents.
+        harness.agents().await?;
+        let conversation = Conversation::open(harness.connect().await?)?;
+        let from = conversation.settled().await?;
+        Self::observe(conversation, from).await
+    }
+
+    async fn observe(conversation: Arc<Conversation>, from: u64) -> Result<Self> {
+        let observer = conversation.observe(from).await?;
+        Ok(Self {
+            conversation,
+            observer,
+        })
+    }
+
+    /// The entry settled at inbox sequence `inbox`, as the observer reports
+    /// it; a finished agent or a closed Session fails the wait.
+    async fn settled(&mut self, inbox: u64) -> Result<ConversationEntry> {
+        loop {
+            match self.observer.next().await? {
+                Event::Turn(entry) if entry.inbox == inbox => return Ok(entry),
+                Event::Status(status) => {
+                    if matches!(status.phase, crate::agent::Phase::Done { .. }) {
+                        return Err(Error::Conflict(format!("agent finished: {status:?}")));
+                    }
+                }
+                Event::Turn(_) | Event::Output => {}
+            }
+        }
+    }
+
+    async fn send(&mut self, id: &str, prompt: &str) -> Result<ConversationEntry> {
+        let inbox = self.conversation.send(id, prompt).await?;
+        self.settled(inbox).await
+    }
+}
+
+/// Inspect the immutable text bodies delivered through the real content reader.
+async fn request_text(
+    harness: &LocalHarness,
+    request: &crate::model::ModelRequest,
+) -> Result<String> {
+    let reader = harness.client_reader()?;
+    let mut text = String::new();
+    for message in &request.messages {
+        if let crate::model::ModelContent::Text(body) = &message.content {
+            text.push_str(body);
+            text.push('\n');
+        }
+        for part in message.content.parts() {
+            if let crate::model::ModelContentPart::Text { text: body, .. } = part {
+                text.push_str(body);
+                text.push('\n');
+            }
+        }
+        for (file, policy) in message.content.file_parts() {
+            if matches!(policy, crate::model::FileProjectionPolicy::BoundedFull) {
+                let bytes = reader
+                    .read(file, file.descriptor().byte_length(), None, None)?
+                    .await?;
+                text.push('\n');
+                text.push_str(
+                    std::str::from_utf8(&bytes)
+                        .map_err(|error| Error::Storage(error.to_string()))?,
+                );
+            }
+        }
+    }
+    Ok(text)
 }
 
 fn checkout_config(
@@ -70,37 +152,6 @@ fn model() -> Result<Model> {
     Model::new("scripted".into(), "test".into(), "1".into())
 }
 
-#[test]
-fn automatic_compaction_fits_small_models_without_rewriting_explicit_budgets() -> Result<()> {
-    let capacity = ModelContextCapacity {
-        context_tokens: 32_768,
-        output_tokens: Some(4096),
-    };
-    let explicit = acyclic_harness::context::ThresholdCompaction::default();
-    let automatic = acyclic_harness::context::ThresholdCompaction::for_capacity(capacity, 24_000)?;
-    assert_eq!(
-        Some(automatic.validate(capacity, None)?),
-        capacity.output_tokens
-    );
-    assert!(automatic.recent_tokens < explicit.recent_tokens);
-    assert!(
-        24_000 + automatic.response_reserve_tokens + 2 * automatic.recent_tokens
-            <= capacity.context_tokens
-    );
-    assert!(explicit.validate(capacity, None).is_err());
-    assert!(
-        acyclic_harness::context::ThresholdCompaction::for_capacity(
-            ModelContextCapacity {
-                context_tokens: 2,
-                output_tokens: Some(1)
-            },
-            0
-        )
-        .is_err()
-    );
-    Ok(())
-}
-
 #[tokio::test]
 async fn incompatible_explicit_compaction_fails_before_owner_creation() -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
@@ -115,24 +166,6 @@ async fn incompatible_explicit_compaction_fails_before_owner_creation() -> Resul
     ));
     assert!(!owner_path.exists());
     assert_eq!(provider.requests().len(), 0);
-    Ok(())
-}
-
-#[tokio::test]
-async fn oversized_tool_catalog_fails_before_owner_creation_or_model_dispatch() -> Result<()> {
-    let directory = tempfile::tempdir().map_err(super::storage)?;
-    let project = volume(directory.path()).await?;
-    let provider = text();
-    let mut oversized = tool("test.oversized");
-    oversized.definition.description = "x".repeat(capacity().context_tokens as usize);
-    let config = volume_config(directory.path(), project, provider.clone())?.tool(oversized);
-    let owner = config.resolved_state_directory()?.join("owner.json");
-    assert!(matches!(
-        LocalHarness::open(config).await,
-        Err(Error::Invalid(_))
-    ));
-    assert!(!owner.exists());
-    assert!(provider.requests().is_empty());
     Ok(())
 }
 

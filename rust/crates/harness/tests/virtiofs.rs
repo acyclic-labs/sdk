@@ -115,7 +115,7 @@ fn standalone_daemon_qemu_and_cloud_hypervisor_read_write_delete() -> Result {
         // changing the test process's umask would race parallel tests.
         let mut daemon_command = ProcessCommand::new("sh");
         daemon_command.args(["-c", "umask 000; exec \"$@\"", "acyclic-daemon-test"]);
-        daemon_command.arg(env!("CARGO_BIN_EXE_acyclic-virtiofsd"));
+        daemon_command.arg(acyclic_test_support::binary_path!("acyclic-virtiofsd"));
         daemon_command
             .arg("--socket")
             .arg(&socket)

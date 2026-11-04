@@ -1,0 +1,11 @@
+diff --git a/rust/crates/harness-core/src/agent/records.rs b/rust/crates/harness-core/src/agent/records.rs
+--- a/rust/crates/harness-core/src/agent/records.rs
++++ b/rust/crates/harness-core/src/agent/records.rs
+@@ -337,7 +337,6 @@
+ /// named by this record's inbox sequence, so no two requests collide. The host
+ /// admits the child's template against this agent's creation capabilities.
+ #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+-#[serde(deny_unknown_fields)]
+ pub struct SpawnRequest {
+     /// Who asked.
+     pub by: Sender,

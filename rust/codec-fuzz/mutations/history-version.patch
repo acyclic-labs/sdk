@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/agent/history.rs b/rust/crates/harness-core/src/agent/history.rs
+--- a/rust/crates/harness-core/src/agent/history.rs
++++ b/rust/crates/harness-core/src/agent/history.rs
+@@ -165,7 +165,7 @@
+     pub fn decode(bytes: &[u8]) -> Result<Self, super::Error> {
+         let checkpoint: Self = serde_json::from_slice(bytes)
+             .map_err(|_| super::Error::Record("history checkpoint is malformed"))?;
+-        if checkpoint.version != 1 || checkpoint.conversation == 0 {
++        if checkpoint.conversation == 0 {
+             return Err(super::Error::Record(
+                 "history checkpoint version or cut is invalid",
+             ));

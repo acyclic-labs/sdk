@@ -156,7 +156,7 @@
     }
   },
   {
-    "name": "run_shell_command",
+    "name": "shell",
     "description": "This tool executes a shell command in the selected workspace and returns stdout, stderr, exit status and any retained output file. Commands use the workspace's native shell. Omitted execution lifetime is unbounded; cancellation and authorization expiry still apply. Background execution is unavailable.",
     "parametersJsonSchema": {
       "type": "object",

@@ -4,6 +4,11 @@ These declarations pin the public tool interfaces each model family was trained
 on. They do not import a host's agent loop or execution implementation. The
 family profile files pin each declaration's capability, name and revision.
 
+The model-visible command name is `shell` for every family and operating
+system. The extracted command declarations retain their family argument
+schemas; the shared adapter maps those arguments to the original shell
+capability. Upstream host command names remain provenance, not call aliases.
+
 | Family | Public source | Selection |
 | --- | --- | --- |
 | Claude Code | [Claude Agent SDK 0.3.316](https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk/-/claude-agent-sdk-0.3.316.tgz), `sdk-tools.d.ts` | `BashInput`, `FileReadInput`, `FileWriteInput`, `FileEditInput`, `GlobInput`, `GrepInput`, `NotebookEditInput`; field names, types, optionality and field documentation. Tool summaries follow the [public SDK reference](https://code.claude.com/docs/en/agent-sdk/typescript). |
@@ -22,9 +27,9 @@ root NOTICE. The JSON files are extracted declarations, not captured model
 responses. Adversarial protocol tests generate their own data and do not claim
 provider-fixture provenance.
 
-The `golden/` lists are deterministic protocol projections of those extracted
-public declarations, with recursively sorted schema keys. They are declaration
-goldens, not observations of a provider stream or a private harness prompt.
+The shared model renderer's property checks declaration ordering and schema
+preservation for all provider families. The native binding control checks the
+original catalog executor, selected family revision and capability grants.
 
 The Claude Grep `head_limit` description adapts the upstream default to the
 harness contract: omission and zero mean unlimited output. Explicit positive

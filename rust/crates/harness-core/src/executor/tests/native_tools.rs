@@ -2,7 +2,7 @@
 //! native call runs the canonical capability under the capability's grant,
 //! and the result returns under the native call byte for byte.
 use super::*;
-use crate::model::NativeToolProfile;
+use crate::model::{NativeToolProfile, ToolResultContent};
 
 /// The canonical capability: records the call it was handed and echoes it.
 struct Canonical(Mutex<Vec<ToolInvocation>>);
@@ -65,7 +65,14 @@ fn native_call(call_id: &str, name: &str, arguments: Value) -> ModelEvent {
 async fn run(
     profile: NativeToolProfile,
     calls: Vec<ModelEvent>,
-) -> Result<(Vec<String>, Vec<ToolInvocation>, String)> {
+) -> Result<(Vec<String>, Vec<ToolInvocation>, Vec<ToolResultContent>)> {
+    let requested: Vec<_> = calls
+        .iter()
+        .map(|event| match event {
+            ModelEvent::ToolCall(call) => (call.call_id.clone(), call.name.clone()),
+            _ => unreachable!("the turn contains only tool calls"),
+        })
+        .collect();
     let canonical = Arc::new(Canonical(Mutex::new(Vec::new())));
     let mut tools = capabilities(&canonical)?;
     crate::tools::native::bind(&mut tools, profile)?;
@@ -112,9 +119,39 @@ async fn run(
         .flat_map(|message| message.content.parts())
         .filter(|part| matches!(part, ModelContentPart::ToolResult { .. }))
         .collect();
-    let results =
-        serde_json::to_string(&results).map_err(|error| Error::Invalid(error.to_string()))?;
     let ran = std::mem::take(&mut *canonical.0.lock().unwrap());
+    let by_id: std::collections::HashMap<_, _> = ran
+        .iter()
+        .map(|call| (call.call_id.as_str(), call))
+        .collect();
+    assert_eq!(results.len(), requested.len());
+    let results = results
+        .into_iter()
+        .zip(requested)
+        .map(|(part, (requested_id, requested_name))| {
+            let ModelContentPart::ToolResult {
+                call_id,
+                name,
+                content,
+            } = part
+            else {
+                unreachable!("only tool results were selected")
+            };
+            assert_eq!(call_id, &requested_id);
+            assert_eq!(name, &requested_name);
+            if let Some(invocation) = by_id.get(call_id.as_str()) {
+                assert_eq!(
+                    content,
+                    &ToolResultContent::Json {
+                        value: json!({"ran": invocation.name, "arguments": invocation.arguments}),
+                    }
+                );
+            } else {
+                assert!(matches!(content, ToolResultContent::Error { .. }));
+            }
+            content.clone()
+        })
+        .collect();
     Ok((offered, ran, results))
 }
 
@@ -146,18 +183,19 @@ async fn anthropic_native_calls_run_their_capabilities() -> Result<()> {
                 "NotebookEdit",
                 json!({"notebook_path":"n.ipynb","new_source":"x","cell_type":"code","edit_mode":"insert"}),
             ),
-            native_call("toolu_3", "Bash", json!({"command":"ls","timeout":5000})),
+            native_call("toolu_3", "shell", json!({"command":"ls","timeout":5000})),
             native_call(
                 "toolu_4",
-                "Bash",
+                "shell",
                 json!({"command":"sleep 9","run_in_background":true}),
             ),
             native_call("toolu_5", "read", json!({"path":"src/lib.rs"})),
+            native_call("toolu_6", "Bash", json!({"command":"ls"})),
         ],
     )
     .await?;
     // Grants name capabilities; each is offered as its family's declarations.
-    assert_eq!(offered, ["Edit", "NotebookEdit", "Read", "Bash", "Write"]);
+    assert_eq!(offered, ["Edit", "NotebookEdit", "Read", "shell", "Write"]);
     let inserted_id = invocations[1].operation_id.to_string();
     assert_eq!(
         ran(&invocations),
@@ -179,14 +217,13 @@ async fn anthropic_native_calls_run_their_capabilities() -> Result<()> {
             ),
         ]
     );
-    assert_eq!(
-        results,
-        // The operation UUID is runtime-owned, while the surrounding wire
-        // result and the model's call ID remain fixed by the scripted call.
-        include_str!("native_tools/anthropic.json")
-            .trim_end()
-            .replace("\"id\":\"toolu_2\"", &format!("\"id\":\"{inserted_id}\""))
-    );
+    for (result, reason) in results[3..].iter().zip([
+        "run_in_background is not supported here",
+        "tool `read` is not available",
+        "tool `Bash` is not available",
+    ]) {
+        assert!(matches!(result, ToolResultContent::Error { message } if message.contains(reason)));
+    }
     Ok(())
 }
 
@@ -207,16 +244,14 @@ async fn google_native_calls_run_their_capabilities() -> Result<()> {
             ),
             native_call(
                 "call_3",
-                "run_shell_command",
+                "shell",
                 json!({"command":"ls","dir_path":"src"}),
             ),
+            native_call("call_4", "run_shell_command", json!({"command":"ls"})),
         ],
     )
     .await?;
-    assert_eq!(
-        offered,
-        ["replace", "read_file", "run_shell_command", "write_file"]
-    );
+    assert_eq!(offered, ["replace", "read_file", "shell", "write_file"]);
     assert_eq!(
         ran(&invocations),
         [
@@ -237,7 +272,8 @@ async fn google_native_calls_run_their_capabilities() -> Result<()> {
             ),
         ]
     );
-    assert_eq!(results, include_str!("native_tools/google.json").trim_end());
+    assert!(matches!(&results[3], ToolResultContent::Error { message }
+        if message.contains("tool `run_shell_command` is not available")));
     Ok(())
 }
 
@@ -296,7 +332,7 @@ fn native_declarations_run_the_revisions_a_manifest_pins() -> Result<()> {
     native.bind(&mut whole)?;
     assert_eq!(
         offered(&whole)?,
-        ["Edit", "NotebookEdit", "Read", "Bash", "Write"]
+        ["Edit", "NotebookEdit", "Read", "shell", "Write"]
     );
     assert_eq!(runs(&whole)?, Some(pinned));
     // A manifest naming one capability offers only its declarations.
