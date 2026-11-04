@@ -154,36 +154,10 @@ impl<'a> AuthorityWork<'a> {
 
     pub(super) fn bytes(&mut self, payload: &[u8]) -> Result<Bytes, AuthorityStoreError> {
         let buffer = self.byte_buffer(&[], &[], &[payload])?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.original.is_some() {
-            let mut buffer = buffer;
-            buffer
-                .1
-                .as_mut()
-                .ok_or(crate::NativeTreeMaterializationError::MissingCustody)?
-                .grow(
-                    acyclic_auth::operation::bytes_owner_allocation_bytes::<ForkBytes>() as u64,
-                )?;
-            return match buffer {
-                (bytes, Some(allocation)) => Ok(Bytes::from_owner(ForkBytes {
-                    bytes,
-                    _allocation: allocation,
-                })),
-                (_, None) => Err(crate::NativeTreeMaterializationError::MissingCustody.into()),
-            };
-        }
-        self.plain_bytes(buffer.0)
-    }
-
-    pub(super) fn plain_bytes(&mut self, buffer: Vec<u8>) -> Result<Bytes, AuthorityStoreError> {
-        let owner = WorkCounters {
-            allocation_operations: u64::from(buffer.capacity() != buffer.len()),
-            ..WorkCounters::UNCHARGED
-        };
-        self.admit(owner)?;
-        let bytes = Bytes::from(buffer);
-        self.charge(owner)?;
-        Ok(bytes)
+        let mut accounting = self.accounting();
+        crate::kernel::allocation::retained::Retained::from_owned(buffer, &mut accounting)
+            .and_then(|buffer| buffer.into_bytes((), &mut accounting))
+            .map_err(authority_error)
     }
 
     pub(super) fn stream_bytes(
@@ -202,9 +176,8 @@ impl<'a> AuthorityWork<'a> {
     ) -> Result<acyclic_stream::OwnedBytes, AuthorityStoreError> {
         let buffer = self.byte_buffer(scope, domain, fields)?;
         #[cfg(not(target_arch = "wasm32"))]
-        let mut buffer = buffer;
-        #[cfg(not(target_arch = "wasm32"))]
         if self.is_native() {
+            let mut buffer = crate::async_storage::authority_parts(buffer);
             return acyclic_stream::OwnedBytes::from_vec_with_guard_in_place(
                 &mut buffer.0,
                 &mut buffer.1,
@@ -212,7 +185,11 @@ impl<'a> AuthorityWork<'a> {
             )
             .map_err(|error| self.native_io_failure(error));
         }
-        self.plain_bytes(buffer.0).map(Into::into)
+        let mut accounting = self.accounting();
+        crate::kernel::allocation::retained::Retained::from_owned(buffer, &mut accounting)
+            .and_then(|buffer| buffer.into_bytes((), &mut accounting))
+            .map(Into::into)
+            .map_err(authority_error)
     }
 
     fn byte_buffer(
@@ -220,7 +197,7 @@ impl<'a> AuthorityWork<'a> {
         scope: &[u8],
         domain: &[u8],
         fields: &[&[u8]],
-    ) -> Result<(Vec<u8>, AuthorityAllocation), AuthorityStoreError> {
+    ) -> Result<crate::kernel::Owned<Vec<u8>>, AuthorityStoreError> {
         let length = fields
             .iter()
             .try_fold(domain.len(), |n, field| n.checked_add(field.len()))
@@ -243,7 +220,7 @@ impl<'a> AuthorityWork<'a> {
             buffer.value.extend_from_slice(field);
         }
         self.charge(writes)?;
-        Ok(crate::async_storage::authority_parts(buffer))
+        Ok(buffer)
     }
 
     pub(super) fn path(
@@ -679,19 +656,6 @@ impl<'a> AuthorityWork<'a> {
     pub(super) fn finish<T>(&self, value: T) -> Result<T, AuthorityStoreError> {
         self.check()?;
         Ok(value)
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-struct ForkBytes {
-    bytes: Vec<u8>,
-    _allocation: crate::NativeAllocation,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl AsRef<[u8]> for ForkBytes {
-    fn as_ref(&self) -> &[u8] {
-        &self.bytes
     }
 }
 
