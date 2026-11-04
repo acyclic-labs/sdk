@@ -29,7 +29,7 @@
         "jsonl"
       ],
       "stdin": "{\"prompt\":\"/repeated\",\"id\":\"first\"}\n{\"prompt\":\"/nope\",\"id\":\"typo\"}\n{\"prompt\":\"/repeated\",\"id\":\"later\"}\n",
-      "exit": 0,
+      "exit": 1,
       "stdout_contains": [
         "\"id\":\"first\"",
         "\"id\":\"typo\"",
