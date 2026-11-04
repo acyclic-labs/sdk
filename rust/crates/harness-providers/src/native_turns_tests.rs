@@ -94,6 +94,7 @@ fn settle(adapter: Adapter, provider: &ResolvedModel) -> TurnOutput {
         }
     }
     let output = TurnOutput {
+        journal_cut: None,
         text,
         attachments: Vec::new(),
         metadata: Value::Null,
