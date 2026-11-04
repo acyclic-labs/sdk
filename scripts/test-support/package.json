@@ -1,0 +1,11 @@
+{
+  "name": "@acyclic-labs/test-support",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Shared exact test execution evidence verification",
+  "license": "Apache-2.0",
+  "exports": {
+    "./libtest": "./libtest.mjs"
+  },
+  "files": ["libtest.mjs", "README.md"]
+}

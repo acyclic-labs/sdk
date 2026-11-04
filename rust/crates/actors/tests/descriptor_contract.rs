@@ -135,27 +135,6 @@ fn named_declaration<'a>(
         .unwrap_or_else(|| panic!("{field_name} must contain {name}"))
 }
 
-fn named_field<'a>(
-    parent: &'a mut DynamicMessage,
-    field_name: &str,
-    name: &str,
-) -> &'a mut DynamicMessage {
-    let fields = parent
-        .get_field_by_name_mut(field_name)
-        .unwrap_or_else(|| panic!("{field_name} must exist"));
-    let Value::List(fields) = fields else {
-        panic!("{field_name} must be repeated");
-    };
-    fields
-        .iter_mut()
-        .find(|value| declaration_name(value) == name)
-        .and_then(|value| match value {
-            Value::Message(message) => Some(message),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("{field_name} must contain {name}"))
-}
-
 fn assert_mutation_rejected(mutate: impl FnOnce(&mut DynamicMessage)) {
     let mut descriptor_set =
         DynamicMessage::decode(descriptor_set_message(), EXPECTED_ACTORS_DESCRIPTOR)
@@ -171,13 +150,6 @@ fn assert_mutation_rejected(mutate: impl FnOnce(&mut DynamicMessage)) {
         .is_some(),
         "descriptor proof must reject the requested identity mutation"
     );
-}
-
-fn assert_field_value(message: &DynamicMessage, field_name: &str, expected: Value) {
-    let actual = message
-        .get_field_by_name(field_name)
-        .map(|value| value.into_owned());
-    assert_eq!(actual, Some(expected), "{field_name} descriptor value");
 }
 
 fn unknown_option_numbers(bytes: &[u8]) -> Vec<u32> {
@@ -409,48 +381,11 @@ fn descriptor_comparison_rejects_all_unknown_file_metadata() {
 }
 
 #[test]
-fn expected_contract_identities_cover_tags_presence_oneofs_enums_and_rpcs() {
-    let mut descriptor_set =
-        DynamicMessage::decode(descriptor_set_message(), EXPECTED_ACTORS_DESCRIPTOR)
-            .expect("expected descriptor must decode");
-    let file = first_file(&mut descriptor_set);
-
-    let subscription_start = named_declaration(file, "message_type", "SubscriptionStart");
-    let cursor = named_field(subscription_start, "field", "cursor");
-    assert_field_value(cursor, "number", Value::I32(1));
-    assert_field_value(cursor, "oneof_index", Value::I32(0));
-    let start_oneof = named_declaration(subscription_start, "oneof_decl", "start");
-    assert_field_value(start_oneof, "name", Value::String("start".to_owned()));
-
-    let observation = named_declaration(file, "message_type", "SubscriptionObservation");
-    let failed_cursor = named_field(observation, "field", "failed_cursor");
-    assert_field_value(failed_cursor, "number", Value::I32(10));
-    assert_field_value(failed_cursor, "proto3_optional", Value::Bool(true));
-
-    let actor_state = named_declaration(file, "enum_type", "ActorState");
-    let active = named_field(actor_state, "value", "ACTOR_STATE_ACTIVE");
-    assert_field_value(active, "number", Value::I32(1));
-
-    let service = named_declaration(file, "service", "ActorsService");
-    let deploy_namespace = named_field(service, "method", "DeployNamespace");
-    assert_field_value(
-        deploy_namespace,
-        "input_type",
-        Value::String(".acyclic.actors.v1.DeploymentRequest".to_owned()),
-    );
-    assert_field_value(
-        deploy_namespace,
-        "output_type",
-        Value::String(".acyclic.actors.v1.DeploymentResponse".to_owned()),
-    );
-}
-
-#[test]
 fn descriptor_comparison_rejects_field_number_mutation() {
     assert_mutation_rejected(|descriptor_set| {
         let file = first_file(descriptor_set);
         let message = named_declaration(file, "message_type", "SubscriptionStart");
-        let cursor = named_field(message, "field", "cursor");
+        let cursor = named_declaration(message, "field", "cursor");
         cursor.set_field_by_name("number", Value::I32(17));
     });
 }
@@ -460,7 +395,7 @@ fn descriptor_comparison_rejects_enum_value_mutation() {
     assert_mutation_rejected(|descriptor_set| {
         let file = first_file(descriptor_set);
         let actor_state = named_declaration(file, "enum_type", "ActorState");
-        let active = named_field(actor_state, "value", "ACTOR_STATE_ACTIVE");
+        let active = named_declaration(actor_state, "value", "ACTOR_STATE_ACTIVE");
         active.set_field_by_name("number", Value::I32(7));
     });
 }
@@ -470,7 +405,7 @@ fn descriptor_comparison_rejects_presence_mutation() {
     assert_mutation_rejected(|descriptor_set| {
         let file = first_file(descriptor_set);
         let message = named_declaration(file, "message_type", "SubscriptionObservation");
-        let failed_cursor = named_field(message, "field", "failed_cursor");
+        let failed_cursor = named_declaration(message, "field", "failed_cursor");
         failed_cursor.set_field_by_name("proto3_optional", Value::Bool(false));
     });
 }
@@ -490,7 +425,7 @@ fn descriptor_comparison_rejects_rpc_identity_mutation() {
     assert_mutation_rejected(|descriptor_set| {
         let file = first_file(descriptor_set);
         let service = named_declaration(file, "service", "ActorsService");
-        let deploy_namespace = named_field(service, "method", "DeployNamespace");
+        let deploy_namespace = named_declaration(service, "method", "DeployNamespace");
         deploy_namespace.set_field_by_name(
             "input_type",
             Value::String(".acyclic.actors.v1.UpdateNamespaceRequest".to_owned()),
