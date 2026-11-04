@@ -206,6 +206,9 @@ async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
                 )?;
                 assert!(boundary.value.iter().all(|byte| *byte == 0x6b));
                 drop(boundary);
+                let state = cache.lock_state();
+                let resident =
+                    OperationReadCache::<()>::slot_bytes(&state)? + state.retained_owned_bytes;
                 assert_eq!(work.allocations.live_bytes(), baseline + resident);
             }
             if observed && capacity == 3 {
