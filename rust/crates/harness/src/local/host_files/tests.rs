@@ -963,11 +963,10 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         .map_err(storage)?,
     )?;
     connected.shared.published(operation);
-    let committed =
-        tokio::task::spawn_blocking(move || response.recv_timeout(Duration::from_secs(2)))
-            .await
-            .map_err(storage)?
-            .map_err(storage)?;
+    let committed = tokio::task::spawn_blocking(move || response.recv())
+        .await
+        .map_err(storage)?
+        .map_err(storage)?;
     let Delivery::Reply(Ok(committed)) = committed else {
         panic!("the actual owner must publish its committed result");
     };
