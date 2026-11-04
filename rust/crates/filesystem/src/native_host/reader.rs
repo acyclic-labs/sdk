@@ -51,11 +51,11 @@ impl HostStatReader {
         let Some((entry, allocation)) = self.next_with_handle::<W, false, false>(work)? else {
             return Ok(None);
         };
-        #[unix]
+        #[cfg(unix)]
         {
             Ok(Some((entry.name, allocation)))
         }
-        #[windows]
+        #[cfg(windows)]
         {
             let name = decode_windows_name(&entry.name, work);
             drop(entry);
