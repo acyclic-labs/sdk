@@ -196,11 +196,11 @@ fn continuation_finish_keeps_the_hash_cut_bound_to_its_canonical_bytes() -> Resu
             continued.messages().push(message(added));
             let suffix_bytes =
                 crate::contract::canonical_json_bytes(&*continued.messages())?.len() - 2;
-            let ((next, scanned), work) =
-                input_work(|| shape_work(|| continued.finish(Limits::default(), None)));
+            let (next, (messages, rebuilds, scanned)) =
+                measured_work(|| continued.finish(Limits::default(), None));
             prepared = next?;
             assert_eq!(
-                work,
+                (messages, rebuilds),
                 (1, 0),
                 "input footprint rescanned historical messages"
             );
@@ -305,31 +305,30 @@ fn continuation_finish_keeps_the_hash_cut_bound_to_its_canonical_bytes() -> Resu
 }
 
 fn input_work<T>(run: impl FnOnce() -> T) -> (T, (u64, u64)) {
+    let (result, (messages, rebuilds, _)) = measured_work(run);
+    (result, (messages, rebuilds))
+}
+
+fn measured_work<T>(run: impl FnOnce() -> T) -> (T, (u64, u64, u64)) {
     let (result, trace) =
         acyclic_test_support::differential::observe::<_, _, (&'static str, u64)>(|| (), |()| run());
     let mut messages = 0;
     let mut rebuilds = 0;
+    let mut shape = 0;
     for (kind, count) in trace {
         match kind {
             "input footprint messages" => messages += count,
             "input prefix rebuilds" => rebuilds += count,
+            "JSON shape bytes" => shape += count,
             _ => {}
         }
     }
-    (result, (messages, rebuilds))
+    (result, (messages, rebuilds, shape))
 }
 
 fn shape_work<T>(run: impl FnOnce() -> T) -> (T, u64) {
-    let (result, trace) =
-        acyclic_test_support::differential::observe::<_, _, (&'static str, u64)>(|| (), |()| run());
-    (
-        result,
-        trace
-            .into_iter()
-            .filter(|(kind, _)| *kind == "JSON shape bytes")
-            .map(|(_, bytes)| bytes)
-            .sum(),
-    )
+    let (result, (_, _, shape)) = measured_work(run);
+    (result, shape)
 }
 
 #[cfg(all(
