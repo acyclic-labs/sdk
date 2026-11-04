@@ -211,18 +211,30 @@ impl From<acyclic_auth::operation::Stopped> for Error {
 /// The one detail every transport carries for a failure: its code and cause.
 impl From<Error> for wire::ErrorDetail {
     fn from(error: Error) -> Self {
-        Self::from(&error)
+        error_detail(
+            error.code,
+            error
+                .refusal
+                .and_then(acyclic_auth::refusal::Refusal::into_cause),
+        )
     }
 }
 
 impl From<&Error> for wire::ErrorDetail {
     fn from(error: &Error) -> Self {
-        let cause = error.cause().cloned().unwrap_or_default();
-        Self {
-            code: error.code as i32,
-            request_id: cause.request_id,
-            component: cause.component,
-            reason: cause.reason,
-        }
+        error_detail(error.code, error.cause().cloned())
+    }
+}
+
+fn error_detail(
+    code: wire::ErrorCode,
+    cause: Option<acyclic_auth::refusal::Cause>,
+) -> wire::ErrorDetail {
+    let cause = cause.unwrap_or_default();
+    wire::ErrorDetail {
+        code: code as i32,
+        request_id: cause.request_id,
+        component: cause.component,
+        reason: cause.reason,
     }
 }

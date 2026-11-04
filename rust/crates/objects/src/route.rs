@@ -132,7 +132,7 @@ pub async fn put_blobs(
         .map(|outcome| wire::PutResult {
             outcome: Some(match outcome {
                 Ok(put) => wire::put_result::Outcome::Put(convert::wire_put(&put)),
-                Err(error) => wire::put_result::Outcome::Error((&error).into()),
+                Err(error) => wire::put_result::Outcome::Error(error.into()),
             }),
         })
         .collect();

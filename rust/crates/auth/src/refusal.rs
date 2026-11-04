@@ -171,6 +171,17 @@ impl Refusal {
         self.0.cause.as_ref()
     }
 
+    /// Consumes this refusal's attribution, moving its strings when uniquely
+    /// owned. If shared, clones only the attribution; other owners retain the
+    /// original status.
+    #[must_use]
+    pub fn into_cause(self) -> Option<Cause> {
+        match Arc::try_unwrap(self.0) {
+            Ok(said) => said.cause,
+            Err(said) => said.cause.clone(),
+        }
+    }
+
     /// The member's original status parts, when they said more than the
     /// canonical status.
     #[must_use]
