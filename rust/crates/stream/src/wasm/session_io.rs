@@ -293,15 +293,29 @@ mod tests {
 
     #[wasm_bindgen_test::wasm_bindgen_test]
     async fn javascript_transport_failures_preserve_interruption_disposition() {
+        // Derive adversarial diagnostics from the production status writer.
+        // These are not captures of a deployed member's attribution contract.
+        let canonical = wire_codec::status::error_status(&StreamError::Unavailable);
+        let mut metadata = canonical.metadata().clone();
+        metadata.append("acyclic-original", canonical.message().parse().unwrap());
+        metadata.append("acyclic-original", canonical.message().parse().unwrap());
+        let status = tonic::Status::with_details_and_metadata(
+            tonic::Code::Unknown,
+            canonical.message(),
+            canonical.message().as_bytes().to_vec().into(),
+            metadata,
+        );
+        let reported = wire_codec::status::status(&status);
         for write in [false, true] {
             for (error, transient) in [
                 (StreamError::Unavailable, true),
                 (StreamError::Unavailable, false),
                 (StreamError::AccessDenied, false),
                 (StreamError::InvalidResponse, false),
+                (reported.clone(), true),
+                (reported.clone(), false),
             ] {
-                let original = js_sys::Error::new("original callback failure");
-                Reflect::set(&original, &"code".into(), &error.code().into()).unwrap();
+                let original = super::super::validation::js_error(error.clone());
                 Reflect::set(&original, &"transient".into(), &transient.into()).unwrap();
                 let io = Object::new();
                 let next = Closure::<dyn Fn() -> Promise>::new({
