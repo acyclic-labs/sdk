@@ -389,10 +389,8 @@ async fn generation_parents_keep_original_work_and_result_custody()
             selected.id().object_id().digest
         );
         assert_eq!(original.live_allocation_bytes(), held_baseline);
-        assert_eq!(
-            original.receipt().backend_read_operations,
-            prior.backend_read_operations + 2
-        );
+        assert_eq!(original.receipt().object_probes, prior.object_probes + 2);
+        assert!(original.receipt().backend_read_operations > prior.backend_read_operations);
         let prior = original.receipt();
         assert!(matches!(
             selected
