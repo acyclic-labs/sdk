@@ -103,7 +103,6 @@ pub(crate) use persistent_point::split_allocation;
 pub(crate) use probe::WorkingRebaseProbe;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use publication::publish_generation_async_guarded_with_native_work;
-pub(crate) use range::plan_extent_range_with_accounting;
 pub(crate) use rebase::{
     ClassifyRebaseFailure, CommitFootprint, Settled, classify_rebase_settling_with_accounting,
 };

@@ -3,7 +3,10 @@ use super::*;
 /// Enumerate each publisher's create, partial write, file-sync, rename and
 /// completed cuts. A rename may be visible before its publisher settles it;
 /// the real paired reader must settle both names before returning either.
-fn every_pair_cut_is_durable(omit_reader_sync: bool) -> Result<bool, Box<dyn std::error::Error>> {
+fn every_pair_cut_is_durable(
+    root: &HostRoot,
+    omit_reader_sync: bool,
+) -> Result<bool, Box<dyn std::error::Error>> {
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {
@@ -13,8 +16,6 @@ fn every_pair_cut_is_durable(omit_reader_sync: bool) -> Result<bool, Box<dyn std
     }
     let _reset = Reset;
     let mut safe = true;
-    let directory = tempfile::tempdir()?;
-    let root = HostRoot::open(directory.path(), &mut ordinary_work())?;
     for first in 0..5 {
         for second in 0..5 {
             let leaves = ["first", "second"].map(|leaf| format!("{first}-{second}-{leaf}"));
@@ -54,21 +55,9 @@ fn every_pair_cut_is_durable(omit_reader_sync: bool) -> Result<bool, Box<dyn std
 #[test]
 fn every_paired_publication_cut_returns_only_durable_records()
 -> Result<(), Box<dyn std::error::Error>> {
-    assert!(every_pair_cut_is_durable(false)?);
-    Ok(())
-}
-
-#[test]
-fn negative_control_a_pair_reader_can_outrun_the_publishers_flush()
--> Result<(), Box<dyn std::error::Error>> {
-    assert!(!every_pair_cut_is_durable(true)?);
-    Ok(())
-}
-
-#[test]
-fn paired_publications_share_one_namespace_barrier() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let root = HostRoot::open(directory.path(), &mut ordinary_work())?;
+    assert!(every_pair_cut_is_durable(&root, false)?);
     root.read_or_publish(Path::new("rule"), || Ok(*b"*\n"), &mut ordinary_work())?;
     root.read_or_publish(Path::new("token"), || Ok([7; 16]), &mut ordinary_work())?;
     let budget = WorkBudget {
@@ -92,13 +81,6 @@ fn paired_publications_share_one_namespace_barrier() -> Result<(), Box<dyn std::
         root.read_or_publish(Path::new("token"), || Ok([7; 16]), &mut old)
             .is_err()
     );
-    Ok(())
-}
-
-#[test]
-fn paired_records_never_escape_a_failed_barrier() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    let root = HostRoot::open(directory.path(), &mut ordinary_work())?;
     root.read_or_publish(Path::new("first"), || Ok([1]), &mut ordinary_work())?;
     root.read_or_publish(Path::new("second"), || Ok([2]), &mut ordinary_work())?;
     let cancellation = crate::CancellationToken::new();
@@ -133,5 +115,14 @@ fn paired_records_never_escape_a_failed_barrier() -> Result<(), Box<dyn std::err
         )
         .is_err()
     );
+    Ok(())
+}
+
+#[test]
+fn negative_control_a_pair_reader_can_outrun_the_publishers_flush()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let root = HostRoot::open(directory.path(), &mut ordinary_work())?;
+    assert!(!every_pair_cut_is_durable(&root, true)?);
     Ok(())
 }
