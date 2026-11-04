@@ -21,6 +21,13 @@ an oracle that rejects a population-dependent implementation.
 
 ## Current closure work
 
+The [work arithmetic control](work-arithmetic/README.md) compares actual receipt
+addition with independent wider arithmetic across every declared field, including
+peak/max semantics and unchanged receipts on refused addition or charge. Its
+production mutation removes the overflow fence; the original property must
+reject a wrapped sum. Reservation ownership and native concurrency remain
+separate obligations.
+
 The [Auth producer-loss control](auth-producer-loss/README.md) retains a
 production mutation that captures the global watch sender in its own account
 dependency future. The original retained-account oracle must reject the resulting

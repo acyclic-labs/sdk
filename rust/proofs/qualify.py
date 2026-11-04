@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "work-arithmetic"])
 claim = parser.parse_args().claim
 if claim == "retained-credit":
     source = "rust/crates/filesystem/src/kernel/allocation.rs"
@@ -40,12 +40,18 @@ elif claim == "objects-empty-dispatch":
     test = "local::outcome_tests::empty_ranges_preserve_native_presence_without_dispatch"
     diagnostic = "empty range dispatched a physical job for key"
     features = ["--no-default-features", "--features", "local,test-support"]
-else:
+elif claim == "auth-producer-loss":
     source = "rust/crates/auth/src/trust/follower.rs"
     crate = "acyclic-auth"
     test = "trust::follower::tests::account_events_preserve_exact_dependencies_without_unrelated_wakes"
     diagnostic = "account wait retained its lost global producer"
     features = ["--no-default-features"]
+else:
+    source = "rust/crates/filesystem/src/performance.rs"
+    crate = "acyclic-fs"
+    test = "performance::tests::full_width_work_arithmetic_preserves_exact_sums_and_refusals"
+    diagnostic = "full-width work sum disagreed with wider arithmetic"
+    features = []
 SOURCE = ROOT / source
 COMMAND = ["cargo", "test", "--locked", "-p", crate, *features, "--lib", test,
            "--", "--exact", "--nocapture"]
