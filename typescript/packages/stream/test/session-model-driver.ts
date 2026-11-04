@@ -14,7 +14,7 @@ if (fault === "followSelect") {
       const source = await Bun.file(args.path).text();
       const old = "this.acquireProvider(signal)";
       if (!source.includes(old)) throw new Error("follow selection negative control no longer matches");
-      return { contents: source.replace(old, "this.acquireProvider(undefined)"), loader: "ts" };
+      return { contents: source.replaceAll(old, "this.acquireProvider(undefined)"), loader: "ts" };
     });
   } });
 }
@@ -26,7 +26,9 @@ const sessions = new StreamSessions(async (node, signal) => {
   const transport = await peer.connect(node, signal);
   return { ...transport, async send(bytes, writeSignal) {
     const frame = fromBinary(wire.SessionFrameSchema, bytes);
-    if (rejectWrite && frame.body.case === "interest" && frame.body.value.upsert.some(item => item.kind.case === "follow" && item.kind.value.resource === "streams:/events")) {
+    const interest = frame.body.case === "hello" ? frame.body.value.interest
+      : frame.body.case === "interest" ? frame.body.value : undefined;
+    if (rejectWrite && interest?.upsert.some(item => item.kind.case === "follow" && item.kind.value.resource === "streams:/events")) {
       observedRejection = true;
       for (const notify of peer.changed) notify();
       if (fault === "rejection") await new Promise<void>(() => {});
@@ -44,14 +46,14 @@ Reflect.set(facade, "select", async () => {
   return { follow: (path: string, options: Parameters<StreamSessions["follow"]>[1]) => sessions.follow(path, options) };
 });
 const records = scenario === "rejection" ? sessions.follow("events", { from: 0n, signal: controller.signal })
-  : facade.follow("agents", { from: 0n, signal: controller.signal });
+  : scenario === "followSelect" ? facade.follow("agents", { from: 0n, signal: controller.signal }) : undefined;
 if (scenario === "rejection") {
   peer.append("events", 2);
-  await records.next();
+  await records!.next();
 }
 let settled = false;
 let rejected: unknown;
-if (scenario === "followSelect") void records.next().then(() => { settled = true; }, error => { settled = true; rejected = error; });
+if (scenario === "followSelect") void records!.next().then(() => { settled = true; }, error => { settled = true; rejected = error; });
 async function command(action: string, hex?: string, path?: string,
   work?: { warm: number; samples: number; reverse: boolean; shared: boolean }, count?: number): Promise<unknown> {
   switch (action) {
@@ -84,7 +86,7 @@ async function command(action: string, hex?: string, path?: string,
         rejectWrite = true;
         peer.disconnect();
         await peer.until(() => observedRejection);
-        void records.next().then(() => { settled = true; }, error => { settled = true; rejected = error; });
+        void records!.next().then(() => { settled = true; }, error => { settled = true; rejected = error; });
       }
       break;
     // Lifetime controls: a command that never settles while client work stays scheduled, a client that keeps
@@ -101,7 +103,10 @@ async function command(action: string, hex?: string, path?: string,
       return { connections: peer.connections.length - before };
     }
     case "releaseSelection": releaseSelection?.(); break;
-    case "drop": await records.return(undefined); break;
+    case "drop":
+      if (records === undefined) throw new Error("scenario has no cursor to drop");
+      await records.return(undefined);
+      break;
     case "abort": controller.abort(); break;
     case "decode": {
       let decoded: wire.SessionFrame;
