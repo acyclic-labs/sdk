@@ -260,11 +260,22 @@ fn last_session_drop_waits_for_kernel_ack_using_birth_credit()
 }
 
 fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::native_mount::tests::retirement::{Fixture, retired};
+
+    let Fixture {
+        root,
+        mut session,
+        work,
+        fence,
+    } = Fixture::new()?;
+    let before = work.receipt();
     let meter = matches!(mode, Retirement::Meter);
     let last_owner = matches!(mode, Retirement::LastOwner);
-    let (source, _) = shared_sources(posix_config())?;
+    let (callbacks, source) = shared_sources(posix_config())?;
+    let retained_source: Arc<dyn MountFilesystem> = Arc::new(source);
+    let source = Arc::downgrade(&retained_source);
     let core = projection_core(
-        Arc::new(source),
+        Arc::new(callbacks),
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     )?;
@@ -311,6 +322,7 @@ fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::
     if !meter {
         // Losing the original caller cannot revoke already accepted cleanup.
         original.cancellation().cancel();
+        work.cancellation().cancel();
     }
     let state = Arc::new(Mutex::new(FuseSessionState {
         path: super::super::FuseOwned::empty(vec![0]),
@@ -320,7 +332,12 @@ fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::
         device: Some(Arc::new(std::fs::File::open("/dev/null")?)),
         notifier: None,
         identity: None,
-        retirement: None,
+        retirement: Some(crate::native_mount::NativeMountRetirement {
+            retained_source: Some(retained_source),
+            destination_guard: session.destination_guard.take(),
+            startup_source_watch: None,
+            terminal_source_failure: None,
+        }),
         cleanup,
         failure: crate::native_mount::retirement::TerminalFailures::default(),
         shared: None,
@@ -364,21 +381,9 @@ fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::
                     .map(|outcome| assert!(outcome.is_empty()))
             }
             Retirement::LastOwner => {
-                let mut owner = crate::NativeMountSession::new(
-                    crate::NativeMountRequest {
-                        mount_id: crate::MountId::new(),
-                        volume_id: crate::VolumeId::new(),
-                        destination: Path::new("/not-mounted").to_path_buf(),
-                        writable: false,
-                        shared: false,
-                    },
-                    None,
-                    None,
-                );
-                owner.driver = Some(facade);
-                drop(owner);
+                session.driver = Some(facade);
+                drop(session);
                 events.send(Event::Released).unwrap();
-                release.send(()).unwrap();
                 return;
             }
         };
@@ -386,26 +391,54 @@ fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::
     });
     let mut released = !last_owner;
     let mut polling = false;
+    let mut observer_custody = true;
     while !released || !polling {
         match observed.recv()? {
             Event::Polling => polling = true,
-            Event::Released => released = true,
+            Event::Released => {
+                // The physical owner is still preempted here: only its packet
+                // can retain the source and destination after observer drop.
+                observer_custody = source.upgrade().is_some()
+                    && fence.is_file()
+                    && root.path().join("retired-mount").is_dir();
+                released = true;
+                release.send(())?;
+            }
             Event::Retired(result) => {
                 worker.join().map_err(|_| "retirement worker panicked")?;
                 panic!("retirement returned before the kernel acknowledgment: {result:?}");
             }
         }
     }
-    assert!(
-        matches!(state.try_lock(), Err(std::sync::TryLockError::WouldBlock)),
-        "session ownership escaped before the kernel acknowledgment"
-    );
+    let locked = matches!(state.try_lock(), Err(std::sync::TryLockError::WouldBlock));
+    let source_held = source.upgrade().is_some();
+    let fence_held = fence.is_file() && root.path().join("retired-mount").is_dir();
+    // Drain the accepted owner before asserting, including negative controls
+    // that retire a resource too early. A failed assertion must not strand it.
     acknowledge.send(())?;
     let Event::Retired(result) = observed.recv()? else {
         panic!("retirement polled again instead of awaiting acknowledgment");
     };
     worker.join().map_err(|_| "retirement worker panicked")?;
     result?;
+    assert!(
+        observer_custody,
+        "observer drop released retirement resources"
+    );
+    assert!(
+        locked,
+        "session ownership escaped before the kernel acknowledgment"
+    );
+    assert!(
+        source_held,
+        "source retired before the kernel acknowledgment"
+    );
+    assert!(
+        fence_held,
+        "destination fence retired before the kernel acknowledgment"
+    );
+    assert!(source.upgrade().is_none(), "retired packet kept its source");
+    retired(root.path(), &fence, before, &work)?;
     assert!(
         !caller_waited.load(std::sync::atomic::Ordering::Acquire),
         "observer drop entered the original native wait instead of its accepted physical owner"
