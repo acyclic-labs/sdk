@@ -8,7 +8,7 @@ use acyclic_stream::ProviderTask;
 pub trait FsWork: Sync + ProviderTask {
     /// Result shape for this work source.
     type Output<T, E>;
-    /// Result shape for an owned output buffer.
+    /// Result shape for an owned output buffer, preserving its operation error.
     type OwnedOutput<T, E>;
     #[doc(hidden)]
     fn finish_owned<T, E: From<FsError>>(
