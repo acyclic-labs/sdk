@@ -38,7 +38,7 @@ test("native event callback failures end unmatched waits with the original cause
           try { readFileSync(join(root, "original-missing-callback-input")); }
           catch (error) { original = stage === "listener" ? error.message : error; throw original; }
         };
-        const producer = processes.start(process.execPath, ["-e", stage === "eof" ? "" :
+        const producer = processes.start(process.execPath, ["-e", stage === "eof" ? "process.exitCode=3" :
           "console.log(JSON.stringify({id:'first'}));console.log(JSON.stringify({id:'later'}))"]);
         producer.input.end();
         const events = new Spool(producer.child.stdout, producer.closed, {
@@ -46,16 +46,19 @@ test("native event callback failures end unmatched waits with the original cause
         });
         if (stage === "listener") events.subscribe(fail);
         const next = events.next(stage === "match" ? fail : () => false).catch(error => error);
-        const keyed = events.keyed("unpublished").catch(error => error);
-        const laterNext = events.next(() => false).catch(error => error);
-        const laterKeyed = events.keyed("unpublished-other").catch(error => error);
+        const failures = [];
+        for (const waiting of [events.keyed("unpublished"), events.keyed("unpublished"),
+          events.next(() => false), events.keyed("unpublished-other")])
+          waiting.catch(error => failures.push(error));
         const failure = await next;
+        const result = await producer.closed;
         assert.ok(failure instanceof SpoolEnded);
-        assert.equal(await keyed, failure);
-        assert.equal(await laterNext, failure);
-        assert.equal(await laterKeyed, failure);
+        assert.equal(failures.length, 4,
+          "original terminal settles every ordinary wait, repeated key and distinct key before producer retirement");
+        assert.ok(failures.every(error => error === failure), "all consumers retain the same terminal cause");
         assert.equal(failure.kind, stage === "eof" ? "eof" : "consumer");
-        if (stage !== "eof") {
+        if (stage === "eof") assert.equal(failure.detail, result);
+        else {
           assert.equal(failure.detail, original);
           const report = failureReport(failure);
           if (stage === "listener") {
@@ -70,7 +73,7 @@ test("native event callback failures end unmatched waits with the original cause
         }
         await assert.rejects(events.next(() => true), error => error === failure);
         await assert.rejects(events.keyed("late"), error => error === failure);
-        assert.equal((await producer.closed).code, 0, "native exit zero cannot erase consumer failure");
+        assert.equal(result.code, stage === "eof" ? 3 : 0, "native exit zero cannot erase consumer failure");
         assert.equal(calls, stage === "eof" ? 0 : 1, "a failed callback cannot consume later events");
         assert.equal(processes.children.size, 0, "original producer retirement precedes completion");
       } finally { await processes.close(); }

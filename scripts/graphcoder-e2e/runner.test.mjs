@@ -247,31 +247,16 @@ test("case selection rejects misspellings before starting either executable", as
   } finally { await processes.close(); }
 });
 
-test("a spool ends with the exact typed cause", async t => {
-  const ended = async (events, feed) => { const waiting = events.next(() => false); feed(); return waiting.then(() => assert.fail("resolved"), error => error); };
-  await t.test("source EOF carries the source result", async () => {
-    const stream = new PassThrough();
-    let close; const closed = new Promise(resolve => { close = resolve; });
-    const events = new Spool(stream, closed), results = [];
-    const waits = [events.next(() => false), events.next(() => false),
-      events.keyed("same"), events.keyed("same"), events.keyed("other")];
-    for (const wait of waits) wait.catch(error => { results.push(error); });
-    const error = await ended(events, () => { stream.end(); close({ code: 3, signal: null }); });
-    assert.equal(error.kind, "eof"); assert.equal(error.detail.code, 3);
-    assert.equal(results.length, waits.length, "the original EOF settles every ordinary wait, repeated key and distinct key");
-    assert.ok(results.every(result => result === error), "all consumers retain the same terminal cause");
-  });
-  await t.test("early event: next never sees it, and EOF ends the wait exactly", async () => {
-    const stream = new PassThrough();
-    let close; const closed = new Promise(resolve => { close = resolve; });
-    const events = new Spool(stream, closed);
-    const published = events.next(event => event.ready);
-    stream.write('{"ready":true}\n');
-    await published;
-    const late = events.next(event => event.ready);
-    stream.end(); close({ code: 0, signal: null });
-    await assert.rejects(late, error => error.kind === "eof");
-  });
+test("early event: next never sees it, and EOF ends the wait exactly", async () => {
+  const stream = new PassThrough();
+  let close; const closed = new Promise(resolve => { close = resolve; });
+  const events = new Spool(stream, closed);
+  const published = events.next(event => event.ready);
+  stream.write('{"ready":true}\n');
+  await published;
+  const late = events.next(event => event.ready);
+  stream.end(); close({ code: 0, signal: null });
+  await assert.rejects(late, error => error.kind === "eof");
 });
 
 test("transcript admission refuses before the executable starts", async t => {

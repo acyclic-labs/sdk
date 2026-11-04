@@ -66,7 +66,9 @@ async function replay(bytes, unique, partition, closedFirst, path) {
   let comparisons = 0;
   const terminal = spool.next(() => { comparisons++; return false; })
     .then(() => assert.fail("a false predicate cannot resolve"), error => error);
-  const missing = spool.keyed(Symbol("absent")).then(() => assert.fail("absent key cannot resolve"), error => error);
+  const missing = [], repeated = Symbol("absent");
+  for (const id of [repeated, repeated, Symbol("other absent")])
+    spool.keyed(id).then(value => missing.push(value), error => missing.push(error));
   const drained = finished(source);
   if (closedFirst) close(captured);
   else source.once("end", () => close(captured));
@@ -79,7 +81,8 @@ async function replay(bytes, unique, partition, closedFirst, path) {
     assert.equal(result.error.detail, reason, "cancellation retains its original reason");
   }
   assert.equal(cause.kind, reference.kind, "original terminal must survive byte partitions and physical-exit order");
-  assert.equal(await missing, cause, "all original waiters must receive the same terminal");
+  assert.equal(missing.length, 3, "original terminal settles repeated and distinct keyed waits before source retirement");
+  assert.ok(missing.every(error => error === cause), "all original waiters must receive the same terminal");
   assert.equal(spool.ended, cause);
   assert.equal(spool.sequence, reference.sequence);
   assert.deepEqual(events, reference.events, "no event may follow the first malformed or duplicate terminal");
