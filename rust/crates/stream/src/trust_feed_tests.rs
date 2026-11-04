@@ -1,14 +1,12 @@
-//! Feed proofs over an in-memory source, stepped by hand: every assertion
-//! follows one poll of the run with all input ready, so nothing waits.
+//! Feed controls over the original memory provider. Fault adapters only
+//! interrupt a follow or hold its opening; they never construct records.
 use super::*;
-use crate::{CommitId, IdempotencyKey, MemoryStream, OwnedBytes, RecordHeaders, StreamPath};
+use crate::{IdempotencyKey, MemoryStream, OwnedBytes};
 use acyclic_auth::trust::{ChangeSource as _, EnvironmentFrontier, Issuer};
 use acyclic_auth::verify::Trust as _;
-use bytes::Bytes;
 use ed25519_dalek::SigningKey;
-use futures::stream;
+use futures::{channel::oneshot, stream};
 use std::{
-    collections::HashSet,
     future::Future,
     pin::Pin,
     sync::{
@@ -32,65 +30,57 @@ impl UnixMillisClock for Clock {
 
 #[derive(Default)]
 struct Path {
-    records: Vec<Bytes>,
-    live: Vec<mpsc::UnboundedSender<Result<Record, StreamError>>>,
+    live: Option<oneshot::Sender<()>>,
     read: Arc<AtomicUsize>,
 }
 
-/// Streams in memory; a `slow` path never answers its tail.
+/// Observe real follows and hold selected openings behind their own producer.
 #[derive(Default)]
-struct Fake {
+struct ControlledSource {
+    provider: Arc<MemoryStream>,
     paths: Mutex<HashMap<String, Path>>,
-    slow: Mutex<HashSet<String>>,
+    slow: Mutex<HashMap<String, oneshot::Receiver<()>>>,
+    appended: AtomicUsize,
 }
 
-fn record(sequence: usize, value: Bytes) -> Record {
-    Record {
-        sequence: sequence as u64,
-        value: value.into(),
-        commit_id: CommitId::from_bytes([0; 32]),
-        committed_at_micros: 0,
-        headers: RecordHeaders::default(),
-        origin: StreamPath::new("trust").unwrap(),
-    }
-}
-
-impl Fake {
-    fn push(&self, path: &str, value: Vec<u8>) {
-        let mut paths = self.paths.lock().unwrap();
-        let path = paths.entry(path.to_owned()).or_default();
-        let value = Bytes::from(value);
-        let sequence = path.records.len();
-        path.records.push(value.clone());
-        path.live.retain(|live| {
-            live.unbounded_send(Ok(record(sequence, value.clone())))
-                .is_ok()
-        });
+impl ControlledSource {
+    async fn push(&self, path: &str, value: Vec<u8>) {
+        Stream::new(self.provider.clone(), path)
+            .unwrap()
+            .append(
+                OwnedBytes::from(value),
+                IdempotencyKey::new(
+                    self.appended
+                        .fetch_add(1, Ordering::SeqCst)
+                        .to_le_bytes()
+                        .to_vec(),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
     }
 
-    /// Lose every live follow of `path`.
+    /// Lose the original observed follow of `path`.
     fn end(&self, path: &str) {
         if let Some(path) = self.paths.lock().unwrap().get_mut(path) {
-            path.live.clear();
+            path.live.take();
         }
     }
 }
 
-struct Src(Arc<Fake>);
+struct Src(Arc<ControlledSource>);
 
 impl Source for Src {
     fn tail<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<u64, StreamError>> {
-        if self.0.slow.lock().unwrap().contains(path) {
-            return future::pending().boxed();
+        let held = self.0.slow.lock().unwrap().remove(path);
+        async move {
+            if let Some(held) = held {
+                held.await.map_err(|_| StreamError::Unavailable)?;
+            }
+            Source::tail(&self.0.provider, path).await
         }
-        let tail = self
-            .0
-            .paths
-            .lock()
-            .unwrap()
-            .get(path)
-            .map_or(0, |path| path.records.len() as u64);
-        future::ready(Ok(tail)).boxed()
+        .boxed()
     }
 
     fn follow<'a>(
@@ -98,50 +88,48 @@ impl Source for Src {
         path: &'a str,
         from: u64,
     ) -> BoxFuture<'a, Result<Records, StreamError>> {
-        let mut paths = self.0.paths.lock().unwrap();
-        let path = paths.entry(path.to_owned()).or_default();
-        let (sender, live) = mpsc::unbounded();
-        path.live.push(sender);
-        let read = Arc::clone(&path.read);
-        let backlog = path
-            .records
-            .iter()
-            .enumerate()
-            .skip(from as usize)
-            .map(|(sequence, value)| Ok(record(sequence, value.clone())))
-            .collect::<Vec<_>>();
-        future::ready(Ok(stream::iter(backlog)
-            .chain(live)
-            .inspect(move |_| {
-                read.fetch_add(1, Ordering::SeqCst);
-            })
-            .boxed()))
+        async move {
+            let records = Source::follow(&self.0.provider, path, from).await?;
+            let (sender, ended) = oneshot::channel();
+            let read = {
+                let mut paths = self.0.paths.lock().unwrap();
+                let path = paths.entry(path.to_owned()).or_default();
+                path.live = Some(sender);
+                Arc::clone(&path.read)
+            };
+            Ok(records
+                .take_until(ended)
+                .inspect(move |_| {
+                    read.fetch_add(1, Ordering::SeqCst);
+                })
+                .boxed())
+        }
         .boxed()
     }
 }
 
 struct World {
-    fake: Arc<Fake>,
+    source: Arc<ControlledSource>,
     follower: Arc<Follower>,
     feed: TrustFeed<Src>,
     accounts: Accounts,
 }
 
 /// `account`'s Stream holds `genesis`; the environment Stream is empty.
-fn world(anchor: &Issuer, genesis: Vec<Vec<u8>>) -> World {
-    let fake = Arc::new(Fake::default());
+async fn world(anchor: &Issuer, genesis: Vec<Vec<u8>>) -> World {
+    let source = Arc::new(ControlledSource::default());
     for value in genesis {
-        fake.push(&account_path("test", "account"), value);
+        source.push(&account_path("test", "account"), value).await;
     }
     let follower = Arc::new(Follower::new("test", anchor.anchor()));
     let (feed, accounts) = TrustFeed::new(
-        Src(Arc::clone(&fake)),
+        Src(Arc::clone(&source)),
         Arc::clone(&follower),
         Arc::new(Clock),
     );
     accounts.follow("account").unwrap();
     World {
-        fake,
+        source,
         follower,
         feed,
         accounts,
@@ -238,17 +226,17 @@ async fn reconnect_completes_an_interrupted_authenticated_replay() {
     assert!(served(&follower, "account"));
 }
 
-#[test]
-fn losing_one_account_follow_fences_everything() {
+#[tokio::test]
+async fn losing_one_account_follow_fences_everything() {
     let issuer = Issuer::new("test", key(1));
     let (_root, genesis) = issuer.genesis("account", key(2), NOW).unwrap();
-    let mut world = world(&issuer, genesis);
-    let (fake, follower) = (Arc::clone(&world.fake), Arc::clone(&world.follower));
+    let mut world = world(&issuer, genesis).await;
+    let (source, follower) = (Arc::clone(&world.source), Arc::clone(&world.follower));
     let mut run = Box::pin(world.feed.run());
     assert!(step(&mut run).is_none());
     assert!(served(&follower, "account"));
     // The environment follow stays live; only the account's ends.
-    fake.end(&account_path("test", "account"));
+    source.end(&account_path("test", "account"));
     assert_eq!(step(&mut run), Some(Err(StreamError::Unavailable)));
     assert!(!served(&follower, "account"));
     assert_eq!(
@@ -257,8 +245,8 @@ fn losing_one_account_follow_fences_everything() {
     );
 }
 
-#[test]
-fn an_account_record_before_its_environment_signer_is_retained_then_applied() {
+#[tokio::test]
+async fn an_account_record_before_its_environment_signer_is_retained_then_applied() {
     let anchor = Issuer::new("test", key(1));
     let rotated = Issuer::new("test", key(9));
     let mut frontier = EnvironmentFrontier::genesis("test", anchor.anchor());
@@ -268,46 +256,48 @@ fn an_account_record_before_its_environment_signer_is_retained_then_applied() {
         .unwrap();
     // Signed by a key the environment Stream has not delivered yet.
     let (_root, genesis) = rotated.genesis("account", key(2), NOW).unwrap();
-    let mut world = world(&anchor, genesis);
-    let (fake, follower) = (Arc::clone(&world.fake), Arc::clone(&world.follower));
+    let mut world = world(&anchor, genesis).await;
+    let (source, follower) = (Arc::clone(&world.source), Arc::clone(&world.follower));
     let mut run = Box::pin(world.feed.run());
     assert!(step(&mut run).is_none());
     assert_eq!(*follower.state().borrow(), FollowerState::Serving);
     assert!(!served(&follower, "account"));
-    fake.push(&environment_path("test"), environment);
+    source.push(&environment_path("test"), environment).await;
     assert!(step(&mut run).is_none());
     assert!(served(&follower, "account"));
 }
 
-#[test]
-fn an_undecodable_account_record_fences_that_account_only() {
+#[tokio::test]
+async fn an_undecodable_account_record_fences_that_account_only() {
     let issuer = Issuer::new("test", key(1));
     let (mut root, genesis) = issuer.genesis("account", key(2), NOW).unwrap();
-    let mut world = world(&issuer, genesis);
-    let (fake, follower) = (Arc::clone(&world.fake), Arc::clone(&world.follower));
+    let mut world = world(&issuer, genesis).await;
+    let (source, follower) = (Arc::clone(&world.source), Arc::clone(&world.follower));
     let mut run = Box::pin(world.feed.run());
     assert!(step(&mut run).is_none());
     assert!(served(&follower, "account"));
     let path = account_path("test", "account");
-    fake.push(&path, vec![0xFF, 0xFF]);
+    source.push(&path, vec![0xFF, 0xFF]).await;
     assert!(step(&mut run).is_none());
     assert!(!served(&follower, "account"));
     assert_eq!(*follower.state().borrow(), FollowerState::Serving);
-    let read = Arc::clone(&fake.paths.lock().unwrap()[&path].read);
+    let read = Arc::clone(&source.paths.lock().unwrap()[&path].read);
     let before = read.load(Ordering::SeqCst);
     // The original follow is paused at the refused record. Successors stay
     // behind its provider's credit instead of accumulating in the feed.
-    fake.push(
-        &path,
-        root.revoke_keys(&[("retired", NOW + 50)], NOW).unwrap(),
-    );
+    source
+        .push(
+            &path,
+            root.revoke_keys(&[("retired", NOW + 50)], NOW).unwrap(),
+        )
+        .await;
     assert!(step(&mut run).is_none());
     assert!(!served(&follower, "account"));
     assert_eq!(read.load(Ordering::SeqCst), before);
 }
 
-#[test]
-fn a_new_account_replays_from_a_current_checkpoint_after_environment_rotation() {
+#[tokio::test]
+async fn a_new_account_replays_from_a_current_checkpoint_after_environment_rotation() {
     let anchor = Issuer::new("test", key(1));
     let current = Issuer::new("test", key(9));
     let mut frontier = EnvironmentFrontier::genesis("test", anchor.anchor());
@@ -316,14 +306,15 @@ fn a_new_account_replays_from_a_current_checkpoint_after_environment_rotation() 
         .unwrap();
     let (mut root, mut history) = anchor.genesis("late", key(2), NOW).unwrap();
     history.push(current.keyring(&mut root, NOW).unwrap());
-    let mut world = world(&anchor, vec![]);
-    let (fake, follower) = (Arc::clone(&world.fake), Arc::clone(&world.follower));
+    let (_, existing) = anchor.genesis("account", key(2), NOW).unwrap();
+    let mut world = world(&anchor, existing).await;
+    let (source, follower) = (Arc::clone(&world.source), Arc::clone(&world.follower));
     let mut run = Box::pin(world.feed.run());
     assert!(step(&mut run).is_none());
-    fake.push(&environment_path("test"), environment);
+    source.push(&environment_path("test"), environment).await;
     assert!(step(&mut run).is_none());
     for record in history {
-        fake.push(&account_path("test", "late"), record);
+        source.push(&account_path("test", "late"), record).await;
     }
     world.accounts.follow("late").unwrap();
     assert!(step(&mut run).is_none());
@@ -332,16 +323,18 @@ fn a_new_account_replays_from_a_current_checkpoint_after_environment_rotation() 
     // alone cannot bootstrap another account after that key was retired.
     let (_, historical) = anchor.genesis("foreign", key(3), NOW).unwrap();
     for record in historical {
-        fake.push(&account_path("test", "foreign"), record);
+        source.push(&account_path("test", "foreign"), record).await;
     }
     // Even a valid environment publication has no authority on an account
     // follow. Without the path binding it could revive the historical signer.
-    fake.push(
-        &account_path("test", "foreign"),
-        current
-            .environment_keyring(&mut frontier, &anchor.anchor(), NOW)
-            .unwrap(),
-    );
+    source
+        .push(
+            &account_path("test", "foreign"),
+            current
+                .environment_keyring(&mut frontier, &anchor.anchor(), NOW)
+                .unwrap(),
+        )
+        .await;
     world.accounts.follow("foreign").unwrap();
     assert!(step(&mut run).is_none());
     assert!(!served(&follower, "foreign"));
@@ -352,25 +345,32 @@ fn a_new_account_replays_from_a_current_checkpoint_after_environment_rotation() 
     );
 }
 
-#[test]
-fn a_slow_account_open_never_delays_another_accounts_revocations() {
+#[tokio::test]
+async fn a_slow_account_open_never_delays_another_accounts_revocations() {
     let issuer = Issuer::new("test", key(1));
     let (mut root, genesis) = issuer.genesis("account", key(2), NOW).unwrap();
-    let mut world = world(&issuer, genesis);
-    let (fake, follower) = (Arc::clone(&world.fake), Arc::clone(&world.follower));
-    fake.slow
+    let mut world = world(&issuer, genesis).await;
+    let (source, follower) = (Arc::clone(&world.source), Arc::clone(&world.follower));
+    let (producer, held) = oneshot::channel();
+    source
+        .slow
         .lock()
         .unwrap()
-        .insert(account_path("test", "slow"));
+        .insert(account_path("test", "slow"), held);
     world.accounts.follow("slow").unwrap();
     let mut run = Box::pin(world.feed.run());
     assert!(step(&mut run).is_none());
     assert!(served(&follower, "account"));
     let changed = follower.changed();
-    fake.push(
-        &account_path("test", "account"),
-        root.revoke_keys(&[("retired", NOW + 50)], NOW).unwrap(),
-    );
+    source
+        .push(
+            &account_path("test", "account"),
+            root.revoke_keys(&[("retired", NOW + 50)], NOW).unwrap(),
+        )
+        .await;
     assert!(step(&mut run).is_none());
     assert_eq!(changed.now_or_never(), Some(Ok(())));
+    drop(producer);
+    assert_eq!(step(&mut run), Some(Err(StreamError::Unavailable)));
+    assert!(!served(&follower, "account"));
 }
