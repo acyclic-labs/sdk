@@ -197,6 +197,63 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
             .await?
             .value
     );
+    // Unsorted leaves share proper ancestors and include a duplicate, rather
+    // than being covered by an explicitly selected ancestor directory.
+    let leaves: Vec<_> = [
+        "/tree/nested/retained-alias",
+        "/tree/nested/file",
+        "/tree/nested/alias",
+        "/tree/nested/file",
+        "/tree/nested/retained",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let leaf_child = workspace
+        .fork::<_, _, crate::WorkspaceError>(
+            "selected-fork-leaf-child",
+            ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
+                .inherit_paths(leaves.clone()),
+            crate::PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            &mut |_| {
+                std::future::ready(Ok(crate::OperationReceipt {
+                    value: (),
+                    work: crate::WorkCounters::UNCHARGED,
+                }))
+            },
+        )
+        .await?
+        .value;
+    let leaf_head = leaf_child.head(B, &cancel).await?.value;
+    for path in ["/tree/nested/file", "/tree/nested/alias"] {
+        let selected = leaf_head.stat(path, B, &cancel).await?.value;
+        assert_eq!(selected.file_id, file.file_id);
+        assert_eq!(selected.link_count, 2);
+        assert_eq!(
+            leaf_child.read(path, 32, B, &cancel).await?.value.as_ref(),
+            b"linked body"
+        );
+    }
+    for path in ["/tree/nested/retained", "/tree/nested/retained-alias"] {
+        let selected = leaf_head.stat(path, B, &cancel).await?.value;
+        assert_eq!(selected.file_id, retained.file_id);
+        assert_eq!(selected.link_count, 2);
+    }
+    assert!(
+        leaf_child
+            .read("/outside-alias", 32, B, &cancel)
+            .await
+            .is_err()
+    );
+    assert!(leaf_child.read("/omitted", 32, B, &cancel).await.is_err());
+    assert!(
+        leaf_head
+            .matches_fork_selection(&source, Some(leaves), B, &cancel)
+            .await?
+            .value
+    );
     let cancellation = CancellationToken::new();
     let baseline = initial
         .matches_fork_selection(&source, Some(paths.clone()), B, &cancellation)

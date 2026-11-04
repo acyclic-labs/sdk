@@ -23,6 +23,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                         std::ops::Bound::Excluded(&name.0)
                     }),
                     super::names::CASE_FOLD_COLLISION_SCAN_PAGE,
+                    acyclic_collections::page::Direction::Ascending,
                 ),
                 DecodeLimits::for_volume(self.volume.config),
                 accounting,

@@ -18,6 +18,21 @@ impl FollowFilter {
     fn clauses(&self) -> &[Clause] {
         self.0.as_deref().map_or(&[], Vec::as_slice)
     }
+
+    /// Requires both admitted selections, preserving every authority ceiling.
+    /// An unrestricted selection contributes no additional clause.
+    pub fn intersection(&self, other: &Self) -> Self {
+        if self.0.is_none() {
+            return other.clone();
+        }
+        if other.0.is_none() {
+            return self.clone();
+        }
+        let mut clauses = Vec::with_capacity(self.clauses().len() + other.clauses().len());
+        clauses.extend_from_slice(self.clauses());
+        clauses.extend_from_slice(other.clauses());
+        Self(Some(Arc::new(clauses)))
+    }
     /// Validates and canonicalizes a requested subscription filter.
     pub fn new(requested: wire::SessionFilter) -> Result<Self, StreamError> {
         Ok(Self::from_clauses(Self::requested_clauses(requested)?))
@@ -797,6 +812,21 @@ mod tests {
             }
         }
         let forwarded = FollowFilter::new(original.transport_filter().unwrap()).unwrap();
+        let requested = FollowFilter(Some(Arc::new(vec![make(false, b"a", b"c")])));
+        let ceiling = FollowFilter(Some(Arc::new(vec![
+            make(true, b"a", b"m"),
+            make(true, b"b", b"z"),
+        ])));
+        let intersection = requested.intersection(&ceiling);
+        assert_eq!(intersection, original);
+        assert_eq!(
+            intersection.intersection(&FollowFilter::default()),
+            original
+        );
+        assert_eq!(
+            FollowFilter::default().intersection(&intersection),
+            original
+        );
         assert_eq!(original.digest(), forwarded.digest());
         assert!(forwarded.matches(&headers(&["b", "j"], "alice")));
         assert!(!forwarded.matches(&headers(&["b", "z"], "alice")));

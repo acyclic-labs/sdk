@@ -671,6 +671,7 @@ impl Owned<TransactionState> {
                 (
                     (None).map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
                     1,
+                    acyclic_collections::page::Direction::Ascending,
                 ),
                 DecodeLimits::for_volume(config),
                 accounting,
