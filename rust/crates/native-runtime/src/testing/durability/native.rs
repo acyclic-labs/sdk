@@ -170,7 +170,7 @@ fn namespace_interruption(operation: Operation, metered: bool, reissue: bool) ->
     }));
     let trace = schedule.durable_writes();
     let is_rename = matches!(operation, Operation::Rename);
-    let first_admissions = u64::from(metered) * (1 + u64::from(cfg!(windows) && is_rename));
+    let first_admissions = u64::from(metered) * (1 + 2 * u64::from(cfg!(windows) && is_rename));
     let refused = result.as_ref().err().is_some_and(|error| {
         error.kind() == io::ErrorKind::Interrupted
             && error
@@ -200,7 +200,14 @@ fn namespace_interruption(operation: Operation, metered: bool, reissue: bool) ->
     assert_eq!(renamed.get(), usize::from(is_rename));
     assert_eq!(
         observer.used_operations.load(Ordering::Acquire),
-        u64::from(metered) * if is_rename { 4 } else { 2 },
+        // Each Windows invocation prepares its source handle before admitting
+        // the fault-controlled rename and write-through durability attempt.
+        u64::from(metered)
+            * if is_rename {
+                4 + 2 * u64::from(cfg!(windows))
+            } else {
+                2
+            },
     );
     let trace = schedule.durable_writes();
     assert_eq!(trace.len(), if cfg!(unix) && is_rename { 3 } else { 2 });
