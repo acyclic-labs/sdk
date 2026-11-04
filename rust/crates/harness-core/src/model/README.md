@@ -8,8 +8,9 @@ until retirement; no prior node backing relocates as the history grows.
 
 The retained projection property compares complete output bytes and authentication
 traces with an independent baseline. It checks original custody retirement and
-equal original work/allocation deltas for equal history increments. The generated
-private-index property remains while other journal consumers use that index.
+equal original work/allocation deltas for equal history increments. Shared-index
+behavior is covered by `ordered_histories_preserve_values_branch_bounds_and_original_custody`
+and `refused_admission_never_constructs_or_publishes_and_preserves_prior_funding`.
 
 The retained production mutation restores a prefix visit before each result:
 
