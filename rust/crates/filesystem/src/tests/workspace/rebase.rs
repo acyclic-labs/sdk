@@ -15,7 +15,7 @@ async fn filtered_fork_rebase_preserves_local_and_parent_changes() -> Result<(),
     child.write_text("/local", "child").await?;
     parent.write_text("/omitted", "user edit").await?;
     assert!(matches!(
-        child.live_rebase(IdempotencyKey::new(), 64, 64, 16).await?,
+        unbounded!(child, live_rebase(IdempotencyKey::new(), 64, 64, 16))?,
         WorkspaceRebase::Rebased(_)
     ));
     assert_eq!(
@@ -135,8 +135,37 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
     agent.write_text("/agent", "local").await?;
     main.write_text("/upstream", "first").await?;
 
+    let cancellation = CancellationToken::new();
+    let refused = agent
+        .live_rebase(
+            IdempotencyKey::new(),
+            128,
+            128,
+            32,
+            WorkBudget {
+                backend_read_operations: 0,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .await;
+    assert!(
+        matches!(
+            refused,
+            Err(crate::OperationFailure {
+                error: WorkspaceError::Work(crate::WorkError::BudgetExceeded {
+                    counter: "backend_read_operations",
+                    ..
+                }),
+                ..
+            })
+        ),
+        "live rebase bypassed original read admission"
+    );
+
     let first_key = IdempotencyKey::new();
-    let WorkspaceRebase::Rebased(first) = agent.live_rebase(first_key, 128, 128, 32).await? else {
+    let WorkspaceRebase::Rebased(first) = unbounded!(agent, live_rebase(first_key, 128, 128, 32))?
+    else {
         return Err("first live rebase did not publish".into());
     };
     assert_eq!(
@@ -148,15 +177,13 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
         OwnedBytes::from_static(b"first")
     );
     assert!(matches!(
-        agent.live_rebase(first_key, 128, 128, 32).await?,
+        unbounded!(agent, live_rebase(first_key, 128, 128, 32))?,
         WorkspaceRebase::Current(_)
     ));
 
     main.write_text("/later", "second").await?;
     assert!(matches!(
-        agent
-            .live_rebase(IdempotencyKey::new(), 128, 128, 32)
-            .await?,
+        unbounded!(agent, live_rebase(IdempotencyKey::new(), 128, 128, 32))?,
         WorkspaceRebase::Rebased(_)
     ));
     assert_eq!(
@@ -185,9 +212,7 @@ async fn live_rebase_conflict_and_non_fork_leave_heads_unchanged() -> Result<(),
     let before = unbounded!(agent, head())?.id();
     main.write_text("/shared", "upstream").await?;
     assert!(matches!(
-        agent
-            .live_rebase(IdempotencyKey::new(), 128, 128, 32)
-            .await?,
+        unbounded!(agent, live_rebase(IdempotencyKey::new(), 128, 128, 32))?,
         WorkspaceRebase::Conflicted {
             truncated: false,
             ..
@@ -199,7 +224,7 @@ async fn live_rebase_conflict_and_non_fork_leave_heads_unchanged() -> Result<(),
         OwnedBytes::from_static(b"local")
     );
     assert!(matches!(
-        main.live_rebase(IdempotencyKey::new(), 128, 128, 32).await,
+        unbounded!(main, live_rebase(IdempotencyKey::new(), 128, 128, 32)),
         Err(WorkspaceError::NotFork)
     ));
     Ok(())
@@ -237,9 +262,7 @@ async fn live_rebase_merges_disjoint_sparse_ranges_without_materializing_file()
         TransactionCommit::Committed(_)
     ));
     assert!(matches!(
-        agent
-            .live_rebase(IdempotencyKey::new(), 128, 128, 32)
-            .await?,
+        unbounded!(agent, live_rebase(IdempotencyKey::new(), 128, 128, 32))?,
         WorkspaceRebase::Rebased(_)
     ));
     let merged = unbounded!(agent, read("/shared", 128))?;
@@ -315,9 +338,7 @@ three
             .await?;
         let before = unbounded!(agent, head())?.id();
 
-        let rebased = agent
-            .live_rebase(IdempotencyKey::new(), 128, 128, 32)
-            .await?;
+        let rebased = unbounded!(agent, live_rebase(IdempotencyKey::new(), 128, 128, 32))?;
         if replaced_text == base {
             assert!(matches!(rebased, WorkspaceRebase::Rebased(_)), "{case}");
             assert_eq!(
