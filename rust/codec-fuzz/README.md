@@ -763,6 +763,28 @@ conversion and must fail at `unique member projection moves all original
 diagnostic allocations`. These checks reuse the retained mixed-batch writer
 and its derived known/unknown attribution operands; they add no captured wire.
 
+The same `ErrorDetail` protobuf and JSON targets also retain the original
+status bytes through the owned status admission and check that its message and
+detail buffer move rather than copy. Native borrowed admission is compared
+against that same owner in `every_member_refusal_round_trips_its_original_status`.
+
+The JavaScript account's retained WASM control exercises the shipped account
+and request ports, including the actual bounded memory provider's refusal,
+derived future reasons, unknown protobuf fields, repeated binary metadata and
+malformed envelopes. `negative-controls/object_javascript_refusal.patch` removes
+only the original refusal field; the unchanged control must reject it at
+`original provider refusal survives JavaScript`.
+The JavaScript fuzz target uses the same public request port and its actual
+Rust writer, with arbitrary status detail bytes from the existing corpus:
+
+```sh
+node typescript/packages/objects/test/refusal.fuzz.mjs rust/codec-fuzz/corpus/protobuf/acyclic.objects.v1.ErrorDetail
+```
+
+Build the Objects package first using its documented build command. The target
+also accepts arbitrary byte inputs through its exported `fuzz` function, and
+checks the TypeScript adapter retains the same original envelope.
+
 Actors uses the same canonical `refusal::Cause`. Its original code, message
 and raw detail envelope survive the public client metadata projection, including
 unknown service codes and partial attribution. The protobuf and protobuf JSON

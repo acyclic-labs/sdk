@@ -1,0 +1,11 @@
+diff --git a/rust/crates/objects/src/binary/javascript.rs b/rust/crates/objects/src/binary/javascript.rs
+--- a/rust/crates/objects/src/binary/javascript.rs
++++ b/rust/crates/objects/src/binary/javascript.rs
+@@ -104,6 +104,6 @@
+     let _ = Reflect::set(
+         &result,
+-        &"refusal".into(),
++        &"discardedRefusal".into(),
+         &acyclic_auth::refusal::javascript::value(&value.status_parts()),
+     );
+     result.into()

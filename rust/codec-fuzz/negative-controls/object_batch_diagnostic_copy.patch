@@ -1,6 +1,6 @@
-diff --git a/rust/crates/objects/src/lib.rs b/rust/crates/objects/src/lib.rs
---- a/rust/crates/objects/src/lib.rs
-+++ b/rust/crates/objects/src/lib.rs
+diff --git a/rust/crates/objects/src/error.rs b/rust/crates/objects/src/error.rs
+--- a/rust/crates/objects/src/error.rs
++++ b/rust/crates/objects/src/error.rs
 @@ -211,10 +211,5 @@
  impl From<Error> for wire::ErrorDetail {
      fn from(error: Error) -> Self {
