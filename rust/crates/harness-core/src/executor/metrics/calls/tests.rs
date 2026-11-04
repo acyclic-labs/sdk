@@ -390,7 +390,9 @@ async fn receipt_projection_neither_copies_nor_scans_opaque_results() -> Result<
     let account = AccountId::new(b"original").map_err(export_error)?;
     for failure in [false, true] {
         let mut cost = None;
-        for length in [0, 65537] {
+        // Exercise opaque bodies through the original provider's admitted
+        // record format, leaving room for the call's indexed attributes.
+        for length in [0, acyclic_stream::MAX_RECORD_BYTES / 2] {
             let provider = Arc::new(MemoryStream::default());
             let call = CallPath::new(&caller, "result").map_err(export_error)?;
             publish(

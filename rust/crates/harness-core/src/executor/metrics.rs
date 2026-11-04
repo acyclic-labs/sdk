@@ -988,26 +988,42 @@ mod tests {
             for format in [Format::Arrow, Format::Parquet] {
                 let mut bytes = Vec::new();
                 write(&original, &mut bytes, format)?;
-                let decoded = match format {
+                let (schema, decoded) = match format {
                     Format::Arrow => {
-                        arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
-                            .map_err(export_error)?
-                            .collect::<std::result::Result<Vec<_>, _>>()
-                            .map_err(export_error)?
+                        let reader = arrow_ipc::reader::StreamReader::try_new(
+                            std::io::Cursor::new(bytes),
+                            None,
+                        )
+                        .map_err(export_error)?;
+                        (
+                            reader.schema(),
+                            reader
+                                .collect::<std::result::Result<Vec<_>, _>>()
+                                .map_err(export_error)?,
+                        )
                     }
                     Format::Parquet => {
-                        parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
-                            bytes::Bytes::from(bytes),
+                        let builder =
+                            parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+                                bytes::Bytes::from(bytes),
+                            )
+                            .map_err(export_error)?;
+                        // Parquet exposes file metadata on the builder; its
+                        // record batches carry only the projected fields.
+                        (
+                            builder.schema().clone(),
+                            builder
+                                .build()
+                                .map_err(export_error)?
+                                .collect::<std::result::Result<Vec<_>, _>>()
+                                .map_err(export_error)?,
                         )
-                        .map_err(export_error)?
-                        .build()
-                        .map_err(export_error)?
-                        .collect::<std::result::Result<Vec<_>, _>>()
-                        .map_err(export_error)?
                     }
                 };
+                assert_eq!(schema, original.data.schema());
                 assert_eq!(decoded.len(), 1);
-                assert_eq!(decoded[0], original.data);
+                assert_eq!(decoded[0].schema().fields(), schema.fields());
+                assert_eq!(decoded[0].columns(), original.data.columns());
                 if table == Table::ModelCalls {
                     let column = |name| decoded[0].column_by_name(name).expect("projected column");
                     assert_eq!(
