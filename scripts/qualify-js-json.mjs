@@ -15,9 +15,10 @@ const metadata = args.includes("--metadata");
 const array = args.includes("--array");
 const number = args.includes("--number");
 const revoked = args.includes("--revoked");
+const prototype = args.includes("--prototype");
 const selectedControl = retirement || bytes || metadata || array || number;
 const reuse = args.find(arg => arg.startsWith("--reuse="))?.slice("--reuse=".length);
-const recovery = `node scripts/qualify-js-json.mjs${retirement ? " --retirement" : bytes ? " --bytes" : metadata ? " --metadata" : array ? " --array" : number ? " --number" : ""}${red ? " --red" : ""}${quoted ? " --quoted" : ""}${revoked ? " --revoked" : ""}${reuse ? ` --reuse=${JSON.stringify(reuse)}` : ""}`;
+const recovery = `node scripts/qualify-js-json.mjs${retirement ? " --retirement" : bytes ? " --bytes" : metadata ? " --metadata" : array ? " --array" : number ? " --number" : ""}${red ? " --red" : ""}${quoted ? " --quoted" : ""}${revoked ? " --revoked" : ""}${prototype ? " --prototype" : ""}${reuse ? ` --reuse=${JSON.stringify(reuse)}` : ""}`;
 const test = bytes ? "external JSON bytes preserve engine tokens or refuse before rounding"
   : retirement ? "canonical admission releases JavaScript references after intrinsic failures"
   : "canonical admission selects entries before evaluating their values";
@@ -31,11 +32,12 @@ const run = (step, command, parameters, options = {}) => {
   if (result.error) fail(step, result.error.message);
   return result;
 };
-if (args.some(arg => !["--red", "--retirement", "--bytes", "--quoted", "--metadata", "--array", "--number", "--revoked"].includes(arg) && !arg.startsWith("--reuse="))
+if (args.some(arg => !["--red", "--retirement", "--bytes", "--quoted", "--metadata", "--array", "--number", "--revoked", "--prototype"].includes(arg) && !arg.startsWith("--reuse="))
   || new Set(args).size !== args.length || Number(retirement) + Number(bytes) + Number(metadata) + Number(array) + Number(number) > 1 || quoted && !(bytes && red)
   || args.filter(arg => arg.startsWith("--reuse=")).length > 1 || args.includes("--reuse=") || reuse && red || revoked && !(retirement && red)
+  || prototype && (!(retirement && red) || revoked)
   || red && !selectedControl) {
-  fail("arguments", "expected at most one control (--retirement, --bytes, --metadata, --array or --number); --red requires a control, --quoted requires --bytes --red, --revoked requires --retirement --red, and --reuse=<receipt> excludes --red",
+  fail("arguments", "expected at most one control (--retirement, --bytes, --metadata, --array or --number); --red requires a control, --quoted requires --bytes --red, --revoked or --prototype requires --retirement --red and excludes the other, and --reuse=<receipt> excludes --red",
     "node scripts/qualify-js-json.mjs --array --red");
 }
 
@@ -49,14 +51,16 @@ try {
   if (red) {
     try { original = readFileSync(production, "utf8"); }
     catch (error) { fail("read production admission source", String(error)); }
-    const entrance = retirement ? revoked ? "    let array = is_array(value)?;"
+    const entrance = retirement ? prototype ? "        let prototype: JsValue = js_sys::Reflect::get_prototype_of(value)?.into();"
+      : revoked ? "    let array = is_array(value)?;"
       : "        for key in object_keys(value)?.iter() {"
       : number ? "        if !crate::conversation::is_exact_js_number(number) {"
       : array ? "        let items = js_sys::Array::from_iterable(value.unchecked_ref::<js_sys::Array>())?;"
       : metadata ? "        let mut entries = Vec::new();"
       : quoted ? "        if quoted {" : "    reject_out_of_range_integer_tokens(bytes)?;";
     if (original.split(entrance).length !== 2) fail("admission mutation", "expected exactly one production entrance");
-    const replacement = retirement ? revoked ? "    let array = js_sys::Array::is_array(value);"
+    const replacement = retirement ? prototype ? "        let prototype: JsValue = js_sys::Object::get_prototype_of(value).into();"
+      : revoked ? "    let array = js_sys::Array::is_array(value);"
       : "        for key in js_sys::Object::keys(value.unchecked_ref::<js_sys::Object>()).iter() {"
       : number ? "        if false && !crate::conversation::is_exact_js_number(number) {"
       : array ? "        let items = value.unchecked_ref::<js_sys::Array>();"
@@ -194,7 +198,7 @@ try {
     : array ? `javascript-json-array-${red ? "red" : "fixed"}.json`
     : metadata ? `javascript-json-metadata-${red ? "red" : "fixed"}.json`
     : bytes ? `javascript-json-bytes-${quoted ? "quoted-" : ""}${red ? "red" : "fixed"}.json`
-    : retirement ? `javascript-json-retirement-${revoked ? "revoked-" : ""}${red ? "red" : "fixed"}.json`
+    : retirement ? `javascript-json-retirement-${prototype ? "prototype-" : revoked ? "revoked-" : ""}${red ? "red" : "fixed"}.json`
     : red ? "javascript-json-qualification.json" : "javascript-json-fixed-qualification.json";
   try { writeFileSync(new URL(`../${receiptName}`, import.meta.url), receipt); }
   catch (error) { fail("qualification receipt", String(error)); }
