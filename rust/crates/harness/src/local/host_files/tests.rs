@@ -126,12 +126,14 @@ async fn carrier_io_publishes_without_blocking_its_coordinator() -> Result<()> {
         report.snapshot().is_empty(),
         "physical completion retires its wait"
     );
-    let reply: Value = serde_json::from_slice(&regular_bytes(&reply_path(&status, operation))?)
-        .map_err(storage)?;
+    let reply: Value =
+        serde_json::from_slice(&regular_bytes(&reply_path(&status, operation), u64::MAX)?)
+            .map_err(storage)?;
     assert_eq!(reply["ok"], serde_json::json!({"reply": 7}));
     // Publishing a diagnostic does not retire its original allocation. Use a
     // real rejected directory read and keep that exact cause until withdrawal.
-    let original = regular_bytes(&files.requests).expect_err("a directory is not a reply");
+    let original =
+        regular_bytes(&files.requests, u64::MAX).expect_err("a directory is not a reply");
     let diagnostic = |cause: &Error| match cause {
         Error::Invalid(message) | Error::Storage(message) => message.as_ptr(),
         cause => panic!("directory refusal must retain its diagnostic: {cause}"),
@@ -160,7 +162,7 @@ async fn carrier_io_publishes_without_blocking_its_coordinator() -> Result<()> {
         .await?;
     assert!(!files.served.known.contains_key(&failed));
     assert!(matches!(
-        regular_bytes(&reply_path(&status, failed)),
+        regular_bytes(&reply_path(&status, failed), u64::MAX),
         Err(Error::NotFound(_))
     ));
     drop(files);
@@ -219,7 +221,8 @@ async fn carrier_io_producer_loss_keeps_its_failure_and_releases_its_files() -> 
 
     let (_checkout, mut files, probe) = carrier_io()?;
     let operation = OperationId::new();
-    let original = regular_bytes(&files.requests).expect_err("a directory is not a reply");
+    let original =
+        regular_bytes(&files.requests, u64::MAX).expect_err("a directory is not a reply");
     let message = original.to_string();
     let code = original.code();
     files
@@ -1414,8 +1417,8 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     };
     // Compare both original native failures, without pinning diagnostic wording.
     // Neither operation can remove this directory, including during retirement.
-    let admission =
-        regular_bytes(&rejected).expect_err("a directory cannot be admitted as a request");
+    let admission = regular_bytes(&rejected, MAXIMUM_REQUEST_BYTES)
+        .expect_err("a directory cannot be admitted as a request");
     let withdrawal =
         remove_projection(&rejected).expect_err("file withdrawal cannot remove a directory");
     assert_eq!(causes.primary().to_string(), admission.to_string());

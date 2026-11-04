@@ -37,6 +37,11 @@ withdrawn reply publication must fail the physical reply-presence assertion.
 `omit-large-reply.patch` must fail full reply decoding on the original large
 event; `claim-unknown-fields.patch` must fail unknown-field rejection through
 the actual event codec, including the production-generated empty claim.
+`omit-input-protection.patch` must fail the original opened-file refusal for a
+64 MiB + 1 sparse input projection. The same construction checks that production
+admission withdraws this untrusted file without dispatching an action. This
+protective allocation bound is independent of native event admission and does
+not cap published reply envelopes. It adds no syscall, allocation or copy.
 Compilation/setup failures do not count as detected defects. Reverse each patch
 before another mutation or the positive run.
 

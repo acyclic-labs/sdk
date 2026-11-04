@@ -21,13 +21,36 @@ impl WorkspaceInput {
         let status = directory.join("status");
         std::fs::create_dir(&status).map_err(storage)?;
         let status = acyclic_fs::hold_root(&status).map_err(native_file_error)?;
-        Ok(Self {
+        let input = Self {
             workspace,
             directory,
             requests,
             status,
             _checkout: checkout,
-        })
+        };
+        // An untrusted sparse file must be refused before its claimed length
+        // can fund an allocation, then withdrawn without dispatching work.
+        let operation = OperationId::from_bytes([0; 16]);
+        let leaf = OsString::from(format!("{operation}.json"));
+        let path = input.requests.join(&leaf);
+        std::fs::File::create(&path)
+            .and_then(|file| file.set_len(MAXIMUM_REQUEST_BYTES + 1))
+            .map_err(storage)?;
+        assert!(
+            matches!(
+                regular_bytes(&path, MAXIMUM_REQUEST_BYTES),
+                Err(Error::Invalid(_))
+            ),
+            "oversized input must be refused before reading"
+        );
+        let mut served = Served::default();
+        served.observe(&input.requests, uuid::Uuid::nil(), &leaf)?;
+        assert!(served.start().is_empty(), "oversized input dispatched");
+        assert!(
+            !path.try_exists().map_err(storage)?,
+            "oversized input was not withdrawn"
+        );
+        Ok(input)
     }
 
     /// Checks original writer bytes and arbitrary bytes at deployed admission.
@@ -169,7 +192,7 @@ impl WorkspaceInput {
                             crate::client::decode_command_result(
                                 operation,
                                 0,
-                                &regular_bytes(&reply)?,
+                                &regular_bytes(&reply, u64::MAX)?,
                             )?,
                             outcome,
                         );

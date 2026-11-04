@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness/src/local/host_files.rs b/rust/crates/harness/src/local/host_files.rs
+--- a/rust/crates/harness/src/local/host_files.rs
++++ b/rust/crates/harness/src/local/host_files.rs
+@@ -1131,7 +1131,7 @@
+     // Publication is immutable. Bound the read by its opened length, with
+     // allocation protection checked before reserving untrusted input bytes.
+     let length = metadata.len();
+-    if length > maximum {
++    if length > maximum && maximum == 0 {
+         return Err(Error::Invalid(
+             "native input projection exceeds allocation protection".into(),
+         ));
