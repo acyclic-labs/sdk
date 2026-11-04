@@ -128,11 +128,11 @@ pub async fn put_blobs(
     }
     let revision = covering(outcomes.iter().flatten());
     let results = outcomes
-        .iter()
+        .into_iter()
         .map(|outcome| wire::PutResult {
             outcome: Some(match outcome {
-                Ok(put) => wire::put_result::Outcome::Put(convert::wire_put(put)),
-                Err(error) => wire::put_result::Outcome::Error(error.code.into()),
+                Ok(put) => wire::put_result::Outcome::Put(convert::wire_put(&put)),
+                Err(error) => wire::put_result::Outcome::Error((&error).into()),
             }),
         })
         .collect();

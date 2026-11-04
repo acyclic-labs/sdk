@@ -65,7 +65,7 @@ message PutResult {
   oneof outcome {
     PutResponse put = 1;
     // This member's failure; it leaves every other member as reported.
-    ErrorCode error = 2;
+    ErrorDetail error = 2;
   }
 }
 message PutBlobsResponse {

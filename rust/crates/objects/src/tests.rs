@@ -1994,9 +1994,8 @@ async fn a_remote_put_batch_waits_for_durability_once_and_fails_members_alone()
                     Some(put_response::Outcome::AlreadyExists(_)) => "exists",
                     _ => "unknown",
                 },
-                Some(put_result::Outcome::Error(code)) => {
-                    ErrorCode::try_from(code).map_or("unspecified", |code| code.as_str_name())
-                }
+                Some(put_result::Outcome::Error(detail)) => ErrorCode::try_from(detail.code)
+                    .map_or("unspecified", |code| code.as_str_name()),
                 None => "absent",
             })
             .collect();

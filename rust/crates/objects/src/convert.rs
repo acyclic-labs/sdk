@@ -320,10 +320,8 @@ pub(crate) fn verified_puts(
             Some(wire::put_result::Outcome::Put(put)) => Ok(Ok(
                 verified_put(put, digest, length)?.committed_at(revision.cloned())
             )),
-            Some(wire::put_result::Outcome::Error(code)) => wire::ErrorCode::try_from(*code)
-                .ok()
-                .filter(|code| *code != wire::ErrorCode::Unspecified)
-                .map(|code| Err(code.into()))
+            Some(wire::put_result::Outcome::Error(detail)) => Error::from_detail(detail.clone())
+                .map(Err)
                 .ok_or_else(|| wire::ErrorCode::Unavailable.into()),
             None => Err(wire::ErrorCode::Unavailable.into()),
         })

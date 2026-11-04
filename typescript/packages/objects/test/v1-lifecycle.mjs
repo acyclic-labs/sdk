@@ -53,7 +53,7 @@ export async function lifecycle(provider) {
   // One call, answered member by member in order: a failed member stands alone.
   const batched = new Uint8Array([4, 5, 6]);
   const batch = await provider.putBlobs([{ body: batched, references: [child] }, { body: new Uint8Array([7]), references: [absent] }, { body: tail, references: [digest] }]);
-  assert.deepEqual(batch.map(result => result.outcome.case === "put" ? result.outcome.value.outcome.case : wire.ErrorCode[result.outcome.value]), ["created", "MISSING_REFERENCE", "alreadyExists"]);
+  assert.deepEqual(batch.map(result => result.outcome.case === "put" ? result.outcome.value.outcome.case : wire.ErrorCode[result.outcome.value.code]), ["created", "MISSING_REFERENCE", "alreadyExists"]);
   assert.deepEqual((await provider.head(verified(batch[0].outcome.value).digest)).references.map(value => value.blake3), [child.blake3]);
   assert.deepEqual(await provider.putBlobs([]), []);
 
