@@ -295,6 +295,15 @@ impl RetainedAllocation {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn standalone_live_bytes(&self) -> Option<u64> {
+        let ledger = self.standalone_ledger()?.upgrade()?;
+        let state = ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Some(state.allocations.live_bytes())
+    }
+
     /// Combines leases from the same original ledger without admitting work.
     pub(crate) fn absorb(&mut self, incoming: &mut Self) -> Result<(), crate::FsError> {
         match (self, incoming) {
