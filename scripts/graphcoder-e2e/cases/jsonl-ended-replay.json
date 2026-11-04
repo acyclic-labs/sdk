@@ -42,7 +42,7 @@
       "stdout_contains": [
         "FIRST_ANSWER",
         "\"id\":\"b\"",
-        "scripted refusal"
+        "model HTTP status 400"
       ]
     },
     {
