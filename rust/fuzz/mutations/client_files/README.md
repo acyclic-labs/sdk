@@ -27,6 +27,12 @@ the next control and before running the restored corpus.
 | `layout-version.patch` | `unsupported-layout-version` | `layout version admitted outside v1` |
 | `command-path-duplicates.patch` | `duplicate-request-path` | `client files admitted duplicate paths` |
 | `reply-file-path.patch` | `mismatched-reply-path` | `reply file path did not match request` |
+| `command-valid-refusal.patch` | `committed-snapshot` | `client files encoder and decoder disagree on admission` |
+
+The command oracle compares the original caller's encoder admission with the
+host's decoder admission. Both use the same command validation, so a decoder
+that rejects a valid session query cannot silently return from the target.
+The recorded successful query is also the control for that failure class.
 
 The restored corpus must pass. Retain the instrumented coverage report with
 the exact source and invocation; a bounded run does not establish complete

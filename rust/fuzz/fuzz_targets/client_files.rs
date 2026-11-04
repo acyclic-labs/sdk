@@ -30,10 +30,26 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     let (command, reply) = data.split_at(split);
-    let Ok(command) = PreparedCommand::decode_whole(command) else {
+    let Ok(typed) = serde_json::from_slice::<AgentCommand>(command) else {
         return;
     };
-    let encoded = PreparedCommand::new(&command).expect("admitted command encodes");
+    if !matches!(
+        typed,
+        AgentCommand::ClientFiles { .. } | AgentCommand::PublishClientFiles { .. }
+    ) {
+        return;
+    }
+    // Compare the host decoder with admission by the original caller encoder.
+    // Starting from a decoded command alone would miss refusals of valid input.
+    let encoded = PreparedCommand::new(&typed);
+    let decoded = PreparedCommand::decode_whole(command);
+    assert_eq!(
+        encoded.is_ok(),
+        decoded.is_ok(),
+        "client files encoder and decoder disagree on admission"
+    );
+    let Ok(command) = decoded else { return };
+    let encoded = encoded.expect("admitted command encodes");
     assert_eq!(
         serde_json::to_value(&command).unwrap(),
         serde_json::to_value(encoded.decoded().unwrap()).unwrap()
