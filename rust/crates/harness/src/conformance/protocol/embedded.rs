@@ -2,7 +2,7 @@
 use super::*;
 use crate::conformance::{Storage, observe::Observed};
 use crate::hosting::{self, Bound, Placement, RootRequest, Server, Serving, Turns, VerifiedCaller};
-use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock, wire};
+use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
 use acyclic_auth::{authority::PolicyDecision, contract::Principal};
 use acyclic_fs::{Fs, StreamAuthorityStore};
 use acyclic_harness_core::{
@@ -16,7 +16,7 @@ use acyclic_harness_core::{
     tool::{JsonToolProjection, Tool, ToolExecutor, ToolInvocation, ToolRegistry, ToolResult},
 };
 use acyclic_stream::StreamProviderExt as _;
-use acyclic_stream::{BoxProviderStream, session::Client};
+use acyclic_stream::session::Client;
 use futures::TryFutureExt as _;
 use prost::Message as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -189,16 +189,7 @@ pub async fn open<B: Backend + ?Sized>(
         None,
     );
     client.register_credential(0, credential(server.resource()))?;
-    let binding = wire::InvokeActorRequest {
-        deployment_envelope: Vec::new(),
-        actor_id: "root".into(),
-        method: "POST".into(),
-        url: "https://agents.invalid/command".into(),
-        namespace: Some("agents".into()),
-        account_id: b"account".to_vec(),
-        ..Default::default()
-    }
-    .encode_to_vec();
+    let binding = server.binding().encode_to_vec();
     Ok(Box::new(Embedded {
         _storage: storage,
         bound,
