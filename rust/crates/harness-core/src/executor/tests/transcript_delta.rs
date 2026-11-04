@@ -24,9 +24,13 @@ fn message(index: usize) -> ModelMessage {
     }
 }
 
-#[tokio::test]
+#[test]
 #[cfg(feature = "filesystem")]
-async fn a_thousand_request_deltas_write_only_the_suffix_and_reopen_exact_bytes() -> Result<()> {
+fn a_thousand_request_deltas_write_only_the_suffix_and_reopen_exact_bytes() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| Error::Storage(error.to_string()))?;
     let issuer = crate::core::AuthorityRoot::new(
         "segments",
         [91; 32],
@@ -53,38 +57,35 @@ async fn a_thousand_request_deltas_write_only_the_suffix_and_reopen_exact_bytes(
         assert_eq!(prepared.request().messages.len(), step);
         let key = format!("request:{step}");
         let reads = journal.4.load(Ordering::SeqCst);
-        let reference = segments::stage_request(
-            &journal,
-            operation,
-            &key,
-            &prepared,
-            previous.as_ref(),
-            None,
-        )
-        .await?;
+        let (reference, trace) =
+            acyclic_test_support::differential::observe::<_, _, (&'static str, u64)>(
+                || (),
+                |()| {
+                    runtime.block_on(segments::stage_request(
+                        &journal,
+                        operation,
+                        &key,
+                        &prepared,
+                        previous.as_ref(),
+                        None,
+                    ))
+                },
+            );
+        let reference = reference?;
         assert_eq!(
             journal.4.load(Ordering::SeqCst) - reads,
             usize::from(step > 2)
         );
-        let prefix = format!("{operation}:{key}");
-        let (files, bytes) = {
-            let stored = journal.1.lock().unwrap();
-            let (files, bytes) = [
-                format!("{prefix}:header"),
-                format!("{prefix}:messages"),
-                prefix,
-            ]
+        let (files, bytes) = trace
             .iter()
-            .filter_map(|key| stored.get(key))
-            .fold((0, 0), |(files, bytes), (_, value)| {
-                (files + 1, bytes + value.len())
+            .filter(|(kind, _)| *kind == "journal stage")
+            .fold((0, 0), |(files, bytes), (_, length)| {
+                (files + 1, bytes + length)
             });
-            // This journal is dedicated to the immutable request writer. The
-            // total also catches unexpected files without scanning old steps.
-            total_files += files;
-            assert_eq!(stored.len(), total_files, "unaccounted request files");
-            (files, bytes)
-        };
+        // Observe every staged payload, including content-bound keys, without
+        // inspecting history. The total also detects missing or extra records.
+        total_files += files;
+        assert_eq!(journal.1.lock().unwrap().len(), total_files);
         assert_eq!(
             files,
             match step {
@@ -96,23 +97,26 @@ async fn a_thousand_request_deltas_write_only_the_suffix_and_reopen_exact_bytes(
         assert!(bytes < 4096, "step {step} encoded {bytes} bytes");
         largest_delta = largest_delta.max(bytes);
         if [1, 100, 1000].contains(&step) {
-            let reopened =
-                load_model_request(&journal, &reference, Limits::default(), None).await?;
+            let reopened = runtime.block_on(load_model_request(
+                &journal,
+                &reference,
+                Limits::default(),
+                None,
+            ))?;
             assert_eq!(reopened.bytes(), prepared.bytes());
             assert_eq!(reopened.request_digest(), prepared.request_digest());
             let expected = request(&(1..=step).map(message).collect::<Vec<_>>())?;
             assert_eq!(reopened.request(), expected.request());
             assert_eq!(reopened.bytes(), expected.bytes());
             assert_eq!(
-                segments::stage_request(
+                runtime.block_on(segments::stage_request(
                     &journal,
                     operation,
                     &key,
                     &expected,
                     previous.as_ref(),
                     None,
-                )
-                .await?,
+                ))?,
                 reference
             );
             if step == 1000 {
