@@ -658,16 +658,10 @@ pub(super) async fn stage_projection(
     accounting: Option<&ContextAccounting>,
     io: Option<&PreparationIo>,
 ) -> Result<FileRef> {
-    // This is the sole persisted projection schema, including inline context
-    // and request-bound accounting. Validate it before either its event or request
-    // can be published; per-message admission is insufficient.
+    // Admit projection metadata against the exact immutable request whose
+    // message and instruction bounds were already established at preparation.
+    crate::context::validate_projected_request(&projection.context, prepared, io)?;
     let messages = &prepared.request().messages;
-    crate::context::validate_projected_messages(
-        &projection.context,
-        messages,
-        prepared.admitted_limits(),
-        io,
-    )?;
     stage_json(
         journal,
         operation,
