@@ -378,21 +378,7 @@ impl NativeMountRecoveryOwner {
         };
         if let Err(error) = result {
             // Constructor rejection waits for the physical acquisition prefix to retire.
-            if let Some(retirement) = owner.retirement.take() {
-                let _ = retirement.send(());
-            }
-            let mut state = owner
-                .shared
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            while state.is_some() {
-                state = owner
-                    .shared
-                    .wake
-                    .wait(state)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-            }
+            wait_for_retirement(owner)?;
             return Err(error);
         }
         Ok(owner)
@@ -911,7 +897,6 @@ fn retire_recovery(
     drop(_closure);
 }
 
-#[cfg(test)]
 pub(super) fn wait_for_retirement(
     mut owner: NativeMountRecoveryOwner,
 ) -> Result<(), NativeMountError> {
