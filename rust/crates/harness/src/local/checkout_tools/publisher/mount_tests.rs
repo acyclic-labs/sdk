@@ -343,10 +343,23 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         )
         .await?;
         assert_eq!(result.value["text"], "first");
-        assert_eq!(
-            result.value["file"],
-            serde_json::to_value(&file).map_err(storage)?
-        );
+        let selected: crate::tool::files::FileReadSource =
+            serde_json::from_value(result.value["file"].clone()).map_err(storage)?;
+        match (version.is_null(), selected) {
+            (true, crate::tool::files::FileReadSource::Authored(selected)) => {
+                assert_eq!(selected.volume, *file.volume());
+                assert_eq!(selected.path, file.path());
+                assert_eq!(selected.byte_length, file.descriptor().byte_length());
+                assert_eq!(
+                    hex::encode(selected.generation.as_resource().key()),
+                    file.version()
+                );
+            }
+            (false, crate::tool::files::FileReadSource::Content(selected)) => {
+                assert_eq!(selected, file);
+            }
+            (_, selected) => panic!("read returned another source kind: {selected:?}"),
+        }
         assert!(projected.to_string().contains(path));
     }
     let wrong_path = run(
