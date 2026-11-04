@@ -157,8 +157,8 @@ impl HostWorkspaceOwner {
     /// withdraws it from this original held directory after reading its reply.
     /// An uncertain observation retains the result.
     #[must_use]
-    pub fn with_requests(mut self, requests: acyclic_fs::HeldRoot) -> Self {
-        self.requests = Some(Arc::new(requests));
+    pub fn with_requests(mut self, requests: Arc<acyclic_fs::HeldRoot>) -> Self {
+        self.requests = Some(requests);
         self
     }
 

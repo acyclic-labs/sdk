@@ -726,9 +726,11 @@ pub async fn serve_until(
         )
         .map_err(storage)?,
     );
-    let request_root = directory
-        .create_directories(Path::new("requests"), acyclic_fs::NativeDurability::Durable)
-        .map_err(storage)?;
+    let request_root = Arc::new(
+        directory
+            .create_directories(Path::new("requests"), acyclic_fs::NativeDurability::Durable)
+            .map_err(storage)?,
+    );
     let status = directory
         .create_directories(Path::new("status"), acyclic_fs::NativeDurability::Durable)
         .map_err(storage)?;
@@ -747,7 +749,8 @@ pub async fn serve_until(
     let bytes = serde_json::to_vec(&endpoint).map_err(storage)?;
     let descriptor = directory.path().join("owner.json");
     immutable(&descriptor, &bytes)?;
-    let owner = HostWorkspaceOwner::new(Arc::clone(&local))?.with_requests(request_root);
+    let owner =
+        HostWorkspaceOwner::new(Arc::clone(&local))?.with_requests(Arc::clone(&request_root));
     // Notifications name the canonical paths; a non-canonical root would
     // turn every one into an overflow rescan.
     let requests = std::fs::canonicalize(directory.path().join("requests")).map_err(storage)?;
@@ -762,7 +765,7 @@ pub async fn serve_until(
         .map_err(storage)?;
     let files = CarrierIo {
         served: Served::default(),
-        requests,
+        requests: request_root,
         status,
         _ownership: Arc::clone(&ownership),
     };
@@ -860,7 +863,7 @@ struct Served {
 /// owner lock fences every accepted write even if its observer disappears.
 struct CarrierIo {
     served: Served,
-    requests: PathBuf,
+    requests: Arc<acyclic_fs::HeldRoot>,
     status: acyclic_fs::HeldRoot,
     _ownership: Arc<acyclic_native_runtime::FileLock>,
 }
@@ -888,7 +891,13 @@ impl CarrierIo {
 impl Served {
     /// Applies what notifications reported: each named request is admitted
     /// or withdrawn on its own; only an overflow lists the whole directory.
-    fn touch(&mut self, requests: &Path, session: uuid::Uuid, touched: Touched) -> Result<()> {
+    fn touch(
+        &mut self,
+        requests: &acyclic_fs::HeldRoot,
+        status: &acyclic_fs::HeldRoot,
+        session: uuid::Uuid,
+        touched: Touched,
+    ) -> Result<()> {
         if let Some(failure) = touched.failure {
             return Err(Error::Storage(failure));
         }
@@ -898,8 +907,8 @@ impl Served {
                 self.rescans += 1;
             }
             let mut names = touched.names;
-            for entry in std::fs::read_dir(requests).map_err(storage)? {
-                names.insert(entry.map_err(storage)?.file_name());
+            for name in requests.read_names().map_err(native_file_error)? {
+                names.insert(name.map_err(native_file_error)?);
             }
             // A known request absent from the listing was withdrawn.
             names.extend(
@@ -912,36 +921,39 @@ impl Served {
             touched.names
         };
         for name in names {
-            self.observe(requests, session, &name)?;
+            self.observe(requests, status, session, &name)?;
         }
         Ok(())
     }
 
     fn observe(
         &mut self,
-        requests: &Path,
+        requests: &acyclic_fs::HeldRoot,
+        status: &acyclic_fs::HeldRoot,
         session: uuid::Uuid,
         name: &std::ffi::OsStr,
     ) -> Result<()> {
-        let path = requests.join(name);
+        let path = Path::new(name);
         if path.extension().is_none_or(|extension| extension != "json") {
             return Ok(());
         }
         let Some(operation) = operation_leaf(name) else {
             // Not a request record; see the invalid-request case below.
-            let _ = remove_projection(&path);
+            let _ = remove_held_projection(requests, path);
             return Ok(());
         };
         if self.known.contains_key(&operation) {
             // A known request changes only by its withdrawal.
-            if std::fs::symlink_metadata(&path).is_err() {
-                self.withdraw(requests, operation)?;
+            match requests.open_file(path, false).map_err(native_file_error) {
+                Ok(_) => {}
+                Err(Error::NotFound(_)) => self.withdraw(status, operation)?,
+                Err(error) => return Err(error),
             }
             return Ok(());
         }
         // Request projections are writable by native tools. Invalid input
         // must not terminate the trusted owner or dispatch another action.
-        let request = regular_bytes(&path, MAXIMUM_REQUEST_BYTES).and_then(|bytes| {
+        let request = held_bytes(requests, path, MAXIMUM_REQUEST_BYTES).and_then(|bytes| {
             let request: Request = serde_json::from_slice(&bytes).map_err(storage)?;
             if request.session != session || request.operation != operation {
                 return Err(Error::Unauthorized(
@@ -960,7 +972,7 @@ impl Served {
             // Held-root removal unlinks the projection itself, never a
             // symlink target. Clients keep their durable command records.
             Err(admission) => {
-                if let Err(cleanup) = remove_projection(&path) {
+                if let Err(cleanup) = remove_held_projection(requests, path) {
                     // No withdrawal event can be produced. End the original
                     // owner with both causes instead of abandoning its waiter.
                     return Error::after_cleanup(Err(admission), Err(cleanup));
@@ -971,7 +983,7 @@ impl Served {
     }
 
     /// Withdrawal retires only this request's reply, if already published.
-    fn withdraw(&mut self, requests: &Path, operation: OperationId) -> Result<()> {
+    fn withdraw(&mut self, status: &acyclic_fs::HeldRoot, operation: OperationId) -> Result<()> {
         let std::collections::hash_map::Entry::Occupied(mut tracked) = self.known.entry(operation)
         else {
             return Ok(());
@@ -984,12 +996,8 @@ impl Served {
                 return Ok(());
             }
             Tracked::Answered(cause) => {
-                let withdrawal = requests
-                    .parent()
-                    .ok_or_else(|| Error::Invalid("native request directory has no parent".into()))
-                    .and_then(|directory| {
-                        remove_projection(&reply_path(&directory.join("status"), operation))
-                    });
+                let withdrawal =
+                    remove_held_projection(status, Path::new(&format!("{operation}.json")));
                 match withdrawal {
                     Ok(()) | Err(Error::NotFound(_)) => {}
                     Err(error) => {
@@ -1079,7 +1087,9 @@ async fn serve_requests(
         if touched.rescan || !touched.names.is_empty() || touched.failure.is_some() {
             files = files
                 .apply(session, move |files| {
-                    files.served.touch(&files.requests, session, touched)
+                    files
+                        .served
+                        .touch(&files.requests, &files.status, session, touched)
                 })
                 .await?;
         }
@@ -1102,8 +1112,12 @@ async fn serve_requests(
 
 fn remove_projection(path: &Path) -> Result<()> {
     let (parent, leaf) = projection_parent(path)?;
+    remove_held_projection(&parent, &leaf)
+}
+
+fn remove_held_projection(parent: &acyclic_fs::HeldRoot, leaf: &Path) -> Result<()> {
     match parent
-        .remove_file(&leaf, acyclic_fs::NativeDurability::Durable)
+        .remove_file(leaf, acyclic_fs::NativeDurability::Durable)
         .map_err(native_file_error)
     {
         Ok(()) | Err(Error::NotFound(_)) => Ok(()),
@@ -1113,7 +1127,11 @@ fn remove_projection(path: &Path) -> Result<()> {
 
 fn regular_bytes(path: &Path, maximum: u64) -> Result<Vec<u8>> {
     let (parent, leaf) = projection_parent(path)?;
-    let file = parent.open_file(&leaf, false).map_err(native_file_error)?;
+    held_bytes(&parent, &leaf, maximum)
+}
+
+fn held_bytes(parent: &acyclic_fs::HeldRoot, leaf: &Path, maximum: u64) -> Result<Vec<u8>> {
+    let file = parent.open_file(leaf, false).map_err(native_file_error)?;
     let metadata = file.metadata().map_err(storage)?;
     if !metadata.is_file() {
         return Err(Error::Invalid(

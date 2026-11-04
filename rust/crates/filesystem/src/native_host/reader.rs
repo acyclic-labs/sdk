@@ -20,7 +20,7 @@ impl HostStatReader {
         &mut self,
         work: &mut W,
     ) -> Result<Option<(HostListedEntry, W::Allocation)>, W::Error> {
-        self.next_with_handle::<W, true>(work)
+        self.next_with_handle::<W, true, true>(work)
     }
     #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn next_metadata<W: NativeHostWork>(
@@ -37,14 +37,33 @@ impl HostStatReader {
         }
         #[cfg(target_os = "linux")]
         {
-            self.next_with_handle::<W, false>(work)
+            self.next_with_handle::<W, false, true>(work)
         }
         #[cfg(not(target_os = "linux"))]
         {
             self.next(work)
         }
     }
-    fn next_with_handle<W: NativeHostWork, const HANDLE: bool>(
+    pub(crate) fn next_name<W: NativeHostWork>(
+        &mut self,
+        work: &mut W,
+    ) -> Result<Option<(OsString, W::Allocation)>, W::Error> {
+        let Some((entry, allocation)) = self.next_with_handle::<W, false, false>(work)? else {
+            return Ok(None);
+        };
+        #[unix]
+        {
+            Ok(Some((entry.name, allocation)))
+        }
+        #[windows]
+        {
+            let name = decode_windows_name(&entry.name, work);
+            drop(entry);
+            work.release(allocation)?;
+            name.map(Some)
+        }
+    }
+    fn next_with_handle<W: NativeHostWork, const HANDLE: bool, const STAT: bool>(
         &mut self,
         work: &mut W,
     ) -> Result<Option<(HostListedEntry, W::Allocation)>, W::Error> {
@@ -81,6 +100,9 @@ impl HostStatReader {
             let name = OsString::from_vec(name);
             let result = (|| {
                 work.record(copied)?;
+                if !STAT {
+                    return Ok(None);
+                }
                 #[cfg(unix)]
                 {
                     #[cfg(target_os = "linux")]
@@ -332,9 +354,27 @@ pub(crate) fn read_dir_held<W: NativeHostWork>(
     directory: &Dir,
     work: &mut W,
 ) -> Result<(HostStatReader, W::Allocation), W::Error> {
+    read_directory::<W, true>(directory, work)
+}
+
+pub(crate) fn read_names_held<W: NativeHostWork>(
+    directory: &Dir,
+    work: &mut W,
+) -> Result<(HostStatReader, W::Allocation), W::Error> {
+    read_directory::<W, false>(directory, work)
+}
+
+fn read_directory<W: NativeHostWork, const STAT: bool>(
+    directory: &Dir,
+    work: &mut W,
+) -> Result<(HostStatReader, W::Allocation), W::Error> {
     #[cfg(windows)]
-    let volume_serial_number = u32::try_from(directory_identity(directory, work)?.device)
-        .map_err(|_| W::invalid_request())?;
+    let volume_serial_number = if STAT {
+        u32::try_from(directory_identity(directory, work)?.device)
+            .map_err(|_| W::invalid_request())?
+    } else {
+        0
+    };
     #[cfg(unix)]
     let file = {
         let flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY;
