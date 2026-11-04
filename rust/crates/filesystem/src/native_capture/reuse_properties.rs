@@ -65,6 +65,16 @@ fn reuse_matches_full_recapture_for_metadata_links_and_empty_representations()
     acyclic_native_runtime::initialize_native_io_services()?;
     let _inline = acyclic_native_runtime::InlineBlocking::enter();
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    let fs = crate::Fs::memory();
+    // Every edit starts from the same immutable empty head. Capture changes
+    // only its private checkout; workspace creation is not part of the oracle.
+    let workspace = runtime
+        .block_on(fs.create_workspace(
+            "reuse-property",
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        ))?
+        .value;
     let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
         cases: 64,
         source_file: Some(file!()),
@@ -96,12 +106,6 @@ fn reuse_matches_full_recapture_for_metadata_links_and_empty_representations()
                     let cancellation = CancellationToken::new();
                     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
                         .unwrap();
-                    let fs = crate::Fs::memory();
-                    let workspace = fs
-                        .create_workspace("reuse-property", work.budget(), &cancellation)
-                        .await
-                        .unwrap()
-                        .value;
                     let mut initial = workspace
                         .checkout(
                             crate::model::GenerationSelector::Head,

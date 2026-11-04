@@ -1010,17 +1010,22 @@ async fn report_linux_exact_materializer_costs() -> Result<(), Box<dyn std::erro
     let mut transaction = workspace
         .begin_transaction(IdempotencyKey::new(), &work, &cancel)
         .await?;
-    transaction
-        .create_dir_all("/hot/d000", &work, &cancel)
-        .await?;
-    for index in 0..100 {
-        transaction
-            .write_text(
-                &format!("/hot/d000/f{index:03}.txt"),
-                &format!("payload-000-{index:03}\n"),
+    let paths: Vec<_> = (0..100)
+        .map(|index| format!("/hot/d000/f{index:03}.txt"))
+        .collect();
+    let files: Vec<_> = paths
+        .iter()
+        .enumerate()
+        .map(|(index, path)| {
+            (
+                path.as_str(),
+                acyclic_stream::OwnedBytes::from(format!("payload-000-{index:03}\n").into_bytes()),
             )
-            .await?;
-    }
+        })
+        .collect();
+    transaction
+        .create_batch(&["/hot/d000"], &files, &work, &cancel)
+        .await?;
     let TransactionCommit::Committed(exact) = transaction
         .commit_with_native_work(
             None,
