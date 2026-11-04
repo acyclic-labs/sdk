@@ -682,6 +682,10 @@ async fn workspace_diff_admits_range_restoration_before_reading_content() -> Res
     let volume = &fixture.root.volume;
     let cancel = CancellationToken::new();
     let work = WorkBudget::UNBOUNDED;
+    let reference = acyclic_harness::filesystem::workspace_ref(
+        volume.provider().clone(),
+        &volume.storage_name(&mut None)?,
+    )?;
     let workspace = fixture
         .filesystem
         .open_workspace(volume.storage_name(&mut None)?, work, &cancel)
@@ -690,8 +694,19 @@ async fn workspace_diff_admits_range_restoration_before_reading_content() -> Res
         .value;
     for length in [4096, 65_537] {
         let text = "x".repeat(length);
+        // A native checkout imports workspace files, without an uploaded
+        // immutable publication descriptor that a range write would stale.
         fixture
-            .put("restored.txt", &text, &format!("seed-{length}"))
+            .host
+            .apply(
+                &reference,
+                None,
+                &[acyclic_harness::filesystem::WorkspaceMutation::PutFile {
+                    path: "/restored.txt".into(),
+                    bytes: text.as_bytes().to_vec().into(),
+                }],
+                &IdempotencyKey::new(format!("seed-{length}"))?,
+            )
             .await?;
         let base = fixture.source("restored.txt").await?.generation;
         let mut transaction = workspace
