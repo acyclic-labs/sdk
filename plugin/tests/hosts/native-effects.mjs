@@ -47,7 +47,6 @@ try {
   assert.ok(isAbsolute(binary??''),'staged plugin executable must be an absolute admitted path');
   const args=['fs','merge','agents/native-child'];
   step='merge original native child';
-  console.error('native effect: '+step);
   try {execFileSync(binary,args,{stdio:['ignore','inherit','inherit']});}
   catch(cause) {throw new Error('native merge failed; recovery argv: '+JSON.stringify([binary,...args])+'; '+cause.message,{cause});}
   assert.equal(await text('parent.txt'),'PARENT');
@@ -62,7 +61,6 @@ try {
   const descriptor=openSync(current,'w');
   try {
    step='read original native session';
-   console.error('native effect: '+step);
    await new Promise((resolve,reject)=>{
     const query=spawn(binary,['__workspace'],{stdio:['pipe',descriptor,'inherit']});
     let failure;
@@ -74,7 +72,6 @@ try {
     });
     query.stdin?.end(JSON.stringify({kind:'hook',host,event:'NativeSession',input:{task:original.task}}));
    });
-   console.error('native effect: original native session received');
   } finally {closeSync(descriptor);}
   const session=JSON.parse(await text(current));
   nativeSessionIdentity(session);
