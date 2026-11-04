@@ -1,5 +1,148 @@
 use super::*;
 
+struct OriginalPageAuthority<'a>(&'a StreamAuthorityStore<acyclic_stream::MemoryStream>);
+
+impl OriginalPageAuthority<'_> {
+    fn observe(work: &mut AuthorityWork<'_>) -> Result<(), AuthorityStoreError> {
+        assert!(
+            work.spent().bytes_encoded >= 7,
+            "accounting page replaced the original request frame"
+        );
+        work.charge(crate::WorkCounters {
+            bytes_encoded: 7,
+            ..crate::WorkCounters::UNCHARGED
+        })
+    }
+}
+
+impl AsyncAuthorityStore for OriginalPageAuthority<'_> {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        self.0.operation_claims()
+    }
+
+    fn actor_scope(&self) -> [u8; 16] {
+        self.0.actor_scope()
+    }
+
+    async fn head(
+        &self,
+        id: AuthorityId,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<Head, AuthorityStoreError> {
+        Self::observe(work)?;
+        self.0.head(id, work).await
+    }
+
+    async fn replay(
+        &self,
+        id: AuthorityId,
+        after: Sequence,
+        limit: ReplayLimit,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(Vec<DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
+        Self::observe(work)?;
+        self.0.replay(id, after, limit, work).await
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn pages_retain_original_frame_and_fact_backing_until_retirement()
+-> Result<(), Box<dyn Error>> {
+    use crate::kernel::allocation::retained::Retained;
+    crate::initialize_test_native_io();
+    let (fs, authority, objects) = fixture();
+    let cancel = CancellationToken::new();
+    let workspace = fs
+        .create_workspace("original-accounting", B, &cancel)
+        .await?
+        .value;
+    workspace.write_text("/file", "original").await?;
+    let id = volume_authority_id(workspace.id().volume_id());
+    for native in [false, true] {
+        let cancel = CancellationToken::new();
+        let original =
+            crate::NativeMaterializationWork::new(BUDGET, &cancel).map_err(|(error, _)| error)?;
+        let mut work = if native {
+            AuthorityWork::native(&original, &cancel)
+        } else {
+            AuthorityWork::new(BUDGET, &cancel)
+        };
+        work.charge(crate::WorkCounters {
+            bytes_encoded: 7,
+            ..crate::WorkCounters::UNCHARGED
+        })?;
+        let independent = Retained::<Vec<u8>>::allocate(73, &mut work.accounting())?;
+        let live = |work: &AuthorityWork<'_>| {
+            if native {
+                original.live_allocation_bytes()
+            } else {
+                work.allocations.live_bytes()
+            }
+        };
+        let baseline = live(&work);
+        let page = accounting_page(
+            &OriginalPageAuthority(&authority),
+            &objects,
+            id,
+            AccountingCursor::genesis(),
+            2,
+            &mut work,
+        )
+        .await?;
+        assert_eq!(page.facts().len(), 2);
+        let fact_bytes =
+            (page.facts.value.capacity() * size_of::<crate::accounting::AccountingFact>()) as u64;
+        assert_eq!(live(&work), baseline + fact_bytes);
+        drop(page);
+        assert_eq!(live(&work), baseline);
+        assert!(matches!(
+            accounting_page(
+                &OriginalPageAuthority(&authority),
+                &objects,
+                id,
+                AccountingCursor {
+                    sequence: Sequence::new(1),
+                    digest: Digest::ZERO,
+                    settled_at_micros: 1,
+                },
+                2,
+                &mut work,
+            )
+            .await,
+            Err(AccountingError::InvalidHistory)
+        ));
+        assert_eq!(live(&work), baseline, "rejected page lost original backing");
+        cancel.cancel();
+        assert!(matches!(
+            accounting_page(
+                &OriginalPageAuthority(&authority),
+                &objects,
+                id,
+                AccountingCursor::genesis(),
+                2,
+                &mut work,
+            )
+            .await,
+            Err(AccountingError::Authority(AuthorityStoreError::Cancelled))
+                | Err(AccountingError::Authority(
+                    AuthorityStoreError::NativeOriginal(
+                        crate::NativeTreeMaterializationError::Cancelled
+                    )
+                ))
+        ));
+        assert_eq!(
+            live(&work),
+            baseline,
+            "cancelled page lost original backing"
+        );
+        let independent_bytes = independent.value.capacity() as u64;
+        drop(independent);
+        assert_eq!(live(&work), baseline - independent_bytes);
+    }
+    Ok(())
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
     #[test]
@@ -34,27 +177,27 @@ async fn dense_paging(lengths: &[usize], page_size: u32) -> Result<(), Box<dyn E
     assert_eq!(original.len(), expected.len());
     let mut position = AccountingCursor::genesis();
     let mut consumed = Vec::new();
-    let mut facts = Vec::new();
     loop {
         let next = page(&authority, &objects, id, position, page_size).await?;
-        assert!(!next.facts.is_empty());
-        assert!(next.facts.len() <= page_size as usize);
+        assert!(!next.facts().is_empty());
+        assert!(next.facts().len() <= page_size as usize);
         assert_eq!(
             next.watermark_sequence,
             original.last().ok_or("no records")?.sequence
         );
-        assert_eq!(next.facts[0].sequence.get(), position.sequence.get() + 1);
+        assert_eq!(next.facts()[0].sequence.get(), position.sequence.get() + 1);
         next.work.verify(BUDGET)?;
-        consumed.push((position, next.facts.clone()));
-        facts.extend(next.facts);
         position = next.next;
-        if next.complete {
+        let complete = next.complete;
+        consumed.push(next);
+        if complete {
             break;
         }
     }
-    assert_eq!(facts.len(), original.len());
+    let facts = || consumed.iter().flat_map(AccountingPage::facts);
+    assert_eq!(facts().count(), original.len());
     for ((fact, record), (generation_root, logical_regular_file_bytes)) in
-        facts.iter().zip(&original).zip(expected)
+        facts().zip(&original).zip(expected)
     {
         assert_eq!(fact.authority_id, id);
         assert_eq!(fact.sequence, record.sequence);
@@ -84,48 +227,68 @@ async fn dense_paging(lengths: &[usize], page_size: u32) -> Result<(), Box<dyn E
         .ok_or("later record missing")?;
     let deletion = IdempotencyKey::new();
     workspace.delete(deletion).await?;
-    for (anchor, facts) in consumed {
+    let mut anchor = AccountingCursor::genesis();
+    for retained in consumed {
         assert_eq!(
             authority
-                .accounting_page(&objects, id, anchor, facts.len() as u32, BUDGET, &cancel)
+                .accounting_page(
+                    &objects,
+                    id,
+                    anchor,
+                    retained.facts().len() as u32,
+                    &mut AuthorityWork::new(BUDGET, &cancel)
+                )
                 .await?
-                .facts,
-            facts
+                .facts(),
+            retained.facts()
         );
+        anchor = retained.next;
     }
     let terminal = authority
-        .accounting_page(&objects, id, position, 2, BUDGET, &cancel)
+        .accounting_page(
+            &objects,
+            id,
+            position,
+            2,
+            &mut AuthorityWork::new(BUDGET, &cancel),
+        )
         .await?;
     assert!(terminal.complete);
-    assert_eq!(terminal.facts.len(), 2);
+    assert_eq!(terminal.facts().len(), 2);
     assert_eq!(
-        terminal.facts[0].transition,
+        terminal.facts()[0].transition,
         AccountingTransition::Published {
             volume_id: workspace.id().volume_id(),
             generation_root: later_root,
             logical_regular_file_bytes: 73
         }
     );
-    assert_eq!(terminal.facts[0].operation_id, later.operation_id);
-    assert_eq!(terminal.facts[0].commit_digest, later.digest);
+    assert_eq!(terminal.facts()[0].operation_id, later.operation_id);
+    assert_eq!(terminal.facts()[0].commit_digest, later.digest);
     assert_eq!(
-        Some(terminal.facts[0].settled_at_micros),
+        Some(terminal.facts()[0].settled_at_micros),
         later.settled_at_micros
     );
     assert_eq!(
-        terminal.facts[1].transition,
+        terminal.facts()[1].transition,
         AccountingTransition::WorkspaceDeleted {
             volume_id: workspace.id().volume_id()
         }
     );
-    assert_eq!(terminal.facts[1].operation_id, deletion.operation_id());
-    assert!(terminal.facts.iter().all(|fact| fact.authority_id == id
+    assert_eq!(terminal.facts()[1].operation_id, deletion.operation_id());
+    assert!(terminal.facts().iter().all(|fact| fact.authority_id == id
         && fact.operation_class == AccountingOperationClass::CustomerMutation));
-    assert_eq!(terminal.next.digest, terminal.facts[1].commit_digest);
+    assert_eq!(terminal.next.digest, terminal.facts()[1].commit_digest);
     let empty = authority
-        .accounting_page(&objects, id, terminal.next, 2, BUDGET, &cancel)
+        .accounting_page(
+            &objects,
+            id,
+            terminal.next,
+            2,
+            &mut AuthorityWork::new(BUDGET, &cancel),
+        )
         .await?;
-    assert!(empty.complete && empty.facts.is_empty());
+    assert!(empty.complete && empty.facts().is_empty());
     assert_eq!(empty.next, terminal.next);
     assert!(matches!(
         authority
@@ -203,15 +366,15 @@ async fn retention_pages_distinguish_customer_pins_and_internal_fork_retention()
         let id = retention_authority_id(workspace.id().volume_id(), kind, label);
         let retained = page(&authority, &objects, id, AccountingCursor::genesis(), 1).await?;
         assert!(retained.complete);
-        assert_eq!(retained.facts.len(), 1);
-        assert_eq!(retained.facts[0].authority_id, id);
+        assert_eq!(retained.facts().len(), 1);
+        assert_eq!(retained.facts()[0].authority_id, id);
         // The same generation's volume publication is a different source.
         assert_ne!(
-            retained.facts[0].authority_id,
+            retained.facts()[0].authority_id,
             volume_authority_id(workspace.id().volume_id())
         );
         assert_eq!(
-            retained.facts[0].transition,
+            retained.facts()[0].transition,
             AccountingTransition::Retained {
                 volume_id: workspace.id().volume_id(),
                 owner_volume_id: owner,
@@ -220,9 +383,9 @@ async fn retention_pages_distinguish_customer_pins_and_internal_fork_retention()
                 logical_regular_file_bytes: 8
             }
         );
-        assert_eq!(retained.facts[0].operation_class, class);
+        assert_eq!(retained.facts()[0].operation_class, class);
         assert_eq!(
-            Some(retained.facts[0].settled_at_micros),
+            Some(retained.facts()[0].settled_at_micros),
             records(&authority, id).await?[0].settled_at_micros
         );
     }
@@ -254,12 +417,12 @@ async fn a_later_publication_changes_the_watermark_without_changing_consumed_fac
     let last = page(&authority, &objects, id, second.next, 1).await?;
     assert!(last.complete);
     let bounded = page(&authority, &objects, id, AccountingCursor::genesis(), 8).await?;
-    assert!(!bounded.facts.is_empty() && bounded.facts.len() < 4);
+    assert!(!bounded.facts().is_empty() && bounded.facts().len() < 4);
     assert!(!bounded.complete);
     bounded.work.verify(BUDGET)?;
     assert_eq!(
         bounded.next.sequence,
-        bounded.facts.last().unwrap().sequence
+        bounded.facts().last().unwrap().sequence
     );
     let mut insufficient = BUDGET;
     insufficient.items_examined = last.work.items_examined.checked_sub(1).unwrap();
@@ -270,8 +433,7 @@ async fn a_later_publication_changes_the_watermark_without_changing_consumed_fac
             id,
             second.next,
             1,
-            insufficient,
-            &cancel
+            &mut AuthorityWork::new(insufficient, &cancel)
         )
         .await,
         Err(AccountingError::Work(
@@ -279,9 +441,9 @@ async fn a_later_publication_changes_the_watermark_without_changing_consumed_fac
         ))
     ));
     for (fact, (generation_root, logical_regular_file_bytes)) in second
-        .facts
+        .facts()
         .iter()
-        .chain(&last.facts)
+        .chain(last.facts())
         .zip([(old, 3), (newer, 5), (latest, 7)])
     {
         assert_eq!(
@@ -294,8 +456,8 @@ async fn a_later_publication_changes_the_watermark_without_changing_consumed_fac
         );
     }
     assert_eq!(
-        page(&authority, &objects, id, first.next, 2).await?.facts,
-        second.facts
+        page(&authority, &objects, id, first.next, 2).await?.facts(),
+        second.facts()
     );
     Ok(())
 }
@@ -409,11 +571,11 @@ async fn refused_archive_and_closure_preserve_exact_spent_work() -> Result<(), B
             spent: 0,
         };
         let original = page(&authority, &store, id, AccountingCursor::genesis(), 2).await?;
-        assert_eq!(original.facts.len(), 1);
+        assert_eq!(original.facts().len(), 1);
         assert!(!original.complete);
         store.spent = 7;
         let charged = page(&authority, &store, id, AccountingCursor::genesis(), 2).await?;
-        assert_eq!(charged.facts, original.facts);
+        assert_eq!(charged.facts(), original.facts());
         assert_eq!(charged.next, original.next);
         let mut expected = original.work;
         expected.items_examined += store.spent;

@@ -4,6 +4,7 @@ pub(super) fn verify_record(
     authority_id: AuthorityId,
     cursor: AccountingCursor,
     record: &DurableCommit,
+    work: &mut crate::AuthorityWork<'_>,
 ) -> Result<u64, AccountingError> {
     if record.sequence
         != cursor
@@ -11,15 +12,7 @@ pub(super) fn verify_record(
             .checked_next()
             .map_err(|_| AccountingError::InvalidHistory)?
         || record.previous_digest != cursor.digest
-        || authority_commit_digest(
-            authority_id,
-            record.epoch,
-            record.sequence,
-            record.operation_id,
-            record.fingerprint,
-            record.previous_digest,
-            &record.payload,
-        ) != record.digest
+        || record_digest(authority_id, record, work)? != record.digest
     {
         return Err(AccountingError::InvalidHistory);
     }
@@ -33,14 +26,38 @@ pub(super) fn verify_record(
     Ok(stamp)
 }
 
+pub(super) fn record_digest(
+    authority_id: AuthorityId,
+    record: &DurableCommit,
+    work: &mut crate::AuthorityWork<'_>,
+) -> Result<Digest, AccountingError> {
+    let cost = WorkCounters {
+        bytes_hashed: crate::AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES
+            .checked_add(record.payload.len() as u64)
+            .ok_or(WorkError::Overflow)?,
+        ..WorkCounters::UNCHARGED
+    };
+    work.admit(cost)?;
+    let digest = authority_commit_digest(
+        authority_id,
+        record.epoch,
+        record.sequence,
+        record.operation_id,
+        record.fingerprint,
+        record.previous_digest,
+        &record.payload,
+    );
+    work.charge(cost)?;
+    Ok(digest)
+}
+
 pub(super) async fn prove_bytes<O: AsyncObjectStore>(
     objects: &O,
     root: ObjectId,
     volume: (VolumeId, VolumeConfig),
     authority_id: AuthorityId,
     record: &DurableCommit,
-    measured: &mut AccountingReadWork,
-    cancellation: &CancellationToken,
+    work: &mut crate::AuthorityWork<'_>,
 ) -> Result<u128, AccountingError> {
     let (volume_id, config) = volume;
     // Borrowed canonical fields, decoded manifest/root, exact payload, and
@@ -49,32 +66,17 @@ pub(super) async fn prove_bytes<O: AsyncObjectStore>(
     let evidence_bound = config
         .limits
         .maximum_generation_bytes
-        .min(measured.remaining()?.peak_allocation_bytes / 8);
-    let archived = {
-        let mut work = crate::AuthorityWork::new(measured.remaining()?, cancellation);
-        let result = objects
-            .historical_generation_evidence(
-                authority_id,
-                record,
-                evidence_bound,
-                config.limits.maximum_objects_per_generation,
-                &mut work,
-            )
-            .await;
-        work.receipt(result)
-    };
-    let archived = match archived {
-        Ok(archived) => archived,
-        Err(failure) => {
-            measured.backend(*failure.work)?;
-            return Err(match failure.error {
-                crate::ObjectStoreError::Work(error) => error.into(),
-                error => AccountingError::Proof(error.to_string()),
-            });
-        }
-    };
-    measured.backend(archived.work)?;
-    if let Some(evidence) = archived.value {
+        .min(work.remaining()?.peak_allocation_bytes / 8);
+    let archived = objects
+        .historical_generation_evidence(
+            authority_id,
+            record,
+            evidence_bound,
+            config.limits.maximum_objects_per_generation,
+            work,
+        )
+        .await?;
+    if let Some(evidence) = archived {
         let original = crate::kernel::decode_historical_generation_evidence(
             &evidence,
             authority_id,
@@ -82,7 +84,7 @@ pub(super) async fn prove_bytes<O: AsyncObjectStore>(
             evidence_bound,
             config.limits.maximum_objects_per_generation,
         )
-        .map_err(|failure| AccountingError::Proof(failure.to_string()))?;
+        .map_err(AccountingError::Proof)?;
         if original.manifest.generation_root != root
             || original.root.volume_id != volume_id
             || original.manifest.config != config
@@ -104,22 +106,18 @@ pub(super) async fn prove_bytes<O: AsyncObjectStore>(
     // Without a provider archive, authenticate only the root named by this
     // historical record. Missing collected bodies fail closed; a current head
     // is never a substitute for the original generation.
-    let proof =
-        match prove_generation_closure(objects, root, limits, measured.remaining()?, cancellation)
-            .await
-        {
-            Ok(proof) => proof,
-            Err(failure) => {
-                measured.backend(*failure.work)?;
-                return Err(match failure.error {
-                    crate::kernel::ClosureError::Work(error) => error.into(),
-                    error => AccountingError::Proof(error.to_string()),
-                });
-            }
-        };
-    measured.backend(proof.work)?;
-    if proof.root.volume_id != volume_id {
-        return Err(AccountingError::InvalidHistory);
-    }
-    Ok(proof.logical_file_bytes)
+    let mut accounting = work.accounting();
+    let mut frame = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
+    let meter = crate::kernel::closure::ProofMeter::from_accounting(frame.accounting())?;
+    let (proof, guard) = crate::kernel::closure::ProofContext::new(objects, limits, meter)
+        .prove(root)
+        .await?;
+    let result = if proof.root.volume_id != volume_id {
+        Err(AccountingError::InvalidHistory)
+    } else {
+        Ok(proof.logical_file_bytes)
+    };
+    drop(proof);
+    drop(guard);
+    result
 }

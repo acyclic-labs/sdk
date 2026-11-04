@@ -68,8 +68,7 @@ async fn page(
         id,
         cursor,
         maximum,
-        BUDGET,
-        &CancellationToken::new(),
+        &mut AuthorityWork::new(BUDGET, &CancellationToken::new()),
     )
     .await
 }
