@@ -432,7 +432,23 @@ mod tests {
         let decoded: Roster = serde_json::from_slice(bytes).expect("admit original records");
         assert_eq!(decoded.canonical(), (bytes, digest));
         assert!(std::ptr::eq(bytes, roster.canonical().0));
-        assert!(std::ptr::eq(bytes, roster.clone().canonical().0));
+        let mut retained = None;
+        let sharing = acyclic_test_support::measure(|| retained = Some(roster.clone()));
+        assert_eq!(
+            sharing.count_total, 0,
+            "retain the admitted roster without copying"
+        );
+        let retained = retained.expect("retained snapshot");
+        assert!(std::ptr::eq(bytes, retained.canonical().0));
+        assert!(std::ptr::eq(roster.targets(), retained.targets()));
+        assert!(std::ptr::eq(roster.home_name(), retained.home_name()));
+        let copying = acyclic_test_support::measure(|| {
+            std::hint::black_box(roster.targets().to_vec());
+        });
+        assert!(
+            copying.count_total > sharing.count_total,
+            "copy negative control"
+        );
         // An announced roster is not announced again; any other one is.
         let first = roster.announcement(None).expect("announced");
         assert_eq!(roster.announcement(Some(first.1)), None);
