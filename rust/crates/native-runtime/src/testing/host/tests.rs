@@ -323,21 +323,50 @@ fn unscoped_physical_workers_leave_the_driver_available_to_reply() {
         receive.recv().unwrap();
     }
     let host = Host::for_workers(workers);
-    let mut completion = crate::run_blocking_io(|| 42, None).unwrap();
+    let (requested, mut requests) = mpsc::unbounded_channel();
+    let mut completion = crate::run_blocking_io(
+        move || {
+            let (reply, waiting) = oneshot::channel();
+            requested
+                .send(reply)
+                .map_err(|_| std::io::ErrorKind::BrokenPipe)?;
+            blocking_on(waiting).map_err(|_| std::io::ErrorKind::BrokenPipe)
+        },
+        None,
+    )
+    .unwrap();
     let mut job = completion.pending.take().unwrap();
     Work::bind(&mut job, None, Some(host.clone()));
     let mut drive = Box::pin(host.drive(queued(job, workers)));
     // Every physical worker is waiting for this driver. Its first poll must
     // yield before any reply is sent, even though none belongs to this Host.
     assert!(drive.as_mut().poll(&mut cx).is_pending());
-    executor::complete_io(async {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let deadline = tokio::time::sleep(std::time::Duration::from_secs(30));
+        tokio::pin!(deadline);
         for (index, reply) in replies.into_iter().enumerate() {
             reply.send(index).unwrap();
         }
-        drive.await.unwrap();
-        assert_eq!(completion.await.unwrap(), 42);
-        for (index, completion) in occupants.into_iter().enumerate() {
-            assert_eq!(completion.await.unwrap(), index);
+        let completed = async {
+            drive.await.unwrap();
+            assert_eq!(completion.await.unwrap().unwrap(), 42);
+            for (index, completion) in occupants.into_iter().enumerate() {
+                assert_eq!(completion.await.unwrap(), index);
+            }
+        };
+        tokio::pin!(completed);
+        loop {
+            tokio::select! {
+                biased;
+                Some(request) = requests.recv() => request.send(42).unwrap(),
+                () = &mut completed => break,
+                () = &mut deadline => panic!("foreign native occupancy advanced the consumer deadline before its original callback reply"),
+            }
         }
     });
 }
