@@ -2,6 +2,29 @@ use super::*;
 use crate::local::host_owner::SessionAction;
 use std::time::Duration;
 
+fn request_storage_cause(error: &Error, operation: OperationId) -> &str {
+    assert_eq!(
+        error.request_operation_id(),
+        Some(operation),
+        "observation failure must retain its typed request identity"
+    );
+    let Error::Command(failure) = error else {
+        panic!("original request cause was discarded")
+    };
+    let original = failure
+        .original()
+        .expect("local observation retains its actual cause");
+    assert_eq!(
+        error.classification(),
+        original.classification(),
+        "request identity must not change the original failure classification"
+    );
+    let Error::Storage(cause) = original else {
+        panic!("original storage cause was replaced")
+    };
+    cause
+}
+
 fn carrier_io() -> Result<(tempfile::TempDir, CarrierIo, std::fs::File)> {
     let checkout = tempfile::tempdir().map_err(storage)?;
     let root = acyclic_fs::hold_root(checkout.path()).map_err(native_file_error)?;
@@ -382,8 +405,8 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
         .owner_finished(Err(std::io::ErrorKind::BrokenPipe.into()));
     let failure = lock(&failed.shared.waiters).failure.clone().unwrap();
     assert!(matches!(response.try_recv(),
-        Ok(Delivery::Reply(Err(Error::Storage(error))))
-            if error == format!("operation={operation}; {failure}")));
+        Ok(Delivery::Reply(Err(error)))
+            if request_storage_cause(&error, operation) == failure));
     assert!(!lock(&failed.shared.waiters).gone);
     assert!(lock(&failed.shared.waiters).retirement.is_none());
     assert_eq!(lock(&registry).bridges.len(), 1);
@@ -922,7 +945,9 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     let Delivery::Reply(Ok(committed)) = committed else {
         panic!("the actual owner must publish its committed result");
     };
-    assert!(committed.get("ok").is_some());
+    let _: crate::agent::AgentPath =
+        serde_json::from_value(committed["task"].clone()).map_err(storage)?;
+    assert!(Path::new(committed["cwd"].as_str().expect("committed workspace path")).is_absolute());
     remove_projection(&recovery_path)?;
     drop(waiting);
     let (delivery, response) = mpsc::sync_channel(1);
@@ -963,7 +988,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
                     session: "conflicting-reply".into(),
                 },
             ),
-            Err(Error::Storage(_))
+            Err(error) if error.request_operation_id() == Some(operation) && error.code() == crate::wire::ErrorCode::Indeterminate
         ));
         served.withdraw(&directory.join("requests"), operation)?;
         // The actual shared owner must still complete an unrelated request.
@@ -1087,7 +1112,8 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
                     .or_else(|error| match error {
                         // Locating the root may be refused; it must still
                         // be answered, never left waiting.
-                        Error::Conflict(_) | Error::Invalid(_) | Error::NotFound(_) => Ok(()),
+                        error if matches!(error.code(), crate::wire::ErrorCode::Conflict
+                            | crate::wire::ErrorCode::Invalid | crate::wire::ErrorCode::NotFound) => Ok(()),
                         error => Err(error),
                     })
             })
@@ -1188,7 +1214,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         .try_recv()
         .expect("watch failure settles the first reply")
     {
-        Delivery::Reply(Err(Error::Storage(failure))) => failure,
+        Delivery::Reply(Err(error)) => error,
         _ => panic!("watch failure must retain its storage cause"),
     };
     let failure = lock(&bridge.shared.waiters)
@@ -1196,16 +1222,16 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         .clone()
         .expect("the first notification cause remains available");
     assert_eq!(
-        first_failure,
-        format!("operation={}; {failure}", first.operation)
+        request_storage_cause(&first_failure, first.operation),
+        failure
     );
-    assert!(Error::Storage(first_failure).uncertain());
+    assert!(first_failure.uncertain());
     assert!(failure.contains("step=observe native workspace files:"));
     assert!(failure.ends_with("recovery=acyclic agents"));
     assert!(matches!(
         second_reply.try_recv(),
-        Ok(Delivery::Reply(Err(Error::Storage(ref error))))
-            if error == &format!("operation={}; {failure}", second.operation)
+        Ok(Delivery::Reply(Err(ref error)))
+            if request_storage_cause(error, second.operation) == failure
     ));
     drop((first, second));
     bridge
@@ -1217,9 +1243,12 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         Arc::ptr_eq(&Registry::bridge(&registry, &cwd, Bridge::open)?, &bridge),
         "a failed live connection must not reopen its notification source"
     );
-    assert!(matches!(request_with(&registry, &cwd, HostAction::Agents {
+    let refused_operation = OperationId::new();
+    assert!(
+        matches!(request_operation(&registry, &cwd, refused_operation, HostAction::Agents {
         task: serde_json::from_value(result["task"].clone()).map_err(storage)?,
-    }), Err(Error::Storage(ref error)) if error == &failure));
+    }), Err(ref error) if request_storage_cause(error, refused_operation) == failure)
+    );
     assert_eq!(
         std::fs::read_dir(&requests).map_err(storage)?.count(),
         0,
@@ -1241,14 +1270,14 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         .shared
         .owner_finished(Err(std::io::ErrorKind::BrokenPipe.into()));
     let first = match response.try_recv().expect("owner observer must settle") {
-        Delivery::Reply(Err(Error::Storage(error))) => error,
+        Delivery::Reply(Err(error)) => error,
         _ => panic!("owner observation failure must preserve its native cause"),
     };
     let failure = lock(&observed.shared.waiters)
         .failure
         .clone()
         .expect("owner observation failure remains available");
-    assert_eq!(first, format!("operation={}; {failure}", waiting.operation));
+    assert_eq!(request_storage_cause(&first, waiting.operation), failure);
     assert!(failure.contains("step=observe native workspace owner exit:"));
     assert!(failure.ends_with("recovery=graphcoder --host-workspace"));
     assert!(!lock(&observed.shared.waiters).gone);
@@ -1329,7 +1358,7 @@ fn absent_owner_never_creates_a_service_or_state_directory() -> Result<()> {
                 session: "fixture".into()
             }
         ),
-        Err(Error::NotFound(_))
+        Err(error) if error.code() == crate::wire::ErrorCode::NotFound
     ));
     assert_eq!(
         std::fs::read_dir(checkout.path()).map_err(storage)?.count(),

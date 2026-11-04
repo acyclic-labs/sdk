@@ -169,10 +169,10 @@ pub use crate::executor::json::{
 };
 pub use contract::{
     Admission, AgentId, AuthorityLevel, AuthorityPolicy, BatchId, COMPONENT_LABEL_FORBIDDEN_EXACT,
-    COMPONENT_LABEL_FORBIDDEN_SEPARATORS, COMPONENT_LABEL_MAX_BYTES, Capabilities,
+    COMPONENT_LABEL_FORBIDDEN_SEPARATORS, COMPONENT_LABEL_MAX_BYTES, Capabilities, CommandFailure,
     CommandIndeterminacy, CommandIndeterminacyReason, ConversationId, EffectAttemptId, EffectId,
-    Error, GroupId, HeadlessOutcome, IdempotencyKey, IndeterminateCause, InteractionId,
-    InteractionRejection, ModelTransportFailure, OperationId, Outcome, PolicyLayer,
+    Error, ErrorClassification, GroupId, HeadlessOutcome, IdempotencyKey, IndeterminateCause,
+    InteractionId, InteractionRejection, ModelTransportFailure, OperationId, Outcome, PolicyLayer,
     ProtocolIdentity, Result, SessionId, TaskId, TurnId, is_valid_component_label,
     resolve_policies, resolve_policy_layers,
 };

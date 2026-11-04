@@ -143,11 +143,9 @@ impl Waiters {
         }
         let failure = self.failure.insert(failure());
         for (operation, waiter) in std::mem::take(&mut self.waiting) {
-            let _ = waiter
-                .delivery
-                .try_send(Delivery::Reply(Err(Error::Storage(format!(
-                    "operation={operation}; {failure}"
-                )))));
+            let _ = waiter.delivery.try_send(Delivery::Reply(Err(
+                Error::Storage(failure.clone()).for_request(operation)
+            )));
         }
     }
 }
@@ -198,15 +196,15 @@ impl Shared {
         }
         let leaf = format!("{operation}.json");
         let reply = match regular_bytes(&self.status.join(&leaf)) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(storage),
+            Ok(bytes) => crate::client::decode_command_result(operation, 0, &bytes),
             Err(Error::NotFound(_)) => match std::fs::symlink_metadata(self.requests.join(&leaf)) {
                 Ok(_) => return,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     Err(Error::Indeterminate(operation))
                 }
-                Err(error) => Err(storage(error)),
+                Err(error) => Err(Error::reply_unavailable(operation, storage(error))),
             },
-            Err(error) => Err(error),
+            Err(error) => Err(Error::reply_unavailable(operation, error)),
         };
         let mut waiters = lock(&self.waiters);
         if let Some(waiter) = waiters.waiting.remove(&operation) {
@@ -569,33 +567,35 @@ fn request_operation(
     operation: OperationId,
     action: HostAction,
 ) -> Result<Value> {
-    let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
-    let bridge = Registry::bridge(registry, &cwd, Bridge::open)?;
-    let request = Request {
-        session: bridge.session,
-        operation,
-        action,
-    };
-    let bytes = serde_json::to_vec(&request).map_err(storage)?;
-    if bytes.len() as u64 > MAXIMUM_BYTES {
-        return Err(Error::Invalid(
-            "native host request exceeds file bound".into(),
-        ));
-    }
-    let (waiter, delivery) = mpsc::sync_channel(1);
-    let waiting = bridge.wait(operation, waiter)?;
-    let request_path = bridge
-        .directory
-        .join("requests")
-        .join(format!("{operation}.json"));
-    immutable(&request_path, &bytes)?;
-    // A writable reply may predate registration. Watching before this read
-    // covers both that case and publication concurrent with the read.
-    bridge.shared.published(operation);
-    let result =
-        match acyclic_native_runtime::obs::waiting_sync("native-workspace-reply", operation, || {
-            delivery.recv()
-        }) {
+    let result = (|| {
+        let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
+        let bridge = Registry::bridge(registry, &cwd, Bridge::open)?;
+        let request = Request {
+            session: bridge.session,
+            operation,
+            action,
+        };
+        let bytes = serde_json::to_vec(&request).map_err(storage)?;
+        if bytes.len() as u64 > MAXIMUM_BYTES {
+            return Err(Error::Invalid(
+                "native host request exceeds file bound".into(),
+            ));
+        }
+        let (waiter, delivery) = mpsc::sync_channel(1);
+        let waiting = bridge.wait(operation, waiter)?;
+        let request_path = bridge
+            .directory
+            .join("requests")
+            .join(format!("{operation}.json"));
+        immutable(&request_path, &bytes)?;
+        // A writable reply may predate registration. Watching before this read
+        // covers both that case and publication concurrent with the read.
+        bridge.shared.published(operation);
+        let result = match acyclic_native_runtime::obs::waiting_sync(
+            "native-workspace-reply",
+            operation,
+            || delivery.recv(),
+        ) {
             Ok(Delivery::Reply(reply)) => reply,
             Ok(Delivery::Gone) | Err(_) => {
                 drop(waiting);
@@ -607,24 +607,12 @@ fn request_operation(
                 );
             }
         };
-    drop(waiting);
-    // Withdrawing the request retires its reply and any saved result. Every
-    // effect is an agent commit keyed by this operation.
-    let result = result.and_then(|result| {
-        if result.get("completion").and_then(Value::as_str) == Some("indeterminate") {
-            return Err(Error::Indeterminate(operation));
-        }
-        result.get("ok").cloned().ok_or_else(|| {
-            Error::Conflict(
-                result
-                    .get("error")
-                    .and_then(Value::as_str)
-                    .unwrap_or("harness returned no outcome")
-                    .into(),
-            )
-        })
-    });
-    Error::after_cleanup(result, remove_projection(&request_path))
+        drop(waiting);
+        // Withdrawing the request retires its reply and any saved result. Every
+        // effect is an agent commit keyed by this operation.
+        Error::after_cleanup(result, remove_projection(&request_path))
+    })();
+    result.map_err(|error: Error| error.for_request(operation))
 }
 
 fn reply_path(status: &Path, operation: OperationId) -> PathBuf {
@@ -1042,10 +1030,11 @@ impl Served {
             drop(tracked.remove());
             return Ok(());
         }
-        let bytes = match crate::client::encode_command_result(0, &outcome, MAXIMUM_BYTES) {
-            Ok(bytes) => bytes,
-            Err(error) => return Error::after_cleanup(outcome.map(drop), Err(error)),
-        };
+        let bytes =
+            match crate::client::encode_command_result(0, operation, &outcome, MAXIMUM_BYTES) {
+                Ok(bytes) => bytes,
+                Err(error) => return Error::after_cleanup(outcome.map(drop), Err(error)),
+            };
         match status.publish_immutable(
             Path::new(&format!("{operation}.json")),
             &bytes,
