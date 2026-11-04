@@ -56,7 +56,7 @@ async fn empty_ranges_preserve_native_presence_without_dispatch()
         "out-of-range index refusal dispatched physical work"
     );
 
-    // Cost negative: actual requested bytes still go through the original
+    // Counter sensitivity: actual requested bytes still go through the original
     // native owner and return the selected bytes from the reopened log.
     let (result, jobs) = counted(medium.read("key", Some(1..5))).await;
     assert_eq!(result?.as_deref(), Some(&b"rigi"[..]));
