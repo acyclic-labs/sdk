@@ -27,17 +27,19 @@ async function processSource() {
 }
 
 async function statusBindingControl(run, host) {
-  let original, corrupted, originalStatus, spawns = 0;
+  let original, originalWire, originalArguments, receipt, corrupted, originalStatus, spawns = 0;
   const spawned = ({process: child}) => {
     spawns++;
-    const at = child.spawnargs.indexOf('--completion');
-    assert.ok(at > 0);
-    const receipt = child.spawnargs[at + 1];
     // This listener precedes the bridge's exit listener. The original native
     // owner has retired its tree and closed its receipt before exit; corrupt
     // only its actual status field before the original reader consumes it.
     child.once('exit', (code, signal) => {
-      const bytes = readFileSync(receipt);
+      // The diagnostic publishes at construction, before spawnargs exists.
+      const at = child.spawnargs.indexOf('--completion');
+      assert.ok(at > 0);
+      receipt = child.spawnargs[at + 1];
+      originalArguments = child.spawnargs.slice(1);
+      const bytes = originalWire = readFileSync(receipt);
       original = JSON.parse(bytes);
       originalStatus = {code, signal};
       assert.equal(code >>> 0, original.host_exit_code);
@@ -64,6 +66,7 @@ async function statusBindingControl(run, host) {
   assert.equal(error.code, 'PROCESS_HOST_STATUS_MISMATCH');
   assert.deepEqual(error.hostStatus, originalStatus);
   assert.deepEqual(error.completion, corrupted);
+  return {originalWire, originalArguments, receipt};
 }
 
 async function argumentControls(host) {
@@ -473,7 +476,11 @@ if (mode === 'signal-owner') {
   assert.ok(unfinishedInput.destroyed, 'original exit must close an input producer that has no terminal');
 
   await terminalControls(commandProcess, host);
-  await statusBindingControl(commandProcess, host);
+  const {originalWire, originalArguments, receipt} = await statusBindingControl(commandProcess, host);
+  // Reuse the original producer bytes captured before status corruption.
+  fuzz(originalWire);
+  console.log(`PROCESS_COMPLETION_CORPUS_BASE64=${originalWire.toString('base64')}`);
+  console.log(`PROCESS_HOST_ARGUMENTS_BASE64=${Buffer.from(JSON.stringify(originalArguments)).toString('base64')}`);
   await exitBeforeOutputControl(commandProcess, host);
   // These are omissions in the actual shipped source. The identical public
   // topology/oracles must reject lost terminal failures and receipt binding.
@@ -489,23 +496,7 @@ if (mode === 'signal-owner') {
     const {commandProcess: mutant} = await import(`data:text/javascript;base64,${Buffer.from(planted).toString('base64')}`);
     await assert.rejects(() => control(mutant, host), {code: 'ERR_ASSERTION'}, guard);
   }
-  // Capture original wire bytes from the shipped producer for the retained
-  // decoder fuzzer. No fixture response or codec model is handwritten.
-  const wireDirectory = await mkdtemp(join(tmpdir(), 'process-wire-control-'));
-  try {
-    const receipt = join(wireDirectory, 'completion');
-    const originalArguments = ['--completion', receipt, '--invocation', 'original-wire-control',
-      '--inherit-input', '--', process.execPath, script, 'exit'];
-    const producer = spawn(host, originalArguments, {stdio: 'ignore'});
-    const [code] = await once(producer, 'close');
-    assert.equal(code, 17);
-    const originalWire = await readFile(receipt);
-    fuzz(originalWire);
-    // Preserve the producer's exact bytes for the decoder's retained corpus.
-    console.log(`PROCESS_COMPLETION_CORPUS_BASE64=${originalWire.toString('base64')}`);
-    console.log(`PROCESS_HOST_ARGUMENTS_BASE64=${Buffer.from(JSON.stringify(originalArguments)).toString('base64')}`);
-  } finally { await rm(wireDirectory, {recursive: true, force: true}); }
-  const missing = await commandProcess(join(wireDirectory, 'missing-executable'), [], options);
+  const missing = await commandProcess(join(receipt, 'missing-executable'), [], options);
   assert.equal(missing.completion.root_status, null);
   assert.equal(missing.completion.process_tree_retired, false);
   assert.equal(missing.completion.failure.phase, 'root-admission');
