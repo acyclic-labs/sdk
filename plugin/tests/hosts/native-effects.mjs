@@ -46,6 +46,8 @@ try {
   const binary=process.env.E2E_PLUGIN_BINARY;
   assert.ok(isAbsolute(binary??''),'staged plugin executable must be an absolute admitted path');
   const args=['fs','merge','agents/native-child'];
+  step='merge original native child';
+  console.error('native effect: '+step);
   try {execFileSync(binary,args,{stdio:['ignore','inherit','inherit']});}
   catch(cause) {throw new Error('native merge failed; recovery argv: '+JSON.stringify([binary,...args])+'; '+cause.message,{cause});}
   assert.equal(await text('parent.txt'),'PARENT');
@@ -59,8 +61,11 @@ try {
   const current=phase==='merge'?initial:join(root,'.volumes/home/native-resumed-session.json');
   const descriptor=openSync(current,'w');
   try {
+   step='read original native session';
+   console.error('native effect: '+step);
    execFileSync(binary,['__workspace'],{input:JSON.stringify({kind:'hook',host,event:'NativeSession',
     input:{task:original.task}}),stdio:['pipe',descriptor,'inherit']});
+   console.error('native effect: original native session received');
   } finally {closeSync(descriptor);}
   const session=JSON.parse(await text(current));
   nativeSessionIdentity(session);
