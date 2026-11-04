@@ -22,10 +22,10 @@ async fn capture(
 
 async fn check(
     empty: &crate::facade::MemoryCheckout,
+    source: &Path,
     body: &[u8],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let source = tempfile::tempdir()?;
-    let file = source.path().join("file");
+    let file = source.join("file");
     std::fs::write(&file, body)?;
     // Keep access time ahead of modification/change time so reading cannot
     // itself edit the metadata being compared (including Linux relatime).
@@ -54,8 +54,8 @@ async fn check(
     let path =
         NamespacePath::from_portable(&crate::path::PortablePath::parse("/file", limits)?, limits)?;
     let options = CaptureOptions {
-        source_root: source.path().to_owned(),
-        expected_root_identity: capture_root_identity(source.path())?,
+        source_root: source.to_owned(),
+        expected_root_identity: capture_root_identity(source)?,
         maximum_paths: 8,
         maximum_extent_spans: 8,
     };
@@ -140,9 +140,10 @@ fn inline_capture_reuses_only_identical_staged_bytes() -> Result<(), Box<dyn std
             NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .map_err(|(error, _)| error)?;
         let empty = capture_policy_tests::native_checkout(&setup).await?;
+        let source = tempfile::tempdir()?;
         for length in [0, 1, 7, 63, 64, 65] {
             for byte in [0, b'x'] {
-                check(&empty, &vec![byte; length]).await?;
+                check(&empty, source.path(), &vec![byte; length]).await?;
             }
         }
         Ok(())
