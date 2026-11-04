@@ -8,6 +8,14 @@ publish = false
 cargo-fuzz = true
 
 [[bin]]
+name = "command_result"
+path = "fuzz_targets/command_result.rs"
+required-features = ["core"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "config_evaluation"
 path = "fuzz_targets/config_evaluation.rs"
 required-features = ["core"]

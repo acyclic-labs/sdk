@@ -217,19 +217,6 @@ impl LocalWorkspace {
         Ok(Arc::new(mounts))
     }
 
-    #[cfg(test)]
-    #[cfg(all(any(test, feature = "native-execution"), unix))]
-    pub(super) async fn current(
-        &self,
-    ) -> acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend> {
-        let state = lock_owned(StateArc::clone(&self.state)).await;
-        state
-            .active
-            .as_ref()
-            .unwrap_or(&self.view)
-            .workspace()
-            .clone()
-    }
     pub(super) fn context_line(&self) -> &str {
         &self.context_line
     }
@@ -375,10 +362,8 @@ pub(super) async fn open(
     if native_mounts {
         volumes::exclude_state(&root)?;
     }
-    #[cfg(test)]
-    setup_probe::before_setup(&path);
     let setup = if native_mounts {
-        Some(setup_probe::setup_root(&root)?)
+        Some(root.try_clone().map_err(storage)?)
     } else {
         None
     };
@@ -565,57 +550,6 @@ async fn held_source(
         .map_err(|error| Error::from(acyclic_fs::LazyWorkspaceError::from(error)))?;
     Ok(Arc::new(source))
 }
-
-/// The root that scratch setup works in: the held root itself. Under test,
-/// a hook can replace the checkout's path before setup, and the negative
-/// control restores setup that re-resolves the saved path.
-mod setup_probe {
-    use super::*;
-
-    #[cfg(test)]
-    type SetupHook = Box<dyn FnOnce(&Path)>;
-
-    #[cfg(test)]
-    thread_local! {
-        static BEFORE_SETUP: std::cell::RefCell<Option<SetupHook>> =
-            const { std::cell::RefCell::new(None) };
-        static FOLLOW_PATH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    }
-
-    /// Runs `hook` with the checkout's path after its root is held and
-    /// before setup. Unix only: Windows refuses to rename a held directory.
-    #[cfg(test)]
-    #[cfg(unix)]
-    pub(in crate::local) fn replace_before_setup(hook: impl FnOnce(&Path) + 'static) {
-        BEFORE_SETUP.set(Some(Box::new(hook)));
-    }
-
-    /// Negative control: setup reopens the saved path.
-    #[cfg(test)]
-    pub(in crate::local) fn follow_path(follow: bool) {
-        FOLLOW_PATH.set(follow);
-    }
-
-    #[cfg(test)]
-    pub(super) fn before_setup(path: &Path) {
-        if let Some(hook) = BEFORE_SETUP.take() {
-            hook(path);
-        }
-    }
-
-    pub(super) fn setup_root(root: &acyclic_fs::HeldRoot) -> Result<acyclic_fs::HeldRoot> {
-        #[cfg(test)]
-        if FOLLOW_PATH.get() {
-            return acyclic_fs::hold_root(root.path()).map_err(storage);
-        }
-        root.try_clone().map_err(storage)
-    }
-}
-#[cfg(test)]
-pub(super) use setup_probe::follow_path;
-#[cfg(test)]
-#[cfg(unix)]
-pub(super) use setup_probe::replace_before_setup;
 
 // A configured SDK volume gets one persistent private native view. Bootstrap
 // into a sibling and rename only the complete generation, before binding its

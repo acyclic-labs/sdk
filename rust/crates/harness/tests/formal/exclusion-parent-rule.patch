@@ -1,0 +1,10 @@
+--- a/rust/crates/harness/src/local/owner/exclusion.rs
++++ b/rust/crates/harness/src/local/owner/exclusion.rs
+@@ -355,6 +355,7 @@
+ /// The anchored Git exclusion rule for `path`, as raw filename bytes: Git
+ /// matches paths as bytes on Unix, and records them as UTF-8 on Windows.
+ pub(in crate::local) fn pattern(path: &Path) -> Result<Vec<u8>> {
++    let path = path.parent().unwrap_or(path);
+     let mut result = Vec::new();
+     for part in path.components() {
+         let std::path::Component::Normal(part) = part else {

@@ -143,11 +143,9 @@ impl Waiters {
         }
         let failure = self.failure.insert(failure());
         for (operation, waiter) in std::mem::take(&mut self.waiting) {
-            let _ = waiter
-                .delivery
-                .try_send(Delivery::Reply(Err(Error::Storage(format!(
-                    "operation={operation}; {failure}"
-                )))));
+            let _ = waiter.delivery.try_send(Delivery::Reply(Err(
+                Error::Storage(failure.clone()).for_request(operation)
+            )));
         }
     }
 }
@@ -198,15 +196,15 @@ impl Shared {
         }
         let leaf = format!("{operation}.json");
         let reply = match regular_bytes(&self.status.join(&leaf)) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(storage),
+            Ok(bytes) => crate::client::decode_command_result(operation, 0, &bytes),
             Err(Error::NotFound(_)) => match std::fs::symlink_metadata(self.requests.join(&leaf)) {
                 Ok(_) => return,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     Err(Error::Indeterminate(operation))
                 }
-                Err(error) => Err(storage(error)),
+                Err(error) => Err(Error::reply_unavailable(operation, storage(error))),
             },
-            Err(error) => Err(error),
+            Err(error) => Err(Error::reply_unavailable(operation, error)),
         };
         let mut waiters = lock(&self.waiters);
         if let Some(waiter) = waiters.waiting.remove(&operation) {
@@ -569,33 +567,35 @@ fn request_operation(
     operation: OperationId,
     action: HostAction,
 ) -> Result<Value> {
-    let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
-    let bridge = Registry::bridge(registry, &cwd, Bridge::open)?;
-    let request = Request {
-        session: bridge.session,
-        operation,
-        action,
-    };
-    let bytes = serde_json::to_vec(&request).map_err(storage)?;
-    if bytes.len() as u64 > MAXIMUM_BYTES {
-        return Err(Error::Invalid(
-            "native host request exceeds file bound".into(),
-        ));
-    }
-    let (waiter, delivery) = mpsc::sync_channel(1);
-    let waiting = bridge.wait(operation, waiter)?;
-    let request_path = bridge
-        .directory
-        .join("requests")
-        .join(format!("{operation}.json"));
-    immutable(&request_path, &bytes)?;
-    // A writable reply may predate registration. Watching before this read
-    // covers both that case and publication concurrent with the read.
-    bridge.shared.published(operation);
-    let result =
-        match acyclic_native_runtime::obs::waiting_sync("native-workspace-reply", operation, || {
-            delivery.recv()
-        }) {
+    let result = (|| {
+        let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
+        let bridge = Registry::bridge(registry, &cwd, Bridge::open)?;
+        let request = Request {
+            session: bridge.session,
+            operation,
+            action,
+        };
+        let bytes = serde_json::to_vec(&request).map_err(storage)?;
+        if bytes.len() as u64 > MAXIMUM_BYTES {
+            return Err(Error::Invalid(
+                "native host request exceeds file bound".into(),
+            ));
+        }
+        let (waiter, delivery) = mpsc::sync_channel(1);
+        let waiting = bridge.wait(operation, waiter)?;
+        let request_path = bridge
+            .directory
+            .join("requests")
+            .join(format!("{operation}.json"));
+        immutable(&request_path, &bytes)?;
+        // A writable reply may predate registration. Watching before this read
+        // covers both that case and publication concurrent with the read.
+        bridge.shared.published(operation);
+        let result = match acyclic_native_runtime::obs::waiting_sync(
+            "native-workspace-reply",
+            operation,
+            || delivery.recv(),
+        ) {
             Ok(Delivery::Reply(reply)) => reply,
             Ok(Delivery::Gone) | Err(_) => {
                 drop(waiting);
@@ -607,24 +607,12 @@ fn request_operation(
                 );
             }
         };
-    drop(waiting);
-    // Withdrawing the request retires its reply and any saved result. Every
-    // effect is an agent commit keyed by this operation.
-    let result = result.and_then(|result| {
-        if result.get("completion").and_then(Value::as_str) == Some("indeterminate") {
-            return Err(Error::Indeterminate(operation));
-        }
-        result.get("ok").cloned().ok_or_else(|| {
-            Error::Conflict(
-                result
-                    .get("error")
-                    .and_then(Value::as_str)
-                    .unwrap_or("harness returned no outcome")
-                    .into(),
-            )
-        })
-    });
-    Error::after_cleanup(result, remove_projection(&request_path))
+        drop(waiting);
+        // Withdrawing the request retires its reply and any saved result. Every
+        // effect is an agent commit keyed by this operation.
+        Error::after_cleanup(result, remove_projection(&request_path))
+    })();
+    result.map_err(|error: Error| error.for_request(operation))
 }
 
 fn reply_path(status: &Path, operation: OperationId) -> PathBuf {
@@ -706,13 +694,17 @@ fn discover(cwd: &Path) -> Result<(PathBuf, Endpoint)> {
 /// Each request dispatches once into the native agent runtime, whose commits
 /// it keys by the request operation, then publishes its immutable reply.
 pub async fn serve(local: Arc<LocalHarness>) -> Result<()> {
-    serve_until(local, std::future::pending()).await
+    serve_until(local, || Ok(()), std::future::pending()).await
 }
 
 /// Stops accepting requests, joins view retirement and disconnects the shared
 /// harness before reporting shutdown. Native callbacks keep their runtime.
+/// Calls `ready` once after acquiring ownership and installing request events.
+/// A retained descriptor only discovers this endpoint; it cannot announce a
+/// new serving lifetime. Readiness failure joins the same owner retirement.
 pub async fn serve_until(
     local: Arc<LocalHarness>,
+    ready: impl FnOnce() -> Result<()>,
     shutdown: impl std::future::Future<Output = Result<()>>,
 ) -> Result<()> {
     let workspace = local
@@ -773,7 +765,10 @@ pub async fn serve_until(
         status,
         _ownership: Arc::clone(&ownership),
     };
-    let result = serve_requests(&owner, files, session, &notices, shutdown).await;
+    let result = match ready() {
+        Ok(()) => serve_requests(&owner, files, session, &notices, shutdown).await,
+        Err(error) => Err(error),
+    };
     drop(watcher);
     drop(local);
     Error::after_cleanup(result, owner.retire().await)
@@ -845,8 +840,8 @@ enum Tracked {
     Queued,
     /// Dispatched; `withdrawn` once its file disappeared.
     Running { withdrawn: bool },
-    /// Its reply is published.
-    Answered,
+    /// Its reply is published; original failure custody ends at withdrawal.
+    Answered(Option<Box<Error>>),
 }
 
 /// The owner's active requests. Each reply is published and retired by its
@@ -976,26 +971,37 @@ impl Served {
 
     /// Withdrawal retires only this request's reply, if already published.
     fn withdraw(&mut self, requests: &Path, operation: OperationId) -> Result<()> {
-        let Some(tracked) = self.known.remove(&operation) else {
+        let std::collections::hash_map::Entry::Occupied(mut tracked) = self.known.entry(operation)
+        else {
             return Ok(());
         };
-        match tracked {
+        match tracked.get_mut() {
             Tracked::Queued => {}
-            Tracked::Running { .. } => {
+            Tracked::Running { withdrawn } => {
                 // Its dispatch still runs; its reply will not be published.
-                self.known
-                    .insert(operation, Tracked::Running { withdrawn: true });
+                *withdrawn = true;
+                return Ok(());
             }
-            Tracked::Answered => {
-                let directory = requests.parent().ok_or_else(|| {
-                    Error::Invalid("native request directory has no parent".into())
-                })?;
-                match remove_projection(&reply_path(&directory.join("status"), operation)) {
+            Tracked::Answered(cause) => {
+                let withdrawal = requests
+                    .parent()
+                    .ok_or_else(|| Error::Invalid("native request directory has no parent".into()))
+                    .and_then(|directory| {
+                        remove_projection(&reply_path(&directory.join("status"), operation))
+                    });
+                match withdrawal {
                     Ok(()) | Err(Error::NotFound(_)) => {}
-                    Err(error) => return Err(error),
+                    Err(error) => {
+                        // Original failure custody moves into the owner error.
+                        return Error::after_cleanup(
+                            cause.take().map_or(Ok(()), |cause| Err(*cause)),
+                            Err(error),
+                        );
+                    }
                 }
             }
         }
+        drop(tracked.remove());
         Ok(())
     }
 
@@ -1020,13 +1026,22 @@ impl Served {
         operation: OperationId,
         outcome: Result<Value>,
     ) -> Result<()> {
-        let Some(Tracked::Running { withdrawn }) = self.known.remove(&operation) else {
+        let std::collections::hash_map::Entry::Occupied(mut tracked) = self.known.entry(operation)
+        else {
             return Ok(());
         };
-        if withdrawn {
+        let Tracked::Running { withdrawn } = tracked.get() else {
+            return Ok(());
+        };
+        if *withdrawn {
+            drop(tracked.remove());
             return Ok(());
         }
-        let bytes = crate::client::encode_command_result(0, &outcome, MAXIMUM_BYTES)?;
+        let bytes =
+            match crate::client::encode_command_result(0, operation, &outcome, MAXIMUM_BYTES) {
+                Ok(bytes) => bytes,
+                Err(error) => return Error::after_cleanup(outcome.map(drop), Err(error)),
+            };
         match status.publish_immutable(
             Path::new(&format!("{operation}.json")),
             &bytes,
@@ -1038,9 +1053,11 @@ impl Served {
             // a caller cannot terminate unrelated dispatches by occupying it.
             Err(acyclic_fs::demand::DemandError::Io(error))
                 if error.kind() == std::io::ErrorKind::InvalidData => {}
-            Err(error) => return Err(native_file_error(error)),
+            Err(error) => {
+                return Error::after_cleanup(outcome.map(drop), Err(native_file_error(error)));
+            }
         }
-        self.known.insert(operation, Tracked::Answered);
+        tracked.insert(Tracked::Answered(outcome.err().map(Box::new)));
         Ok(())
     }
 }

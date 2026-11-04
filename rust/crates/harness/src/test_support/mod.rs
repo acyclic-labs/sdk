@@ -70,11 +70,6 @@ pub fn check_native_child_reference(input: &[u8]) {
     );
 }
 
-#[cfg(feature = "test-support")]
-pub(crate) mod model_view_work;
-#[cfg(feature = "test-support")]
-pub use model_view_work::measure as measure_model_view_work;
-
 /// Local test composition with temporary state and settings, independent of the per-user store, HOME and CODEX_HOME.
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub fn local_harness_config(

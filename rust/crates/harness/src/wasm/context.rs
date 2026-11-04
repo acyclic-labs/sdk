@@ -113,7 +113,18 @@ pub async fn select_model_context_wasm(
     let conversation: ConversationState = from_js(conversation)?;
     let selection: ModelContextSelection = from_js(selection)?;
     let resolver = BrowserContentReader(reader);
-    let maximum_render_bytes = exact_nonnegative_u64(maximum_render_bytes, "maximum render bytes")?;
+    if !crate::conversation::is_exact_js_number(maximum_render_bytes)
+        || maximum_render_bytes < 0.0
+        || maximum_render_bytes.fract() != 0.0
+    {
+        return Err(JsValue::from_str(
+            "maximum render bytes must be a safe non-negative integer",
+        ));
+    }
+    let maximum_render_bytes = maximum_render_bytes
+        .to_string()
+        .parse::<u64>()
+        .map_err(|_| JsValue::from_str("maximum render bytes is outside the supported range"))?;
     let selected = select_model_context(
         &conversation,
         selection.conversation_revision,

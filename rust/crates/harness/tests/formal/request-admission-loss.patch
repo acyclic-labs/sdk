@@ -1,0 +1,11 @@
+--- a/rust/crates/harness/src/local/host_files.rs
++++ b/rust/crates/harness/src/local/host_files.rs
+@@ -967,7 +967,7 @@
+                 if let Err(cleanup) = remove_projection(&path) {
+                     // No withdrawal event can be produced. End the original
+                     // owner with both causes instead of abandoning its waiter.
+-                    return Error::after_cleanup(Err(admission), Err(cleanup));
++                    return Err(cleanup);
+                 }
+             }
+         }

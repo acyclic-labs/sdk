@@ -7,12 +7,14 @@ use crate::{
     config::{Admission, AdmissionStatus, Sampling},
     conversation::{ContentAccess, ContentGrant, VolumeOperation},
 };
-use std::path::Path;
 
-async fn open(directory: &Path) -> Result<LocalHarness> {
-    let project = volume(directory).await?;
+#[cfg(feature = "hooks")]
+async fn open(
+    directory: &std::path::Path,
+    project: &crate::conversation::VolumeRef,
+) -> Result<LocalHarness> {
     LocalHarness::open(
-        volume_config(directory, project, text())?
+        volume_config(directory, project.clone(), text())?
             .compaction(crate::context::CompactionPolicy::Disabled),
     )
     .await
@@ -81,76 +83,92 @@ async fn admission(harness: &LocalHarness, path: &str, version: &str) -> Result<
 #[tokio::test]
 async fn home_agent_settings_apply_at_open_and_bad_ones_fall_back_to_the_seed() -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let harness = open(directory.path()).await?;
+    let project = volume(directory.path()).await?;
+    let config = || {
+        volume_config(directory.path(), project.clone(), text())
+            .map(|config| config.compaction(crate::context::CompactionPolicy::Disabled))
+    };
+    let harness = LocalHarness::open(config()?).await?;
     // The seed's default passes the started model through, untouched.
     assert_eq!(harness.sampling, None);
-    let applied = write(
-        &harness,
-        "agent.ts",
-        "import type { AgentConfig } from 'sys/types/config';\n\
-         export default (base: AgentConfig): AgentConfig => ({ ...base, sampling: { temperature: 0.25 } });",
-    )
-    .await?;
+    let source = "import type { AgentConfig } from 'sys/types/config';\n\
+         export default (base: AgentConfig): AgentConfig => ({ ...base, sampling: { temperature: 0.25 } });";
+    let applied = write(&harness, "agent.ts", source).await?;
     drop(harness);
-    let harness = open(directory.path()).await?;
-    assert_eq!(
-        harness
-            .sampling
-            .as_ref()
-            .and_then(|sampling| sampling.temperature),
-        Some(0.25)
-    );
-    drop(harness);
-    // Reopening identical source must not reuse an upload identity with a
-    // newly timestamped admission body.
-    let mut harness = open(directory.path()).await?;
+    let harness = LocalHarness::open(config()?).await?;
     let sampling = Sampling {
         temperature: Some(0.25),
         ..Sampling::default()
     };
-    assert_eq!(harness.sampling, Some(sampling));
+    assert_eq!(harness.sampling.as_ref(), Some(&sampling));
     let record = admission(&harness, "agent.ts", &applied).await?;
     assert_eq!(
         (record.path.as_str(), record.status, record.error),
         ("agent.ts", AdmissionStatus::Applied, None)
     );
 
-    // Each refusal names its reason; the seed's settings stay in force.
+    // Re-admit identical source and every refusal through the original volume
+    // admission path. Only startup selection needs a harness reopen.
     for (source, status, reason) in [
+        (source, AdmissionStatus::Applied, None),
         (
             "export default (base) => ({ ...base, colour: 1 });",
             AdmissionStatus::Invalid,
-            "colour",
+            Some("colour"),
         ),
         (
             "export default (base) => ({ ...base, effort: 'high' });",
             AdmissionStatus::Rejected,
-            "effort",
+            Some("effort"),
         ),
         (
             "export default (base) => ({ ...base, sampling: { maxOutputTokens: 8192 } });",
             AdmissionStatus::Rejected,
-            "requested output exceeds selected model capacity",
+            Some("requested output exceeds selected model capacity"),
         ),
         (
             "export default { model: 'other/model' };",
             AdmissionStatus::Rejected,
-            "bound by its host",
+            Some("bound by its host"),
         ),
     ] {
         let version = write(&harness, "agent.ts", source).await?;
-        drop(harness);
-        harness = open(directory.path()).await?;
-        assert_eq!(harness.sampling, None, "{source}");
+        let settings = super::super::agent_settings::admit(
+            &super::super::agent_settings::Volumes {
+                files: &harness.files,
+                verifier: &harness.verifier,
+                signed: &harness.signed,
+                home: &harness.scratch,
+                journal: &harness.journal,
+                maximum_bytes: harness.limits.file_bytes,
+            },
+            harness.root,
+            harness.agent.clone().expect("the configured model"),
+            None,
+            (
+                &crate::context::CompactionPolicy::Disabled,
+                &Some(crate::context::CompactionPolicy::Disabled),
+            ),
+            harness.clock.as_ref(),
+        )
+        .await?;
+        let expected = (status == AdmissionStatus::Applied).then_some(&sampling);
+        assert_eq!(settings.sampling.as_ref(), expected, "{source}");
         let record = admission(&harness, "agent.ts", &version).await?;
         assert_eq!(record.status, status, "{source}");
-        assert!(
-            record
-                .error
-                .as_deref()
-                .is_some_and(|error| error.contains(reason)),
-            "{record:?}"
-        );
+        match reason {
+            Some(reason) => assert!(
+                record
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.contains(reason)),
+                "{record:?}"
+            ),
+            None => {
+                assert_eq!(version, applied);
+                assert_eq!(record.error, None);
+            }
+        }
     }
     Ok(())
 }
@@ -158,7 +176,7 @@ async fn home_agent_settings_apply_at_open_and_bad_ones_fall_back_to_the_seed() 
 #[tokio::test]
 async fn conflicting_sampling_is_rejected_before_a_profile_bound_session_opens() -> Result<()> {
     use crate::model::{
-        Model, ModelDispatch, ModelEvent, ModelProfileBinding, ModelProvider, PreparedModelRequest,
+        Model, ModelDispatch, ModelProfileBinding, ModelProvider, PreparedModelRequest,
     };
     use crate::profile::{AgentOverride, ModelProfile, ProjectLayer, RoleFile, resolve};
     use std::sync::Arc;
@@ -236,12 +254,13 @@ async fn conflicting_sampling_is_rejected_before_a_profile_bound_session_opens()
 #[tokio::test]
 async fn each_settings_manifest_retains_its_own_admission_on_reopen() -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let harness = open(directory.path()).await?;
+    let project = volume(directory.path()).await?;
+    let harness = open(directory.path(), &project).await?;
     let source = "export default (base) => base;";
     write(&harness, "agent.ts", source).await?;
     let version = write(&harness, "plugins.ts", source).await?;
     drop(harness);
-    let harness = open(directory.path()).await?;
+    let harness = open(directory.path(), &project).await?;
     // Both reads select the same current home generation.
     for path in ["agent.ts", "plugins.ts"] {
         let record = admission(&harness, path, &version).await?;
@@ -255,10 +274,11 @@ async fn each_settings_manifest_retains_its_own_admission_on_reopen() -> Result<
 #[tokio::test]
 async fn a_directory_at_the_selected_plugins_entry_retains_seed_settings() -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let harness = open(directory.path()).await?;
+    let project = volume(directory.path()).await?;
+    let harness = open(directory.path(), &project).await?;
     write(&harness, "plugins.ts/child.ts", "export default {}; ").await?;
     drop(harness);
-    let harness = open(directory.path()).await?;
+    let harness = open(directory.path(), &project).await?;
     assert!(harness.plugin_hooks.is_empty());
     Ok(())
 }
@@ -267,7 +287,8 @@ async fn a_directory_at_the_selected_plugins_entry_retains_seed_settings() -> Re
 #[tokio::test]
 async fn an_enabled_guard_file_read_refusal_cannot_remove_the_guard() -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let harness = open(directory.path()).await?;
+    let project = volume(directory.path()).await?;
+    let harness = open(directory.path(), &project).await?;
     for (path, source) in [
         (
             "plugins/guard/plugin.ts",
@@ -282,7 +303,7 @@ async fn an_enabled_guard_file_read_refusal_cannot_remove_the_guard() -> Result<
         write(&harness, path, source).await?;
     }
     drop(harness);
-    match open(directory.path()).await {
+    match open(directory.path(), &project).await {
         Err(Error::ToolRejected {
             code: crate::wire::ErrorCode::Invalid,
             ..
