@@ -226,15 +226,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 
     /// Configuration and initial access policy of every harness volume.
+    /// Independent producers compose disjoint writes through the authority;
+    /// observed data, policy and explicit generation conditions remain exact.
     pub(in crate::filesystem) fn volume_initialization(
         &self,
     ) -> acyclic_fs::VolumeInitialization<'static> {
         acyclic_fs::VolumeInitialization {
-            config: acyclic_fs::VolumeConfig::portable(if self.filesystem.capabilities().durable {
-                acyclic_fs::Lifecycle::Durable
-            } else {
-                acyclic_fs::Lifecycle::Ephemeral
-            }),
+            config: acyclic_fs::VolumeConfig {
+                concurrency: acyclic_fs::model::ConcurrencyMode::SerializedAuthority,
+                ..acyclic_fs::VolumeConfig::portable(if self.filesystem.capabilities().durable {
+                    acyclic_fs::Lifecycle::Durable
+                } else {
+                    acyclic_fs::Lifecycle::Ephemeral
+                })
+            },
             access_policy: Some(access::INITIAL_POLICY),
         }
     }
@@ -263,17 +268,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Creates the unique physical workspace for a logical volume.
     pub async fn create_volume(&self, volume: &VolumeRef) -> Result<WorkspaceObservation> {
         let (name, operation) = self.volume_creation(volume)?;
-        self.filesystem
-            .create_workspace_with_operation::<_, (), WorkspaceError>(
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let original = self
+            .filesystem
+            .workspace_for_creation_operation(
                 &name,
-                self.volume_initialization(),
+                None,
                 operation,
                 acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-                None,
+                &cancellation,
             )
             .await
             .map_err(|failure| map_error(failure.error))?;
+        if original.value.is_none() {
+            self.filesystem
+                .create_workspace_with_operation::<_, (), WorkspaceError>(
+                    &name,
+                    self.volume_initialization(),
+                    operation,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                    None,
+                )
+                .await
+                .map_err(|failure| map_error(failure.error))?;
+        }
         self.resolve(&workspace_ref(self.provider.clone(), &name)?, None)
             .await
     }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {Processes,Spool} from '../../../scripts/graphcoder-e2e/process.mjs';
+import {Processes,Spool,SpoolEnded} from '../../../scripts/graphcoder-e2e/process.mjs';
 import {withOwnedCase} from '../../../scripts/graphcoder-e2e/suite.mjs';
 
 // Only this launched owner's announcement admits clients. Its immutable
@@ -11,7 +11,9 @@ export async function startWorkspaceOwner({scope,binary,workspace,state,env,root
    {cwd:workspace,env,scopeCapture:capture,scopeMountRoot:root,...(process.platform!=='win32'?{scopeReportSignal:'SIGTERM'}:{})});
  const events=new Spool(owner.child.stdout,owner.closed,
   {key:event=>event?.type==='workspace-owner-ready'?['ready']:[],unique:true});
- await events.keyed('ready');return owner;
+ try{await events.keyed('ready');}
+ catch(error){throw error instanceof SpoolEnded&&error.kind==='source'&&error.cause instanceof Error?error.cause:error;}
+ return owner;
 }
 
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
