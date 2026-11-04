@@ -1,0 +1,9 @@
+--- a/rust/crates/harness-core/src/model/recorded.rs
++++ b/rust/crates/harness-core/src/model/recorded.rs
+@@ -288,5 +288,5 @@
+ impl LiveTurn {
+     fn unclaimed(&self) -> bool {
+-        !self.accepted && self.pending == 0
++        !self.accepted
+     }
+ }

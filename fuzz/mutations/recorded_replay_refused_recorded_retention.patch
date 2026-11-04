@@ -1,43 +1,12 @@
 --- a/rust/crates/harness-core/src/model/recorded.rs
 +++ b/rust/crates/harness-core/src/model/recorded.rs
-@@ -160,15 +160,8 @@
-             return admit(None);
-         };
--        match admit(Some((*next, call))) {
--            Ok(result) => {
--                *next += 1;
--                self.used += 1;
--                Ok(result)
--            }
+@@ -166,8 +166,5 @@
+                 Ok(result)
+             }
 -            Err(error) => {
 -                self.next.retire_if(key, |next| *next == 0);
 -                Err(error)
 -            }
--        }
-+        let result = admit(Some((*next, call)))?;
-+        *next += 1;
-+        self.used += 1;
-+        Ok(result)
-     }
-
-@@ -533,5 +526,5 @@
++            Err(error) => Err(error),
          }
-         let output = if live.contains(&dispatch.operation_id) {
--            Ok(None)
-+            None
-         } else {
-             cursor.select(&self.recording, key, &mut CursorWork(work), |candidate| {
-@@ -548,12 +541,5 @@
-                 *selection = Some(ReplaySelection::Recorded { key, index });
-                 Ok(Some(output))
--            })
--        };
--        let output = match output {
--            Ok(output) => output,
--            Err(error) => {
--                dispatches.retire_if(dispatch_key(dispatch), Option::is_none);
--                return Err(error);
--            }
-+            })?
-         };
-         match output {
+     }

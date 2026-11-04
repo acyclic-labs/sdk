@@ -1,0 +1,10 @@
+--- a/rust/crates/harness-core/src/model/recorded.rs
++++ b/rust/crates/harness-core/src/model/recorded.rs
+@@ -574,7 +574,4 @@
+                         Ok(output) => output,
+                         Err(error) => {
+-                            for lookup in staged {
+-                                tools.retire_if(lookup, |slot| slot.selected.is_none());
+-                            }
+                             return Err(error);
+                         }

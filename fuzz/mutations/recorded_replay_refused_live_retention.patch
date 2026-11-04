@@ -1,20 +1,19 @@
 --- a/rust/crates/harness-core/src/model/recorded.rs
 +++ b/rust/crates/harness-core/src/model/recorded.rs
-@@ -434,10 +434,11 @@
-     fn drop(&mut self) {
+@@ -417,9 +417,11 @@
          if !self.accepted {
--            self.owner
--                .lock()
+             let mut replay = self.owner.lock();
+-            replay
 -                .dispatches
 -                .retire_if(dispatch_key(self.dispatch), |selection| {
 -                    matches!(selection, Some(ReplaySelection::Pending))
 -                });
-+            if let Some(selection) = self.owner.lock().dispatches.get_retained_mut(
++            if let Some(selection) = replay.dispatches.get_retained_mut(
 +                dispatch_key(self.dispatch),
 +                |selection| matches!(selection, Some(ReplaySelection::Pending)),
 +                |_| {},
 +            ) {
 +                *selection = None;
 +            }
+             replay.release_live(self.dispatch.operation_id, false);
          }
-     }
