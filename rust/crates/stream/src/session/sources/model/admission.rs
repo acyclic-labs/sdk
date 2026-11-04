@@ -37,6 +37,7 @@ fn record() -> crate::Record {
         value: vec![7].into(),
         commit_id: crate::CommitId::from_bytes([1; 32]),
         committed_at_micros: 0,
+        origin: crate::StreamPath::new("source").unwrap(),
     }
 }
 

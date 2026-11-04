@@ -49,7 +49,7 @@ async fn original_fill_epoch_survives_clear_reply_loss_and_reentrant_destruction
             let cache = CachedObjectStore::new(
                 PausedStore {
                     inner: Arc::clone(&inner),
-                    release: Mutex::new(Some(receiver)),
+                    release: std::sync::Mutex::new(Some(receiver)),
                 },
                 options(4, 128),
             )?;

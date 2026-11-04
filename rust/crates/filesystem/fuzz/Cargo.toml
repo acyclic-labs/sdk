@@ -122,3 +122,11 @@ path = "fuzz_targets/workspace_name.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "decoded_cache"
+required-features = ["fuzz-targets"]
+path = "fuzz_targets/decoded_cache.rs"
+test = false
+doc = false
+bench = false

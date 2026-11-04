@@ -1,11 +1,13 @@
 use super::*;
 use crate::kernel::allocation::effects::{OMIT_REFUND, OMIT_RESERVATION};
 use crate::kernel::codec::{CanonicalDecodeError, Encoder};
-use crate::sync::atomic::{AtomicU64, Ordering};
 use crate::{CancellationToken, NativeMaterializationWork, WorkBudget, WorkCounters};
 use std::{
     cell::{Cell, RefCell},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 loom::thread_local! {
@@ -43,44 +45,14 @@ fn encode<const BROKEN: bool>(
     cancellation: &CancellationToken,
     actual: Arc<AtomicU64>,
     pages: bool,
-    storage: Option<EffectStorage>,
 ) {
     EFFECT.with(|witness| *witness.borrow_mut() = Some((actual, pages)));
     OMIT_RESERVATION.with(|flag| flag.set(BROKEN));
     let mut accounting = allocation::KernelAccounting::native(work, cancellation);
-    if let Some((wire, mut output, owner)) = storage {
-        let mut observer = EncodeAccounting {
-            credit: crate::kernel::allocation::effects::EffectCredit::for_accounting(&accounting),
-            accounting: &mut accounting,
-            owned_bytes: output.len() as u64,
-            allocation: Some(allocation::KernelOwnedAllocation::NativeOriginal(owner)),
-        };
-        let delta = WorkCounters {
-            bytes_encoded: wire.len() as u64,
-            ..WorkCounters::UNCHARGED
-        };
-        // Bound the model to the protected effect. Storage is funded
-        // before contention, as in the read-credit model. Admission, page-step
-        // mapping, completion and refund are the production observer paths;
-        // full writer/capacity callback sequences are covered by the byte oracle.
-        let (before, after) = if pages {
-            (
-                crate::kernel::blob::page_write_step(EncodeWorkStep::Admit(delta)),
-                crate::kernel::blob::page_write_step(EncodeWorkStep::Completed(delta)),
-            )
-        } else {
-            (
-                EncodeWorkStep::Allocation(EncodeAllocationStep::BeforeHeader { bytes: 10 }),
-                EncodeWorkStep::Allocation(EncodeAllocationStep::HeaderWritten { bytes: 10 }),
-            )
-        };
-        if observer.observe(&before).is_ok() {
-            output.copy_from_slice(&wire);
-            assert_eq!(output, wire);
-            let _ = observer.observe(&after);
-        }
-        drop(output);
-        drop(observer);
+    let result = if pages {
+        // Use the shipped page writer, including its original admission,
+        // allocation, capacity, header, fields and completion callbacks.
+        crate::kernel::blob::encode_blob_page_with_accounting(&page(), 1, &mut accounting).map(drop)
     } else {
         let mut observer = EncodeAccounting::new(&mut accounting);
         let result = Encoder::with_exact_capacity(
@@ -91,19 +63,28 @@ fn encode<const BROKEN: bool>(
             |_| crate::FsError::from(CanonicalDecodeError::AllocationFailed),
         )
         .map(Encoder::finish);
-        if let Ok((bytes, allocation)) = observer.finish(result) {
-            assert_eq!(bytes, b"ACYFSFIL\x01\x00");
-            drop(bytes);
-            drop(allocation);
-        }
+        observer.finish(result).map(drop)
+    };
+    if let Err(error) = result {
+        assert!(
+            matches!(
+                &error,
+                crate::FsError::Cancelled(_)
+                    | crate::FsError::NativeKernel(
+                        crate::NativeTreeMaterializationError::Cancelled
+                            | crate::NativeTreeMaterializationError::Work(
+                                crate::WorkError::BudgetExceeded { .. }
+                            )
+                    )
+            ),
+            "unexpected encoding refusal: {error:?}"
+        );
     }
     EFFECT.with(|witness| *witness.borrow_mut() = None);
 }
 
-type EffectStorage = (Vec<u8>, Vec<u8>, crate::NativeAllocation);
-
-fn effect_storage(work: &NativeMaterializationWork, pages: bool) -> EffectStorage {
-    let page = crate::kernel::BlobPage {
+fn page() -> crate::kernel::BlobPage {
+    crate::kernel::BlobPage {
         first_offset: 0,
         end_offset: 1,
         node: crate::kernel::BlobNode::Leaf(vec![crate::kernel::BlobChunkRef {
@@ -115,23 +96,7 @@ fn effect_storage(work: &NativeMaterializationWork, pages: bool) -> EffectStorag
                 digest: crate::Digest::from_bytes([1; 32]),
             },
         }]),
-    };
-    let wire = if pages {
-        crate::kernel::encode_blob_page(
-            &page,
-            1,
-            |_| Ok::<_, CanonicalDecodeError>(()),
-            |_| CanonicalDecodeError::AllocationFailed,
-        )
-        .unwrap()
-    } else {
-        b"ACYFSFIL\x01\x00".to_vec()
-    };
-    let owner = work
-        .claim(wire.len() as u64, 1, WorkCounters::UNCHARGED)
-        .unwrap();
-    let output = vec![0; wire.len()];
-    (wire, output, owner)
+    }
 }
 
 fn race<const BROKEN: bool, const ASSERT_LIMIT: bool>(
@@ -139,7 +104,6 @@ fn race<const BROKEN: bool, const ASSERT_LIMIT: bool>(
     pages: bool,
     resource: bool,
     cancel: bool,
-    bounded: bool,
 ) {
     loom::model(move || {
         let cancellation = CancellationToken::new();
@@ -164,27 +128,42 @@ fn race<const BROKEN: bool, const ASSERT_LIMIT: bool>(
             original.clone()
         };
         let baseline = original.live_allocation_bytes();
-        let worker_page = bounded.then(|| effect_storage(&work, pages));
-        let local_page = bounded.then(|| effect_storage(&work, pages));
-        // Standard Arc only transports owners pinned through join. All mutable
-        // production leaf/resource/cancellation state and the witness use sync.
+        // The witness is observed only after join; its counter adds no product
+        // synchronization. Original ledger/resource/cancellation state uses Loom.
         let actual = Arc::new(AtomicU64::new(0));
         let worker_work = work.clone();
         let worker_cancel = cancellation.clone();
         let worker_actual = actual.clone();
         let worker = loom::thread::spawn(move || {
-            encode::<BROKEN>(
-                &worker_work,
-                &worker_cancel,
-                worker_actual,
-                pages,
-                worker_page,
-            )
+            encode::<BROKEN>(&worker_work, &worker_cancel, worker_actual, pages)
         });
         if cancel {
             cancellation.cancel();
+        } else if pages {
+            // One full writer competes with the same production credit primitive
+            // used by every writer. Exploring two full callback sequences repeats
+            // their local allocation checks without adding a credit transition.
+            let result = allocation::effects::perform(
+                &work,
+                &cancellation,
+                WorkCounters {
+                    page_writes: 1,
+                    ..WorkCounters::UNCHARGED
+                },
+                || {
+                    actual.fetch_add(1, Ordering::Relaxed);
+                },
+            );
+            if let Err(error) = result {
+                assert!(matches!(
+                    error,
+                    crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
+                        crate::WorkError::BudgetExceeded { .. }
+                    ))
+                ));
+            }
         } else {
-            encode::<BROKEN>(&work, &cancellation, actual.clone(), pages, local_page);
+            encode::<BROKEN>(&work, &cancellation, actual.clone(), pages);
         }
         worker.join().unwrap();
         let completed = actual.load(Ordering::Relaxed);
@@ -193,6 +172,9 @@ fn race<const BROKEN: bool, const ASSERT_LIMIT: bool>(
                 completed <= maximum,
                 "concurrent encoders must not exceed admitted work"
             );
+            if !cancel {
+                assert_eq!(completed, maximum, "available encoding work must complete");
+            }
         }
         let receipt = original.receipt();
         assert_eq!(
@@ -211,17 +193,16 @@ fn race<const BROKEN: bool, const ASSERT_LIMIT: bool>(
 #[test]
 fn concurrent_headers_reserve_zero_one_or_both_allowances() {
     for maximum in [0, 10, 20] {
-        race::<false, true>(maximum, false, false, false, false);
-        race::<false, true>(maximum, false, false, false, true);
+        race::<false, true>(maximum, false, false, false);
     }
-    race::<false, true>(10, false, true, false, false);
-    race::<false, true>(10, false, false, true, false);
+    race::<false, true>(10, false, true, false);
+    race::<false, true>(10, false, false, true);
 }
 
 #[test]
-fn concurrent_blob_pages_reserve_the_page_write_charge() {
+fn blob_page_writer_competes_with_original_effect_credit() {
     for maximum in [0, 1, 2] {
-        race::<false, true>(maximum, true, false, false, true);
+        race::<false, true>(maximum, true, false, false);
     }
 }
 
@@ -236,11 +217,10 @@ fn rejected(panic: Box<dyn std::any::Any + Send>, expected: &str) {
 #[test]
 fn check_only_admission_and_deleting_the_bound_assertion_are_detected() {
     for (maximum, pages) in [(10, false), (1, true)] {
-        let panic =
-            std::panic::catch_unwind(|| race::<true, true>(maximum, pages, false, false, true))
-                .expect_err("the old check-only admission must violate its allowance");
+        let panic = std::panic::catch_unwind(|| race::<true, true>(maximum, pages, false, false))
+            .expect_err("the old check-only admission must violate its allowance");
         rejected(panic, "concurrent encoders must not exceed admitted work");
-        race::<true, false>(maximum, pages, false, false, true);
+        race::<true, false>(maximum, pages, false, false);
     }
 }
 
@@ -286,7 +266,7 @@ fn refund_model<const OMIT: bool>(action: u8) {
         let worker_cancel = cancellation.clone();
         let worker_actual = actual.clone();
         let worker = loom::thread::spawn(move || {
-            encode::<false>(&worker_root, &worker_cancel, worker_actual, false, None)
+            encode::<false>(&worker_root, &worker_cancel, worker_actual, false)
         });
         let completed = if action == 3 { 4 } else { 0 };
         if completed != 0 {
