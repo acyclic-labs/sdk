@@ -49,14 +49,15 @@ struct InstanceState {
 
 impl InstanceState {
     fn detach(&mut self, path: &std::ffi::CStr, root: &Path) -> bool {
-        let mut detached = !self.mount.pending();
+        let mut detached = !self.mount.needs_unmount();
         if !detached {
             let device = self.device.as_ref().map(std::os::fd::AsFd::as_fd);
             match self.mount.stop(path, device) {
                 Ok(()) => {
-                    detached = device
-                        .is_none_or(|device| self.mount.device_detached(device).unwrap_or(false))
-                        || !self.mount.pending();
+                    // Namespace removal is accepted even while a held file
+                    // delays device acknowledgement. The transport stop and
+                    // worker join below own that remaining physical lifetime.
+                    detached = !self.mount.needs_unmount();
                 }
                 Err(error) => {
                     tracing::warn!(%error, root = %root.display(), "shared FUSE unmount failed");
