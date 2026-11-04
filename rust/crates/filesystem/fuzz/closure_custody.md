@@ -174,3 +174,21 @@ relation must reject the missing original funding. Restore the patch before
 requiring the relation to pass. Cache admission adds no payload copy, object
 read, durability barrier or wait; each payload transfers its existing lease
 once, and one slot lease replaces the former residency reconciliation.
+
+The same local-provider relation repeats every capacity with proof observation
+enabled at the exact peak measured without the observer. Cache residency is
+excluded from external admission only when its retained lease identifies the
+leaf's original ledger. A foreign ledger still refuses a peak one byte below
+the simultaneously resident cache. Both paths retain the independent buffer
+through physical output retirement. Decode, decoded-cache admission, cloning
+and paged leaf admission share this distinction; residency is never inferred
+from the leaf's total live bytes. One weak ledger identity and one byte total
+describe the operation cache without retaining additional funding or scanning
+entries. A different original source cannot be attached to the same proof owner.
+
+`mutations/operation_cache_duplicate_charge.patch` removes that exclusion from
+the production observer. The exact-peak relation must reject the duplicate
+charge; restore the patch before requiring the relation to pass. The existing
+`decoder_work` target and its recorded canonical corpus continue to exercise
+the unchanged page decoders; the local-provider relation covers cache funding
+around those decoders.

@@ -54,7 +54,7 @@ impl<'a, S> OperationReadCache<'a, S> {
             .value
             .resize_with(slot_limit.min(INITIAL_CACHE_SLOTS), || None);
         if let Some(owner) = data_custody {
-            owner.add_operation_cache_bytes(bytes)?;
+            owner.add_original_cache_bytes(bytes, &slots.allocation)?;
         }
         Ok(Self {
             store,
@@ -115,6 +115,14 @@ impl<'a, S> OperationReadCache<'a, S> {
         if state.entry_count >= self.maximum_entries {
             return Ok(false);
         }
+        if self.data_custody.is_some()
+            && let Some(original) = state.slots.allocation.standalone_ledger()
+            && !accounting
+                .standalone_parts()
+                .is_some_and(|(ledger, ..)| ledger.shares_retained_ledger(&original))
+        {
+            return Ok(false);
+        }
         let (existing, mut vacant) = probe_slots(&state.slots.value, object_id, accounting, None)?;
         if existing.is_some() {
             return Ok(false);
@@ -160,10 +168,11 @@ impl<'a, S> OperationReadCache<'a, S> {
             let old = std::mem::replace(&mut state.slots, grown);
             drop(old);
             if let Some(owner) = self.data_custody {
-                owner.add_operation_cache_bytes(
+                owner.add_original_cache_bytes(
                     Self::slot_bytes(&state)?
                         .checked_sub(old_bytes)
                         .ok_or(WorkError::Overflow)?,
+                    &state.slots.allocation,
                 )?;
             }
             if REPROBE_GROWTH {
@@ -183,6 +192,9 @@ impl<'a, S> OperationReadCache<'a, S> {
                 accounting,
             )?)
         };
+        if let Some(owner) = self.data_custody {
+            owner.add_original_cache_bytes(owned_bytes, &state.slots.allocation)?;
+        }
         *state
             .slots
             .value
@@ -194,9 +206,6 @@ impl<'a, S> OperationReadCache<'a, S> {
         });
         state.entry_count += 1;
         state.retained_owned_bytes = retained_owned_bytes;
-        if let Some(owner) = self.data_custody {
-            owner.add_operation_cache_bytes(owned_bytes)?;
-        }
         Ok(true)
     }
 }
@@ -219,7 +228,10 @@ impl<S> Drop for OperationReadCache<'_, S> {
             .expect("cache residency was admitted before retaining each payload");
         drop(std::mem::take(&mut state.slots.value));
         if let Some(owner) = self.data_custody {
-            owner.release_operation_cache_bytes(bytes);
+            owner.release_original_cache_bytes(
+                bytes,
+                state.slots.allocation.standalone_ledger().is_some(),
+            );
         }
     }
 }

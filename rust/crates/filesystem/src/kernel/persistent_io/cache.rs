@@ -193,17 +193,22 @@ pub(crate) fn admit_decoded_with_accounting<S: AsyncObjectStore, F: Format>(
     };
     let logical_bytes = decoded.logical_bytes;
     let control_bytes = usize_to_u64(size_of::<Page<F>>());
-    if let Err(error) =
-        claim_read_allocation(control_bytes, 1, allocations, work, budget, data_custody, 0)
-    {
-        drop(page);
-        allocations
-            .release(logical_bytes)
-            .map_err(allocation_error)?;
-        return Err(error);
-    }
+    let cached_local_bytes =
+        match claim_read_allocation(control_bytes, 1, allocations, work, budget, data_custody, 0) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                drop(page);
+                allocations
+                    .release(logical_bytes)
+                    .map_err(allocation_error)?;
+                return Err(error);
+            }
+        };
     if let Some(owner) = data_custody {
-        let local_peak = allocations.live_bytes();
+        let local_peak = allocations
+            .live_bytes()
+            .checked_sub(cached_local_bytes)
+            .ok_or(WorkError::Overflow)?;
         if let Err(error) = owner.record_completed_leaf_work(WorkCounters {
             allocation_operations: 1,
             peak_allocation_bytes: local_peak,

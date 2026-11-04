@@ -17,6 +17,9 @@ struct ProofDataWorkReport {
     delivery_generation: u64,
     live_future_bytes: u64,
     live_cache_bytes: u64,
+    original_cache_bytes: u64,
+    original_cache_ledger:
+        Option<std::sync::Weak<std::sync::Mutex<super::allocation::SharedAllocationBytes>>>,
     #[cfg(not(target_arch = "wasm32"))]
     native_accounting: Option<Arc<crate::demand::NativeProofAccounting>>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -215,6 +218,73 @@ impl ProofDataCustody {
 
     pub(crate) fn operation_cache_bytes(&self) -> u64 {
         self.completed_data_work.lock().live_cache_bytes
+    }
+
+    /// Cache leases keep the actual source ledger; only foreign residency is
+    /// external to a leaf borrowing that ledger.
+    pub(crate) fn local_operation_cache_bytes(
+        &self,
+        ledger: &super::allocation::AllocationLedger,
+    ) -> u64 {
+        let completed = self.completed_data_work.lock();
+        if completed
+            .original_cache_ledger
+            .as_ref()
+            .is_some_and(|original| ledger.shares_retained_ledger(original))
+        {
+            completed.original_cache_bytes
+        } else {
+            0
+        }
+    }
+
+    pub(crate) fn add_original_cache_bytes(
+        &self,
+        bytes: u64,
+        allocation: &super::allocation::retained::RetainedAllocation,
+    ) -> Result<(), crate::FsError> {
+        let Some(ledger) = allocation.standalone_ledger() else {
+            return self.add_operation_cache_bytes(bytes).map_err(Into::into);
+        };
+        let mut completed = self.completed_data_work.lock();
+        if completed
+            .original_cache_ledger
+            .as_ref()
+            .is_some_and(|original| !std::sync::Weak::ptr_eq(original, &ledger))
+        {
+            return Err(crate::FsError::AccountingHandoffActive);
+        }
+        let original = completed
+            .original_cache_bytes
+            .checked_add(bytes)
+            .ok_or(WorkError::Overflow)?;
+        let live = completed
+            .live_cache_bytes
+            .checked_add(bytes)
+            .ok_or(WorkError::Overflow)?;
+        completed.original_cache_bytes = original;
+        completed.live_cache_bytes = live;
+        completed.original_cache_ledger = Some(ledger);
+        Ok(())
+    }
+
+    pub(crate) fn release_original_cache_bytes(&self, bytes: u64, ordinary: bool) {
+        let mut completed = self.completed_data_work.lock();
+        completed.live_cache_bytes = completed
+            .live_cache_bytes
+            .checked_sub(bytes)
+            .unwrap_or_else(|| unreachable!("cache retirement follows physical destruction"));
+        if ordinary {
+            completed.original_cache_bytes = completed
+                .original_cache_bytes
+                .checked_sub(bytes)
+                .unwrap_or_else(|| {
+                    unreachable!("original cache leases retire their own residency")
+                });
+            if completed.original_cache_bytes == 0 {
+                completed.original_cache_ledger = None;
+            }
+        }
     }
 
     pub(crate) fn add_operation_cache_bytes(&self, bytes: u64) -> Result<(), WorkError> {
