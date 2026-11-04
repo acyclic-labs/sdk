@@ -866,3 +866,12 @@ the disjoint lower-prefix request and upper-suffix authority: different entries
 cannot collectively satisfy the conjunction. The oracle derives the empty
 intersection directly from the original sorted keys and does not call the
 production predicate to decide the expected subset.
+
+`negative-controls/change_projection_eager_decode.patch` restores the original
+restricted projection's eager decode. The same property now exercises a whole
+record admitted by intersected requested and authority ranges. Complete input
+validation must still reject malformed bodies and header indexes before any
+selection. A fully admitted record must transfer its original owners after one
+body parse, with no decoded allocations; the restored implementation must fail
+that unchanged allocation oracle. Mixed selections keep the existing decoder
+and encoder path, so their extra parses remain an open optimization.
