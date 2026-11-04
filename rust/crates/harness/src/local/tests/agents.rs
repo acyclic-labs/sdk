@@ -1446,10 +1446,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         .conversation
         .send("parent-write", "write parent seed")
         .await?;
-    tokio::select! {
-        result = parent.settled(parent_input) => result.map(|_| ())?,
-        result = runtime.completion() => result?,
-    }
+    parent.settled(parent_input).await?;
     assert_eq!(provider.request_count(), 4);
     let parent_file = publication(&connection, &root, parent_input).await?;
     assert_eq!(parent_file.volume(), &project);

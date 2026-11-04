@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 """Qualify a production ownership/event oracle and its retained mutation."""
 import argparse
+import os
 from pathlib import Path
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
-parser = argparse.ArgumentParser(description=__doc__)
+
+
+class ClaimParser(argparse.ArgumentParser):
+    def error(self, message):
+        self.exit(2, f"step=select claim; cause={message}; recovery: python3 rust/proofs/qualify.py --help\n")
+
+
+parser = ClaimParser(description=__doc__)
 parser.add_argument("claim", choices=["retained-credit", "settlement-terminal"])
 claim = parser.parse_args().claim
 if claim == "retained-credit":
@@ -32,7 +40,9 @@ def require(condition, step):
 
 
 def run(label):
-    result = subprocess.run(COMMAND, cwd=ROOT, capture_output=True, text=True)
+    environment = os.environ.copy()
+    environment.setdefault("PROPTEST_RNG_SEED", "1697")
+    result = subprocess.run(COMMAND, cwd=ROOT, capture_output=True, text=True, env=environment)
     output = result.stdout + result.stderr
     directory = ROOT / "target" / claim
     directory.mkdir(parents=True, exist_ok=True)
