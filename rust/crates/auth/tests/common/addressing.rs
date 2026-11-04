@@ -45,10 +45,7 @@ fn header<T>(
         );
     }
     header.pop();
-    assert!(matches!(
-        decode(&header),
-        Err(IdentityError::UnsupportedVersion)
-    ));
+    assert!(matches!(decode(&header), Err(error) if error == invalid));
     let mut alias = bytes.to_vec();
     alias[0] ^= 1;
     for value in [alias.as_slice(), &bytes[offset + 1..]] {
