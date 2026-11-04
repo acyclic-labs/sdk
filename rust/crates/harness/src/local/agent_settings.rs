@@ -36,18 +36,6 @@ struct Tree<'a> {
 }
 
 impl Tree<'_> {
-    // Only the selected settings entry may fall back to the seed on an
-    // invalid file. Enabled plugin files and imports retain their read errors.
-    async fn entry(&self, path: &str) -> Result<Option<(String, acyclic_stream::OwnedBytes)>> {
-        match self.home(path).await {
-            Err(Error::ToolRejected {
-                code: crate::wire::ErrorCode::Invalid,
-                ..
-            }) => Ok(None),
-            result => result,
-        }
-    }
-
     async fn home(&self, path: &str) -> Result<Option<(String, acyclic_stream::OwnedBytes)>> {
         match self
             .volumes
@@ -89,8 +77,8 @@ impl config::Tree for Tree<'_> {
 }
 
 /// The settings `agent.ts` selects over `started`, recording the home
-/// module's admission. An invalid or rejected home module leaves the seed's
-/// settings in force; the seed's own module must be admissible.
+/// module's admission. Invalid or rejected enforcement settings refuse the
+/// session; the seed applies only when the home module is absent.
 pub(super) async fn admit(
     volumes: &Volumes<'_>,
     agent: AgentId,
@@ -108,7 +96,7 @@ pub(super) async fn admit(
         generation: "",
         bytes: crate::seed::file(config::AGENT),
     };
-    let home = tree.entry(config::AGENT).await?;
+    let home = tree.home(config::AGENT).await?;
     let Some((version, bytes)) = home else {
         return settle(&[seed], &tree, started, resolve, compaction)
             .await
@@ -122,27 +110,14 @@ pub(super) async fn admit(
             bytes: Some(&bytes),
         },
     ];
-    let (settings, status, error) =
-        match settle(&layers, &tree, started.clone(), resolve, compaction).await {
-            Ok(settings) => (settings, AdmissionStatus::Applied, None),
-            Err(Refused::Operation(error)) => return Err(error),
-            Err(Refused::Settings(status, error)) => (
-                settle(&layers[..1], &tree, started, resolve, compaction)
-                    .await
-                    .map_err(Refused::seed)?,
-                status,
-                Some(error),
-            ),
-        };
-    record(
+    admitted(
         volumes,
         agent,
         (config::AGENT, &version),
-        (status, error),
+        settle(&layers, &tree, started, resolve, compaction).await,
         clock,
     )
-    .await?;
-    Ok(settings)
+    .await
 }
 
 impl<'a> Tree<'a> {
@@ -165,6 +140,24 @@ impl<'a> Tree<'a> {
             generation,
         })
     }
+}
+
+/// Records a settings decision before returning it. Operational failures keep
+/// their original cause; invalid enforcement content cannot select defaults.
+async fn admitted<T>(
+    volumes: &Volumes<'_>,
+    agent: AgentId,
+    version: (&str, &str),
+    result: std::result::Result<T, Refused>,
+    clock: &dyn acyclic_stream::UnixMillisClock,
+) -> Result<T> {
+    let outcome = match &result {
+        Ok(_) => (AdmissionStatus::Applied, None),
+        Err(Refused::Settings(status, error)) => (*status, Some(error.to_string())),
+        Err(Refused::Operation(_)) => return result.map_err(Refused::cause),
+    };
+    record(volumes, agent, version, outcome, clock).await?;
+    result.map_err(Refused::cause)
 }
 
 /// Records the outcome of the home's `path` at `version` in the journal,
@@ -215,8 +208,8 @@ async fn record(
 }
 
 /// The before-hook rules of the plugins `plugins.ts` enables, read as the
-/// session starts, recording the home module's admission. An invalid home
-/// `plugins.ts` leaves the seed's set in force.
+/// session starts, recording the home module's admission. Invalid enforcement
+/// manifests refuse the session rather than remove its guards.
 #[cfg(any(test, feature = "hooks"))]
 pub(super) async fn plugins(
     volumes: &Volumes<'_>,
@@ -237,7 +230,7 @@ pub(super) async fn plugins(
         }
         error => error,
     };
-    let Some((version, bytes)) = tree.entry(MANIFEST).await? else {
+    let Some((version, bytes)) = tree.home(MANIFEST).await? else {
         return Ok(load(&tree, &[seed], &enabler).await.map_err(seeded)?.rules);
     };
     let layers = [
@@ -248,32 +241,29 @@ pub(super) async fn plugins(
             bytes: Some(&bytes),
         },
     ];
-    let (rules, outcome) = match load(&tree, &layers, &enabler).await {
-        Ok(enabled) => (enabled.rules, (AdmissionStatus::Applied, None)),
-        Err(Error::Invalid(reason)) => (
-            load(&tree, &layers[..1], &enabler)
-                .await
-                .map_err(seeded)?
-                .rules,
-            (AdmissionStatus::Invalid, Some(reason)),
-        ),
-        Err(error) => return Err(error),
-    };
-    record(volumes, agent, (MANIFEST, &version), outcome, clock).await?;
-    Ok(rules)
+    admitted(
+        volumes,
+        agent,
+        (MANIFEST, &version),
+        load(&tree, &layers, &enabler)
+            .await
+            .map(|enabled| enabled.rules)
+            .map_err(Refused::evaluated),
+        clock,
+    )
+    .await
 }
 
-/// Only configuration refusals permit fallback. Operation failures retain their
-/// original typed cause and cannot become an admission record.
+/// Configuration refusals have a recorded status. Operational failures retain
+/// their original typed cause and cannot become an admission record.
 #[derive(Debug)]
 enum Refused {
-    Settings(AdmissionStatus, String),
+    Settings(AdmissionStatus, Error),
     Operation(Error),
 }
 
 impl Refused {
-    /// The seed is the floor every home module falls back to; refusing it
-    /// is a defect of this build. Read failures keep their original cause.
+    /// The seed itself must be admissible. Read failures keep their cause.
     fn seed(self) -> Error {
         match self {
             Self::Settings(_, reason) => {
@@ -283,17 +273,23 @@ impl Refused {
         }
     }
 
+    fn cause(self) -> Error {
+        match self {
+            Self::Settings(_, error) | Self::Operation(error) => error,
+        }
+    }
+
     fn evaluated(error: Error) -> Self {
         match error {
-            Error::Invalid(reason) => Self::Settings(AdmissionStatus::Invalid, reason),
+            error @ Error::Invalid(_) => Self::Settings(AdmissionStatus::Invalid, error),
             error => Self::Operation(error),
         }
     }
 
     fn selection(error: Error) -> Self {
         match error {
-            Error::Invalid(_) | Error::Unsupported(_) | Error::NotFound(_) => {
-                Self::Settings(AdmissionStatus::Rejected, error.to_string())
+            error @ (Error::Invalid(_) | Error::Unsupported(_) | Error::NotFound(_)) => {
+                Self::Settings(AdmissionStatus::Rejected, error)
             }
             error => Self::Operation(error),
         }
@@ -317,7 +313,8 @@ async fn settle(
     ),
 ) -> std::result::Result<Settings, Refused> {
     let selection = format!("{}/{}", started.0.provider, started.0.name);
-    let invalid = |error: String| Refused::Settings(AdmissionStatus::Invalid, error);
+    let invalid =
+        |error: String| Refused::Settings(AdmissionStatus::Invalid, Error::Invalid(error));
     let (value, _) = config::compose(
         config::AGENT,
         layers,
@@ -331,7 +328,7 @@ async fn settle(
     let rejected = |reason: &str| {
         Refused::Settings(
             AdmissionStatus::Rejected,
-            format!("{}: {reason}", config::AGENT),
+            Error::Invalid(format!("{}: {reason}", config::AGENT)),
         )
     };
     if settings.effort.is_some() {
@@ -546,7 +543,7 @@ mod tests {
             crate::local::tests::settings::write(&harness, path, source).await?;
         }
         let enabler = harness.root.to_string();
-        let (version, bytes) = original.entry(crate::plugins::MANIFEST).await?.unwrap();
+        let (version, bytes) = original.home(crate::plugins::MANIFEST).await?.unwrap();
         let layers = [Layer {
             name: "home",
             generation: &version,
