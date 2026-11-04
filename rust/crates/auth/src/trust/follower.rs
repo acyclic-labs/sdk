@@ -299,6 +299,8 @@ pub(super) fn publication_account(signed: &SignedRevocation) -> &str {
 pub enum FenceCause {
     /// A follow was lost; the driver reconnects and catches up.
     LostFollow,
+    /// The authenticated bootstrap key-set publication owner was lost.
+    AnchorLost,
     /// An environment record was refused; everything stays fenced.
     Refused,
     /// The driver stopped for good.
@@ -324,6 +326,7 @@ pub enum FollowerState {
 /// Follows signed trust records for any number of accounts of one environment.
 pub struct Follower {
     environment: RwLock<EnvironmentFrontier>,
+    environment_refusal: RwLock<Option<VerifyError>>,
     accounts: RwLock<HashMap<String, Arc<AccountEntry>>>,
     floor: AtomicU64,
     // The original state watch serializes generation updates and their wakes.
@@ -359,12 +362,51 @@ impl Follower {
     pub fn new(environment: impl Into<String>, anchor: Vec<BlockId>) -> Self {
         Self {
             environment: RwLock::new(EnvironmentFrontier::genesis(environment, anchor)),
+            environment_refusal: RwLock::new(None),
             accounts: RwLock::default(),
             floor: AtomicU64::new(0),
             generation: AtomicU64::new(1),
             state: tokio::sync::watch::Sender::new(FollowerState::Connecting),
             global: tokio::sync::watch::Sender::new(()),
         }
+    }
+
+    /// Replace the owner's bootstrap keys before the first environment record
+    /// authenticates. An established signed chain keeps its original frontier;
+    /// an anchor update cannot replace its keys or skip a signed rotation.
+    /// The feed calls this only on an actual owner key-set publication.
+    ///
+    /// # Errors
+    /// Inaccessible frontier storage. This does not serve trust:
+    /// the refused record must still authenticate and catch up first.
+    pub fn reanchor(&self, anchor: Vec<BlockId>) -> Result<(), VerifyError> {
+        let mut environment = self
+            .environment
+            .write()
+            .map_err(|_| VerifyError::Unavailable)?;
+        if environment.revision.sequence == 0 && environment.revision.keys.as_ref() != anchor {
+            environment.revision.keys = anchor.into();
+        }
+        Ok(())
+    }
+
+    /// Original environment-record failure behind the retryable refusal fence.
+    /// This is a diagnostic, never an AccessDenied verdict on a caller.
+    pub fn environment_refusal(&self) -> Option<VerifyError> {
+        self.environment_refusal
+            .read()
+            .ok()
+            .and_then(|cause| *cause)
+    }
+
+    fn refuse_environment(&self, cause: VerifyError) {
+        if let Ok(mut refusal) = self.environment_refusal.write() {
+            *refusal = Some(cause);
+        }
+        // Original follows and catch-up acknowledgements remain live: no
+        // account generation withdrawal or population scan is needed.
+        self.notify(Some(FollowerState::Fenced(FenceCause::Refused)));
+        self.global.send_replace(());
     }
 
     /// The serving state, updated on every apply, fence, resume and serve.
@@ -439,7 +481,13 @@ impl Follower {
         release: bool,
         target: Option<Target<'_>>,
     ) -> Result<Applied, VerifyError> {
-        let record = decode(record)?.record;
+        let record = decode(record)
+            .inspect_err(|cause| {
+                if matches!(target, Some(Target::Environment)) {
+                    self.refuse_environment(*cause);
+                }
+            })?
+            .record;
         let matches = match (&target, &record) {
             (None, _) | (Some(Target::Environment), TrustRecordKind::Environment(_)) => true,
             (Some(Target::Account(id)), TrustRecordKind::Keyring(signed)) => {
@@ -451,6 +499,9 @@ impl Follower {
             _ => false,
         };
         if !matches {
+            if matches!(target, Some(Target::Environment)) {
+                self.refuse_environment(VerifyError::Trust);
+            }
             return Err(VerifyError::Trust);
         }
         let account_id = match &record {
@@ -469,9 +520,12 @@ impl Follower {
         let result = match (&record, &account) {
             (TrustRecordKind::Environment(signed), _) => {
                 let result = self.environment_record(signed, now);
-                if result.is_err() {
-                    self.fence(FenceCause::Refused);
+                if let Err(cause) = result {
+                    self.refuse_environment(cause);
                     return result.map(|(applied, _)| applied);
+                }
+                if let Ok(mut refusal) = self.environment_refusal.write() {
+                    *refusal = None;
                 }
                 result
             }
@@ -513,6 +567,7 @@ impl Follower {
             environment.revision.clone()
         };
         let sequence = prepared.sequence;
+        let keys = prepared.keys.clone();
         let result = prepared.apply(signed, now)?;
         if result.0 == Applied::Duplicate {
             return Ok(result);
@@ -522,7 +577,9 @@ impl Follower {
                 .environment
                 .write()
                 .map_err(|_| VerifyError::Unavailable)?;
-            if environment.revision.sequence != sequence {
+            if environment.revision.sequence != sequence
+                || !Arc::ptr_eq(&environment.revision.keys, &keys)
+            {
                 return Err(VerifyError::Unavailable);
             }
             std::mem::replace(&mut environment.revision, prepared)

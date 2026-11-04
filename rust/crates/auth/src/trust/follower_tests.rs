@@ -94,6 +94,36 @@ fn follower(world: &World) -> Follower {
     follower
 }
 
+#[test]
+fn reanchor_during_environment_verification_cannot_publish_the_old_proof() {
+    let world = world();
+    let trust = Arc::new(Follower::new("test", world.issuer.anchor()));
+    let mut frontier = EnvironmentFrontier::genesis("test", world.issuer.anchor());
+    let record = world
+        .issuer
+        .environment_keyring(&mut frontier, &world.issuer.anchor(), NOW)
+        .unwrap();
+    let concurrent = trust.clone();
+    VERIFYING_ENVIRONMENT.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            concurrent
+                .reanchor(Issuer::new("test", key(9)).anchor())
+                .unwrap();
+        }));
+    });
+    assert_eq!(
+        trust.apply_environment(&record, NOW),
+        Err(VerifyError::Unavailable)
+    );
+    assert_eq!(
+        *trust.state().borrow(),
+        FollowerState::Fenced(FenceCause::Refused)
+    );
+    assert_eq!(trust.environment.read().unwrap().frontier(), (0, [0; 32]));
+    trust.reanchor(world.issuer.anchor()).unwrap();
+    assert_eq!(trust.apply_environment(&record, NOW), Ok(Applied::Changed));
+}
+
 /// Credential `index`: its bytes and its root block id.
 fn credential(world: &World, trust: &Follower, index: u8) -> (Vec<u8>, BlockId) {
     let capability = world
