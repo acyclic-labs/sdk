@@ -47,7 +47,6 @@ fn check_publication(
 }
 
 pub fn check(bytes: &[u8]) {
-    check_reanchor(bytes).unwrap();
     let issuer = Issuer::new("test", SigningKey::from_bytes(&[1; 32]));
     let anchor = issuer.anchor();
     let follower = Follower::new("test", anchor.clone());
@@ -143,6 +142,7 @@ pub fn check(bytes: &[u8]) {
             assert_eq!(replayed.minimum_key_epoch(), current.minimum_key_epoch);
         }
     }
+    check_reanchor(bytes).unwrap();
 }
 
 #[cfg(test)]

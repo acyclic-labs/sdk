@@ -222,6 +222,14 @@ try:
     if any(hashlib.sha256(path.read_bytes()).digest() != digest
            for path, digest in oracle_hashes.items()):
         raise RuntimeError("Auth oracle changed during the negative control")
+    if choice == "trust-target":
+        step = "admit the original trust record after restoring the scope guard"
+        restored = subprocess.run(
+            command, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        print(restored.stdout, end="")
+        if restored.returncode != 0:
+            raise RuntimeError("the restored production scope guard did not pass the same oracle")
 except (OSError, RuntimeError) as error:
     print(
         f"STEP {step} failed: {error}; inspect the original output and correct the source or command; "
