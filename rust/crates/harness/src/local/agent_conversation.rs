@@ -253,9 +253,9 @@ impl Conversation {
         match self.deliver(id, prompt).await? {
             Sent::Accepted(inbox) => Ok(inbox),
             Sent::Refused(reason) => Err(Error::Storage(reason)),
-            Sent::Unknown => Err(Error::Storage(
-                "the message's commit outcome is unknown; resend it".into(),
-            )),
+            Sent::Unknown => Err(self
+                .connection
+                .stream_failure("the message's commit outcome is unknown; resend it")),
         }
     }
 
