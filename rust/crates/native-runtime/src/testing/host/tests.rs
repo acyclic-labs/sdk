@@ -323,30 +323,40 @@ fn unscoped_physical_workers_leave_the_driver_available_to_reply() {
         receive.recv().unwrap();
     }
     let host = Host::for_workers(workers);
-    let (requested, mut requests) = mpsc::unbounded_channel();
-    let mut completion = crate::run_blocking_io(
-        move || {
-            let (reply, waiting) = oneshot::channel();
-            requested
-                .send(reply)
-                .map_err(|_| std::io::ErrorKind::BrokenPipe)?;
-            blocking_on(waiting).map_err(|_| std::io::ErrorKind::BrokenPipe)
-        },
-        None,
-    )
-    .unwrap();
-    let mut job = completion.pending.take().unwrap();
-    Work::bind(&mut job, None, Some(host.clone()));
-    let mut drive = Box::pin(host.drive(queued(job, workers)));
-    // Every physical worker is waiting for this driver. Its first poll must
-    // yield before any reply is sent, even though none belongs to this Host.
-    assert!(drive.as_mut().poll(&mut cx).is_pending());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .start_paused(true)
         .build()
         .unwrap();
-    runtime.block_on(async {
+    let (schedule, _events) = Schedule::seeded(29);
+    let context = runtime.block_on(schedule.scope(async { Context::current().unwrap() }));
+    let (requested, mut requests) = mpsc::unbounded_channel();
+    // Retain the original simulation sources on the physical submission,
+    // without entering CURRENT and resubmitting it through another task.
+    let mut completion = BLOCKING_CONTEXT
+        .sync_scope(Some(context.clone()), || {
+            crate::run_blocking_io(
+                move || {
+                    if Host::current().is_none() {
+                        return Err(std::io::ErrorKind::InvalidInput);
+                    }
+                    let (reply, waiting) = oneshot::channel();
+                    requested
+                        .send(reply)
+                        .map_err(|_| std::io::ErrorKind::BrokenPipe)?;
+                    blocking_on(waiting).map_err(|_| std::io::ErrorKind::BrokenPipe)
+                },
+                None,
+            )
+        })
+        .unwrap();
+    let mut job = completion.pending.take().unwrap();
+    Work::bind(&mut job, Some(context), Some(host.clone()));
+    let mut drive = Box::pin(host.drive(queued(job, workers)));
+    // Every physical worker is waiting for this driver. Its first poll must
+    // yield before any reply is sent, even though none belongs to this Host.
+    assert!(drive.as_mut().poll(&mut cx).is_pending());
+    runtime.block_on(schedule.scope(async {
         let deadline = tokio::time::sleep(std::time::Duration::from_secs(30));
         tokio::pin!(deadline);
         for (index, reply) in replies.into_iter().enumerate() {
@@ -368,7 +378,7 @@ fn unscoped_physical_workers_leave_the_driver_available_to_reply() {
                 () = &mut deadline => panic!("foreign native occupancy advanced the consumer deadline before its original callback reply"),
             }
         }
-    });
+    }));
 }
 
 #[test]
