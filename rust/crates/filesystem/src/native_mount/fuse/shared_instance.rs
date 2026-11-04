@@ -40,8 +40,11 @@ struct InstanceState {
     mount: super::mount::Mount,
     device: Option<Arc<std::fs::File>>,
     worker: Option<std::thread::JoinHandle<Result<(), NativeMountError>>>,
+    transport: Option<Arc<super::host_io::HostIo>>,
     invalidator: Option<std::thread::JoinHandle<()>>,
     guard: Option<MountDestinationGuard>,
+    #[cfg(test)]
+    worker_lifetime: std::sync::Weak<()>,
 }
 
 impl InstanceState {
@@ -61,20 +64,22 @@ impl InstanceState {
             }
         }
         if !detached {
-            // Busy: detach the namespace now; the kernel ends the connection,
-            // and with it the worker, once the last open file closes.
+            // Busy: detach the namespace. The physical owner still stops and
+            // joins the transport, including while an old file remains open.
             match nix::mount::umount2(path, nix::mount::MntFlags::MNT_DETACH) {
                 Ok(()) => detached = true,
                 Err(error) => {
                     tracing::warn!(%error, root = %root.display(), "shared FUSE detach failed");
                 }
             }
-            drop(self.worker.take());
         }
         detached
     }
 
     fn join_worker(&mut self) {
+        if let Some(transport) = self.transport.take() {
+            transport.stop();
+        }
         if let Some(worker) = self.worker.take() {
             match worker.join() {
                 Ok(Ok(())) => {}
@@ -158,11 +163,23 @@ impl SharedFuseInstance {
         )?;
         session.initialize()?;
         let notifier = session.notifier();
+        state.transport = Some(session.transport());
         views.set_notifier(notifier.clone());
+        #[cfg(test)]
+        let lifetime = Arc::new(());
+        #[cfg(test)]
+        {
+            state.worker_lifetime = Arc::downgrade(&lifetime);
+        }
         state.worker = Some(
             std::thread::Builder::new()
                 .name("acyclic-fuse".to_owned())
-                .spawn(move || session.run())?,
+                .spawn(move || {
+                    let result = session.run();
+                    #[cfg(test)]
+                    drop(lifetime);
+                    result
+                })?,
         );
         state.invalidator = Some(
             std::thread::Builder::new()
@@ -195,6 +212,15 @@ impl SharedFuseInstance {
             // root detaches it.
             drop(guard);
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn worker_lifetime(&self) -> std::sync::Weak<()> {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .worker_lifetime
+            .clone()
     }
 }
 
