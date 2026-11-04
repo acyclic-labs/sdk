@@ -163,7 +163,11 @@ async fn saved_command_replay_authenticates_its_original_repository_sources() ->
         Some(request),
     )
     .await;
-    assert!(matches!(denied, Err(Error::Unauthorized(_))));
+    assert!(
+        matches!(denied, Err(ref error) if error.code() == crate::wire::ErrorCode::Unauthorized),
+        "{:?}",
+        denied.as_ref().err()
+    );
     Ok(())
 }
 

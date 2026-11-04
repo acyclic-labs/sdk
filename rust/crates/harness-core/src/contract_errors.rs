@@ -1,5 +1,5 @@
 use super::OperationId;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 use crate::wire::ErrorCode;
 
 /// Reasons an interaction settled without approving its action. Tool callers
@@ -486,6 +486,21 @@ pub(crate) fn native_work_error_code(
     }
 }
 
+/// Classify the original cause without formatting or copying its diagnostic.
+#[cfg(feature = "filesystem")]
+fn filesystem_error_code(source: &acyclic_fs::FsError) -> ErrorCode {
+    use acyclic_fs::{AuthorityStoreError, FsError};
+    match source {
+        FsError::InvalidAccessPolicy => ErrorCode::Unauthorized,
+        FsError::UnauthenticatedAccessFacts => ErrorCode::Unsupported,
+        FsError::Authority(AuthorityStoreError::Missing) => ErrorCode::NotFound,
+        FsError::Cancelled(_) => ErrorCode::Cancelled,
+        #[cfg(not(target_arch = "wasm32"))]
+        FsError::NativeKernel(cause) => native_work_error_code(cause),
+        _ => ErrorCode::Storage,
+    }
+}
+
 /// Wire classification of a retained Machines cause.
 #[cfg(feature = "machines")]
 const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::wire::ErrorCode {
@@ -510,6 +525,44 @@ const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::
 }
 
 impl Error {
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn workspace_error_code(source: &acyclic_fs::WorkspaceError) -> ErrorCode {
+        use acyclic_fs::WorkspaceError;
+        match source {
+            WorkspaceError::AccessDenied => ErrorCode::Unauthorized,
+            WorkspaceError::Filesystem(source) => filesystem_error_code(source),
+            WorkspaceError::NotFound => ErrorCode::NotFound,
+            WorkspaceError::RetentionConflict
+            | WorkspaceError::StaleGeneration
+            | WorkspaceError::StaleSource
+            | WorkspaceError::StaleIdentity => ErrorCode::Conflict,
+            WorkspaceError::Name(_)
+            | WorkspaceError::Path(_)
+            | WorkspaceError::NamespacePath(_)
+            | WorkspaceError::ReadLimitExceeded
+            | WorkspaceError::NotRegularFile
+            | WorkspaceError::NotDirectory
+            | WorkspaceError::IsDirectory
+            | WorkspaceError::DirectoryNotEmpty
+            | WorkspaceError::ForeignGeneration
+            | WorkspaceError::IncompatibleWorkspace
+            | WorkspaceError::NoCommonAncestor
+            | WorkspaceError::LineageLimit
+            | WorkspaceError::JoinLimit
+            | WorkspaceError::StaleTarget
+            | WorkspaceError::InvalidMergeResolution
+            | WorkspaceError::ChangeSetContinuity
+            | WorkspaceError::ChangedPathLimit
+            | WorkspaceError::EmptyContentSet
+            | WorkspaceError::NotFork
+            | WorkspaceError::ContentLengthOverflow
+            | WorkspaceError::Work(_)
+            | WorkspaceError::WorkMerge { .. } => ErrorCode::Invalid,
+            WorkspaceError::Cancelled(_) => ErrorCode::Cancelled,
+            WorkspaceError::Engine(_) => ErrorCode::Storage,
+        }
+    }
+
     /// Join an operation with cleanup that has already completed. Neither
     /// concrete cause is discarded. An uncertain cleanup takes precedence over
     /// a settled operation's wire class, so an adapter cannot report settlement.
@@ -667,31 +720,15 @@ impl Error {
             | Self::NativeSchema { code, .. }
             | Self::NativeReservation { code, .. } => *code,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::NativeWorkspace { source, .. }
-                if matches!(
-                    source.as_ref(),
-                    acyclic_fs::WorkspaceError::NotFound
-                        | acyclic_fs::WorkspaceError::Filesystem(acyclic_fs::FsError::Authority(
-                            acyclic_fs::AuthorityStoreError::Missing,
-                        ))
-                ) =>
-            {
-                ErrorCode::NotFound
-            }
+            Self::NativeWorkspace { source, .. } => Self::workspace_error_code(source),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::NativeFilesystem { source, .. }
-                if matches!(source.as_ref(), acyclic_fs::FsError::InvalidAccessPolicy) =>
-            {
-                ErrorCode::Unauthorized
-            }
+            Self::NativeFilesystem { source, .. } => filesystem_error_code(source),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeConstruction { .. }
             | Self::NativeSupervisor { .. }
             | Self::NativeSource { .. }
-            | Self::NativeWorkspace { .. }
             | Self::NativeDrivenJoin { .. }
-            | Self::NativeStageUncertain { .. }
-            | Self::NativeFilesystem { .. } => ErrorCode::Storage,
+            | Self::NativeStageUncertain { .. } => ErrorCode::Storage,
             #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
             Self::NativeView { .. } | Self::NativeTimeout { .. } => ErrorCode::Storage,
             #[cfg(all(
@@ -814,10 +851,25 @@ impl Error {
             } | Self::NativeSchema {
                 code: crate::wire::ErrorCode::Invalid,
                 ..
-            } | Self::NativeWorkspace { .. }
-                | Self::NativeFilesystem { .. }
+            } | Self::NativeFilesystem { .. }
         ) {
             return true;
+        }
+        // A retained workspace cause is model feedback only as a definitive
+        // refusal; exhausted work stays a harness failure despite its Invalid code.
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Self::NativeWorkspace { source, .. } = self {
+            use crate::wire::ErrorCode;
+            return !matches!(
+                **source,
+                acyclic_fs::WorkspaceError::Work(_) | acyclic_fs::WorkspaceError::WorkMerge { .. }
+            ) && matches!(
+                Self::workspace_error_code(source),
+                ErrorCode::Invalid
+                    | ErrorCode::NotFound
+                    | ErrorCode::Conflict
+                    | ErrorCode::Unauthorized
+            );
         }
         !self.is_native_failure() || matches!(self, Self::Process(_))
     }

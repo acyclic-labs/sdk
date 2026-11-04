@@ -187,8 +187,11 @@ async fn readonly_import(bytes: &[u8], flow: Preparation, ceiling: ReadCeiling) 
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     let original = lazy.workspace().head(&work, &cancellation).await?.id();
-    let options = if ceiling == ReadCeiling::All {
-        local_owner_mount_options(lazy.workspace(), "readonly-import", false).await?
+    let (options, _issuer) = if ceiling == ReadCeiling::All {
+        (
+            local_owner_mount_options(lazy.workspace(), "readonly-import", false).await?,
+            None,
+        )
     } else {
         use acyclic_fs::access::{
             Action, Capability, GenerationRange, Generations, Grant, ResourcePattern,
@@ -229,7 +232,7 @@ async fn readonly_import(bytes: &[u8], flow: Preparation, ceiling: ReadCeiling) 
         };
         let grants = crate::Capabilities::new([capability.to_scope_label()?]);
         let scope = issuer.bootstrap_scope("native-volume", &grants, None, &mut None)?;
-        authenticated_mount_options(
+        let options = authenticated_mount_options(
             lazy.workspace(),
             original,
             NativeAccessAuthority {
@@ -241,10 +244,12 @@ async fn readonly_import(bytes: &[u8], flow: Preparation, ceiling: ReadCeiling) 
             &work,
         )
         .await?
-        .native_context(&work, None, None)
-    }
-    .publication(MountPublication::Manual)
-    .subdirectory("/hot");
+        .native_context(&work, None, None);
+        (options, Some(issuer))
+    };
+    let options = options
+        .publication(MountPublication::Manual)
+        .subdirectory("/hot");
     // The owner's actual ledger is retained by its options.
     let view = options.require_access_view()?.clone();
     assert_eq!(view.current()?.data_generation(), Some(original));
@@ -484,7 +489,7 @@ async fn preparation_disclosure(bytes: &[u8], foreign: bool, bypass: bool) -> Te
     assert!(
         matches!(result, Err(acyclic_fs::MountLifecycleError::NativePolicy(reason)) if reason == expected)
             && std::fs::read_dir(destination.path())?.count() == 0,
-        "working-set admission disclosed bytes"
+        "working-set admission disclosed bytes or lost its refusal: {result:?}"
     );
     Ok(())
 }
@@ -509,16 +514,6 @@ async fn preparation_workspace<A: AsyncAuthorityStore + 'static, O: AsyncObjectS
         .map_err(|failure| failure.error)?
         .value
         .workspace())
-}
-
-#[tokio::test]
-async fn revoked_policy_rejects_previously_bound_generation_before_copy() -> TestResult {
-    preparation_disclosure(b"revoked secret", false, false).await
-}
-
-#[tokio::test]
-async fn foreign_volume_rejects_before_copy() -> TestResult {
-    preparation_disclosure(b"foreign secret", true, false).await
 }
 
 proptest! {

@@ -58,19 +58,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 ordinary = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
                 &ordinary
             };
-            if let Some(ceiling) = access.ceiling
-                && !crate::core::volume_write_granted_with_work(
-                    ceiling,
-                    volume,
-                    &mut Some(&mut io.history_io()),
-                )?
-            {
-                return Err(stock_boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Unauthorized,
-                    "content caller lacks a filesystem write grant",
-                ));
-            }
             let reference = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
             let root = self.open(&reference, Some(io)).await?;
             let operation = bounded_io::operation_key(key, Some(io))?;
@@ -95,15 +82,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             if receipt.0 != 1 {
                 return Err(io.invalid("unsupported conditional publication receipt"));
             }
-            let label = crate::core::filesystem_scope_label(
-                grant.policy_scope().capabilities(),
-                &mut Some(&mut io.history_io()),
-            )?;
+            let payload = change_payload(grant.policy_scope(), volume, io)?;
             let view = access::access_view(
                 &opened,
                 grant.policy_scope(),
                 None,
-                access::capability_payload(label, VolumeOperation::Write, io)?,
+                payload,
                 access.ceiling,
                 io,
             )
@@ -114,7 +98,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         &root,
                         grant.policy_scope(),
                         None,
-                        access::capability_payload(label, VolumeOperation::Write, io)?,
+                        payload,
                         access.ceiling,
                         io,
                     )
@@ -123,6 +107,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             } else {
                 None
             };
+            let mut checked_actions = [false; 2];
             for record in &receipt.1 {
                 let (file, action) = match (&record.source, &record.file) {
                     (None, Some(file)) => (file, Action::Create),
@@ -130,6 +115,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     (Some(file), None) => (file, Action::Delete),
                     (None, None) => return Err(io.invalid("empty conditional publication member")),
                 };
+                require_change_ceiling(action, volume, access.ceiling, &mut checked_actions, io)?;
                 file.validate(&mut Some(&mut io.history_io()))?;
                 if file.volume() != volume {
                     return Err(io.invalid("conditional receipt volume differs"));
@@ -180,17 +166,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "conditional publication needs a nonempty bound-volume request",
             ));
         }
-        if let Some(ceiling) = ceiling
-            && !crate::executor::with_history_io(io, |work| {
-                crate::core::volume_write_granted_with_work(ceiling, volume, work)
-            })?
-        {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Unauthorized,
-                "content caller lacks a filesystem write grant",
-            ));
-        }
         crate::conversation::BoundedContentFuture::new(io, || async move {
             let ordinary;
             let io = match io {
@@ -221,8 +196,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let mut records = crate::model::vec_with_capacity(changes.len(), Some(io))?;
             // The ordered receipt contains source identity and resulting
             // descriptors, never another copy of the file contents.
+            let mut checked_actions = [false; 2];
             for change in changes {
                 crate::model::charge_items(Some(io), 1)?;
+                require_change_ceiling(
+                    change_action(change),
+                    volume,
+                    ceiling,
+                    &mut checked_actions,
+                    io,
+                )?;
                 crate::conversation::validate_content_path(
                     change.path(),
                     &mut Some(&mut io.history_io()),
@@ -285,21 +268,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 Some(binding) => binding,
                 None => (self.select_current_workspace(&root, io).await?, None),
             };
-            let label = crate::core::filesystem_scope_label(
-                grant.policy_scope().capabilities(),
-                &mut Some(&mut io.history_io()),
-            )?;
+            let payload = change_payload(grant.policy_scope(), volume, io)?;
             let root_view = if opened.id() != root.id() || needs_binding {
                 Some(
-                    access::access_view(
-                        &root,
-                        grant.policy_scope(),
-                        None,
-                        access::capability_payload(label, VolumeOperation::Write, io)?,
-                        ceiling,
-                        io,
-                    )
-                    .await?,
+                    access::access_view(&root, grant.policy_scope(), None, payload, ceiling, io)
+                        .await?,
                 )
             } else {
                 None
@@ -330,15 +303,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             } else {
                 None
             };
-            let view = access::access_view(
-                &opened,
-                grant.policy_scope(),
-                None,
-                access::capability_payload(label, VolumeOperation::Write, io)?,
-                ceiling,
-                io,
-            )
-            .await?;
+            let view =
+                access::access_view(&opened, grant.policy_scope(), None, payload, ceiling, io)
+                    .await?;
             for change in changes {
                 let action = change_action(change);
                 if let Some(check) = check {
@@ -413,12 +380,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 let mut candidate = parent;
                                 loop {
                                     let prefix = &absolute[..candidate.len() + 1];
-                                    match io.sdk(selected.stat(prefix, io, io.cancellation()).await)
-                                    {
-                                        Ok(_) => break,
-                                        Err(error)
-                                            if error.code() == crate::wire::ErrorCode::NotFound =>
-                                        {
+                                    match io.sdk_if_present(
+                                        selected.stat(prefix, io, io.cancellation()).await,
+                                    )? {
+                                        Some(_) => break,
+                                        None => {
                                             access::require(
                                                 &view.0,
                                                 Action::Create,
@@ -437,7 +403,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                                 check(Action::Create, candidate)?;
                                             }
                                         }
-                                        Err(error) => return Err(error),
                                     }
                                     if let Some((parent, _)) = candidate.rsplit_once('/') {
                                         candidate = parent;
@@ -504,15 +469,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 .await,
                         )?;
                     } else {
-                        match io.sdk(
+                        io.sdk_if_present(
                             transaction
                                 .remove(&metadata_path, io, io.cancellation())
                                 .await,
-                        ) {
-                            Ok(_) => {}
-                            Err(error) if error.code() == crate::wire::ErrorCode::NotFound => {}
-                            Err(error) => return Err(error),
-                        }
+                        )?;
                     }
                 }
                 io.sdk(
@@ -592,6 +553,66 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )?;
         self.seal_publication(file, Some(io))
     }
+}
+
+// The authenticated logical-volume admission precedes this conversion. A plain
+// write grant remains create/replace only; removal needs its own signed label.
+fn change_payload<'a>(
+    scope: &'a Scope,
+    volume: &VolumeRef,
+    io: &PreparationIo,
+) -> Result<&'a [u8]> {
+    let grants = scope.capabilities();
+    let label = crate::core::filesystem_scope_label(grants, &mut Some(&mut io.history_io()))?;
+    if label.is_some() {
+        return access::capability_payload(label, VolumeOperation::Write, io);
+    }
+    let delete = crate::core::contains_content_grant_with_work(
+        grants,
+        volume,
+        VolumeOperation::Delete.capability_prefix(),
+        &mut Some(&mut io.history_io()),
+    )?;
+    access::whole_volume_payload(if delete {
+        acyclic_fs::access::ActionSet::DestinationEdit
+    } else {
+        acyclic_fs::access::ActionSet::DestinationWrite
+    })
+}
+
+fn require_change_ceiling(
+    action: Action,
+    volume: &VolumeRef,
+    ceiling: Option<&crate::Capabilities>,
+    checked_actions: &mut [bool; 2],
+    io: &PreparationIo,
+) -> Result<()> {
+    let checked = &mut checked_actions[usize::from(action == Action::Delete)];
+    if *checked {
+        return Ok(());
+    }
+    let operation = if action == Action::Delete {
+        VolumeOperation::Delete
+    } else {
+        VolumeOperation::Write
+    };
+    if let Some(grants) = ceiling
+        && crate::core::filesystem_scope_label(grants, &mut Some(&mut io.history_io()))?.is_none()
+        && !crate::core::contains_content_grant_with_work(
+            grants,
+            volume,
+            operation.capability_prefix(),
+            &mut Some(&mut io.history_io()),
+        )?
+    {
+        return Err(stock_boundary(
+            Some(io),
+            crate::wire::ErrorCode::Unauthorized,
+            "content caller lacks the requested filesystem action grant",
+        ));
+    }
+    *checked = true;
+    Ok(())
 }
 
 fn change_result(

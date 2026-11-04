@@ -362,6 +362,7 @@ async fn measured_replacement_failures_retain_the_workspace_cause() -> Result<()
         )
         .await
         .expect_err("a directory cannot become a regular file");
+        assert_eq!(error.code(), crate::wire::ErrorCode::Invalid);
         assert!(
             matches!(error, Error::NativeWorkspace { source, .. }
                 if matches!(*source, WorkspaceError::NotRegularFile)),
@@ -543,135 +544,231 @@ async fn internal_publication_has_one_metadata_and_recovery_record_for_every_ada
 async fn conditional_changes_publish_once_with_action_and_parent_authority() -> Result<()> {
     use crate::conversation::{ContentAccess, ContentChange};
     use acyclic_fs::access::{Action, Capability};
-    let provider = ProviderRef::new(
-        "conditional".into(),
-        "filesystem".into(),
-        "1".into(),
-        &mut None,
-    )?;
-    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
-    let agent = AgentId::from_bytes([39; 16]);
-    let volume = VolumeRef::new(
-        provider.clone(),
-        "private".into(),
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(agent),
-        &mut None,
-    )?;
-    host.create_volume(&volume).await?;
-    let (write, read) = publication_grants(&volume, agent)?;
-    let actions = |actions: &[Action]| -> Result<crate::Capabilities> {
-        Ok(crate::Capabilities::new([Capability::whole_volume(
-            None, actions,
-        )
-        .to_scope_label()
-        .map_err(|error| Error::Invalid(error.to_string()))?]))
-    };
-    let create = actions(&[Action::Create])?;
-    let create_access = ContentAccess {
-        ceiling: Some(&create),
-        io: None,
-    };
-    let add = |path| ContentChange::CreateAbsent {
-        path,
-        bytes: b"first",
-        media_type: "text/plain",
-        display_name: "file",
-    };
-    let changes = [add("nested/first"), add("second")];
-    let key = IdempotencyKey::new("conditional-create")?;
-    let original = host
-        .put_changes(&volume, &write, &changes, &key, 64, create_access, None)?
-        .await?;
-    let first = original.files().next().unwrap();
-    assert_eq!(
-        host.read_content(first, &read, 64, None).await?.as_ref(),
-        b"first"
-    );
-    let replay = host
-        .put_changes(&volume, &write, &changes, &key, 64, create_access, None)?
-        .await?;
-    assert_eq!(replay.generation, original.generation);
-    assert_eq!(
-        replay.files().collect::<Vec<_>>(),
-        original.files().collect::<Vec<_>>()
-    );
-    let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
-    let before = host.resolve(&workspace, None).await?;
-    // The first member is valid; an existing later destination refuses the whole cut.
-    assert!(
-        host.put_changes(
-            &volume,
-            &write,
-            &[add("unpublished"), add("second")],
-            &IdempotencyKey::new("conditional-conflict")?,
-            64,
-            create_access,
-            None
-        )?
-        .await
-        .is_err()
-    );
-    assert_eq!(host.resolve(&workspace, None).await?, before);
-    let deny_parent = |action, path: &str| {
-        if action == Action::Create && path == "forbidden" {
-            Err(Error::Unauthorized("directory creation denied".into()))
-        } else {
-            Ok(())
+    for adapter in 0..3 {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::work_budget(8_000_000, 8_000_000);
+        let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = match adapter {
+            0 => None,
+            1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
+            _ => Some(PreparationIo::from_native_work(&native)?),
+        };
+        let provider = ProviderRef::new(
+            "conditional".into(),
+            "filesystem".into(),
+            "1".into(),
+            &mut None,
+        )?;
+        let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+        let agent = AgentId::from_bytes([39; 16]);
+        let volume = VolumeRef::new(
+            provider.clone(),
+            "private".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+            &mut None,
+        )?;
+        host.create_volume(&volume).await?;
+        let (write, read) = publication_grants(&volume, agent)?;
+        let actions = |actions: &[Action]| -> Result<crate::Capabilities> {
+            Ok(crate::Capabilities::new([Capability::whole_volume(
+                None, actions,
+            )
+            .to_scope_label()
+            .map_err(|error| Error::Invalid(error.to_string()))?]))
+        };
+        let create = actions(&[Action::Create])?;
+        let create_access = ContentAccess {
+            ceiling: Some(&create),
+            io: io.as_ref(),
+        };
+        let add = |path| ContentChange::CreateAbsent {
+            path,
+            bytes: b"first",
+            media_type: "text/plain",
+            display_name: "file",
+        };
+        let changes = [add("nested/first"), add("second")];
+        let key = IdempotencyKey::new("conditional-create")?;
+        let original = host
+            .put_changes(&volume, &write, &changes, &key, 64, create_access, None)?
+            .await?;
+        let first = original.files().next().unwrap();
+        assert_eq!(
+            host.read_content(first, &read, 64, None).await?.as_ref(),
+            b"first"
+        );
+        let replay = host
+            .put_changes(&volume, &write, &changes, &key, 64, create_access, None)?
+            .await?;
+        assert_eq!(replay.generation, original.generation);
+        assert_eq!(
+            replay.files().collect::<Vec<_>>(),
+            original.files().collect::<Vec<_>>()
+        );
+        let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
+        let before = host.resolve(&workspace, None).await?;
+        // The first member is valid; an existing later destination refuses the whole cut.
+        let collision = host
+            .put_changes(
+                &volume,
+                &write,
+                &[add("unpublished"), add("second")],
+                &IdempotencyKey::new("conditional-conflict")?,
+                64,
+                create_access,
+                None,
+            )?
+            .await
+            .expect_err("an existing destination must refuse the entire publication");
+        assert_eq!(collision.code(), crate::wire::ErrorCode::Conflict);
+        assert_eq!(host.resolve(&workspace, None).await?, before);
+        let deny_parent = |action, path: &str| {
+            if action == Action::Create && path == "forbidden" {
+                Err(Error::Unauthorized("directory creation denied".into()))
+            } else {
+                Ok(())
+            }
+        };
+        assert!(
+            host.put_changes(
+                &volume,
+                &write,
+                &[add("valid"), add("forbidden/file")],
+                &IdempotencyKey::new("conditional-parent")?,
+                64,
+                create_access,
+                Some(&deny_parent)
+            )?
+            .await
+            .is_err()
+        );
+        assert_eq!(host.resolve(&workspace, None).await?, before);
+        assert!(
+            host.put_changes(
+                &volume,
+                &write,
+                &[ContentChange::UpdateExpected {
+                    source: first,
+                    bytes: b"denied"
+                }],
+                &IdempotencyKey::new("conditional-write-denied")?,
+                64,
+                create_access,
+                None
+            )?
+            .await
+            .is_err()
+        );
+        assert_eq!(host.resolve(&workspace, None).await?, before);
+        let volume_write =
+            crate::Capabilities::new([volume.capability(VolumeOperation::Write, &mut None)?]);
+        for ceiling in [&create, &volume_write] {
+            let denied = host
+                .put_changes(
+                    &volume,
+                    &write,
+                    &[ContentChange::DeleteExpected { source: first }],
+                    &IdempotencyKey::new("conditional-delete-without-grant")?,
+                    64,
+                    ContentAccess {
+                        ceiling: Some(ceiling),
+                        io: io.as_ref(),
+                    },
+                    None,
+                )?
+                .await
+                .expect_err("create or write authority cannot authorize deletion");
+            assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+            assert_eq!(host.resolve(&workspace, None).await?, before);
         }
-    };
-    assert!(
-        host.put_changes(
-            &volume,
-            &write,
-            &[add("valid"), add("forbidden/file")],
-            &IdempotencyKey::new("conditional-parent")?,
-            64,
-            create_access,
-            Some(&deny_parent)
-        )?
-        .await
-        .is_err()
-    );
-    assert_eq!(host.resolve(&workspace, None).await?, before);
-    assert!(
-        host.put_changes(
-            &volume,
-            &write,
-            &[ContentChange::UpdateExpected {
-                source: first,
-                bytes: b"denied"
-            }],
-            &IdempotencyKey::new("conditional-write-denied")?,
-            64,
-            create_access,
-            None
-        )?
-        .await
-        .is_err()
-    );
-    assert_eq!(host.resolve(&workspace, None).await?, before);
-    let delete = actions(&[Action::Delete])?;
-    let removed = host
-        .put_changes(
-            &volume,
-            &write,
-            &[ContentChange::DeleteExpected { source: first }],
-            &IdempotencyKey::new("conditional-delete")?,
-            64,
-            ContentAccess {
-                ceiling: Some(&delete),
-                io: None,
-            },
-            None,
-        )?
-        .await?;
-    assert_eq!(removed.members.len(), 1);
-    assert_eq!(removed.files().count(), 0);
-    // The original immutable source remains readable after deletion.
-    assert_eq!(
-        host.read_content(first, &read, 64, None).await?.as_ref(),
-        b"first"
-    );
+        let structured_delete = actions(&[Action::Delete])?;
+        let volume_delete =
+            crate::Capabilities::new([volume.capability(VolumeOperation::Delete, &mut None)?]);
+        for (index, delete) in [structured_delete, volume_delete].iter().enumerate() {
+            let first = original.files().nth(index).unwrap();
+            let before = host.resolve(&workspace, None).await?;
+            let delete_access = ContentAccess {
+                ceiling: Some(delete),
+                io: io.as_ref(),
+            };
+            for changes in [
+                &[add("delete-cannot-create")] as &[_],
+                &[ContentChange::UpdateExpected {
+                    source: first,
+                    bytes: b"delete-cannot-write",
+                }],
+                &[
+                    ContentChange::DeleteExpected { source: first },
+                    add("delete-cannot-authorize-a-later-create"),
+                ],
+            ] {
+                let denied = async {
+                    host.put_changes(
+                        &volume,
+                        &write,
+                        changes,
+                        &IdempotencyKey::new("conditional-delete-denied")?,
+                        64,
+                        delete_access,
+                        None,
+                    )?
+                    .await
+                }
+                .await
+                .expect_err("a delete ceiling cannot authorize creation or replacement");
+                assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+                assert_eq!(host.resolve(&workspace, None).await?, before);
+            }
+            let denied = host
+                .observe_changes(&volume, &write, &key, 64_000, delete_access)?
+                .await
+                .expect_err("a delete ceiling cannot recover a creation receipt");
+            assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+            let delete_key = IdempotencyKey::new(if index == 0 {
+                "conditional-structured-delete"
+            } else {
+                "conditional-volume-delete"
+            })?;
+            let removed = host
+                .put_changes(
+                    &volume,
+                    &write,
+                    &[ContentChange::DeleteExpected { source: first }],
+                    &delete_key,
+                    64,
+                    delete_access,
+                    None,
+                )?
+                .await
+                .expect("a delete-only ceiling must publish deletions");
+            assert_eq!(removed.members.len(), 1);
+            assert_eq!(removed.files().count(), 0);
+            let replay = host
+                .put_changes(
+                    &volume,
+                    &write,
+                    &[ContentChange::DeleteExpected { source: first }],
+                    &delete_key,
+                    64,
+                    delete_access,
+                    None,
+                )?
+                .await?;
+            assert_eq!(replay, removed);
+            let observed = host
+                .observe_changes(&volume, &write, &delete_key, 64_000, delete_access)?
+                .await?
+                .expect("the delete ceiling can recover its deletion receipt");
+            assert_eq!(observed.generation, removed.generation);
+            assert_eq!(observed.members, removed.members);
+        }
+        // The original immutable source remains readable after deletion.
+        assert_eq!(
+            host.read_content(first, &read, 64, None).await?.as_ref(),
+            b"first"
+        );
+    }
     Ok(())
 }

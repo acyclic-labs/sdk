@@ -47,6 +47,18 @@ pub fn check_access_record(bytes: &[u8]) -> Result<()> {
     if bytes.len() > 4096 {
         return Ok(());
     }
+    if let Ok(capability) = serde_json::from_slice::<Capability>(bytes) {
+        crate::core::check_filesystem_refinement(&capability)?;
+    }
+    if let Ok(operation) = serde_json::from_slice::<VolumeOperation>(bytes) {
+        let encoded =
+            serde_json::to_vec(&operation).map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(
+            serde_json::from_slice::<String>(&encoded).unwrap(),
+            serde_json::from_slice::<String>(bytes).unwrap(),
+            "volume operation changed at the admission boundary"
+        );
+    }
     let cancel = acyclic_fs::CancellationToken::new();
     #[cfg(not(target_arch = "wasm32"))]
     let work = acyclic_fs::NativeMaterializationWork::new(
@@ -72,6 +84,11 @@ pub fn check_access_record(bytes: &[u8]) -> Result<()> {
     if let Ok(capabilities) =
         record::<crate::Capabilities>(&io, bytes, crate::wire::ErrorCode::Storage)
     {
+        for label in capabilities.0.with_prefix(acyclic_fs::access::SCOPE_PREFIX) {
+            if let Ok(Some(capability)) = Capability::from_scope_label(label) {
+                crate::core::check_filesystem_refinement(&capability)?;
+            }
+        }
         let ceilings = crate::Capabilities::new(
             capabilities
                 .0

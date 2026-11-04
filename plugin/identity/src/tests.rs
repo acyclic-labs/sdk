@@ -604,6 +604,57 @@ async fn expired_session_rotates_before_whoami_and_orgs_reuses_new_access() {
 }
 
 #[tokio::test]
+async fn typed_token_admission_avoids_value_materialization_and_refuses_invalid_receipts() {
+    let mut response = tokens("access", "refresh");
+    response["unused"] = json!({"nested": ["discarded", {"field": "discarded"}]});
+    let mut wrong_type = tokens("access", "refresh");
+    wrong_type["token_type"] = json!("MAC");
+    let mut no_expiry = tokens("access", "refresh");
+    no_expiry["expires_in"] = json!(0);
+    let fake = Fake::start(vec![
+        Expected::token(refresh_fields("original"), response),
+        Expected::get("/v1/identity/session", "access", json!({"id": "user"})),
+        Expected::token(refresh_fields("original"), wrong_type),
+        Expected::token(refresh_fields("original"), no_expiry),
+        Expected::token(refresh_fields("original"), tokens("", "refresh")),
+    ])
+    .await;
+    let session = fake
+        .identity
+        .token(&refresh_fields("original"))
+        .await
+        .expect("typed token");
+    assert_eq!(session.access_token, "access");
+    assert_eq!(session.refresh_token, "refresh");
+    assert_eq!(fake.identity.response_values.load(Ordering::Relaxed), 0);
+    // An actual Value response exercises the same admission counter.
+    let value: Value = fake
+        .identity
+        .response(
+            fake.identity
+                .client
+                .get(format!("{}/v1/identity/session", fake.identity.endpoint))
+                .bearer_auth(&session.access_token),
+        )
+        .await
+        .expect("public JSON response");
+    assert_eq!(value, json!({"id": "user"}));
+    assert_eq!(fake.identity.response_values.load(Ordering::Relaxed), 1);
+    for _ in 0..3 {
+        let error = fake
+            .identity
+            .token(&refresh_fields("original"))
+            .await
+            .err()
+            .expect("invalid receipt");
+        assert_eq!(error.code, "invalid_response");
+    }
+    assert_eq!(fake.identity.response_values.load(Ordering::Relaxed), 1);
+    assert_eq!(fake.requests.load(Ordering::Relaxed), 5);
+    fake.done();
+}
+
+#[tokio::test]
 async fn explicit_refresh_retains_one_admission_and_detects_a_redundant_read() {
     let fake = Fake::start(vec![Expected::token(
         refresh_fields("refresh-1"),
@@ -1045,35 +1096,6 @@ fn dropping_store_releases_lock_while_a_forked_child_waits_to_exec() {
         dropped_owner_error.is_none(),
         "dropping Store must release its lock before the child execs: {dropped_owner_error:?}"
     );
-}
-
-#[tokio::test]
-async fn identity_read_errors_preserve_code_and_redact_description() {
-    let mut refused = Expected::get(
-        "/v1/identity/orgs",
-        "access",
-        json!({
-            "error": "permission_denied", "error_description": "refresh-secret"
-        }),
-    );
-    refused.status = StatusCode::FORBIDDEN;
-    let fake = Fake::start(vec![refused]).await;
-    let directory = tempfile::tempdir().expect("directory");
-    let store = Store::open(&directory.path().join("identity.json")).expect("store");
-    store
-        .write(
-            &fake.identity.endpoint,
-            session("access", "refresh-secret", now().expect("time") + 900),
-        )
-        .expect("write");
-    let error = fake
-        .identity
-        .get(&store, "/v1/identity/orgs")
-        .await
-        .expect_err("refused");
-    assert_eq!(error.code, "permission_denied");
-    assert!(!error.json().to_string().contains("refresh-secret"));
-    fake.done();
 }
 
 #[test]

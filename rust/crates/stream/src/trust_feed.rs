@@ -4,8 +4,9 @@
 //! served as soon as its Stream delivers it, never on a refresh interval.
 //! Opening a Stream runs alongside the live follows, so one slow account
 //! never delays another's revocations. Any follow ending fences everything;
-//! a refused account record fences that account and pauses its original
-//! follow until an environment record lets it apply.
+//! a refused account record fences that account, whose reads refuse as
+//! `VerifyError::Refused`, and pauses its original follow until an
+//! environment record lets it apply.
 use crate::{FollowFilter, Record, Stream, StreamError, StreamProvider, UnixMillisClock};
 use acyclic_auth::trust::{
     Applied, FenceCause, Follower, FollowerState, account_path, environment_path,

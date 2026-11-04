@@ -1,5 +1,5 @@
-//! Layered reads. An agent's effective tree is its `home` over the `seed`:
-//! a read looks in the highest layer first, and each file has one rule
+//! Layered reads, lowest first: seed, user/org, scope, template, parent, home.
+//! A read looks in the highest layer first, and each file has one rule
 //! (listed in the seed's `sys/kernel.md`). Layers are separate pinned
 //! volumes; resolving a path reads at most one entry per layer and copies
 //! nothing into a volume.
@@ -8,12 +8,31 @@
 pub const HOME: &str = "home";
 /// The read-only layer built into the binary (see [`crate::seed`]).
 pub const SEED: &str = "seed";
+/// User or organization configuration, above the seed.
+pub const USER_ORG: &str = "user-org";
+/// Scope (swarm) configuration.
+pub const SCOPE: &str = "scope";
+/// The selected template's configuration.
+pub const TEMPLATE: &str = "template";
+/// Configuration supplied by the parent.
+pub const PARENT: &str = "parent";
+
+/// Configuration precedence. This is the set of semantic layer positions,
+/// independent of the number of agents, files or generations in their volumes.
+pub const ORDER: [&str; 6] = [SEED, USER_ORG, SCOPE, TEMPLATE, PARENT, HOME];
+
+#[cfg(feature = "filesystem")]
+mod manifest;
+#[cfg(feature = "filesystem")]
+pub use manifest::Manifest;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub use manifest::ManifestTree;
 
 /// Tool path of the agent's home volume.
 pub const HOME_PATH: &str = ".volumes/home/";
 /// Tool path of the seed volume.
 pub const SEED_PATH: &str = ".volumes/seed/";
-/// Tool path of the effective view: `home` over `seed`, read-only.
+/// Tool path of the effective view over the complete layer stack, read-only.
 pub const EFFECTIVE_PATH: &str = ".volumes/effective/";
 /// Suffix naming a composed file's provenance chain beside it.
 pub const WHY_SUFFIX: &str = ".why.json";

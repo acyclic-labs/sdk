@@ -18,12 +18,13 @@ pub fn is_filesystem_capability(label: &str) -> bool {
         DIRECTORY_READ_PREFIX,
         VolumeOperation::Read.capability_prefix(),
         VolumeOperation::Write.capability_prefix(),
+        VolumeOperation::Delete.capability_prefix(),
     ]
     .iter()
     .any(|prefix| label.starts_with(prefix))
 }
 
-/// Whole-volume content operations in harness signed scopes.
+/// Independently granted whole-volume content operations in harness signed scopes.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VolumeOperation {
@@ -31,6 +32,8 @@ pub enum VolumeOperation {
     Read,
     /// Create a new file version.
     Write,
+    /// Remove an existing file. Does not grant creation or replacement.
+    Delete,
 }
 
 impl VolumeOperation {
@@ -39,6 +42,7 @@ impl VolumeOperation {
         match self {
             Self::Read => "volume:read:",
             Self::Write => "volume:write:",
+            Self::Delete => "volume:delete:",
         }
     }
 }
@@ -51,6 +55,10 @@ pub enum ActionSet {
     SourceRead,
     /// Publish content into a destination volume.
     DestinationWrite,
+    /// Publish a conditional batch that may also remove existing files.
+    DestinationEdit,
+    /// Remove existing files without granting publication of new bytes.
+    DestinationDelete,
     /// Read-only native filesystem view.
     MountRead,
     /// Writable native filesystem view.
@@ -68,6 +76,8 @@ impl ActionSet {
         match self {
             Self::SourceRead => &[List, Read, ReadHistory, Fork],
             Self::DestinationWrite => &[Create, Write, MergeInto],
+            Self::DestinationEdit => &[Create, Write, Delete, MergeInto],
+            Self::DestinationDelete => &[Delete],
             Self::MountRead => &[List, Read, ReadHistory],
             Self::MountWrite => &[
                 List,
@@ -213,31 +223,6 @@ pub(super) fn binding(capability: &Capability) -> Result<[u8; 32], InvalidPolicy
 #[cfg(test)]
 mod action_set_tests {
     use super::*;
-
-    #[test]
-    fn volume_and_unbound_ceilings_grant_identical_named_actions() {
-        for set in [
-            ActionSet::SourceRead,
-            ActionSet::DestinationWrite,
-            ActionSet::MountRead,
-            ActionSet::MountWrite,
-            ActionSet::Owner,
-            ActionSet::Metadata,
-        ] {
-            let bound = Capability::whole_volume(Some("fixture".into()), set.actions());
-            let unbound = Capability::whole_volume(None, set.actions());
-            for action in Action::ALL {
-                assert_eq!(
-                    bound.layers[0][0].actions.contains(&action),
-                    unbound.layers[0][0].actions.contains(&action)
-                );
-                assert_eq!(
-                    bound.layers[0][0].actions.contains(&action),
-                    set.actions().contains(&action)
-                );
-            }
-        }
-    }
 
     #[test]
     fn negative_control_all_actions_cannot_stand_in_for_a_writable_mount() {

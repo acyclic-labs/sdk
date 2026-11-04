@@ -544,7 +544,11 @@ fn scopes(
         ]);
     }
     for volume in [project, scratch] {
-        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+        for operation in [
+            VolumeOperation::Read,
+            VolumeOperation::Write,
+            VolumeOperation::Delete,
+        ] {
             grants.push(volume.capability(operation, &mut None)?);
         }
         grants.push(volume.directory_read_capability("", &mut None)?);

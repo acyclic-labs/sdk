@@ -53,17 +53,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             crate::executor::preparation_format(format_args!("/{}", reference.path()), work)
         })?;
         let metadata =
-            match read_generation(selected, &metadata_path, MAXIMUM_METADATA, Some(io)).await {
-                Ok(metadata) => Some(metadata),
-                Err(error) if error.code() == crate::wire::ErrorCode::NotFound => None,
-                #[cfg(not(target_arch = "wasm32"))]
-                Err(Error::NativeWorkspace { source, .. })
-                    if matches!(source.as_ref(), acyclic_fs::WorkspaceError::NotFound) =>
-                {
-                    None
-                }
-                Err(error) => return Err(error),
-            };
+            read_generation_if_present(selected, &metadata_path, MAXIMUM_METADATA, io).await?;
         let original = if let Some(metadata) = metadata {
             let (staged, _staged_hold) = decode_content_metadata(&metadata, io)?;
             if staged.volume() != reference.volume()

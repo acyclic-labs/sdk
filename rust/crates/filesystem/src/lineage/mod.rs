@@ -401,7 +401,16 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             if !seen.insert(id) || records.len() >= maximum as usize {
                 return Err(WorkspaceLineageError::TraversalLimit);
             }
-            let record = self.required(id).await?;
+            let record = match self.required(id).await {
+                // A workspace this lineage never registered is outside it,
+                // which is a definite refusal rather than corrupt state.
+                Err(WorkspaceLineageError::IncompatibleState)
+                    if ancestor.is_some() && id == workspace && !self.registered(id).await? =>
+                {
+                    return Err(WorkspaceLineageError::UnauthorizedJoin);
+                }
+                record => record?,
+            };
             next = record.parent_workspace_id;
             if id != workspace {
                 records.push(record);
@@ -412,6 +421,17 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         } else {
             Ok(records)
         }
+    }
+
+    async fn registered(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<bool, WorkspaceLineageError<S::Error>> {
+        self.store
+            .load(workspace_id)
+            .await
+            .map(|record| record.is_some())
+            .map_err(WorkspaceLineageError::Store)
     }
 
     async fn required(

@@ -507,10 +507,17 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 "a sealed filesystem commit cannot accept contributions",
             ));
         }
+        // Refuse a foreign invocation before source work or request growth.
+        // The same transfer also preserves any already funded request owner.
+        commit.retain_request_custody(work)?;
         let (path, located) = self
             .resolve_source_fork_point(authority, generation, work)
             .await?;
-        grow(&mut commit.request.conditions, 1, work)?;
+        let grown = prepare_growth(&commit.request.conditions, 1, work)?;
+        // Install new backing only after its original credit belongs to the
+        // retained commit, including a later merge refusal or cancellation.
+        commit.retain_request_custody(work)?;
+        install_growth(&mut commit.request.conditions, grown);
         super::policy::merge_condition(
             &mut commit.request.conditions,
             CommitCondition::Tail {

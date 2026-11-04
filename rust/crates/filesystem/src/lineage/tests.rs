@@ -145,6 +145,13 @@ async fn descendant_authorization_stops_at_the_authenticated_anchor() {
             .await
             .is_err()
     );
+    // A workspace this lineage never registered is refused, not corrupt.
+    assert!(matches!(
+        graph
+            .authorize_descendant(workspace("unregistered"), root)
+            .await,
+        Err(WorkspaceLineageError::UnauthorizedJoin)
+    ));
 }
 
 #[tokio::test]

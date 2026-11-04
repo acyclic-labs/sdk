@@ -35,6 +35,11 @@ pub enum VerifyError {
     /// answer. Retryable, and never a verdict on the credential.
     #[error("credential verifier unavailable")]
     Unavailable,
+    /// The account's own trust record was refused, so its trust is fenced
+    /// until a record for it applies. Definite: unlike [`Self::Trust`] it
+    /// never means "not served yet", so a reader must not wait on it.
+    #[error("account trust record refused")]
+    Refused,
     /// An ancestor key, epoch or block has been revoked.
     #[error("capability revoked")]
     Revoked,
@@ -69,6 +74,7 @@ impl VerifyError {
             Self::Signature => "signature",
             Self::Trust => "trust",
             Self::Unavailable => "unavailable",
+            Self::Refused => "refused",
             Self::Revoked => "revoked",
             Self::Time => "time",
             Self::RepeatedKey => "repeated_key",

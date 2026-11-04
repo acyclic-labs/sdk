@@ -316,11 +316,11 @@ pub(super) fn require_structured_write(
     }
 }
 
-/// A local root agent's grants: routing, its agent tools, read and write of
+/// A local root agent's grants: routing, its agent tools, read, write and delete of
 /// every bound volume, read of its provider's seed layer (see
 /// [`crate::seed`]), and each `external` file by its exact version.
 fn root_grants(volumes: &[VolumeBinding], external: &[FileRef]) -> Result<Vec<String>> {
-    let mut grants = Vec::with_capacity(2 * volumes.len() + 2);
+    let mut grants = Vec::with_capacity(3 * volumes.len() + 2);
     if let Some(binding) = volumes.first() {
         grants.push(
             crate::seed::volume(binding.volume.provider())?
@@ -331,16 +331,13 @@ fn root_grants(volumes: &[VolumeBinding], external: &[FileRef]) -> Result<Vec<St
     // Every agent may spawn, message and archive within its own subtree.
     grants.extend(crate::tools::AGENT_TOOLS.map(crate::contract::capability::tool_call));
     for binding in volumes {
-        grants.push(
-            binding
-                .volume
-                .capability(VolumeOperation::Read, &mut None)?,
-        );
-        grants.push(
-            binding
-                .volume
-                .capability(VolumeOperation::Write, &mut None)?,
-        );
+        for operation in [
+            VolumeOperation::Read,
+            VolumeOperation::Write,
+            VolumeOperation::Delete,
+        ] {
+            grants.push(binding.volume.capability(operation, &mut None)?);
+        }
     }
     for file in external {
         if !volumes
@@ -665,7 +662,7 @@ where
         Bindings,
         Arc<AgentInternalFiles<A, O>>,
     )> {
-        self.journal(self.admit(agent)?, agent.policy.as_slice(), None)
+        self.journal(self.admit(agent)?, agent.policy.as_slice(), None, None)
             .await
     }
 
@@ -674,7 +671,7 @@ where
         &self,
         agent: &AgentState,
     ) -> Result<FilesystemExecutionJournal<P, A, O>> {
-        let (journal, _, _) = self.journal(self.admit(agent)?, &[], None).await?;
+        let (journal, _, _) = self.journal(self.admit(agent)?, &[], None, None).await?;
         Ok(journal)
     }
 
@@ -704,6 +701,7 @@ where
         let actions = match operation {
             VolumeOperation::Read => &[Action::List, Action::Read][..],
             VolumeOperation::Write => ActionSet::DestinationWrite.actions(),
+            VolumeOperation::Delete => ActionSet::DestinationDelete.actions(),
         };
         let mut heads = Vec::new();
         for binding in &agent.volumes {
@@ -796,6 +794,7 @@ where
         admitted: AdmittedAgent<'_>,
         external: &[FileRef],
         context: Option<&mut TurnContext<'_>>,
+        stop: Option<acyclic_actors::guest::CancellationToken>,
     ) -> Result<(
         FilesystemExecutionJournal<P, A, O>,
         Bindings,
@@ -808,7 +807,7 @@ where
             grants: mut capabilities,
             verifier,
             private,
-        } = admitted.authority(external).await?;
+        } = crate::core::until_turn_stopped(stop.clone(), admitted.authority(external)).await?;
         // The turn's reader and writer take no content bound of their own:
         // each caller states its bound, and harness-owned records (manifests,
         // settled outputs, policies) are read at their pinned length, so a
@@ -844,9 +843,11 @@ where
                 // workload retains its original ceiling and cannot mint this grant.
                 inherited.extend(capabilities.iter().map(str::to_owned));
                 capabilities = Capabilities::new(inherited);
-                scope = issuer
-                    .issue(None, "agent", &capabilities, scope.agent())
-                    .await?;
+                scope = crate::core::until_turn_stopped(
+                    stop.clone(),
+                    issuer.issue(None, "agent", &capabilities, scope.agent()),
+                )
+                .await?;
                 reader = FilesystemContentVerifier::new(
                     Arc::clone(&self.host),
                     &verifier,
@@ -1739,7 +1740,11 @@ where
                     .filter_map(|settled| settled.steering.clone())
                     .collect();
                 if !transcripts.is_empty() {
-                    let authority = self.admit(agent)?.authority(&transcripts).await?;
+                    let authority = crate::core::until_turn_stopped(
+                        Some(stop.clone()),
+                        self.admit(agent)?.authority(&transcripts),
+                    )
+                    .await?;
                     let reader = FilesystemContentVerifier::new(
                         Arc::clone(&self.host),
                         &authority.verifier,
@@ -1769,7 +1774,7 @@ where
                     .cloned()
                     .collect();
                 let (journal, bindings, files) = self
-                    .journal(admitted, &external, Some(&mut context))
+                    .journal(admitted, &external, Some(&mut context), Some(stop.clone()))
                     .await?;
                 let input =
                     std::mem::replace(&mut context.input, ModelContent::Text(String::new()));

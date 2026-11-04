@@ -8,6 +8,7 @@ pub(super) fn scope_facts(capability: &VerifiedCapability) -> Result<Claims> {
     for (index, block) in capability.blocks().iter().enumerate() {
         let mut id = None;
         let mut grants = None;
+        let mut filesystem = None;
         let mut agent = last.as_ref().and_then(|parent| parent.agent);
         let mut named = false;
         for caveat in &block.caveats {
@@ -17,6 +18,11 @@ pub(super) fn scope_facts(capability: &VerifiedCapability) -> Result<Claims> {
                         && id.replace(value).is_some()
                     {
                         return Err(unauthorized("a block carries two scopes"));
+                    }
+                    if label.starts_with(acyclic_fs::access::SCOPE_PREFIX)
+                        && filesystem.replace(label.as_str()).is_some()
+                    {
+                        return Err(unauthorized("a block carries two filesystem refinements"));
                     }
                 }
                 CaveatKind::Grants(set) => {
@@ -42,7 +48,19 @@ pub(super) fn scope_facts(capability: &VerifiedCapability) -> Result<Claims> {
         let (Some(id), Some(grants)) = (id, grants) else {
             return Err(unauthorized("admission lacks a complete scope chain"));
         };
-        let capabilities = capabilities(grants)?;
+        let mut capabilities = capabilities(grants)?;
+        if let Some(filesystem) = filesystem {
+            let refined = Capabilities::new([filesystem]);
+            if !refined.is_subset_of(&capabilities) {
+                return Err(unauthorized(
+                    "filesystem refinement exceeds its certified grant",
+                ));
+            }
+            capabilities
+                .0
+                .retain(|label| !label.starts_with(acyclic_fs::access::SCOPE_PREFIX));
+            capabilities.0.extend(refined.0);
+        }
         if last
             .as_ref()
             .is_some_and(|parent| !capabilities.is_subset_of(&parent.capabilities))
@@ -73,19 +91,47 @@ pub(super) fn scope_facts(capability: &VerifiedCapability) -> Result<Claims> {
 fn capabilities(grants: &GrantSet) -> Result<Capabilities> {
     let mut held = Vec::new();
     for grant in &grants.grants {
-        let GrantKind::Resource(grant) = &grant.kind else {
-            continue;
-        };
-        let Some(name) = grant.resource.name.strip_prefix(CAPABILITIES) else {
-            continue;
-        };
-        if grant.resource.prefix || grant.actions.iter().any(|action| action != HOLD) {
-            return Err(unauthorized("malformed capability grant"));
+        if let Some(name) = capability_name(grant)? {
+            held.push(name);
         }
-        held.push(
-            String::from_utf8(acyclic_auth::decode_component(name).map_err(unauthorized)?)
-                .map_err(unauthorized)?,
-        );
     }
     Ok(Capabilities::new(held))
+}
+
+fn capability_name(grant: &Grant) -> Result<Option<String>> {
+    let GrantKind::Resource(grant) = &grant.kind else {
+        return Ok(None);
+    };
+    let Some(name) = grant.resource.name.strip_prefix(CAPABILITIES) else {
+        return Ok(None);
+    };
+    if grant.resource.prefix || grant.actions.iter().any(|action| action != HOLD) {
+        return Err(unauthorized("malformed capability grant"));
+    }
+    String::from_utf8(acyclic_auth::decode_component(name).map_err(unauthorized)?)
+        .map(Some)
+        .map_err(unauthorized)
+}
+
+/// The original exact grant remains certified; the filesystem owns refinement.
+pub(super) fn filesystem_grant(capability: &VerifiedCapability) -> Result<(&Grant, String)> {
+    for caveat in &capability
+        .blocks()
+        .last()
+        .ok_or_else(|| unauthorized("admission has no scope"))?
+        .caveats
+    {
+        if let CaveatKind::Grants(grants) = &caveat.kind {
+            for grant in &grants.grants {
+                if let Some(name) = capability_name(grant)?
+                    && name.starts_with(acyclic_fs::access::SCOPE_PREFIX)
+                {
+                    return Ok((grant, name));
+                }
+            }
+        }
+    }
+    Err(unauthorized(
+        "filesystem refinement lacks its certified grant",
+    ))
 }

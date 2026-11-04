@@ -604,7 +604,7 @@ impl ContentGrant {
         {
             return Ok(());
         }
-        if operation == VolumeOperation::Write {
+        if operation != VolumeOperation::Read {
             volume.require_writer(agent, work)?;
         }
         volume.validate(work)?;
