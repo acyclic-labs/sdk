@@ -173,6 +173,36 @@ impl<F: Fn(notify::Result<notify::Event>) + Send + Sync> HostChangeSink for Obse
     }
 }
 
+#[cfg(all(test, target_os = "macos"))]
+#[test]
+fn moved_original_root_ends_callback_delivery_without_a_fence()
+-> Result<(), Box<dyn std::error::Error>> {
+    for move_parent in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let parent = directory.path().canonicalize()?.join("parent");
+        let path = parent.join("root");
+        std::fs::create_dir_all(&path)?;
+        let root =
+            crate::native_host::HostRoot::open(&path, &mut crate::native_host::ordinary_work())?;
+        let (send, receive) = std::sync::mpsc::channel();
+        let watch = HeldRootWatch::open(&root, move |event| {
+            if let Err(error) = event {
+                let _ = send.send(error);
+            }
+        })?;
+        let original = if move_parent { &parent } else { &path };
+        std::fs::rename(original, directory.path().join("moved"))?;
+        let error = receive.recv_timeout(std::time::Duration::from_secs(2))?;
+        assert!(
+            matches!(error.kind, notify::ErrorKind::Io(ref error) if error.kind() == std::io::ErrorKind::BrokenPipe),
+            "{error}"
+        );
+        drop(watch);
+        assert!(receive.try_recv().is_err(), "one original terminal cause");
+    }
+    Ok(())
+}
+
 #[cfg(all(test, target_os = "linux"))]
 #[test]
 fn original_callback_failure_and_producer_panic_settle_once()
