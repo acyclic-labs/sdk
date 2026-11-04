@@ -209,6 +209,12 @@ impl From<acyclic_auth::operation::Stopped> for Error {
     }
 }
 /// The one detail every transport carries for a failure: its code and cause.
+impl From<Error> for wire::ErrorDetail {
+    fn from(error: Error) -> Self {
+        Self::from(&error)
+    }
+}
+
 impl From<&Error> for wire::ErrorDetail {
     fn from(error: &Error) -> Self {
         let cause = error.cause().cloned().unwrap_or_default();
