@@ -1,0 +1,19 @@
+diff --git a/rust/crates/collections/src/lib.rs b/rust/crates/collections/src/lib.rs
+--- a/rust/crates/collections/src/lib.rs
++++ b/rust/crates/collections/src/lib.rs
+@@ -591,12 +591,12 @@
+         // The immutable descent identified this exact parent. Pay its second
+         // traversal before changing a link or retiring its original funding.
+-        if ancestors != 0 {
+-            charge(ancestors)?;
+-        }
+         let mut extracted = self
+             .extract_at(parent, |bit| high(&key, bit), |_| {})
+             .into_index();
++        if ancestors != 0 {
++            charge(ancestors)?;
++        }
+         let retired = extracted
+             .root
+             .take()
+             .unwrap_or_else(|| unreachable!("verified registration"));

@@ -896,6 +896,20 @@ fn ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors()
                 prop_assert_eq!(row, None);
                 prop_assert_eq!(work.claims, claims);
                 prop_assert_eq!(work.live.get(), live);
+                for key in expected.keys().copied().collect::<Vec<_>>() {
+                    let before = work.items;
+                    let entry = table
+                        .remove(key, &mut ReadOnly(&mut work))
+                        .map_err(TestCaseError::fail)?;
+                    prop_assert_eq!(
+                        entry.as_ref().map(|entry| (*entry.key(), *entry.value())),
+                        expected.remove(&key).map(|value| (key, value))
+                    );
+                    prop_assert!(work.items - before <= 17 * 40 + 1);
+                    drop(entry);
+                    audit(&table);
+                }
+                prop_assert_eq!(work.claims, claims);
                 drop(table);
                 prop_assert_eq!(work.live.get(), 0);
                 Ok(())
@@ -953,7 +967,28 @@ fn ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors()
             );
         }
         work.maximum_items = None;
+        let held = work.live.get();
+        // The zero key traverses every actual branch coordinate in this tree.
+        // Refusal at any point, including the second walk, must preserve it.
+        for credit in 0..(17 * N + 1) as u64 {
+            work.maximum_items = Some(work.items + credit);
+            assert_eq!(
+                table.remove([0; N], &mut ReadOnly(&mut work)).err(),
+                Some("items refused")
+            );
+            work.maximum_items = None;
+            assert_eq!(
+                table.get([0; N], &mut ReadOnly(&mut work))?,
+                Some(&0),
+                "refused removal must preserve original owner"
+            );
+            assert_eq!(work.live.get(), held);
+        }
         work.cancelled = true;
+        assert_eq!(
+            table.remove([0; N], &mut ReadOnly(&mut work)).err(),
+            Some("cancelled")
+        );
         assert_eq!(
             table.get_mut([255; N], &mut ReadOnly(&mut work)).err(),
             Some("cancelled")
@@ -963,6 +998,10 @@ fn ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors()
             Some("cancelled")
         );
         let mut empty = FixedIndex::<usize, Allocation, N>::default();
+        assert_eq!(
+            empty.remove([0; N], &mut ReadOnly(&mut work)).err(),
+            Some("cancelled")
+        );
         assert_eq!(
             empty.get_mut([0; N], &mut ReadOnly(&mut work)).err(),
             Some("cancelled")
@@ -1005,6 +1044,17 @@ fn ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors()
                 .get_or_try_insert_with([0; N], &mut work, |_| panic!("cancelled construction"))
                 .is_err()
         );
+        assert_eq!(work.claims, claims);
+        work.cancelled = false;
+        work.maximum_items = None;
+        let before = work.items;
+        let entry = table
+            .remove([0; N], &mut ReadOnly(&mut work))?
+            .ok_or("original owner missing after refused removals")?;
+        assert_eq!((*entry.key(), *entry.value()), ([0; N], 2));
+        assert_eq!(work.items - before, (17 * N + 1) as u64);
+        drop(entry);
+        assert_eq!(table.get([0; N], &mut ReadOnly(&mut work))?, None);
         assert_eq!(work.claims, claims);
         drop(table);
         assert_eq!(work.live.get(), 0);
