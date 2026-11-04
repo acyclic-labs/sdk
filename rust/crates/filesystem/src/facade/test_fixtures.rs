@@ -52,15 +52,17 @@ pub(crate) async fn folded_checkout(
     Ok(checkout)
 }
 
-pub(crate) async fn legacy_folded_checkout()
--> Result<(MemoryCheckout, [FileId; 2]), Box<dyn std::error::Error>> {
-    let names = ["Straße".to_owned(), "STRASSE".to_owned()]
+pub(crate) async fn legacy_folded_checkout(
+    names: [&str; 2],
+) -> Result<(MemoryCheckout, [FileId; 2]), Box<dyn std::error::Error>> {
+    let entries = names
+        .map(str::to_owned)
         .into_iter()
         .chain((0..255).map(|index| format!("Sa{index:03}")));
-    let mut checkout = folded_checkout(names).await?;
+    let mut checkout = folded_checkout(entries).await?;
     let cancellation = CancellationToken::new();
     let mut ids = [FileId::new(); 2];
-    for (id, name) in ids.iter_mut().zip(["Straße", "STRASSE"]) {
+    for (id, name) in ids.iter_mut().zip(names) {
         let path = NamespacePath::new(
             vec![LogicalName::new(
                 NameEncoding::Utf8,
