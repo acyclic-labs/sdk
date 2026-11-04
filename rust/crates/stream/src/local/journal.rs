@@ -53,8 +53,8 @@ impl Journal {
             true,
             true,
         )?;
-        // A whole header cannot prove the previous open flushed this name.
-        // Publish the directory entry before exposing recovered or new frames.
+        // A whole header cannot prove the previous open flushed these names.
+        // Publish the incarnation and journal before exposing recovered frames.
         sync_directory(root, LocalDurability::FullFlush)?;
         let mut journal = Self {
             #[cfg(test)]

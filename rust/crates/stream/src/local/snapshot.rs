@@ -111,7 +111,6 @@ fn incarnation(root: &Path, fresh: bool) -> Result<u128, LocalStreamError> {
         sync_file(&file, LocalDurability::FullFlush)?;
     }
     acyclic_native_runtime::rename_file(&temporary, &path)?;
-    sync_directory(root, LocalDurability::FullFlush)?;
     Ok(incarnation)
 }
 
