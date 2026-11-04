@@ -247,10 +247,13 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                 if planned.ready && planned.initial_generation != initial_generation.id() {
                     return Err(WorkspaceLineageError::ConflictingRegistration);
                 }
-                let mut ready = planned;
-                ready.ready = true;
-                ready.initial_generation = initial_generation.id();
-                self.promote_ready(ready).await?;
+                if !planned.ready {
+                    let expected_revision = planned.revision;
+                    let mut ready = planned;
+                    ready.ready = true;
+                    ready.initial_generation = initial_generation.id();
+                    self.promote_ready(ready, expected_revision).await?;
+                }
                 Ok(child)
             })
             .await,
@@ -465,7 +468,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         {
             if lineage_shape_is_valid(&existing) && same_lineage(&existing, &record) {
                 if record.ready && !existing.ready {
-                    return self.promote_ready(record).await;
+                    return self.promote_ready(record, existing.revision).await;
                 }
                 return Ok(existing);
             }
@@ -495,7 +498,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             && record.ready
             && !existing.ready
         {
-            self.promote_ready(record).await
+            self.promote_ready(record, existing.revision).await
         } else {
             Err(WorkspaceLineageError::ConflictingRegistration)
         }
@@ -503,35 +506,21 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
 
     async fn promote_ready(
         &self,
-        ready: WorkspaceLineageRecord,
+        mut ready: WorkspaceLineageRecord,
+        expected_revision: u64,
     ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
-        if !ready.ready || !lineage_shape_is_valid(&ready) {
-            return Err(WorkspaceLineageError::IncompatibleState);
-        }
-        let existing = self
-            .store
-            .load(ready.workspace_id)
-            .await
-            .map_err(WorkspaceLineageError::Store)?
-            .ok_or(WorkspaceLineageError::IncompatibleState)?;
-        if !lineage_shape_is_valid(&existing) || !same_lineage(&existing, &ready) {
-            return Err(WorkspaceLineageError::ConflictingRegistration);
-        }
-        if existing.ready {
-            return Ok(existing);
-        }
-        let mut replacement = ready.clone();
-        replacement.revision = existing
-            .revision
+        // The caller validated this lineage at the observed revision. Only the
+        // conditional write can authorize replacing it; do not refresh the fence.
+        ready.revision = expected_revision
             .checked_add(1)
             .ok_or(WorkspaceLineageError::IncompatibleState)?;
         if self
             .store
-            .compare_and_swap(ready.workspace_id, existing.revision, replacement.clone())
+            .compare_and_swap(ready.workspace_id, expected_revision, ready.clone())
             .await
             .map_err(WorkspaceLineageError::Store)?
         {
-            return Ok(replacement);
+            return Ok(ready);
         }
         Err(WorkspaceLineageError::Contended)
     }

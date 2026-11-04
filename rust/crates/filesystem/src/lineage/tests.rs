@@ -119,6 +119,7 @@ async fn descendant_authorization_stops_at_the_authenticated_anchor() {
     struct ObservedStore {
         inner: MemoryWorkspaceLineageStore,
         reads: std::sync::atomic::AtomicUsize,
+        contend: std::sync::atomic::AtomicBool,
     }
     impl ObservedStore {
         fn take_reads(&self) -> usize {
@@ -143,12 +144,24 @@ async fn descendant_authorization_stops_at_the_authenticated_anchor() {
             revision: u64,
             replacement: WorkspaceLineageRecord,
         ) -> Result<bool, Self::Error> {
+            if self
+                .contend
+                .swap(false, std::sync::atomic::Ordering::Relaxed)
+            {
+                // A real competing conditional publication wins before ours.
+                assert!(
+                    self.inner
+                        .compare_and_swap(id, revision, replacement.clone())
+                        .await?
+                );
+            }
             self.inner.compare_and_swap(id, revision, replacement).await
         }
     }
     let graph = WorkspaceGraph::new(ObservedStore {
         inner: MemoryWorkspaceLineageStore::new(),
         reads: std::sync::atomic::AtomicUsize::new(0),
+        contend: std::sync::atomic::AtomicBool::new(false),
     });
     let root = workspace("unregistered-anchor");
     let child = workspace("registered-child");
@@ -218,26 +231,27 @@ async fn descendant_authorization_stops_at_the_authenticated_anchor() {
         "an absent workspace is classified from its original observation"
     );
     // A stored but incompatible or unfinished record is never treated as absent.
-    for (name, version, ready) in [("invalid", 2, true), ("planned", 1, false)] {
+    for (name, version, ready, contend) in [
+        ("invalid", 2, true, false),
+        ("planned", 1, false, false),
+        ("contended", 1, false, true),
+    ] {
         let id = workspace(name);
+        let record = WorkspaceLineageRecord {
+            version,
+            revision: 1,
+            ready,
+            workspace_id: id,
+            workspace_name: name.into(),
+            parent_workspace_id: Some(root),
+            parent_workspace_name: Some("unregistered-anchor".into()),
+            fork_generation: generation(1),
+            initial_generation: generation(2),
+        };
         assert!(
             graph
                 .store()
-                .compare_and_swap(
-                    id,
-                    0,
-                    WorkspaceLineageRecord {
-                        version,
-                        revision: 1,
-                        ready,
-                        workspace_id: id,
-                        workspace_name: name.into(),
-                        parent_workspace_id: Some(root),
-                        parent_workspace_name: Some("unregistered-anchor".into()),
-                        fork_generation: generation(1),
-                        initial_generation: generation(2),
-                    }
-                )
+                .compare_and_swap(id, 0, record.clone())
                 .await
                 .unwrap()
         );
@@ -250,6 +264,29 @@ async fn descendant_authorization_stops_at_the_authenticated_anchor() {
             1,
             "one original refusal for {name}"
         );
+        if !ready {
+            let mut promotion = record;
+            promotion.ready = true;
+            graph
+                .store()
+                .contend
+                .store(contend, std::sync::atomic::Ordering::Relaxed);
+            let result = graph.register(promotion).await;
+            if contend {
+                assert!(matches!(result, Err(WorkspaceLineageError::Contended)));
+            } else {
+                assert_eq!(result.unwrap().revision, 2);
+            }
+            assert_eq!(
+                graph.store().take_reads(),
+                1,
+                "promotion retains its observed revision"
+            );
+            let winner = graph.resolve(id).await.unwrap();
+            assert!(winner.ready);
+            assert_eq!(winner.revision, 2);
+            assert_eq!(graph.store().take_reads(), 1);
+        }
     }
 }
 
