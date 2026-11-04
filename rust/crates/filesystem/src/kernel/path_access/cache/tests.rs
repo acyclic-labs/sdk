@@ -65,7 +65,8 @@ async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
                 &mut work.accounting(),
                 &cancellation,
             )
-            .await?;
+            .await
+            .map_err(|error| format!("warming {capacity} operation cache entries: {error}"))?;
             assert_eq!(cache.lock_state().entry_count, capacity);
             let retained = crate::kernel::file_read::retained_object_reads_bytes(
                 &reads.value,
@@ -84,7 +85,8 @@ async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
             &mut work.accounting(),
             &cancellation,
         )
-        .await?;
+        .await
+        .map_err(|error| format!("owned miss batch at cache capacity {capacity}: {error}"))?;
         assert_eq!(reads.value.len(), requests.len());
         assert_eq!(reads.value[0].bytes.as_ref(), b"first");
         assert_eq!(reads.value[1].bytes.as_ref(), b"second");
