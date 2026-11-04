@@ -1,5 +1,5 @@
 //! One funded selection shared by discovery validation and instruction projection.
-use super::instruction_index::{Index, history_step_traced, step, trace_operation};
+use super::instruction_index::{history_step_traced, step, trace_operation};
 use super::*;
 
 pub(crate) struct InstructionSources<'a> {
@@ -18,14 +18,14 @@ impl<'a> InstructionSources<'a> {
             });
         }
         let mut positions = crate::core::reserve_copy_vector(files.len(), quota)?;
-        // Lookup storage dies with its own quota before returning. Only the
+        // Nodes retire on this original observer before returning. Only the
         // funded first-source positions survive through reservation/projection.
-        let mut lookup_quota = crate::wire_codec::CodecQuota::new(quota.work(), 0)?;
-        let mut lookup: Index<usize> = Index::new(files.len(), &mut lookup_quota)?;
+        let original = crate::wire_codec::BorrowedIndexWork::new(quota.work());
+        let mut lookup = acyclic_collections::FixedIndex::<usize, _, 32>::default();
         for (position, file) in files.iter().enumerate() {
-            history_step_traced(lookup_quota.work(), 1)?;
+            original.with(|work| history_step_traced(work, 1))?;
             trace_operation("instruction-source-visit", 1);
-            file.validate_source(lookup_quota.work())?;
+            original.with(|work| file.validate_source(work))?;
             #[cfg(all(
                 test,
                 feature = "test-support",
@@ -35,27 +35,26 @@ impl<'a> InstructionSources<'a> {
             if PREFIX_SCAN.with(std::cell::Cell::get) {
                 for prior in &files[..position] {
                     std::hint::black_box(
-                        prior
-                            .source()
-                            .same_source(file.source(), lookup_quota.work())?,
+                        original.with(|work| prior.source().same_source(file.source(), work))?,
                     );
                 }
             }
-            let key = file.source().index_key(lookup_quota.work())?;
-            if let Some(prior) = lookup.get_history(0, &key, lookup_quota.work())? {
-                if !files[prior]
-                    .source()
-                    .same_source(file.source(), lookup_quota.work())?
-                {
-                    return Err(crate::store::guarded_boundary(
-                        lookup_quota.work(),
-                        crate::wire::ErrorCode::Conflict,
-                        "instruction source has conflicting contents",
-                    ));
-                }
-            } else {
-                lookup.set_history(0, key, Some(position), lookup_quota.work())?;
+            let key = original.with(|work| file.source().index_key(work))?;
+            let prior = *lookup.get_or_try_insert_with(key, &mut &original, |_| Ok(position))?;
+            if prior == position {
                 positions.push(position);
+            } else {
+                original.with(|work| {
+                    if files[prior].source().same_source(file.source(), work)? {
+                        Ok(())
+                    } else {
+                        Err(crate::store::guarded_boundary(
+                            work,
+                            crate::wire::ErrorCode::Conflict,
+                            "instruction source has conflicting contents",
+                        ))
+                    }
+                })?;
             }
         }
         Ok(Self { files, positions })
