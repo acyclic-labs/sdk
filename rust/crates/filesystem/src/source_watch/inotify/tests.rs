@@ -245,7 +245,6 @@ fn finite_admission_preserves_the_first_watch_and_denies_the_later_native_call()
             .shared
             .watches
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .any(|(path, _)| path == Path::new("a"))
     );
@@ -254,7 +253,6 @@ fn finite_admission_preserves_the_first_watch_and_denies_the_later_native_call()
             .shared
             .watches
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .any(|(path, _)| path == Path::new("a/b"))
     );
@@ -289,7 +287,6 @@ fn component_admission_does_not_follow_a_directory_symlink_outside_the_held_root
             .shared
             .watches
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .any(|(path, _)| path == Path::new("a"))
     );
@@ -298,7 +295,6 @@ fn component_admission_does_not_follow_a_directory_symlink_outside_the_held_root
             .shared
             .watches
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .any(|(path, _)| path == Path::new("a/child"))
     );
@@ -333,7 +329,6 @@ fn removal_admits_the_native_write_before_forgetting_the_live_registration()
             .shared
             .watches
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .any(|(path, _)| path == Path::new("a"))
     );
@@ -352,7 +347,6 @@ fn removal_admits_the_native_write_before_forgetting_the_live_registration()
             .shared
             .watches
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .any(|(path, _)| path == Path::new("a"))
     );
@@ -389,42 +383,36 @@ fn original_cleanup_wait_precancel_and_contention_preserve_cleanup_custody()
         watch.stop_with_cleanup_wait(&wait),
         Err(DemandError::Cancelled)
     ));
-    assert!(matches!(
-        watch.stop_with_cleanup_wait(&CancellationToken::new()),
-        Err(DemandError::WorkerUnavailable)
-    ));
+    super::super::tests::cancel_contended_cleanup(&watch)?;
+    // Give the queued cleanup its permit while it is between registration
+    // and observation. The actual nonblocking service path then finds that
+    // permit held. Cancelling its observer must hand the owed service back,
+    // even though no ReadingGuard was ever constructed for that permit.
+    super::super::tests::cancel_contended_cleanup_after(&watch, || {
+        drop(paused);
+        assert!(watch.shared.service_reading().is_none());
+        assert!(watch.shared.reading.owed.load(Ordering::SeqCst));
+    })?;
+    assert!(
+        !watch.shared.reading.owed.load(Ordering::SeqCst),
+        "cancelled acquisition must hand back the owed service"
+    );
     assert_eq!(original.lock().receipt(), prefix);
     assert!(!watch.shared.stopping.load(Ordering::Acquire));
     assert!(!watch.is_stopped());
-    assert!(
-        watch
-            .worker
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_some()
-    );
+    assert!(watch.worker.lock().is_some());
 
     for descriptor in [&watch.shared.inotify, &watch.shared.root] {
         assert!(descriptor.load(Ordering::Acquire) >= 0);
     }
-    drop(paused);
     // Withhold the already-owned join cursor, then restore that exact cursor.
     // Neither refusal nor the explicit cleanup join creates native credit.
     let reads = {
-        let mut cleanup = watch
-            .shared
-            .cleanup
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut cleanup = watch.shared.cleanup.lock();
         std::mem::take(&mut cleanup.reads)
     };
     let denied = watch.stop_with_cleanup_wait(&CancellationToken::new());
-    watch
-        .shared
-        .cleanup
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .reads = reads;
+    watch.shared.cleanup.lock().reads = reads;
     assert!(matches!(denied, Err(DemandError::NativeWorkUnavailable)));
     assert_eq!(original.lock().receipt(), prefix);
     assert!(!watch.shared.stopping.load(Ordering::Acquire));
@@ -434,13 +422,7 @@ fn original_cleanup_wait_precancel_and_contention_preserve_cleanup_custody()
     watch.stop_accepted_cleanup()?;
     assert!(watch.is_stopped());
     assert!(watch.shared.physically_cleared());
-    assert!(
-        watch
-            .worker
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_none()
-    );
+    assert!(watch.worker.lock().is_none());
     let terminal = original.lock().receipt();
 
     watch.stop_with_cleanup_wait(&wait)?;
@@ -520,13 +502,7 @@ fn original_cleanup_wait_late_cancel_waits_for_the_actual_native_terminal()
     assert!(matches!(result, Err(DemandError::Cancelled)));
     assert!(watch.is_stopped());
     assert!(watch.shared.physically_cleared());
-    assert!(
-        watch
-            .worker
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_none()
-    );
+    assert!(watch.worker.lock().is_none());
 
     Ok(())
 }
@@ -624,22 +600,16 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
     }
     cancellation.cancel();
 
-    let denied = watch.stop_with_cleanup_wait(&CancellationToken::new());
+    super::super::tests::cancel_contended_cleanup(&watch)?;
     let pending_terminal = watch.is_stopped();
     drop(release);
-    assert!(matches!(denied, Err(DemandError::WorkerUnavailable)));
     assert!(!pending_terminal);
 
     assert_eq!(receive.recv()?, CallbackEvent::Lost);
     // Loss is emitted while the original service holds the read cursor. Its
     // unlock joins that service's retirement attempt, including failure; the
     // controller must not take over cleanup before checking its result.
-    let reading = watch
-        .shared
-        .reading
-        .raw
-        .lock()
-        .map_err(|_| "the original native reader failed during retirement")?;
+    let reading = watch.shared.reading.raw.lock();
     assert!(
         watch.is_stopped(),
         "the original service retires its resources"
@@ -653,13 +623,7 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
     watch.delivery_lost();
     assert!(receive.try_recv().is_err(), "one terminal notification");
     assert!(watch.shared.physically_cleared());
-    assert!(
-        watch
-            .worker
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_none()
-    );
+    assert!(watch.worker.lock().is_none());
     assert!(!watch.delivery().is_exact());
     let mut state = original.lock();
     assert_eq!(
@@ -911,8 +875,7 @@ fn watches_share_the_queue_and_route_ancestor_records_by_name()
             .ok_or("watches exist")?
             .shared
             .ancestors
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+            .lock();
         ancestors
             .iter()
             .find(|(_, name)| name == "w0")
@@ -924,11 +887,7 @@ fn watches_share_the_queue_and_route_ancestor_records_by_name()
             watch.shared.inotify.load(Ordering::Acquire),
             hub.raw_descriptor()
         );
-        let ancestors = watch
-            .shared
-            .ancestors
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let ancestors = watch.shared.ancestors.lock();
         let name = format!("w{index}");
         assert!(
             ancestors

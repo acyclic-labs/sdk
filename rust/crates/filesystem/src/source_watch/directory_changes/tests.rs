@@ -99,10 +99,25 @@ fn assert_retired(shared: &Shared) {
     assert_eq!(shared.buffer_bytes.load(Ordering::Acquire), 0);
 }
 fn wait_retired(shared: &Shared) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !shared.stop_completed.load(Ordering::Acquire) && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(1));
+    // The last watch owner has dropped. Only its port thread can finish this
+    // retirement, and that thread never blocks on its own packet collection.
+    let _waiting = hub::Waiting::enter(shared).expect("native terminal producer is live");
+    let mut arrivals = shared
+        .arrivals
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    while !shared.stop_completed.load(Ordering::Acquire) {
+        assert!(!hub::lost(), "native terminal producer was lost");
+        assert!(
+            !shared.parked.load(Ordering::Acquire),
+            "native retirement exhausted its original cleanup credit"
+        );
+        arrivals = shared
+            .arrived
+            .wait(arrivals)
+            .unwrap_or_else(PoisonError::into_inner);
     }
+    drop(arrivals);
     assert!(shared.stop_completed.load(Ordering::Acquire));
     assert_retired(shared);
 }
@@ -332,10 +347,7 @@ mod original {
         let before = birth.with_original_leaf(|work| work.work);
         let wait = CancellationToken::new();
         let paused = watch.paused();
-        assert!(matches!(
-            watch.stop_with_cleanup_wait(&wait),
-            Err(DemandError::WorkerUnavailable)
-        ));
+        super::super::super::tests::cancel_contended_cleanup(&watch)?;
         drop(paused);
         assert_eq!(birth.with_original_leaf(|work| work.work), before);
         cancellation.cancel();
@@ -455,11 +467,9 @@ mod original {
         let protection = Protection(Arc::clone(&completion));
         let before = birth.with_original_leaf(|work| work.work);
         cancellation.cancel();
-        // A cancellable caller cannot enter while a reader holds this lock.
-        // Prove that admission is distinct from the native close failure below.
-        let denied = watch.stop_with_cleanup_wait(&CancellationToken::new());
+        // Observer cancellation leaves the physical reader and its suffix intact.
+        super::super::super::tests::cancel_contended_cleanup(&watch)?;
         drop(reads);
-        assert!(matches!(denied, Err(DemandError::WorkerUnavailable)));
         // Accepted cleanup owns the reserved suffix and waits for the reader;
         // its close result cannot be replaced by transient lock admission.
         let failure = watch

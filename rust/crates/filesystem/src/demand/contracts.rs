@@ -193,6 +193,9 @@ pub trait SourceWatch: Send + Sync {
     -> Result<(), DemandError>;
 
     /// Retires this owned subscription against its original birth-paid cleanup.
+    /// Caller cancellation can abandon waiting for custody before retirement
+    /// starts. After admission, the provider settles the accepted native work
+    /// before reporting cancellation. Cancellation does not create cleanup credit.
     #[cfg(not(target_arch = "wasm32"))]
     fn stop_with_cleanup_wait(&self, wait: &CancellationToken) -> Result<(), DemandError> {
         wait.check().map_err(|_| DemandError::Cancelled)?;

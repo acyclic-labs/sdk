@@ -194,13 +194,7 @@ fn stop_denial_and_precancellation_preserve_the_original_stream_custody() -> Tes
         assert!(!watch.is_stopped());
         assert!(watch.delivery().is_exact());
         assert_eq!(watch.platform_owned_bytes(), owned);
-        assert!(
-            watch
-                .stream
-                .lock()
-                .map_err(|_| "poisoned stream")?
-                .is_some()
-        );
+        assert!(watch.stream.lock().is_some());
     }
     let cancellation = CancellationToken::new();
     cancellation.cancel();
@@ -227,13 +221,7 @@ fn stop_denial_and_precancellation_preserve_the_original_stream_custody() -> Tes
     assert_eq!(admitted_stop.work.items_examined, 0);
     assert!(!watch.delivery().is_exact());
     assert!(watch.platform_owned_bytes() < owned);
-    assert!(
-        watch
-            .stream
-            .lock()
-            .map_err(|_| "poisoned stream")?
-            .is_none()
-    );
+    assert!(watch.stream.lock().is_none());
     let mut again = DemandWork::new(WorkBudget::default(), &CancellationToken::new());
     watch.stop_with_work(&mut again)?;
     assert!(watch.is_stopped());
@@ -264,7 +252,6 @@ pub(crate) fn terminal_cancellation_watch(
     watch
         .stream
         .lock()
-        .map_err(|_| "poisoned actual stream custody")?
         .as_mut()
         .ok_or("missing actual event stream")?
         .set_terminal(Arc::new((Arc::clone(&watch.shared), wait.clone())));
@@ -311,14 +298,8 @@ fn cleanup_wait_preserves_cancelled_birth_and_finishes_late_cancellation() -> Te
             (before, held_budget)
         );
         let wait = CancellationToken::new();
-        let custody = watch
-            .stream
-            .lock()
-            .map_err(|_| "poisoned actual stream custody")?;
-        assert!(matches!(
-            watch.stop_with_cleanup_wait(&wait),
-            Err(DemandError::WorkerUnavailable)
-        ));
+        let custody = watch.stream.lock();
+        super::super::tests::cancel_contended_cleanup(&watch)?;
         drop(custody);
         assert_eq!(birth.with_original_leaf(|work| work.work), before);
         root_cancellation.cancel();
@@ -332,7 +313,6 @@ fn cleanup_wait_preserves_cancelled_birth_and_finishes_late_cancellation() -> Te
             watch
                 .stream
                 .lock()
-                .map_err(|_| "poisoned stream")?
                 .as_mut()
                 .ok_or("missing stream")?
                 .set_terminal(Arc::new((watch.shared.clone(), wait.clone())));
@@ -349,13 +329,7 @@ fn cleanup_wait_preserves_cancelled_birth_and_finishes_late_cancellation() -> Te
             "terminal follows native serial queue drain and context release"
         );
         assert_eq!(watch.shared.stream_bytes.load(Ordering::Acquire), 0);
-        assert!(
-            watch
-                .stream
-                .lock()
-                .map_err(|_| "poisoned retired stream custody")?
-                .is_none()
-        );
+        assert!(watch.stream.lock().is_none());
         assert!(watch.platform_owned_bytes() < owned);
         let stopped = birth.with_original_leaf(|work| {
             assert_eq!(
@@ -498,10 +472,16 @@ fn stop_allows_callback_payload_reads_and_rejects_callback_self_stop() -> TestRe
     assert!(!watch.is_stopped());
     let live_bytes = watch.platform_owned_bytes();
     std::fs::write(root.path().join("callback"), b"event")?;
-    arrival.recv_timeout(Duration::from_secs(10))?;
+    arrival.recv()?;
     let (finished, completion) = channel();
+    let (entering, entered) = channel();
     std::thread::scope(|scope| -> TestResult {
         let stop = scope.spawn(|| {
+            crate::fsevents::BEFORE_DRAIN.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || {
+                    entering.send(()).expect("live serial drain observer");
+                }));
+            });
             #[cfg(feature = "native-mount")]
             let result = watch.stop_with_work(&mut crate::NativeMaterializationWork::from_meter(
                 original.clone(),
@@ -514,30 +494,18 @@ fn stop_allows_callback_payload_reads_and_rejects_callback_self_stop() -> TestRe
             let _ = finished.send(());
             result
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        let stop_entered = loop {
-            match watch.stream.try_lock() {
-                Err(std::sync::TryLockError::WouldBlock) => break true,
-                Err(std::sync::TryLockError::Poisoned(_)) => break false,
-                Ok(_) => {}
-            }
-            if std::time::Instant::now() >= deadline {
-                break false;
-            }
-            std::thread::yield_now();
-        };
-        let before_release = completion.recv_timeout(Duration::from_millis(100));
+        entered.recv()?;
+        let before_release = completion.try_recv();
         let stopped_before_release = watch.is_stopped();
         release.release();
         let stopped = stop.join().map_err(|_| "stop worker panicked")?;
-        assert!(stop_entered, "stop did not begin");
         assert!(matches!(
             before_release,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            Err(std::sync::mpsc::TryRecvError::Empty)
         ));
         assert!(!stopped_before_release);
         let (bytes, stopped_in_callback, original_unlocked, self_stop, work) =
-            observation.recv_timeout(Duration::from_secs(10))?;
+            observation.recv()?;
         assert_eq!(bytes, live_bytes);
         assert!(!stopped_in_callback);
         assert!(original_unlocked);
@@ -703,7 +671,6 @@ fn original_callback_last_owner_drop_runs_the_same_queue_terminal_suffix() -> Te
                 let fence = watch
                     .stream
                     .lock()
-                    .map_err(|_| DemandError::WorkerUnavailable)?
                     .as_ref()
                     .ok_or(DemandError::WorkerUnavailable)?
                     .delivery_fence();
@@ -741,7 +708,6 @@ fn original_callback_last_owner_drop_runs_the_same_queue_terminal_suffix() -> Te
     let fence = watch
         .stream
         .lock()
-        .map_err(|_| "poisoned stream custody")?
         .as_ref()
         .ok_or("stream was not registered")?
         .delivery_fence();

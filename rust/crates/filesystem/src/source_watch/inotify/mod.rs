@@ -23,7 +23,8 @@ mod events;
 mod hub;
 mod lifecycle;
 mod registration;
-use cleanup::{clear_records, close, close_component, stop_custody};
+use crate::cancellation::custody::Custody;
+use cleanup::{clear_records, close, close_component};
 use registration::{owned, proc_fd_path, watch_ancestors};
 
 const READ: WorkCounters = WorkCounters {
@@ -63,7 +64,7 @@ const EVENT_HEADER_BYTES: usize = 16;
 pub(crate) struct NativeSourceWatch {
     shared: Arc<Shared>,
     /// Background delivery through the hub's service pool, until retired.
-    worker: Mutex<Option<Worker>>,
+    worker: Custody<Option<Worker>>,
 }
 
 /// Custody of background delivery for one watch.
@@ -90,15 +91,14 @@ struct Shared {
     /// Set once retirement began: a service pass then returns at once
     /// instead of waiting on `retired` behind a retirer.
     retiring: AtomicBool,
-    ancestors: Mutex<Vec<(i32, std::ffi::OsString)>>,
+    ancestors: Custody<Vec<(i32, std::ffi::OsString)>>,
     retained_variable_bytes: AtomicU64,
     reading: Reading,
-    reading_changed: Condvar,
-    watches: Mutex<Vec<(PathBuf, i32)>>,
+    watches: Custody<Vec<(PathBuf, i32)>>,
     stopping: AtomicBool,
     completed: AtomicBool,
     controller_alive: AtomicBool,
-    cleanup: Mutex<StartupCleanup>,
+    cleanup: Custody<StartupCleanup>,
     ownership: SourcePayloadOwnership,
     delivery: Arc<Delivery>,
     /// Disconnected after every payload and original keeper has been dropped.
@@ -133,7 +133,7 @@ struct RawReads {
 /// when its guard drops.
 #[derive(Default)]
 struct Reading {
-    raw: Mutex<RawReads>,
+    raw: Custody<RawReads>,
     owed: AtomicBool,
 }
 
@@ -141,7 +141,7 @@ struct Reading {
 /// found the cursor held.
 struct ReadingGuard<'a> {
     // Fields drop in order: the cursor unlocks before `_served` runs.
-    raw: std::sync::MutexGuard<'a, RawReads>,
+    raw: tokio::sync::MutexGuard<'a, RawReads>,
     _served: OwedService<'a>,
 }
 
@@ -180,22 +180,14 @@ impl Shared {
     /// Locks the read cursor, waiting for its holder.
     fn reading(&self) -> ReadingGuard<'_> {
         ReadingGuard {
-            raw: self
-                .reading
-                .raw
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
+            raw: self.reading.raw.lock(),
             _served: OwedService(self),
         }
     }
 
     /// Locks the read cursor if it is free.
     fn try_reading(&self) -> Option<ReadingGuard<'_>> {
-        let raw = match self.reading.raw.try_lock() {
-            Ok(raw) => raw,
-            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => return None,
-        };
+        let raw = self.reading.raw.try_lock()?;
         Some(ReadingGuard {
             raw,
             _served: OwedService(self),

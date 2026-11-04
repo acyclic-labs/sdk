@@ -422,24 +422,54 @@ fn original_watch_budget() -> Result<crate::WorkBudget, Box<dyn std::error::Erro
     Ok(serde_json::from_value(value)?)
 }
 
-fn cleanup_original_watch(
+/// Called with physical read/stream custody held by the real native fixture.
+pub(super) fn cancel_contended_cleanup(watch: &NativeSourceWatch) -> TestResult {
+    cancel_contended_cleanup_after(watch, || {})
+}
+
+pub(super) fn cancel_contended_cleanup_after(
     watch: &NativeSourceWatch,
-    wait: &crate::CancellationToken,
+    registered: impl FnOnce(),
 ) -> TestResult {
-    // The OS must eventually complete its existing join/serial completion.
-    // This deadline bounds test retries, not an admitted native shutdown.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        match watch.stop_with_cleanup_wait(wait) {
-            Err(DemandError::WorkerUnavailable) if std::time::Instant::now() < deadline => {
-                std::thread::yield_now();
-            }
-            result => {
-                result?;
-                return Ok(());
-            }
+    std::thread::scope(|threads| {
+        enum Event {
+            Waiting,
+            Finished(Result<(), DemandError>),
         }
-    }
+        let (events, received) = std::sync::mpsc::channel();
+        let observer = crate::CancellationToken::new();
+        let waiting = observer.clone();
+        let (resume, resumed) = std::sync::mpsc::channel();
+        let stopper = threads.spawn(move || {
+            let entering = events.clone();
+            crate::cancellation::custody::BEFORE_WAIT.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || {
+                    entering
+                        .send(Event::Waiting)
+                        .expect("live custody observer");
+                    resumed.recv().expect("live custody controller");
+                }));
+            });
+            events
+                .send(Event::Finished(watch.stop_with_cleanup_wait(&waiting)))
+                .expect("live cleanup observer");
+        });
+        let entered = matches!(received.recv(), Ok(Event::Waiting));
+        if entered {
+            registered();
+        }
+        observer.cancel();
+        if entered {
+            resume.send(()).expect("registered cleanup resumes");
+            assert!(matches!(
+                received.recv(),
+                Ok(Event::Finished(Err(DemandError::Cancelled)))
+            ));
+        }
+        stopper.join().expect("cleanup observer returned");
+        assert!(entered, "contended cleanup must wait on custody release");
+    });
+    Ok(())
 }
 
 #[test]
@@ -559,7 +589,7 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
         "root cancellation is not physical watch retirement"
     );
 
-    cleanup_original_watch(&watch, &crate::CancellationToken::new())?;
+    watch.stop_with_cleanup_wait(&crate::CancellationToken::new())?;
     assert!(watch.is_stopped());
     assert!(!watch.is_exact());
     assert!(
@@ -624,18 +654,7 @@ fn accepted_cleanup_wrapper_retires_original_watch_after_observer_and_root_cance
     ));
     assert_eq!(scope.receipt(), before);
     assert!(!watch.is_stopped());
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        match watch.stop_accepted_cleanup() {
-            Err(DemandError::WorkerUnavailable) if std::time::Instant::now() < deadline => {
-                std::thread::yield_now();
-            }
-            result => {
-                result?;
-                break;
-            }
-        }
-    }
+    watch.stop_accepted_cleanup()?;
     assert!(
         watch.is_stopped(),
         "real callback/native-resource terminal state, not kernel thread exit"

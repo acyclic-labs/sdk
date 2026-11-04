@@ -119,23 +119,6 @@ impl StartupCleanup {
     }
 }
 
-pub(super) fn stop_custody<'a, T>(
-    mutex: &'a Mutex<T>,
-    wait: Option<&crate::CancellationToken>,
-) -> Result<std::sync::MutexGuard<'a, T>, DemandError> {
-    if let Some(wait) = wait {
-        if wait.is_cancelled() {
-            return Err(DemandError::Cancelled);
-        }
-        match mutex.try_lock() {
-            Ok(guard) => Ok(guard),
-            Err(std::sync::TryLockError::Poisoned(error)) => Ok(error.into_inner()),
-            Err(std::sync::TryLockError::WouldBlock) => Err(DemandError::WorkerUnavailable),
-        }
-    } else {
-        Ok(mutex.lock().unwrap_or_else(PoisonError::into_inner))
-    }
-}
 pub(super) fn close(descriptor: i32) -> Result<(), DemandError> {
     // SAFETY: exclusive custody was removed from its owner after quiescence.
     let status = unsafe { libc::close(descriptor) };
@@ -180,7 +163,7 @@ impl Shared {
         if delta == WorkCounters::UNCHARGED {
             return Ok(());
         }
-        let mut cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut cleanup = self.cleanup.lock();
         if self.delivery.birth_matches(work)
             || (self.delivery.original.is_none() && cleanup.covers(delta))
         {
@@ -191,7 +174,7 @@ impl Shared {
     }
 
     pub(super) fn cancel_cleanup<W: SourceDemandReadWork>(&self, work: &mut W) {
-        let mut cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut cleanup = self.cleanup.lock();
         if let Some(birth) = &self.delivery.original {
             cleanup.cancel(&mut crate::NativeMaterializationWork::clone(birth));
         } else {
@@ -204,13 +187,7 @@ impl Shared {
         delta: WorkCounters,
         work: &W,
     ) -> Result<(), DemandError> {
-        if self.delivery.birth_matches(work)
-            && !self
-                .cleanup
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .covers(delta)
-        {
+        if self.delivery.birth_matches(work) && !self.cleanup.lock().covers(delta) {
             return Err(DemandError::NativeWorkUnavailable);
         }
         Ok(())
@@ -229,11 +206,8 @@ impl Shared {
         reading: &mut RawReads,
         work: &mut W,
     ) -> Result<(), DemandError> {
-        let mut watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut ancestors = self
-            .ancestors
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut watches = self.watches.lock();
+        let mut ancestors = self.ancestors.lock();
         let records = reading
             .cleanup
             .len()

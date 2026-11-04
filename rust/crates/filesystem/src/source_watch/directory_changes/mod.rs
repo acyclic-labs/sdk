@@ -9,15 +9,16 @@
 #[cfg(test)]
 use super::HostChange;
 use super::{Delivery, HostChangeWide};
+use crate::cancellation::custody::Custody;
 use crate::demand::{DemandError, DemandWork, SourceDemandReadWork, SourcePayloadOwnership};
 use crate::performance::WorkCounters;
 use std::io;
 use std::mem::size_of;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, OwnedHandle};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 #[cfg(test)]
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_INVALID_FUNCTION, ERROR_IO_INCOMPLETE, ERROR_NOT_FOUND,
     ERROR_NOTIFY_ENUM_DIR, ERROR_OPERATION_ABORTED, HANDLE,
@@ -81,7 +82,7 @@ struct Shared {
     pin_name: bool,
     /// The most the read buffer grows to.
     maximum_buffer_bytes: u64,
-    reads: Mutex<Reads>,
+    reads: Custody<Reads>,
     /// The bytes of the read buffer this watch owns; zero once retired.
     buffer_bytes: AtomicU64,
     /// Signalled each time the hub collects a packet for this watch, which
@@ -168,7 +169,7 @@ impl Drop for Shared {
 /// The reads, held. Releasing them re-wakes the hub if it found them held.
 struct ReadsGuard<'a> {
     shared: &'a Shared,
-    reads: Option<MutexGuard<'a, Reads>>,
+    reads: Option<tokio::sync::MutexGuard<'a, Reads>>,
 }
 impl std::ops::Deref for ReadsGuard<'_> {
     type Target = Reads;
@@ -198,16 +199,12 @@ impl Shared {
     fn lock_reads(&self) -> ReadsGuard<'_> {
         ReadsGuard {
             shared: self,
-            reads: Some(self.reads.lock().unwrap_or_else(PoisonError::into_inner)),
+            reads: Some(self.reads.lock()),
         }
     }
     /// The reads, unless another thread holds them.
     fn try_lock_reads(&self) -> Option<ReadsGuard<'_>> {
-        let reads = match self.reads.try_lock() {
-            Ok(reads) => reads,
-            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => return None,
-        };
+        let reads = self.reads.try_lock()?;
         Some(ReadsGuard {
             shared: self,
             reads: Some(reads),
@@ -217,6 +214,10 @@ impl Shared {
     fn collected(&self) {
         drop(self.arrivals.lock().unwrap_or_else(PoisonError::into_inner));
         self.arrived.notify_all();
+    }
+    fn complete_stop(&self) {
+        self.stop_completed.store(true, Ordering::Release);
+        self.collected();
     }
     /// Waits until the hub has collected the pending read's completion.
     /// The hub itself cannot wait for its own collection: it answers false,

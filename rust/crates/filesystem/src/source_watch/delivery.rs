@@ -75,8 +75,7 @@ impl Delivery {
         ownership.retain(bytes, work)?;
         Ok(Some(Arc::new(SourceWatchStartupFailure {
             cause: std::sync::OnceLock::new(),
-            watch: std::sync::Mutex::new(None),
-            stopped: AtomicBool::new(false),
+            watch: std::sync::OnceLock::new(),
             _ownership: ownership,
         })))
     }
