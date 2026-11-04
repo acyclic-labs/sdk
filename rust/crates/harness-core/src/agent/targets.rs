@@ -18,6 +18,20 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+struct RosterRead;
+
+impl acyclic_collections::IndexReadWork for RosterRead {
+    type Error = std::convert::Infallible;
+
+    fn validate(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn examine(&mut self, _: u64) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
 /// The `target` prefix that names a user's home device instead of a device.
 pub const USER_PREFIX: &str = "user:";
 /// Longest target name, in bytes.
@@ -317,19 +331,9 @@ impl Roster {
     pub(crate) fn select_position(&self, target: Option<&str>) -> Result<usize, TargetRefusal> {
         let admitted = &self.admitted;
         let named = target.unwrap_or(&admitted.home);
-        let found = if named == admitted.home {
-            Some(admitted.home_position)
-        } else {
-            match named.strip_prefix(USER_PREFIX) {
-                Some(owner) => admitted
-                    .targets
-                    .iter()
-                    .position(|record| record.owner == owner),
-                None => admitted
-                    .targets
-                    .iter()
-                    .position(|record| record.name == named),
-            }
+        let found = match self.lookup(named, &mut RosterRead) {
+            Ok(found) => found,
+            Err(never) => match never {},
         };
         let refused = match found {
             Some(position) if admitted.targets[position].state == TargetState::Online => {
@@ -339,6 +343,25 @@ impl Roster {
             None => Refused::Unknown,
         };
         Err(self.refusal(named, refused))
+    }
+
+    fn lookup<W: acyclic_collections::IndexReadWork>(
+        &self,
+        named: &str,
+        work: &mut W,
+    ) -> Result<Option<usize>, W::Error> {
+        work.validate()?;
+        if named == self.admitted.home {
+            return Ok(Some(self.admitted.home_position));
+        }
+        let owner = named.strip_prefix(USER_PREFIX);
+        for (position, record) in self.admitted.targets.iter().enumerate() {
+            work.examine(1)?;
+            if owner.map_or(record.name == named, |owner| record.owner == owner) {
+                return Ok(Some(position));
+            }
+        }
+        Ok(None)
     }
 
     /// Describe a refusal from this same admitted roster. A known-lost target
@@ -419,6 +442,53 @@ mod tests {
             alone.select(None).expect_err("offline").to_string(),
             "target 'pc' is offline; online: none"
         );
+
+        struct Reads(u64);
+        impl acyclic_collections::IndexReadWork for Reads {
+            type Error = &'static str;
+            fn validate(&mut self) -> Result<(), Self::Error> {
+                Ok(())
+            }
+            fn examine(&mut self, items: u64) -> Result<(), Self::Error> {
+                self.0 += items;
+                Ok(())
+            }
+        }
+        let mut first = [0; 2];
+        for count in [2, 4, 8, 16] {
+            let records = (0..count)
+                .map(|index| {
+                    device(
+                        &format!("t{index:02}"),
+                        &format!("u{index:02}"),
+                        TargetState::Online,
+                    )
+                })
+                .collect();
+            let admitted = Roster::new("t00", records).expect("original admission");
+            for (kind, name) in [
+                format!("t{:02}", count - 1),
+                format!("user:u{:02}", count - 1),
+            ]
+            .iter()
+            .enumerate()
+            {
+                let mut reads = Reads(0);
+                assert_eq!(admitted.lookup(name, &mut reads), Ok(Some(count - 1)));
+                assert_eq!(
+                    admitted.select(Some(name)).unwrap().name,
+                    format!("t{:02}", count - 1)
+                );
+                if count == 2 {
+                    first[kind] = reads.0;
+                }
+                assert!(
+                    reads.0 <= first[kind] + 3,
+                    "population-dependent lookup: {count} records, {} examinations",
+                    reads.0
+                );
+            }
+        }
     }
 
     #[test]
