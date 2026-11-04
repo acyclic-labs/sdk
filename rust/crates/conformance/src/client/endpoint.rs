@@ -302,6 +302,13 @@ async fn wait_reply(
     };
     let mut follow = AgentClient::all(session.clone(), agent.clone(), settled, statuses, 0)
         .map_err(|error| observation_failure("reply_follow", error))?;
+    // Consume a follow delivery before querying the reply. Constructing the
+    // observer alone leaves its follows lazy; the query could otherwise retire
+    // the last admitted channel before either follow opens.
+    follow
+        .next()
+        .await
+        .map_err(|error| observation_failure("reply_follow", error))?;
     loop {
         let AgentReply::Reply { reply } = execute(
             controls,

@@ -541,12 +541,15 @@ async fn run(producer: Producer) -> Outcome {
     let serving = hosted.await;
     if drop_model || drop_command || drop_reply_host {
         let failure = result.expect_err("closed producer must fail the waiting client");
-        assert!(matches!(
-            failure.cause,
-            Some(acyclic_conformance::client::Cause::Stream(
-                StreamError::Unavailable
-            ))
-        ));
+        assert!(
+            matches!(
+                failure.cause,
+                Some(acyclic_conformance::client::Cause::Stream(
+                    StreamError::Unavailable
+                ))
+            ),
+            "closed producer returned {failure:?}"
+        );
         if drop_reply_host {
             assert_eq!(failure.case, "reply_liveness");
         } else if drop_command {
