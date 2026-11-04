@@ -390,14 +390,14 @@ pub(crate) fn projection_contract(record: &crate::Record) -> bool {
     let Some(pivot) = original.entries.get(original.entries.len() / 2) else {
         return false;
     };
-    for selection in 0..3 {
+    for selection in 0..4 {
         // An empty range end means unbounded, so it cannot select the empty
         // prefix before a first empty key. The suffix still covers that key.
-        if selection == 1 && pivot.key.is_empty() {
+        if matches!(selection, 1 | 3) && pivot.key.is_empty() {
             continue;
         }
         let keys = match selection {
-            1 => vec![wire::KeyRange {
+            1 | 3 => vec![wire::KeyRange {
                 start: Default::default(),
                 end: pivot.key.clone(),
             }],
@@ -409,6 +409,19 @@ pub(crate) fn projection_contract(record: &crate::Record) -> bool {
         };
         let Ok(filter) = FollowFilter::new(wire::SessionFilter {
             keys,
+            // Different entries cannot satisfy different authority clauses.
+            all_of: if selection == 3 {
+                vec![wire::SessionFilterClause {
+                    keys: vec![wire::KeyRange {
+                        start: pivot.key.clone(),
+                        end: Default::default(),
+                    }],
+                    all_keys: true,
+                    ..Default::default()
+                }]
+            } else {
+                vec![]
+            },
             ..Default::default()
         }) else {
             return false;
@@ -417,6 +430,7 @@ pub(crate) fn projection_contract(record: &crate::Record) -> bool {
         expected.entries.retain(|entry| match selection {
             1 => entry.key < pivot.key,
             2 => entry.key >= pivot.key,
+            3 => false,
             _ => true,
         });
         let Ok(projected) = filter.project(record.clone()) else {

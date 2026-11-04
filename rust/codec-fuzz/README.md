@@ -869,8 +869,9 @@ This is a derived adversarial input, not an additional captured service packet.
 The existing `stream_persistence` target also checks typed change projection
 through `FollowFilter::project`, using the same oracle as the default
 `projection_reuses_validation_and_skips_unrestricted_decoding` property. The
-oracle checks complete, lower-prefix and upper-suffix selections against the
-admitted entries, retaining context, operations, metadata, attributes and record
+oracle checks complete, lower-prefix and upper-suffix selections, plus disjoint
+authority conjunctions, against the admitted entries, retaining context,
+operations, metadata, attributes and record
 identity. Its v1 input is the retained `stream.changes-v1` protocol golden; its
 v2 input and multi-entry corpus seeds come from `AppendRecord::changes`. These
 are SDK codec inputs, not recorded remote-service responses.
@@ -884,3 +885,10 @@ cargo test --locked -p acyclic-stream --features test-support --lib follow_filte
 
 The unchanged property must reject the leaked entry. Reverse the patch before
 the positive run. A compiler failure is not a successful negative control.
+
+`negative-controls/change_projection_authority.patch` changes the production
+entry predicate from every clause to any clause. The same property must reject
+the disjoint lower-prefix request and upper-suffix authority: different entries
+cannot collectively satisfy the conjunction. The oracle derives the empty
+intersection directly from the original sorted keys and does not call the
+production predicate to decide the expected subset.
