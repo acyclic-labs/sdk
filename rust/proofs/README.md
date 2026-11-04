@@ -21,6 +21,12 @@ an oracle that rejects a population-dependent implementation.
 
 ## Current closure work
 
+The [admission rebind control](admission-rebind/README.md) measures actual
+pending-membership home rebinding and retains a mutation of the production
+method. Its zero-allocation oracle replaces a hand-written former-mechanism
+comparison. Allocation-free traversal and complete membership-operation cost
+remain separate obligations.
+
 The retained-credit property addresses ownership conservation behind double
 retirement: scratch and retained guards must never refund the same live bytes.
 Its scope includes the standalone guard path and full-width arithmetic; the
