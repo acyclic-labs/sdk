@@ -35,8 +35,6 @@ struct Fixture {
     writer: ContentGrant,
     reader: Arc<dyn ContentResidencyVerifier>,
     #[cfg(feature = "hosting")]
-    issuer: AuthorityRoot,
-    #[cfg(feature = "hosting")]
     files: Arc<
         FilesystemContentVerifier<
             acyclic_fs::MemoryAuthorityBackend,
@@ -286,8 +284,6 @@ impl Fixture {
             },
             writer,
             reader,
-            #[cfg(feature = "hosting")]
-            issuer,
             #[cfg(feature = "hosting")]
             files,
         })
@@ -635,7 +631,7 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
         .expect("scope");
     let unlisted = FilesystemContentVerifier::new(
         fixture.host.clone(),
-        &fixture.issuer.verifier(&mut None).expect("verifier"),
+        &fixture._issuer.verifier(&mut None).expect("verifier"),
         &scope,
         1 << 20,
         None,
