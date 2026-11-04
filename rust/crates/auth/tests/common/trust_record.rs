@@ -1,6 +1,6 @@
 //! Shared production trust-record oracle for corpus replay and fuzzing.
 use acyclic_auth::{
-    contract::{TrustRecord, TrustRecordKind, TrustRecordProto},
+    contract::{RevocationPublication, TrustRecord, TrustRecordKind, TrustRecordProto},
     crypto::BlockId,
     trust::{Applied, FenceCause, Follower, FollowerState, Issuer, KeyringFrontier},
     verify::{Trust as _, VerifyError},
@@ -89,19 +89,27 @@ pub fn check(bytes: &[u8]) {
                 // and silently stop the subsequent served-floor assertions.
                 let decoded =
                     TrustRecord::try_from(TrustRecordProto::decode(record).unwrap()).unwrap();
-                match decoded.record {
+                let account = match decoded.record {
                     TrustRecordKind::Environment(_) => {
                         assert_eq!(
                             follower.apply_environment(record, 100),
                             Ok(Applied::Duplicate)
                         );
                         environment_changed = true;
+                        None
                     }
-                    _ => {
-                        assert_eq!(
-                            follower.apply_account("account", record, 100),
-                            Ok(Applied::Duplicate)
-                        );
+                    TrustRecordKind::Keyring(signed) => Some(signed.snapshot.account_id),
+                    TrustRecordKind::Revocation(signed) => Some(match signed.publication {
+                        RevocationPublication::Delta(delta) => delta.account_id,
+                        RevocationPublication::Checkpoint(checkpoint) => checkpoint.account_id,
+                    }),
+                };
+                if let Some(account) = account {
+                    assert_eq!(
+                        follower.apply_account(&account, record, 100),
+                        Ok(Applied::Duplicate)
+                    );
+                    if account == "account" {
                         accepted.push(record.to_vec());
                     }
                 }

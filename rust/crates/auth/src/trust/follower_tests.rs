@@ -98,6 +98,56 @@ fn follower(world: &World) -> Follower {
 }
 
 #[test]
+fn reanchor_during_account_verification_cannot_publish_the_old_proof() {
+    let world = world();
+    let trust = Arc::new(Follower::new("test", world.issuer.anchor()));
+    let concurrent = trust.clone();
+    VERIFYING_KEYRING.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            assert!(concurrent.environment.try_write().is_ok());
+            concurrent
+                .reanchor(Issuer::new("test", key(9)).anchor().into())
+                .unwrap();
+        }));
+    });
+    assert_eq!(
+        trust.apply_account("account", &world.genesis[0], NOW),
+        Err(VerifyError::Unavailable)
+    );
+    assert!(
+        trust
+            .find_account("account")
+            .unwrap()
+            .unwrap()
+            .state
+            .read()
+            .unwrap()
+            .keyring
+            .is_none()
+    );
+    trust.reanchor(world.issuer.anchor().into()).unwrap();
+    assert_eq!(
+        trust.apply_account("account", &world.genesis[0], NOW),
+        Ok(Applied::Changed)
+    );
+}
+
+#[test]
+fn reanchor_wakes_global_and_account_trust_dependencies() {
+    let world = world();
+    let trust = follower(&world);
+    let mut global = trust.changed();
+    let mut account = trust.changed_for("account");
+    assert!((&mut global).now_or_never().is_none());
+    assert!((&mut account).now_or_never().is_none());
+    let current = Issuer::new("test", key(9)).anchor();
+    trust.reanchor(current.clone().into()).unwrap();
+    assert_eq!(global.now_or_never(), Some(Ok(())));
+    assert_eq!(account.now_or_never(), Some(Ok(())));
+    assert_eq!(*trust.environment_keys("test").unwrap(), current);
+}
+
+#[test]
 fn reanchor_during_environment_verification_cannot_publish_the_old_proof() {
     let world = world();
     let trust = Arc::new(Follower::new("test", world.issuer.anchor()));
