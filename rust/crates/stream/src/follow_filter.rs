@@ -717,6 +717,7 @@ mod tests {
             }],
         };
         let old_request = requested.clone();
+        let requested_intersection = FollowFilter::new(requested.clone()).unwrap();
         let mut original = None;
         let mut transferred = None;
         let build_original = || {
@@ -812,12 +813,8 @@ mod tests {
             }
         }
         let forwarded = FollowFilter::new(original.transport_filter().unwrap()).unwrap();
-        let requested = FollowFilter(Some(Arc::new(vec![make(false, b"a", b"c")])));
-        let ceiling = FollowFilter(Some(Arc::new(vec![
-            make(true, b"a", b"m"),
-            make(true, b"b", b"z"),
-        ])));
-        let intersection = requested.intersection(&ceiling);
+        let ceiling = FollowFilter::authorized(Default::default(), &capability).unwrap();
+        let intersection = requested_intersection.intersection(&ceiling);
         assert_eq!(intersection, original);
         assert_eq!(
             intersection.intersection(&FollowFilter::default()),
