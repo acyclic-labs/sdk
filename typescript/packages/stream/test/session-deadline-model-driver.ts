@@ -25,8 +25,10 @@ plugin({ name: "raw-follow-deadline-model", setup(build) {
     const source = await Bun.file(args.path).text();
     if (fault !== "write") return { contents: source, loader: "ts" };
     const cancellation = "const abort = (): void => { pending?.close(); handle?.close(); };";
-    if (!source.includes(cancellation)) throw new Error("blocked-write negative control no longer matches");
-    return { contents: source.replace(cancellation, "const abort = (): void => {};"), loader: "ts" };
+    const withdrawal = "    handle?.close();";
+    if (!source.includes(cancellation) || !source.includes(withdrawal)) throw new Error("blocked-write negative control no longer matches");
+    // Both abort and explicit close interrupt a pull before awaiting its disposal.
+    return { contents: source.replace(cancellation, "const abort = (): void => {};").replace(withdrawal, ""), loader: "ts" };
   });
   build.onLoad({ filter: /[\\/]src[\\/]grpc\.ts$/ }, async args => {
     let source = await Bun.file(args.path).text();
