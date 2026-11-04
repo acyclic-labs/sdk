@@ -20,34 +20,10 @@ pub fn js_error(error: StreamError) -> JsValue {
         let _property_result = Reflect::set(
             value.as_ref(),
             &JsValue::from_str("refusal"),
-            &refusal_value(original),
+            &acyclic_auth::refusal::javascript::value(original),
         );
     }
     value.into()
-}
-
-/// A member's original status, verbatim: metadata values stay bytes.
-fn refusal_value(parts: &acyclic_auth::refusal::Parts) -> JsValue {
-    let refusal = js_sys::Object::new();
-    let metadata = js_sys::Array::new();
-    for (name, value) in &parts.metadata {
-        metadata.push(&js_sys::Array::of2(
-            &JsValue::from_str(name.as_str()),
-            &js_sys::Uint8Array::from(value.as_bytes()),
-        ));
-    }
-    for (key, field) in [
-        ("status", JsValue::from_f64(f64::from(parts.code))),
-        ("message", JsValue::from_str(&parts.message)),
-        (
-            "details",
-            js_sys::Uint8Array::from(&parts.details[..]).into(),
-        ),
-        ("metadata", metadata.into()),
-    ] {
-        let _property_result = Reflect::set(&refusal, &JsValue::from_str(key), &field);
-    }
-    refusal.into()
 }
 
 /// Return whether a code can be emitted by this WASM adapter.
