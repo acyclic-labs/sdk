@@ -66,7 +66,7 @@ try {
     assert.equal(error.code, publicHttpErrorCode(code, "session"), `public result for ${code}`);
     // Missing paths and other terminal errors must not be retried as outages.
     assert.equal(fixture.counts.sessions - before, 1, `a peer refusal never requests retry for ${code}`);
-    await follow.return?.();
+    await assert.rejects(follow.return!(), cleanup => cleanup === error);
   }
   assert.equal(fixture.counts.legacyFollows, 0);
   assert.equal(fixture.counts.connections, 1);
@@ -99,5 +99,10 @@ try {
     assert.equal(fixture.counts.connections, 2);
     assert.equal(fixture.counts.legacyFollows, 0);
   } finally { await Promise.all(follows.map(follow => follow.return?.())); }
+  await fixture.close();
+  const refused = new GrpcStreamProvider(fixture.options).follow("refused", { from: 0n })[Symbol.asyncIterator]();
+  const refusal = await refused.next().then(() => undefined, error => error);
+  assert(refusal instanceof StreamError && refusal.code === "unavailable");
+  await assert.rejects(refused.return!(), cleanup => cleanup === refusal);
   console.log(JSON.stringify({ codes: codes.length, sessions: peerSessions, connections: 1, recoveredConnections: fixture.counts.connections }));
 } finally { await fixture.close(); identity.dispose(); }
