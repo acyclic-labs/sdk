@@ -403,11 +403,29 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
                 } else {
                     AuthorityWork::new(native_read_budget(), &token)
                 };
-                let (values, allocation) = if stored {
-                    store.read_many_stored(requests, &mut work).await?
-                } else {
-                    store.read_many(requests, &mut work).await?
-                };
+                let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::new();
+                let mut batch = Box::pin(schedule.scope(async {
+                    if stored {
+                        store.read_many_stored(requests, &mut work).await
+                    } else {
+                        store.read_many(requests, &mut work).await
+                    }
+                }));
+                assert!(futures::poll!(batch.as_mut()).is_pending());
+                // Both original LocalMedium persistence jobs must be accepted
+                // before the driver releases any native execution boundary.
+                let admitted = schedule.pending_native_work();
+                let driver = tokio::spawn(async move {
+                    while let Some(boundary) = events.recv().await {
+                        boundary.release();
+                    }
+                });
+                let result = batch.await;
+                schedule.drained().await;
+                driver.abort();
+                let _ = driver.await;
+                assert_eq!(admitted, 2, "durable misses must overlap before release");
+                let (values, allocation) = result?;
                 assert_eq!(values.len(), expected.len());
                 for (read, bytes) in values.iter().zip(expected) {
                     assert_eq!(&read.bytes, *bytes);
