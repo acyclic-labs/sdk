@@ -9,13 +9,13 @@ pub trait FsWork: Sync + ProviderTask {
     /// Result shape for this work source.
     type Output<T, E>;
     /// Result shape for an owned output buffer.
-    type OwnedOutput<T>;
+    type OwnedOutput<T, E>;
     #[doc(hidden)]
-    fn finish_owned<T>(
+    fn finish_owned<T, E: From<FsError>>(
         &self,
-        result: Result<(T, KernelOwnedAllocation), FsError>,
+        result: Result<(T, KernelOwnedAllocation), E>,
         accounting: &KernelAccounting<'_>,
-    ) -> Self::OwnedOutput<T>;
+    ) -> Self::OwnedOutput<T, E>;
     #[doc(hidden)]
     fn accounting<'a>(&'a self, cancellation: &'a CancellationToken) -> KernelAccounting<'a>;
     #[doc(hidden)]
@@ -28,12 +28,12 @@ pub trait FsWork: Sync + ProviderTask {
 
 impl FsWork for WorkBudget {
     type Output<T, E> = MeasuredResult<OperationReceipt<T>, E>;
-    type OwnedOutput<T> = FsResult<T>;
-    fn finish_owned<T>(
+    type OwnedOutput<T, E> = MeasuredResult<OperationReceipt<T>, E>;
+    fn finish_owned<T, E: From<FsError>>(
         &self,
-        result: Result<(T, KernelOwnedAllocation), FsError>,
+        result: Result<(T, KernelOwnedAllocation), E>,
         accounting: &KernelAccounting<'_>,
-    ) -> Self::OwnedOutput<T> {
+    ) -> Self::OwnedOutput<T, E> {
         measured(result.map(|(value, _allocation)| value), accounting)
     }
     fn accounting<'a>(&'a self, cancellation: &'a CancellationToken) -> KernelAccounting<'a> {
@@ -51,19 +51,21 @@ impl FsWork for WorkBudget {
 #[cfg(not(target_arch = "wasm32"))]
 impl FsWork for &NativeMaterializationWork {
     type Output<T, E> = Result<T, E>;
-    type OwnedOutput<T> = Result<(T, NativeAllocation), FsError>;
-    fn finish_owned<T>(
+    type OwnedOutput<T, E> = Result<(T, NativeAllocation), E>;
+    fn finish_owned<T, E: From<FsError>>(
         &self,
-        result: Result<(T, KernelOwnedAllocation), FsError>,
+        result: Result<(T, KernelOwnedAllocation), E>,
         _: &KernelAccounting<'_>,
-    ) -> Self::OwnedOutput<T> {
+    ) -> Self::OwnedOutput<T, E> {
         result.and_then(|(value, allocation)| {
             Ok((
                 value,
                 match allocation {
                     KernelOwnedAllocation::NativeOriginal(guard) => guard,
                     KernelOwnedAllocation::Standalone => {
-                        return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
+                        return Err(E::from(FsError::from(
+                            crate::NativeTreeMaterializationError::InvalidLayout,
+                        )));
                     }
                 },
             ))

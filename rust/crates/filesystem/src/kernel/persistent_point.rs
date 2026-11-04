@@ -65,6 +65,25 @@ impl<T> Owned<T> {
 }
 
 impl<T> Owned<Vec<T>> {
+    /// Appends only within original admitted backing, without growing it.
+    pub(crate) fn push(
+        &mut self,
+        value: T,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        if self.value.len() == self.value.capacity() {
+            return Err(super::CanonicalDecodeError::AllocationFailed.into());
+        }
+        let copied = crate::WorkCounters {
+            items_examined: 1,
+            bytes_copied: std::mem::size_of::<T>() as u64,
+            ..crate::WorkCounters::UNCHARGED
+        };
+        accounting.admit(copied)?;
+        self.value.push(value);
+        accounting.record_completed(copied)
+    }
+
     pub(crate) fn allocate(
         count: usize,
         accounting: &mut KernelAccounting<'_>,
