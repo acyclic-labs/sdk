@@ -12,10 +12,11 @@ fn unjoined_original_output_keeps_its_task_accounted_through_release() {
             "task accounting retired before its original cleanup"
         );
     }
-    struct Output(Schedule);
+    struct Output(Schedule, Arc<std::sync::atomic::AtomicU8>);
     impl Drop for Output {
         fn drop(&mut self) {
             accounted(&self.0);
+            self.1.fetch_or(4, std::sync::atomic::Ordering::Release);
         }
     }
     struct Producer {
@@ -29,7 +30,7 @@ fn unjoined_original_output_keeps_its_task_accounted_through_release() {
             self.lifecycle
                 .fetch_or(1, std::sync::atomic::Ordering::Relaxed);
             assert!(!self.panic, "original producer panic");
-            Poll::Ready(Output(self.schedule.clone()))
+            Poll::Ready(Output(self.schedule.clone(), self.lifecycle.clone()))
         }
     }
     impl Drop for Producer {
@@ -42,33 +43,62 @@ fn unjoined_original_output_keeps_its_task_accounted_through_release() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
-    for panic in [false, true] {
-        for detached in [false, true] {
-            let (schedule, _events) = Schedule::seeded(83);
-            let executor = schedule.0.executor.as_ref().unwrap();
-            let task = runtime.block_on(schedule.scope(async {
-                let active = Context::current().unwrap().accept("task");
-                executor.spawn_owned(
-                    Some(active),
-                    Producer {
+    for native in [false, true] {
+        for panic in [false, true] {
+            for detached in [false, true] {
+                let (schedule, _events) = if native {
+                    Schedule::new()
+                } else {
+                    Schedule::seeded(83)
+                };
+                let lifecycle = Arc::new(std::sync::atomic::AtomicU8::new(0));
+                let (produced, production) = oneshot::channel();
+                let task = runtime.block_on(schedule.scope(async {
+                    let active = Context::current().unwrap().accept("task");
+                    let producer = Producer {
                         schedule: schedule.clone(),
                         panic,
-                        lifecycle: Arc::default(),
-                    },
-                )
-            }));
-            let task = if detached {
+                        lifecycle: lifecycle.clone(),
+                    };
+                    let future = async move {
+                        let output = producer.await;
+                        let _ = produced.send(());
+                        output
+                    };
+                    if native {
+                        TaskHandle::native(Some(active), future)
+                    } else {
+                        schedule
+                            .0
+                            .executor
+                            .as_ref()
+                            .unwrap()
+                            .spawn_owned(Some(active), future)
+                    }
+                }));
+                let task = if detached {
+                    drop(task);
+                    None
+                } else {
+                    Some(task)
+                };
+                // The original producer publishes or drops this event. On the
+                // native executor, drive it without joining away its output.
+                if let Some(executor) = &schedule.0.executor {
+                    executor.poll_owned(&PollContext::from_waker(Waker::noop()));
+                    assert!(executor.trace().iter().any(|(_, phase)| *phase == "ready"));
+                }
+                assert_eq!(runtime.block_on(production).is_err(), panic);
+                // Drop the original future before either its error or a rejected
+                // delivery can retire accounting. Unjoined output retains it too.
                 drop(task);
-                None
-            } else {
-                Some(task)
-            };
-            // Drop the original future before either its error or a rejected
-            // delivery can retire accounting. Unjoined output retains it too.
-            executor.poll_owned(&PollContext::from_waker(Waker::noop()));
-            assert!(executor.trace().iter().any(|(_, phase)| *phase == "ready"));
-            drop(task);
-            runtime.block_on(schedule.drained());
+                runtime.block_on(schedule.drained());
+                assert_eq!(
+                    lifecycle.load(std::sync::atomic::Ordering::Acquire),
+                    if panic { 3 } else { 7 },
+                    "task accounting retired before its original cleanup"
+                );
+            }
         }
     }
     for native in [false, true] {

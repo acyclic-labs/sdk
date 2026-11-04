@@ -12,7 +12,7 @@ import subprocess
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("defect", choices=["panic", "output"])
+    parser.add_argument("defect", choices=["panic", "output", "native-output"])
     defect = parser.parse_args().defect
     if defect == "panic":
         path = Path("rust/crates/native-runtime/src/task/custody.rs")
@@ -33,6 +33,14 @@ def main():
             b"                _owner: owner,\n"
             b"            }));"
         )
+        if defect == "native-output":
+            anchor = (
+                b"let value = work.value.await;\n"
+                b"            Accounted {\n"
+                b"                value,\n"
+                b"                _owner: owner,\n"
+                b"            }"
+            )
         replacement = anchor.replace(b"_owner: owner,", b"_owner: None,")
         count = 1
         test = "testing::executor::tests::unjoined_original_output_keeps_its_task_accounted_through_release"
