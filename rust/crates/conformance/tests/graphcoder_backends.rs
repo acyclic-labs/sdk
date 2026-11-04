@@ -641,12 +641,21 @@ impl Shape {
                 .unwrap_or_else(|| panic!("no {call} result: {outputs:?}"));
             serde_json::from_str(output).unwrap_or_else(|_| output.as_str().into())
         };
-        let pick = |value: &Value, pointers: &[&str]| -> Value {
-            pointers
-                .iter()
-                .map(|pointer| value.pointer(pointer).cloned().unwrap_or_default())
-                .collect()
-        };
+        // Publication projects a path and a version containing the original
+        // FileRef. Use its shared decoder, retaining descriptor checks rather
+        // than silently comparing nulls at the old canonical-result paths.
+        let written = parsed("write");
+        let file: acyclic_harness::conversation::FileRef = serde_json::from_str(
+            written["version"]
+                .as_str()
+                .expect("write supplied no version"),
+        )
+        .expect("write supplied no file reference");
+        assert_eq!(written["path"], file.path());
+        assert_eq!(file.path(), "conformance.txt");
+        file.descriptor()
+            .verify(WRITTEN.as_bytes(), &mut None)
+            .unwrap();
         // The child's path under the root, less the backend's agent ids.
         let spawned = parsed("spawn");
         let child: Vec<&str> = spawned["agent"]
@@ -667,10 +676,7 @@ impl Shape {
                 // The shared shell projects its exit and output as text to
                 // the model; structured file and child results remain JSON.
                 parsed("shell"),
-                pick(
-                    &parsed("write"),
-                    &["/file/descriptor", "/file/path", "/file/volume/class"],
-                ),
+                json!([file.descriptor(), file.path(), file.volume().class()]),
                 child.into(),
             ],
             steps,
