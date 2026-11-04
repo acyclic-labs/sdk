@@ -1,6 +1,23 @@
 use super::*;
 
 impl Projector {
+    /// The existing projector owns the initial listing, just as it owns
+    /// subsequent listings. Its original startup ledger remains live until
+    /// the pass publishes its result and wakes the startup waiter.
+    pub(super) fn initialize(
+        &self,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
+        let mut state = lock_recover(&self.state);
+        if state.stopping || state.startup.is_some() {
+            return Err(NativeMountError::ControlPending);
+        }
+        state.startup = Some(work.clone());
+        self.wake();
+        drop(state);
+        self.settle()
+    }
+
     pub(super) fn new() -> Self {
         Self {
             clock: super::super::clock::Clock::capture(),
@@ -490,6 +507,38 @@ impl Projector {
         context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
         mut state: MutexGuard<'a, ProjectorState>,
     ) -> (MutexGuard<'a, ProjectorState>, bool) {
+        if let Some(work) = state.startup.take() {
+            state.relisting = true;
+            drop(state);
+            // A panicking source must complete the same startup wait instead
+            // of dropping its only producer and leaving the constructor hung.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.materialize(
+                    Projection {
+                        runtime,
+                        work: &work,
+                        context,
+                        starting: true,
+                    },
+                    MountPath::root(),
+                )
+            }))
+            .unwrap_or_else(|payload| {
+                let message = payload
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| payload.downcast_ref::<&str>().copied())
+                    .unwrap_or("non-string panic payload");
+                Err(format!("initial projection source panicked: {message}"))
+            });
+            state = lock_recover(&self.state);
+            state.relisting = false;
+            if let Err(failure) = result {
+                state.failure.get_or_insert(failure);
+            }
+            self.changed.notify_all();
+            return (state, true);
+        }
         let source = runtime.source.as_ref();
         let work = match runtime.native_work(false) {
             Ok(work) => work,
@@ -649,13 +698,18 @@ impl Projector {
         let target = state.notified;
         let mut deadline = None;
         while !state.stopping
-            && (state.processed < target
+            && (state.startup.is_some()
+                || state.processed < target
                 || state.relisting
                 || !state.stale.is_empty()
                 || !state.pending.is_empty()
                 || !state.vacated.is_empty())
         {
-            if state.processed < target || state.relisting || !state.stale.is_empty() {
+            if state.startup.is_some()
+                || state.processed < target
+                || state.relisting
+                || !state.stale.is_empty()
+            {
                 state = self
                     .changed
                     .wait(state)

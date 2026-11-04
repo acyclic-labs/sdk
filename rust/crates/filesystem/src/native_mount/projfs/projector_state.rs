@@ -159,6 +159,7 @@ pub(super) const HELD_SETTLE_LIMIT: std::time::Duration = std::time::Duration::f
 
 #[derive(Default)]
 pub(super) struct ProjectorState {
+    pub(super) startup: Option<crate::NativeMaterializationWork>,
     pub(super) written: HashMap<MountPath, WrittenEntry>,
     pub(super) pending: HashMap<MountPath, WrittenEntry>,
     pub(super) directories: HashMap<MountPath, Materialized>,
@@ -190,7 +191,11 @@ impl ProjectorState {
     pub(super) fn readiness(&self) -> Readiness {
         if self.stopping {
             Readiness::Stopped
-        } else if self.processed < self.notified || self.retry || !self.stale.is_empty() {
+        } else if self.startup.is_some()
+            || self.processed < self.notified
+            || self.retry
+            || !self.stale.is_empty()
+        {
             Readiness::Ready
         } else {
             Readiness::Idle
