@@ -91,7 +91,7 @@ impl Ticket {
     pub(in crate::kernel::publication) fn take_authentication(
         &self,
         root: ObjectId,
-    ) -> Result<Option<super::super::authenticate::Authenticated>, crate::FsError> {
+    ) -> Option<super::super::authenticate::Authenticated> {
         let authenticated = self
             .proposal
             .prepared
@@ -99,15 +99,11 @@ impl Ticket {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .authentication
             .take();
-        let Some(authenticated) = authenticated else {
-            return Ok(None);
-        };
-        if authenticated.value.proof.generation_id.object_id() != root {
-            return Ok(None);
+        let authenticated = authenticated?;
+        if authenticated.proof.generation_id.object_id() != root {
+            return None;
         }
-        let Retained { value, allocation } = authenticated;
-        drop(allocation);
-        Ok(Some(value))
+        Some(authenticated)
     }
 }
 

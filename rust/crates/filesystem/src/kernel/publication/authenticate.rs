@@ -32,7 +32,7 @@ pub(super) async fn prove<O: crate::AsyncObjectStore>(
 }
 
 pub(super) struct PinnedAuthentication {
-    pub(super) authentication: crate::kernel::allocation::retained::Retained<Authenticated>,
+    pub(super) authentication: Authenticated,
     pub(super) pin: Option<crate::collection::Hold>,
 }
 
@@ -44,12 +44,12 @@ pub(super) async fn retain_and_pin<O: crate::AsyncObjectStore>(
     proven_at: u64,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<PinnedAuthentication, crate::FsError> {
-    let authentication = retain_authentication(authenticated, accounting)?;
+    let authentication = authenticated;
     let pin = if let Some(collection) = objects.collection() {
         Some(
             collection
                 .hold_generation_with_accounting(
-                    &authentication.value.proof,
+                    &authentication.proof,
                     config,
                     proven_at,
                     accounting,
@@ -62,17 +62,5 @@ pub(super) async fn retain_and_pin<O: crate::AsyncObjectStore>(
     Ok(PinnedAuthentication {
         authentication,
         pin,
-    })
-}
-pub(super) fn retain_authentication(
-    authenticated: Authenticated,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<crate::kernel::allocation::retained::Retained<Authenticated>, crate::FsError> {
-    // The proof guard already owns its original producer's allocation.
-    Ok(crate::kernel::allocation::retained::Retained {
-        value: authenticated,
-        allocation: crate::kernel::allocation::retained::RetainedAllocation::claim(
-            0, 0, accounting,
-        )?,
     })
 }

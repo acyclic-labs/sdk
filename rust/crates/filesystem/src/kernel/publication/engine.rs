@@ -68,8 +68,7 @@ where
     let (appended, authentication, published, _projection_fence, _publication_hold) =
         if let Some(ticket) = candidate.ticket.as_mut() {
             let publication = combiner::SubmittedPublication {
-                authentication: authenticate::retain_authentication(authentication, accounting)
-                    .map_err(E::from)?,
+                authentication,
                 custody: combiner::PublicationCustody {
                     published: None,
                     projection_fence,
@@ -91,12 +90,9 @@ where
                 changes.retire(accounting).map_err(E::from)?;
             }
             let (appended, publication) = result?;
-            let crate::kernel::allocation::retained::Retained { value, allocation } =
-                publication.authentication;
-            drop(allocation);
             (
                 appended,
-                value,
+                publication.authentication,
                 publication.custody.published,
                 publication.custody.projection_fence,
                 publication.custody.publication_hold,
