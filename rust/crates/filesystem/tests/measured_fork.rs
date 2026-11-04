@@ -10,10 +10,6 @@
 #[path = "support/unbounded.rs"]
 mod unbounded;
 
-#[macro_use]
-#[path = "support/provider_receipt.rs"]
-mod provider_receipt;
-
 use acyclic_fs::storage::ObjectWrite;
 use acyclic_fs::{
     AsyncObjectStore, CancellationToken, EmbeddedCapabilities, ForkOptions, Fs, IdempotencyKey,
@@ -208,19 +204,9 @@ impl AsyncObjectStore for CancelAfterPut {
         bytes: OwnedBytes,
         context: &mut acyclic_fs::AuthorityWork<'_>,
     ) -> Result<(), acyclic_fs::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
-        }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            let receipt = provider_receipt!(self.inner, put(id, bytes), budget, cancellation)?;
-            self.after_put(cancellation);
-            Ok(receipt)
-        }
-        .await;
-        context.accept(result)
+        self.inner.put(id, bytes, context).await?;
+        self.after_put(context.cancellation);
+        Ok(())
     }
 
     async fn put_many(
@@ -228,19 +214,9 @@ impl AsyncObjectStore for CancelAfterPut {
         writes: &[ObjectWrite],
         context: &mut acyclic_fs::AuthorityWork<'_>,
     ) -> Result<(), acyclic_fs::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
-        }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            let receipt = provider_receipt!(self.inner, put_many(writes), budget, cancellation)?;
-            self.after_put(cancellation);
-            Ok(receipt)
-        }
-        .await;
-        context.accept(result)
+        self.inner.put_many(writes, context).await?;
+        self.after_put(context.cancellation);
+        Ok(())
     }
 
     async fn read(
@@ -249,14 +225,7 @@ impl AsyncObjectStore for CancelAfterPut {
         maximum_bytes: u64,
         context: &mut acyclic_fs::AuthorityWork<'_>,
     ) -> Result<acyclic_fs::ObjectRead, acyclic_fs::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
-        }
-        let budget = context.read_budget()?;
-        let cancellation = context.cancellation;
-        let result = provider_receipt!(self.inner, read(id, maximum_bytes), budget, cancellation);
-        context.accept(result)
+        self.inner.read(id, maximum_bytes, context).await
     }
 
     async fn read_many(
@@ -267,14 +236,7 @@ impl AsyncObjectStore for CancelAfterPut {
         (Vec<acyclic_fs::ObjectRead>, acyclic_fs::AuthorityAllocation),
         acyclic_fs::ObjectStoreError,
     > {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
-        }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = provider_receipt!(self.inner, read_many(requests), budget, cancellation);
-        context.accept(result).map(|values| (values, None))
+        self.inner.read_many(requests, context).await
     }
 
     async fn contains(
@@ -282,14 +244,7 @@ impl AsyncObjectStore for CancelAfterPut {
         id: ObjectId,
         context: &mut acyclic_fs::AuthorityWork<'_>,
     ) -> Result<bool, acyclic_fs::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
-        }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = provider_receipt!(self.inner, contains(id), budget, cancellation);
-        context.accept(result)
+        self.inner.contains(id, context).await
     }
 }
 
