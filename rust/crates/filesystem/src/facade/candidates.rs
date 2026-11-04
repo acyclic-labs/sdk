@@ -492,31 +492,3 @@ pub(super) fn root_parent_bytes(root: &GenerationRoot) -> Result<u64, FsError> {
         .map(crate::foundation::usize_to_u64)
         .ok_or(FsError::Work(WorkError::Overflow))
 }
-
-pub(super) fn root_parent_buffer(
-    parents: &[GenerationId],
-    live_owned_bytes: u64,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> FsResult<Vec<GenerationId>> {
-    let mut accounting = KernelAccounting::standalone(budget, cancellation);
-    let result = (|| {
-        accounting.check()?;
-        accounting.claim_owned(live_owned_bytes, 0)?;
-        let copied = WorkCounters {
-            bytes_copied: usize_to_u64(
-                parents
-                    .len()
-                    .checked_mul(size_of::<GenerationId>())
-                    .ok_or(WorkError::Overflow)?,
-            ),
-            ..WorkCounters::UNCHARGED
-        };
-        accounting.admit(copied)?;
-        let mut values = Owned::<Vec<GenerationId>>::allocate(parents.len(), &mut accounting)?;
-        values.value.extend_from_slice(parents);
-        accounting.record_completed(copied)?;
-        Ok(values.value)
-    })();
-    measured(result, &accounting)
-}
