@@ -178,7 +178,7 @@ async fn empty_environment_reanchors_blocked_account_opens_and_records() {
                 stream
                     .append(
                         OwnedBytes::from(value),
-                        IdempotencyKey::new(index.to_le_bytes().to_vec()).unwrap(),
+                        IdempotencyKey::new(format!("{name}-{index}").into_bytes()).unwrap(),
                     )
                     .await
                     .unwrap();
@@ -220,7 +220,7 @@ async fn empty_environment_reanchors_blocked_account_opens_and_records() {
         stream
             .append(
                 OwnedBytes::from(value),
-                IdempotencyKey::new(index.to_le_bytes().to_vec()).unwrap(),
+                IdempotencyKey::new(format!("live-{index}").into_bytes()).unwrap(),
             )
             .await
             .unwrap();
