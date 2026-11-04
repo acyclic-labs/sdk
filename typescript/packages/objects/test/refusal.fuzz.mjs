@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { create, toBinary } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { MemoryObjectsV1, ObjectsV1Error, blobDigest, objectsV1Error } from "@acyclic-labs/objects";
 import * as wire from "@acyclic-labs/objects/proto";
 import { ObjectsV1Memory, ObjectsV1Request } from "../generated/wasm/acyclic_objects_wasm.js";
@@ -31,6 +31,26 @@ async function producer() {
   }));
 }
 
+async function observedFailure(failure) {
+  let closed = 0;
+  const port = { open() {
+    return { next: () => Promise.reject(failure), close: () => { closed++; } };
+  } };
+  const request = ObjectsV1Request.observe(port, requestBytes);
+  let actual;
+  try {
+    await request.next();
+  } catch (error) {
+    actual = error;
+  } finally {
+    request.close();
+    request.free();
+  }
+  assert.ok(actual, "original request producer must fail");
+  assert.equal(closed, 1, "original failed request retires exactly once");
+  return actual;
+}
+
 /** Arbitrary diagnostic bytes through the shipped Rust -> JS -> Rust port.
  * The seed is the original Rust writer. Variants are derived adversarial
  * operands, never records of additional provider failures. */
@@ -43,24 +63,21 @@ export async function fuzz(input) {
     details: new Uint8Array(input),
     metadata: [["acyclic-original-bin", new TextEncoder().encode(Buffer.from(input).toString("base64"))]],
   };
-  let closed = 0;
-  const port = { open() {
-    return { next: () => Promise.reject({ code: original.code, refusal: raw }), close: () => { closed++; } };
-  } };
-  const request = ObjectsV1Request.observe(port, requestBytes);
+  const error = await observedFailure({ code: original.code, refusal: raw });
+  assert.deepEqual(error.refusal, raw, "original JavaScript diagnostic envelope");
+  const projected = objectsV1Error(error);
+  assert.ok(projected instanceof ObjectsV1Error);
+  assert.equal(projected.refusal, error.refusal, "TypeScript retains the same envelope");
+
+  // Differential admission through the generated protobuf reader and the
+  // shipped Rust request, including malformed and future semantic codes.
+  let code = original.code;
   try {
-    await request.next();
-    assert.fail("original request producer must fail");
-  } catch (error) {
-    assert.deepEqual(error.refusal, raw, "original JavaScript diagnostic envelope");
-    const projected = objectsV1Error(error);
-    assert.ok(projected instanceof ObjectsV1Error);
-    assert.equal(projected.refusal, error.refusal, "TypeScript retains the same envelope");
-  } finally {
-    request.close();
-    request.free();
-  }
-  assert.equal(closed, 1, "original failed request retires exactly once");
+    const detail = fromBinary(wire.ErrorDetailSchema, input);
+    if (detail.code !== wire.ErrorCode.UNSPECIFIED && Object.values(wire.ErrorCode).includes(detail.code)) code = detail.code;
+  } catch {}
+  const detailed = await observedFailure({ code: original.code, detailBytes: new Uint8Array(input) });
+  assert.equal(detailed.code, code, "unsupported details preserve the original category");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

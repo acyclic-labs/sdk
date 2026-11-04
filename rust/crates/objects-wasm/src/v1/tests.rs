@@ -296,7 +296,7 @@ async fn original_javascript_account_preserves_results_and_cancellation() {
     }
     // HTTP preserves its status category even when a peer's detail has no
     // supported semantic code. Derive these operands from the same writer.
-    for code in 1..=wire::ErrorCode::OutcomeUnknown as i32 {
+    for code in 1..=wire::ErrorCode::DeadlineElapsed as i32 {
         let Ok(code) = wire::ErrorCode::try_from(code) else {
             continue;
         };

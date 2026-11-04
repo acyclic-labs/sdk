@@ -784,6 +784,11 @@ node typescript/packages/objects/test/refusal.fuzz.mjs rust/codec-fuzz/corpus/pr
 Build the Objects package first using its documented build command. The target
 also accepts arbitrary byte inputs through its exported `fuzz` function, and
 checks the TypeScript adapter retains the same original envelope.
+It also compares the generated protobuf reader with the shipped request's
+detail admission. An unsupported detail category falls back to the original
+top-level category. `negative-controls/object_javascript_category.patch`
+restores category loss; the same WASM control must reject it at
+`unsupported detail code 0 preserves category InvalidArgument`.
 
 Actors uses the same canonical `refusal::Cause`. Its original code, message
 and raw detail envelope survive the public client metadata projection, including
