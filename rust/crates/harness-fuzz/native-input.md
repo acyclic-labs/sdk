@@ -29,3 +29,20 @@ host action. Full binary dispatch, owner effects, installed host stdout and nati
 settings remain separate obligations. Corpus replay is not complete source branch
 coverage or a new fuzz campaign. Each manifest records only its qualified source;
 the catalog extension requires its own mutation and restored-corpus result.
+
+The real binary test
+`native_input::native_stdin_failures_stop_before_workspace_effects` passes the
+same write-only file as stdin to `__workspace`, `__install-package` and
+`__hook codex Stop`. It compares the original OS cause with stderr or the hook
+refusal, checks process retirement and checks that workspace and settings effects
+have not occurred. It uses the existing executable selection and process owner.
+Control `native_stdin_binary` omits actual stdin read-error propagation and must
+fail the unchanged cause assertion before exact-restored source passes:
+
+```
+python3 rust/crates/harness-fuzz/graphcoder-args-control.py native_stdin_binary
+```
+
+This named integration test uses the Cargo-built binary in its original source
+snapshot. Relocated artifact selection, installed host loops, other lifecycle
+branches and platform acceptance require their own evidence.
