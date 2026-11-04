@@ -47,7 +47,7 @@ pub struct IntervalCoordinates {
 pub struct UnixClockAnchor {
     /// Original origin's domain; never a cross-machine synchronization claim.
     pub domain: [u8; 16],
-    /// Original SystemTime observation, in nanoseconds since the Unix epoch.
+    /// Original `SystemTime` observation, in nanoseconds since the Unix epoch.
     pub observed_unix_ns: u128,
     /// Monotonic time between the reads surrounding that observation. The
     /// first read is the original IntervalOrigin.instant, at coordinate zero.

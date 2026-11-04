@@ -547,7 +547,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn counter_overflow_cannot_produce_decisive_slo_evidence() {
+    fn counter_overflow_cannot_produce_decisive_slo_evidence()
+    -> Result<(), Box<dyn std::error::Error>> {
         let slo = crate::Slo {
             version: 1,
             operation: "acyclic.test".into(),
@@ -569,17 +570,18 @@ mod tests {
                     snapshot.ok = 0;
                     snapshot.err = 0;
                     snapshot.incomplete = 0;
-                    snapshot.latency_ns[0] = u64::MAX;
+                    *snapshot.latency_ns.first_mut().ok_or("missing histogram")? = u64::MAX;
                 }
                 snapshot.sample(outcome, 0);
                 assert!(snapshot.overflowed);
                 assert_eq!(snapshot.outcome_counts(), None);
-                assert_eq!(slo.evaluate(&snapshot).unwrap().success, None);
+                assert_eq!(slo.evaluate(&snapshot)?.success, None);
                 // The former silent saturation invents a decisive verdict.
                 snapshot.overflowed = false;
-                assert_eq!(slo.evaluate(&snapshot).unwrap().success, Some(true));
+                assert_eq!(slo.evaluate(&snapshot)?.success, Some(true));
             }
         }
+        Ok(())
     }
 
     #[test]
@@ -623,7 +625,8 @@ mod tests {
     }
 
     #[test]
-    fn selected_series_cost_is_independent_of_unrelated_series() {
+    fn selected_series_cost_is_independent_of_unrelated_series()
+    -> Result<(), Box<dyn std::error::Error>> {
         use tracing_subscriber::prelude::*;
         let metrics = Metrics::default();
         let query = metrics.query("acyclic.selected");
@@ -648,7 +651,7 @@ mod tests {
             });
             assert_eq!(INDEX_VISITS.get(), "acyclic.selected".len());
             let snapshot = query.snapshot();
-            assert_eq!(snapshot.ok, sample as u64 + 1);
+            assert_eq!(snapshot.ok, u64::try_from(sample)? + 1);
             assert_eq!(snapshot.latency_ns.iter().sum::<u64>(), snapshot.ok);
         }
         // A full namespace visit, formerly typical of snapshot collectors,
@@ -663,6 +666,7 @@ mod tests {
         drop(unrelated);
         let names = metrics.0.lock().unwrap_or_else(PoisonError::into_inner);
         assert_eq!(full_visit(&names), "acyclic.selected".len() + 1);
+        Ok(())
     }
 }
 
