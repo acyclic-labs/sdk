@@ -1,14 +1,16 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { close, closeSync, createWriteStream, mkdtempSync, openSync, readFileSync, readSync, write, writev } from "node:fs";
 import { tmpdir } from "node:os";
 import { finished, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import assert from "node:assert/strict";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ProcessReport } from "./process-report.mjs";
 import { listenReportPipe } from "./report-pipe.mjs";
 import { Lines } from "./lines.mjs";
+import { decodeCompletion } from "../../typescript/packages/sdk/native/process-completion.mjs";
 
 export async function schedule(items, platform, execute) {
   if (platform !== "win32") return Promise.all(items.map(execute));
@@ -202,8 +204,31 @@ export class Processes {
     if (process.platform === "win32") {
       const host = options.env?.E2E_PROCESS_HOST ?? process.env.E2E_PROCESS_HOST;
       assert.ok(host && isAbsolute(host), "E2E_PROCESS_HOST must name the cross-built process-tree host");
-      return start(host, [...(scopeInheritInput ? ["--inherit-input"] : []), program, ...args],
-        { ...spawnOptions, scopeTreeControl: !scopeInheritInput });
+      const invocation = randomUUID(), receipt = join(resolve(this.transcripts), `${invocation}.completion`);
+      return start(host, ["--completion", receipt, "--invocation", invocation,
+        ...(scopeInheritInput ? ["--inherit-input"] : []), "--", program, ...args],
+        { ...spawnOptions, scopeTreeControl: !scopeInheritInput, scopeCapture: result => {
+          let completion;
+          try { completion = decodeCompletion(readFileSync(receipt, "utf8"), invocation, result); }
+          catch (cause) {
+            throw Object.assign(new Error(
+              "step=owned-process-completion; recovery=retain the original host receipt, invocation and transcripts", { cause }),
+              { code: cause.code === "PROCESS_HOST_STATUS_MISMATCH" ? cause.code : "PROCESS_COMPLETION_INVALID",
+                receipt, invocation, hostStatus: result });
+          }
+          // Keep every original native field and the host's own terminal. The
+          // selected executable's status comes only from the bound producer.
+          result.completion = completion;
+          result.hostStatus = { code: result.code, signal: result.signal };
+          result.code = completion.root_status?.code ?? null;
+          result.signal = null; // Windows root statuses retain their DWORD, never a POSIX signal.
+          if (!completion.process_tree_retired || completion.failure) {
+            throw Object.assign(new Error(
+              "step=owned-process-retirement; recovery=inspect the original completion before reusing its custody",
+              { cause: completion.failure }), { code: "PROCESS_HOST_FAILED", completion, result });
+          }
+          return spawnOptions.scopeCapture?.(result);
+        } });
     }
     const mountLease = process.platform === "linux" && scopeMountRoot
       ? ["--mount-root", scopeMountRoot, "--"] : [];
