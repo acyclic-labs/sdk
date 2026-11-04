@@ -235,7 +235,7 @@ impl StockExecution<'_> {
         &self,
         journal: &dyn ExecutionJournal,
         turn: (&TurnInput, u32),
-        projection: ResponseProjection,
+        mut projection: ResponseProjection,
         accounting: Option<ContextAccounting>,
         prepared: crate::model::PreparedModelRequest,
         records: &[ExecutionRecord],
@@ -254,7 +254,13 @@ impl StockExecution<'_> {
                 let input_tokens =
                     with_history_io(self.io, |work| accounting.count.validate(&prepared, work))?;
                 if let Some(retained) = self
-                    .retained_compacted_response(journal, input, step, &projection, records)
+                    .retained_compacted_response(
+                        journal,
+                        input,
+                        step,
+                        (&mut projection, &prepared),
+                        records,
+                    )
                     .await?
                 {
                     return Ok(retained);
