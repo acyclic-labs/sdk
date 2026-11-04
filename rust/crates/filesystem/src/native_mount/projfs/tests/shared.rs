@@ -79,7 +79,19 @@ async fn shared_views_serve_their_own_sources_and_retire_without_trace()
     assert!(first.lookup(&windows_path("f0.txt"))?.is_none());
     assert!(second.lookup(&windows_path("new.txt"))?.is_none());
     assert!(second.lookup(&windows_path("f2.txt"))?.is_some());
+    let retired_projector = Arc::clone(
+        &one_session
+            .driver
+            .as_ref()
+            .and_then(|driver| driver.runtime.as_ref())
+            .ok_or("live view has no runtime")?
+            .projector,
+    );
     one_session.stop()?;
+    assert!(matches!(
+        retired_projector.settle(),
+        Err(NativeMountError::ControlPending)
+    ));
     assert_eq!(
         std::fs::symlink_metadata(&one)
             .map_err(|error| error.kind())
