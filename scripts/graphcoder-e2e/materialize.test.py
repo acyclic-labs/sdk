@@ -2,7 +2,9 @@ import errno
 import hashlib
 import importlib.util
 import io
+import os
 from pathlib import Path
+import shutil
 import tarfile
 import tempfile
 import unittest
@@ -17,9 +19,18 @@ class Materialization(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name) / "qualification" / "artifacts"
+        self.root.mkdir(parents=True)
+        (self.root / "argument").mkdir()
+        if os.name == "nt":
+            scratch = patch.dict(os.environ, {"E2E_SCRATCH_ROOT": str(self.root)})
+            scratch.start()
+            self.addCleanup(scratch.stop)
         self.archive = self.root / "input.tar.gz"
         self.contents = {"bin/tool.exe": b"binary" * 1024, "source/fixture.txt": b"fixture\n" * 1024}
+        fixture = ("tests/fixtures/proof-policy/canonical-exports-v1/bundle/.rustdoc/profiles/"
+                   "profile-1003d772898959a081259696ca59636cf0fca2c91ce60b3a5c5edafb4d7b2358.json")
+        self.contents["source/scripts/" + fixture] = (Path(__file__).resolve().parent.parent / fixture).read_bytes()
         self.inventory = {name: {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
                           for name, data in self.contents.items()}
         self.pack(self.contents.items())
@@ -33,7 +44,10 @@ class Materialization(unittest.TestCase):
         self.digest = hashlib.sha256(self.archive.read_bytes()).hexdigest()
 
     def prepare(self, **options):
-        return module.materialize(self.archive, self.digest, self.inventory, self.root, **options)
+        # Ordinary caller paths may contain parent traversal; the archive's
+        # members still obey the separate strict relative-member contract.
+        parent = self.root / "argument" / ".."
+        return module.materialize(parent / self.archive.name, self.digest, self.inventory, parent, **options)
 
     def test_every_payload_write_follows_the_complete_physical_reservation(self):
         reserved = []
@@ -50,6 +64,7 @@ class Materialization(unittest.TestCase):
 
         with patch.object(module, "_reserve_file", allocation), patch.object(module, "_write_member", consume):
             result = self.prepare()
+        self.addCleanup(shutil.rmtree, result)
         for name, expected in self.contents.items():
             self.assertEqual((result / name).read_bytes(), expected)
 
