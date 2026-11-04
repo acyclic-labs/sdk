@@ -365,7 +365,27 @@ impl AuthorityRoot {
     /// Creates an issuer from host-managed key material.
     #[must_use]
     pub fn new(id: impl Into<String>, key: [u8; 32], audience: Authority) -> Self {
-        Self::create(id.into(), key, audience, None)
+        Self::create(
+            id.into(),
+            key,
+            audience,
+            None,
+            runtime_signing::TrustOwner::Custody,
+        )
+    }
+
+    /// Creates a host owner's root whose public trust serves while the root
+    /// or any verifier derived from it lives. Access the owner hands out keeps
+    /// verifying after the root drops; signing and admission still end with it.
+    #[must_use]
+    pub fn host_owned(id: impl Into<String>, key: [u8; 32], audience: Authority) -> Self {
+        Self::create(
+            id.into(),
+            key,
+            audience,
+            None,
+            runtime_signing::TrustOwner::Verifiers,
+        )
     }
 
     /// Creates host custody with its original trusted wall clock. Issuance,
@@ -379,7 +399,13 @@ impl AuthorityRoot {
         audience: Authority,
         clock: std::sync::Arc<dyn acyclic_stream::UnixMillisClock>,
     ) -> Self {
-        Self::create(id.into(), key, audience, Some(clock))
+        Self::create(
+            id.into(),
+            key,
+            audience,
+            Some(clock),
+            runtime_signing::TrustOwner::Custody,
+        )
     }
 
     fn create(
@@ -387,9 +413,12 @@ impl AuthorityRoot {
         key: [u8; 32],
         audience: Authority,
         clock: Option<std::sync::Arc<dyn acyclic_stream::UnixMillisClock>>,
+        owner: runtime_signing::TrustOwner,
     ) -> Self {
         Self {
-            runtime: std::sync::Arc::new(runtime_signing::RuntimeSigner::new(&id, key, clock)),
+            runtime: std::sync::Arc::new(runtime_signing::RuntimeSigner::new(
+                &id, key, clock, owner,
+            )),
             id,
             audience,
         }

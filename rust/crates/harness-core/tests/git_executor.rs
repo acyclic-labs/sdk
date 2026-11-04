@@ -310,7 +310,7 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
         return Err("expected a generation archive".into());
     };
     assert_eq!(kind, "archive");
-    assert_eq!(value["format"], "acyclic-fs-manifest-v2");
+    assert_eq!(value["format"], "acyclic-fs-manifest-v1");
     assert_eq!(
         read_reported_generation(
             &fs,

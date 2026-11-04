@@ -11,12 +11,28 @@ pub(super) struct RuntimeSigner {
     /// public trust every verifier of this runtime reads.
     pub(super) trust: Arc<acyclic_auth::trust::Follower>,
     pub(super) public: Arc<PublicAuthority>,
+    /// Serves `trust` while signing custody lives, unless its verifiers own it.
+    _serving: Option<TrustServing>,
 }
 
-impl Drop for RuntimeSigner {
+/// Serves public trust while its one owner lives. Dropping it fences the
+/// Follower, so every authority check derived from that trust fails closed.
+pub(super) struct TrustServing(Arc<acyclic_auth::trust::Follower>);
+
+impl Drop for TrustServing {
     fn drop(&mut self) {
-        self.trust.close(acyclic_auth::trust::FenceCause::Shutdown);
+        self.0.close(acyclic_auth::trust::FenceCause::Shutdown);
     }
+}
+
+/// Who keeps a runtime's public trust serving.
+#[derive(Clone, Copy)]
+pub(super) enum TrustOwner {
+    /// Signing custody: dropping the root fences every derived verifier.
+    Custody,
+    /// The root and every verifier derived from it: access a host owner hands
+    /// out never outlives the trust it is checked against.
+    Verifiers,
 }
 
 #[cfg(test)]
@@ -34,6 +50,7 @@ impl RuntimeSigner {
         id: &str,
         seed: [u8; 32],
         clock: Option<Arc<dyn acyclic_stream::UnixMillisClock>>,
+        owner: TrustOwner,
     ) -> Self {
         let seed = zeroize::Zeroizing::new(seed);
         let metadata = prepare_key(&blake3::derive_key(
@@ -45,11 +62,17 @@ impl RuntimeSigner {
             workload::ENVIRONMENT,
             issuer.anchor(),
         ));
+        let serving = TrustServing(trust.clone());
+        let (custody, verifiers) = match owner {
+            TrustOwner::Custody => (Some(serving), None),
+            TrustOwner::Verifiers => (None, Some(serving)),
+        };
         let public = Arc::new(PublicAuthority {
             trust: trust.clone(),
             metadata_key: metadata.verifying_key().to_bytes(),
             workload: Default::default(),
             clock,
+            _serving: verifiers,
         });
         let workload = workload::RuntimeKeys::genesis(id, issuer, &seed, &trust, public.now())
             .ok()
@@ -59,6 +82,7 @@ impl RuntimeSigner {
             workload,
             trust,
             public,
+            _serving: custody,
         }
     }
 
@@ -81,6 +105,8 @@ pub(super) struct PublicAuthority {
     // Admission decisions are never retained.
     pub(super) workload: std::sync::Mutex<workload::WorkloadOwner>,
     pub(super) clock: Option<Arc<dyn acyclic_stream::UnixMillisClock>>,
+    /// Serves `trust` while any verifier of a verifier-owned root lives.
+    pub(super) _serving: Option<TrustServing>,
 }
 
 impl PublicAuthority {
@@ -146,6 +172,41 @@ mod key_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_verifier_owned_trust_outlives_its_root() -> Result<()> {
+        use futures::FutureExt;
+        let audience = Authority {
+            kind: AggregateKind::Agent,
+            id: "owner".into(),
+        };
+        for (owned, root) in [
+            (
+                false,
+                AuthorityRoot::new("owner", [75; 32], audience.clone()),
+            ),
+            (
+                true,
+                AuthorityRoot::host_owned("owner", [75; 32], audience.clone()),
+            ),
+        ] {
+            let scope =
+                root.bootstrap_scope("owner", &Capabilities::new(["read"]), None, &mut None)?;
+            let verifier = root.verifier(&mut None)?;
+            let closed = root.trust_changes().changed();
+            drop(root);
+            // Custody-owned trust fences with its root; verifier-owned trust
+            // serves until the last verifier drops. Signing ends either way.
+            assert_eq!(verifier.verify(&scope, &mut None).is_ok(), owned);
+            assert!(verifier.admission.sign(&[0; 32]).is_err());
+            drop(verifier);
+            assert_eq!(
+                closed.now_or_never(),
+                Some(Err(acyclic_auth::trust::SourceClosed))
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn delegated_issuance_requires_a_parent_and_refuses_every_widening() -> Result<()> {

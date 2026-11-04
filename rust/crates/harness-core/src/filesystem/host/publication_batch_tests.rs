@@ -3,7 +3,7 @@ use crate::core::{AggregateKind, AuthorityRoot};
 use crate::{AgentId, conversation::VolumeOwner, core::Authority};
 
 fn publication_grants(volume: &VolumeRef, agent: AgentId) -> Result<(ContentGrant, ContentGrant)> {
-    let issuer = AuthorityRoot::new(
+    let issuer = AuthorityRoot::host_owned(
         "batch",
         [41; 32],
         Authority {
