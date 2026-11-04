@@ -24,3 +24,21 @@ require the same test to pass. Source-selection semantics remain covered by
 and `model::instruction_sources::tests::discovery_and_projection_preserve_source_work_and_original_custody`.
 The shared collection properties cover bounded index traversal; these adapter
 checks cover original custody rather than restating the radix algorithm.
+
+The owned adapter transfers the existing preparation custody into each node,
+so records can outlive the issuing observer. Its existing custody property also
+covers refused construction, reads with a different observer, cancellation and
+retirement after the original observer has been dropped:
+
+```sh
+cargo test --locked -p acyclic-harness-core --features filesystem,test-support --lib filesystem::bounded_io::custody_tests::original_index_custody_survives_issuer_drop_and_refused_mutation -- --exact
+git apply rust/crates/harness-core/src/wire_codec/tests/owned_index_unfunded.patch
+cargo test --locked -p acyclic-harness-core --features filesystem,test-support --lib filesystem::bounded_io::custody_tests::original_index_custody_survives_issuer_drop_and_refused_mutation -- --exact
+git apply -R rust/crates/harness-core/src/wire_codec/tests/owned_index_unfunded.patch
+```
+
+The mutation releases the actual original token before constructing its node.
+Require a runtime failure at `retained > 0`, then require the unchanged property
+to pass after restoration. Record integration is covered by the real filesystem
+journal in `executor::tests::turn_cost::native_growth` and the selector, retry
+identity and replacement-journal checks in `executor::tests::turn_cost`.

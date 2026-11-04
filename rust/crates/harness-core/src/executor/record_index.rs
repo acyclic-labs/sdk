@@ -1,7 +1,10 @@
 //! A driver validates the immutable journal prefix once and indexes new records.
 //! This cache belongs to one stock execution, never to an authority or process.
 use super::*;
-use crate::model::DigestIndex;
+use crate::wire_codec::{OwnedIndexAllocation, OwnedIndexWork};
+use acyclic_collections::FixedIndex;
+
+type Records = FixedIndex<ExecutionRecord, OwnedIndexAllocation, 8>;
 
 #[cfg(feature = "filesystem")]
 fn release_page_scratch(
@@ -37,8 +40,8 @@ fn release_page_scratch(
 pub(super) struct RecordIndex<'a> {
     binding: Option<(OperationId, ExecutionJournalCacheId)>,
     tail: u64,
-    keys: DigestIndex<usize>,
-    steps: Vec<Vec<ExecutionRecord>>,
+    keys: FixedIndex<(), OwnedIndexAllocation, 32>,
+    steps: FixedIndex<Records, OwnedIndexAllocation, 32>,
     // Values are dropped before the custody that funds them.
     #[cfg(feature = "filesystem")]
     quota: Option<crate::conversation::ContentHold<'a>>,
@@ -176,19 +179,6 @@ impl ExecutionEvent {
 }
 
 impl<'a> RecordIndex<'a> {
-    fn bucket(&self, key: [u8; 32], io: Option<&PreparationIo>) -> Result<&[ExecutionRecord]> {
-        match self.keys.get(1, &key, io)? {
-            None => Ok(&[]),
-            Some(index) => self.steps.get(index).map(Vec::as_slice).ok_or_else(|| {
-                stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Storage,
-                    "execution index bucket is missing",
-                )
-            }),
-        }
-    }
-
     async fn refresh(
         &mut self,
         journal: &dyn ExecutionJournal,
@@ -260,7 +250,7 @@ impl<'a> RecordIndex<'a> {
             if record.operation_id != operation
                 || self.tail.checked_add(index as u64 + 1) != Some(record.sequence)
                 || record.idempotency_key.is_empty()
-                || self.keys.get(0, &key, io)?.is_some()
+                || self.keys.get(key, &mut OwnedIndexWork(io))?.is_some()
                 || keys.get(..index).is_none_or(|prior| prior.contains(&key))
             {
                 return Err(stock_boundary(
@@ -282,26 +272,14 @@ impl<'a> RecordIndex<'a> {
         let advanced = !page.is_empty();
         for (record, key) in page.into_iter().zip(keys) {
             let step = record_bucket_key(&record.event, io)?;
-            let bucket_index = if let Some(index) = self.keys.get(1, &step, io)? {
-                index
-            } else {
-                let index = self.steps.len();
-                stock_vec_push(&mut self.steps, Vec::new(), io)?;
-                self.keys.reserve_key(io)?;
-                self.keys.set(1, step, Some(index), io)?;
-                index
-            };
             let sequence = record.sequence;
-            let bucket = self.steps.get_mut(bucket_index).ok_or_else(|| {
-                stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Storage,
-                    "execution index bucket is missing",
-                )
-            })?;
-            stock_vec_push(bucket, record, io)?;
-            self.keys.reserve_key(io)?;
-            self.keys.set(0, key, Some(0), io)?;
+            let mut work = OwnedIndexWork(io);
+            let bucket = self
+                .steps
+                .get_or_try_insert_with(step, &mut work, |_| Ok(Records::default()))?;
+            bucket.get_or_try_insert_with(sequence.to_be_bytes(), &mut work, |_| Ok(record))?;
+            self.keys
+                .get_or_try_insert_with(key, &mut work, |_| Ok(()))?;
             self.tail = sequence;
         }
         #[cfg(feature = "filesystem")]
@@ -320,12 +298,30 @@ impl<'a> RecordIndex<'a> {
         io: Option<&PreparationIo>,
     ) -> Result<(u64, Vec<ExecutionRecord>)> {
         let mut selected = Vec::new();
+        let mut work = OwnedIndexWork(io);
         let started = if include_started {
-            self.bucket(step_key(None), io)?
+            self.steps.get(step_key(None), &mut work)?
         } else {
-            &[]
+            None
         };
-        for record in started.iter().chain(self.bucket(bucket, io)?.iter()) {
+        let buckets = [started, self.steps.get(bucket, &mut work)?];
+        let mut next = [None, None];
+        for (slot, bucket) in next.iter_mut().zip(buckets) {
+            *slot = bucket
+                .map(|bucket| bucket.first(&mut work))
+                .transpose()?
+                .flatten();
+        }
+        // Merge the two ordered cursors without moving or sorting retained records.
+        while let Some(side) = match next {
+            [Some((a, _)), Some((b, _))] => Some(usize::from(a > b)),
+            [Some(_), None] => Some(0),
+            [None, Some(_)] => Some(1),
+            [None, None] => None,
+        } {
+            let Some((key, record)) = next[side] else {
+                unreachable!("the selected cursor has a record")
+            };
             crate::model::charge_items(io, 1)?;
             if select(&record.event) {
                 if selected.len() >= maximum {
@@ -343,15 +339,11 @@ impl<'a> RecordIndex<'a> {
                 };
                 stock_vec_push(&mut selected, copied, io)?;
             }
+            next[side] = buckets[side]
+                .map(|bucket| bucket.seek_after(*key, &mut work))
+                .transpose()?
+                .flatten();
         }
-        // Preserve wire order even when a malformed journal puts Started after
-        // step records. Only the selected step is sorted, never its history.
-        crate::model::charge_items(
-            io,
-            (selected.len() as u64)
-                .saturating_mul(u64::from(usize::BITS - selected.len().leading_zeros())),
-        )?;
-        selected.sort_unstable_by_key(|record| record.sequence);
         Ok((self.tail, selected))
     }
 }
