@@ -10,6 +10,11 @@ pub use crate::testing::{AbortHandle, TaskHandle, spawn, spawn_blocking};
 #[cfg(not(feature = "test-support"))]
 pub use native::{AbortHandle, TaskHandle, spawn, spawn_blocking};
 
+mod custody;
+pub use custody::{OwnedTask, TaskCompletion, spawn_owned};
+#[cfg(feature = "test-support")]
+pub(crate) use custody::{cancelled_error, panic_error};
+
 /// Runtime for a single coordination owner. Durable storage uses its own shared,
 /// fixed service through [`spawn_persistence`]. Its one blocking slot runs only
 /// work that completes on its own, in submission order; an open stdin, whose
@@ -258,11 +263,7 @@ impl TaskSpawner {
 
 /// Maps a Tokio join failure onto the shared task error contract.
 pub(crate) fn join_error(cause: tokio::task::JoinError) -> std::io::Error {
-    if cause.is_cancelled() {
-        std::io::Error::new(std::io::ErrorKind::Interrupted, cause)
-    } else {
-        std::io::Error::other(cause)
-    }
+    custody::join_error(cause)
 }
 
 #[cfg(not(feature = "test-support"))]
@@ -568,18 +569,5 @@ mod tests {
             drop(release);
             assert_eq!(finishing.await.unwrap(), std::io::ErrorKind::Interrupted);
         });
-    }
-
-    #[test]
-    fn an_aborted_task_reports_interrupted() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
-        let error = runtime.block_on(async {
-            let task = super::spawn(std::future::pending::<()>());
-            task.abort();
-            task.await.unwrap_err()
-        });
-        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
     }
 }

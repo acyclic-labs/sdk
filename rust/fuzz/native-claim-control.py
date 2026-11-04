@@ -21,8 +21,9 @@ def lock_contents(data):
 
 
 def main():
-    if len(sys.argv) != 2:
-        raise RuntimeError("arguments: expected evidence directory; recovery: python3 rust/fuzz/native-claim-control.py /tmp/native-claim-control")
+    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] != "--routine"):
+        raise RuntimeError("arguments: expected evidence directory and optional --routine; recovery: python3 rust/fuzz/native-claim-control.py /tmp/native-claim-control [--routine]")
+    routine = len(sys.argv) == 3
     root = Path(__file__).resolve().parents[2]
     output = Path(sys.argv[1]).resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -35,7 +36,7 @@ def main():
     oracle_hash = digest(oracle.read_bytes())
     lock = root / "Cargo.lock"
     original_lock = lock.read_bytes()
-    report = {"codec_sha256": digest(original), "oracle_sha256": oracle_hash, "commands": []}
+    report = {"mode": "routine" if routine else "fuzz", "codec_sha256": digest(original), "oracle_sha256": oracle_hash, "commands": []}
 
     def run(step, command, negative=False):
         log = output / (step + ".log")
@@ -62,26 +63,30 @@ def main():
         return text
 
     try:
-        capture = output / ("capture-native-claim.exe" if os.name == "nt" else "capture-native-claim")
-        run("compile-capture", ["rustc", "--edition=2024", "rust/fuzz/examples/capture_native_claim.rs", "-o", str(capture)])
-        run("capture", [str(capture), str(corpus)])
+        if routine:
+            corpus = root / "rust/fuzz/corpus/native_claim_record"
+            command = ["cargo", "test", "--locked", "-p", "acyclic-native-runtime", "--test", "native_claim_record", "--", "--nocapture"]
+        else:
+            capture = output / ("capture-native-claim.exe" if os.name == "nt" else "capture-native-claim")
+            run("compile-capture", ["rustc", "--edition=2024", "rust/fuzz/examples/capture_native_claim.rs", "-o", str(capture)])
+            run("capture", [str(capture), str(corpus)])
+            toolchain = "+nightly-2026-07-01"
+            command = ["cargo", toolchain, "fuzz", "run", "--fuzz-dir", "rust/fuzz", "--dev", "--no-default-features", "native_claim_record", str(corpus), "--", "-runs=10000", "-seed=1", "-max_len=8192", "-artifact_prefix=" + str(artifacts) + os.sep]
+            run("positive", command)
+            target = output / "coverage-build"
+            run("coverage", ["cargo", toolchain, "fuzz", "coverage", "--fuzz-dir", "rust/fuzz", "--dev", "--no-default-features", "--target-dir", str(target), "native_claim_record", str(corpus)])
+            binaries = list(target.rglob("native_claim_record"))
+            if len(binaries) != 1:
+                raise RuntimeError("coverage-binary: expected one instrumented target; recovery: inspect the coverage-build directory and correct binary selection")
+            sysroot = run("sysroot", ["rustc", toolchain, "--print", "sysroot"]).strip()
+            llvm = Path(sysroot) / "lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-cov"
+            profile = root / "rust/fuzz/coverage/native_claim_record/coverage.profdata"
+            coverage = json.loads(run("coverage-export", [str(llvm), "export", str(binaries[0]), "-instr-profile=" + str(profile), "-summary-only"]))
+            rows = [row for entry in coverage["data"] for row in entry["files"] if row["filename"].replace("\\", "/").endswith("/claim/record.rs")]
+            if len(rows) != 1:
+                raise RuntimeError("coverage-codec: expected original claim codec row; recovery: inspect coverage-export.log and correct source selection")
+            report["codec_coverage"] = rows[0]["summary"]
         report["corpus"] = {p.name: {"bytes": p.stat().st_size, "sha256": digest(p.read_bytes()), "producer": "claim::record::Record::encode"} for p in sorted(corpus.iterdir())}
-        toolchain = "+nightly-2026-07-01"
-        command = ["cargo", toolchain, "fuzz", "run", "--fuzz-dir", "rust/fuzz", "--dev", "--no-default-features", "native_claim_record", str(corpus), "--", "-runs=10000", "-seed=1", "-max_len=8192", "-artifact_prefix=" + str(artifacts) + os.sep]
-        run("positive", command)
-        target = output / "coverage-build"
-        run("coverage", ["cargo", toolchain, "fuzz", "coverage", "--fuzz-dir", "rust/fuzz", "--dev", "--no-default-features", "--target-dir", str(target), "native_claim_record", str(corpus)])
-        binaries = list(target.rglob("native_claim_record"))
-        if len(binaries) != 1:
-            raise RuntimeError("coverage-binary: expected one instrumented target; recovery: inspect the coverage-build directory and correct binary selection")
-        sysroot = run("sysroot", ["rustc", toolchain, "--print", "sysroot"]).strip()
-        llvm = Path(sysroot) / "lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-cov"
-        profile = root / "rust/fuzz/coverage/native_claim_record/coverage.profdata"
-        coverage = json.loads(run("coverage-export", [str(llvm), "export", str(binaries[0]), "-instr-profile=" + str(profile), "-summary-only"]))
-        rows = [row for entry in coverage["data"] for row in entry["files"] if row["filename"].replace("\\", "/").endswith("/claim/record.rs")]
-        if len(rows) != 1:
-            raise RuntimeError("coverage-codec: expected original claim codec row; recovery: inspect coverage-export.log and correct source selection")
-        report["codec_coverage"] = rows[0]["summary"]
         needle = b"if checksum(body) != sum {"
         if original.count(needle) != 1:
             raise RuntimeError("plant-checksum: expected one original checksum guard; recovery: inspect claim/record.rs and update the exact mutation")
@@ -90,6 +95,11 @@ def main():
         report["mutant_sha256"] = digest(mutant)
         codec.write_bytes(mutant)
         run("checksum-negative", command, negative=True)
+        if routine:
+            codec.write_bytes(original)
+            result = run("routine-positive", command)
+            if "test result: ok. 1 passed;" not in result:
+                raise RuntimeError("routine-count: expected one ordinary corpus test; recovery: inspect routine-positive.log and restore test discovery")
     finally:
         codec.write_bytes(original)
         rewritten_lock = lock.read_bytes()
