@@ -1,1 +1,0 @@
-{"prompt":"Reject duplicate recovered terminal events.","turns":[[{"type":"error","error":"offline"}]],"recoveries":[{"observed":[],"continuation":[{"kind":"completed","metadata":null},{"kind":"completed","metadata":null}]}],"expect":{"error":"model emitted an event after completion"}}

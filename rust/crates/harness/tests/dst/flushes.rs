@@ -67,7 +67,7 @@ fn turns(
             // Wait on that same actor's delivery lock and committed checkpoint,
             // while its ordinary continuous runtime remains running.
             entry(agents.drain(root)).await.map_err(storage)?;
-            cuts[turn] = schedule.durable_writes().len();
+            cuts[turn] = schedule.durable_write_count();
         }
         use acyclic_stream::StreamProviderExt as _;
         agents
@@ -80,7 +80,7 @@ fn turns(
             })
             .await
             .map_err(storage)?;
-        cuts[5] = schedule.durable_writes().len();
+        cuts[5] = schedule.durable_write_count();
         Ok(cuts)
     })
 }
