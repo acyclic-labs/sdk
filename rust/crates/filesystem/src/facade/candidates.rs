@@ -448,7 +448,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 crate::collection::clone_generation_root(&self.base_root, accounting, Some(owner))?
             }
             _ => {
-                let (root, _) = crate::collection::clone_generation_root_with_accounting(
+                let (root, _) = crate::kernel::clone_generation_root_with_accounting(
                     &self.base_root,
                     accounting,
                 )?;

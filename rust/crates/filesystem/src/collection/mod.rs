@@ -9,8 +9,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::kernel::GenerationRoot;
 use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
+use crate::kernel::{GenerationRoot, clone_generation_root_with_accounting};
 use crate::performance::WorkCounters;
 use crate::storage::{ObjectId, ObjectStoreError};
 
@@ -342,7 +342,7 @@ mod epoch;
 mod holds;
 mod roots;
 mod sweep;
-pub(crate) use buffers::{clone_generation_root, clone_generation_root_with_accounting};
+pub(crate) use buffers::clone_generation_root;
 use buffers::{held_owned_bytes, root_parent_bytes};
 pub(crate) use epoch::{CollectionEpoch, Epochs};
 pub(crate) use holds::{GenerationHold, Hold};
