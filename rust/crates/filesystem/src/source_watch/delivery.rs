@@ -19,6 +19,15 @@ impl Drop for NativeEventBatch<'_> {
 }
 
 impl Delivery {
+    pub(super) fn is_retired(&self) -> bool {
+        self.retired.load(Ordering::Acquire)
+    }
+
+    /// Delivery loss and caller cancellation do not establish retirement.
+    pub(super) fn finish_retirement(&self) {
+        self.retired.store(true, Ordering::Release);
+    }
+
     #[cfg(target_os = "linux")]
     pub(super) fn event_batch(&self) -> impl Drop + '_ {
         if let Some(sink) = &self.events {
@@ -51,6 +60,7 @@ impl Delivery {
         Ok(Self {
             sink,
             exact: AtomicBool::new(true),
+            retired: AtomicBool::new(false),
             budget,
             cancellation,
             failure: std::sync::Mutex::new(None),

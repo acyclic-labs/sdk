@@ -204,9 +204,6 @@ impl NativeSourceWatch {
         result.and(check_wait(wait))
     }
 
-    pub(crate) fn is_stopped(&self) -> bool {
-        self.shared.stream_bytes.load(Ordering::Acquire) == 0
-    }
     pub(crate) fn delivery(&self) -> &Delivery {
         &self.shared.delivery
     }
@@ -257,6 +254,7 @@ impl crate::fsevents::StreamTerminal for Shared {
         }
         self.delivery.notify_lost();
         self.stream_bytes.store(0, Ordering::Release);
+        self.delivery.finish_retirement();
         self.delivery.sink.delivery_lost();
     }
 }

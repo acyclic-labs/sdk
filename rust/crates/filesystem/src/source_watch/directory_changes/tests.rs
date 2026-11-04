@@ -106,7 +106,7 @@ fn wait_retired(shared: &Shared) {
         .arrivals
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    while !shared.stop_completed.load(Ordering::Acquire) {
+    while !shared.delivery.is_retired() {
         assert!(!hub::lost(), "native terminal producer was lost");
         assert!(
             !shared.parked.load(Ordering::Acquire),
@@ -118,7 +118,7 @@ fn wait_retired(shared: &Shared) {
             .unwrap_or_else(PoisonError::into_inner);
     }
     drop(arrivals);
-    assert!(shared.stop_completed.load(Ordering::Acquire));
+    assert!(shared.delivery.is_retired());
     assert_retired(shared);
 }
 fn record(extended: bool, action: u32, file: u64, name: &str, last: bool) -> Vec<u8> {

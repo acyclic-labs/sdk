@@ -93,7 +93,6 @@ struct Shared {
     /// The hub found the reads held; their holder wakes it on release.
     missed: AtomicBool,
     stopping: AtomicBool,
-    stop_completed: AtomicBool,
     /// A native retirement failed on its terminal credit; nothing retries it.
     parked: AtomicBool,
     ownership: SourcePayloadOwnership,
@@ -216,7 +215,7 @@ impl Shared {
         self.arrived.notify_all();
     }
     fn complete_stop(&self) {
-        self.stop_completed.store(true, Ordering::Release);
+        self.delivery.finish_retirement();
         self.collected();
     }
     /// Waits until the hub has collected the pending read's completion.
@@ -260,9 +259,6 @@ impl NativeSourceWatch {
 
     pub(crate) fn delivery(&self) -> &Delivery {
         &self.shared.delivery
-    }
-    pub(crate) fn is_stopped(&self) -> bool {
-        self.shared.stop_completed.load(Ordering::Acquire)
     }
     pub(crate) fn platform_owned_bytes(&self) -> u64 {
         super::arc_control_bytes::<Shared>()

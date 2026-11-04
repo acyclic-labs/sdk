@@ -264,7 +264,7 @@ impl Shared {
     /// once its owner has dropped, the terminal one. An owner whose terminal
     /// attempt fails stays parked with its resources.
     pub(super) fn retire_native(&self, reads: &mut Reads) {
-        if self.stop_completed.load(Ordering::Acquire) || self.parked.load(Ordering::Acquire) {
+        if self.delivery.is_retired() || self.parked.load(Ordering::Acquire) {
             return;
         }
         self.stopping.store(true, Ordering::Release);

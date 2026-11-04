@@ -1,6 +1,11 @@
 use super::*;
 
 impl NativeSourceWatch {
+    /// Whether the original native driver has retired its physical resources.
+    pub(crate) fn is_stopped(&self) -> bool {
+        self.delivery().is_retired()
+    }
+
     /// Retires accepted cleanup on its birth credits without caller cancellation.
     pub(crate) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
         self.cleanup(None)

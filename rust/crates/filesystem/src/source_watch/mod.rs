@@ -222,6 +222,8 @@ pub(crate) enum CallbackWork {
 pub(crate) struct Delivery {
     sink: Arc<dyn HostChangeSink>,
     exact: AtomicBool,
+    /// Published only by the original driver after physical retirement.
+    retired: AtomicBool,
     budget: crate::performance::WorkBudget,
     cancellation: crate::cancellation::CancellationToken,
     failure: std::sync::Mutex<Option<(DemandError, Option<WorkCounters>)>>,

@@ -92,7 +92,6 @@ impl NativeSourceWatch {
                 arrivals: Mutex::new(()),
                 missed: AtomicBool::new(false),
                 stopping: AtomicBool::new(false),
-                stop_completed: AtomicBool::new(false),
                 parked: AtomicBool::new(false),
                 ownership,
                 cleanup: Mutex::new([active, terminal]),
