@@ -501,6 +501,8 @@ async fn a_crash_at_every_epoch_step_loses_nothing_and_is_reclaimed_after()
 #[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_quiet_account_collection_opens_no_epoch() -> Result<(), Box<dyn Error>> {
+    use acyclic_objects::Blobs as _;
+
     let directory = tempfile::tempdir()?;
     let cancellation = CancellationToken::new();
     let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
@@ -514,6 +516,43 @@ async fn a_quiet_account_collection_opens_no_epoch() -> Result<(), Box<dyn Error
     let quiet = fs.collect_local_garbage(None, &cancellation).await?;
     assert_eq!(quiet.removed, 0);
     assert_eq!(epoch.current(), settled);
+    // A root outside the filesystem can refuse an otherwise unmarked blob.
+    // That definitive non-mutation must preserve its warmed cache entry.
+    let account = fs.local_account();
+    let bytes = OwnedBytes::from_static(b"retained outside the filesystem");
+    let put = account.put(bytes.clone(), Vec::new()).await?;
+    let root = acyclic_objects::RootId::new(*b"external-cache-owner")?;
+    account
+        .retain(
+            &root,
+            vec![put.verified().ok_or("the local put was unknown")?.digest],
+        )
+        .await?;
+    let object = crate::ObjectId {
+        storage: None,
+        kind: crate::ObjectKind::BlobChunk,
+        digest: crate::object_digest(&bytes),
+    };
+    let cache = fs.objects().inner();
+    let mut warm = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    cache.read(object, bytes.len() as u64, &mut warm).await?;
+    let (refused, retained) = fs.collect_local_pass(None, false, &cancellation).await?;
+    assert_eq!(refused.removed, 0);
+    assert_eq!(retained, 1);
+    let mut hit = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    assert_eq!(
+        cache
+            .read(object, bytes.len() as u64, &mut hit)
+            .await?
+            .bytes,
+        bytes
+    );
+    assert_eq!(
+        hit.work.backend_read_operations, 0,
+        "a referenced deletion must preserve the warmed cache entry"
+    );
+    account.release(&root).await?;
+    drop(account);
     // Negative control: opening an epoch anyway retains every live object
     // again.
     fs.collect_local_pass(None, true, &cancellation).await?;
