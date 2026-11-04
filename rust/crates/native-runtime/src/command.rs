@@ -167,7 +167,7 @@ mod tests {
         if path.extension().is_some_and(|extension| extension == "cmd") {
             std::fs::write(path, []).unwrap();
         } else {
-            std::fs::hard_link(std::env::current_exe().unwrap(), path).unwrap();
+            std::fs::copy(std::env::current_exe().unwrap(), path).unwrap();
         }
         #[cfg(not(windows))]
         std::fs::write(path, []).unwrap();
