@@ -645,7 +645,16 @@ fn rejected_requests_end_without_owner_exit() -> Result<()> {
         drop(owner);
         observation
     })?;
-    assert!(matches!(result, Err(Error::Indeterminate(id)) if id == operation));
+    let error = result.expect_err("a rejected request has no completed reply");
+    assert_eq!(error.request_operation_id(), Some(operation));
+    assert_eq!(
+        error.classification(),
+        Error::Indeterminate(operation).classification()
+    );
+    let Error::Command(failure) = error else {
+        panic!("the request lost its original terminal cause")
+    };
+    assert!(matches!(failure.original(), Some(Error::Indeterminate(id)) if *id == operation));
     Ok(())
 }
 
