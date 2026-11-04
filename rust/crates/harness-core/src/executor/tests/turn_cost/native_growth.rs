@@ -88,6 +88,8 @@ impl ExecutionJournal for ReplayOnly<'_> {
 async fn a_thousand_records_retain_live_metadata_without_decoder_scratch() -> Result<()> {
     let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
     let journal = storage.journal();
+    let replay_only = ReplayOnly(journal.as_ref());
+    let journal: &dyn ExecutionJournal = &replay_only;
     let operation = OperationId::new();
     journal
         .append(
@@ -134,14 +136,7 @@ async fn a_thousand_records_retain_live_metadata_without_decoder_scratch() -> Re
                 &cancellation,
             )?
         };
-        check_index_storage(
-            &executor,
-            journal.as_ref(),
-            operation,
-            &io,
-            native.then_some(&work),
-        )
-        .await?;
+        check_index_storage(&executor, journal, operation, &io, native.then_some(&work)).await?;
         assert_eq!(
             io.owned_bytes()?,
             0,
