@@ -37,7 +37,7 @@ fn derived_options_preserve_repeated_resources_and_streaming()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     OptionsFile::render(root.path())?;
-    let status = Command::new(protoc_bin_vendored::protoc_bin_path()?)
+    let status = Command::new(acyclic_test_support::runtime_path("PROTOC", protoc_bin_vendored::protoc_bin_path)?)
         .arg(format!("--proto_path={}", root.path().display()))
         .arg(format!(
             "--proto_path={}",
@@ -45,7 +45,7 @@ fn derived_options_preserve_repeated_resources_and_streaming()
         ))
         .arg(format!(
             "--proto_path={}",
-            protoc_bin_vendored::include_path()?.display()
+            acyclic_test_support::runtime_path("PROTOC_INCLUDE", protoc_bin_vendored::include_path)?.display()
         ))
         .arg(format!(
             "--descriptor_set_out={}",
@@ -90,7 +90,7 @@ fn product_descriptors() -> Result<DescriptorPool, Box<dyn std::error::Error>> {
         "stream/v1/stream.proto",
         "stream/v1/session.proto",
     ];
-    let mut command = Command::new(protoc_bin_vendored::protoc_bin_path()?);
+    let mut command = Command::new(acyclic_test_support::runtime_path("PROTOC", protoc_bin_vendored::protoc_bin_path)?);
     for family in [
         "actors",
         "filesystem-wire",
@@ -115,7 +115,7 @@ fn product_descriptors() -> Result<DescriptorPool, Box<dyn std::error::Error>> {
         ))
         .arg(format!(
             "--proto_path={}",
-            protoc_bin_vendored::include_path()?.display()
+            acyclic_test_support::runtime_path("PROTOC_INCLUDE", protoc_bin_vendored::include_path)?.display()
         ))
         .arg(format!("--descriptor_set_out={}", output.display()))
         .arg("--include_imports")

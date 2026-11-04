@@ -65,6 +65,23 @@ pub fn crate_source_path(manifest: &str, relative: impl AsRef<Path>) -> PathBuf 
     source_path(package.join(relative))
 }
 
+/// Locates an artifact whose runtime path variable is `variable`.
+///
+/// Relocated tests supply paths to executables and their include directories
+/// at run time. Ordinary Cargo runs use the original compiled path. Cargo
+/// binary targets use [`cargo_binary!`](crate::cargo_binary).
+/// The compiled path is requested only when no runtime input is present.
+///
+/// # Errors
+///
+/// Returns the compiled path provider's error when no runtime input is present.
+pub fn runtime_path<E>(
+    variable: &str,
+    compiled: impl FnOnce() -> Result<PathBuf, E>,
+) -> Result<PathBuf, E> {
+    std::env::var_os(variable).map_or_else(compiled, |path| Ok(PathBuf::from(path)))
+}
+
 /// The path of a file inside the calling crate's source directory.
 #[macro_export]
 macro_rules! crate_path {
