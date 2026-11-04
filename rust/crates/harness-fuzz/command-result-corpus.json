@@ -230,5 +230,46 @@
     "replay_seconds": 0,
     "instrumented_edges": 1347,
     "features": 2386
+  },
+  "typed_receiver_qualification": {
+    "source_commit": "b72213e0e45584fbaa934f18425dae8f3c35072c",
+    "source_tree": "9ed2e7ed1bcfa16de311df953d63993012769d25",
+    "sources": {
+      "rust/crates/harness-core/src/contract_errors.rs": "09503acefe74a958059435043ffc965a281ec4789af0d87a5fd58e6a482fc20c",
+      "rust/crates/harness/src/client/command_result.rs": "a203a210f7c2a0eb96a52fe4c052c54aaf78ed82b5db39e12fa82018e5f0cc2b",
+      "rust/crates/harness-fuzz/fuzz_targets/command_result.rs": "4b9d78f095c30d5f1c4d6b03b08dec34c9cda5f1fa8511437a98b2302c1fa581"
+    },
+    "result": "pass",
+    "negative_controls": [
+      {
+        "name": "host-reply-classification-loss",
+        "exit_status": 1,
+        "witness": "receiver must preserve the original failure code"
+      },
+      {
+        "name": "host-reply-effect-identity-loss",
+        "exit_status": 1,
+        "witness": "receiver must preserve the original uncertain operation"
+      },
+      {
+        "name": "host-reply-request-identity-loss",
+        "exit_status": 1,
+        "witness": "a reply cannot settle a different request"
+      },
+      {
+        "name": "host-reply-unknown-fields",
+        "exit_status": 1,
+        "witness": "malformed replies must retain the request's reconciliation identity"
+      }
+    ],
+    "restored_inputs": 1024,
+    "replay_seconds": 1,
+    "instrumented_edges": 1777,
+    "features": 2527,
+    "retained_files": 160,
+    "retained_bytes": 22524,
+    "oracle": "Actual shared classifier, bounded command-result writer and strict receiver, including full and omitted diagnostic envelopes, distinct request/effect identities, local cause retention and idempotent request scoping.",
+    "retained_cleanup_property": "cleanup_preserves_encoded_terminal_outcomes retains the wider constructor and nested-cleanup matrix; the generated Cleanup case here joins Indeterminate with Storage.",
+    "scope": "Core-feature producer/receiver component qualification at this exact source. Historical qualification entries remain source-bound. Deployed terminal/report custody, native feature coverage and other platforms remain open."
   }
 }
