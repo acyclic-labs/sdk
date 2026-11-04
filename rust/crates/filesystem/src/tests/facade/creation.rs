@@ -43,6 +43,7 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head() -> TestRes
     {
         crate::initialize_test_native_io();
         for deny_hash in [true, false] {
+            let fs = Fs::memory();
             let caller = CancellationToken::new();
             let original =
                 crate::NativeMaterializationWork::new(B, &caller).map_err(|(cause, _)| cause)?;
@@ -109,7 +110,15 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head() -> TestRes
                 assert_eq!(original.receipt().authority_records_appended, 2);
             }
             assert!(original.receipt().items_examined >= 7);
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            let stored_live = original.live_allocation_bytes();
+            if deny_hash {
+                assert_eq!(stored_live, baseline);
+            } else {
+                assert!(
+                    stored_live > baseline,
+                    "stored bytes lost their original funding"
+                );
+            }
             let spent = original.receipt();
             caller.cancel();
             assert!(matches!(
@@ -126,6 +135,8 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head() -> TestRes
                 ))
             ));
             assert_eq!(original.receipt(), spent);
+            assert_eq!(original.live_allocation_bytes(), stored_live);
+            drop(fs);
             assert_eq!(original.live_allocation_bytes(), baseline);
             drop(restricted);
             drop(held);
