@@ -111,12 +111,10 @@ async fn generation_diff_keeps_original_backing_on_success_refusal_and_withdrawa
         if reads == 0 {
             assert!(matches!(
                 result,
-                Err(WorkspaceError::Filesystem(FsError::Work(
-                    crate::WorkError::BudgetExceeded {
-                        counter: "backend_read_operations",
-                        ..
-                    }
-                )))
+                Err(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
+                    counter: "backend_read_operations",
+                    ..
+                }))
             ));
             assert_eq!(spent.items_examined, 1);
             assert_eq!(spent.backend_read_operations, 0);
