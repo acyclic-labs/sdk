@@ -73,7 +73,7 @@ fn unconnected() -> Result<Client, ConnectError> {
 /// Ends its first follow cleanly, then denies or delegates later follows.
 pub(super) struct EndingFollow {
     pub(super) inner: MemoryStream,
-    pub(super) follows: AtomicUsize,
+    pub(super) follows: Arc<AtomicUsize>,
     pub(super) deny: bool,
     pub(super) finite: bool,
 }
@@ -117,7 +117,16 @@ impl StreamProvider for EndingFollow {
             let opened = self.inner.follow(request).await?;
             return Ok(opened.map_cursor(|cursor| {
                 if attempt == 0 {
-                    cursor.take(20).boxed()
+                    // Twenty records: a progress follow's opening cut is not one.
+                    cursor
+                        .filter(|update| {
+                            futures::future::ready(!matches!(
+                                update,
+                                Ok(crate::FollowUpdate::Opening { .. })
+                            ))
+                        })
+                        .take(20)
+                        .boxed()
                 } else {
                     stream::empty().boxed()
                 }
@@ -302,7 +311,7 @@ async fn invalid_configuration_is_rejected_before_network_io() -> TestResult {
 async fn source_eof_is_unavailable_without_reopening() -> TestResult {
     let provider = EndingFollow {
         inner: MemoryStream::default(),
-        follows: AtomicUsize::new(0),
+        follows: Arc::new(AtomicUsize::new(0)),
         deny: false,
         finite: false,
     };
@@ -316,13 +325,16 @@ async fn source_eof_is_unavailable_without_reopening() -> TestResult {
             idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
+    let follows = Arc::clone(&provider.follows);
     let transport = client(provider)?;
     let mut records = transport
         .follow(crate::FollowRequest::new(path, 0))
         .map_ok(crate::records_only)
         .await?;
-    let record = records.next().await.ok_or("follow ended")??;
-    assert_eq!(record.value.as_slice(), b"resumed");
+    // The provider's EOF is terminal: one Unavailable, no second provider follow.
+    assert_eq!(records.next().await, Some(Err(StreamError::Unavailable)));
+    assert_eq!(records.next().await, None);
+    assert_eq!(follows.load(Ordering::SeqCst), 1);
     Ok(())
 }
 
@@ -330,7 +342,7 @@ async fn source_eof_is_unavailable_without_reopening() -> TestResult {
 async fn a_denied_follow_reports_access_denied_once_and_then_ends() -> TestResult {
     let transport = client(EndingFollow {
         inner: MemoryStream::default(),
-        follows: AtomicUsize::new(0),
+        follows: Arc::new(AtomicUsize::new(0)),
         deny: true,
         finite: false,
     })?;
@@ -567,7 +579,7 @@ async fn platform_roots_and_exclusive_ca() -> TestResult {
 async fn source_eof_never_discards_records_queued_before_terminal_close() -> TestResult {
     let provider = EndingFollow {
         inner: MemoryStream::default(),
-        follows: AtomicUsize::new(0),
+        follows: Arc::new(AtomicUsize::new(0)),
         deny: false,
         finite: true,
     };

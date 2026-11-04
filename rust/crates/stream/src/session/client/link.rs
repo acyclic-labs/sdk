@@ -47,6 +47,19 @@ impl Route {
     }
 }
 
+impl Link {
+    /// Records that `route`'s interest joined this physical session: one
+    /// causal edge per interest, whether it rode the opening handshake or
+    /// a later upsert.
+    pub(super) fn joined(&self, route: &Route) {
+        if let Some(observation) = &self.observation {
+            observation
+                .operation
+                .follows_from_same_subscriber(&route.observation);
+        }
+    }
+}
+
 impl Pool {
     pub(super) fn install(
         &mut self,
@@ -254,11 +267,7 @@ impl Pool {
             .links
             .get_mut(&route.node)
             .ok_or(StreamError::Unavailable)?;
-        if let Some(observation) = &link.observation {
-            observation
-                .operation
-                .follows_from_same_subscriber(&route.observation);
-        }
+        link.joined(route);
         let revision = link.revision.checked_add(1).ok_or(StreamError::Capacity)?;
         let value = frame(
             0,

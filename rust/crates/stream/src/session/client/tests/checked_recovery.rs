@@ -65,7 +65,14 @@ impl transport::Transport for Observed {
                 // Observable mutant: send the last received commit rather
                 // than the last yielded commit on recovery. The actual Rust
                 // client, queue, credit and recovery run in both variants.
-                if broken && let Some(Body::Interest(interest)) = &mut frame.body {
+                // A new physical session carries its opening interest in
+                // Hello; later changes use Interest. Both carry resumes.
+                let interest = match &mut frame.body {
+                    Some(Body::Interest(interest)) => Some(interest),
+                    Some(Body::Hello(hello)) => hello.interest.as_mut(),
+                    _ => None,
+                };
+                if broken && let Some(interest) = interest {
                     let last = *received.last.lock().unwrap();
                     for upsert in &mut interest.upsert {
                         if upsert.channel.is_some_and(|channel| channel.generation > 1)

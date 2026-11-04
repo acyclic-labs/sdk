@@ -436,15 +436,16 @@ async fn malformed_and_over_capacity_snapshots_leave_live_state_unchanged()
         stream.install_state(&wrong_magic).await,
         Err(StreamError::InvalidArgument)
     );
-    // Reject obsolete version markers explicitly, without changing live state.
-    for version in *b"024" {
+    // Refuse old and unknown versions as unsupported (the shared versioned
+    // format contract), without changing live state.
+    for version in *b"014" {
         let mut obsolete = valid.clone();
         *obsolete
             .get_mut(MAGIC.len() - 2)
             .ok_or(StreamError::InvalidArgument)? = version;
         assert_eq!(
             stream.install_state(&obsolete).await,
-            Err(StreamError::InvalidArgument)
+            Err(StreamError::Unsupported)
         );
         assert_eq!(stream.encode_state().await, valid);
     }

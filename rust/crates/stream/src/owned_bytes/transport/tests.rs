@@ -26,7 +26,12 @@ fn transport_transfer_preserves_original_backing_credit_and_refusal()
             } else {
                 data.into()
             };
-            let bytes = bytes.slice(1..length - 1).slice(1..);
+            // Shadowing would keep the unsliced original (and its custody)
+            // alive to the end of the iteration; the block retires it here.
+            let bytes = {
+                let original = bytes;
+                original.slice(1..length - 1).slice(1..)
+            };
             let pointer = bytes.as_ptr();
             let held = observed.held.load(Ordering::SeqCst);
             let header = if native {

@@ -15,8 +15,9 @@ const ENVELOPE_MAGIC: &[u8] = b"ACYCLIC-STREAM-ENVELOPE-V1\0";
 /// copies nothing, and takes constant work independent of the payload length.
 ///
 /// # Errors
-/// Returns [`StreamError::InvalidArgument`] for another domain, and
-/// [`StreamError::Unsupported`] for an absent, old or unknown version.
+/// Returns [`StreamError::InvalidArgument`] for another domain or a header
+/// truncated before its version ends, and [`StreamError::Unsupported`] for an
+/// old or unknown version.
 pub fn header<'a>(
     encoded: &'a [u8],
     domain: &[u8],

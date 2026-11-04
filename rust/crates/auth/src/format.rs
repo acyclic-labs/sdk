@@ -5,6 +5,10 @@
 /// Fixed headers require constant work, no allocation and no payload copy.
 /// Errors are constructed only on refusal, before any payload interpretation.
 /// Callers provide their boundary's typed errors rather than translating text.
+///
+/// Another domain, or input that ends inside the expected header, is
+/// `invalid`: truncation is malformed input, not a version choice. A complete
+/// header naming another version is `unsupported`.
 pub fn header<'a, E>(
     encoded: &'a [u8],
     domain: &[u8],
@@ -12,9 +16,12 @@ pub fn header<'a, E>(
     invalid: impl FnOnce() -> E,
     unsupported: impl FnOnce() -> E,
 ) -> Result<&'a [u8], E> {
-    encoded
-        .strip_prefix(domain)
-        .ok_or_else(invalid)?
-        .strip_prefix(version)
-        .ok_or_else(unsupported)
+    match encoded.strip_prefix(domain) {
+        Some(rest) => match rest.strip_prefix(version) {
+            Some(payload) => Ok(payload),
+            None if version.starts_with(rest) => Err(invalid()),
+            None => Err(unsupported()),
+        },
+        None => Err(invalid()),
+    }
 }
