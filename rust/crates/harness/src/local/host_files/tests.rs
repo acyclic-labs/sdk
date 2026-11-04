@@ -383,8 +383,17 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
     // Real owner loss before registration is not allowed to publish an alias
     // with no future producer. Join that same native observer inside setup.
     let early_lock = ownership(&cwd)?;
+    let original_directory = cwd.join(DIRECTORY);
+    let retained_directory = original_directory.with_file_name("retained-host-files");
     let result = Registry::bridge(&registry, &cwd, |directory, endpoint| {
-        let bridge = Bridge::open(directory, endpoint)?;
+        // Discovery has admitted the descriptor. Connection must use that
+        // same directory even if its name changes before the owner probe.
+        std::fs::rename(&original_directory, &retained_directory).map_err(storage)?;
+        std::fs::create_dir(&original_directory).map_err(storage)?;
+        let bridge = Bridge::open(directory, endpoint)
+            .expect("discovery retains its original directory through connection admission");
+        std::fs::remove_dir(&original_directory).map_err(storage)?;
+        std::fs::rename(&retained_directory, &original_directory).map_err(storage)?;
         let observing = observer(&bridge);
         drop(early_lock);
         observing.join().expect("early owner terminal must return");
