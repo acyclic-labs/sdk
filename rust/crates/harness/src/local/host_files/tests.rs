@@ -1230,6 +1230,15 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     drop(waiting);
     let (delivery, response) = mpsc::sync_channel(1);
     let late = connected.wait(operation, delivery)?;
+    // The admitted client must read the committed reply in its original
+    // directory even when an unrelated directory takes over the same name.
+    // Arm the waiter first so all subsequent changes have a real producer.
+    let status = checkout.path().join(DIRECTORY).join("status");
+    let retained_status = checkout.path().join(DIRECTORY).join("retained-status");
+    std::fs::rename(&status, &retained_status).map_err(storage)?;
+    std::fs::create_dir(&status).map_err(storage)?;
+    let replacement = reply_path(&status, operation);
+    std::fs::write(&replacement, b"{unrelated replacement reply").map_err(storage)?;
     connected.shared.published(operation);
     let Delivery::Reply(Ok(recovered)) = response
         .try_recv()
@@ -1238,6 +1247,13 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         panic!("withdrawal must not replace an available committed outcome");
     };
     assert_eq!(recovered, committed);
+    assert_eq!(
+        std::fs::read(&replacement).map_err(storage)?,
+        b"{unrelated replacement reply"
+    );
+    std::fs::remove_file(&replacement).map_err(storage)?;
+    std::fs::remove_dir(&status).map_err(storage)?;
+    std::fs::rename(&retained_status, &status).map_err(storage)?;
     drop(late);
     let requests_registry = Arc::clone(&registry);
     let result = tokio::task::spawn_blocking(move || {
