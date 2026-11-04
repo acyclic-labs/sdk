@@ -58,7 +58,7 @@ pub(crate) fn validate_projected_context(
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
     validate_projection_metadata(context, context.messages.len(), limits, io)?;
-    crate::executor::with_history_io(io, |work| {
+    crate::executor::with_history_io(io, |work| -> Result<()> {
         for message in &context.messages {
             message.content.validate_limits(limits, work)?;
         }

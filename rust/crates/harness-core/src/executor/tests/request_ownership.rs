@@ -135,10 +135,11 @@ async fn funded_request_and_projection_share_one_owned_history() -> Result<()> {
             None,
         )?
         .await?;
-    let request = executor.request_from_messages(vec![ModelMessage {
-        role: ModelRole::User,
-        content: ModelContent::Text("input".into()),
-    }])?;
+    let request =
+        StockExecution::ordinary(&executor).request_from_messages(vec![ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Text("input".into()),
+        }])?;
     let limits = Limits {
         attachments: 1,
         ..executor.limits
