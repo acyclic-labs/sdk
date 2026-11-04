@@ -55,28 +55,18 @@ where
 async fn files<P: acyclic_harness::store::JournalProvider>(
     name: &str,
     stream: Arc<P>,
+    cases: &[(PathBuf, Value, Value)],
 ) -> TestResult {
-    let cases = scenarios()?;
-    assert_eq!(cases.len(), 27, "scenario inventory changed");
-    // The independent memory reference is identical for every filesystem
-    // adapter. Run its oracle once per case and share only the immutable trace.
-    let cases = futures::future::try_join_all(cases.into_iter().map(|(path, case)| async move {
-        let expected = trace(&case, Arc::new(MemoryStream::default()))
-            .await
-            .map_err(|error| format!("{name}/reference/{}: {error}", path.display()))?;
-        TestResult::<_>::Ok((path, case, expected))
-    }))
-    .await?;
     row(
         &format!("memory/{name}"),
         Fs::memory(),
         stream.clone(),
-        &cases,
+        cases,
     )
     .await?;
     let directory = tempfile::tempdir()?;
     let local = Fs::local(acyclic_fs::LocalOptions::new(directory.path())).await?;
-    row(&format!("disk/{name}"), local, stream.clone(), &cases).await?;
+    row(&format!("disk/{name}"), local, stream.clone(), cases).await?;
     // Remote authority and local Objects are independently bound. Public remote
     // Objects batches and an Actors host are separate, explicit qualification gaps.
     let authority = loopback(Arc::new(MemoryStream::default())).await?;
@@ -90,26 +80,34 @@ async fn files<P: acyclic_harness::store::JournalProvider>(
         &format!("grpc-authority/{name}"),
         remote_authority,
         stream,
-        &cases,
+        cases,
     )
     .await
 }
 
 #[tokio::test]
-async fn shared_families_with_memory_journals() -> TestResult {
-    files("memory", Arc::new(MemoryStream::default())).await
-}
-
-#[tokio::test]
-async fn shared_families_with_disk_journals() -> TestResult {
+async fn shared_families_with_independent_filesystem_and_journal_providers() -> TestResult {
+    let cases = scenarios()?;
+    assert_eq!(cases.len(), 27, "scenario inventory changed");
+    // The reference is independent of both selected providers. Each original
+    // scenario runs once here, then every matrix entry checks its exact trace.
+    let cases = futures::future::try_join_all(cases.into_iter().map(|(path, case)| async move {
+        let expected = trace(&case, Arc::new(MemoryStream::default()))
+            .await
+            .map_err(|error| format!("reference/{}: {error}", path.display()))?;
+        TestResult::<_>::Ok((path, case, expected))
+    }))
+    .await?;
     let directory = tempfile::tempdir()?;
-    let stream =
+    let disk =
         Arc::new(acyclic_stream::LocalStream::open(directory.path(), Default::default()).await?);
-    files("disk", stream).await
-}
-
-#[tokio::test]
-async fn shared_families_with_grpc_journals() -> TestResult {
     let remote = loopback(Arc::new(MemoryStream::default())).await?;
-    files("grpc", remote.client.clone()).await
+    let results = futures::join!(
+        files("memory", Arc::new(MemoryStream::default()), &cases),
+        files("disk", disk, &cases),
+        files("grpc", remote.client.clone(), &cases),
+    );
+    results.0?;
+    results.1?;
+    results.2
 }
