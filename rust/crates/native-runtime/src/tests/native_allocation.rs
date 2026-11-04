@@ -316,7 +316,7 @@ fn file_import_cannot_spend_payload_only_credit_before_querying_the_file() -> io
     initialize_native_io_services()?;
     for owned in [false, true] {
         let mut policy = ReadBudgetMeter::new(1, 0);
-        policy.memory_limit = std::mem::size_of::<NativeFilePayload>() as u64;
+        policy.memory_limit = std::mem::size_of::<HeldFile>() as u64;
         let observed = Arc::new(policy);
         let meter: Arc<dyn NativeReadMeter> = observed.clone();
         let accounting = if owned {

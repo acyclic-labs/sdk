@@ -37,7 +37,7 @@ pub fn recover_disconnected_native_mount_destination_in(
     parent: &crate::HeldRoot,
     leaf: &std::ffi::OsStr,
 ) -> Result<bool, NativeMountError> {
-    let Some(destination) = linux::Pinned::open_in(&parent.root.directory, leaf)? else {
+    let Some(destination) = linux::Pinned::open_in(&*parent.root.directory(), leaf)? else {
         return Ok(false);
     };
     recover(&destination)

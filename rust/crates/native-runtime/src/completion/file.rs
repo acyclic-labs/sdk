@@ -4,7 +4,7 @@ pub(crate) struct FileCompletion<T> {
     state: Option<Arc<CompletionMutex<CompletionState<T>>>>,
     fence: Option<Arc<OperationFence>>,
     health: Option<HealthOwner>,
-    file: Option<Arc<NativeFilePayload>>,
+    file: Option<Arc<HeldFile>>,
     span: obs::OperationSpan,
 }
 
@@ -13,7 +13,7 @@ impl<T> FileCompletion<T> {
         state: Arc<CompletionMutex<CompletionState<T>>>,
         fence: Option<Arc<OperationFence>>,
         health: Option<HealthOwner>,
-        file: Option<Arc<NativeFilePayload>>,
+        file: Option<Arc<HeldFile>>,
         span: obs::OperationSpan,
     ) -> Self {
         Self {

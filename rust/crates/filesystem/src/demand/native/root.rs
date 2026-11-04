@@ -152,7 +152,7 @@ impl NativeDemandSource {
                                 None => HostRoot::open(&path, &mut context)?,
                             };
                             let inline = crate::native_host::filesystem_is_local(
-                                &root.directory,
+                                &root.directory(),
                                 &mut context,
                             )?;
                             if !inline {

@@ -89,7 +89,7 @@ pub(super) async fn finish_restore(
                 })
             }
         }
-        .and_then(|()| crate::native_host::sync_directory_held(&stage_owner.directory, work));
+        .and_then(|()| stage_owner.sync_directory(work));
         match (result, cleanup) {
             (Ok(value), Ok(())) => Ok(value),
             (Ok(_), Err(error)) => Err(MaterializeError::from(error)),
@@ -134,7 +134,7 @@ pub(super) fn prepare_restore(
     cleanup_removed_restore(&destination_parent, &relative.0, work)?;
     match replacement {
         HostPathReplacement::Atomic => crate::native_exchange::recover_native_entry_exchange(
-            &destination_parent.directory,
+            &destination_parent.directory(),
             Path::new(destination_name),
             work,
         )
@@ -198,7 +198,7 @@ pub(super) fn prepare_restore(
                     })
                 }
             }
-            .and_then(|()| crate::native_host::sync_directory_held(&stage_owner.directory, work));
+            .and_then(|()| stage_owner.sync_directory(work));
             return Err(error);
         }
     };
@@ -226,15 +226,15 @@ pub(super) fn publish_restore(
     let destination_name = relative.file_name().ok_or(MaterializeError::InvalidPath)?;
     let stage_parent = held_parent(stage_root, relative, work)?;
     let name = Path::new(destination_name);
-    if crate::native_host::entry_identity(&destination_parent.directory, name, work)
+    if crate::native_host::entry_identity(&destination_parent.directory(), name, work)
         .map_err(MaterializeError::from)?
         .is_some()
     {
         match replacement {
             HostPathReplacement::Atomic => crate::native_exchange::exchange_native_entries(
-                &destination_parent.directory,
+                &destination_parent.directory(),
                 name,
-                &stage_parent.directory,
+                &stage_parent.directory(),
                 name,
                 work,
             )
@@ -253,9 +253,9 @@ pub(super) fn publish_restore(
             #[cfg(unix)]
             {
                 crate::native_host::rename_held(
-                    &(stage_parent).directory,
+                    &(stage_parent).directory(),
                     name,
-                    &(destination_parent).directory,
+                    &(destination_parent).directory(),
                     name,
                     acyclic_native_runtime::RenameMode::Replace,
                     None,
@@ -266,9 +266,9 @@ pub(super) fn publish_restore(
             {
                 crate::native_host::with_wide_path(name, work, |name, work| {
                     crate::native_host::rename_held(
-                        &stage_parent.directory,
+                        &stage_parent.directory(),
                         name,
-                        &destination_parent.directory,
+                        &destination_parent.directory(),
                         name,
                         acyclic_native_runtime::RenameMode::Replace,
                         None,
@@ -278,9 +278,11 @@ pub(super) fn publish_restore(
             }
         }
         .map_err(MaterializeError::from)?;
-        crate::native_host::sync_directory_held(&destination_parent.directory, work)
+        destination_parent
+            .sync_directory(work)
             .map_err(MaterializeError::from)?;
-        crate::native_host::sync_directory_held(&stage_parent.directory, work)
+        stage_parent
+            .sync_directory(work)
             .map_err(MaterializeError::from)?;
     }
     Ok(())
@@ -360,9 +362,7 @@ pub(super) fn create_restore_stage(
                     // deleting this name, which may already have been swapped.
                     Err(error) => return Err(MaterializeError::from(error)),
                 };
-                if let Err(error) = crate::native_host::sync_directory_held(&parent.directory, work)
-                    .map_err(MaterializeError::from)
-                {
+                if let Err(error) = parent.sync_directory(work).map_err(MaterializeError::from) {
                     let identity = root.identity();
                     drop(root);
                     let _ = {
@@ -377,9 +377,7 @@ pub(super) fn create_restore_stage(
                             })
                         }
                     }
-                    .and_then(|()| {
-                        crate::native_host::sync_directory_held(&parent.directory, work)
-                    });
+                    .and_then(|()| parent.sync_directory(work));
                     return Err(error);
                 }
                 return Ok((name, root));

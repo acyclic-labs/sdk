@@ -121,7 +121,7 @@ fn query_metadata<G>(
     before_open: impl FnOnce() -> G,
 ) -> Result<Option<crate::native_host::HostStat>, crate::NativeTreeMaterializationError> {
     query_metadata_using(root, path, work, before_open, |name, volume| {
-        crate::native_host::stat_windows_name(&root.directory, name, volume, true)
+        crate::native_host::stat_windows_name(&root.directory(), name, volume, true)
     })
 }
 
@@ -190,7 +190,7 @@ fn stat_leaf_metadata(
     // The caller already restricted this to one leaf. The held root can be
     // borrowed directly; no parent traversal or duplicate handle is needed.
     let file = crate::native_host::open_windows_at(
-        &root.directory,
+        &root.directory(),
         path,
         fs::FILE_READ_ATTRIBUTES | fs::SYNCHRONIZE,
         nt::FILE_OPEN,

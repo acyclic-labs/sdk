@@ -308,7 +308,7 @@ fn acquire_lock_mode(
             crate::native_host::HostRoot::open(paths.directory(), &mut &*work)?
         };
         materialization_open_at(
-            &parent.directory,
+            &parent.directory(),
             &paths.lock,
             &if create {
                 crate::native_host::NativeOpenOptions::ReadWriteCreate

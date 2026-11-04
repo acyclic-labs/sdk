@@ -2,7 +2,7 @@ use crate::*;
 
 pub(crate) enum NativeJob {
     Read {
-        file: Arc<NativeFilePayload>,
+        file: Arc<HeldFile>,
         reads: Vec<OwnedRead>,
         span: obs::OperationSpan,
         #[cfg(windows)]
@@ -12,7 +12,7 @@ pub(crate) enum NativeJob {
         health: Option<HealthOwner>,
     },
     Write {
-        file: Arc<NativeFilePayload>,
+        file: Arc<HeldFile>,
         writes: Vec<OwnedWrite>,
         span: obs::OperationSpan,
         #[cfg(windows)]

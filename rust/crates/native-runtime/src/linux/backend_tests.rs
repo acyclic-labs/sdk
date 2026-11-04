@@ -14,7 +14,7 @@ fn owned_write_batches_preserve_contiguous_runs_gaps_and_chunk_boundaries() -> i
     for positional in [false, true] {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("owned-batch");
-        let file = Arc::new(NativeFilePayload {
+        let file = Arc::new(HeldFile {
             file: std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -105,7 +105,7 @@ proptest! {
         bytes in proptest::collection::vec(any::<u8>(), 1..128),
     ) {
         let directory = tempfile::tempdir().unwrap();
-        let file = Arc::new(NativeFilePayload {
+        let file = Arc::new(HeldFile {
             file: std::fs::OpenOptions::new().read(true).write(true).create_new(true)
                 .open(directory.path().join("fallback")).unwrap(),
             _allocation: None,
@@ -134,7 +134,7 @@ fn compio_poll_failure_retains_key_and_allows_unrelated_progress() -> io::Result
     // the test writes: unrelated progress and reaping are forced to happen
     // before its terminal completion instead of racing it.
     let (reader, mut writer) = std::io::pipe()?;
-    let affected = Arc::new(NativeFilePayload {
+    let affected = Arc::new(HeldFile {
         file: std::fs::File::from(std::os::fd::OwnedFd::from(reader)),
         _allocation: None,
     });
@@ -159,7 +159,7 @@ fn compio_poll_failure_retains_key_and_allows_unrelated_progress() -> io::Result
     assert_eq!(owner.select()?, Selected::Positional);
 
     let temporary = tempfile::tempdir()?;
-    let unrelated = Arc::new(NativeFilePayload {
+    let unrelated = Arc::new(HeldFile {
         file: std::fs::OpenOptions::new()
             .read(true)
             .write(true)

@@ -45,13 +45,13 @@ pub(super) fn prepare_projection_cleanup(
     };
     let root = HostRoot::open(destination, &mut &*work)?;
     if root.identity() != expected
-        || reparse_tag_held(&root.directory, &mut &*work)?
+        || reparse_tag_held(&*root.directory(), &mut &*work)?
             != Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS)
     {
         return Err(NativeMountError::InvalidDestination);
     }
     let root_handle = crate::native_host::open_windows_at(
-        &root.directory,
+        &root.directory(),
         &[46],
         FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
         FILE_OPEN,
@@ -189,7 +189,7 @@ fn collect_projection(
             continue;
         }
         let file = crate::native_host::open_windows_at(
-            &root.directory,
+            &root.directory(),
             &entry.name,
             DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
             FILE_OPEN,
@@ -251,7 +251,7 @@ pub(in crate::native_mount) fn detach_dead_shared_root(
     let leaf: Vec<u16> = name.as_os_str().encode_wide().collect();
     let mut work = crate::native_host::ordinary_work();
     match crate::native_host::open_windows_at(
-        &roots.root.directory,
+        &roots.root.directory(),
         &leaf,
         FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
         FILE_OPEN,

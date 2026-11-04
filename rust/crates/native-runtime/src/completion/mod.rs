@@ -27,7 +27,7 @@ impl<T> Unpin for NativeCompletion<T> {}
 
 impl NativeCompletion<Vec<Bytes>> {
     pub(crate) fn submit(
-        file: Arc<NativeFilePayload>,
+        file: Arc<HeldFile>,
         reads: Vec<OwnedRead>,
         health: Option<HealthOwner>,
         span: obs::OperationSpan,

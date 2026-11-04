@@ -46,8 +46,8 @@ impl HostRoot {
     {
         let read = (|| -> Result<_, DemandError> {
             Ok((
-                read_record(&self.directory, first, work)?,
-                read_record(&self.directory, second, work)?,
+                read_record(&self.directory(), first, work)?,
+                read_record(&self.directory(), second, work)?,
             ))
         })();
         let records = match read {
@@ -62,7 +62,7 @@ impl HostRoot {
         #[cfg(not(any(test, feature = "test-support")))]
         let sync = true;
         if sync {
-            sync_directory_held(&self.directory, work)?;
+            self.sync_directory(work)?;
         }
         Ok(Some(records))
     }
@@ -74,10 +74,10 @@ impl HostRoot {
         durability: NativeDurability,
         work: &mut W,
     ) -> Result<(), W::Error> {
-        remove_leaf(&self.directory, leaf, false, work)?;
+        remove_leaf(&self.directory(), leaf, false, work)?;
         match durability {
             NativeDurability::Visibility => Ok(()),
-            NativeDurability::Durable => sync_directory_held(&self.directory, work),
+            NativeDurability::Durable => self.sync_directory(work),
         }
     }
 
@@ -102,7 +102,7 @@ impl HostRoot {
             };
             #[cfg(unix)]
             let options = NativeOpenOptions::Read;
-            match open_leaf(&self.directory, leaf, &options, work) {
+            match open_leaf(&self.directory(), leaf, &options, work) {
                 Ok(mut file) => {
                     let mut offset = 0;
                     let mut chunk = [0; 4096];
@@ -133,7 +133,7 @@ impl HostRoot {
                         NativeDurability::Visibility => Ok(()),
                         NativeDurability::Durable => {
                             sync_file_held(&file, work)?;
-                            sync_directory_held(&self.directory, work)
+                            self.sync_directory(work)
                         }
                     };
                 }
@@ -142,7 +142,7 @@ impl HostRoot {
             }
             let temporary =
                 PathBuf::from(format!(".{}.next", crate::identity::fresh_uuid().simple()));
-            match publish_record(&self.directory, &temporary, leaf, bytes, durability, work) {
+            match publish_record(self, &temporary, leaf, bytes, durability, work) {
                 Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::AlreadyExists) => {}
                 result => return result,
             }
@@ -155,10 +155,10 @@ impl HostRoot {
         work: &mut W,
     ) -> Result<Self, W::Error> {
         #[cfg(unix)]
-        let directory = directory_path(&self.directory, relative, false, work)?;
+        let directory = directory_path(&self.directory(), relative, false, work)?;
         #[cfg(windows)]
         let directory = with_wide_path(relative, work, |relative, work| {
-            directory_path(&self.directory, relative, false, work)
+            directory_path(&self.directory(), relative, false, work)
         })?;
         let identity = directory_identity(&directory, work)?;
         Ok(Self::from_parts(directory, identity))
@@ -176,11 +176,20 @@ impl HostRoot {
         } else {
             NativeOpenOptions::Read
         };
-        open_leaf(&self.directory, leaf, &options, work)
+        open_leaf(&self.directory(), leaf, &options, work)
     }
 
     pub(crate) fn sync_directory<W: NativeHostWork>(&self, work: &mut W) -> Result<(), W::Error> {
-        sync_directory_held(&self.directory, work)
+        #[cfg(target_vendor = "apple")]
+        return work.attempt_io(
+            WorkCounters {
+                durability_operations: 1,
+                ..WorkCounters::UNCHARGED
+            },
+            || self.file.sync_once(),
+        );
+        #[cfg(not(target_vendor = "apple"))]
+        sync_directory_held(&self.directory(), work)
     }
 
     pub(crate) fn sync_record_file<W: NativeHostWork>(
@@ -193,12 +202,13 @@ impl HostRoot {
 
     /// A second handle on the same held directory.
     pub(crate) fn try_clone<W: NativeHostWork>(&self, work: &mut W) -> Result<Self, W::Error> {
-        Ok(Self {
-            directory: clone_directory(&self.directory, work)?,
-            identity: self.identity,
-            #[cfg(target_os = "linux")]
+        let root = Self::from_parts(clone_directory(&self.directory(), work)?, self.identity);
+        #[cfg(target_os = "linux")]
+        let root = Self {
             origin: self.origin.clone(),
-        })
+            ..root
+        };
+        Ok(root)
     }
 
     /// The directory at `relative` below this root, each missing component
@@ -209,12 +219,13 @@ impl HostRoot {
         durability: NativeDurability,
         work: &mut W,
     ) -> Result<Self, W::Error> {
+        let root = self.directory();
         let mut held: Option<Dir> = None;
         for component in relative.components() {
             let std::path::Component::Normal(name) = component else {
                 return Err(W::invalid_request());
             };
-            let directory = held.as_ref().unwrap_or(&self.directory);
+            let directory = held.as_ref().unwrap_or(&root);
             #[cfg(any(test, feature = "test-support"))]
             let duplicate = if publish_probe::duplicate_parents() {
                 Some(clone_directory(directory, work)?)
@@ -267,7 +278,7 @@ impl HostRoot {
             candidate()?;
         }
         loop {
-            match read_record(&self.directory, leaf, work) {
+            match read_record(&self.directory(), leaf, work) {
                 Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::NotFound) => {}
                 Ok(record) => {
                     // The winner may have renamed but not synced yet. A
@@ -277,7 +288,7 @@ impl HostRoot {
                     #[cfg(not(any(test, feature = "test-support")))]
                     let sync = true;
                     if sync {
-                        sync_directory_held(&self.directory, work)?;
+                        self.sync_directory(work)?;
                     }
                     return Ok(record);
                 }
@@ -287,7 +298,7 @@ impl HostRoot {
             let temporary =
                 PathBuf::from(format!(".{}.next", crate::identity::fresh_uuid().simple()));
             match publish_record(
-                &self.directory,
+                self,
                 &temporary,
                 leaf,
                 &candidate,
@@ -321,20 +332,21 @@ fn read_record<const N: usize, W: NativeHostWork<Error = DemandError>>(
 
 #[cfg(any(test, feature = "native-mount"))]
 fn publish_record<W: NativeHostWork<Error = DemandError>>(
-    directory: &Dir,
+    root: &HostRoot,
     temporary: &Path,
     leaf: &Path,
     bytes: &[u8],
     durability: NativeDurability,
     work: &mut W,
 ) -> Result<(), DemandError> {
+    let directory = root.directory();
     #[cfg(any(test, feature = "test-support"))]
     let temporary = if publish_probe::torn() {
         leaf
     } else {
         temporary
     };
-    let file = open_leaf(directory, temporary, &NativeOpenOptions::CreateNew, work)?;
+    let file = open_leaf(&directory, temporary, &NativeOpenOptions::CreateNew, work)?;
     let result = (|| -> Result<(), DemandError> {
         let mut file = file;
         #[cfg(any(test, feature = "test-support"))]
@@ -358,14 +370,14 @@ fn publish_record<W: NativeHostWork<Error = DemandError>>(
         if publish_probe::torn() {
             return Ok(());
         }
-        rename_no_replace(directory, temporary, leaf, work)?;
+        rename_no_replace(&directory, temporary, leaf, work)?;
         #[cfg(any(test, feature = "test-support"))]
         publish_probe::after_rename();
         #[cfg(any(test, feature = "test-support"))]
         publish_probe::step(3)?;
         match durability {
             NativeDurability::Visibility => Ok(()),
-            NativeDurability::Durable => sync_directory_held(directory, work),
+            NativeDurability::Durable => root.sync_directory(work),
         }
     })();
     #[cfg(any(test, feature = "test-support"))]
@@ -374,7 +386,7 @@ fn publish_record<W: NativeHostWork<Error = DemandError>>(
         return result;
     }
     if result.is_err() {
-        let _ = remove_leaf(directory, temporary, false, work);
+        let _ = remove_leaf(&directory, temporary, false, work);
     }
     result
 }

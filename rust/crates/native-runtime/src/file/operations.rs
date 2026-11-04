@@ -29,7 +29,7 @@ pub fn sync_file(
 }
 
 pub(super) fn sync_owned_file(
-    file: &NativeFilePayload,
+    file: &HeldFile,
     durability: Durability,
     meter: Option<&dyn NativeReadMeter>,
 ) -> io::Result<()> {
@@ -38,7 +38,7 @@ pub(super) fn sync_owned_file(
 
 enum SyncTarget<'a> {
     Borrowed(&'a File),
-    Owned(&'a NativeFilePayload),
+    Owned(&'a HeldFile),
 }
 
 fn sync_file_target(

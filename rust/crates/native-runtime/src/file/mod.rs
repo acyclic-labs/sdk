@@ -41,8 +41,13 @@ pub use operations::{
 };
 pub use range::AsyncRangeReader;
 
+/// One original file descriptor and its owner-bound durability evidence.
+///
+/// Importing moves the file without I/O, allocation or descriptor duplication.
+/// Evidence resolves at the first successful full-flush stage and survives only
+/// while this owner retains that file; descriptor-number reuse cannot inherit it.
 #[derive(Debug)]
-pub(crate) struct NativeFilePayload {
+pub struct HeldFile {
     pub(crate) file: File,
     #[cfg(target_vendor = "apple")]
     pub(crate) device: crate::device_flush::HeldDevice,
@@ -50,7 +55,47 @@ pub(crate) struct NativeFilePayload {
     pub(crate) _allocation: Option<ReadAllocation>,
 }
 
-impl std::ops::Deref for NativeFilePayload {
+impl HeldFile {
+    /// Retains the original file, without querying it or changing its flags.
+    pub fn new(file: File) -> Self {
+        Self {
+            file,
+            #[cfg(target_vendor = "apple")]
+            device: Default::default(),
+            _allocation: None,
+        }
+    }
+
+    /// Borrows this owner's original file.
+    pub fn as_file(&self) -> &File {
+        &self.file
+    }
+
+    /// Returns the original file, releasing its retained durability evidence.
+    pub fn into_file(self) -> File {
+        self.file
+    }
+
+    /// One full-flush attempt after the caller's original durability admission.
+    /// Uses the same physical flush as [`crate::sync_descriptor_once`], retaining
+    /// successful device classification across requests on this owner. Native
+    /// failures, including interruption, return without retry or weaker fallback.
+    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+    pub fn sync_once(&self) -> io::Result<()> {
+        #[cfg(unix)]
+        use std::os::fd::AsFd as _;
+        #[cfg(windows)]
+        use std::os::windows::io::AsHandle as _;
+        #[cfg(target_vendor = "apple")]
+        return crate::apple::sync_descriptor_once(self.file.as_fd(), Some(&self.device));
+        #[cfg(target_os = "linux")]
+        return crate::sync_descriptor_once(self.file.as_fd());
+        #[cfg(windows)]
+        crate::sync_descriptor_once(self.file.as_handle())
+    }
+}
+
+impl std::ops::Deref for HeldFile {
     type Target = File;
     fn deref(&self) -> &File {
         &self.file
@@ -58,9 +103,16 @@ impl std::ops::Deref for NativeFilePayload {
 }
 
 #[cfg(unix)]
-impl std::os::fd::AsFd for NativeFilePayload {
+impl std::os::fd::AsFd for HeldFile {
     fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
         std::os::fd::AsFd::as_fd(&self.file)
+    }
+}
+
+#[cfg(windows)]
+impl std::os::windows::io::AsHandle for HeldFile {
+    fn as_handle(&self) -> std::os::windows::io::BorrowedHandle<'_> {
+        std::os::windows::io::AsHandle::as_handle(&self.file)
     }
 }
 
@@ -107,7 +159,7 @@ pub(crate) fn is_uncertain_io_error(error: &io::Error) -> bool {
 
 #[cfg(not(any(windows, target_os = "linux")))]
 pub(crate) fn write_all_batch_owned(
-    file: &Arc<NativeFilePayload>,
+    file: &Arc<HeldFile>,
     writes: Vec<OwnedWrite>,
 ) -> io::Result<()> {
     validate_write_batch(&writes)?;

@@ -163,7 +163,7 @@ impl NativeTreeMaterializationBackend {
                     })
                     .map_err(native_materialization_work_error)?;
                 let (mut reader, _cursor) =
-                    crate::native_host::read_dir_held(&directory.directory, &mut &backend.work)?;
+                    crate::native_host::read_dir_held(&directory.directory(), &mut &backend.work)?;
                 while let Some((entry, _allocation)) = reader.next(&mut &backend.work)? {
                     backend
                         .work
@@ -178,14 +178,11 @@ impl NativeTreeMaterializationBackend {
                             )
                         })
                         .map_err(native_materialization_work_error)?;
-                    crate::native_host::sync_directory_held(
-                        &directory.directory,
-                        &mut &backend.work,
-                    )?;
+                    directory.sync_directory(&mut &backend.work)?;
                 }
                 if let Some(parent) = path.parent() {
                     let parent = held_child(&backend.held_target, parent, &backend.work)?;
-                    crate::native_host::sync_directory_held(&parent.directory, &mut &backend.work)?;
+                    parent.sync_directory(&mut &backend.work)?;
                 }
                 Ok(directory.identity())
             },

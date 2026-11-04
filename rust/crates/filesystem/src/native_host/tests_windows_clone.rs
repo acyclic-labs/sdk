@@ -643,7 +643,7 @@ fn directory_walk_borrows_root_and_preserves_identity_at_every_read_bound()
                 };
                 let work = NativeMaterializationWork::new(budget, &crate::CancellationToken::new())
                     .map_err(|(error, _)| TestCaseError::fail(error.to_string()))?;
-                let result = directory_path(&root.directory, &path, false, &mut &work);
+                let result = directory_path(&root.directory(), &path, false, &mut &work);
                 directory_read_admission(
                     depth,
                     reads,
@@ -663,7 +663,7 @@ fn directory_walk_borrows_root_and_preserves_identity_at_every_read_bound()
             let cancelled = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
                 .map_err(|(error, _)| TestCaseError::fail(error.to_string()))?;
             cancellation.cancel();
-            prop_assert!(directory_path(&root.directory, &path, false, &mut &cancelled).is_err());
+            prop_assert!(directory_path(&root.directory(), &path, false, &mut &cancelled).is_err());
             prop_assert_eq!(cancelled.receipt().backend_read_operations, 0);
             if depth > 0 {
                 // Negative control recreates the old root duplicate before the
@@ -673,7 +673,7 @@ fn directory_walk_borrows_root_and_preserves_identity_at_every_read_bound()
                     &crate::CancellationToken::new(),
                 )
                 .map_err(|(error, _)| TestCaseError::fail(error.to_string()))?;
-                let duplicate = clone_directory(&root.directory, &mut &legacy)
+                let duplicate = clone_directory(&root.directory(), &mut &legacy)
                     .map_err(|error| TestCaseError::fail(error.to_string()))?;
                 let result = directory_path(&duplicate, &path, false, &mut &legacy);
                 prop_assert!(

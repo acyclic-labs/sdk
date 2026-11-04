@@ -38,7 +38,7 @@ fn state(flags: Vec<Arc<AtomicBool>>, error: bool) -> (DriverState, DriverFile, 
             })),
         },
     );
-    let file = DriverFile::Original(Arc::new(NativeFilePayload {
+    let file = DriverFile::Original(Arc::new(HeldFile {
         file: tempfile::tempfile().unwrap(),
         _allocation: None,
     }));
@@ -116,7 +116,7 @@ fn write_completion_retires_real_driver_buffers_before_its_callback() -> io::Res
             .create_new(true)
             .custom_flags(if overlapped { FILE_FLAG_OVERLAPPED } else { 0 })
             .open(directory.path().join(format!("write-{overlapped}")))?;
-        let file = Arc::new(NativeFilePayload {
+        let file = Arc::new(HeldFile {
             file,
             _allocation: None,
         });

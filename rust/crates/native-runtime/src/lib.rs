@@ -91,16 +91,16 @@ pub use file::read_declared_source_bytes;
 #[cfg(not(any(windows, target_os = "linux")))]
 pub(crate) use file::write_all_batch_owned;
 pub use file::{
-    AsyncRangeReader, Durability, NativeFile, NativeFileMeter, NativeSyncBatch, OwnedRead,
-    OwnedWrite, flush_file_all, flush_file_data, read_at, read_batch_async, rename_file, set_len,
-    sync_data, sync_file, sync_filesystem, sync_parent, truncate_file, write_all_at, write_file,
-    write_file_all, write_file_with,
+    AsyncRangeReader, Durability, HeldFile, NativeFile, NativeFileMeter, NativeSyncBatch,
+    OwnedRead, OwnedWrite, flush_file_all, flush_file_data, read_at, read_batch_async, rename_file,
+    set_len, sync_data, sync_file, sync_filesystem, sync_parent, truncate_file, write_all_at,
+    write_file, write_file_all, write_file_with,
 };
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 pub(crate) use file::{FileIdentity, file_identity};
 pub(crate) use file::{
-    NativeFilePayload, is_uncertain_io_error, validate_prepared_read_range, validate_write_batch,
-    with_file_admission, with_file_scope, write_bounded_in_place,
+    is_uncertain_io_error, validate_prepared_read_range, validate_write_batch, with_file_admission,
+    with_file_scope, write_bounded_in_place,
 };
 mod claim;
 pub use claim::{ClaimCheck, StoreClaim, StoreClaimRelease, StoreHandle};

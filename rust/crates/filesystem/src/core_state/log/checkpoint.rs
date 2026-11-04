@@ -39,10 +39,10 @@ impl CheckpointFamily {
             let leaf = Path::new(directory.file_name().ok_or_else(W::invalid_request)?);
             #[cfg(unix)]
             let directory =
-                crate::native_host::directory_path(&parent.directory, leaf, true, work)?;
+                crate::native_host::directory_path(&parent.directory(), leaf, true, work)?;
             #[cfg(windows)]
             let directory = crate::native_host::with_wide_path(leaf, work, |leaf, work| {
-                crate::native_host::directory_path(&parent.directory, leaf, true, work)
+                crate::native_host::directory_path(&parent.directory(), leaf, true, work)
             })?;
             let identity = crate::native_host::directory_identity(&directory, work)?;
             Ok((
@@ -71,10 +71,10 @@ impl CheckpointFamily {
         let options = crate::native_host::NativeOpenOptions::ReadWriteCreate;
         let file = match work {
             Some(work) => {
-                crate::native_host::open_leaf(&self.held.directory, leaf, &options, &mut &*work)?
+                crate::native_host::open_leaf(&self.held.directory(), leaf, &options, &mut &*work)?
             }
             None => ordinary_checkpoint(|work| {
-                crate::native_host::open_leaf(&self.held.directory, leaf, &options, work)
+                crate::native_host::open_leaf(&self.held.directory(), leaf, &options, work)
             })?,
         };
         if let Some(work) = work {
@@ -130,7 +130,7 @@ impl CheckpointFamily {
             .as_ref()
             .map(|allocation| allocation.work());
         self.validate(&paths, work)?;
-        durability.directory(&self.held.directory, work)?;
+        durability.directory(&self.held.directory(), work)?;
         Ok(())
     }
 }
@@ -245,7 +245,7 @@ impl CoreLog {
             {
                 return Err(LocalCoreStateStoreError::Integrity);
             }
-            durability.directory(&first.parent.directory, work)?;
+            durability.directory(&first.parent.directory(), work)?;
         }
         self.reset_checkpoint_wal(durability.finish(work)?, work, &mut lease)
     }

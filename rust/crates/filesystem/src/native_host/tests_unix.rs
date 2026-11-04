@@ -65,7 +65,7 @@ fn a_local_root_is_classified_local() -> std::io::Result<()> {
     let temporary = tempfile::tempdir()?;
     assert!(
         filesystem_is_local(
-            &test_root(temporary.path())?.directory,
+            &test_root(temporary.path())?.directory(),
             &mut ordinary_work()
         )
         .map_err(ordinary_error)?
@@ -199,7 +199,7 @@ fn held_special_metadata_rejects_intermediate_symlink_escape() -> std::io::Resul
     #[cfg(target_os = "macos")]
     assert!(
         open_macos_metadata_target(
-            &root.directory,
+            &root.directory(),
             Path::new("pivot/target"),
             &mut ordinary_work()
         )

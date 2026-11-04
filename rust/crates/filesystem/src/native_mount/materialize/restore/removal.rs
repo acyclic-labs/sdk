@@ -15,7 +15,7 @@ pub(in crate::native_mount::materialize) fn cleanup_removed_restore(
                 relative,
                 work,
                 |witness, work| {
-                    if crate::native_host::entry_identity(&parent.directory, removed, work)
+                    if crate::native_host::entry_identity(&parent.directory(), removed, work)
                         .map_err(MaterializeError::from)?
                         .is_some()
                     {
@@ -26,7 +26,8 @@ pub(in crate::native_mount::materialize) fn cleanup_removed_restore(
                             ));
                         }
                         remove_entry(parent, removed, work).map_err(MaterializeError::from)?;
-                        crate::native_host::sync_directory_held(&parent.directory, work)
+                        parent
+                            .sync_directory(work)
                             .map_err(MaterializeError::from)?;
                         remove_restore_witness(parent, witness, work)?;
                     } else if validate_restore_witness(
@@ -61,16 +62,22 @@ pub(in crate::native_mount::materialize) fn remove_restored_path(
                 work,
                 |witness, work| {
                     create_restore_witness(parent, witness, REMOVE_RESTORE_WITNESS, work)?;
-                    if crate::native_host::entry_identity(&parent.directory, destination_name, work)
-                        .map_err(MaterializeError::from)?
-                        .is_some()
+                    if crate::native_host::entry_identity(
+                        &parent.directory(),
+                        destination_name,
+                        work,
+                    )
+                    .map_err(MaterializeError::from)?
+                    .is_some()
                     {
                         rename_entry(parent, destination_name, parent, removed, work)
                             .map_err(MaterializeError::from)?;
-                        crate::native_host::sync_directory_held(&parent.directory, work)
+                        parent
+                            .sync_directory(work)
                             .map_err(MaterializeError::from)?;
                         remove_entry(parent, removed, work).map_err(MaterializeError::from)?;
-                        crate::native_host::sync_directory_held(&parent.directory, work)
+                        parent
+                            .sync_directory(work)
                             .map_err(MaterializeError::from)?;
                     }
                     remove_restore_witness(parent, witness, work)
