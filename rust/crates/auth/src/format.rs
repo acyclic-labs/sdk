@@ -19,7 +19,7 @@ pub fn header<'a, E>(
     match encoded.strip_prefix(domain) {
         Some(rest) => match rest.strip_prefix(version) {
             Some(payload) => Ok(payload),
-            None if version.starts_with(rest) => Err(invalid()),
+            None if rest.len() < version.len() => Err(invalid()),
             None => Err(unsupported()),
         },
         None => Err(invalid()),
