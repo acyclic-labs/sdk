@@ -174,14 +174,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         })
     }
     /// Observes one original creation without retrying its publication.
+    /// `None` preserves its recorded configuration; a supplied configuration
+    /// must match exactly. Both forms authenticate the original operation.
     pub async fn workspace_for_creation_operation<W: FsWork>(
         &self,
         name: impl AsRef<str>,
-        config: VolumeConfig,
+        config: impl Into<Option<VolumeConfig>>,
         operation_id: OperationId,
         budget: W,
         cancellation: &CancellationToken,
     ) -> W::Output<Option<crate::Generation<A, O>>, WorkspaceError> {
+        let config = config.into();
         let mut accounting = budget.accounting(cancellation);
         let result = async {
             let (name, id) = self.workspace_name(name.as_ref(), &mut accounting, cancellation)?;
@@ -199,6 +202,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 }
                 Err(error) => return Err(error),
             };
+            let config = config.unwrap_or(creation.config);
             authenticate_named_creation(
                 &creation,
                 operation,
