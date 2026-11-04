@@ -3,7 +3,6 @@
 use crate::CancellationToken;
 use crate::foundation::{FileId, GenerationId, OperationId, VolumeId};
 use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
-use crate::kernel::binary_search_with_accounting;
 use crate::kernel::{
     ExtentKind, FileKind, FileMetadata, FilePayload, LogicalName, MetadataField, NamespacePath,
 };

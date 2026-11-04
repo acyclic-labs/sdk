@@ -68,52 +68,83 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         cancellation: &CancellationToken,
     ) -> W::Output<FileIdentityPaths, WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
-        let result = async {
-            let paths = self
-                .unaccounted_paths_for_file_ids(file_ids, maximum_entries)
-                .await?;
-            let mut retained =
-                crate::kernel::allocation::retained::Retained::allocate(0, &mut accounting)?;
-            retained.value = paths.into_iter().collect();
-            Ok(FileIdentityPaths {
-                paths: retained,
-                complete: true,
-            })
-        }
-        .await;
+        let result = self
+            .paths_for_file_ids_with_accounting(
+                file_ids,
+                maximum_entries,
+                &mut accounting,
+                cancellation,
+            )
+            .await;
         work.finish(result, &accounting)
     }
 
-    async fn unaccounted_paths_for_file_ids(
+    pub(super) async fn paths_for_file_ids_with_accounting(
         &self,
         file_ids: impl IntoIterator<Item = FileId>,
         maximum_entries: u32,
-    ) -> Result<BTreeMap<FileId, Vec<String>>, WorkspaceError> {
-        let cancellation = CancellationToken::new();
-        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<FileIdentityPaths, WorkspaceError> {
+        let mut accounting = accounting.allocation_scope()?;
         let ids = sorted_changed_file_ids(file_ids, &mut accounting)?;
         let search = self
             .namespace_records_with_accounting(
                 &ids.0,
                 maximum_entries,
                 &mut accounting,
-                &cancellation,
+                cancellation,
             )
             .await;
         let bytes = workspace_vec_bytes(&ids.0);
         reverse_drop(ids, bytes, &mut accounting)?;
-        search?
-            .0
-            .records
-            .into_iter()
-            .map(|(file_id, records)| {
-                records
-                    .into_iter()
-                    .map(|(path, _)| namespace_path_text(&path))
-                    .collect::<Result<Vec<_>, _>>()
-                    .map(|paths| (file_id, paths))
-            })
-            .collect()
+        let search = search?;
+        let complete = search.0.complete;
+        // The authenticated producer already groups and orders identities and
+        // aliases. Project once into exact-capacity vectors, with no second map.
+        let mut projected = crate::kernel::Owned::<Vec<(FileId, Vec<String>)>>::allocate(
+            search.0.records.len(),
+            &mut accounting,
+        )?;
+        for (file_id, records) in &search.0.records {
+            accounting.charge_items(1)?;
+            let mut paths =
+                crate::kernel::Owned::<Vec<String>>::allocate(records.len(), &mut accounting)?;
+            for (path, _) in records {
+                accounting.charge_items(1)?;
+                let copied = copy_work(std::mem::size_of::<String>() as u64);
+                accounting.admit(copied)?;
+                let (text, allocation) =
+                    path.unicode_text_with_accounting(&mut accounting, cancellation)?;
+                let bytes = text.capacity() as u64;
+                let text = crate::kernel::Owned::new(text, allocation, bytes).transfer_to(
+                    &mut paths.allocation,
+                    &mut paths.bytes,
+                    &mut accounting,
+                )?;
+                paths.value.push(text);
+                accounting.record_completed(copied)?;
+            }
+            let copied = copy_work(std::mem::size_of::<(FileId, Vec<String>)>() as u64);
+            accounting.admit(copied)?;
+            let paths = paths.transfer_to(
+                &mut projected.allocation,
+                &mut projected.bytes,
+                &mut accounting,
+            )?;
+            projected.value.push((*file_id, paths));
+            accounting.record_completed(copied)?;
+        }
+        // Physical temporaries die before the scope retires their scratch. Only
+        // the returned vectors and strings become independently retained work.
+        drop(search);
+        Ok(FileIdentityPaths {
+            paths: crate::kernel::allocation::retained::Retained::from_owned(
+                projected,
+                &mut accounting,
+            )?,
+            complete,
+        })
     }
 
     pub(super) async fn namespace_records_with_accounting(
