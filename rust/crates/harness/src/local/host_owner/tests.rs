@@ -79,6 +79,21 @@ impl Fixture {
             )
             .await
     }
+
+    async fn restart(&mut self, child: &AgentPath) -> Result<()> {
+        let local = Arc::clone(&self.owner.local);
+        let previous = std::mem::replace(&mut self.owner, HostWorkspaceOwner::new(local)?);
+        drop(previous);
+        self.owner
+            .dispatch(
+                OperationId::new(),
+                HostAction::Reopen {
+                    task: child.clone(),
+                },
+            )
+            .await?;
+        Ok(())
+    }
 }
 
 fn claim(turn: &Value) -> Result<TurnClaim> {
@@ -204,18 +219,7 @@ not json naming a session_id
         Some(&json!(diagnostic))
     );
     // A new owner over the same harness reopens the same agent and view.
-    let local = Arc::clone(&fixture.owner.local);
-    let previous = std::mem::replace(&mut fixture.owner, HostWorkspaceOwner::new(local)?);
-    drop(previous);
-    fixture
-        .owner
-        .dispatch(
-            OperationId::new(),
-            HostAction::Reopen {
-                task: child.clone(),
-            },
-        )
-        .await?;
+    fixture.restart(&child).await?;
     assert_eq!(
         fixture
             .owner
@@ -339,9 +343,7 @@ not json naming a session_id
     } else {
         panic!("completed session did not retain its admitted event");
     }
-    let local = Arc::clone(&fixture.owner.local);
-    let previous = std::mem::replace(&mut fixture.owner, HostWorkspaceOwner::new(local)?);
-    drop(previous);
+    fixture.restart(&child).await?;
     assert_eq!(
         fixture
             .owner

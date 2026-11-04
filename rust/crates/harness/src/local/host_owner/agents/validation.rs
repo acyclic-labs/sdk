@@ -6,8 +6,10 @@ use super::*;
 /// so rejecting every input cannot satisfy the oracle.
 pub fn check_native_session_storage(bytes: &[u8]) {
     let empty = serde_json::to_vec(&Session::default()).unwrap();
+    let claim = serde_json::to_vec(&Event::Claim).unwrap();
     assert_eq!(Session::decode(&empty).unwrap(), Session::default());
-    for bytes in [bytes, empty.as_slice()] {
+    assert!(matches!(Event::decode(&claim), Ok(Event::Claim)));
+    for bytes in [bytes, empty.as_slice(), claim.as_slice()] {
         if let Ok(session) = Session::decode(bytes) {
             let mut value = serde_json::to_value(&session).unwrap();
             assert_eq!(
