@@ -123,19 +123,16 @@ impl Pool {
                             .ok_or(StreamError::Unavailable)?;
                     }
                 }
-                if !reused && let Some(opening) = opening {
-                    match self
+                // The opening cause was linked before credential/transport
+                // I/O in dial(). Link only later upserts in subscribe().
+                if !reused
+                    && let Some(opening) = opening
+                    && !self
                         .routes
                         .get(&opening.channel_id)
-                        .filter(|route| route.generation == opening.generation && route.live())
-                    {
-                        Some(route) => {
-                            if let Some(link) = self.links.get(&installed) {
-                                link.joined(route);
-                            }
-                        }
-                        None => self.cancel_subscription(&installed, opening)?,
-                    }
+                        .is_some_and(|route| route.generation == opening.generation && route.live())
+                {
+                    self.cancel_subscription(&installed, opening)?;
                 }
                 if reused {
                     // Routes already on the reused link were queued when it was
@@ -920,7 +917,7 @@ pub(super) fn poll_dials(
     cx: &mut std::task::Context<'_>,
 ) -> std::task::Poll<Option<Dialed>> {
     for (node, dial) in dials.iter_mut() {
-        if let std::task::Poll::Ready(result) = dial.as_mut().poll(cx) {
+        if let std::task::Poll::Ready(result) = dial.future.as_mut().poll(cx) {
             let node = node.clone();
             dials.remove(&node);
             return std::task::Poll::Ready(Some(result));

@@ -59,7 +59,10 @@ pub use progress::verify_latest_progress;
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod tests;
 type Ready = (String, Link, Response);
-type Dial = BoxProviderFuture<'static, (String, u64, Result<Ready, StreamError>)>;
+struct Dial {
+    opening: Arc<Progress>,
+    future: BoxProviderFuture<'static, (String, u64, Result<Ready, StreamError>)>,
+}
 type Response = transport::Responses;
 type Read = BoxProviderFuture<'static, (String, u64, Response, Option<Result<Frame, StreamError>>)>;
 const QUEUE: usize = RECEIVE_FRAMES;

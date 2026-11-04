@@ -120,7 +120,6 @@ impl Drop for OutputOwner {
 }
 struct DisconnectingHost {
     provider: Arc<acyclic_stream::MemoryStream>,
-    successor: Arc<acyclic_stream::MemoryStream>,
     outage: Arc<Outage>,
 }
 #[tonic::async_trait]
@@ -210,11 +209,7 @@ impl StreamSessionService for DisconnectingHost {
             })
             .boxed();
         let output = acyclic_stream::session::serve(
-            Arc::clone(if successor {
-                &self.successor
-            } else {
-                &self.provider
-            }),
+            Arc::clone(&self.provider),
             acyclic_stream::session::testing::authority(),
             "native".into(),
             Default::default(),
@@ -297,7 +292,6 @@ struct Fixture {
     provider: Arc<acyclic_stream::MemoryStream>,
     client: Arc<grpc::Client>,
     outage: Arc<Outage>,
-    successor: Arc<acyclic_stream::MemoryStream>,
     _server: ServerOwner,
 }
 struct ServerOwner(tokio::task::JoinHandle<std::result::Result<(), tonic::transport::Error>>);
@@ -320,12 +314,10 @@ impl Fixture {
         let certificate = identity.cert.pem();
         let key = identity.signing_key.serialize_pem();
         let provider = Arc::new(acyclic_stream::MemoryStream::default());
-        let successor = Arc::new(acyclic_stream::MemoryStream::default());
         let outage = Arc::new(Outage::default());
         outage.terminal.store(terminal, Ordering::SeqCst);
         let host = DisconnectingHost {
             provider: Arc::clone(&provider),
-            successor: Arc::clone(&successor),
             outage: Arc::clone(&outage),
         };
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -370,7 +362,6 @@ impl Fixture {
             provider,
             client,
             outage,
-            successor,
             _server: server,
         })
     }
@@ -607,7 +598,6 @@ impl Drop for RetainCursorOnDrop {
 
 #[derive(Default)]
 struct CancellationEvidence {
-    children: bool,
     action: u8,
     gate: &'static str,
     outage: Option<Arc<Outage>>,
@@ -629,8 +619,8 @@ impl CancellationEvidence {
             .completed
             .or_else(|| self.started.map(|started| started.elapsed()));
         format!(
-            "children={}, action={action}, gate={}, elapsed={elapsed:?}, observed handshakes={handshakes:?}",
-            self.children, self.gate,
+            "action={action}, gate={}, elapsed={elapsed:?}, observed handshakes={handshakes:?}",
+            self.gate,
         )
     }
 }
@@ -658,13 +648,11 @@ fn verify_retired_interest(
 }
 
 async fn cancellation_case(
-    children: bool,
     action: u8,
     retain: bool,
     evidence: &SyncMutex<CancellationEvidence>,
 ) -> TestResult {
     *evidence.lock() = CancellationEvidence {
-        children,
         action,
         gate: "fixture connection",
         outage: None,
@@ -676,15 +664,11 @@ async fn cancellation_case(
     evidence.lock().gate = "initial native registration";
     fixture.outage.isolated.store(true, Ordering::SeqCst);
     fixture.append("events", 10).await?;
-    fixture
-        .successor
-        .append(AppendRequest {
-            path: StreamPath::new("replacement")?,
-            records: vec![vec![91].into(), vec![92].into()],
-            if_tail: None,
-            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
-        })
-        .await?;
+    // A replacement connection serves the same authority and revision scope.
+    // A different MemoryStream would wait forever for the original scope's
+    // minimum instead of testing transport/cursor retirement.
+    fixture.append("replacement", 91).await?;
+    fixture.append("replacement", 92).await?;
     let cancellation = NativeStreamCancellation::new();
     let cursor = fixture.follow(Some(&cancellation)).await?;
     record(&cursor, 0, 10).await?;
@@ -702,6 +686,15 @@ async fn cancellation_case(
         })
         .ok_or("original interest never reached the provider")?;
     let retained = Arc::new(SyncMutex::new(None));
+    let lifetime = Arc::new(());
+    let owner = Arc::downgrade(&lifetime);
+    let frames = cursor.state.records.lock().await.take().unwrap();
+    let frames = frames
+        .inspect(move |_| {
+            let _owner = &lifetime;
+        })
+        .boxed();
+    *cursor.state.records.lock().await = Some(frames);
     if retain {
         let frames = cursor.state.records.lock().await.take().unwrap();
         *cursor.state.records.lock().await = Some(
@@ -725,6 +718,14 @@ async fn cancellation_case(
         .0;
     evidence.lock().gate = "native cursor retirement";
     retire_cursor(cursor, &cancellation, action).await?;
+    // Retirement must destroy the real provider cursor synchronously. Check
+    // that ownership before waiting for the remote cancellation it produces:
+    // preserving that cursor cannot produce a distinct replacement RPC.
+    assert!(
+        owner.upgrade().is_none(),
+        "retired native cursor retained its provider interest; {}",
+        evidence.lock().describe(),
+    );
     evidence.lock().gate = "successor RPC arrival";
     let (replacement, successor) = fixture.replacement_after_retirement(old, evidence).await?;
     evidence.lock().gate = "replacement payload";
@@ -752,23 +753,16 @@ async fn cancellation_case(
 async fn cancellation_close_and_drop_release_native_interests_during_recovery() {
     // Each case keeps its original endpoint, cursor and handshake owners,
     // just as in the counterfactual.
-    let cases: Vec<_> = [false]
-        .into_iter()
-        .flat_map(|children| {
-            (0..3).map(move |action| {
-                (
-                    children,
-                    action,
-                    SyncMutex::new(CancellationEvidence::default()),
-                )
-            })
-        })
+    let cases: Vec<_> = (0..3)
+        .map(|action| (action, SyncMutex::new(CancellationEvidence::default())))
         .collect();
-    let results = futures::future::join_all(cases.iter().map(|(children, action, evidence)| {
-        cancellation_case(*children, *action, false, evidence)
-    }))
+    let results = futures::future::join_all(
+        cases
+            .iter()
+            .map(|(action, evidence)| cancellation_case(*action, false, evidence)),
+    )
     .await;
-    for (result, (_, _, evidence)) in results.into_iter().zip(&cases) {
+    for (result, (_, evidence)) in results.into_iter().zip(&cases) {
         result.unwrap_or_else(|error| {
             panic!("native retirement: {error}; {}", evidence.lock().describe())
         });
@@ -778,13 +772,11 @@ async fn cancellation_close_and_drop_release_native_interests_during_recovery() 
 #[tokio::test]
 async fn retained_provider_cursor_fails_the_same_cancellation_close_and_drop_oracle() {
     use futures::FutureExt as _;
-    let results = futures::future::join_all([false].into_iter().flat_map(|children| {
-        (0..3).map(move |action| async move {
-            let evidence = SyncMutex::new(CancellationEvidence::default());
-            std::panic::AssertUnwindSafe(cancellation_case(children, action, true, &evidence))
-                .catch_unwind()
-                .await
-        })
+    let results = futures::future::join_all((0..3).map(|action| async move {
+        let evidence = SyncMutex::new(CancellationEvidence::default());
+        std::panic::AssertUnwindSafe(cancellation_case(action, true, &evidence))
+            .catch_unwind()
+            .await
     }))
     .await;
     for result in results {
@@ -795,7 +787,7 @@ async fn retained_provider_cursor_fails_the_same_cancellation_close_and_drop_ora
             .or_else(|| error.downcast_ref::<&str>().copied())
             .unwrap_or("");
         assert!(
-            message.contains("retired native interest crossed into the replacement session"),
+            message.contains("retired native cursor retained its provider interest"),
             "{message}"
         );
     }
