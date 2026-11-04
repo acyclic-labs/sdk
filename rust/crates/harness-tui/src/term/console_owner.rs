@@ -320,19 +320,25 @@ impl<W: Write + Send + 'static, N: CloseWake + 'static> Owner<W, N> {
             return Ok(());
         }
         state.phase = Phase::Cancelled;
+        let current = state.generation;
+        // A cancellation owns the original worker handle across every wait.
+        // Reacquiring owner state must never select replacement work.
+        let worker = if wait_for_ack && !state.acknowledged {
+            state.worker.clone()
+        } else {
+            None
+        };
         while wait_for_ack && !state.acknowledged {
             // A notified waiter may reacquire after replacement. Cancellation
             // still belongs to its original operation, never the new worker.
-            if generation.is_some_and(|value| value != state.generation) {
+            if current != state.generation {
                 return Ok(());
             }
             // Repeat cancellation across the pre-submission race. An idle
             // worker skips the action; a submitted worker must finish/abort.
-            let worker = state.worker.clone();
-            let current = state.generation;
             drop(state);
-            if let Some(worker) = worker {
-                (self.cancel)(&worker);
+            if let Some(worker) = &worker {
+                (self.cancel)(worker);
             }
             state = self.state.lock().map_err(|_| io::ErrorKind::Other)?;
             if current != state.generation {

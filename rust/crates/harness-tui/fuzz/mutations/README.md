@@ -84,8 +84,11 @@ the modeled restoration fence alone does not qualify it.
 
 ## Console cancellation handoff
 
-`console-cancel-replacement-generation.patch` removes the production generation
-check after a cancellation wake. With the wrapper above, run the exact test
+`console-cancel-replacement-generation.patch` restores the production loop from
+`18c1d620951f` that selects a worker on every wake, with its per-wakeup generation
+fence removed. The corrected loop retains the original worker handle once, so
+even a wake after replacement cannot retarget cancellation. With the wrapper
+above, run the exact test
 `term::console_owner::tests::cancellation_wakeup_cannot_target_replacement_generation`.
 It must fail with `cancel reached replacement worker`; restore the patch and run
 the same test again. Both generations are submitted by production `Owner::submit`,
