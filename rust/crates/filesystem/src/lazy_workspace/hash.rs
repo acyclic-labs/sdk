@@ -27,11 +27,11 @@ impl Charge<'_, '_> {
             Self::Native(state, cancellation) => {
                 state
                     .admit(WorkCounters::UNCHARGED)
-                    .map_err(crate::materializer::native_materialization_work_error)?;
+                    .map_err(crate::NativeTreeMaterializationError::from)?;
                 cancellation.check()?;
                 state
                     .charge(delta)
-                    .map_err(crate::materializer::native_materialization_work_error)?;
+                    .map_err(crate::NativeTreeMaterializationError::from)?;
                 Ok(())
             }
         }

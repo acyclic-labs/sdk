@@ -24,7 +24,7 @@ macro_rules! demand_calls {
     ($($(#[$doc:meta])* $vis:vis $name:ident($argument:ident: $kind:ty) => $method:ident;)*) => {$ (
         $(#[$doc])*
         $vis fn $name(&self, $argument: $kind) -> Result<(), NativeTreeMaterializationError> {
-            self.state(|state| state.$method($argument)).map_err(native_materialization_work_error)
+            self.state(|state| state.$method($argument)).map_err(NativeTreeMaterializationError::from)
         }
     )*};
 }
@@ -73,7 +73,7 @@ impl NativeMaterializationWork {
     ) -> Result<Self, (NativeTreeMaterializationError, Box<WorkCounters>)> {
         state.check().map_err(|error| {
             (
-                native_materialization_work_error(error),
+                NativeTreeMaterializationError::from(error),
                 Box::new(state.work),
             )
         })?;
@@ -95,7 +95,7 @@ impl NativeMaterializationWork {
             )
             .map_err(|error| {
                 (
-                    native_materialization_work_error(error),
+                    NativeTreeMaterializationError::from(error),
                     Box::new(state.work),
                 )
             })?;
@@ -261,13 +261,13 @@ impl NativeMaterializationWork {
     pub fn runtime_error(&self, error: std::io::Error) -> NativeTreeMaterializationError {
         self.take_native_io_failure().map_or_else(
             || NativeTreeMaterializationError::from_runtime_error(error),
-            native_materialization_work_error,
+            NativeTreeMaterializationError::from,
         )
     }
     /// Remaining finite allowance.
     pub fn remaining(&self) -> Result<WorkBudget, NativeTreeMaterializationError> {
         self.state(|state| state.check().and_then(|()| state.remaining()))
-            .map_err(native_materialization_work_error)
+            .map_err(NativeTreeMaterializationError::from)
     }
     /// Reuses item admission while validating an already admitted operation.
     pub fn recheck_admitted(&self) -> Self {
@@ -305,24 +305,24 @@ impl NativeMaterializationWork {
     /// Admits work before dispatch.
     pub fn admit(&self, delta: WorkCounters) -> Result<(), NativeTreeMaterializationError> {
         self.state(|state| state.admit(delta))
-            .map_err(native_materialization_work_error)
+            .map_err(NativeTreeMaterializationError::from)
     }
     /// Charges work starting now.
     pub fn charge(&self, delta: WorkCounters) -> Result<(), NativeTreeMaterializationError> {
         self.state(|state| state.charge(delta))
-            .map_err(native_materialization_work_error)
+            .map_err(NativeTreeMaterializationError::from)
     }
     /// Records work completed by a nested operation.
     pub fn spent(&self, delta: WorkCounters) -> Result<(), NativeTreeMaterializationError> {
         self.state(|state| state.spent(delta))
-            .map_err(native_materialization_work_error)
+            .map_err(NativeTreeMaterializationError::from)
     }
     pub(crate) fn record_admitted(
         &self,
         delta: WorkCounters,
     ) -> Result<(), NativeTreeMaterializationError> {
         self.state(|state| state.record(delta))
-            .map_err(native_materialization_work_error)
+            .map_err(NativeTreeMaterializationError::from)
     }
     demand_calls! {
         /// Admits retained bytes.
@@ -335,8 +335,7 @@ impl NativeMaterializationWork {
         operations: u64,
         delta: WorkCounters,
     ) -> Result<NativeAllocation, NativeTreeMaterializationError> {
-        self.state(|state| state.claim_allocation(bytes, operations, delta))
-            .map_err(native_materialization_work_error)?;
+        self.state(|state| state.claim_allocation(bytes, operations, delta))?;
         Ok(NativeAllocation {
             meter: self.allocation_work(),
             bytes,
@@ -360,8 +359,7 @@ impl NativeMaterializationWork {
         maximum: WorkCounters,
     ) -> Result<NativeWorkReservation, NativeTreeMaterializationError> {
         let maximum = self.item_charge(maximum);
-        self.state(|state| state.reserve(maximum))
-            .map_err(native_materialization_work_error)?;
+        self.state(|state| state.reserve(maximum))?;
         Ok(NativeWorkReservation::new(self.allocation_work(), maximum))
     }
     pub(crate) fn reserve_cleanup_write(
@@ -401,7 +399,7 @@ impl NativeMaterializationWork {
                 meter: self.allocation_work(),
                 bytes,
             },
-            result.map_err(native_materialization_work_error),
+            result.map_err(NativeTreeMaterializationError::from),
         )
     }
     /// Maximum complete builtin payload.
