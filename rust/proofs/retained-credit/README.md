@@ -13,6 +13,16 @@ unchanged. This replaces the fixed 73/127-byte shared-peak example; the separate
 physical-value destruction, admission-refusal and native concurrent-retirement
 checks remain because they cover different boundaries.
 
+The native adapter already has
+[`empty_retirement_preserves_capacity_receipts_and_resource_credit`](../../crates/filesystem/src/materializer/allocation_tests.rs).
+It calls actual `NativeMaterializationWork` and `NativeAllocation` across nested
+resource scopes, cancellation and split/drop orders, checking exact original
+capacity, receipts and resource credit. Native guards reject over-retirement
+against their own byte ownership; standalone scratch instead shares a ledger
+with retained leases, which is the distinct fence exercised here. The native
+property uses small amounts and does not extend this full-width arithmetic
+claim to native resource admission.
+
 Run `python3 rust/proofs/qualify.py retained-credit` from the repository root. The
 kept mutation removes the production scratch/retained fence. The unchanged
 property must fail at `scratch retirement accepted retained credit`. A compile
