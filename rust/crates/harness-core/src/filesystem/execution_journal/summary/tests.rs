@@ -93,6 +93,7 @@ proptest! {
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
         prop_assert_eq!(before - io.remaining().unwrap().peak_allocation_bytes, retained);
         prop_assert_eq!(state.tools.len(), count);
+        let mut rebuilt = SummaryMap::<[u8; 32], bool>::default();
         for (index, entry) in state.tools.entries(Some(&io)).enumerate() {
             use super::super::summary_map::SummaryKey;
             let (digest, settled) = entry.map_err(|error| TestCaseError::fail(error.to_string()))?;
@@ -100,7 +101,16 @@ proptest! {
                 .digest(None).map_err(|error| TestCaseError::fail(error.to_string()))?;
             prop_assert_eq!(digest, expected, "summary writer order changed");
             prop_assert!(*settled);
+            // Replay the accepted production trace through the same map entry
+            // point, isolating retained-index copies from encoding and batching.
+            let copied = io.receipt().bytes_copied;
+            rebuilt.insert_digest(digest, *settled, Some(&io))
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            prop_assert_eq!(io.receipt().bytes_copied, copied,
+                "summary insertion copied prior backing");
+            prop_assert_eq!(rebuilt.get_digest(&digest, Some(&io)).unwrap(), Some(settled));
         }
+        drop(rebuilt);
         let pending = io.guard_owned(io.owned_bytes().unwrap()).unwrap();
         drop(state);
         drop(pending);
