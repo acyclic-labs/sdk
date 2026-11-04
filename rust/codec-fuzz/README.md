@@ -1,5 +1,6 @@
-Run these checks on demand from this directory. This is an independent Cargo
-workspace; fuzzing and proofs have no CI or scheduled jobs.
+Unless stated otherwise, run these checks on demand from this directory.
+This is an independent Cargo workspace; fuzzing and proofs have no CI or
+scheduled jobs.
 
 The [shared format inventory](../../compatibility/FORMATS.md) tracks decoder
 versions, targets, goldens and remaining qualification boundaries. A listed source
@@ -657,6 +658,9 @@ manifest, delete, retain, release or collect routes. The same control ends an
 ahead-of-provider mutation through the original authority's close event. This
 qualifies server admission independently of the client's final-status check;
 it does not establish remote replica or full source-branch coverage.
+
+Run all Machines checks below from the repository root (`cd ../..` from
+`rust/codec-fuzz`). This selects the SDK workspace and resolves the patch paths.
 
 The retained `mutations/machines-call-opening-producer-loss.patch` restores the
 original unguarded finite read before an operation watch opens its follow:
