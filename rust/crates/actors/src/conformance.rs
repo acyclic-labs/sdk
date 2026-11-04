@@ -425,7 +425,10 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
                 key: None,
                 path: self.outbox.clone(),
                 from: 0,
-                limit: expected.len() + 1,
+                limit: u32::try_from(expected.len())
+                    .ok()
+                    .and_then(|count| count.checked_add(1))
+                    .ok_or(Error::Invalid("conformance output count overflow"))?,
                 at_least: Default::default(),
             })
             .await

@@ -458,7 +458,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
             .ok_or(Error::CompletionStopped)?;
-        let mut completing = Vec::new();
+        let mut completing: Vec<Completion> = Vec::new();
         let mut completion_tail = 0;
         let mut failure = None;
         let root = self.store.root().clone();

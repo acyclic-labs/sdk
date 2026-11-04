@@ -81,13 +81,13 @@ def observation():
         raise RuntimeError("shared observation source changed; recovery: " + RECOVERY + " --observation")
     # End the original provider cursor early; keep its real opening and records.
     truncated = observer.replace(cursor, b".map_ok(|follow| acyclic_stream::records_only(follow).take(0))")
-    name = "local::runtime::tests::conformance_suite_passes_on_memory_runtime"
+    name = "local::sockets::tests::socket_conformance_passes_on_local_runtime"
     print("Shared observation source sha256=" + hashlib.sha256(original).hexdigest(), flush=True)
     try:
         source.write_bytes(normalized[:begin] + truncated.replace(closed, b"None => break,")
                            + normalized[end:])
         run([name], "original closed-follow misclassification",
-            'Error: Violation { case: "ordered"', model=False, recovery="--observation")
+            'Error: Violation { case: "echo"', model=False, recovery="--observation")
         source.write_bytes(normalized[:begin] + truncated + normalized[end:])
         run([name], "typed closed-follow refusal", "Error: Target(Stream(Unavailable))",
             model=False, recovery="--observation")
@@ -134,11 +134,17 @@ def completion():
         print("STEP restored Actor completion controls: " + repr(command), flush=True)
         if subprocess.run(command, cwd=ROOT).returncode:
             raise RuntimeError("restored Actor completion controls failed; recovery: " + RECOVERY + " --completion")
+        observation()
         command = ["cargo", "check", "--locked", "-p", "acyclic-actors", "--tests",
                    "--all-features", "--target", "x86_64-pc-windows-gnu"]
         print("STEP Windows Actor cross-check: " + repr(command), flush=True)
         if subprocess.run(command, cwd=ROOT).returncode:
             raise RuntimeError("Windows Actor cross-check failed; recovery: " + RECOVERY + " --completion")
+        command = ["cargo", "check", "--locked", "-p", "acyclic-cloudflare-conformance",
+                   "--target", "wasm32-unknown-unknown"]
+        print("STEP hosted completion adapter cross-check: " + repr(command), flush=True)
+        if subprocess.run(command, cwd=ROOT).returncode:
+            raise RuntimeError("hosted completion adapter cross-check failed; recovery: " + RECOVERY + " --completion")
     finally:
         source.write_bytes(original)
 

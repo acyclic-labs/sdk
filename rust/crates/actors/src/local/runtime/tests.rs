@@ -872,8 +872,8 @@ async fn records<P: StreamProvider + ?Sized>(
 // Observe committed production state while the real dispatcher runs. Provider
 // errors/closure and dispatcher failure terminate the observation; a pending
 // executor poll is never interpreted as a completed scheduling turn.
-async fn state_after(
-    store: &Store<MemoryStream>,
+async fn state_after<P: StreamProvider + ?Sized>(
+    store: &Store<P>,
     actor: &ActorReference,
     predicate: impl Fn(&State) -> bool,
 ) -> Result<State, Box<dyn std::error::Error>> {
