@@ -925,7 +925,7 @@ mod cancellation_tests {
             request.when_absent = WhenAbsent::Wait;
             let mut execution = Box::pin(async {
                 let mut records = provider.follow(request).await?;
-                let mut journal = Journal::default();
+                let mut journal = Journal::new(call.log());
                 while let Some(update) = records.next().await {
                     let FollowUpdate::Record(record) = update? else {
                         continue;

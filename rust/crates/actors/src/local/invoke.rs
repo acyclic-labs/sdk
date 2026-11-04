@@ -288,7 +288,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         })
                         .await?,
                 );
-                let mut journal = Journal::default();
+                let mut journal = Journal::new(path.log());
                 let (terminal, outcome) = loop {
                     let record = records.try_next().await?.ok_or(StreamError::Unavailable)?;
                     if let Entry::Terminal(outcome) = journal.apply(&record)? {
@@ -381,8 +381,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         )
     }
 
-    /// A failed invocation consumes only its original input and retains every
-    /// previously committed guest value. No failed-attempt effects can escape.
+    /// A deterministic guest failure consumes only its original input and
+    /// retains committed guest values. Host precondition changes stay queued.
     pub(super) fn prepare_invocation_failure(
         &self,
         previous: &Snapshot,
@@ -413,6 +413,11 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         outcome: Option<Result<&Bytes, &GuestError>>,
         effects: &[Effect],
     ) -> Result<Option<(call::CallPath, Vec<Effect>)>, Error> {
+        // A changed host guard is a refusal, never a guest result. Keep the
+        // original delivery unapplied, including explicit failure preparation.
+        if matches!(outcome, Some(Err(GuestError::PreconditionChanged))) {
+            return Err(Error::PreconditionChanged);
+        }
         let invocation = delivered
             .map(Invocation::decode_bound)
             .transpose()?

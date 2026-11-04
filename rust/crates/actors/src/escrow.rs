@@ -62,6 +62,22 @@ impl Escrow {
         Ok(())
     }
 
+    /// Transfer funding into a call's immutable hold. Join the returned hold
+    /// with this owner's debit in one request commit. A finite balance cannot
+    /// fund an unbounded hold. Neither cancellation nor an unknown outcome
+    /// credits this balance; the original executor host reconciles spend.
+    pub fn hold(&mut self, units: Option<u64>) -> Result<Self, Error> {
+        match units {
+            Some(units) => self.debit(units)?,
+            None if self.remaining.is_some() => return Err(Error::Exhausted),
+            None => {}
+        }
+        Ok(Self {
+            remaining: units,
+            branch: self.branch,
+        })
+    }
+
     /// Encode one bounded record, independent of other agents and history.
     pub fn encode(self) -> Bytes {
         let mut record = Vec::with_capacity(

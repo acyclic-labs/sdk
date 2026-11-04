@@ -1,14 +1,14 @@
 use super::*;
 use acyclic_actors::call::{Accepted, CallPath, Commit, Journal};
 use acyclic_stream::{
-    CommitId, CommitOutcome, IdempotencyKey, MemoryStream, OwnedBytes, Stream,
+    CommitId, CommitOutcome, IdempotencyKey, MemoryStream, OwnedBytes, Stream, StreamProvider,
     StreamProviderExt as _,
 };
 use arrow_array::{Array, StringArray, UInt64Array};
 use futures::TryStreamExt as _;
 use std::sync::Arc;
 
-async fn publish(provider: &MemoryStream, commit: Commit) -> Result<()> {
+async fn publish<P: StreamProvider + ?Sized>(provider: &Arc<P>, commit: Commit) -> Result<()> {
     match provider
         .commit(commit.request(IdempotencyKey::unique()))
         .await
@@ -21,7 +21,11 @@ async fn publish(provider: &MemoryStream, commit: Commit) -> Result<()> {
     }
 }
 
-async fn at(provider: &Arc<MemoryStream>, path: &StreamPath, sequence: u64) -> Result<Record> {
+async fn at<P: StreamProvider + ?Sized>(
+    provider: &Arc<P>,
+    path: &StreamPath,
+    sequence: u64,
+) -> Result<Record> {
     Stream::new(provider.clone(), path.as_str())
         .map_err(export_error)?
         .read(sequence, 1)
@@ -56,6 +60,7 @@ fn number(batch: &Batch, name: &str) -> u64 {
 }
 
 #[tokio::test]
+#[cfg(not(target_arch = "wasm32"))]
 async fn original_call_fold_preserves_scope_and_cancellation_disposition() -> Result<()> {
     let scope = StreamPath::new("research/scope").map_err(export_error)?;
     let account = AccountId::new(b"original\0\xff").map_err(export_error)?;
@@ -65,14 +70,71 @@ async fn original_call_fold_preserves_scope_and_cancellation_disposition() -> Re
         agent: None,
         account: &account,
     };
+    // Different terminals in one real commit share their sequence and commit
+    // identity. The selected path cannot stand in for the record's source.
+    let directory = tempfile::tempdir().map_err(export_error)?;
+    let provider = Arc::new(
+        acyclic_stream::LocalStream::open(directory.path(), Default::default())
+            .await
+            .map_err(export_error)?,
+    );
+    let call = CallPath::new(&scope, "first").map_err(export_error)?;
+    let sibling = CallPath::new(&scope, "second").map_err(export_error)?;
+    let mut joined = call.cancel("first").map_err(export_error)?;
+    let other = sibling
+        .cancel("longer sibling reason")
+        .map_err(export_error)?;
+    joined.conditions.extend(other.conditions);
+    joined.mutations.extend(other.mutations);
+    publish(&provider, joined).await?;
+    drop(provider);
+    // Reconstruct the receipt from the persisted source, rather than keeping
+    // a live reader or an in-memory commit result across the reopen.
+    let provider = Arc::new(
+        acyclic_stream::LocalStream::open(directory.path(), Default::default())
+            .await
+            .map_err(export_error)?,
+    );
+    let original = at(&provider, call.log(), 0).await?;
+    let mut foreign = at(&provider, sibling.log(), 0).await?;
+    assert_eq!(original.commit_id, foreign.commit_id);
+    assert_eq!(original.sequence, foreign.sequence);
+    assert_ne!(original.origin, foreign.origin);
+    let mut journal = Journal::new(call.log());
+    journal.apply(&original).map_err(export_error)?;
+    let row = project(source(), &journal, &call, call.log(), &original)?;
+    assert_eq!(text(&row, "source_origin"), original.origin.as_str());
+    assert_eq!(
+        number(&row, "logical_value_bytes"),
+        original.value.len() as u64
+    );
+    assert!(project(source(), &journal, &call, call.log(), &foreign).is_err());
+    // Negative control loses the original source evidence. The remaining
+    // position/commit checks then misattribute the sibling's actual bytes.
+    // Projection cannot authenticate a caller that fabricates this evidence.
+    foreign.origin = original.origin.clone();
+    let mislabeled = project(source(), &journal, &call, call.log(), &foreign)?;
+    assert_eq!(
+        number(&mislabeled, "logical_value_bytes"),
+        foreign.value.len() as u64
+    );
+    assert_ne!(original.value.len(), foreign.value.len());
     for accepted in [false, true] {
-        let provider = Arc::new(MemoryStream::default());
+        let directory = tempfile::tempdir().map_err(export_error)?;
+        let provider = Arc::new(
+            acyclic_stream::LocalStream::open(directory.path(), Default::default())
+                .await
+                .map_err(export_error)?,
+        );
         let call = CallPath::new(&scope, "cancel").map_err(export_error)?;
         if accepted {
             publish(
                 &provider,
-                call.request(OwnedBytes::from("request"))
-                    .map_err(export_error)?,
+                call.request(
+                    OwnedBytes::from("request"),
+                    acyclic_actors::escrow::Escrow::new(Some(1)),
+                )
+                .map_err(export_error)?,
             )
             .await?;
             publish(
@@ -88,15 +150,63 @@ async fn original_call_fold_preserves_scope_and_cancellation_disposition() -> Re
             )
             .await?;
         }
-        publish(&provider, call.cancel("stop").map_err(export_error)?).await?;
-        let mut journal = Journal::default();
-        let last = if accepted { 2 } else { 0 };
+        let terminal = call
+            .cancel("stop")
+            .map_err(export_error)?
+            .request(IdempotencyKey::unique());
+        let committed = provider
+            .commit(terminal.clone())
+            .await
+            .map_err(export_error)?;
+        let CommitOutcome::Committed(original_receipt) = &committed else {
+            return Err(export_error("original cancellation conflicted"));
+        };
+        drop(provider);
+        let provider = Arc::new(
+            acyclic_stream::LocalStream::open(directory.path(), Default::default())
+                .await
+                .map_err(export_error)?,
+        );
+        assert_eq!(
+            provider
+                .commit(terminal.clone())
+                .await
+                .map_err(export_error)?,
+            committed,
+            "reopen must retain the original terminal receipt"
+        );
+        // A new identity cannot recover that receipt or append a second end.
+        let mut rival = terminal;
+        rival.idempotency_key = IdempotencyKey::unique();
+        assert!(matches!(
+            provider.commit(rival).await.map_err(export_error)?,
+            CommitOutcome::Conflict(_)
+        ));
+        let mut journal = Journal::new(call.log());
+        let last = if accepted { 3 } else { 0 };
+        assert_eq!(
+            provider
+                .head(call.log().clone())
+                .await
+                .map_err(export_error)?
+                .tail,
+            last + 1
+        );
+        assert_eq!(
+            provider
+                .head(call.settled().clone())
+                .await
+                .map_err(export_error)?
+                .tail,
+            1
+        );
         for sequence in 0..=last {
             journal
                 .apply(&at(&provider, call.log(), sequence).await?)
                 .map_err(export_error)?;
         }
         let record = at(&provider, call.log(), last).await?;
+        assert_eq!(record.commit_id, original_receipt.commit_id);
         let row = project(source(), &journal, &call, call.log(), &record)?;
         assert_eq!(row.table, Table::Outcomes);
         assert_eq!(
@@ -116,7 +226,7 @@ async fn original_call_fold_preserves_scope_and_cancellation_disposition() -> Re
             digest(*record.commit_id.as_bytes())
         );
         assert_eq!(text(&row, "source_origin"), record.origin.as_str());
-        for unknown in ["agent_path", "operation_id", "fence", "artifact"] {
+        for unknown in ["agent_path", "operation_id", "artifact"] {
             assert!(row.data.column_by_name(unknown).unwrap().is_null(0));
         }
         assert_eq!(
@@ -169,7 +279,16 @@ async fn original_call_fold_preserves_scope_and_cancellation_disposition() -> Re
             )
             .is_err()
         );
-        assert!(project(source(), &Journal::default(), &call, call.log(), &record).is_err());
+        assert!(
+            project(
+                source(),
+                &Journal::new(call.log()),
+                &call,
+                call.log(),
+                &record
+            )
+            .is_err()
+        );
         #[cfg(feature = "provenance-export")]
         {
             let mut encoded = Vec::new();
@@ -188,7 +307,7 @@ async fn original_call_fold_preserves_scope_and_cancellation_disposition() -> Re
 }
 
 #[tokio::test]
-async fn original_session_fence_has_no_invented_terminal() -> Result<()> {
+async fn original_session_loss_requires_the_call_terminal() -> Result<()> {
     let scope = StreamPath::new("research/scope").map_err(export_error)?;
     let account = AccountId::new(b"original").map_err(export_error)?;
     let source = || Source {
@@ -198,10 +317,10 @@ async fn original_session_fence_has_no_invented_terminal() -> Result<()> {
         account: &account,
     };
     let provider = Arc::new(MemoryStream::default());
-    let call = CallPath::new(&scope, "lost").map_err(export_error)?;
-    let sibling = CallPath::new(&scope, "also-lost").map_err(export_error)?;
     let fence = StreamPath::new("executor/session/ended").map_err(export_error)?;
-    for call in [&call, &sibling] {
+    let mut observations = Vec::new();
+    for id in ["lost", "also-lost"] {
+        let call = CallPath::new(&scope, id).map_err(export_error)?;
         publish(
             &provider,
             call.accept(
@@ -214,93 +333,55 @@ async fn original_session_fence_has_no_invented_terminal() -> Result<()> {
             .map_err(export_error)?,
         )
         .await?;
+        let mut journal = Journal::new(call.log());
+        journal
+            .apply(&at(&provider, call.log(), 0).await?)
+            .map_err(export_error)?;
+        observations.push((call, journal));
     }
-    let mut journal = Journal::default();
-    journal
-        .apply(&at(&provider, call.log(), 0).await?)
-        .map_err(export_error)?;
     Stream::new(provider.clone(), fence.as_str())
         .map_err(export_error)?
         .append("ended", IdempotencyKey::unique())
         .await
         .map_err(export_error)?;
     let original_fence = at(&provider, &fence, 0).await?;
-    journal.fenced("original session ended");
-    let row = project(source(), &journal, &call, &fence, &original_fence)?;
-    // Existence of the first record closed the session. A later append to
-    // that same path is not another observation of the original settlement.
-    Stream::new(provider.clone(), fence.as_str())
-        .map_err(export_error)?
-        .append("later", IdempotencyKey::unique())
-        .await
-        .map_err(export_error)?;
-    let later_fence = at(&provider, &fence, 1).await?;
-    assert_ne!(later_fence.commit_id, original_fence.commit_id);
-    assert!(project(source(), &journal, &call, &fence, &later_fence).is_err());
-    assert_eq!(text(&row, "outcome"), "indeterminate");
-    assert_eq!(text(&row, "coverage"), "original_call_fence");
-    assert_eq!(text(&row, "fence"), fence.as_str());
-    assert_eq!(text(&row, "source_stream"), fence.as_str());
-    for unknown in [
-        "terminal_sequence",
-        "request_sequence",
-        "request_commit_id",
-        "agent_path",
-    ] {
-        assert!(row.data.column_by_name(unknown).unwrap().is_null(0));
-    }
-    assert!(project(source(), &journal, &call, call.log(), &original_fence).is_err());
-    assert!(
-        project(
-            source(),
-            &Journal::default(),
-            &call,
-            &fence,
-            &original_fence
+    let mut commits = Vec::new();
+    for (call, mut journal) in observations {
+        assert!(journal.receipt_ref(call.log()).is_none());
+        assert!(project(source(), &journal, &call, &fence, &original_fence).is_err());
+        publish(
+            &provider,
+            journal
+                .recover(&call, "original session ended")
+                .map_err(export_error)?
+                .ok_or_else(|| export_error("missing original recovery"))?,
         )
-        .is_err()
-    );
-    #[cfg(feature = "provenance-export")]
-    {
-        let mut sibling_journal = Journal::default();
-        sibling_journal
-            .apply(&at(&provider, sibling.log(), 0).await?)
-            .map_err(export_error)?;
-        sibling_journal.fenced("original session ended");
-        let sibling_row = project(
-            source(),
-            &sibling_journal,
-            &sibling,
-            &fence,
-            &original_fence,
-        )?;
-        assert_eq!(
-            text(&row, "source_commit_id"),
-            text(&sibling_row, "source_commit_id")
+        .await?;
+        let terminal = at(&provider, call.log(), 1).await?;
+        journal.apply(&terminal).map_err(export_error)?;
+        let row = project(source(), &journal, &call, call.log(), &terminal)?;
+        assert_eq!(text(&row, "outcome"), "indeterminate");
+        assert_eq!(text(&row, "coverage"), "original_call_terminal");
+        assert_eq!(text(&row, "source_stream"), call.log().as_str());
+        assert_eq!(number(&row, "terminal_sequence"), 1);
+        for unknown in ["request_sequence", "request_commit_id", "agent_path"] {
+            assert!(row.data.column_by_name(unknown).unwrap().is_null(0));
+        }
+        assert!(project(source(), &journal, &call, &fence, &original_fence).is_err());
+        assert!(
+            journal
+                .recover(&call, "lost again")
+                .map_err(export_error)?
+                .is_none()
         );
-        let subject = |batch: &Batch| -> Result<String> {
-            let mut encoded = Vec::new();
-            super::super::provenance::write(batch, &mut encoded)?;
-            let triples = oxttl::NTriplesParser::new()
-                .for_reader(encoded.as_slice())
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(export_error)?;
-            Ok(triples
-                .into_iter()
-                .find(|triple| triple.predicate.as_str() == "urn:acyclic:research:callLog")
-                .expect("original call observation")
-                .subject
-                .to_string())
-        };
-        assert_ne!(
-            subject(&row)?,
-            subject(&sibling_row)?,
-            "one original session fence must not merge distinct call observations"
-        );
+        commits.push(terminal.commit_id);
     }
+    assert_ne!(
+        commits[0], commits[1],
+        "one session fence cannot replace distinct call terminals"
+    );
     Ok(())
 }
-
 #[tokio::test]
 async fn receipt_projection_neither_copies_nor_scans_opaque_results() -> Result<()> {
     let scope = StreamPath::new("research/scope").map_err(export_error)?;
@@ -334,7 +415,7 @@ async fn receipt_projection_neither_copies_nor_scans_opaque_results() -> Result<
                 call.settle(None, &outcome).map_err(export_error)?,
             )
             .await?;
-            let mut journal = Journal::default();
+            let mut journal = Journal::new(call.log());
             for sequence in 0..2 {
                 journal
                     .apply(&at(&provider, call.log(), sequence).await?)

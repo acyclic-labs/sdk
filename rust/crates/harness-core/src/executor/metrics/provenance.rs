@@ -172,23 +172,11 @@ pub fn write(batch: &Batch, writer: impl Write) -> Result<()> {
         let owner_key = scope_identity
             .as_ref()
             .map_or(owner.as_bytes(), |scope| scope.as_bytes());
-        // One session fence can settle many calls. Its source tuple identifies
-        // the shared cause, not each call's distinct resulting observation.
-        let call_identity = (batch.table == Table::Outcomes && kind == "call_receipt")
-            .then(|| -> Result<Id> {
-                Ok(id(
-                    "call-receipt-owner",
-                    &[owner_key, required(batch, "call_log", row)?.as_bytes()],
-                ))
-            })
-            .transpose()?;
         let observation = id(
             "observation",
             &[
                 // Known scope ownership cannot alias an older unknown scope.
-                call_identity
-                    .as_ref()
-                    .map_or(owner_key, |call| call.as_bytes()),
+                owner_key,
                 operation.unwrap_or("").as_bytes(),
                 stream.as_bytes(),
                 &sequence,
@@ -377,7 +365,6 @@ pub fn write(batch: &Batch, writer: impl Write) -> Result<()> {
                 ("call_log", "urn:acyclic:research:callLog"),
                 ("outcome", "urn:acyclic:research:outcome"),
                 ("request_commit_id", "urn:acyclic:research:requestCommitId"),
-                ("fence", "urn:acyclic:research:settlingFence"),
             ] {
                 if let Some(value) = text(batch, field, row)? {
                     out.text(&observation, predicate, value)?;

@@ -7,12 +7,12 @@
 //! an unclaimed one never. The caller does not wait: completion is a record
 //! in the journal. The journal holds, in order:
 //!
-//! 0. optionally the caller's request, when the executor reads it here;
-//! 1. the executor's acceptance, durable and exclusive (a `Tail` guard);
+//! 0. the caller's request and escrow hold, when the executor reads them here;
+//! 1. the executor's acceptance, durable and exclusive (`Absent{accepted}`);
 //! 2. the executor's ordered chunks;
 //! 3. exactly one terminal: `ok`, `error`, `cancelled` or `indeterminate`.
 //!
-//! Every terminal is guarded by `Absent{<log>/settled}` and creates that
+//! Every terminal is guarded by `Absent{<log>/terminal}` and creates that
 //! marker, so whichever hop ends the call writes the only terminal: the
 //! executor, a canceller (or a gate deny) or the executor host's recovery.
 //! Cancellation is one conditional commit and never waits for the executor;
@@ -40,9 +40,10 @@ use acyclic_stream::{
 
 /// Subtree segment under which a caller keeps its call journals.
 pub const CALLS: &str = "calls";
-const SETTLED: &str = "settled";
-const KIND: &str = "acyclic.call.v1";
-const FENCE: &str = "acyclic.call.v1.fence";
+const SETTLED: &str = "terminal";
+const ACCEPTED: &str = "accepted";
+const KIND: &str = "acyclic.call.v2";
+const FENCE: &str = "acyclic.call.v2.fence";
 
 /// A call journal that cannot be addressed or does not follow the protocol.
 #[derive(Debug, thiserror::Error)]
@@ -103,6 +104,9 @@ pub struct Accepted {
 pub enum Entry {
     /// The caller's request.
     Request(OwnedBytes),
+    /// Funding transferred by the caller in the request's original commit.
+    /// A terminal does not release it; actual spend reconciles separately.
+    Hold(crate::escrow::Escrow),
     /// The call was accepted.
     Accepted(Accepted),
     /// One ordered chunk of the executor's output.
@@ -139,6 +143,7 @@ impl Commit {
 pub struct CallPath {
     log: StreamPath,
     settled: StreamPath,
+    accepted: StreamPath,
 }
 
 impl CallPath {
@@ -152,7 +157,12 @@ impl CallPath {
         }
         let log = StreamPath::new(format!("{root}/{CALLS}/{id}")).map_err(Error::Stream)?;
         let settled = StreamPath::new(format!("{log}/{SETTLED}")).map_err(Error::Stream)?;
-        Ok(Self { log, settled })
+        let accepted = StreamPath::new(format!("{log}/{ACCEPTED}")).map_err(Error::Stream)?;
+        Ok(Self {
+            log,
+            settled,
+            accepted,
+        })
     }
 
     /// The journal.
@@ -167,44 +177,70 @@ impl CallPath {
         &self.settled
     }
 
-    /// The caller's request as the journal's first record, for a call whose
-    /// executor reads its request here. It commits with the caller's claim.
+    /// The marker created atomically with the sole executor acceptance.
+    #[must_use]
+    pub const fn accepted(&self) -> &StreamPath {
+        &self.accepted
+    }
+
+    /// The caller's request and hold, in the same journal and commit. Join
+    /// this step with the original caller escrow debit and request delivery.
+    /// The hold conveys no execution authority and survives every terminal.
     ///
     /// # Errors
     /// When the record cannot be built.
-    pub fn request(&self, body: OwnedBytes) -> Result<Commit, Error> {
+    pub fn request(&self, body: OwnedBytes, hold: crate::escrow::Escrow) -> Result<Commit, Error> {
         Ok(Commit {
             conditions: vec![CommitCondition::Tail {
                 path: self.log.clone(),
                 expected: 0,
             }],
-            mutations: vec![append(&self.log, record(b"request", body, None)?)],
+            mutations: vec![CommitMutation::Append {
+                path: self.log.clone(),
+                records: vec![
+                    record(b"request", body, None)?,
+                    record(b"hold", hold.encode().into(), None)?,
+                ],
+            }],
         })
     }
 
-    /// Exclusive acceptance: only directly after the request (`requested`)
-    /// or into an empty journal when the request was delivered on the
-    /// executor's own queue, so never after another acceptance or a
-    /// terminal, and never by an ended session.
+    /// Exclusive acceptance, under the accepted and terminal absence guards.
+    /// `requested` selects a journal request and hold; otherwise the original
+    /// request is on the executor's own queue and this journal must be absent.
     ///
     /// # Errors
     /// When the record cannot be built.
     pub fn accept(&self, accepted: &Accepted, requested: bool) -> Result<Commit, Error> {
         Ok(Commit {
-            conditions: std::iter::once(CommitCondition::Tail {
-                path: self.log.clone(),
-                expected: u64::from(requested),
-            })
+            conditions: [
+                if requested {
+                    CommitCondition::Present {
+                        path: self.log.clone(),
+                    }
+                } else {
+                    CommitCondition::Absent {
+                        path: self.log.clone(),
+                    }
+                },
+                CommitCondition::Absent {
+                    path: self.accepted.clone(),
+                },
+            ]
+            .into_iter()
             .chain(self.open(accepted.fence.as_ref()))
             .collect(),
-            mutations: vec![append(
-                &self.log,
-                record(
-                    b"accepted",
-                    accepted.executor.clone(),
-                    accepted.fence.as_ref(),
-                )?,
-            )],
+            mutations: vec![
+                append(
+                    &self.log,
+                    record(
+                        b"accepted",
+                        accepted.executor.clone(),
+                        accepted.fence.as_ref(),
+                    )?,
+                ),
+                append(&self.accepted, AppendRecord::from(OwnedBytes::default())),
+            ],
         })
     }
 
@@ -239,17 +275,24 @@ impl CallPath {
         outcome: &Outcome,
         attributes: impl IntoIterator<Item = Attribute>,
     ) -> Result<Commit, Error> {
+        self.settle_body(fence, outcome.kind(), outcome.body(), attributes)
+    }
+
+    fn settle_body(
+        &self,
+        fence: Option<&StreamPath>,
+        kind: &'static [u8],
+        body: OwnedBytes,
+        attributes: impl IntoIterator<Item = Attribute>,
+    ) -> Result<Commit, Error> {
         Ok(Commit {
             conditions: self.open(fence).collect(),
             mutations: vec![
                 append(
                     &self.log,
-                    record_with_attributes(outcome.kind(), outcome.body(), fence, attributes)?,
+                    record_with_attributes(kind, body, fence, attributes)?,
                 ),
-                append(
-                    &self.settled,
-                    AppendRecord::from(OwnedBytes::from(outcome.kind())),
-                ),
+                append(&self.settled, AppendRecord::from(OwnedBytes::from(kind))),
             ],
         })
     }
@@ -260,7 +303,12 @@ impl CallPath {
     /// # Errors
     /// When the record cannot be built.
     pub fn cancel(&self, reason: &str) -> Result<Commit, Error> {
-        self.settle(None, &Outcome::Cancelled(reason.to_owned()))
+        self.settle_body(
+            None,
+            b"cancelled",
+            OwnedBytes::from(reason),
+            std::iter::empty(),
+        )
     }
 
     fn open(&self, fence: Option<&StreamPath>) -> impl Iterator<Item = CommitCondition> {
@@ -367,6 +415,10 @@ impl Entry {
         let value = &record.value;
         Ok(match kind.as_ref() {
             b"request" => Self::Request(value.clone()),
+            b"hold" => Self::Hold(
+                crate::escrow::Escrow::decode(value)
+                    .map_err(|_| Error::Malformed("invalid call hold"))?,
+            ),
             b"accepted" => Self::Accepted(Accepted {
                 executor: value.clone(),
                 fence: fence(record)?,
@@ -400,18 +452,16 @@ impl Committed {
 }
 
 /// The original committed receipt of one call: its request record, when the
-/// caller wrote one, and its one terminal record. A call settled by its
-/// fence has no terminal record; its fence is the receipt's terminal.
+/// caller wrote one, and its one terminal record. Session loss is recorded
+/// in that same journal; a fence alone is not a call terminal.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Receipt {
     /// The call's journal.
     pub log: StreamPath,
     /// The committed request.
     pub request: Option<Committed>,
-    /// The committed terminal; `None` only for a fenced call.
-    pub terminal: Option<Committed>,
-    /// The fence that settled an accepted call with no terminal record.
-    pub fence: Option<StreamPath>,
+    /// The committed terminal.
+    pub terminal: Committed,
     /// How the call ended, as the caller reads it.
     pub outcome: Outcome,
 }
@@ -424,10 +474,8 @@ pub struct ReceiptRef<'a> {
     pub log: &'a StreamPath,
     /// The committed request, when present.
     pub request: Option<Committed>,
-    /// The original terminal, absent for a fenced call.
-    pub terminal: Option<Committed>,
-    /// The original acceptance's settling fence, when no terminal exists.
-    pub fence: Option<&'a StreamPath>,
+    /// The original committed terminal.
+    pub terminal: Committed,
     /// The original reader's settled disposition.
     pub outcome: &'a Outcome,
 }
@@ -438,29 +486,49 @@ impl From<ReceiptRef<'_>> for Receipt {
             log: receipt.log.clone(),
             request: receipt.request,
             terminal: receipt.terminal,
-            fence: receipt.fence.cloned(),
             outcome: receipt.outcome.clone(),
         }
     }
 }
 
-/// A reader's fold of one journal, applied record by record in order.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// A reader's fold of one original journal, applied record by record in order.
+/// Inherited records retain their original append destination; they cannot
+/// authorize recovery or label receipts for another call.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Journal {
+    origin: StreamPath,
     request: Option<Committed>,
+    hold: Option<crate::escrow::Escrow>,
     accepted: Option<Accepted>,
+    acceptance: Option<Committed>,
     terminal: Option<Committed>,
     outcome: Option<Outcome>,
     next: u64,
 }
 
 impl Journal {
+    /// Read one call at its original destination. Bind before applying any
+    /// records so a copied prefix cannot choose another call's identity.
+    #[must_use]
+    pub fn new(log: &StreamPath) -> Self {
+        Self {
+            origin: log.clone(),
+            request: None,
+            hold: None,
+            accepted: None,
+            acceptance: None,
+            terminal: None,
+            outcome: None,
+            next: 0,
+        }
+    }
+
     /// Applies the journal's next record and returns it as the caller reads
     /// it: a cancel after acceptance reads as `indeterminate`.
     ///
     /// # Errors
-    /// When the record is out of order or breaks the protocol, including an
-    /// executor chunk or terminal naming another acceptance session.
+    /// When the record is out of order or breaks the protocol, including a
+    /// different original journal or acceptance session.
     pub fn apply(&mut self, record: &Record) -> Result<Entry, Error> {
         if record.sequence != self.next {
             return Err(Error::Malformed("call record out of order"));
@@ -468,15 +536,35 @@ impl Journal {
         if self.outcome.is_some() {
             return Err(Error::Malformed("call record after its terminal"));
         }
-        let first = self.next == u64::from(self.request.is_some());
+        if self.origin != record.origin {
+            return Err(Error::Malformed("record belongs to another call journal"));
+        }
+        let first = self.next == u64::from(self.request.is_some()) + u64::from(self.hold.is_some());
         let entry = match Entry::decode(record)? {
             Entry::Request(body) if self.next == 0 => {
                 self.request = Some(Committed::of(record));
                 Entry::Request(body)
             }
             Entry::Request(_) => return Err(Error::Malformed("call request is not first")),
-            Entry::Accepted(accepted) if first => {
+            Entry::Hold(hold)
+                if self.next == 1
+                    && self
+                        .request
+                        .is_some_and(|request| request.commit_id == record.commit_id) =>
+            {
+                self.hold = Some(hold);
+                Entry::Hold(hold)
+            }
+            Entry::Hold(_) => {
+                return Err(Error::Malformed(
+                    "call hold is not committed with its request",
+                ));
+            }
+            Entry::Accepted(accepted)
+                if first && (self.request.is_none() || self.hold.is_some()) =>
+            {
                 self.accepted = Some(accepted.clone());
+                self.acceptance = Some(Committed::of(record));
                 Entry::Accepted(accepted)
             }
             Entry::Accepted(_) => return Err(Error::Malformed("call accepted twice")),
@@ -491,6 +579,9 @@ impl Journal {
                 Entry::Chunk(body)
             }
             Entry::Terminal(outcome) => {
+                if self.request.is_some() && self.hold.is_none() {
+                    return Err(Error::Malformed("call request has no committed hold"));
+                }
                 if let Some(fence) = attribute(record, FENCE)
                     && !self
                         .accepted
@@ -514,16 +605,52 @@ impl Journal {
         Ok(entry)
     }
 
-    /// The acceptance's fence exists and every record committed before it has
-    /// been applied: an accepted call with no terminal is `indeterminate`.
-    pub fn fenced(&mut self, reason: &str) -> Option<&Outcome> {
-        if self.outcome.is_none() && self.accepted.is_some() {
-            self.outcome = Some(Outcome::Indeterminate(reason.to_owned()));
+    /// Publish the original accepted session's loss as the sole terminal.
+    /// The accepted marker must still name the original acceptance commit,
+    /// and that acceptance's own fence must exist. A live session refuses;
+    /// a racing terminal wins its original absence guard. Retain this exact
+    /// publication and identity across an unknown result; never redispatch.
+    /// The immutable hold remains until the executor host reconciles spend.
+    ///
+    /// # Errors
+    /// When the acceptance has no session fence or the terminal cannot be built.
+    pub fn recover(&self, call: &CallPath, reason: &str) -> Result<Option<Commit>, Error> {
+        if self.outcome.is_some() {
+            return Ok(None);
         }
-        self.outcome.as_ref()
+        let Some(accepted) = &self.accepted else {
+            return Ok(None);
+        };
+        if &self.origin != call.log() {
+            return Err(Error::Malformed("recovery belongs to another call journal"));
+        }
+        let fence = accepted
+            .fence
+            .as_ref()
+            .ok_or(Error::Malformed("acceptance has no recovery fence"))?;
+        let acceptance = self
+            .acceptance
+            .ok_or(Error::Malformed("acceptance has no committed record"))?;
+        let mut commit = call.settle_body(
+            None,
+            b"indeterminate",
+            OwnedBytes::from(reason),
+            std::iter::empty(),
+        )?;
+        commit.conditions.extend([
+            CommitCondition::Head {
+                path: call.accepted.clone(),
+                expected: 1,
+                commit_id: acceptance.commit_id,
+            },
+            CommitCondition::Present {
+                path: fence.clone(),
+            },
+        ]);
+        Ok(Some(commit))
     }
 
-    /// The call's committed receipt, once settled.
+    /// The call's committed receipt, once settled, at its original destination.
     #[must_use]
     pub fn receipt(&self, log: &StreamPath) -> Option<Receipt> {
         self.receipt_ref(log).map(Receipt::from)
@@ -534,20 +661,14 @@ impl Journal {
     /// a cancellation terminal in isolation and lose its acceptance context.
     #[must_use]
     pub fn receipt_ref<'a>(&'a self, log: &'a StreamPath) -> Option<ReceiptRef<'a>> {
+        if &self.origin != log {
+            return None;
+        }
         let outcome = self.outcome.as_ref()?;
         Some(ReceiptRef {
             log,
             request: self.request,
-            terminal: self.terminal,
-            fence: self
-                .terminal
-                .is_none()
-                .then(|| {
-                    self.accepted
-                        .as_ref()
-                        .and_then(|accepted| accepted.fence.as_ref())
-                })
-                .flatten(),
+            terminal: self.terminal?,
             outcome,
         })
     }
@@ -556,6 +677,12 @@ impl Journal {
     #[must_use]
     pub const fn accepted(&self) -> Option<&Accepted> {
         self.accepted.as_ref()
+    }
+
+    /// The original caller's immutable hold. Settlement never refunds it.
+    #[must_use]
+    pub const fn hold(&self) -> Option<crate::escrow::Escrow> {
+        self.hold
     }
 
     /// The call's outcome, once settled.
@@ -574,3 +701,8 @@ impl Journal {
 #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub mod model;
+
+/// Decoder fuzz entry point shared with the original committed-record controls.
+#[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+#[doc(hidden)]
+pub mod codec_fuzz;

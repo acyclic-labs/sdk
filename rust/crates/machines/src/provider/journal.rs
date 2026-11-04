@@ -34,7 +34,6 @@ pub(crate) struct Publication {
 
 // Machine lifecycle calls have one acceptance and one terminal, with their
 // request delivered inline. The shared call fold alone owns protocol state.
-#[derive(Default)]
 struct CallSnapshot {
     journal: call::Journal,
     digest: Option<[u8; 32]>,
@@ -43,6 +42,15 @@ struct CallSnapshot {
 }
 
 impl CallSnapshot {
+    fn new(path: &CallPath) -> Self {
+        Self {
+            journal: call::Journal::new(path.log()),
+            digest: None,
+            completed: None,
+            preceding: None,
+        }
+    }
+
     fn apply(&mut self, record: &acyclic_stream::Record) -> Result<(), ProviderError> {
         let digest = match self.journal.apply(record).map_err(call_error)? {
             call::Entry::Accepted(accepted) if accepted.fence.is_none() => {
@@ -119,7 +127,7 @@ impl Journal {
     }
 
     async fn read_call(&self, path: &CallPath) -> Result<CallSnapshot, ProviderError> {
-        let mut snapshot = CallSnapshot::default();
+        let mut snapshot = CallSnapshot::new(path);
         let mut records = match self
             .streams
             .read(ReadRequest {
