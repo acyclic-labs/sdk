@@ -86,7 +86,8 @@ fn one_byte_short_budget_rejects_before_claim() -> Result<(), AllocationError> {
 }
 
 #[test]
-fn vector_capacity_and_ledger_corruption_guards_are_total() -> Result<(), AllocationError> {
+fn vector_capacity_and_ledger_corruption_guards_are_total() -> Result<(), Box<dyn std::error::Error>>
+{
     let mut capacity = LogicalVecCapacity::default();
     let mut values = Vec::<u64>::new();
     let mut ledger = AllocationLedger::default();
@@ -122,7 +123,79 @@ fn vector_capacity_and_ledger_corruption_guards_are_total() -> Result<(), Alloca
         ledger.release(admitted + 1),
         Err(AllocationError::ReleaseInvariant)
     );
+    drop(values);
     ledger.release(admitted)?;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    for owned in [false, true] {
+        let cancellation = crate::CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(
+            WorkBudget {
+                bytes_copied: 0,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .map_err(|(error, _)| error)?;
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        if owned {
+            let mut values =
+                super::super::persistent_point::Owned::<Vec<u64>>::allocate(1, &mut accounting)?;
+            let old_capacity = values.value.capacity();
+            values.value.resize(old_capacity, 7);
+            let old_pointer = values.value.as_ptr();
+            let before = original.receipt();
+            let result = values.ensure_for_push(old_capacity + 1, &mut accounting);
+            assert!(result.is_err(), "owned growth bypassed copy admission");
+            assert_eq!(values.value.as_ptr(), old_pointer);
+            assert_eq!(values.value.capacity(), old_capacity);
+            assert!(values.value.iter().all(|value| *value == 7));
+            assert_eq!(original.receipt(), before);
+            values.retire(&mut accounting)?;
+        } else {
+            let mut values = Vec::<u64>::new();
+            let mut capacity = LogicalVecCapacity::default();
+            let mut allocation = KernelOwnedAllocation::Standalone;
+            capacity.ensure_for_push_with_accounting(
+                &mut values,
+                1,
+                &mut allocation,
+                &mut accounting,
+            )?;
+            let old_capacity = values.capacity();
+            values.resize(old_capacity, 7);
+            // Allocators may return extra backing. Admit that existing backing
+            // logically before asking the production helper to grow it.
+            while capacity.elements < old_capacity {
+                capacity.ensure_for_push_with_accounting(
+                    &mut values,
+                    old_capacity,
+                    &mut allocation,
+                    &mut accounting,
+                )?;
+            }
+            let old_pointer = values.as_ptr();
+            let before = original.receipt();
+            let result = capacity.ensure_for_push_with_accounting(
+                &mut values,
+                old_capacity + 1,
+                &mut allocation,
+                &mut accounting,
+            );
+            assert!(result.is_err(), "logical growth bypassed copy admission");
+            assert_eq!(values.as_ptr(), old_pointer);
+            assert_eq!(values.capacity(), old_capacity);
+            assert!(values.iter().all(|value| *value == 7));
+            assert_eq!(original.receipt(), before);
+            drop(values);
+            super::super::persistent_point::retire_allocation(
+                allocation,
+                capacity.logical_bytes(),
+                &mut accounting,
+            )?;
+        }
+        assert_eq!(original.live_allocation_bytes(), 0);
+    }
 
     let mut overflow = AllocationLedger::default();
     overflow.claim_bytes(u64::MAX, 0, &mut work, WorkBudget::UNBOUNDED)?;
