@@ -12,6 +12,7 @@ import { listenReportPipe } from "./report-pipe.mjs";
 import { Lines } from "./lines.mjs";
 import { decodeCompletion } from "../../typescript/packages/sdk/native/process-completion.mjs";
 import { transcript } from "./transcript.mjs";
+import { listenProcessControl } from "../../typescript/packages/sdk/native/process.mjs";
 
 export async function schedule(items, platform, execute) {
   if (platform !== "win32") return Promise.all(items.map(execute));
@@ -54,7 +55,9 @@ export class Processes {
     return this.#start(program, args, options);
   }
   startReported(program, args, options = {}) {
-    const admission = this.#startReported(program, args, options);
+    return this.#admit(this.#startReported(program, args, options));
+  }
+  #admit(admission) {
     this.#admissions.add(admission);
     const settled = () => this.#admissions.delete(admission);
     admission.then(settled, settled);
@@ -123,6 +126,7 @@ export class Processes {
     }
     child.stdin.on("error", error => { if (error.code !== "EPIPE") child.emit("error", error); });
     const kill = () => {
+      if (typeof scopeTreeControl === "function") { scopeTreeControl(); return; }
       if (scopeTreeControl) { input.end(); return; }
       child.kill(scopeKillSignal);
     };
@@ -197,8 +201,8 @@ export class Processes {
     process.input.end(input);
     return process.closed;
   }
-  // Windows Job custody kills the whole tree with its host; POSIX custody
-  // kills only the executable on SIGUSR1 and still drains and reports it.
+  // Cancellation enters the original owner; that owner survives to drain its
+  // output and publish the selected executable's physical completion.
   startOwned(program, args, options = {}) {
     return this.#startOwned(program, args, options, this.start.bind(this));
   }
@@ -208,12 +212,36 @@ export class Processes {
   #startOwned(program, args, options, start) {
     const { scopeMountRoot, scopeInheritInput = false, scopePty = false, ...spawnOptions } = options;
     if (process.platform === "win32") {
-      const host = options.env?.E2E_PROCESS_HOST ?? process.env.E2E_PROCESS_HOST;
-      assert.ok(host && isAbsolute(host), "E2E_PROCESS_HOST must name the cross-built process-tree host");
-      const invocation = randomUUID(), receipt = join(resolve(this.transcripts), `${invocation}.completion`);
-      return start(host, ["--completion", receipt, "--invocation", invocation,
-        ...(scopeInheritInput ? ["--inherit-input"] : []), "--", program, ...args],
-        { ...spawnOptions, scopeTreeControl: !scopeInheritInput, scopeCapture: result => {
+      if (scopeInheritInput) return this.#admit(this.#startInputOwned(program, args, spawnOptions, start));
+      return this.#startWindowsOwned(program, args, spawnOptions, start);
+    }
+    const mountLease = process.platform === "linux" && scopeMountRoot
+      ? ["--mount-root", scopeMountRoot, "--"] : [];
+    const owned = start("python3", [fileURLToPath(new URL("./owned-process.py", import.meta.url)),
+      ...(scopePty ? ["--pty"] : []), ...mountLease, program, ...args], { ...spawnOptions, scopeTreeControl: true });
+    if (owned instanceof Promise) return owned.then(running => ({ ...running, killExecutable: () => running.child.kill("SIGUSR1") }));
+    return { ...owned, killExecutable: () => owned.child.kill("SIGUSR1") };
+  }
+  async #startInputOwned(program, args, options, start) {
+    const endpoint = `\\\\.\\pipe\\acyclic-process-${randomUUID()}`;
+    let control, failure;
+    control = await listenProcessControl(endpoint, cause => {
+      failure ??= Object.assign(new Error("step=process-control; recovery=retain the original cancellation endpoint and process completion", { cause }),
+        { code: "PROCESS_CONTROL_FAILED" });
+      this.#observationFailure ??= failure;
+      control?.stop();
+    });
+    try { return await this.#startWindowsOwned(program, args, options, start, { ...control, endpoint, failure: () => failure }); }
+    catch (error) { await control.close(); throw error; }
+  }
+  #startWindowsOwned(program, args, spawnOptions, start, control) {
+    const host = spawnOptions.env?.E2E_PROCESS_HOST ?? process.env.E2E_PROCESS_HOST;
+    assert.ok(host && isAbsolute(host), "E2E_PROCESS_HOST must name the cross-built process-tree host");
+    const invocation = randomUUID(), receipt = join(resolve(this.transcripts), `${invocation}.completion`);
+    const owned = start(host, ["--completion", receipt, "--invocation", invocation,
+      ...(control ? ["--control", control.endpoint, "--inherit-input"] : []), "--", program, ...args],
+      { ...spawnOptions, scopeTreeControl: control?.stop ?? true, scopeCapture: async result => {
+        try {
           let completion;
           try { completion = decodeCompletion(readFileSync(receipt, "utf8"), invocation, result); }
           catch (cause) {
@@ -233,15 +261,12 @@ export class Processes {
               "step=owned-process-retirement; recovery=inspect the original completion before reusing its custody",
               { cause: completion.failure }), { code: "PROCESS_HOST_FAILED", completion, result });
           }
-          return spawnOptions.scopeCapture?.(result);
-        } });
-    }
-    const mountLease = process.platform === "linux" && scopeMountRoot
-      ? ["--mount-root", scopeMountRoot, "--"] : [];
-    const owned = start("python3", [fileURLToPath(new URL("./owned-process.py", import.meta.url)),
-      ...(scopePty ? ["--pty"] : []), ...mountLease, program, ...args], { ...spawnOptions, scopeTreeControl: true });
-    if (owned instanceof Promise) return owned.then(running => ({ ...running, killExecutable: () => running.child.kill("SIGUSR1") }));
-    return { ...owned, killExecutable: () => owned.child.kill("SIGUSR1") };
+          if (control?.failure()) throw control.failure();
+          return await spawnOptions.scopeCapture?.(result);
+          } finally { await control?.close(); }
+      } });
+    const selected = running => ({ ...running, killExecutable: () => control ? control.stop() : running.input.end() });
+    return owned instanceof Promise ? owned.then(selected) : selected(owned);
   }
   // The one real-terminal transport: ConPTY inside native Job custody on
   // Windows, or a PTY whose root leads its own session under the POSIX owner.
@@ -255,7 +280,7 @@ export class Processes {
   }
   async runOwned(program, args, options, input = "") {
     assert.equal(input, "", "external acceptance commands receive empty stdin");
-    const running = this.startOwned(program, args, options);
+    const running = await this.startOwned(program, args, options);
     const [, result] = await Promise.all([running.exited, running.closed]);
     return result;
   }
