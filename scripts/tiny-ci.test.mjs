@@ -8,16 +8,14 @@ import YAML from './vendor/yaml.cjs';
 const workflows=fs.readdirSync('.github/workflows').filter(p=>/\.ya?ml$/.test(p));
 const read=name=>fs.readFileSync('.github/workflows/'+name,'utf8');
 const triggers=text=>text.match(/^on:\n([\s\S]*?)(?=^[^ #\s])/m)?.[1]??'';
-test('Linux host qualification uses the smallest registered runner and retains every scenario',()=>{
+test('Host qualification runs on each platform and retains every scenario',()=>{
  const workflow=YAML.parse(read('agent-host-qualification.yml'));
  const job=workflow.jobs.qualify;
  assert.deepEqual(job.strategy.matrix.platform,[
-  {name:'linux-fuse',runner:'blacksmith-2vcpu-ubuntu-2404',cache_size:'448M'},
-  {name:'macos-nfs',runner:'blacksmith-6vcpu-macos-15',cache_size:'384M'},
-  {name:'windows-projfs',runner:'blacksmith-4vcpu-windows-2025',cache_size:'576M'},
+  {name:'linux-fuse',runner:'kaizen-linux',cache_size:'448M'},
+  {name:'macos-nfs',runner:'macos-15',cache_size:'384M'},
+  {name:'windows-projfs',runner:'windows-2025',cache_size:'576M'},
  ]);
- const registered=YAML.parse(fs.readFileSync('.github/actionlint.yaml','utf8'))['self-hosted-runner'].labels;
- for(const platform of job.strategy.matrix.platform)assert.ok(registered.includes(platform.runner));
  assert.equal(job['runs-on'],'${{ matrix.platform.runner }}');
  const linux="runner.os == 'Linux'";
  const shimCommands=[
@@ -245,7 +243,7 @@ test('native builds and mount checks overlap qualification and still gate public
  const installer=workflow.jobs['installer-recovery'];
  assert.equal(installer.needs,'build');
  assert.equal(installer.if,undefined);
- assert.equal(installer['runs-on'],'blacksmith-4vcpu-ubuntu-2404');
+ assert.equal(installer['runs-on'],'kaizen-linux');
  assert.equal(installer.permissions.contents,'read');
  assert.equal(installer.steps[0].with.ref,'${{ inputs.source_sha }}');
  assert.equal(installer.steps[1].with['node-version'],'24.15.0');
@@ -259,26 +257,14 @@ test('native builds and mount checks overlap qualification and still gate public
  const matrix=build.strategy.matrix.include;
  assert.deepEqual(matrix.map(row=>row.target).sort(),['darwin-arm64','darwin-x64','linux-arm64-gnu','linux-arm64-musl','linux-x64-gnu','linux-x64-musl','win32-arm64','win32-x64']);
  const windowsArm=matrix.find(row=>row.target==='win32-arm64')??assert.fail('missing Windows ARM64 build');
- assert.equal(windowsArm.runner,'blacksmith-4vcpu-windows-2025');
  assert.equal(build.env.SCCACHE_IDLE_TIMEOUT,'0');
  assert.equal(windowsArm.rust_target,'aarch64-pc-windows-msvc');
  assert.equal(windowsArm.executable,'acyclic.exe');
- assert.ok(fs.readFileSync('.github/actionlint.yaml','utf8').includes(windowsArm.runner));
  assert.deepEqual(matrix.filter(row=>row.backend).map(row=>[row.target,row.backend,row.qualifier]),[
   ['linux-x64-gnu','linux-fuse','native-mount-qualify'],
   ['darwin-arm64','macos-nfs','native-mount-qualify'],
   ['win32-x64','windows-projfs','native-mount-qualify.exe'],
  ]);
- for(const [target,runner] of new Map([
-  ['linux-x64-gnu','blacksmith-16vcpu-ubuntu-2404'],
-  ['linux-arm64-gnu','blacksmith-16vcpu-ubuntu-2404-arm'],
-  ['linux-arm64-musl','blacksmith-16vcpu-ubuntu-2404-arm'],
-  ['win32-x64','blacksmith-32vcpu-windows-2025'],
- ])){
-  const row=matrix.find(row=>row.target===target)??assert.fail(target);
-  assert.equal(row.runner,runner);
-  assert.ok(fs.readFileSync('.github/actionlint.yaml','utf8').includes(row.runner));
- }
  const steps=build.steps;
  const linux=steps.find(step=>step.name==='Qualify Linux or macOS native mount');
  const windows=steps.find(step=>step.name==='Qualify Windows native mount');

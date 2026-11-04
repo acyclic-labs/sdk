@@ -310,7 +310,7 @@ case "$lane" in
     export PATH="$(dirname "$wasm_bindgen_bin"):$PATH"
     bun install --frozen-lockfile
     # Package validation runs with --offline; populate every locked crate even
-    # when the Blacksmith dependency cache is cold.
+    # when the dependency cache is cold.
     cargo fetch --locked
     node scripts/check-git-proto-build.mjs
     background napi native_binding

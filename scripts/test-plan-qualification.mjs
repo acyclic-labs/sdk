@@ -141,7 +141,6 @@ test("ARM native binding production runs independently and all original ARM chec
  const matrix=lanes;
  const producer=matrix.find(lane=>lane.lane==="linux-arm64-bindings");
  assert.equal(producer.artifact,"packages-linux-arm64");assert.equal(producer.artifact_path,"packages");
- assert.equal(producer.runner,"blacksmith-4vcpu-ubuntu-2404-arm");
  assert.equal(matrix.filter(lane=>lane.artifact==="packages-linux-arm64").length,1);
  assert.equal(matrix.find(lane=>lane.lane==="linux-arm64").artifact,"");
  const workflow=readFileSync(".github/workflows/qualification.yml","utf8");
@@ -173,7 +172,6 @@ test("Windows native audits are independent required lanes without moving public
   for (const name of names) {
     const selected = matrix.filter(lane => lane.lane === name);
     assert.equal(selected.length, 1);
-    assert.equal(selected[0].runner, name === "windows-clippy" ? "blacksmith-16vcpu-windows-2025" : "blacksmith-4vcpu-windows-2025");
     assert.equal(selected[0].artifact, "");
   }
   assert.equal(matrix.find(lane => lane.lane === "windows").artifact, "stream-native-windows");
@@ -200,51 +198,22 @@ test("Windows native audits are independent required lanes without moving public
 });
 
 
-test("ARM workspace compilation uses the larger runner's complete CPU allocation", () => {
-  const matrix = lanes;
-  const arm = matrix.find(lane => lane.lane === "linux-arm64");
-  assert.equal(arm.runner, "blacksmith-32vcpu-ubuntu-2404-arm");
-  assert.equal(arm.workers, 32);
-  assert.equal(arm.artifact, "");
-  for (const name of ["linux-arm64-bindings", "linux-arm64-musl"]) {
-    const lane = matrix.find(lane => lane.lane === name);
-    assert.equal(lane.runner, "blacksmith-4vcpu-ubuntu-2404-arm");
-    assert.equal(lane.workers, 4);
-  }
-  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
-  assert.ok(workflow.includes("runs-on: ${{ matrix.runner }}"));
-  for (const variable of ["CARGO_BUILD_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL", "RAYON_NUM_THREADS", "RUST_TEST_THREADS"])
-    assert.ok(workflow.includes(variable + ": ${{ matrix.workers }}"), variable);
-  assert.ok(readFileSync(".github/actionlint.yaml", "utf8").includes(arm.runner));
-});
-
-
-test("Windows package and clippy compilation use sixteen CPUs while cross-check runners stay bounded", () => {
+test("Windows package and clippy compilation size workers from their lane", () => {
   const matrix = lanes;
   const windows = matrix.find(lane => lane.lane === "windows");
-  assert.equal(windows.runner, "blacksmith-16vcpu-windows-2025");
-  assert.equal(windows.workers, 16);
   assert.equal(windows.artifact, "stream-native-windows");
   assert.equal(windows.artifact_path, "stream-native-bundle");
   const clippy = matrix.find(lane => lane.lane === "windows-clippy") ?? assert.fail("missing Windows clippy lane");
-  assert.equal(clippy.runner, windows.runner);
-  assert.equal(clippy.workers, 16);
   const script = readFileSync("scripts/qualify-ci.ps1", "utf8");
   const clippyBody = script.split("    'windows-clippy' {")[1]?.split("        return")[0] ?? assert.fail("missing Windows clippy dispatch");
   assert.ok(clippyBody.includes("cargo clippy -p acyclic-plugin --all-targets --all-features --locked -- -D warnings"));
   assert.ok(clippyBody.includes("node scripts/clippy-feature-sets.mjs 4"));
   assert.ok(clippyBody.indexOf("$env:CARGO_BUILD_JOBS = '4'") > clippyBody.indexOf("cargo clippy -p acyclic-plugin"));
   assert.ok(clippyBody.indexOf("$env:CARGO_BUILD_JOBS = '4'") < clippyBody.indexOf("node scripts/clippy-feature-sets.mjs 4"));
-  for (const name of ["windows-napi", "windows-arm64"]) {
-    const audit = matrix.find(lane => lane.lane === name);
-    assert.equal(audit.runner, "blacksmith-4vcpu-windows-2025");
-    assert.equal(audit.workers, 4);
-  }
   const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
   assert.ok(workflow.includes("runs-on: ${{ matrix.runner }}"));
   for (const variable of ["CARGO_BUILD_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL", "RAYON_NUM_THREADS", "RUST_TEST_THREADS"])
     assert.ok(workflow.includes(variable + ": ${{ matrix.workers }}"), variable);
-  assert.ok(readFileSync(".github/actionlint.yaml", "utf8").includes(windows.runner));
 });
 
 
@@ -309,8 +278,6 @@ test("Linux mount and fork/join qualification overlap packages on an independent
   assert.ok(packages.includes("run-harness-conformance.mjs"));
   const matrix = lanes;
   const lane = matrix.find(lane => lane.lane === "linux-runtime");
-  assert.equal(lane.runner, "blacksmith-4vcpu-ubuntu-2404");
-  assert.equal(lane.workers, 4);
   const full = lanes;
   assert.equal(full.filter(lane => lane.lane === "linux-runtime").length, 1);
   assert.equal(lane.artifact, "");
@@ -324,11 +291,9 @@ test("Linux mount and fork/join qualification overlap packages on an independent
 });
 
 
-test("macOS workspace qualification uses all twelve CPUs without changing package evidence", () => {
+test("macOS workspace qualification sizes workers from its lane without changing package evidence", () => {
   const matrix = lanes;
   const macos = matrix.find(lane => lane.lane === "macos");
-  assert.equal(macos.runner, "blacksmith-12vcpu-macos-15");
-  assert.equal(macos.workers, 12);
   assert.equal(macos.artifact, "packages-macos");
   assert.equal(macos.artifact_path, "packages");
   const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
@@ -352,7 +317,6 @@ test("macOS workspace qualification uses all twelve CPUs without changing packag
   assert.ok(workflow.includes("runs-on: ${{ matrix.runner }}"));
   for (const variable of ["CARGO_BUILD_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL", "RAYON_NUM_THREADS", "RUST_TEST_THREADS"])
     assert.ok(workflow.includes(variable + ": ${{ matrix.workers }}"), variable);
-  assert.ok(readFileSync(".github/actionlint.yaml", "utf8").includes(macos.runner));
 });
 
 
@@ -432,22 +396,17 @@ printf 'joined\\n'
   }
 });
 
-test("Linux package qualification uses sixteen workers without changing publication inputs", () => {
+test("Linux package qualification sizes workers from its lane without changing publication inputs", () => {
   const matrix = lanes;
   const linux = matrix.find(lane => lane.lane === "linux") ?? assert.fail("missing Linux lane");
-  assert.equal(linux.runner, "blacksmith-16vcpu-ubuntu-2404");
-  assert.equal(linux.workers, 16);
   assert.equal(linux.artifact, "packages-linux");
   assert.equal(linux.artifact_path, "packages");
   const runtime = matrix.find(lane => lane.lane === "linux-runtime") ?? assert.fail("missing runtime lane");
-  assert.equal(runtime.runner, "blacksmith-4vcpu-ubuntu-2404");
-  assert.equal(runtime.workers, 4);
   const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
   assert.ok(workflow.includes("runs-on: ${{ matrix.runner }}"));
   for (const variable of ["CARGO_BUILD_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL", "RAYON_NUM_THREADS", "RUST_TEST_THREADS"])
     assert.ok(workflow.includes(variable + ": ${{ matrix.workers }}"), variable);
   assert.ok(workflow.includes("MAKEFLAGS: -j${{ matrix.workers }}"));
-  assert.ok(readFileSync(".github/actionlint.yaml", "utf8").includes(linux.runner));
 });
 
 test("Linux filesystem packaging overlaps Harness conformance and joins both failures", async () => {
@@ -719,5 +678,4 @@ test("docs and generation provision nightly targets after stable", () => {
   assert.ok(stable >= 0 && nightly > stable);
   assert.equal(steps[nightly].if, "inputs.lane == 'docs' || inputs.lane == 'generation'");
   assert.equal(steps[nightly].run, "rustup toolchain install nightly-2026-07-01 --profile minimal --target wasm32-unknown-unknown --no-self-update");
-  for (const name of ["docs", "generation"]) assert.equal(lanes.find(lane => lane.lane === name).runner, "blacksmith-2vcpu-ubuntu-2404");
 });

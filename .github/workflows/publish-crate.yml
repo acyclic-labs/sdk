@@ -26,7 +26,7 @@ concurrency:
 jobs:
   prepare:
     name: Prepare qualified Cargo source
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: kaizen-linux
     timeout-minutes: 10
     permissions:
       actions: read
@@ -124,7 +124,7 @@ jobs:
     name: Verify crates.io CLI installation
     needs: [ prepare, publish ]
     # Installing compiles the whole dependency graph from the registry.
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: kaizen-linux
     permissions:
       contents: read
     steps:
