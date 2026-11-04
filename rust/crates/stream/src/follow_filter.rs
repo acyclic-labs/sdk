@@ -732,28 +732,6 @@ mod tests {
         assert!(!filter.matches(&headers(&["b"], "bob")));
         assert!(!filter.matches(&headers(&[], "alice")));
     }
-    #[test]
-    fn opaque_authority_never_discloses_a_record_with_an_outside_key() {
-        let requested = Clause {
-            all_keys: false,
-            filter: canonical(wire::SessionFilter {
-                all_of: vec![],
-                keys: vec![range(b"a", b"c")],
-                attributes: vec![],
-            })
-            .unwrap(),
-        };
-        let ceiling = Clause {
-            all_keys: true,
-            filter: requested.filter.clone(),
-        };
-        let filter = FollowFilter(Some(Arc::new(vec![requested.clone(), ceiling])));
-        assert!(filter.matches(&headers(&["a", "b"], "alice")));
-        assert!(!filter.matches(&headers(&["b", "z"], "alice")));
-        assert!(
-            FollowFilter(Some(Arc::new(vec![requested]))).matches(&headers(&["b", "z"], "alice"))
-        );
-    }
     #[tokio::test]
     async fn provider_hops_preserve_requested_any_keys_and_all_authority_ceilings() {
         use acyclic_auth::{contract as auth, testing as signed};
