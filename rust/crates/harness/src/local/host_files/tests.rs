@@ -25,6 +25,12 @@ fn request_storage_cause(error: &Error, operation: OperationId) -> &str {
     cause
 }
 
+fn observer(bridge: &Bridge) -> std::thread::JoinHandle<()> {
+    lock(&bridge.observer)
+        .take()
+        .expect("the original owner observer")
+}
+
 fn carrier_io() -> Result<(tempfile::TempDir, CarrierIo, std::fs::File)> {
     use acyclic_fs::NativeDurability::Visibility;
 
@@ -292,12 +298,6 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
         )?;
         Ok((checkout, workspace, ownership))
     }
-    fn observer(bridge: &Bridge) -> std::thread::JoinHandle<()> {
-        lock(&bridge.observer)
-            .take()
-            .expect("the original owner observer")
-    }
-
     let registry = Arc::new(Mutex::<Registry>::default());
     let (_checkout, cwd, owner_lock) = owner()?;
     let (_other_checkout, other_cwd, other_lock) = owner()?;
@@ -1365,10 +1365,11 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         remove_projection(&rejected).expect_err("file withdrawal cannot remove a directory");
     assert_eq!(causes.primary().to_string(), admission.to_string());
     assert_eq!(causes.cleanup().to_string(), withdrawal.to_string());
+    observer(&blocked)
+        .join()
+        .expect("the original owner observer must retire");
     assert!(matches!(
-        response
-            .recv_timeout(Duration::from_secs(2))
-            .map_err(storage)?,
+        response.try_recv().map_err(storage)?,
         Delivery::Gone
     ));
     drop(waiting);
