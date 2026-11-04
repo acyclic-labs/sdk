@@ -46,6 +46,7 @@ export class Actors extends DurableObject<Env> {
     await this.discover();
     if (this.routes.get(key(address)) === undefined) refuse("completion-owner");
     // The same owner wake awaits publication and its final registered-input recheck.
+    ++this.calls.wake;
     await this.owner(address).wake();
   }));
   private readonly journal = new SqliteJournal(this.ctx.storage, "actors", changes => {
