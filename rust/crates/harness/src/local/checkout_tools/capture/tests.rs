@@ -168,9 +168,11 @@ async fn run(tools: &CheckoutTools, slot: &mut Option<Cursor>) -> Result<()> {
 
 #[tokio::test]
 async fn cursor_custody_follows_actual_capture_admission() -> Result<()> {
+    let (_directory, harness, tools) = fixture().await?;
     for boundary in [0, 1] {
         for producer_lost in [false, true] {
-            let (_directory, harness, tools) = fixture().await?;
+            // Each interruption gets a fresh cursor and current head, then
+            // recovers on the same physical workspace before the next case.
             let mut slot = Some(Cursor::initial(&tools.workspace, &tools.capture_policy)?);
             let workspace = tools.workspace.view().workspace();
             let cancellation = CancellationToken::new();
@@ -251,11 +253,10 @@ async fn cursor_custody_follows_actual_capture_admission() -> Result<()> {
             run(&tools, &mut slot).await?;
             assert_eq!(contents(&tools).await?, b"before");
             drop(slot);
-            drop(tools);
-            harness.disconnect().await?;
         }
     }
-    Ok(())
+    drop(tools);
+    harness.disconnect().await
 }
 
 async fn recovers(stage: &'static str) -> Result<()> {
