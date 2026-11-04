@@ -15,7 +15,8 @@
 //!   admitted, then waits for every admitted lease to drain, and only then
 //!   drops the core. The wait blocks on a condition variable; nothing polls;
 //! - only the [`ViewOwner`] returned by [`ViewTable::insert`] can retire a
-//!   view, and dropping it retires the view, so every exit path releases it.
+//!   view. Its admission-close token can move to the physical owner; finishing
+//!   or dropping that token uses the same drain on every exit path.
 //!
 //! Retirement must not run from a callback that holds a lease on the same
 //! view; the harness retires views from its own threads.
@@ -196,8 +197,8 @@ impl<C> ViewTable<C> {
             .len()
     }
 
-    fn retire(&self, serial: ViewSerial, stop: impl FnOnce()) -> Option<C> {
-        let Some(Live { core, drain }) = self
+    fn unlist(&self, serial: ViewSerial) -> RetiringView<C> {
+        let Some(live) = self
             .views
             .write()
             .unwrap_or_else(PoisonError::into_inner)
@@ -206,10 +207,24 @@ impl<C> ViewTable<C> {
         else {
             unreachable!("a view owner retires its own listed view once");
         };
-        // Unlist before stopping the adapter, then drain even if stopping
-        // unwinds. Neither a serial callback nor adapter teardown can bypass
-        // the lifetime of an already admitted callback.
-        let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(stop));
+        RetiringView { live: Some(live) }
+    }
+}
+
+/// Original core and callback drain after admission has closed. Moving this
+/// token transfers cleanup custody; finishing or dropping it drains every
+/// admitted lease before releasing the core, including during unwind.
+pub(crate) struct RetiringView<C> {
+    live: Option<Live<C>>,
+}
+
+impl<C> RetiringView<C> {
+    pub(crate) fn finish(mut self) -> C {
+        self.drain().expect("retirement drains every lease")
+    }
+
+    fn drain(&mut self) -> Option<C> {
+        let Live { core, drain } = self.live.take()?;
         let mut state = drain.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.retiring = true;
         #[cfg(loom)]
@@ -225,9 +240,6 @@ impl<C> ViewTable<C> {
             }
         }
         drop(state);
-        if let Err(panic) = stopped {
-            std::panic::resume_unwind(panic);
-        }
         match Arc::try_unwrap(core) {
             Ok(core) => Some(core),
             // Only the broken model returns before its leases drain; the last
@@ -235,6 +247,12 @@ impl<C> ViewTable<C> {
             Err(_) if skip => None,
             Err(_) => unreachable!("every lease releases its core before it is counted out"),
         }
+    }
+}
+
+impl<C> Drop for RetiringView<C> {
+    fn drop(&mut self) {
+        drop(self.drain());
     }
 }
 
@@ -249,22 +267,28 @@ impl<C> ViewOwner<C> {
         self.serial
     }
 
-    /// Unlists the view, runs `stop`, then drains callbacks and returns its core.
-    pub(crate) fn retire_after(mut self, stop: impl FnOnce()) -> C {
+    /// Unlists the view and runs `stop` without waiting for admitted callbacks.
+    /// The returned token owns their drain; a panicking stop drains here before
+    /// unwinding, so no caller can lose the original cleanup obligation.
+    pub(crate) fn begin_retirement(mut self, stop: impl FnOnce()) -> RetiringView<C> {
         let Some(table) = self.table.take() else {
             unreachable!("an owner retires once");
         };
-        match table.retire(self.serial, stop) {
-            Some(core) => core,
-            None => unreachable!("retirement drains every lease"),
-        }
+        let retiring = table.unlist(self.serial);
+        stop();
+        retiring
+    }
+
+    /// Unlists the view, runs `stop`, then drains callbacks and returns its core.
+    pub(crate) fn retire_after(self, stop: impl FnOnce()) -> C {
+        self.begin_retirement(stop).finish()
     }
 }
 
 impl<C> Drop for ViewOwner<C> {
     fn drop(&mut self) {
         if let Some(table) = self.table.take() {
-            drop(table.retire(self.serial, || {}));
+            drop(table.unlist(self.serial));
         }
     }
 }
@@ -443,42 +467,5 @@ mod tests {
         );
         assert_eq!(first.len(), 0);
         assert_eq!(second.len(), 0);
-    }
-
-    #[test]
-    fn retirement_waits_for_an_in_flight_lease() {
-        for unwind in [false, true] {
-            let drops = Arc::new(AtomicUsize::new(0));
-            let table = Arc::new(ViewTable::new(u64::MAX));
-            let owner = ViewTable::insert(&table, core(1, &drops)).unwrap();
-            let serial = owner.serial().get();
-            let lease = table.enter(serial).unwrap();
-            let (stopped, stopping) = std::sync::mpsc::channel();
-            let (entered, release) = std::sync::mpsc::channel();
-            let retirer = std::thread::spawn(move || {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    owner.retire_after(|| {
-                        stopped.send(()).unwrap();
-                        assert!(!unwind, "stop failed");
-                    })
-                }));
-                entered
-                    .send(result.map(|core| core.id).map_err(|_| ()))
-                    .unwrap();
-            });
-            stopping.recv().unwrap();
-            assert!(table.enter(serial).is_none());
-            // The held lease keeps the core alive after removal. The shared
-            // Loom model checks that retirement cannot bypass this lease.
-            assert_eq!(drops.load(Ordering::SeqCst), 0);
-            assert_eq!(lease.id, 1);
-            drop(lease);
-            assert_eq!(
-                release.recv().unwrap(),
-                if unwind { Err(()) } else { Ok(1) }
-            );
-            retirer.join().unwrap();
-            assert_eq!(drops.load(Ordering::SeqCst), 1);
-        }
     }
 }

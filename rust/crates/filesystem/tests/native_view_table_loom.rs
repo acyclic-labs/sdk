@@ -147,8 +147,16 @@ fn check(broken: bool) {
             }
         });
 
-        RETIRE_WITHOUT_DRAIN.with(|fault| fault.set(broken));
-        drop(owner);
+        let retiring = owner.begin_retirement(|| {});
+        assert!(table.enter(serial).is_none(), "transfer closes admission");
+        // The same production drain moves from the observer to its physical
+        // owner while admitted callbacks and a new view remain concurrent.
+        loom::thread::spawn(move || {
+            RETIRE_WITHOUT_DRAIN.with(|fault| fault.set(broken));
+            drop(retiring);
+        })
+        .join()
+        .unwrap();
         if !broken {
             assert!(
                 dropped.load(Ordering::SeqCst),
