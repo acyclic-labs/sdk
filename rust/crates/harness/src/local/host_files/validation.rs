@@ -56,11 +56,12 @@ impl WorkspaceInput {
 
     /// Checks original writer bytes and arbitrary bytes at deployed admission.
     pub fn endpoint(&self, input: &[u8]) -> Result<()> {
-        let mut endpoint = Endpoint {
-            version: 3,
-            session: uuid::Uuid::from_bytes(identity(input)),
-            workspace: self.workspace.clone(),
-        };
+        let mut endpoint = Endpoint::new(
+            uuid::Uuid::from_bytes(identity(input)),
+            self.workspace.clone(),
+            &self.requests,
+            &self.status,
+        );
 
         // These bytes use the SAME struct/serializer as serve_until's writer.
         // A reject-all decoder cannot satisfy representation invariance alone.
@@ -81,12 +82,32 @@ impl WorkspaceInput {
         endpoint.version = u32::from_le_bytes(version);
         let versioned = serde_json::to_vec(&endpoint).map_err(storage)?;
         match self.admit(&versioned) {
-            Ok(_) => assert_eq!(endpoint.version, 3),
-            Err(Error::Unsupported(_)) => assert_ne!(endpoint.version, 3),
+            Ok(_) => assert_eq!(endpoint.version, 4),
+            Err(Error::Unsupported(_)) => assert_ne!(endpoint.version, 4),
             Err(error) => panic!("descriptor version admission changed: {error:?}"),
         }
 
-        endpoint.version = 3;
+        for request_root in [true, false] {
+            let mut foreign = Endpoint::new(
+                endpoint.session,
+                self.workspace.clone(),
+                &self.requests,
+                &self.status,
+            );
+            let root = if request_root {
+                &mut foreign.requests
+            } else {
+                &mut foreign.status
+            };
+            let index = usize::from(input.first().copied().unwrap_or(0)) % root.len();
+            root[index] ^= 1;
+            assert!(matches!(
+                self.admit(&serde_json::to_vec(&foreign).map_err(storage)?),
+                Err(Error::Unauthorized(_))
+            ));
+        }
+
+        endpoint.version = 4;
         endpoint.workspace.push("foreign");
         let foreign = serde_json::to_vec(&endpoint).map_err(storage)?;
         assert!(matches!(self.admit(&foreign), Err(Error::Unauthorized(_))));
@@ -210,11 +231,16 @@ impl WorkspaceInput {
 
     fn admit(&self, bytes: &[u8]) -> Result<(acyclic_fs::HeldRoot, Endpoint)> {
         std::fs::write(self.directory.join("owner.json"), bytes).map_err(storage)?;
-        let result = discover(&self.workspace);
+        let result = discover(&self.workspace).and_then(|(directory, endpoint)| {
+            endpoint.open_roots(&directory)?;
+            Ok((directory, endpoint))
+        });
         if let Ok((directory, endpoint)) = &result {
             assert_eq!(directory.path(), &self.directory);
-            assert_eq!(endpoint.version, 3);
+            assert_eq!(endpoint.version, 4);
             assert_eq!(endpoint.workspace, self.workspace);
+            assert_eq!(endpoint.requests, self.requests.identity().to_bytes());
+            assert_eq!(endpoint.status, self.status.identity().to_bytes());
         }
         result
     }

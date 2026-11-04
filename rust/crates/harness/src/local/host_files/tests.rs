@@ -330,13 +330,21 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
         std::fs::create_dir_all(directory.join("requests")).map_err(storage)?;
         std::fs::create_dir(directory.join("status")).map_err(storage)?;
         let ownership = ownership(&workspace)?;
+        let held = acyclic_fs::hold_root(&directory).map_err(native_file_error)?;
+        let requests = held
+            .open_directory(Path::new("requests"))
+            .map_err(native_file_error)?;
+        let status = held
+            .open_directory(Path::new("status"))
+            .map_err(native_file_error)?;
         immutable(
             &directory.join("owner.json"),
-            &serde_json::to_vec(&Endpoint {
-                version: 3,
-                session: uuid::Uuid::new_v4(),
-                workspace: workspace.clone(),
-            })
+            &serde_json::to_vec(&Endpoint::new(
+                uuid::Uuid::new_v4(),
+                workspace.clone(),
+                &requests,
+                &status,
+            ))
             .map_err(storage)?,
         )?;
         Ok((checkout, workspace, ownership))
@@ -561,11 +569,8 @@ fn rejected_requests_end_without_owner_exit() -> Result<()> {
     )
     .map_err(storage)?;
     let session = uuid::Uuid::new_v4();
-    let mut endpoint = Endpoint {
-        version: 2,
-        session,
-        workspace,
-    };
+    let mut endpoint = Endpoint::new(session, workspace, &request_root, &status);
+    endpoint.version = 3;
     let descriptor = directory.join("owner.json");
     immutable(
         &descriptor,
@@ -573,10 +578,10 @@ fn rejected_requests_end_without_owner_exit() -> Result<()> {
     )?;
     assert!(matches!(
         discover(&endpoint.workspace),
-        Err(Error::Unsupported(reason)) if reason.contains("requires 3")
+        Err(Error::Unsupported(reason)) if reason.contains("requires 4")
     ));
     remove_projection(&descriptor)?;
-    endpoint.version = 3;
+    endpoint.version = 4;
     immutable(
         &descriptor,
         &serde_json::to_vec(&endpoint).map_err(storage)?,
@@ -1218,6 +1223,23 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         })?,
         &connected,
     ));
+    // A fresh client has no retained handles. The live owner's descriptor
+    // must bind admission to the reply directory that owner actually serves.
+    // The original request watcher stays live throughout this admission.
+    let directory = cwd.join(DIRECTORY);
+    let original = directory.join("status");
+    let retained = directory.join("retained-status");
+    std::fs::rename(&original, &retained).map_err(storage)?;
+    std::fs::create_dir(&original).map_err(storage)?;
+    let fresh = Arc::new(Mutex::<Registry>::default());
+    let (cold_failure, cold_observer) = match Registry::bridge(&fresh, &cwd, Bridge::open) {
+        Err(error) => (Some(error), None),
+        Ok(bridge) => (None, lock(&bridge.observer).take()),
+    };
+    // Restore before any assertion can fail, then join an incorrectly
+    // admitted observer after its original owner ends.
+    std::fs::remove_dir(&original).map_err(storage)?;
+    std::fs::rename(&retained, &original).map_err(storage)?;
     // Obtain an actual committed workspace result. On this current-thread
     // runtime the owner cannot process withdrawal between the removal below
     // and the late read: an available result must win over absent input.
@@ -1743,6 +1765,13 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         blocked.wait(operation, delivery),
         Err(Error::NotFound(_))
     ));
+    if let Some(observer) = cold_observer {
+        observer.join().expect("original cold observer retires");
+    }
+    assert!(
+        matches!(cold_failure, Some(Error::Unauthorized(_))),
+        "fresh admission must refuse the replacement reply directory: {cold_failure:?}"
+    );
     Ok(())
 }
 
