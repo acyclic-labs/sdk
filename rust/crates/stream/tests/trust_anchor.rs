@@ -184,8 +184,25 @@ async fn empty_environment_reanchors_blocked_account_opens_and_records() {
                     .unwrap();
             }
         } else {
+            // An empty stream is an actual published path, not an absent one.
+            Stream::new(provider.clone(), account_path("test", "cold"))
+                .unwrap()
+                .fork(
+                    stream.path().as_str(),
+                    Some(0),
+                    Vec::new(),
+                    IdempotencyKey::new(b"empty-live".to_vec()).unwrap(),
+                )
+                .await
+                .unwrap();
             records = genesis;
         }
+    }
+    for path in [environment_path("test"), account_path("test", "live")] {
+        assert_eq!(
+            Stream::new(provider.clone(), path).unwrap().tail().await,
+            Ok(0)
+        );
     }
     let follower = Arc::new(Follower::new("test", placeholder.anchor()));
     let (keys, watched) = tokio::sync::watch::channel(Arc::<[_]>::from(placeholder.anchor()));
