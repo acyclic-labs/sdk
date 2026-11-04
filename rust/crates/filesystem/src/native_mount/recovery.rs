@@ -895,6 +895,7 @@ fn retire_recovery(
     drop(state);
     drop((receiver, shared));
     drop(_closure);
+    panic!("original recovery completion mutation");
 }
 
 pub(super) fn wait_for_retirement(
