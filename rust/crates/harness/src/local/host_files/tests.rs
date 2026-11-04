@@ -1249,8 +1249,40 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     let _: crate::agent::AgentPath =
         serde_json::from_value(committed["task"].clone()).map_err(storage)?;
     assert!(Path::new(committed["cwd"].as_str().expect("committed workspace path")).is_absolute());
-    remove_projection(&recovery_path)?;
     drop(waiting);
+    // Re-admission after the last waiter retires must still observe the
+    // original directory. Move the actual committed bytes away before
+    // arming: neither publication's initial read nor unrelated request
+    // events may stand in for the original reply notification.
+    let status = checkout.path().join(DIRECTORY).join("status");
+    let retained_status = checkout.path().join(DIRECTORY).join("retained-status");
+    std::fs::rename(&status, &retained_status).map_err(storage)?;
+    std::fs::create_dir(&status).map_err(storage)?;
+    let original_reply = reply_path(&retained_status, operation);
+    let parked_reply = retained_status.join("parked-reply");
+    std::fs::rename(&original_reply, &parked_reply).map_err(storage)?;
+    let (delivery, response) = mpsc::sync_channel(1);
+    let readmitted = connected.wait(operation, delivery)?;
+    connected.shared.published(operation);
+    assert!(matches!(
+        response.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+    std::fs::rename(&parked_reply, &original_reply).map_err(storage)?;
+    let recovered =
+        tokio::task::spawn_blocking(move || response.recv_timeout(Duration::from_secs(2)))
+            .await
+            .map_err(storage)?
+            .map_err(storage)?;
+    let Delivery::Reply(Ok(recovered)) = recovered else {
+        panic!("the original reply producer must survive idle watch re-admission");
+    };
+    assert_eq!(recovered, committed);
+    assert_eq!(std::fs::read_dir(&status).map_err(storage)?.count(), 0);
+    drop(readmitted);
+    std::fs::remove_dir(&status).map_err(storage)?;
+    std::fs::rename(&retained_status, &status).map_err(storage)?;
+    remove_projection(&recovery_path)?;
     let (delivery, response) = mpsc::sync_channel(1);
     let late = connected.wait(operation, delivery)?;
     // The admitted client must read the committed reply in its original
