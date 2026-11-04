@@ -102,3 +102,10 @@ path = "fuzz_targets/experiment_files.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "native_claim_record"
+path = "fuzz_targets/native_claim_record.rs"
+test = false
+doc = false
+bench = false
