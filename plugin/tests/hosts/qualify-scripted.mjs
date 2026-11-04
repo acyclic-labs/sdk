@@ -1,4 +1,4 @@
-// Credential-free Linux process fixtures. Managed-model qualification is owned
+// Credential-free process fixtures. Managed-model qualification is owned
 // by the coordinator; these exercise the production adapters and native sandbox.
 import assert from 'node:assert/strict';
 import {mkdir,readFile,writeFile} from 'node:fs/promises';
@@ -21,17 +21,17 @@ export function scriptedScenario(artifacts,codex,selection){
    'step=select scripted host scenario; recovery: select '+scriptedSelections.join('|'));
  const [kind,name]=selection.split(':');
  const binary=artifacts.artifacts.acyclic.path;
- if(name==='bounded-framing')return {name,selection,
+ if(name==='bounded-framing')return {name,selection,program:'python3',
   args:[join(here,'mcp-framing.py'),binary],
   accepts:run=>JSON.parse(run.stdout).cases.length===21};
  const graphcoder=artifacts.artifacts.graphcoder.path;
- if(kind==='scale')return {name,selection,
+ if(kind==='scale')return {name,selection,program:'python3',
   args:[join(here,'shared-mount-scale.py'),binary,graphcoder,name],
   accepts:run=>run.stdout.includes('"sessions_alive_at_both_samples": true')};
  assert.ok(codex,'step=admit managed sandbox executable; recovery: supply Codex 0.164 or later for '+selection);
- return {name,selection,
-  args:[join(here,'managed-session.py'),binary,graphcoder,resolve(codex),name],
-  accepts:run=>run.stdout.includes('"suite": "managed-native-session-'+name+'"')};
+ return {name,selection,program:process.execPath,
+  args:[join(here,'managed-session.mjs'),binary,graphcoder,resolve(codex),name],
+  accepts:run=>JSON.parse(run.stdout).suite==='managed-native-session-'+name};
 }
 
 // E2E callers provide their existing process scope, environment and cancellation
@@ -39,7 +39,7 @@ export function scriptedScenario(artifacts,codex,selection){
 export async function runScriptedScenario({scenario,processes,directory,env,
   cwd=process.cwd(),expired=()=>false}){
  const started=performance.now();
- const run=await processes.runOwned('python3',scenario.args,{cwd,env,scopeMountRoot:env.HOME});
+ const run=await processes.runOwned(scenario.program,scenario.args,{cwd,env,scopeMountRoot:env.HOME});
  const seconds=(performance.now()-started)/1000;
  await writeFile(join(directory,scenario.name+'.log'),run.stdout+run.stderr,{flag:'wx'});
  const receipt={schema:'acyclic.plugin.scripted-scenario/v1',selection:scenario.selection,
