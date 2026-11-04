@@ -1,0 +1,12 @@
+diff --git a/rust/crates/filesystem/src/kernel/historical_evidence.rs b/rust/crates/filesystem/src/kernel/historical_evidence.rs
+--- a/rust/crates/filesystem/src/kernel/historical_evidence.rs
++++ b/rust/crates/filesystem/src/kernel/historical_evidence.rs
+@@ -198,6 +198,8 @@ where
+         validate_projection(&projection, plaintext_root, maximum_bytes, observe)?;
+         projection
+     };
++    let mut projection = projection;
++    projection.logical_file_bytes ^= 1;
+     Ok(projection)
+ }
+ 

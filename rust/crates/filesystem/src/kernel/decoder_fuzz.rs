@@ -283,7 +283,7 @@ fn check_inner<const PLANTED: bool>(input: &[u8]) -> Result<(), FsError> {
         );
     }
     let result = decoded.map(|_| ());
-    observed.release_failed().unwrap();
+    observed.retire().unwrap();
     let receipt = accounting.spent();
     assert_eq!(
         receipt.bytes_copied - baseline.bytes_copied,

@@ -40,6 +40,56 @@ fn different_digest(original: Digest) -> Digest {
 
 pub(super) fn check(bytes: &[u8]) {
     let input = evidence(bytes);
+    let mut steps = 0;
+    let projected = project_historical_generation_evidence(&input, u64::MAX, u64::MAX, &mut |_| {
+        steps += 1;
+        Ok::<_, PublicationEvidenceError>(())
+    });
+    if projected.is_ok() {
+        assert!(steps > 0);
+        for before in [0, bytes.len() % steps, steps - 1] {
+            let mut calls = 0;
+            let result =
+                project_historical_generation_evidence(&input, u64::MAX, u64::MAX, &mut |_| {
+                    let current = calls;
+                    calls += 1;
+                    if current == before {
+                        Err(super::DecodeFailure::Original)
+                    } else {
+                        Ok(())
+                    }
+                });
+            assert!(matches!(result, Err(super::DecodeFailure::Original)));
+            assert_eq!(
+                calls,
+                before + 1,
+                "original refusal ends projection immediately"
+            );
+        }
+    }
+    if let Ok(projected) = projected
+        && bytes.starts_with(DOMAIN)
+    {
+        // The same production parser supplies the original append context.
+        // Arbitrary accepted bytes must survive the real writer unchanged.
+        let proof = GenerationProof {
+            root: projected.root.clone(),
+            generation_id: projected.manifest.generation_id,
+            file_count: projected.manifest.file_count,
+            logical_file_bytes: projected.logical_file_bytes,
+            objects: projected.manifest.objects.clone(),
+            work: Default::default(),
+        };
+        let encoded = encode_original_generation_evidence(
+            &proof,
+            &projected.append,
+            projected.manifest.config,
+            bytes.len() as u64,
+        )
+        .expect("accepted original projection is admitted by its writer");
+        assert_eq!(encoded, input);
+        bind(bytes, &projected);
+    }
     let authority = AuthorityId::from_bytes([0; 16]);
     let mut record = DurableCommit {
         epoch: Epoch::GENESIS,
@@ -71,6 +121,18 @@ pub(super) fn check(bytes: &[u8]) {
 }
 
 pub(super) fn publication(bytes: &[u8], original: &GenerationPublicationProjection) {
+    bind(
+        bytes,
+        &HistoricalGenerationProjection {
+            append: original.append.clone(),
+            manifest: original.manifest.clone(),
+            root: original.root.clone(),
+            logical_file_bytes: original.logical_file_bytes,
+        },
+    );
+}
+
+fn bind(bytes: &[u8], original: &HistoricalGenerationProjection) {
     let append = &original.append;
     let input = evidence(bytes);
     let sequence = append.expected.sequence.checked_next().ok();
@@ -97,14 +159,8 @@ pub(super) fn publication(bytes: &[u8], original: &GenerationPublicationProjecti
         return;
     }
     // A canonical digest constructed for this oracle is no settlement receipt.
-    let expected = HistoricalGenerationProjection {
-        append: original.append.clone(),
-        manifest: original.manifest.clone(),
-        root: original.root.clone(),
-        logical_file_bytes: original.logical_file_bytes,
-    };
-    assert_eq!(decoded.expect("original record context binds"), expected);
-    verify(&input, append.authority_id, &record, &expected);
+    assert_eq!(decoded.expect("original record context binds"), *original);
+    verify(&input, append.authority_id, &record, original);
 }
 
 fn verify(

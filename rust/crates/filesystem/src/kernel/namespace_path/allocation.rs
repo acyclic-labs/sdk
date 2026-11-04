@@ -7,7 +7,7 @@ pub(crate) fn finish_owned<T>(
     match result {
         Ok(value) => Ok((value, owned.into_allocation())),
         Err(error) => {
-            owned.release_failed()?;
+            owned.retire()?;
             Err(error)
         }
     }

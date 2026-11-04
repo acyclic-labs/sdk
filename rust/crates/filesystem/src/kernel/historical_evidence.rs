@@ -7,10 +7,9 @@ use super::publication_evidence::{
 };
 use super::{
     DecodeLimits, GenerationExportManifest, GenerationProof, GenerationRoot,
-    PublicationEvidenceError, decode_generation_export_manifest,
-    decode_generation_publication_evidence, decode_generation_root, decode_retention_created,
-    decode_volume_created, encode_generation_export_manifest, encode_generation_root,
-    generation_root_id, retention_authority_id, volume_authority_id,
+    PublicationEvidenceError, decode_generation_root, decode_volume_created,
+    encode_generation_export_manifest, encode_generation_root, generation_root_id,
+    volume_authority_id,
 };
 use crate::foundation::{AuthorityId, Digest, DurableCommit, ProposedCommit, Sequence};
 use crate::model::VolumeConfig;
@@ -83,29 +82,44 @@ pub fn encode_original_generation_evidence(
         root: proof.root.clone(),
         logical_file_bytes: proof.logical_file_bytes,
     };
-    validate_projection(&projection, maximum_bytes)?;
+    let (plaintext_root, _) = generation_root_id(&projection.root)?;
+    validate_projection(
+        &projection,
+        plaintext_root.digest,
+        maximum_bytes,
+        &mut |_| Ok::<_, PublicationEvidenceError>(()),
+    )?;
     encode_projection(&projection, maximum_bytes)
 }
 
-/// Decodes protected original metadata and binds it to this exact authoritative record.
-pub fn decode_historical_generation_evidence(
+/// Projects protected preparation bytes without establishing authority settlement.
+pub fn project_historical_generation_evidence<E>(
     evidence: &HistoricalGenerationEvidence,
-    authority_id: AuthorityId,
-    record: &DurableCommit,
     maximum_bytes: u64,
     maximum_objects: u64,
-) -> Result<HistoricalGenerationProjection, PublicationEvidenceError> {
+    observe: &mut impl FnMut(super::ReadAllocationStep) -> Result<(), E>,
+) -> Result<HistoricalGenerationProjection, E>
+where
+    E: From<PublicationEvidenceError>
+        + From<super::CanonicalDecodeError>
+        + From<super::GenerationExportManifestError>
+        + From<super::VolumeCreatedError>
+        + From<super::RetentionCreatedError>,
+{
+    use super::ReadAllocationStep;
     if maximum_bytes == 0 || u64::try_from(evidence.bytes.len()).unwrap_or(u64::MAX) > maximum_bytes
     {
-        return Err(PublicationEvidenceError::TooLarge);
+        return Err(PublicationEvidenceError::TooLarge.into());
     }
     let projection = if evidence.bytes.starts_with(PUBLICATION_DOMAIN) {
-        let publication = decode_generation_publication_evidence(
-            &evidence.bytes,
-            &evidence.sha256,
-            maximum_bytes,
-            maximum_objects,
-        )?;
+        let publication =
+            super::publication_evidence::decode_generation_publication_evidence_observed(
+                &evidence.bytes,
+                &evidence.sha256,
+                maximum_bytes,
+                maximum_objects,
+                observe,
+            )?;
         HistoricalGenerationProjection {
             append: publication.append,
             manifest: publication.manifest,
@@ -113,37 +127,46 @@ pub fn decode_historical_generation_evidence(
             logical_file_bytes: publication.logical_file_bytes,
         }
     } else {
-        if <[u8; 32]>::from(Sha256::digest(&evidence.bytes)) != evidence.sha256 {
-            return Err(PublicationEvidenceError::Mismatch);
+        observe(ReadAllocationStep::BeforeHash(evidence.bytes.len() as u64))?;
+        let digest: [u8; 32] = Sha256::digest(&evidence.bytes).into();
+        observe(ReadAllocationStep::Hashed(evidence.bytes.len() as u64))?;
+        if digest != evidence.sha256 {
+            return Err(PublicationEvidenceError::Mismatch.into());
         }
-        let mut observe = |_| Ok::<_, crate::kernel::CanonicalDecodeError>(());
-        let mut decoder = Decoder::new(&evidence.bytes, DOMAIN, 1, maximum_bytes, &mut observe)?;
+        let mut decoder = Decoder::new(&evidence.bytes, DOMAIN, 1, maximum_bytes, observe)?;
         let OriginalAppendHeader {
             authority_id,
             epoch,
             expected,
             operation_id,
             fingerprint,
-        } = decode_original_append_header(&mut decoder)?;
-        let logical_file_bytes = u128::from_le_bytes(decoder.fixed(&mut observe)?);
+        } = decode_original_append_header(&mut decoder, observe)?;
+        let logical_file_bytes = u128::from_le_bytes(decoder.fixed(observe)?);
         let field_bound = u32::try_from(maximum_bytes).unwrap_or(u32::MAX);
-        let manifest = decode_generation_export_manifest(
-            decoder.bounded_slice(field_bound, &mut observe)?,
+        let manifest = super::export::decode_generation_export_manifest_observed(
+            decoder.bounded_slice(field_bound, observe)?,
             maximum_bytes,
             maximum_objects,
+            observe,
         )?;
+        let root_bytes = decoder.bounded_slice(field_bound, observe)?;
         let root = decode_generation_root(
-            decoder.bounded_slice(field_bound, &mut observe)?,
+            root_bytes,
             DecodeLimits {
                 maximum_object_bytes: maximum_bytes,
                 ..DecodeLimits::default()
             },
-            &mut observe,
+            &mut *observe,
         )?;
-        let payload = Bytes::copy_from_slice(decoder.bounded_slice(field_bound, &mut observe)?);
+        let payload = Bytes::from(super::codec::copy_bytes(
+            decoder.bounded_slice(field_bound, observe)?,
+            1,
+            observe,
+        )?);
         let permit = decode_publication_permit(
-            decoder.bounded_slice(field_bound, &mut observe)?,
+            decoder.bounded_slice(field_bound, observe)?,
             maximum_bytes,
+            observe,
         )?;
         decoder.finish()?;
         let projection = HistoricalGenerationProjection {
@@ -163,12 +186,53 @@ pub fn decode_historical_generation_evidence(
             root,
             logical_file_bytes,
         };
-        validate_projection(&projection, maximum_bytes)?;
-        if encode_projection(&projection, maximum_bytes)?.bytes != evidence.bytes {
-            return Err(PublicationEvidenceError::Mismatch);
-        }
+        observe(ReadAllocationStep::BeforeHash(root_bytes.len() as u64))?;
+        let plaintext_root = crate::storage::object_digest(root_bytes);
+        observe(ReadAllocationStep::Hashed(root_bytes.len() as u64))?;
+        validate_projection(&projection, plaintext_root, maximum_bytes, observe)?;
         projection
     };
+    Ok(projection)
+}
+
+/// Decodes protected original metadata and binds it to this exact authoritative record.
+pub fn decode_historical_generation_evidence(
+    evidence: &HistoricalGenerationEvidence,
+    authority_id: AuthorityId,
+    record: &DurableCommit,
+    maximum_bytes: u64,
+    maximum_objects: u64,
+) -> Result<HistoricalGenerationProjection, PublicationEvidenceError> {
+    decode_historical_generation_evidence_observed(
+        evidence,
+        authority_id,
+        record,
+        maximum_bytes,
+        maximum_objects,
+        &mut |_| Ok::<_, PublicationEvidenceError>(()),
+    )
+}
+
+pub(crate) fn decode_historical_generation_evidence_observed<E>(
+    evidence: &HistoricalGenerationEvidence,
+    authority_id: AuthorityId,
+    record: &DurableCommit,
+    maximum_bytes: u64,
+    maximum_objects: u64,
+    observe: &mut impl FnMut(super::ReadAllocationStep) -> Result<(), E>,
+) -> Result<HistoricalGenerationProjection, E>
+where
+    E: From<PublicationEvidenceError>
+        + From<super::CanonicalDecodeError>
+        + From<super::GenerationExportManifestError>
+        + From<super::VolumeCreatedError>
+        + From<super::RetentionCreatedError>,
+{
+    let projection =
+        project_historical_generation_evidence(evidence, maximum_bytes, maximum_objects, observe)?;
+    let hash_bytes = crate::AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES
+        .checked_add(record.payload.len() as u64)
+        .ok_or(super::CanonicalDecodeError::LengthOverflow)?;
     let append = &projection.append;
     if append.authority_id != authority_id
         || append.epoch != record.epoch
@@ -178,48 +242,76 @@ pub fn decode_historical_generation_evidence(
         || append.commit.operation_id != record.operation_id
         || append.commit.fingerprint != record.fingerprint
         || append.commit.payload != record.payload
-        || crate::authority_commit_digest(
-            authority_id,
-            record.epoch,
-            record.sequence,
-            record.operation_id,
-            record.fingerprint,
-            record.previous_digest,
-            &record.payload,
-        ) != record.digest
     {
-        return Err(PublicationEvidenceError::Mismatch);
+        return Err(PublicationEvidenceError::Mismatch.into());
+    }
+    observe(super::ReadAllocationStep::BeforeHash(hash_bytes))?;
+    let digest = crate::authority_commit_digest(
+        authority_id,
+        record.epoch,
+        record.sequence,
+        record.operation_id,
+        record.fingerprint,
+        record.previous_digest,
+        &record.payload,
+    );
+    observe(super::ReadAllocationStep::Hashed(hash_bytes))?;
+    if digest != record.digest {
+        return Err(PublicationEvidenceError::Mismatch.into());
     }
     Ok(projection)
 }
 
-fn validate_projection(
+fn validate_projection<E>(
     value: &HistoricalGenerationProjection,
+    plaintext_root: Digest,
     maximum_bytes: u64,
-) -> Result<(), PublicationEvidenceError> {
-    let (plaintext_root, _) = generation_root_id(&value.root)?;
+    observe: &mut impl FnMut(super::ReadAllocationStep) -> Result<(), E>,
+) -> Result<(), E>
+where
+    E: From<PublicationEvidenceError>
+        + From<super::CanonicalDecodeError>
+        + From<super::VolumeCreatedError>
+        + From<super::RetentionCreatedError>,
+{
     let root_id = value.manifest.generation_root;
     if value.manifest.volume_id != value.root.volume_id
         || root_id.kind != crate::ObjectKind::GenerationRoot
-        || root_id.digest != plaintext_root.digest
+        || root_id.digest != plaintext_root
         || value.manifest.generation_id.object_id() != root_id
     {
-        return Err(PublicationEvidenceError::Mismatch);
+        return Err(PublicationEvidenceError::Mismatch.into());
     }
     let append = &value.append;
-    let valid = if let Ok(created) =
-        decode_volume_created(&append.commit.payload, maximum_bytes, &mut |_| {
-            Ok::<_, crate::kernel::VolumeCreatedError>(())
-        }) {
+    let valid = if append
+        .commit
+        .payload
+        .starts_with(b"acyclic-fs-volume-created-v1\0")
+    {
+        let created = decode_volume_created(&append.commit.payload, maximum_bytes, &mut *observe)?;
         append.authority_id == volume_authority_id(created.volume_id)
             && append.expected.sequence == Sequence::GENESIS
             && append.expected.digest == Digest::ZERO
             && created.volume_id == value.root.volume_id
             && created.initial_generation_root == root_id
             && created.config == value.manifest.config
-    } else if let Ok(retained) = decode_retention_created(&append.commit.payload, maximum_bytes) {
+    } else if append
+        .commit
+        .payload
+        .starts_with(b"acyclic-fs-retention-created-v1\0")
+    {
+        let retained = super::retention::decode_retention_created_ref(
+            &append.commit.payload,
+            maximum_bytes,
+            observe,
+        )?;
         append.authority_id
-            == retention_authority_id(retained.volume_id, retained.kind, &retained.label)
+            == super::retention::retention_authority_id_observed(
+                retained.volume_id,
+                retained.kind,
+                retained.label,
+                observe,
+            )?
             && append.expected.sequence == Sequence::GENESIS
             && append.expected.digest == Digest::ZERO
             && retained.volume_id == value.root.volume_id
@@ -229,7 +321,7 @@ fn validate_projection(
         false
     };
     if !valid {
-        return Err(PublicationEvidenceError::Mismatch);
+        return Err(PublicationEvidenceError::Mismatch.into());
     }
     Ok(())
 }
