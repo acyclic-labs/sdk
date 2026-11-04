@@ -92,7 +92,7 @@ async fn a_refused_history_preparation_can_select_a_new_project_generation() -> 
     let (agents, root) = harness.agents().await?;
     let client = crate::local::agent_conversation::Conversation::open(harness.connect().await?);
     client.send("first", "first").await?;
-    settled(agents, root).await?;
+    settled(&harness, root).await?;
     let actor = agents.actor(root).map_err(storage)?;
     let parent = agents.state(root).await.map_err(storage)?;
     let before = agents
@@ -102,7 +102,7 @@ async fn a_refused_history_preparation_can_select_a_new_project_generation() -> 
         .await
         .map_err(storage)?;
     client.send("second", "second").await?;
-    let entries = settled(agents, root).await?;
+    let entries = settled(&harness, root).await?;
     let after = agents
         .runtime()
         .store()
