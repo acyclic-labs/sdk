@@ -10,15 +10,16 @@ const args = process.argv.slice(2);
 const red = args.includes("--red");
 const retirement = args.includes("--retirement");
 const bytes = args.includes("--bytes");
-const quoted = args.includes("--quoted");
 const metadata = args.includes("--metadata");
 const array = args.includes("--array");
 const number = args.includes("--number");
 const sourceArgument = args.find(arg => arg.startsWith("--source="))?.slice("--source=".length);
-const sources = sourceArgument === undefined ? ["keys"] : sourceArgument.split(",");
+const sources = sourceArgument === undefined ? [retirement ? "keys" : "tokens"] : sourceArgument.split(",");
+const sourceKinds = retirement ? ["keys", "array", "prototype", "iterator", "callback", "getter", "number"]
+  : ["tokens", "quoted", "canonical"];
 const selectedControl = retirement || bytes || metadata || array || number;
 const reuse = args.find(arg => arg.startsWith("--reuse="))?.slice("--reuse=".length);
-const recovery = `node scripts/qualify-js-json.mjs${retirement ? " --retirement" : bytes ? " --bytes" : metadata ? " --metadata" : array ? " --array" : number ? " --number" : ""}${red ? " --red" : ""}${quoted ? " --quoted" : ""}${sourceArgument === undefined ? "" : ` --source=${sourceArgument}`}${reuse ? ` --reuse=${JSON.stringify(reuse)}` : ""}`;
+const recovery = `node scripts/qualify-js-json.mjs${retirement ? " --retirement" : bytes ? " --bytes" : metadata ? " --metadata" : array ? " --array" : number ? " --number" : ""}${red ? " --red" : ""}${sourceArgument === undefined ? "" : ` --source=${sourceArgument}`}${reuse ? ` --reuse=${JSON.stringify(reuse)}` : ""}`;
 const test = bytes ? "external JSON bytes preserve engine tokens or refuse before rounding"
   : retirement ? "canonical admission releases JavaScript references after admission failures"
   : "canonical admission selects entries before evaluating their values";
@@ -32,13 +33,13 @@ const run = (step, command, parameters, options = {}) => {
   if (result.error) fail(step, result.error.message);
   return result;
 };
-if (args.some(arg => !["--red", "--retirement", "--bytes", "--quoted", "--metadata", "--array", "--number"].includes(arg) && !arg.startsWith("--reuse=") && !arg.startsWith("--source="))
-  || new Set(args).size !== args.length || Number(retirement) + Number(bytes) + Number(metadata) + Number(array) + Number(number) > 1 || quoted && !(bytes && red)
+if (args.some(arg => !["--red", "--retirement", "--bytes", "--metadata", "--array", "--number"].includes(arg) && !arg.startsWith("--reuse=") && !arg.startsWith("--source="))
+  || new Set(args).size !== args.length || Number(retirement) + Number(bytes) + Number(metadata) + Number(array) + Number(number) > 1
   || args.filter(arg => arg.startsWith("--reuse=")).length > 1 || args.includes("--reuse=") || reuse && red
-  || args.filter(arg => arg.startsWith("--source=")).length > 1 || sourceArgument !== undefined && !(retirement && red)
-  || new Set(sources).size !== sources.length || sources.some(name => !/^(?:keys|array|prototype|iterator|callback|getter|number)$/u.test(name))
+  || args.filter(arg => arg.startsWith("--source=")).length > 1 || sourceArgument !== undefined && !(red && (retirement || bytes))
+  || new Set(sources).size !== sources.length || sources.some(name => !sourceKinds.includes(name))
   || red && !selectedControl) {
-  fail("arguments", "expected at most one control (--retirement, --bytes, --metadata, --array or --number); --red requires a control, --quoted requires --bytes --red, --source=<keys,array,prototype,iterator,callback,getter,number> selects distinct sources and requires --retirement --red, and --reuse=<receipt> excludes --red",
+  fail("arguments", "expected at most one control (--retirement, --bytes, --metadata, --array or --number); --red requires a control; --source selects distinct retirement sources (keys,array,prototype,iterator,callback,getter,number) or byte sources (tokens,quoted,canonical) and requires --red; --reuse=<receipt> excludes --red",
     "node scripts/qualify-js-json.mjs --array --red");
 }
 
@@ -72,7 +73,8 @@ function qualify(source) {
         : number ? "        if !crate::conversation::is_exact_js_number(number) {"
         : array ? "        let items = js_sys::Array::from_iterable(value.unchecked_ref::<js_sys::Array>())?;"
         : metadata ? "        let mut entries = Vec::new();"
-        : quoted ? "        if quoted {" : "    reject_out_of_range_integer_tokens(bytes)?;";
+        : source === "canonical" ? "    if canonical != bytes {"
+        : source === "quoted" ? "        if quoted {" : "    reject_out_of_range_integer_tokens(bytes)?;";
       if (original.split(entrance).length !== 2) fail("admission mutation", "expected exactly one production entrance");
       const replacement = retirement ? selected[1]
         : number ? "        if false && !crate::conversation::is_exact_js_number(number) {"
@@ -82,7 +84,8 @@ function qualify(source) {
             .filter(|size| (0.0..=f64::from(u32::MAX)).contains(size) && size.fract() == 0.0)
             .ok_or_else(|| JsValue::from_str("Map size must be an unsigned 32-bit integer"))?;
         let mut entries = Vec::with_capacity(size as usize);`
-        : quoted ? "        if false && quoted {" : "";
+        : source === "canonical" ? "    if false && canonical != bytes {"
+        : source === "quoted" ? "        if false && quoted {" : "";
       const planted = original.replace(entrance, replacement);
       mutation = {
         removed: entrance.trim(),
@@ -162,7 +165,8 @@ function qualify(source) {
     process.stdout.write(output);
     const expected = red
       ? result.status !== 0 && result.signal === null && output.includes(bytes
-        ? quoted ? "external JSON input was refused despite engine token admission"
+        ? source === "canonical" ? "canonical JSON admitted noncanonical bytes"
+          : source === "quoted" ? "external JSON input was refused despite engine token admission"
           : "external JSON input admission disagrees with engine token oracle" : retirement
           ? "JavaScript refusal retained original input" : number
             ? "canonical admission accepted an unsafe JavaScript Number" : array
@@ -210,7 +214,7 @@ function qualify(source) {
     const receiptName = number ? `javascript-json-number-${red ? "red" : "fixed"}.json`
       : array ? `javascript-json-array-${red ? "red" : "fixed"}.json`
       : metadata ? `javascript-json-metadata-${red ? "red" : "fixed"}.json`
-      : bytes ? `javascript-json-bytes-${quoted ? "quoted-" : ""}${red ? "red" : "fixed"}.json`
+      : bytes ? `javascript-json-bytes-${red && source !== "tokens" ? `${source}-` : ""}${red ? "red" : "fixed"}.json`
       : retirement ? `javascript-json-retirement-${red ? `${source}-red` : "fixed"}.json`
       : red ? "javascript-json-qualification.json" : "javascript-json-fixed-qualification.json";
     try { writeFileSync(new URL(`../${receiptName}`, import.meta.url), receipt); }

@@ -49,6 +49,14 @@ function expectedValue(input: Uint8Array): unknown {
 }
 
 test("external JSON bytes preserve engine tokens or refuse before rounding", () => {
+  const expected = expectedValue(captured);
+  const canonical = contracts.encodeCanonicalJson(expected);
+  const noncanonical = new Uint8Array(canonical.length + 1);
+  noncanonical[0] = 0x20;
+  noncanonical.set(canonical, 1);
+  assert.deepEqual(contracts.decodeClientJson(noncanonical), expected);
+  assert.throws(() => contracts.decodeCanonicalJson(noncanonical),
+    "canonical JSON admitted noncanonical bytes");
   fc.assert(fc.property(inputs, input => {
     let expected: unknown;
     let refused = false;
