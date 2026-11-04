@@ -379,6 +379,7 @@ dependencies = [
  "compio-driver",
  "dirs",
  "futures-core",
+ "futures-util",
  "getrandom 0.3.4",
  "indexmap",
  "keyring",
