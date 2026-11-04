@@ -64,3 +64,17 @@ four-byte scalar must survive page shrinking`. This plants the former raw
 byte midpoint in the actual collector, while leaving the projected filesystem
 input, cursor and exact canonical wire-credit oracle unchanged. Reverse it
 and require the same test to pass.
+
+`diff-missing-baseline.patch` restores the former production fallback that
+treated an incomplete source import as an empty diff. Apply it and run the
+existing native capture control through the served client:
+
+```sh
+cargo test --locked -p acyclic-harness --features filesystem-local,native-execution,test-support --lib local::checkout_tools::capture::tests::unreadable_before_images_remain_optional_until_continuity_is_lost -- --exact --nocapture
+```
+
+The test must fail at `uncertified source was reported as an exact diff`,
+after the real source refuses its before-image and before continuity is
+recovered. Reverse the production patch and require the same test to pass,
+including the exact empty diff after a complete baseline is retained.
+A compilation or setup failure does not qualify the mutation.

@@ -24,8 +24,8 @@ impl LocalHarness {
     }
 
     /// One page of the selected checkout's changes since its first complete
-    /// import, the fork base every agent edit is measured from. Before that
-    /// baseline is recorded nothing has changed. Projection, disclosure
+    /// import, the fork base every agent edit is measured from. Without that
+    /// complete baseline the query refuses to certify a diff. Projection, disclosure
     /// authority and paging are the shared [`crate::hosting::DiffPages`],
     /// which retains this checkout's projection in `diffs`.
     #[cfg(any(test, feature = "native-execution"))]
@@ -49,12 +49,6 @@ impl LocalHarness {
             .unwrap_or_else(|| workspace.view())
             .workspace();
         let cancellation = acyclic_fs::CancellationToken::new();
-        let current = selected
-            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map_err(storage)?
-            .value
-            .id();
         let base = selected
             .operation_generation(
                 acyclic_fs::IdempotencyKey::from_bytes(
@@ -66,7 +60,16 @@ impl LocalHarness {
             .await
             .map_err(storage)?
             .value
-            .map_or(current, |baseline| baseline.id());
+            .ok_or_else(|| {
+                Error::Unsupported("workspace diff requires a complete source baseline".into())
+            })?
+            .id();
+        let current = selected
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value
+            .id();
         diffs
             .page(
                 &*self.signed_reader()?,
