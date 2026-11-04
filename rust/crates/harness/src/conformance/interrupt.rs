@@ -104,22 +104,12 @@ async fn interrupted(backend: &dyn Backend, fault: Option<Fault>) -> Result {
             }),
         )
         .await?;
-        host.send(&agent, &fixtures::sender(), &send("after")?)
-            .await?;
         Result::Ok(())
     };
-    let draining = vectors::drain(&host);
-    futures::pin_mut!(controls, draining);
-    match futures::future::select(controls, draining).await {
-        futures::future::Either::Left((result, draining)) => {
-            result?;
-            draining.await?;
-        }
-        futures::future::Either::Right((result, _)) => {
-            result?;
-            return Err("runtime drain ended before interrupt controls completed".into());
-        }
-    }
+    futures::try_join!(controls, vectors::drain(&host))?;
+    host.send(&agent, &fixtures::sender(), &send("after")?)
+        .await?;
+    vectors::drain(&host).await?;
     let outputs = vectors::values(&*provider, agent.conversation()?).await?;
     if outputs != [b"cancelled".to_vec(), b"queued".to_vec(), b"after".to_vec()] {
         return Err(format!("interrupt lost or repeated committed inputs: {outputs:?}").into());
