@@ -179,10 +179,10 @@ async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         if record.sequence > head.sequence {
             break;
         }
-        let stamp = verify_record(authority_id, next, &record, work)?;
-        let transition = async {
+        let admitted = async {
+            let stamp = verify_record(authority_id, next, &record, work)?;
             work.accounting().charge_items(1)?;
-            Ok::<_, AccountingError>(match &kind {
+            let transition = match &kind {
                 AuthorityKind::Volume { volume_id, config }
                     if record.sequence == Sequence::new(1) =>
                 {
@@ -283,11 +283,16 @@ async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                         logical_regular_file_bytes: bytes,
                     }
                 }
-            })
+            };
+            work.admit(WorkCounters {
+                items_returned: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            Ok::<_, AccountingError>((stamp, transition))
         }
         .await;
-        let transition = match transition {
-            Ok(transition) => transition,
+        let (stamp, transition) = match admitted {
+            Ok(admitted) => admitted,
             Err(AccountingError::Work(WorkError::BudgetExceeded { .. }))
                 if !facts.value.is_empty() =>
             {
@@ -306,10 +311,6 @@ async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 AccountingOperationClass::CustomerMutation
             }
         };
-        work.admit(WorkCounters {
-            items_returned: 1,
-            ..WorkCounters::UNCHARGED
-        })?;
         facts.value.push(AccountingFact {
             authority_id,
             sequence: record.sequence,
