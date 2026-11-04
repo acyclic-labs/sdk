@@ -95,6 +95,7 @@ pulldown-cmark = { version = "0.13.5", default-features = false }
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
+acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 acyclic-harness-client = { version = "=0.2.0", path = "../harness-client" }
 acyclic-harness-search = { version = "=0.2.0", path = "../harness-search" }
 acyclic-harness-tui = { version = "=0.2.0", path = "../harness-tui", default-features = false, optional = true }
