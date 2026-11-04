@@ -294,19 +294,24 @@ fn wait_for_owner_stop() -> ! {
     }
 }
 
-/// Waits for a helper's readiness marker.
-pub(super) fn ready(root: &std::path::Path, name: &str, mut exited: impl FnMut() -> bool) {
-    while !root.join(name).exists() {
-        assert!(
-            !exited() || root.join(name).exists(),
-            "helper exited before it was ready"
-        );
-        thread::sleep(Duration::from_millis(5));
-    }
-}
-
-fn tree_exited(tree: &mut ProcessTree) -> bool {
-    tree.try_wait(None).map_or(true, |status| status.is_some())
+/// Await the original diagnostic pipe without consuming its captured payload.
+/// EOF also completes the wait, letting capture report the lost producer.
+fn stderr_ready(tree: &ProcessTree) -> io::Result<()> {
+    let stderr = tree
+        .child
+        .as_ref()
+        .and_then(|child| child.stderr.as_ref())
+        .ok_or(io::ErrorKind::BrokenPipe)?;
+    #[cfg(unix)]
+    let source = {
+        use std::os::fd::AsFd as _;
+        super::events::Source::Readable(stderr.as_fd())
+    };
+    #[cfg(windows)]
+    let operation = super::events::PipeOperation::reader(stderr)?;
+    #[cfg(windows)]
+    let source = super::events::Source::Pipe(&operation);
+    super::events::arm(&[source], None)?.block().into_result()
 }
 
 /// The parent relays this byte only after its original grandchild holds its
@@ -440,7 +445,6 @@ fn process_tree_helper() {
                 .expect("partial stderr");
             std::io::stdout().flush().expect("flush partial stdout");
             std::io::stderr().flush().expect("flush partial stderr");
-            fs::write(root.join("partial-ready"), b"ready").expect("partial ready");
             wait_for_owner_stop();
         }
         "output" => {
@@ -538,7 +542,12 @@ fn stdin_helper(mode: &str, root: &std::path::Path) {
                 .write_all(b"stdin-stall-marker")
                 .expect("stall marker");
             std::io::stdout().flush().expect("flush stall marker");
-            fs::write(root.join("stdin-stall-ready"), b"ready").expect("stall ready");
+            std::io::stderr()
+                .write_all(b"R")
+                .expect("original stalled input readiness write");
+            std::io::stderr()
+                .flush()
+                .expect("flush original stalled input readiness");
             wait_for_owner_stop();
         }
         "stdin-handshake" => {
@@ -1255,9 +1264,7 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
     let mut command = command("stdin-stall", temporary.path());
     command.stdin(ProcessStdio::piped());
     let mut tree = ProcessTree::spawn(&mut command).expect("spawn stalled exchange");
-    ready(temporary.path(), "stdin-stall-ready", || {
-        tree_exited(&mut tree)
-    });
+    stderr_ready(&tree).expect("original stalled input readiness event");
     // The capture clock is frozen and only reaches the deadline inside the
     // second check, so expiry is ordered after two full capture iterations no
     // matter how late the scheduler runs this thread.
@@ -1285,9 +1292,17 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
             None,
             None,
         )
-        .expect_err("deadline stops stalled input");
-    assert_eq!(failure.error.kind(), std::io::ErrorKind::TimedOut);
+        .expect_err("original stalled input deadline was lost");
+    assert_eq!(
+        failure.error.kind(),
+        std::io::ErrorKind::TimedOut,
+        "original stalled input deadline was lost"
+    );
     assert!(failure.stdout.ends_with(b"stdin-stall-marker"));
+    assert_eq!(
+        failure.stderr, b"R",
+        "original stalled input readiness byte was lost"
+    );
     drop(clock);
     assert_eq!(
         checks, 2,
@@ -1302,7 +1317,7 @@ fn stopped_capture_preserves_output_prefix_and_cleanup_observation() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let mut tree = ProcessTree::spawn(&mut command("partial", temporary.path()))
         .expect("spawn partial output");
-    ready(temporary.path(), "partial-ready", || tree_exited(&mut tree));
+    stderr_ready(&tree).expect("original partial output readiness event");
     let failure = tree
         .wait_with_output(
             Duration::from_millis(20),
