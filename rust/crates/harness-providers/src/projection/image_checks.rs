@@ -360,17 +360,18 @@ async fn check_result_media(
         changed.replay_key().unwrap(),
         "a changed visible tool reference must invalidate replay"
     );
-    let changed_body = crate::projection::body_with_files(
+    let changed_encoded = crate::dispatch::encode(
         provider,
-        changed.request(),
-        &mut crate::files::FileText(
-            (0..2)
-                .map(|_| crate::files::ResolvedFile::Native(STANDARD.encode(bytes)))
-                .collect::<Vec<_>>()
-                .into_iter(),
-        ),
+        &changed,
+        &crate::tool_names::Names::new(changed.request()),
+        None,
+        &provider.reasoning_origin(None, None),
     )
+    .await
     .unwrap();
+    let changed_body: Value = serde_json::from_slice(&changed_encoded.bytes).unwrap();
+    assert!(crate::validate_input(adapter, &changed_body).is_empty());
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 4);
     assert!(contains_text(&changed_body, &marker(&relocated)));
     let mut changed_media = Vec::new();
     collect_media(&changed_body, &mut changed_media);
