@@ -13,7 +13,7 @@ unchanged. This replaces the fixed 73/127-byte shared-peak example; the separate
 physical-value destruction, admission-refusal and native concurrent-retirement
 checks remain because they cover different boundaries.
 
-Run `python3 rust/proofs/retained-credit/run.py` from the repository root. The
+Run `python3 rust/proofs/qualify.py retained-credit` from the repository root. The
 kept mutation removes the production scratch/retained fence. The unchanged
 property must fail at `scratch retirement accepted retained credit`. A compile
 error, signal, empty selection or timeout is not a qualifying negative result.

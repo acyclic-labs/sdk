@@ -28,14 +28,14 @@ separate native Loom model covers actual leaf/resource locks. Neither is a
 substitute for the provider-level reservation regression or for their original
 platform qualification.
 
+The [settlement terminal control](settlement-terminal/README.md) joins the
+actual serving runtime's completion event to raw actor-checkpoint observation.
+It drops the model dispatch producer and requires the original error without
+settling recoverable input; removing the join must fail the unchanged oracle.
 The native spawn-brief end-to-end test still requires an original runtime
-diagnosis for its macOS timeout. Its settlement helper follows the actor
-checkpoint; `LocalAgents::run` reports per-agent failures while keeping work
-queued. That contract alone does not establish that a failed turn produces the
-terminal event a settlement waiter needs. Closing this gap requires a check at
-the actual error/terminal producer, including dispatch failure and producer
-loss. Increasing a timeout or using a successful model response would not prove
-it. No cause is inferred from the timeout census alone.
+diagnosis for its macOS timeout. This event-consumption control does not qualify
+its native projection or identify that timeout's cause. Increasing a timeout
+or using a successful model response would not prove it.
 
 The open whole-operation and topology obligations in the table must remain
 explicit until their checked refinement, original counters and independent
