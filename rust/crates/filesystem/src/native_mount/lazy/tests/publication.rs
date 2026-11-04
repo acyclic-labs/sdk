@@ -262,7 +262,25 @@ async fn replaced_source_identity_keeps_open_handle_and_surviving_alias()
     std::fs::write(source_root.path().join("a"), b"source")?;
     std::fs::write(source_root.path().join("c"), b"target")?;
     std::fs::hard_link(source_root.path().join("c"), source_root.path().join("d"))?;
-    let view = mounted_view(source_root.path(), "mounted-identity-replace").await?;
+    let view = mounted_view_of_with_authored_work(
+        Arc::new(
+            native_source(
+                source_root.path(),
+                crate::model::FilesystemProfile::Portable,
+            )
+            .await?,
+        ),
+        "mounted-identity-replace",
+        crate::MemoryLazyWorkspaceStore::default(),
+        crate::VolumeConfig {
+            // The final unrelated writer advances the head while the mount
+            // retains its removal. This case requires disjoint composition.
+            concurrency: crate::model::ConcurrencyMode::SerializedAuthority,
+            ..crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral)
+        },
+        None,
+    )
+    .await?;
     let lazy = Arc::clone(&view.lazy);
     let a = mounted(&["a"]);
     let c = mounted(&["c"]);
