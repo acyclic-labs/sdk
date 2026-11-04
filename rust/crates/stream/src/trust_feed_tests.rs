@@ -6,7 +6,7 @@ use acyclic_auth::trust::{ChangeSource as _, EnvironmentFrontier, Issuer};
 use acyclic_auth::verify::Trust as _;
 use bytes::Bytes;
 use ed25519_dalek::SigningKey;
-use futures::{FutureExt as _, stream};
+use futures::stream;
 use std::{
     collections::HashSet,
     future::Future,
@@ -222,38 +222,6 @@ fn reconnect_completes_an_interrupted_authenticated_replay() {
     let mut run = Box::pin(feed.run());
     assert!(step(&mut run).is_none());
     assert!(served(&follower, "account"));
-}
-
-#[test]
-fn a_cancelled_run_fences_the_trust_it_served() {
-    let issuer = Issuer::new("test", key(1));
-    let (_root, genesis) = issuer.genesis("account", key(2), NOW).unwrap();
-    let mut world = world(&issuer, genesis);
-    let follower = Arc::clone(&world.follower);
-    let mut run = Box::pin(world.feed.run());
-    assert!(step(&mut run).is_none());
-    assert_eq!(*follower.state().borrow(), FollowerState::Serving);
-    assert!(served(&follower, "account"));
-    drop(run);
-    assert_eq!(
-        *follower.state().borrow(),
-        FollowerState::Fenced(FenceCause::LostFollow)
-    );
-    assert!(!served(&follower, "account"));
-    // Cancelling this run leaves its original feed available for reconnect.
-    world.accounts.follow("account").unwrap();
-    let late = world.accounts.clone();
-    let changed = follower.changed();
-    world.feed.close();
-    assert_eq!(
-        changed.now_or_never(),
-        Some(Err(acyclic_auth::trust::SourceClosed))
-    );
-    assert_eq!(
-        world.accounts.follow("account"),
-        Err(StreamError::Unavailable)
-    );
-    assert_eq!(late.follow("late"), Err(StreamError::Unavailable));
 }
 
 #[test]

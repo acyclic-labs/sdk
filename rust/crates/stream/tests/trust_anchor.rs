@@ -1,8 +1,8 @@
 //! Anchor recovery uses signed records through the original memory provider.
 use acyclic_auth::{
     trust::{
-        EnvironmentFrontier, FenceCause, Follower, FollowerState, Issuer, account_path,
-        environment_path,
+        ChangeSource as _, EnvironmentFrontier, FenceCause, Follower, FollowerState, Issuer,
+        account_path, environment_path,
     },
     verify::{Trust as _, VerifyError},
 };
@@ -11,6 +11,7 @@ use acyclic_stream::{
     trust_feed::TrustFeed,
 };
 use ed25519_dalek::SigningKey;
+use futures::FutureExt as _;
 use std::{
     future::Future,
     pin::Pin,
@@ -237,6 +238,25 @@ async fn empty_environment_reanchors_blocked_account_opens_and_records() {
             "anchor publication must release the original blocked {account} account"
         );
     }
+    drop(run);
+    assert_eq!(
+        *follower.state().borrow(),
+        FollowerState::Fenced(FenceCause::LostFollow)
+    );
+    for account in ["cold", "live"] {
+        assert!(follower.account(account).is_err());
+    }
+    // Cancelling this run leaves its original feed available for reconnect.
+    accounts.follow("cold").unwrap();
+    let late = accounts.clone();
+    let changed = follower.changed();
+    feed.close();
+    assert_eq!(
+        changed.now_or_never(),
+        Some(Err(acyclic_auth::trust::SourceClosed))
+    );
+    assert_eq!(accounts.follow("cold"), Err(StreamError::Unavailable));
+    assert_eq!(late.follow("late"), Err(StreamError::Unavailable));
 }
 
 #[tokio::test]
