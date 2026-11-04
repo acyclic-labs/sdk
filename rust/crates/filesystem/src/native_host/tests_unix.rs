@@ -60,18 +60,6 @@ fn directory_mode_is_restored_before_fixture_retirement() -> std::io::Result<()>
 fn negative_control_unrestored_directory_cannot_retire_with_its_original_mode() {
     assert!(std::panic::catch_unwind(fixture_retirement_mode::<false>).is_err());
 }
-#[test]
-fn a_local_root_is_classified_local() -> std::io::Result<()> {
-    let temporary = tempfile::tempdir()?;
-    assert!(
-        filesystem_is_local(
-            &test_root(temporary.path())?.directory,
-            &mut ordinary_work()
-        )
-        .map_err(ordinary_error)?
-    );
-    Ok(())
-}
 #[cfg(target_os = "linux")]
 #[test]
 fn capability_reads_do_not_change_owned_access_times() -> std::io::Result<()> {
@@ -157,6 +145,7 @@ fn held_root_rejects_intermediate_symlink_escape_for_reads_and_writes() -> std::
     std::fs::write(outside_path.join("secret"), b"outside")?;
     symlink(&outside_path, root_path.join("pivot"))?;
     let root = test_root(&root_path)?;
+    assert!(filesystem_is_local(&root.directory, &mut ordinary_work()).map_err(ordinary_error)?);
     assert!(
         root.open_file(Path::new("pivot/secret"), &mut ordinary_work())
             .map_err(ordinary_error)
