@@ -182,11 +182,25 @@ pub(crate) fn durable_rename_observed(
     {
         let from_path = namespace_path(from, meter)?;
         let to_path = namespace_path(to, meter)?;
+        #[cfg(windows)]
+        let prepared = windows::prepare_rename(&from_path.0, &to_path.0, mode, meter)?;
+        #[cfg(windows)]
+        let attempts = meter
+            .map(|meter| {
+                let write =
+                    NativeOperationReservation::new(meter.as_ref(), NativeOperationKind::Write, 1)?;
+                let durability = NativeOperationReservation::new(
+                    meter.as_ref(),
+                    NativeOperationKind::Durability,
+                    1,
+                )?;
+                Ok::<_, io::Error>((write, durability))
+            })
+            .transpose()?;
+        #[cfg(unix)]
         if let Some(meter) = meter {
             meter.check()?;
             meter.admit_write(0)?;
-            #[cfg(windows)]
-            meter.admit_durability()?;
         }
         let rename = || {
             #[cfg(target_os = "linux")]
@@ -219,33 +233,31 @@ pub(crate) fn durable_rename_observed(
                 )
             } != 0;
             #[cfg(windows)]
-            // SAFETY: both owned paths remain live through MoveFileExW.
-            let failed = unsafe {
-                use windows_sys::Win32::Storage::FileSystem::{
-                    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-                };
-                MoveFileExW(
-                    from_path.0.as_ptr(),
-                    to_path.0.as_ptr(),
-                    MOVEFILE_WRITE_THROUGH
-                        | if mode == RenameMode::Replace {
-                            MOVEFILE_REPLACE_EXISTING
-                        } else {
-                            0
-                        },
-                )
-            } == 0;
+            prepared.rename()?;
+            #[cfg(unix)]
             if failed {
-                Err(io::Error::last_os_error())
-            } else {
-                renamed();
-                Ok(())
+                return Err(io::Error::last_os_error());
             }
+            renamed();
+            Ok(())
         };
-        #[cfg(feature = "test-support")]
-        let result = testing::durable_operation("namespace:rename", rename);
-        #[cfg(not(feature = "test-support"))]
-        let result = rename();
+        let dispatch = || {
+            #[cfg(feature = "test-support")]
+            return testing::durable_operation("namespace:rename", rename);
+            #[cfg(not(feature = "test-support"))]
+            rename()
+        };
+        #[cfg(windows)]
+        let result = match attempts {
+            Some((mut write, mut durability)) => {
+                let ((result, durable_recorded), write_recorded) =
+                    write.attempt(|| durability.attempt(dispatch));
+                result.and(durable_recorded).and(write_recorded)
+            }
+            None => dispatch(),
+        };
+        #[cfg(unix)]
+        let result = dispatch();
         result?;
         #[cfg(unix)]
         sync_rename_parents(from, to, meter)?;

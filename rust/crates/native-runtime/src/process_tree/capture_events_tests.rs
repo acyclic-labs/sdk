@@ -81,6 +81,7 @@ fn child(mode: &str) -> io::Result<ProcessTree> {
 fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_poll()
 -> io::Result<()> {
     use crate::NativeReadMeter as _;
+    use std::os::windows::io::AsHandle as _;
     let mut process = child("metered-write")?;
     let bytes = [b'w'; 64 * 1024];
     let meter = crate::tests::ReadBudgetMeter::shared(u64::MAX, bytes.len() as u64);
@@ -119,14 +120,31 @@ fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_
     process.queued_stdin.take();
     process.writer.0.take();
     let mut output = [0; 128 * 1024];
-    process
-        .child
-        .as_mut()
-        .unwrap()
-        .stderr
-        .as_mut()
-        .unwrap()
-        .read_exact(&mut output)?;
+    let mut remaining = output.as_mut_slice();
+    while !remaining.is_empty() {
+        match process.read_output_controlled(remaining, None, true)? {
+            Some(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            Some(count) => remaining = &mut remaining[count..],
+            None => {
+                // Unread stdout must not repeatedly wake this stderr drain.
+                // Arm the same retained stderr operation and original exit.
+                let child = process.child.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
+                let reader = process.readers[1]
+                    .as_ref()
+                    .ok_or(io::ErrorKind::BrokenPipe)?;
+                events::arm(
+                    &[
+                        events::Source::Pipe(reader),
+                        events::Source::Exit(child.as_handle()),
+                    ],
+                    None,
+                )?
+                .block()
+                .into_result()?;
+            }
+        }
+    }
+    assert!(output.iter().all(|byte| *byte == b'x'));
     input_ready.0.block().into_result()?;
     let result = completion.recv().map_err(io::Error::other);
     process.terminate(None)?;
