@@ -196,4 +196,22 @@ async fn original_javascript_account_preserves_results_and_cancellation() {
         &body
     );
     assert!(owners_balanced(&port));
+
+    // This is the original provider's capacity refusal, through the same
+    // Rust -> JavaScript -> Rust request path as successful account results.
+    let bounded = MemoryObjects::bounded(0);
+    let expected = bounded.put(body.clone(), Vec::new()).await.unwrap_err();
+    let bounded_port = account_port(
+        ObjectsV1Memory {
+            inner: Arc::new(bounded),
+        }
+        .into(),
+    );
+    let bounded = BinaryObjects::new(JavaScriptTransport::new(bounded_port.clone()).unwrap());
+    let actual = bounded.put(body, Vec::new()).await.unwrap_err();
+    assert_eq!(
+        actual, expected,
+        "original provider refusal survives JavaScript"
+    );
+    assert!(owners_balanced(&bounded_port));
 }
