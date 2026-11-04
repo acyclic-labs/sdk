@@ -746,6 +746,15 @@ state. The existing shared capture tool compares those packets with their
 retained goldens; a second golden-comparison property is unnecessary. The original populated batch request and response are retained under both
 binary and JSON targets through that same producer.
 
+The same writer also captures a mixed batch's original missing-reference detail
+and independent successful member. Batch admission preserves the canonical
+`ErrorDetail`, including component, reason and request identity. The oracle
+checks each field against the original decoded reply. Its known and unknown
+reason operands are derived mutations, not captured provider failures.
+`negative-controls/object_batch_cause.patch` drops only the admitted cause;
+`original_service_writers_satisfy_the_semantic_oracle` must fail at
+`original member cause`. Restore the patch before the positive check.
+
 The Objects writer admission also opens the real account's availability feed
 through its public binary client and the shared production cursor writer. It
 requires that original opening cursor to decode, and refuses a zero incarnation
