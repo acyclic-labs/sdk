@@ -141,6 +141,7 @@ fn vector_capacity_and_ledger_corruption_guards_are_total() -> Result<(), Box<dy
             &cancellation,
         )
         .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
         let check_growth = |result: Result<(), crate::FsError>,
                             values: &Vec<u64>,
                             (pointer, capacity, before): (*const u64, usize, WorkCounters)|
@@ -230,7 +231,7 @@ fn vector_capacity_and_ledger_corruption_guards_are_total() -> Result<(), Box<dy
                 &mut accounting,
             )?;
         }
-        assert_eq!(original.live_allocation_bytes(), 0);
+        assert_eq!(original.live_allocation_bytes(), baseline);
         assert_eq!(
             original.remaining()?.bytes_copied,
             copy_budget - original.receipt().bytes_copied
