@@ -1,0 +1,12 @@
+diff --git a/rust/crates/filesystem/src/accounting/proof.rs b/rust/crates/filesystem/src/accounting/proof.rs
+--- a/rust/crates/filesystem/src/accounting/proof.rs
++++ b/rust/crates/filesystem/src/accounting/proof.rs
+@@ -80,7 +80,7 @@ pub(super) async fn prove_bytes<O: AsyncObjectStore>(
+             record,
+             evidence_bound,
+             config.limits.maximum_objects_per_generation,
+-            &mut |step| observed.observe(step).map_err(AccountingError::from),
++            &mut |_| Ok::<_, AccountingError>(()),
+         );
+         let result = decoded.and_then(|original| {
+             if original.manifest.generation_root != root

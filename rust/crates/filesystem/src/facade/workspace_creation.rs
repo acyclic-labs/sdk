@@ -367,7 +367,7 @@ pub(super) fn decode_first_creation_record(
         MAXIMUM_VOLUME_EVENT_BYTES,
         &mut |step| projection.observe(step),
     );
-    projection.release_failed()?;
+    projection.retire()?;
     let creation = creation?;
     if creation.volume_id != volume_id {
         return Err(FsError::VolumeMismatch);
