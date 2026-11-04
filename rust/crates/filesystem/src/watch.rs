@@ -5119,7 +5119,7 @@ mod demand_admission_tests {
     fn windows_short_names_reach_their_registered_directory()
     -> Result<(), Box<dyn std::error::Error>> {
         for exact in [false, true] {
-            let root = tempfile::tempdir()?;
+            let root = crate::windows_test_filesystems::ntfs_tempdir()?;
             let long = "longdirectoryname-beta";
             std::fs::create_dir(root.path().join(long))?;
             let short = crate::native_host::short_path(&root.path().join(long))?;
