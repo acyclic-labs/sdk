@@ -4,7 +4,6 @@ mod call_id;
 mod content;
 mod instruction_identity;
 mod instruction_index;
-pub(crate) use instruction_index::Index as DigestIndex;
 mod instruction_sources;
 pub(crate) use instruction_sources::InstructionSources;
 mod instruction_reads;
