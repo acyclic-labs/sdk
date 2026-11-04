@@ -1,13 +1,13 @@
 # Report order-statistic validation
 
 The report and `local_hotpath_quantiles` property include the same constructor.
-The property replaces fixed example cohorts with generated lengths, finite
+The property supplements native selection-work controls with generated lengths, finite
 nonnegative floating-point bit patterns, both signed zeros, and invalid values
 at generated positions. Empty, negative and nonfinite cohorts must be refused.
 
 For each accepted percentile, the independent oracle counts original values
 strictly below and at or below the result. Those counts must bracket its required
-percentile rank. It does not reproduce the constructor's sorting or rank-index
+percentile rank. It does not reproduce the constructor's selection or rank-index
 calculation. Generated inputs are typed measurements, not provider wire fixtures.
 This validates report arithmetic only; it does not measure a deployed service.
 

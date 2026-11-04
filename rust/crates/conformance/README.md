@@ -57,7 +57,7 @@ a sample with different required work refuses before changing that cohort.
 `--samples` accepts any positive count and defaults to 200. Each reported
 quantile includes its actual sample count; below 100 observations, nearest-rank
 p99 is the sample maximum, without an independently established tail guarantee.
-Run cohort admission and encoding controls without calibration, storage
+Run quantile selection, cohort admission and encoding controls without calibration, storage
 setup or model calls:
 
 ```sh

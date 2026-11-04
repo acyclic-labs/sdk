@@ -1,7 +1,6 @@
-diff --git a/rust/crates/conformance/benches/local_hotpath/report.rs b/rust/crates/conformance/benches/local_hotpath/report.rs
 --- a/rust/crates/conformance/benches/local_hotpath/report.rs
 +++ b/rust/crates/conformance/benches/local_hotpath/report.rs
-@@ -75,7 +75,7 @@
+@@ -78,7 +78,7 @@
      #[derive(Serialize)]
      struct Receipt<'a> {
          sample: usize,
@@ -10,12 +9,12 @@ diff --git a/rust/crates/conformance/benches/local_hotpath/report.rs b/rust/crat
          work: &'a [Option<u64>],
          physical_admission_binding: Option<()>,
          progress: &'static str,
-@@ -84,7 +84,7 @@
-     serializer.collect_seq(receipts.iter().enumerate().map(|(sample, (identity, work))| {
+@@ -87,7 +87,7 @@
+     serializer.collect_seq(receipts.iter().enumerate().map(|(sample, retained)| {
          Receipt {
              sample,
--            identity,
-+            identity: identity.clone(),
-             work: &work.0,
+-            identity: &retained.identity,
++            identity: retained.identity.clone(),
+             work: &retained.observation.work.0,
              physical_admission_binding: None,
-             progress: "original operation returned; operation-specific result oracle checked before the report",
+             progress: "original operation returned successfully; result oracles are complete only when cohort_completed is true",

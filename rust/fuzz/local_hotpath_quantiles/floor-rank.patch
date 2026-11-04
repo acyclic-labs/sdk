@@ -1,11 +1,11 @@
 --- a/rust/crates/conformance/benches/local_hotpath/quantiles.rs
 +++ b/rust/crates/conformance/benches/local_hotpath/quantiles.rs
-@@ -22,7 +22,7 @@
+@@ -28,7 +28,7 @@
                  .len()
                  .checked_mul(percent)
                  .ok_or("sample rank overflow")?
 -                .div_ceil(100)
 +                .div_euclid(100)
-                 .saturating_sub(1);
-             values
-                 .get(index)
+                 .saturating_sub(1))
+         };
+         let samples = values.len();

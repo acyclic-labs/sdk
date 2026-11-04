@@ -119,6 +119,7 @@ path = "fuzz_targets/native_claim_record.rs"
 test = false
 doc = false
 bench = false
+
 [[bin]]
 name = "local_hotpath_options"
 required-features = ["local-hotpath-options"]
