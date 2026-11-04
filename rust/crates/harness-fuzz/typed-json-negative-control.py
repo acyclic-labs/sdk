@@ -22,6 +22,8 @@ selection.add_argument('--raw-domain-prior', metavar='REVISION',
                        help='compare the prior shared oracle before checking borrowed raw JSON admission')
 selection.add_argument('--depth-prior', metavar='REVISION',
                        help='check the prior depth false positive, actual depth omission and exact restored corpus')
+selection.add_argument('--first-cause-prior', metavar='REVISION',
+                       help='check prior-oracle miss, actual first-cause loss and exact restored corpus')
 args = parser.parse_args()
 source = root / 'rust/crates/harness-core/src/executor/json/records.rs'
 oracle = root / 'rust/crates/harness/tests/support/bounded_json.rs'
@@ -35,10 +37,14 @@ if args.depth_prior:
     source = root / 'rust/crates/harness-core/src/executor/json/admission.rs'
     patch = root / 'rust/crates/harness-fuzz/negative-controls/typed-json-ignore-depth.patch'
     out = root / 'target/typed-json-depth-control'
+if args.first_cause_prior:
+    source = root / 'rust/crates/harness-core/src/executor/json/admission.rs'
+    patch = root / 'rust/crates/harness-fuzz/negative-controls/typed-json-drop-first-cause.patch'
+    out = root / 'target/typed-json-first-cause-control'
 command = ['cargo', 'test', '--locked', '-p', 'acyclic-harness-core', '--lib',
            'executor::json::tests::object_work::checked_codec_fuzz_corpus',
            '--', '--exact', '--nocapture']
-if args.depth_prior:
+if args.depth_prior or args.first_cause_prior:
     command = ['cargo', 'nextest', 'run', '--locked', '--profile', 'ci', '--retries', '0',
                '-p', 'acyclic-harness-core', '--lib', '-E',
                'test(=executor::json::tests::object_work::checked_codec_fuzz_corpus)']
@@ -85,6 +91,14 @@ try:
             phases = [('prior-depth-false-positive', 100, 'typed raw JSON must admit independently valid raw input'),
                       ('depth-omission-red', 100, 'typed raw JSON must refuse documents beyond the declared depth'),
                       ('restored-original-corpus', 0, '1 test run: 1 passed')]
+        if args.first_cause_prior:
+            step = 'read prior shared oracle for the actual first-cause omission'
+            prior = subprocess.check_output(['git', 'show', args.first_cause_prior + ':'
+                                             + oracle.relative_to(root).as_posix()], cwd=root)
+            result['prior_oracle'] = {'revision': args.first_cause_prior, 'sha256': digest(prior)}
+            phases = [('prior-oracle-mutant-miss', 0, '1 test run: 1 passed'),
+                      ('first-cause-loss-red', 100, 'materialized JSON admission must preserve the first caller cause'),
+                      ('restored-original-corpus', 0, '1 test run: 1 passed')]
         for name, expected, assertion in phases:
             source.write_bytes(original if name in ['prior-depth-false-positive', 'restored-original-corpus'] else mutated)
             oracle.write_bytes(prior if name in ['prior-oracle-mutant-miss', 'prior-depth-false-positive'] else original_oracle)
@@ -98,7 +112,7 @@ try:
                      'source': digest(source.read_bytes()), 'oracle': digest(oracle.read_bytes()),
                      'log': digest(log.read_bytes())}
             executables = re.findall(r'Running unittests .*? \(([^)]+)\)', output)
-            if args.depth_prior:
+            if args.depth_prior or args.first_cause_prior:
                 executables = re.findall(r'command:.*?(/[^\s]+/acyclic_harness_core-[a-f0-9]+)', output)
             if executables:
                 executable = root / executables[-1]

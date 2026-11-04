@@ -928,3 +928,12 @@ Run `python3 rust/crates/harness-fuzz/typed-json-negative-control.py --depth-pri
 the actual depth-guard omission, and the exact restored ten-input positive.
 The existing malformed-input and valid-input paths now share one typed decode
 and scratch observation. No production decoder or input-size bound changes.
+
+The same property preserves a caller-owned Storage cause at all six charge
+frontiers. It also decodes an original writer's raw-member envelope as a Value,
+refuses inspection and then release, and requires the first cause plus complete
+scratch release. The existing writer buffer and shared scratch accounting are
+reused. Run `python3 rust/crates/harness-fuzz/typed-json-negative-control.py
+--first-cause-prior <prior-oracle-revision>` to check the prior oracle's miss,
+the actual stored-error omission, and the exact restored corpus. No input or
+test count is added.

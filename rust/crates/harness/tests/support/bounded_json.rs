@@ -1,5 +1,5 @@
 use acyclic_harness::executor::json::{
-    JsonBounds, JsonCodecCharge, canonical_json_bytes_bounded, json_bytes_bounded,
+    JsonBounds, JsonCodecCharge, JsonValueSchema, canonical_json_bytes_bounded, json_bytes_bounded,
     json_from_slice_bounded, json_value_bounded,
 };
 use serde_json::Value;
@@ -23,12 +23,10 @@ pub fn check(input: &[u8]) {
         None,
         None,
         &mut |event| {
-            match event {
-                JsonCodecCharge::Admission { .. } => admissions += 1,
-                JsonCodecCharge::Retain { bytes } => scratch = scratch.checked_add(bytes).unwrap(),
-                JsonCodecCharge::Release { bytes } => scratch = scratch.checked_sub(bytes).unwrap(),
-                _ => {}
+            if matches!(event, JsonCodecCharge::Admission { .. }) {
+                admissions += 1;
             }
+            account_scratch(&mut scratch, event);
             Ok(())
         },
     );
@@ -69,6 +67,58 @@ pub fn check(input: &[u8]) {
     // independently of which malformed inputs a byte campaign discovers.
     compact.extend_from_slice(b" null");
     check_refusal(&compact, bounds, 5);
+    #[derive(serde::Serialize)]
+    struct Expanded<'a> {
+        #[serde(rename = "$serde_json::private::RawValue")]
+        source: &'a str,
+    }
+    compact.clear();
+    serde_json::to_writer(&mut compact, &Expanded { source: raw.get() }).unwrap();
+    check_first_cause(&compact, bounds);
+}
+
+fn account_scratch(scratch: &mut u64, event: JsonCodecCharge) {
+    *scratch = match event {
+        JsonCodecCharge::Retain { bytes } => scratch.checked_add(bytes).unwrap(),
+        JsonCodecCharge::Release { bytes } => scratch.checked_sub(bytes).unwrap(),
+        _ => *scratch,
+    };
+}
+
+fn check_first_cause(source: &[u8], bounds: JsonBounds) {
+    let (mut inspected, mut released, mut scratch) = (false, false, 0);
+    let result = json_from_slice_bounded(
+        std::marker::PhantomData::<Value>,
+        source,
+        bounds,
+        None,
+        Some(JsonValueSchema::Root),
+        &mut |event| {
+            account_scratch(&mut scratch, event);
+            match event {
+                JsonCodecCharge::Inspect { .. } => {
+                    assert!(!inspected);
+                    inspected = true;
+                    Err(acyclic_harness::Error::Storage(
+                        "original inspection refusal".into(),
+                    ))
+                }
+                JsonCodecCharge::Release { .. } if inspected => {
+                    released = true;
+                    Err(acyclic_harness::Error::Invalid(
+                        "secondary release refusal".into(),
+                    ))
+                }
+                _ => Ok(()),
+            }
+        },
+    );
+    assert!(inspected && released && scratch == 0);
+    assert!(
+        matches!(result, Err(acyclic_harness::Error::Storage(reason))
+        if reason == "original inspection refusal"),
+        "materialized JSON admission must preserve the first caller cause after scratch release"
+    );
 }
 
 // RawValue has already checked syntax. Count only unquoted structural depth,
@@ -116,21 +166,14 @@ fn check_refusal(source: &[u8], bounds: JsonBounds, frontier: usize) {
         None,
         &mut |event| {
             if frontier == 5 {
-                match event {
-                    JsonCodecCharge::Admission {
-                        maximum_owned_bytes,
-                        ..
-                    } => {
-                        assert_eq!(maximum_owned_bytes, 0);
-                    }
-                    JsonCodecCharge::Retain { bytes } => {
-                        scratch = scratch.checked_add(bytes).unwrap()
-                    }
-                    JsonCodecCharge::Release { bytes } => {
-                        scratch = scratch.checked_sub(bytes).unwrap()
-                    }
-                    _ => {}
+                if let JsonCodecCharge::Admission {
+                    maximum_owned_bytes,
+                    ..
+                } = event
+                {
+                    assert_eq!(maximum_owned_bytes, 0);
                 }
+                account_scratch(&mut scratch, event);
             }
             if !refused_once
                 && matches!(
@@ -143,7 +186,7 @@ fn check_refusal(source: &[u8], bounds: JsonBounds, frontier: usize) {
                 )
             {
                 refused_once = true;
-                Err(acyclic_harness::Error::Invalid(
+                Err(acyclic_harness::Error::Storage(
                     "caller refused JSON charge".into(),
                 ))
             } else {
@@ -152,7 +195,7 @@ fn check_refusal(source: &[u8], bounds: JsonBounds, frontier: usize) {
         },
     );
     assert!(
-        matches!(refused, Err(acyclic_harness::Error::Invalid(reason))
+        matches!(refused, Err(acyclic_harness::Error::Storage(reason))
         if reason == "caller refused JSON charge"),
         "typed JSON decode must preserve caller charge refusal at frontier {frontier}"
     );
