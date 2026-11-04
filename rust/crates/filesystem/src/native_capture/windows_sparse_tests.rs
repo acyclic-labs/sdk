@@ -1,11 +1,8 @@
-#[cfg(windows)]
-use super::settled_sparse_ranges;
 use super::{
     CancellationToken, CaptureError, CaptureWorkScope, HostDataRange, HostRoot, OperationFailure,
     Path, WorkBudget, WorkCounters, capture_demand_error, native_positional_file,
+    settled_sparse_ranges, test_host_stat, test_open_file,
 };
-#[cfg(test)]
-use super::{test_host_stat, test_open_file};
 
 /// Settles `reported` for the file at `name` under `directory`.
 async fn settle(

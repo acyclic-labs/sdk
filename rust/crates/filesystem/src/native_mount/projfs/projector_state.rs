@@ -1,7 +1,7 @@
 use super::{
     Condvar, HashMap, HashSet, KeyedLocks, MountPath, Mutex, NativeMountError,
     PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, ProjFsSession, ReadBasis, Runtime, SendContext,
-    ViewObserver, ViewOrigin, ViewStamp, WrittenEntry, directory, lock_recover, projfs_path_suffix,
+    ViewObserver, ViewOrigin, ViewStamp, WrittenEntry, lock_recover, projfs_path_suffix,
 };
 
 pub(super) struct Materialized {

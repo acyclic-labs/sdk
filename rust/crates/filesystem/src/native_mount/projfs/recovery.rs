@@ -1,6 +1,6 @@
 use super::{
-    Arc, HashMap, NativeMountError, OPERATION, PRJ_FILE_BASIC_INFO, PRJ_PLACEHOLDER_INFO,
-    RankedMutex, ReadOperations, VIEW,
+    Arc, HashMap, NativeHostWork, NativeMountError, OPERATION, PRJ_FILE_BASIC_INFO,
+    PRJ_PLACEHOLDER_INFO, RankedMutex, ReadOperations, VIEW,
 };
 
 pub(super) fn link_placeholder(info: PRJ_FILE_BASIC_INFO) -> PRJ_PLACEHOLDER_INFO {

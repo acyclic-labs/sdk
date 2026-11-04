@@ -1,7 +1,7 @@
 use super::{
-    FILE_ATTRIBUTE_REPARSE_POINT, FileId, GUID, HSTRING, HashMap, HostRoot, MetadataProbeGuard,
-    MountPath, Mutex, NativeHostWork, PCWSTR, PrjMarkDirectoryAsPlaceholder, ProbeGuard,
-    host_windows_metadata, lock_recover, probe_host_windows_metadata, query_metadata,
+    FILE_ATTRIBUTE_REPARSE_POINT, GUID, HSTRING, HashMap, HostRoot, MetadataProbeGuard, MountPath,
+    Mutex, NativeHostWork, PCWSTR, PrjMarkDirectoryAsPlaceholder, ProbeGuard,
+    host_windows_metadata, lock_recover, metadata, probe_host_windows_metadata, query_metadata,
     query_metadata_using,
 };
 use proptest::prelude::*;

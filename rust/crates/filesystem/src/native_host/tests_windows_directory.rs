@@ -1,18 +1,9 @@
-#[cfg(any(test, feature = "local"))]
-use super::create_directories;
-#[cfg(test)]
-#[cfg(windows)]
-use super::stat_probe;
 use super::{
     DemandError, Dir, NativeDurability, NativeMaterializationWork, NativeOpenOptions, Path,
-    directory_identity, directory_path, io, open_leaf, sync_directory_held,
+    WorkBudget, create_directories, directory_identity, directory_path, identity, io, open_leaf,
+    open_windows_directory, ordinary_work, stat_probe, sync_directory_held, test_path, test_root,
+    with_wide_path,
 };
-#[cfg(any(test, feature = "local", feature = "native-watch"))]
-use super::{WorkBudget, ordinary_work};
-#[cfg(windows)]
-use super::{fs, open_windows_directory, with_wide_path};
-#[cfg(test)]
-use super::{test_path, test_root};
 
 #[test]
 fn absolute_creation_returns_its_validated_directory_without_reopening_the_path()

@@ -1,6 +1,7 @@
 use super::{
     CancellationToken, HR_FILE_INVALID, HR_FILE_NOT_FOUND, HR_OK, HR_UNEXPECTED, PCWSTR,
-    PRJ_CALLBACK_DATA, PRJ_DIR_ENTRY_BUFFER_HANDLE, WorkBudget, callback_runtime,
+    PRJ_CALLBACK_DATA, PRJ_DIR_ENTRY_BUFFER_HANDLE, WorkBudget, callback_runtime, callbacks,
+    windows_checkout_source,
 };
 use proptest::prelude::*;
 

@@ -1,5 +1,5 @@
 use super::{
-    HostRoot, create_ordinary_file, handle_state, held_while, metadata, publish_ordinary_file,
+    HostRoot, create_ordinary_file, handle_state, held_while, publish_ordinary_file, staging,
 };
 use std::io::{Read as _, Write as _};
 

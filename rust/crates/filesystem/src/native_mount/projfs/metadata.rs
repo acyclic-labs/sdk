@@ -2,9 +2,9 @@ use super::probe_guard::{ProbeGuard, with_guard};
 use super::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FileId,
     FileMetadata, GUID, HR_OK, HRESULT, HSTRING, HashMap, HostRoot, MetadataField, MountFilesystem,
-    MountNode, MountNodeKind, MountPath, MountSourceError, Mutex, NativeHostWork, PCWSTR,
-    PRJ_CALLBACK_DATA, PRJ_FILE_BASIC_INFO, PathBuf, PrjMarkDirectoryAsPlaceholder, ReadBasis,
-    Runtime, callback_path, lock_recover,
+    MountNode, MountNodeKind, MountPath, MountSourceError, Mutex, NativeHostWork, OsStringExt,
+    PCWSTR, PRJ_CALLBACK_DATA, PRJ_FILE_BASIC_INFO, PathBuf, PrjMarkDirectoryAsPlaceholder,
+    ReadBasis, Runtime, callback_path, directory, lock_recover, metadata,
 };
 
 pub(super) fn path_from(pointer: PCWSTR) -> Option<MountPath> {

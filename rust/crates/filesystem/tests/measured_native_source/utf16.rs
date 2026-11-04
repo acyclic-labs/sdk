@@ -1,6 +1,6 @@
 use super::{
-    CancellationToken, DemandError, FINITE_BUDGET, FilesystemProfile, LogicalName, NameEncoding,
-    NamespacePath, NativeDemandSource, TestResult, VolumeLimits, requested,
+    CancellationToken, DemandError, DemandSource, FINITE_BUDGET, FilesystemProfile, LogicalName,
+    NameEncoding, NamespacePath, NativeDemandSource, TestResult, VolumeLimits, requested,
 };
 
 #[cfg(windows)]

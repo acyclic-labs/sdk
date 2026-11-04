@@ -1,9 +1,7 @@
 //! A burst of changes past a watch's buffer loses none of them, and the watch
 //! grows its buffer until a burst of the same size arrives whole.
-#[cfg(test)]
-use super::HostChange;
 use super::{
-    Arc, Delivery, DemandError, DemandWork, HostChangeWide, INITIAL_BUFFER_BYTES,
+    Arc, Delivery, DemandError, DemandWork, HostChange, HostChangeWide, INITIAL_BUFFER_BYTES,
     MAXIMUM_BUFFER_BYTES, Mutex, NativeSourceWatch, Ordering, PoisonError,
 };
 use crate::source_watch::HostChangeSink;

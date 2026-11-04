@@ -402,11 +402,9 @@ fn probe_platform(
 #[cfg(test)]
 #[cfg(windows)]
 mod tests {
-    #[cfg(windows)]
-    use super::unavailable_platform_code;
     use super::{
-        Error, NativeBlockCloneAccelerationEvidence, NativeSparseAccelerationEvidence,
-        probe_native_storage_accelerations,
+        NativeBlockCloneAccelerationEvidence, NativeSparseAccelerationEvidence,
+        probe_native_storage_accelerations, unavailable_platform_code,
     };
 
     #[cfg(windows)]

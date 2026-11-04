@@ -1,6 +1,8 @@
 use super::{
     Arc, Bytes, FileMetadata, Fs, Lifecycle, LocalOptions, PostOperationFailures, VolumeConfig,
-    metadata, powershell, reparse_tag, setup_chunk, sorted_names, succeeded, windows_demand_source,
+    local_workspace, manual_mount_options, mount_source, powershell, session, setup_chunk,
+    setup_work, sorted_names, succeeded, windows_checkout_source, windows_demand_source,
+    windows_name, windows_path,
 };
 use crate::kernel::KernelAccounting;
 #[tokio::test]

@@ -1,7 +1,7 @@
 use super::{
     Arc, AsRawHandle, AtomicBool, AtomicPtr, AtomicU64, Condvar, Custody, Delivery, DemandError,
-    ERROR_INVALID_FUNCTION, FILE_LIST_DIRECTORY, FILE_SHARE_READ, FILE_SHARE_WRITE, HANDLE,
-    INITIAL_BUFFER_BYTES, IntoRawHandle, MAXIMUM_BUFFER_BYTES, Mutex, NativeSourceWatch,
+    ERROR_INVALID_FUNCTION, FILE_LIST_DIRECTORY, FILE_SHARE_READ, FILE_SHARE_WRITE, FromRawHandle,
+    HANDLE, INITIAL_BUFFER_BYTES, IntoRawHandle, MAXIMUM_BUFFER_BYTES, Mutex, NativeSourceWatch,
     OVERLAPPED, Ordering, OwnedHandle, READ, Reads, Shared, SourceDemandReadWork,
     SourcePayloadOwnership, WRITE, WorkCounters, buffer, hub, io, io_work, size_of,
 };

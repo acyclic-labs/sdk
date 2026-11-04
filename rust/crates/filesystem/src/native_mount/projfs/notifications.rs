@@ -13,10 +13,10 @@ use super::{
     PRJ_NOTIFICATION_PRE_SET_HARDLINK, PRJ_NOTIFY_FILE_OPENED, PRJ_NOTIFY_TYPES,
     PostOperationFailures, ReadBasis, ReadOnlyBinding, Runtime, callback_name_matches,
     capture_changed_windows_metadata, close_metadata_handle, defer_host_capture, empty_destination,
-    end_directory, file_data, get_directory, has_pending_capture, lock_recover,
+    end_directory, file_data, file_id, get_directory, has_pending_capture, lock_recover,
     metadata_changed_since_open, native_hresult, path_from, placeholder,
     probe_host_windows_metadata, projfs_path_suffix, provider_stack, record_metadata_open,
-    refresh_metadata_baseline, size_of, source_hresult, start_directory,
+    refresh_metadata_baseline, runtime, size_of, source_hresult, start_directory,
 };
 
 pub(super) unsafe fn query_name(callback_data: *const PRJ_CALLBACK_DATA) -> HRESULT {

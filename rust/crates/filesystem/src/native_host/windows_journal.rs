@@ -1,16 +1,12 @@
-#[cfg(any(windows, test, feature = "native-watch"))]
-use super::file_identity_and_length;
 #[cfg(test)]
 use super::test_root;
 use super::{
     DemandError, DemandWork, Dir, File, HostStat, ITEM, NativeHostWork, NativeMaterializationWork,
     NativeRootIdentity, OsStr, Path, READ, WRITE, WorkCounters, buffer, copy_work,
-    directory_identity, io, stat,
+    directory_identity, file_identity_and_length, fs, io, nt, win, windows_name_packet,
 };
 #[cfg(any(test, feature = "local", feature = "native-watch"))]
 use super::{WorkBudget, ordinary_work};
-#[cfg(windows)]
-use super::{fs, nt, win, windows_name_packet};
 use std::os::windows::{
     ffi::OsStrExt as _,
     io::{AsRawHandle as _, FromRawHandle as _},

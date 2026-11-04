@@ -1,11 +1,7 @@
-#[cfg(windows)]
-use super::mark_sparse;
-#[cfg(all(test, windows))]
-use super::sync_generation_file;
 use super::{
     CancellationToken, GenerationReceipt, HostRoot, LogicalName, MaterializeError, NameEncoding,
-    NamespacePath, NativeMaterializationActionPhase, Path, create_file, file,
-    materialize_host_path, work, write_generation_bytes,
+    NamespacePath, NativeMaterializationActionPhase, Path, create_file, mark_sparse,
+    materialize_host_path, sync_generation_file, work, write_generation_bytes,
 };
 
 #[tokio::test]

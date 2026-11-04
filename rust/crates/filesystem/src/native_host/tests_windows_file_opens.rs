@@ -1,16 +1,7 @@
-#[cfg(windows)]
-use super::fs;
-#[cfg(test)]
-#[cfg(windows)]
-use super::stat_probe;
-#[cfg(test)]
-use super::test_root;
 use super::{
-    DemandError, NativeMaterializationWork, NativeOpenOptions, Path, io, metadata, open_leaf,
-    sync_directory_held, sync_file_held,
+    DemandError, NativeMaterializationWork, NativeOpenOptions, Path, WorkBudget, io, open_leaf,
+    ordinary_work, stat_probe, sync_directory_held, sync_file_held, test_root,
 };
-#[cfg(any(test, feature = "local", feature = "native-watch"))]
-use super::{WorkBudget, ordinary_work};
 
 #[test]
 fn file_opens_check_kind_and_reparse_during_the_open_for_every_disposition()

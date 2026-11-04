@@ -7,7 +7,7 @@
 
 use super::{
     Arc, Condvar, HashMap, Mutex, NativeMountError, PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
-    Readiness, Runtime, SendContext, lock_recover, service,
+    Readiness, Runtime, SendContext, lock_recover,
 };
 use std::collections::VecDeque;
 use std::sync::Weak;

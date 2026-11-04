@@ -1,9 +1,9 @@
-#[cfg(test)]
-use super::tests;
 use super::{
-    Bytes, CancellationToken, FileMetadata, MountSourceError, PRJ_NOTIFICATION_PRE_DELETE,
-    PRJ_NOTIFICATION_PRE_RENAME, PRJ_NOTIFICATION_PRE_SET_HARDLINK, PRJ_NOTIFY_FILE_OPENED,
-    WorkBudget, authorize_open, authorize_pre_operation, open_notifications,
+    Arc, Barrier, Bytes, CancellationToken, FileMetadata, HashSet, IdempotencyKey,
+    MountSourceError, PRJ_NOTIFICATION_PRE_DELETE, PRJ_NOTIFICATION_PRE_RENAME,
+    PRJ_NOTIFICATION_PRE_SET_HARDLINK, PRJ_NOTIFY_FILE_OPENED, WorkBudget, authorize_open,
+    authorize_pre_operation, local_workspace, manual_mount_options, mount_source,
+    open_notifications, session, setup_work, windows_checkout_source, windows_path,
 };
 #[tokio::test]
 #[ignore = "requires a host that permits mounting a writable ProjFS provider"]

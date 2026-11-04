@@ -1,6 +1,7 @@
-use super::{DemandError, File, HostRoot, READ, SourceDemandReadWork, WorkCounters, io};
-#[cfg(windows)]
-use super::{fs, nt, open_windows_at, wide_parent_leaf};
+use super::{
+    DemandError, File, HostRoot, NativeHostWork, READ, SourceDemandReadWork, WorkCounters, fs, io,
+    leaf, nt, open_windows_at, wide_parent_leaf,
+};
 use std::os::windows::io::AsRawHandle as _;
 use std::sync::{Arc, Mutex};
 use windows::Win32::{

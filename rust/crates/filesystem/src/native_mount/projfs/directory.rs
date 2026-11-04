@@ -1,7 +1,8 @@
 use super::{
     DIRECTORY_PAGE_SIZE, EntryFacts, FILE_ATTRIBUTE_DIRECTORY, MetadataField, MountContentPin,
-    MountLookup, MountNodeKind, MountPath, MountSourceError, PCWSTR, PRJ_FILE_BASIC_INFO,
-    PrjFileNameCompare, Projection, basic, decode_utf16_name, reserve, size_of,
+    MountLookup, MountNodeKind, MountPath, MountSourceError, NativeHostWork, PCWSTR,
+    PRJ_FILE_BASIC_INFO, PrjFileNameCompare, Projection, basic, decode_utf16_name, ownership,
+    reserve, size_of,
 };
 
 pub(super) struct ProjectedEntry {
