@@ -143,16 +143,28 @@ fn check_name(name: &str) -> Result<(), super::Error> {
 }
 
 /// Every target visible to an agent, in attach order, and its home.
+/// Clones retain this same immutable admission in constant time, without
+/// allocating or copying records or canonical announcement bytes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(try_from = "RosterWire")]
 pub struct Roster {
+    #[serde(flatten)]
+    #[cfg_attr(
+        feature = "wasm",
+        tsify(type = "{ home: string; targets: TargetRecord[] }")
+    )]
+    admitted: std::sync::Arc<AdmittedRoster>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct AdmittedRoster {
     home: String,
     targets: Vec<TargetRecord>,
     #[serde(skip)]
     home_position: usize,
     #[serde(skip)]
-    canonical: std::sync::Arc<[u8]>,
+    canonical: Vec<u8>,
     #[serde(skip)]
     digest: [u8; 32],
 }
@@ -248,11 +260,13 @@ impl Roster {
         let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.targets.roster.v1");
         hasher.update(&bytes);
         Ok(Self {
-            home: wire.home,
-            targets: wire.targets,
-            home_position,
-            canonical: bytes.into(),
-            digest: *hasher.finalize().as_bytes(),
+            admitted: std::sync::Arc::new(AdmittedRoster {
+                home: wire.home,
+                targets: wire.targets,
+                home_position,
+                canonical: bytes,
+                digest: *hasher.finalize().as_bytes(),
+            }),
         })
     }
 
@@ -267,25 +281,25 @@ impl Roster {
 
     /// The target an omitted `target` names.
     pub fn home_name(&self) -> &str {
-        &self.home
+        &self.admitted.home
     }
 
     /// Every target in attach order. Changes require admitting a new roster.
     pub fn targets(&self) -> &[TargetRecord] {
-        &self.targets
+        &self.admitted.targets
     }
 
     /// The retained canonical announcement bytes and digest, admitted once
     /// with this immutable roster. Reading them neither encodes nor hashes.
     pub fn canonical(&self) -> (&[u8], [u8; 32]) {
-        (&self.canonical, self.digest)
+        (&self.admitted.canonical, self.admitted.digest)
     }
 
     /// What a turn announces when its agent last announced `announced`: this
     /// roster's encoding and digest when they differ, else nothing.
     ///
     pub fn announcement(&self, announced: Option<[u8; 32]>) -> Option<(&[u8], [u8; 32])> {
-        (announced != Some(self.digest)).then(|| self.canonical())
+        (announced != Some(self.admitted.digest)).then(|| self.canonical())
     }
 
     /// The target a call names: its home when `target` is omitted, the
@@ -296,22 +310,29 @@ impl Roster {
     /// The refusal the call settles with.
     pub fn select(&self, target: Option<&str>) -> Result<&TargetRecord, TargetRefusal> {
         self.select_position(target)
-            .map(|position| &self.targets[position])
+            .map(|position| &self.admitted.targets[position])
     }
 
     /// The position in this admitted roster, shared with its executor table.
     pub(crate) fn select_position(&self, target: Option<&str>) -> Result<usize, TargetRefusal> {
-        let named = target.unwrap_or(&self.home);
-        let found = if named == self.home {
-            Some(self.home_position)
+        let admitted = &self.admitted;
+        let named = target.unwrap_or(&admitted.home);
+        let found = if named == admitted.home {
+            Some(admitted.home_position)
         } else {
             match named.strip_prefix(USER_PREFIX) {
-                Some(owner) => self.targets.iter().position(|record| record.owner == owner),
-                None => self.targets.iter().position(|record| record.name == named),
+                Some(owner) => admitted
+                    .targets
+                    .iter()
+                    .position(|record| record.owner == owner),
+                None => admitted
+                    .targets
+                    .iter()
+                    .position(|record| record.name == named),
             }
         };
         let refused = match found {
-            Some(position) if self.targets[position].state == TargetState::Online => {
+            Some(position) if admitted.targets[position].state == TargetState::Online => {
                 return Ok(position);
             }
             Some(_) => Refused::Offline,
@@ -326,6 +347,7 @@ impl Roster {
         TargetRefusal {
             target: target.to_owned(),
             online: self
+                .admitted
                 .targets
                 .iter()
                 .filter(|record| {
