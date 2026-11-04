@@ -165,6 +165,36 @@ fn metadata(head: &acyclic_objects::Head, original: &wire::BlobInfo) {
     );
 }
 
+fn owned_detail(detail: wire::ErrorDetail) {
+    let error = Error::from_detail(detail.clone()).expect("admitted member detail");
+    let pointers = error.cause().map(|cause| {
+        [
+            cause.component.as_ptr(),
+            cause.reason.as_ptr(),
+            cause.request_id.as_ptr(),
+        ]
+    });
+    // The first conversion must leave the held owner intact. Once it retires,
+    // the second must move the original allocations rather than copy them.
+    assert_eq!(wire::ErrorDetail::from(error.clone()), detail);
+    let moved = wire::ErrorDetail::from(error);
+    assert_eq!(
+        moved, detail,
+        "owned projection preserves every member field"
+    );
+    if let Some(pointers) = pointers {
+        assert_eq!(
+            [
+                moved.component.as_ptr(),
+                moved.reason.as_ptr(),
+                moved.request_id.as_ptr(),
+            ],
+            pointers,
+            "unique member projection moves all original diagnostic allocations"
+        );
+    }
+}
+
 fn batch(bytes: &[u8]) {
     let run = |packet: Bytes, lost| {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -228,6 +258,7 @@ fn batch(bytes: &[u8]) {
                                 "original member request ID"
                             );
                         }
+                        owned_detail(detail);
                     }
                     (Some(wire::put_result::Outcome::Put(reply)), Ok(put)) => {
                         publication(put, &reply, expected);
