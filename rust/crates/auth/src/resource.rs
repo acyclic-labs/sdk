@@ -1,20 +1,7 @@
 //! Resource and semantic action grammar. Canonicalization belongs to the owner.
 
 /// Filesystem actions shared with the filesystem access decision model.
-pub const FS_ACTIONS: &[&str] = &[
-    "list",
-    "read",
-    "create",
-    "write",
-    "append",
-    "delete",
-    "rename",
-    "fork",
-    "merge-into",
-    "read-history",
-    "lock",
-    "admin",
-];
+pub const FS_ACTIONS: &[&str] = crate::action::FsAction::NAMES;
 
 /// Resource components are lossless bytes: unreserved ASCII is literal and all
 /// other bytes use uppercase %HH. Owners canonicalize hierarchical names first;

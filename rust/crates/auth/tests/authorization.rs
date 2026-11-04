@@ -10,7 +10,13 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
     fn authorization_strings_round_trip(value in ".{1,40}") {
-        let input=format!("auth(action = {value:?}, action = \"fs/read\", extractor = \"fs.paths\")");
+        // The actual derive parser must refuse undeclared operations, including
+        // the retired parallel Actors vocabulary.
+        for unknown in ["streams/raed", "execution/actor-turn", "new-product/read"] {
+            let input = format!("auth(action = {unknown:?}, resource = \"stream_path\")");
+            prop_assert!(syn::meta::parser(|meta| authorization::fields(&meta).map(|_| ())).parse_str(&input).is_err());
+        }
+        let input=format!("auth(action = \"streams/follow\", action = \"fs/read\", extractor = {value:?})");
         let mut declaration=String::new();
         syn::meta::parser(|meta| { declaration=authorization::fields(&meta)?; Ok(()) }).parse_str(&input).unwrap();
         let root=tempfile::tempdir().unwrap();
@@ -29,8 +35,10 @@ proptest! {
         let options=pool.get_service_by_name("test.Test").unwrap().methods().next().unwrap().options();
         let rules=options.get_extension(&ext);
         let actions=rules.as_list().unwrap().first().unwrap().as_message().unwrap().get_field_by_name("action").unwrap();
-        prop_assert_eq!(actions.as_list().unwrap().first().unwrap().as_str(),Some(value.as_str()));
+        prop_assert_eq!(actions.as_list().unwrap().first().unwrap().as_str(),Some("streams/follow"));
         prop_assert_eq!(actions.as_list().unwrap().get(1).unwrap().as_str(),Some("fs/read"));
+        let extractor=rules.as_list().unwrap().first().unwrap().as_message().unwrap().get_field_by_name("extractor").unwrap();
+        prop_assert_eq!(extractor.as_str(),Some(value.as_str()));
     }
     #[test]
     fn arbitrary_authorization_input_never_panics(text in ".{0,1024}") {

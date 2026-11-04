@@ -17,6 +17,7 @@ test-support = ["dep:acyclic-differential"]
 client = ["dep:reqwest"]
 
 [dependencies]
+acyclic-auth-action = { version = "=0.2.0", path = "../auth-action" }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-differential = { version = "=0.2.0", path = "../differential", optional = true }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
