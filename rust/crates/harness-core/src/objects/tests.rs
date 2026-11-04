@@ -33,11 +33,13 @@ async fn an_upload_retry_naming_other_content_is_refused()
         let other = BinaryObjects::new(LocalCell {
             account: Arc::new(store.account(b"non-owner")?),
             lost_retain_reply: Arc::new(AtomicBool::new(false)),
+            read_cut: None,
         });
         let lost_retain_reply = Arc::new(AtomicBool::new(false));
         let objects = BinaryObjects::new(LocalCell {
             account: account.clone(),
             lost_retain_reply: lost_retain_reply.clone(),
+            read_cut: None,
         });
         let (file, uncertain) =
             upload_contract(objects, Some(lost_retain_reply.clone()), &issuer).await?;
@@ -70,9 +72,11 @@ async fn an_upload_retry_naming_other_content_is_refused()
         let medium = LocalMedium::open(root.path(), Default::default(), None).await?;
         let store = Store::new(medium);
         let medium = store.medium().clone();
+        let read_cut = Arc::new(ReadCut::default());
         let objects = Arc::new(BinaryObjects::new(LocalCell {
             account: Arc::new(store.account(b"original-owner")?),
             lost_retain_reply: Arc::new(AtomicBool::new(false)),
+            read_cut: Some(read_cut.clone()),
         }));
         objects.collect().await?;
         objects.collect().await?;
@@ -84,14 +88,43 @@ async fn an_upload_retry_naming_other_content_is_refused()
                 b"accepted before reply loss",
             ),
         ] {
-            assert_eq!(
-                binding
-                    .read(&file, file.descriptor().byte_length(), None, None)?
-                    .await?
-                    .as_slice(),
-                expected,
-                "the original volume binding and payload survive collection and reopen"
-            );
+            for range in [
+                None,
+                Some(acyclic_fs::ByteRange {
+                    offset: 1,
+                    length: 3,
+                }),
+                Some(acyclic_fs::ByteRange {
+                    offset: 1,
+                    length: 0,
+                }),
+            ] {
+                let (release, delivered) = tokio::sync::oneshot::channel();
+                *read_cut.delivery.lock().expect("read delivery") = Some(delivered);
+                let before = read_cut.requests.load(Ordering::SeqCst);
+                let read = match range {
+                    Some(range) => binding.read_range(&file, range, None, None)?,
+                    None => binding.read(&file, file.descriptor().byte_length(), None, None)?,
+                };
+                futures::pin_mut!(read);
+                assert!(futures::poll!(read.as_mut()).is_pending());
+                assert_eq!(
+                    read_cut.requests.load(Ordering::SeqCst) - before,
+                    2,
+                    "binding and content requests must start before the binding reply"
+                );
+                release
+                    .send(())
+                    .map_err(|()| "the original read was dropped")?;
+                let selected = range.map_or(expected, |range| {
+                    &expected[range.offset as usize..(range.offset + range.length) as usize]
+                });
+                assert_eq!(
+                    read.await?.as_slice(),
+                    selected,
+                    "the original binding and selected bytes survive collection and reopen"
+                );
+            }
             if file.path() == "notes/uncertain.txt" {
                 let retry = |body: &'static [u8]| {
                     binding.stage(
@@ -125,11 +158,19 @@ async fn an_upload_retry_naming_other_content_is_refused()
 }
 
 // This cell serves actual canonical dispatch and returns its encoded response;
-// only the post-retain delivery cut is controlled. No response is invented.
+// only reply delivery is controlled. No response is invented.
 #[cfg(not(target_arch = "wasm32"))]
 struct LocalCell {
     account: Arc<dyn Blobs>,
     lost_retain_reply: Arc<std::sync::atomic::AtomicBool>,
+    read_cut: Option<Arc<ReadCut>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+struct ReadCut {
+    delivery: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    requests: std::sync::atomic::AtomicUsize,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -139,8 +180,22 @@ impl acyclic_objects::binary::Transport for LocalCell {
         route: &str,
         input: bytes::Bytes,
     ) -> std::result::Result<acyclic_objects::binary::Reply, acyclic_objects::Error> {
+        let delivery = self.read_cut.as_ref().and_then(|cut| {
+            if matches!(route, "blobs/head" | "blobs/get") {
+                cut.requests
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            (route == "blobs/head")
+                .then(|| cut.delivery.lock().expect("read delivery").take())
+                .flatten()
+        });
         let (body, revision) =
             acyclic_objects::route::invoke_at(self.account.as_ref(), route, input).await?;
+        if let Some(delivery) = delivery {
+            delivery.await.map_err(|_| {
+                acyclic_objects::Error::from(acyclic_objects::wire::ErrorCode::Unavailable)
+            })?;
+        }
         if route == "blobs/retain"
             && self
                 .lost_retain_reply
