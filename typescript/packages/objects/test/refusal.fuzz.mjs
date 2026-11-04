@@ -71,13 +71,17 @@ export async function fuzz(input) {
 
   // Differential admission through the generated protobuf reader and the
   // shipped Rust request, including malformed and future semantic codes.
-  let code = original.code;
-  try {
-    const detail = fromBinary(wire.ErrorDetailSchema, input);
-    if (detail.code !== wire.ErrorCode.UNSPECIFIED && Object.values(wire.ErrorCode).includes(detail.code)) code = detail.code;
-  } catch {}
-  const detailed = await observedFailure({ code: original.code, detailBytes: new Uint8Array(input) });
-  assert.equal(detailed.code, code, "unsupported details preserve the original category");
+  const future = fromBinary(wire.ErrorDetailSchema, original.refusal.details);
+  future.code = 0x7fffffff;
+  for (const bytes of [input, toBinary(wire.ErrorDetailSchema, create(wire.ErrorDetailSchema)), toBinary(wire.ErrorDetailSchema, future)]) {
+    let code = original.code;
+    try {
+      const detail = fromBinary(wire.ErrorDetailSchema, bytes);
+      if (detail.code !== wire.ErrorCode.UNSPECIFIED && Object.values(wire.ErrorCode).includes(detail.code)) code = detail.code;
+    } catch {}
+    const detailed = await observedFailure({ code: original.code, detailBytes: new Uint8Array(bytes) });
+    assert.equal(detailed.code, code, "unsupported details preserve the original category");
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
