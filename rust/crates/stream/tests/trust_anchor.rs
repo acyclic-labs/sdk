@@ -163,6 +163,66 @@ async fn placeholder_anchor_recovers_on_key_publication_without_restart() {
 }
 
 #[tokio::test]
+async fn empty_environment_reanchors_blocked_account_opens_and_records() {
+    let issuer = Issuer::new("test", SigningKey::from_bytes(&[1; 32]));
+    let placeholder = Issuer::new("test", SigningKey::from_bytes(&[9; 32]));
+    let provider = Arc::new(MemoryStream::default());
+    let mut records = Vec::new();
+    for name in ["cold", "live"] {
+        let (_, genesis) = issuer
+            .genesis(name, SigningKey::from_bytes(&[2; 32]), 1_000)
+            .unwrap();
+        let stream = Stream::new(provider.clone(), account_path("test", name)).unwrap();
+        if name == "cold" {
+            for (index, value) in genesis.into_iter().enumerate() {
+                stream
+                    .append(
+                        OwnedBytes::from(value),
+                        IdempotencyKey::new(index.to_le_bytes().to_vec()).unwrap(),
+                    )
+                    .await
+                    .unwrap();
+            }
+        } else {
+            records = genesis;
+        }
+    }
+    let follower = Arc::new(Follower::new("test", placeholder.anchor()));
+    let (keys, watched) = tokio::sync::watch::channel(Arc::<[_]>::from(placeholder.anchor()));
+    let (feed, accounts) = TrustFeed::new(provider.clone(), follower.clone(), Arc::new(Clock));
+    accounts.follow("cold").unwrap();
+    accounts.follow("live").unwrap();
+    let mut feed = feed.watch_anchor(watched);
+    let mut run = Box::pin(feed.run());
+    let wake = Arc::new(PublicationWake::default());
+    assert!(step(run.as_mut(), &wake).is_none());
+    assert_eq!(*follower.state().borrow(), FollowerState::Serving);
+    assert!(follower.account("cold").is_err());
+    let stream = Stream::new(provider, account_path("test", "live")).unwrap();
+    for (index, value) in records.into_iter().enumerate() {
+        stream
+            .append(
+                OwnedBytes::from(value),
+                IdempotencyKey::new(index.to_le_bytes().to_vec()).unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+    assert!(step(run.as_mut(), &wake).is_none());
+    assert!(follower.account("live").is_err());
+    wake.0.store(false, Ordering::SeqCst);
+    keys.send_replace(issuer.anchor().into());
+    assert!(wake.0.load(Ordering::SeqCst));
+    assert!(step(run.as_mut(), &wake).is_none());
+    for account in ["cold", "live"] {
+        assert!(
+            follower.account(account).is_ok(),
+            "anchor publication must release the original blocked {account} account"
+        );
+    }
+}
+
+#[tokio::test]
 async fn closing_a_fenced_environment_ends_its_original_anchor_wait() {
     let issuer = Issuer::new("test", SigningKey::from_bytes(&[1; 32]));
     let provider = Arc::new(MemoryStream::default());
