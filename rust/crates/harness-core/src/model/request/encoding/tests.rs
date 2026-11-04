@@ -444,11 +444,11 @@ fn measure_suffix(
             serde_json::json!({"type":"string"}),
         ),
     }];
-    let prepared = PreparedModelRequest::prepare(
-        crate::model::clone_request(&original, Some(io))?,
-        Limits::default(),
-        Some(io),
-    )?;
+    // Admit both appended message slots before preparation records their
+    // inventory; the measured warm suffix must not include vector relocation.
+    let mut original = crate::model::clone_request(&original, Some(io))?;
+    crate::executor::stock_vec_reserve(&mut original.messages, count + 2, Some(io))?;
+    let prepared = PreparedModelRequest::prepare(original, Limits::default(), Some(io))?;
     let mut continuation = prepared.into_continuation();
     push(continuation.messages(), 0, Some(io))?;
     let mut prepared = continuation.finish(Limits::default(), Some(io))?;
