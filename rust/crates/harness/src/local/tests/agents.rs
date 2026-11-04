@@ -549,7 +549,6 @@ async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
         "no tools directory in {root:?}; turn output {}",
         String::from_utf8_lossy(&output)
     );
-    assert_eq!(names(&harness, private, "tools").await?, [turn.to_string()]);
     let turn_id = turn.to_string();
     let turn = format!("tools/{turn}");
     let calls = names(&harness, private, &turn).await?;

@@ -4,9 +4,11 @@
 uses the actual native projection, worker, acknowledged volume head and next
 entrant. Its seeded scope uses the existing native admission's real clock
 origin and must retain the cleanup task after the original waiter disappears.
-The worker releases its channel before retirement; the next
-entrant waits on the same execution guard, and drain waits on the accepted
-task's completion. Every scheduler boundary is released by that test's driver.
+After its release channel, the same physical worker drops its claims and
+announces that retirement was submitted. The next entrant waits on the same
+execution guard while drain drives the accepted cleanup concurrently. Waiting
+for the entrant before driving cleanup would deadlock. Every scheduler boundary
+is released by that test's driver.
 
 Run `python3 rust/proofs/controlled-cleanup/run.py` from the repository root.
 The retained `unscoped-claims.patch` restores direct runtime submission in the

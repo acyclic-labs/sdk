@@ -96,6 +96,7 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
     assert_eq!(published(scratch, "/data").await?, b"acknowledged");
 
     let (started, began) = tokio::sync::oneshot::channel();
+    let (retired, retirement) = tokio::sync::oneshot::channel();
     let (release, released) = std::sync::mpsc::channel();
     let cleaned = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let worker_cleaned = Arc::clone(&cleaned);
@@ -112,7 +113,8 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
             started.send(()).unwrap();
             released.recv().unwrap();
             worker_cleaned.store(true, std::sync::atomic::Ordering::Release);
-            claims
+            drop(claims);
+            retired.send(()).unwrap();
         })
         .await
         .map_err(storage)?;
@@ -154,10 +156,12 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
         "next command entered before physical cleanup"
     );
     release.send(()).map_err(storage)?;
+    // The same physical worker admits retirement before this event. Drive its
+    // accepted cleanup concurrently with the command waiting for its guard.
+    retirement.await.map_err(storage)?;
     let mut completed = Box::pin(async {
-        next.await?;
-        schedule.drained().await;
-        Ok::<_, Error>(())
+        let (result, ()) = futures::join!(next, schedule.drained());
+        result
     });
     loop {
         tokio::select! {
