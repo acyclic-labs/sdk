@@ -39,6 +39,99 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head() -> TestRes
         .await?
         .value;
     assert_eq!(exact.generation_id(), head.generation_id());
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::initialize_test_native_io();
+        for deny_hash in [true, false] {
+            let caller = CancellationToken::new();
+            let original =
+                crate::NativeMaterializationWork::new(B, &caller).map_err(|(cause, _)| cause)?;
+            original.charge(WorkCounters {
+                items_examined: 7,
+                ..WorkCounters::UNCHARGED
+            })?;
+            let initial_live = original.live_allocation_bytes();
+            let held = crate::kernel::allocation::retained::Retained::<Vec<u8>>::allocate(
+                4096,
+                &mut crate::kernel::KernelAccounting::native(&original, &cancel),
+            )?;
+            let restricted = original.native_volume_work(WorkBudget {
+                bytes_hashed: if deny_hash { 0 } else { B.bytes_hashed },
+                ..B
+            })?;
+            let baseline = original.live_allocation_bytes();
+            let id = VolumeId::from_bytes([45; 16]);
+            let result = fs
+                .create_volume_with_id(id, config(), &restricted, &cancel)
+                .await;
+            if deny_hash {
+                assert!(matches!(
+                    result,
+                    Err(FsError::Object(crate::ObjectStoreError::Native(
+                        crate::NativeTreeMaterializationError::Work(
+                            crate::WorkError::BudgetExceeded {
+                                counter: "bytes_hashed",
+                                ..
+                            }
+                        )
+                    )))
+                ));
+                let spent = original.receipt();
+                assert_eq!(spent.bytes_hashed, 0);
+                assert_eq!(spent.backend_write_operations, 0);
+                assert_eq!(spent.authority_records_appended, 0);
+            } else {
+                let first = result?;
+                let head = open_checkout(&first, pinned(), &cancel).await?;
+                let published = original.receipt();
+                assert_eq!(published.authority_records_appended, 1);
+                assert!(published.backend_write_operations > 0);
+                let retry = fs
+                    .create_volume_with_id(id, config(), &restricted, &cancel)
+                    .await?;
+                let exact = retry
+                    .checkout(
+                        GenerationSelector::Exact(head.generation_id()),
+                        pinned(),
+                        B,
+                        &cancel,
+                    )
+                    .await?
+                    .value;
+                assert_eq!(exact.generation_id(), head.generation_id());
+                assert_eq!(original.receipt().authority_records_appended, 1);
+                assert_eq!(
+                    fs.create_volume(config(), &restricted, &cancel)
+                        .await?
+                        .config(),
+                    config()
+                );
+                assert_eq!(original.receipt().authority_records_appended, 2);
+            }
+            assert!(original.receipt().items_examined >= 7);
+            assert_eq!(original.live_allocation_bytes(), baseline);
+            let spent = original.receipt();
+            caller.cancel();
+            assert!(matches!(
+                fs.create_volume_with_id(id, config(), &restricted, &cancel)
+                    .await,
+                Err(FsError::NativeKernel(
+                    crate::NativeTreeMaterializationError::Cancelled
+                ))
+            ));
+            assert!(matches!(
+                fs.create_volume(config(), &restricted, &cancel).await,
+                Err(FsError::NativeKernel(
+                    crate::NativeTreeMaterializationError::Cancelled
+                ))
+            ));
+            assert_eq!(original.receipt(), spent);
+            assert_eq!(original.live_allocation_bytes(), baseline);
+            drop(restricted);
+            drop(held);
+            assert_eq!(original.live_allocation_bytes(), initial_live);
+        }
+    }
     Ok(())
 }
 
