@@ -17,8 +17,9 @@ export async function grpcFixture(identity: { key: string; cert: string }, failu
   const { key, cert } = identity;
   const node = new SessionNode();
   const counts = { connections: 0, sessions: 0, legacyFollows: 0 };
+  const faults = { missingStatus: false };
   const connections = new Set<ServerHttp2Session>();
-  const server = createSecureServer({ key, cert }, connectNodeAdapter({ routes(router) {
+  const adapter = connectNodeAdapter({ routes(router) {
     router.service(StreamService, {
       tail(_request, context) {
         const echo = context.requestHeader.get("x-follow-options") ?? "";
@@ -41,7 +42,17 @@ export async function grpcFixture(identity: { key: string; cert: string }, failu
       try { for await (const frame of transport.incoming) yield fromBinary(SessionFrameSchema, frame); }
       finally { context.signal.removeEventListener("abort", abort); transport.close(); }
     } });
-  } }));
+  } });
+  const server = createSecureServer({ key, cert }, (request, response) => {
+    if (faults.missingStatus) {
+      assert.equal(request.headers.authorization, "Bearer fixture");
+      counts.sessions += 1;
+      response.writeHead(200, { "content-type": "application/grpc" });
+      response.end();
+      return;
+    }
+    adapter(request, response);
+  });
   server.on("connection", socket => socket.setNoDelay(true));
   server.on("session", session => {
     counts.connections += 1;
@@ -52,7 +63,7 @@ export async function grpcFixture(identity: { key: string; cert: string }, failu
   await new Promise<void>(resolve => server.listen(0, "localhost", resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("missing HTTP/2 address");
-  return { node, counts, close, disconnect() { for (const session of connections) session.destroy(); },
+  return { node, counts, faults, close, disconnect() { for (const session of connections) session.destroy(); },
     options: { endpoint: `https://localhost:${address.port}`, token: "fixture", caCertificate: cert } };
 }
 

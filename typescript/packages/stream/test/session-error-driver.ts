@@ -10,11 +10,11 @@ if (process.versions.bun) {
   plugin({ name: "session-error-vocabulary", setup(build) {
     build.onLoad({ filter: /[\\/]src[\\/]grpc\.ts$/ }, async args => {
       const source = await Bun.file(args.path).text();
-      const needle = "throw sessionTransportError(error);";
+      const needle = "throw sessionTransportError(error, interrupted);";
       assert(source.includes(needle), "canonical error probe no longer matches");
       const expression = fault === "aliases" ? 'providerError(error, "session")'
-        : fault === "disposition" ? 'Object.assign(sessionTransportError(error), { transient: false })' : "sessionTransportError(error)";
-      return { contents: source.replace(needle, `const failure = ${expression}; Reflect.get(globalThis, "captureSessionError")(failure); if (Reflect.get(globalThis, "capturePhysicalError")) Reflect.get(globalThis, "capturePhysicalError")(error); throw failure;`), loader: "ts" };
+        : fault === "disposition" ? 'sessionTransportError(error, false)' : "sessionTransportError(error, interrupted)";
+      return { contents: source.replace(needle, `const failure = ${expression}; Reflect.get(globalThis, "captureSessionError")(failure); if (Reflect.get(globalThis, "capturePhysicalError")) Reflect.get(globalThis, "capturePhysicalError")(error, interrupted); throw failure;`), loader: "ts" };
     });
   } });
 }
@@ -72,6 +72,16 @@ try {
   assert.equal(fixture.counts.connections, 1);
   const peerSessions = fixture.counts.sessions;
   failure = undefined;
+  // The same missing-status error on a live connection is a definite protocol
+  // failure. Its text and gRPC code are not evidence for physical reconnection.
+  fixture.faults.missingStatus = true;
+  const malformed = provider.follow("protocol", { from: 0n })[Symbol.asyncIterator]();
+  const protocolError = await malformed.next().then(() => undefined, error => error);
+  assert(protocolError instanceof StreamError && protocolError.code === "unavailable");
+  await assert.rejects(malformed.return!(), cleanup => cleanup === protocolError);
+  assert.equal(fixture.counts.sessions, peerSessions + 1);
+  assert.equal(fixture.counts.connections, 1);
+  fixture.faults.missingStatus = false;
   const follows = ["recovery/a", "recovery/b"].map(path => provider.follow(path, { from: 0n })[Symbol.asyncIterator]());
   try {
     const first = Promise.all(follows.map(follow => follow.next()));
@@ -81,8 +91,8 @@ try {
     assert((await first).every(item => item.value?.sequence === 0n));
     const next = Promise.all(follows.map(follow => follow.next()));
     // Capture only actual transport output, before the public error projection.
-    Reflect.set(globalThis, "capturePhysicalError", (error: Error) => {
-      console.error("physical HTTP/2 loss", error);
+    Reflect.set(globalThis, "capturePhysicalError", (error: Error, interrupted: boolean) => {
+      console.error("physical HTTP/2 loss", { interrupted, error });
     });
     fixture.disconnect();
     await Promise.race([
@@ -95,7 +105,7 @@ try {
     fixture.node.append("recovery/a");
     fixture.node.append("recovery/b");
     assert((await next).every(item => item.value?.sequence === 1n));
-    assert.equal(fixture.counts.sessions, peerSessions + 2);
+    assert.equal(fixture.counts.sessions, peerSessions + 3);
     assert.equal(fixture.counts.connections, 2);
     assert.equal(fixture.counts.legacyFollows, 0);
   } finally { await Promise.all(follows.map(follow => follow.return?.())); }
