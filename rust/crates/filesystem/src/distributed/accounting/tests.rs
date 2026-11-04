@@ -36,6 +36,7 @@ async fn historical_reads_preserve_the_complete_original_receipt() -> TestResult
         payload_bytes: STREAM_RECORD_LIMIT,
     };
     for native in [false, true] {
+        let cancel = CancellationToken::new();
         let expected_owner =
             crate::NativeMaterializationWork::new(BUDGET, &cancel).map_err(|(error, _)| error)?;
         let actual_owner =
@@ -50,6 +51,16 @@ async fn historical_reads_preserve_the_complete_original_receipt() -> TestResult
         } else {
             AuthorityWork::new(BUDGET, &cancel)
         };
+        let expected_independent = crate::kernel::allocation::retained::RetainedAllocation::claim(
+            73,
+            1,
+            &mut expected.accounting(),
+        )?;
+        let actual_independent = crate::kernel::allocation::retained::RetainedAllocation::claim(
+            73,
+            1,
+            &mut actual.accounting(),
+        )?;
         let expected_head = {
             let mut scope = expected.scope()?;
             let snapshot = store.snapshot(AUTHORITY, &mut scope).await?;
@@ -67,6 +78,14 @@ async fn historical_reads_preserve_the_complete_original_receipt() -> TestResult
             "historical head lost original completed work"
         );
         let encoded_before = actual.spent().bytes_encoded;
+        let live = |work: &AuthorityWork<'_>| {
+            if native {
+                work.original.unwrap().live_allocation_bytes()
+            } else {
+                work.allocations.live_bytes()
+            }
+        };
+        let before_replay = live(&actual);
         let (expected_records, expected_allocation) = {
             let mut scope = expected.scope()?;
             let value = store
@@ -92,9 +111,30 @@ async fn historical_reads_preserve_the_complete_original_receipt() -> TestResult
             expected.spent(),
             "historical replay lost original completed work"
         );
+        let alias = records
+            .first()
+            .ok_or("historical replay omitted its physical record")?
+            .payload
+            .clone();
+        assert!(
+            live(&actual) >= before_replay + alias.len() as u64,
+            "historical replay retired funding before its returned payload"
+        );
         drop((records, expected_records));
         drop((allocation, expected_allocation));
         actual.spent().verify(BUDGET)?;
+        cancel.cancel();
+        assert!(
+            live(&actual) >= before_replay + alias.len() as u64,
+            "historical replay retired funding before its last payload alias"
+        );
+        drop(alias);
+        assert_eq!(
+            live(&actual),
+            before_replay,
+            "last payload alias did not retire its original backing"
+        );
+        drop((actual_independent, expected_independent));
     }
     for counter in ["allocation_operations", "bytes_hashed", "bytes_copied"] {
         let budget = match counter {

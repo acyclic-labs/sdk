@@ -33,8 +33,8 @@ use crate::test_support::{
     put_generation_root, put_tree_page,
 };
 
-async fn minimal_generation(
-    store: &MemoryObjectStore,
+async fn minimal_generation<S: crate::AsyncObjectStore>(
+    store: &S,
     file_table: Option<ObjectId>,
 ) -> Result<(ObjectId, FileId, ObjectId), Box<dyn std::error::Error>> {
     let metadata = put_file_metadata(store, metadata()).await?;

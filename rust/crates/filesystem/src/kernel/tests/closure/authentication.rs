@@ -27,16 +27,43 @@ async fn minimal_generation_has_a_complete_authenticated_closure()
         let mut native = crate::AuthorityWork::native(&original, &cancellation);
         original_closure_custody(&traced, generation, &mut native).await?;
     }
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    {
+        crate::initialize_test_native_io();
+        let directory = tempfile::tempdir()?;
+        let provider =
+            acyclic_objects::local::LocalObjects::open(directory.path(), Default::default(), None)
+                .await?;
+        let store = crate::LogicalObjectStore::new(std::sync::Arc::new(provider));
+        let (generation, _, _) = minimal_generation(&store, None).await?;
+        let traced = OriginalReadTrace { inner: &store };
+        let cancellation = CancellationToken::new();
+        let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        work.charge(WorkCounters {
+            bytes_encoded: 7,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let independent = crate::kernel::allocation::retained::RetainedAllocation::claim(
+            73,
+            1,
+            &mut work.accounting(),
+        )?;
+        let baseline = original_live(&mut work);
+        original_single_read_custody(&traced, generation, &mut work, true).await?;
+        cancellation.cancel();
+        drop(independent);
+        assert_eq!(original_live(&mut work), baseline - 73);
+    }
     Ok(())
 }
 
 // The observer delegates the physical read to the shipped store. Admission and
 // completion use the received frame, including seven additional codec units.
-struct OriginalReadTrace<'a> {
-    inner: &'a MemoryObjectStore,
+struct OriginalReadTrace<'a, S> {
+    inner: &'a S,
 }
 
-impl crate::AsyncObjectStore for OriginalReadTrace<'_> {
+impl<S: crate::AsyncObjectStore> crate::AsyncObjectStore for OriginalReadTrace<'_, S> {
     async fn read_many(
         &self,
         requests: &[crate::storage::ObjectReadRequest],
@@ -86,8 +113,41 @@ fn observe_original_read(work: &mut crate::AuthorityWork<'_>) -> Result<(), Obje
     .map_err(ObjectStoreError::from)
 }
 
-async fn original_closure_custody(
-    store: &OriginalReadTrace<'_>,
+async fn original_single_read_custody<S: crate::AsyncObjectStore>(
+    store: &S,
+    generation: ObjectId,
+    work: &mut crate::AuthorityWork<'_>,
+    require_owned: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = work.cancellation;
+    let baseline = original_live(work);
+    let (read, bytes) = crate::kernel::read_object_with_accounting(
+        store,
+        generation,
+        limits().maximum_object_bytes,
+        &mut work.accounting(),
+        cancellation,
+    )
+    .await?;
+    assert!(!read.bytes.is_empty());
+    if require_owned {
+        assert!(
+            bytes > 0,
+            "local physical read did not return owned backing"
+        );
+    }
+    assert!(
+        original_live(work) >= baseline + bytes,
+        "single owned output funding retired at scope exit"
+    );
+    drop(read);
+    crate::kernel::file_read::release_standalone_read_bytes(bytes, &mut work.accounting())?;
+    assert_eq!(original_live(work), baseline);
+    Ok(())
+}
+
+async fn original_closure_custody<S: crate::AsyncObjectStore>(
+    store: &OriginalReadTrace<'_, S>,
     generation: ObjectId,
     work: &mut crate::AuthorityWork<'_>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -98,19 +158,7 @@ async fn original_closure_custody(
         ..WorkCounters::UNCHARGED
     })?;
     let independent = RetainedAllocation::claim(73, 1, &mut work.accounting())?;
-    // The same shipped single and batch read adapters are used by incremental
-    // closure walks. Their actual backend must see this original frame too.
-    let (read, bytes) = crate::kernel::read_object_with_accounting(
-        store,
-        generation,
-        limits().maximum_object_bytes,
-        &mut work.accounting(),
-        cancellation,
-    )
-    .await?;
-    assert!(!read.bytes.is_empty());
-    drop(read);
-    crate::kernel::file_read::release_standalone_read_bytes(bytes, &mut work.accounting())?;
+    original_single_read_custody(store, generation, work, false).await?;
     let requests = [crate::storage::ObjectReadRequest {
         object_id: generation,
         maximum_bytes: limits().maximum_object_bytes,

@@ -63,3 +63,30 @@ prefix checks. Its removed `prefix_oracle_rejects_missing_completed_charges`
 example skipped completion inside the test driver. Missing copy completion is
 instead planted in the real producer by `mutations/decoder_copy_completion.patch`
 and checked by the retained canonical decoder relation.
+
+Historical payload aliases use the same retained owner as publication payloads.
+`distributed::accounting::tests::historical_reads_preserve_the_complete_original_receipt`
+delegates to the actual stream authority and verifies both ordinary and native
+funding after replay scope exit, record destruction, cancellation and the last
+payload alias. The independent original allocation remains live throughout.
+`mutations/payload_alias_custody.patch` drops the producer's actual retained
+lease before returning the physical `Bytes`; it must fail
+`historical replay retired funding before its returned payload`.
+Restore the source before requiring the same relation to pass.
+
+The conversion admits one exact shared owner header before allocation, copies no
+payload bytes and combines its lease with the existing payload lease. An
+ordinary ledger promotes once when its first independent lease is needed.
+Native stream requests retain the existing stream `OwnedBytes` adapter. No
+provider read, wait, syscall or durability barrier is added. This payload owner
+does not supply the separate public accounting page or record-vector contract.
+
+The minimal-generation relation also creates canonical objects through the
+public logical store over `LocalObjects::open` with its real default settings.
+The existing observer delegates to that store; the read must report nonzero
+owned backing, keep it funded outside the adapter scope and retire exactly
+that backing while the independent allocation remains live.
+`mutations/single_owned_read_retirement.patch` removes the actual single-read
+output transfer. Shared-memory reads still pass; the local owned read must fail
+`single owned output funding retired at scope exit`. This closes the shared-only
+coverage gap without an artificial owned-read provider.
