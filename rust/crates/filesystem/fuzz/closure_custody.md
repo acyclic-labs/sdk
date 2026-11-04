@@ -30,3 +30,36 @@ Closure traversal remains proportional to admitted objects and records. The
 membership relation keeps its linear copy and consuming-cursor bounds and the
 old quadratic-move and repeated-seek negative controls at 512 entries, with
 complete identity-bit coverage retained separately in the same relation.
+
+The same relation exercises the shared single-object and batch adapters used by
+incremental walks. Both borrow the original frame. The batch retains its actual
+container capacity and producer-reported owned bytes until physical retirement;
+temporary scratch retires at scope exit. The transfer uses one checked addition
+and one live-byte comparison, with no allocation, scan, wait, copy or admission.
+Reading a batch still takes work proportional to its requested objects.
+
+The kept `mutations/object_read_custody.patch` plants three independent omissions
+in the actual shared read and scope producers. Only the planted source reads
+`ACYCLIC_READ_CUSTODY_OMISSION`; select one omission per run of the same command:
+
+- `single` replaces the single-read frame with remaining-budget work.
+- `batch` replaces the batch-read frame with remaining-budget work.
+- `retirement` retires the batch output at scope exit.
+
+The first two must fail the original-frame admission assertion. The third must
+fail `batch output funding retired at scope exit`. All three use one compiled
+planted binary; restore the source and require the positive run afterward.
+The removed
+`late_backend_retention_refusal_releases_only_returned_backing` and
+`backend_merge_failure_does_not_release_unregistered_returned_backing` examples
+exercised the deleted receipt adapter with fabricated receipts. The surviving
+real-store relation checks original funding and retirement instead;
+`object_store_verifies_identity_bounds_and_original_work` retains actual-store
+budget, cancellation and suspended-custody refusal coverage.
+
+The generated `wrapper_checks_preserve_all_limits_receipts_and_cancellation_prefixes`
+relation keeps its original inputs, accounting modes and independent failure
+prefix checks. Its removed `prefix_oracle_rejects_missing_completed_charges`
+example skipped completion inside the test driver. Missing copy completion is
+instead planted in the real producer by `mutations/decoder_copy_completion.patch`
+and checked by the retained canonical decoder relation.

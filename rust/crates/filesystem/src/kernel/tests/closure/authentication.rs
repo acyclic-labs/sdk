@@ -42,6 +42,7 @@ impl crate::AsyncObjectStore for OriginalReadTrace<'_> {
         requests: &[crate::storage::ObjectReadRequest],
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
+        observe_original_read(work)?;
         self.inner.read_many(requests, work).await
     }
 
@@ -68,17 +69,21 @@ impl crate::AsyncObjectStore for OriginalReadTrace<'_> {
         maximum: u64,
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<crate::storage::ObjectRead, ObjectStoreError> {
-        assert!(
-            work.spent().bytes_encoded >= 7,
-            "closure read replaced its original frame"
-        );
-        work.charge(WorkCounters {
-            bytes_encoded: 7,
-            ..WorkCounters::UNCHARGED
-        })
-        .map_err(ObjectStoreError::from)?;
+        observe_original_read(work)?;
         self.inner.read(id, maximum, work).await
     }
+}
+
+fn observe_original_read(work: &mut crate::AuthorityWork<'_>) -> Result<(), ObjectStoreError> {
+    assert!(
+        work.spent().bytes_encoded >= 7,
+        "closure read replaced its original frame"
+    );
+    work.charge(WorkCounters {
+        bytes_encoded: 7,
+        ..WorkCounters::UNCHARGED
+    })
+    .map_err(ObjectStoreError::from)
 }
 
 async fn original_closure_custody(
@@ -87,11 +92,53 @@ async fn original_closure_custody(
     work: &mut crate::AuthorityWork<'_>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::kernel::allocation::retained::RetainedAllocation;
+    let cancellation = work.cancellation;
     work.charge(WorkCounters {
         bytes_encoded: 7,
         ..WorkCounters::UNCHARGED
     })?;
     let independent = RetainedAllocation::claim(73, 1, &mut work.accounting())?;
+    // The same shipped single and batch read adapters are used by incremental
+    // closure walks. Their actual backend must see this original frame too.
+    let (read, bytes) = crate::kernel::read_object_with_accounting(
+        store,
+        generation,
+        limits().maximum_object_bytes,
+        &mut work.accounting(),
+        cancellation,
+    )
+    .await?;
+    assert!(!read.bytes.is_empty());
+    drop(read);
+    crate::kernel::file_read::release_standalone_read_bytes(bytes, &mut work.accounting())?;
+    let requests = [crate::storage::ObjectReadRequest {
+        object_id: generation,
+        maximum_bytes: limits().maximum_object_bytes,
+    }];
+    let batch_baseline = original_live(work);
+    let batch = crate::kernel::read_objects_with_accounting(
+        store,
+        &requests,
+        &mut work.accounting(),
+        cancellation,
+    )
+    .await?;
+    assert_eq!(batch.value.len(), requests.len());
+    let retained = crate::kernel::file_read::retained_object_reads_bytes(
+        &batch.value,
+        batch.value.capacity(),
+    )?;
+    assert!(
+        original_live(work) >= batch_baseline + retained,
+        "batch output funding retired at scope exit"
+    );
+    drop(batch.value);
+    crate::kernel::file_read::release_read_allocation(
+        retained,
+        batch.custody,
+        &mut work.accounting(),
+    )?;
+    assert_eq!(original_live(work), batch_baseline);
     let before = work.spent();
     let (proof, guard) = {
         let meter = ProofMeter::from_accounting(work.accounting())?;
@@ -103,27 +150,28 @@ async fn original_closure_custody(
     assert_eq!(proof.work, work.spent(), "outer receipt lost original work");
     assert_eq!(
         proof.work.bytes_encoded - before.bytes_encoded,
-        7 * proof.work.object_probes
+        7 * (proof.work.object_probes - before.object_probes)
     );
     let retained = guard.retained_bytes();
-    let live = |work: &mut crate::AuthorityWork<'_>| {
-        let mut accounting = work.accounting();
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            return original.live_allocation_bytes();
-        }
-        accounting.standalone_parts().unwrap().0.live_bytes()
-    };
-    let funded = live(work);
+    let funded = original_live(work);
     assert!(funded >= retained + 73);
     work.cancellation.cancel();
     assert!(work.check().is_err());
     drop(proof);
     drop(guard);
-    assert_eq!(live(work), funded - retained);
+    assert_eq!(original_live(work), funded - retained);
     drop(independent);
-    assert_eq!(live(work), funded - retained - 73);
+    assert_eq!(original_live(work), funded - retained - 73);
     Ok(())
+}
+
+fn original_live(work: &mut crate::AuthorityWork<'_>) -> u64 {
+    let mut accounting = work.accounting();
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(original) = accounting.native_work() {
+        return original.live_allocation_bytes();
+    }
+    accounting.standalone_parts().unwrap().0.live_bytes()
 }
 
 #[tokio::test]

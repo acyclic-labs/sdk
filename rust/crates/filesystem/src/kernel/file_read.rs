@@ -1,6 +1,6 @@
 //! Composed bounded regular-file reads across inline and sparse representations.
 
-use super::allocation::{AllocationError, KernelAccounting, KernelOwnedAllocation};
+use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::{
     BlobReadError, DecodeLimits, ExtentKind, ExtentRangeRequest, ExtentReadError, FileKind,
     FilePayload, FileRecord,
@@ -251,10 +251,6 @@ fn file_error(error: FsError) -> FileRangeReadError {
     }
 }
 
-pub(crate) fn allocation_error(error: AllocationError) -> FsError {
-    error.into_work_or(FsError::FileRead(FileRangeReadError::AllocationFailed))
-}
-
 pub(crate) struct ReadOwned<T> {
     pub(crate) value: T,
     pub(crate) custody: KernelOwnedAllocation,
@@ -388,12 +384,26 @@ pub(crate) async fn read_object_with_accounting<S: AsyncObjectStore>(
             .map(|read| (read, 0))
             .map_err(read_store_error);
     }
-    let result = {
-        let mut work = crate::AuthorityWork::new(accounting.remaining()?, cancellation);
-        let result = store.read(object, maximum, &mut work).await;
-        work.receipt(result)
+    let mut frame = crate::async_storage::AuthorityFrame::borrow(accounting)?;
+    cancellation.check()?;
+    let mut work = frame
+        .scope()
+        .map_err(crate::ObjectStoreError::from)
+        .map_err(read_store_error)?;
+    let read = store
+        .read(object, maximum, &mut work)
+        .await
+        .map_err(read_store_error)?;
+    let bytes = match read.retention {
+        crate::storage::ObjectReadRetention::Shared => 0,
+        crate::storage::ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
     };
-    accept_standalone_object_read(result, accounting)
+    let owned = work.finish_owned(crate::kernel::Owned::new(
+        read,
+        KernelOwnedAllocation::Standalone,
+        bytes,
+    ))?;
+    Ok((owned.value, bytes))
 }
 
 pub(crate) fn read_store_error(error: crate::storage::ObjectStoreError) -> FsError {
@@ -404,70 +414,6 @@ pub(crate) fn read_store_error(error: crate::storage::ObjectStoreError) -> FsErr
         crate::storage::ObjectStoreError::Native(error) => error.into(),
         error => error.into(),
     }
-}
-
-fn record_standalone_backend(
-    accounting: &mut KernelAccounting<'_>,
-    completed: WorkCounters,
-    retained: u64,
-) -> Result<(), (FsError, bool)> {
-    let record = |allocations: &mut super::allocation::AllocationLedger,
-                  work: &mut WorkCounters,
-                  budget: WorkBudget| {
-        *work = work
-            .with_backend(completed, allocations.live_bytes())
-            .map_err(|error| (FsError::from(error), false))?;
-        allocations
-            .record_owned_bytes(retained, work)
-            .map_err(|error| (allocation_error(error), false))?;
-        work.verify(budget)
-            .map_err(|error| (FsError::from(error), true))
-    };
-    match accounting {
-        KernelAccounting::Standalone {
-            allocations,
-            work,
-            budget,
-            ..
-        } => record(allocations, work, *budget),
-        KernelAccounting::BorrowedStandalone {
-            allocations,
-            work,
-            budget,
-            ..
-        } => record(allocations, work, *budget),
-        #[cfg(not(target_arch = "wasm32"))]
-        KernelAccounting::NativeOriginal { .. } => Err((
-            crate::NativeTreeMaterializationError::InvalidLayout.into(),
-            false,
-        )),
-    }
-}
-
-pub(crate) fn accept_standalone_object_read(
-    result: crate::storage::ObjectResult<crate::storage::ObjectRead>,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<(crate::storage::ObjectRead, u64), FsError> {
-    let completed = match &result {
-        Ok(receipt) => receipt.work,
-        Err(failure) => *failure.work,
-    };
-    let retained = match &result {
-        Ok(receipt) => match receipt.value.retention {
-            crate::storage::ObjectReadRetention::Shared => 0,
-            crate::storage::ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
-        },
-        Err(_) => 0,
-    };
-    if let Err((error, registered)) = record_standalone_backend(accounting, completed, retained) {
-        drop(result);
-        if registered {
-            release_standalone_read_bytes(retained, accounting)?;
-        }
-        return Err(error);
-    }
-    let receipt = result.map_err(|failure| read_store_error(failure.error))?;
-    Ok((receipt.value, retained))
 }
 
 pub(crate) async fn read_objects_with_accounting<S: AsyncObjectStore>(
@@ -491,44 +437,24 @@ pub(crate) async fn read_objects_with_accounting<S: AsyncObjectStore>(
             custody: KernelOwnedAllocation::NativeOriginal(custody),
         });
     }
-    let result = {
-        let budget = accounting.remaining()?;
-        cancellation.check()?;
-        let mut work = crate::AuthorityWork::new(budget, cancellation);
-        let result = store
-            .read_many(requests, &mut work)
-            .await
-            .map(|(values, _allocation)| values);
-        work.receipt(result)
-    };
-    let completed = match &result {
-        Ok(receipt) => receipt.work,
-        Err(failure) => *failure.work,
-    };
-    let retained = match &result {
-        Ok(receipt) => retained_object_reads_bytes(&receipt.value, receipt.value.capacity()),
-        Err(_) => Ok(0),
-    };
-    let retained = match retained {
-        Ok(retained) => retained,
-        Err(error) => {
-            let prefix =
-                record_standalone_backend(accounting, completed, 0).map_err(|(error, _)| error);
-            drop(result);
-            prefix?;
-            return Err(error);
-        }
-    };
-    if let Err((error, registered)) = record_standalone_backend(accounting, completed, retained) {
-        drop(result);
-        if registered {
-            release_standalone_read_bytes(retained, accounting)?;
-        }
-        return Err(error);
-    }
-    let receipt = result.map_err(|failure| read_store_error(failure.error))?;
+    let mut frame = crate::async_storage::AuthorityFrame::borrow(accounting)?;
+    cancellation.check()?;
+    let mut work = frame
+        .scope()
+        .map_err(crate::ObjectStoreError::from)
+        .map_err(read_store_error)?;
+    let (values, _allocation) = store
+        .read_many(requests, &mut work)
+        .await
+        .map_err(read_store_error)?;
+    let retained = retained_object_reads_bytes(&values, values.capacity())?;
+    let owned = work.finish_owned(crate::kernel::Owned::new(
+        values,
+        KernelOwnedAllocation::Standalone,
+        retained,
+    ))?;
     Ok(ReadOwned {
-        value: receipt.value,
+        value: owned.value,
         custody: KernelOwnedAllocation::Standalone,
     })
 }
