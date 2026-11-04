@@ -615,6 +615,8 @@ pub(crate) fn validate_commit_shape_with(
     request: &CommitRequest,
     mut visit: impl FnMut(ShapeVisit),
 ) -> Result<(), StreamError> {
+    let mut conditions = request.conditions.iter().peekable();
+    let mut has_carrier = None;
     for mutation in &request.mutations {
         if let CommitMutation::Fork {
             source,
@@ -641,14 +643,21 @@ pub(crate) fn validate_commit_shape_with(
         // by the recipient's closed marker). A fork must prove its destination
         // absent. A soft append's own presence check decides it, so no condition
         // names its path, and it rides on a commit that publishes something.
-        let condition = request
-            .conditions
-            .binary_search_by(|condition| {
-                visit(ShapeVisit::Condition);
-                condition_path(condition).cmp(crate::CommitMutation::path(mutation))
-            })
-            .ok()
-            .and_then(|index| request.conditions.get(index));
+        // Normalization orders both inputs and rejects duplicate paths. Each
+        // comparison consumes a condition or completes this mutation's lookup.
+        let condition = loop {
+            let Some(condition) = conditions.peek().copied() else {
+                break None;
+            };
+            visit(ShapeVisit::Condition);
+            match condition_path(condition).cmp(crate::CommitMutation::path(mutation)) {
+                std::cmp::Ordering::Less => {
+                    conditions.next();
+                }
+                std::cmp::Ordering::Equal => break conditions.next(),
+                std::cmp::Ordering::Greater => break None,
+            }
+        };
         match mutation {
             CommitMutation::Fork { .. }
                 if !matches!(condition, Some(CommitCondition::Absent { .. })) =>
@@ -658,9 +667,11 @@ pub(crate) fn validate_commit_shape_with(
             CommitMutation::SoftAppend { path, closed, .. }
                 if condition.is_some()
                     || closed.as_ref() == Some(path)
-                    || request.mutations.iter().all(|other| {
-                        visit(ShapeVisit::Carrier);
-                        matches!(other, CommitMutation::SoftAppend { .. })
+                    || !*has_carrier.get_or_insert_with(|| {
+                        request.mutations.iter().any(|other| {
+                            visit(ShapeVisit::Carrier);
+                            !matches!(other, CommitMutation::SoftAppend { .. })
+                        })
                     }) =>
             {
                 return Err(StreamError::InvalidArgument);
