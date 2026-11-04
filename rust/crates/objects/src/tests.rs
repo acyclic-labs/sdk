@@ -287,6 +287,7 @@ async fn a_dropped_root_reopens_while_a_forked_copy_of_its_lock_lives()
 /// reads, and bit 2 loses one replacement reply. Bit 3 applies that replacement
 /// before losing its reply; otherwise the original value remains. Bit 4 loses a
 /// root removal reply; bit 5 applies that removal before losing its reply.
+/// Bit 6 loses only a root-batch create reply, after its indexes were admitted.
 #[derive(Default)]
 pub(crate) struct Faulty {
     inner: MemoryMedium,
@@ -332,7 +333,8 @@ pub(crate) async fn failed_release(
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Medium for Faulty {
     async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
-        if self.faults.load(Ordering::SeqCst) & 1 != 0 {
+        let faults = self.faults.load(Ordering::SeqCst);
+        if faults & 1 != 0 || (faults & 64 != 0 && key.contains("/r/")) {
             return Err(MediumError::Ambiguous(std::io::ErrorKind::TimedOut.into()));
         }
         self.inner.create(key, bytes).await
@@ -423,19 +425,22 @@ async fn ambiguous_publication_is_unknown_and_retry_safe() -> Result<(), Box<dyn
     ));
     let root = RootId::new(*b"uncertain")?;
     let cause = acyclic_auth::refusal::Cause::new("objects.medium", "outcome_unknown");
-    store.medium().faults.store(1, Ordering::SeqCst);
-    for failure in [
-        blobs.retain(&root, Vec::new()).await.map(|_| ()),
-        blobs
+    for faults in [1, 64] {
+        store.medium().faults.store(faults, Ordering::SeqCst);
+        let error = blobs
             .retain(&root, vec![Digest::of(&body)])
             .await
-            .map(|_| ()),
-        blobs.collect().await.map(|_| ()),
-    ] {
-        let error = failure.expect_err("an ambiguous mutation cannot be acknowledged");
+            .expect_err("an ambiguous retain cannot be acknowledged");
         assert_eq!(error.code, ErrorCode::OutcomeUnknown);
         assert_eq!(error.cause(), Some(&cause));
     }
+    store.medium().faults.store(1, Ordering::SeqCst);
+    let error = blobs
+        .collect()
+        .await
+        .expect_err("an ambiguous epoch cannot be acknowledged");
+    assert_eq!(error.code, ErrorCode::OutcomeUnknown);
+    assert_eq!(error.cause(), Some(&cause));
     store.medium().faults.store(4, Ordering::SeqCst);
     let error = blobs
         .delete(Digest::of(&body))
