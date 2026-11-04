@@ -64,7 +64,7 @@ macro_rules! methods {
 
 methods! {
     /// Read a bounded range through Session Follow.
-    Read => rpc::StreamRpc::Read.authorization(), Follow;
+    Read => FOLLOW, Follow;
     /// Subscribe to future records.
     Follow => FOLLOW, Follow;
     /// Seek through the same bounded Session Follow.

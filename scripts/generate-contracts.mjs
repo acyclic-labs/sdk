@@ -39,9 +39,11 @@ const availableModules = [
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const families = process.argv.slice(3);
 const knownFamilies = workspaceManifests(root);
-const matchesFamily = (name, family) => name.startsWith(`generate-${family}-`) || name.startsWith(`${family}-`);
+// A complete family or one exact contract can be selected. Exact selection
+// keeps a narrow contract update from compiling unrelated bindings.
+const matchesFamily = (name, family) => name === `generate-${family}.mjs` || name.startsWith(`generate-${family}-`) || name.startsWith(`${family}-`);
 for (const family of families) {
-  if (!knownFamilies.has(family)) {
+  if (!knownFamilies.has(family) && !availableModules.includes(`generate-${family}.mjs`)) {
     throw new Error(`STEP_FAILED contract-selection: unknown family ${JSON.stringify(family)}; recovery: bun scripts/generate-contracts.mjs check`);
   }
 }
