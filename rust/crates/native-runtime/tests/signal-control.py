@@ -330,7 +330,7 @@ qualificationMain([process.argv[1]], (command, args, options) => spawnSync(comma
             ("unpolled-native-owner", executor,
              b"        let work = Accounted {\n            value: future,\n            _owner: owner,\n        };\n        Self(Handle::Tokio(tokio::spawn(async move {\n            let work = work;\n            let owner = work._owner;\n            let value = work.value.await;",
              b"        Self(Handle::Tokio(tokio::spawn(async move {\n            let owner = owner;\n            let value = future.await;",
-             "unpolled task cleanup did not retain its original accounting"),
+             "task accounting retired before its original cleanup"),
         ]
     elif mode == "--clock":
         mutations = [
