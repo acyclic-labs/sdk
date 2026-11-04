@@ -50,12 +50,11 @@ impl NativeSourceWatch {
         } else {
             None
         };
-        // A native owner already stopping answers without the reads, which
-        // the hub may hold while it serves a stale packet: stopping only
-        // ever turns on, and the credits have their own lock.
-        self.shared.refuse_restop(native)?;
         let mut reads = self.shared.lock_reads_unless_waiting(wait)?;
         check_wait(wait)?;
+        if self.is_stopped() {
+            return Ok(());
+        }
         self.shared.refuse_restop(native)?;
         let suffix = io_work(
             u64::from(reads.pending),
@@ -117,7 +116,7 @@ impl NativeSourceWatch {
         self.shared.stopping.store(true, Ordering::Release);
         result = result.and(self.shared.retire(&mut reads, work));
         if self.shared.retired(&reads) {
-            self.shared.stop_completed.store(true, Ordering::Release);
+            self.shared.complete_stop();
         }
         result
     }
@@ -303,9 +302,10 @@ impl Shared {
             };
             drop(credit);
             if retired {
-                self.stop_completed.store(true, Ordering::Release);
+                self.complete_stop();
             } else if terminal {
                 self.parked.store(true, Ordering::Release);
+                self.collected();
             }
             if retired || terminal {
                 return;
@@ -331,14 +331,14 @@ impl Shared {
             DemandError::NativeWorkUnavailable
         })
     }
-    /// The reads; under a cancellable wait, only if no one holds them.
+    /// Waits for the current read owner or the caller's cancellation.
     fn lock_reads_unless_waiting(
         &self,
         wait: Option<&crate::CancellationToken>,
     ) -> Result<ReadsGuard<'_>, DemandError> {
-        if wait.is_none() {
-            return Ok(self.lock_reads());
-        }
-        self.try_lock_reads().ok_or(DemandError::WorkerUnavailable)
+        Ok(ReadsGuard {
+            shared: self,
+            reads: Some(self.reads.lock_with_wait(wait)?),
+        })
     }
 }

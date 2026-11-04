@@ -225,19 +225,15 @@ impl Shared {
         if let Some(original) = &self.delivery.original {
             self.cleanup
                 .lock()
-                .unwrap_or_else(PoisonError::into_inner)
                 .extend(ITEM, &mut crate::NativeMaterializationWork::clone(original))?;
         } else if self.delivery.birth_matches(work) {
-            self.cleanup
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .extend(ITEM, work)?;
+            self.cleanup.lock().extend(ITEM, work)?;
         }
         Ok(())
     }
 
     pub(super) fn cancel_record_cleanup<W: SourceDemandReadWork>(&self, work: &mut W) {
-        let mut cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut cleanup = self.cleanup.lock();
         if let Some(original) = &self.delivery.original {
             cleanup.records -= 1;
             original.state.with_original_leaf(|work| {
@@ -309,7 +305,7 @@ impl Shared {
         if !self.delivery.is_exact() || directory.as_os_str().is_empty() {
             return Ok(false);
         }
-        let mut watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut watches = self.watches.lock();
         if self.stopping.load(Ordering::Acquire) {
             return Ok(false);
         }
@@ -455,7 +451,7 @@ impl Shared {
         work: &mut W,
     ) -> Result<(), DemandError> {
         work.check()?;
-        let mut watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut watches = self.watches.lock();
         if self.stopping.load(Ordering::Acquire) {
             return Ok(());
         }

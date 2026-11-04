@@ -2,6 +2,7 @@
 #![allow(unsafe_code, reason = "reads the held-root path with fcntl")]
 
 use super::{Delivery, HostChange};
+use crate::cancellation::custody::Custody;
 use crate::demand::{SourceDemandReadWork, SourcePayloadOwnership};
 use crate::fsevents::{
     EventBatch, EventStream, ITEM_CREATED, ITEM_REMOVED, ITEM_RENAMED, KERNEL_DROPPED, MOUNT,
@@ -13,10 +14,10 @@ use std::ffi::{CStr, OsStr};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
 #[cfg(test)]
-use std::time::Duration;
+use std::sync::{Mutex, PoisonError};
 
 mod events;
 #[cfg(test)]
@@ -33,7 +34,7 @@ const READ: WorkCounters = WorkCounters {
 
 pub(crate) struct NativeSourceWatch {
     shared: Arc<Shared>,
-    stream: Mutex<Option<EventStream>>,
+    stream: Custody<Option<EventStream>>,
 }
 
 struct Shared {
@@ -112,7 +113,7 @@ impl NativeSourceWatch {
             stream.set_terminal(shared.clone());
             Ok(Self {
                 shared,
-                stream: Mutex::new(Some(stream)),
+                stream: Custody::new(Some(stream)),
             })
         })();
         if !work.is_native_original() {
@@ -164,7 +165,7 @@ impl NativeSourceWatch {
     ) -> Result<(), DemandError> {
         work.check()?;
         self.delivery().ensure_stop_available()?;
-        let mut custody = self.stream.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut custody = self.stream.lock();
         let Some(stream) = custody.as_mut() else {
             return Ok(());
         };
@@ -195,17 +196,7 @@ impl NativeSourceWatch {
             .ok_or(DemandError::NativeWorkUnavailable)?
             .clone();
         self.delivery().ensure_stop_available()?;
-        let mut custody = if wait.is_some() {
-            match self.stream.try_lock() {
-                Ok(custody) => custody,
-                Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-                Err(std::sync::TryLockError::WouldBlock) => {
-                    return Err(DemandError::WorkerUnavailable);
-                }
-            }
-        } else {
-            self.stream.lock().unwrap_or_else(PoisonError::into_inner)
-        };
+        let mut custody = self.stream.lock_with_wait(wait)?;
         check_wait(wait)?;
         let Some(stream) = custody.as_mut() else {
             return Ok(());
@@ -255,12 +246,7 @@ impl Drop for NativeSourceWatch {
     fn drop(&mut self) {
         if !self.is_stopped() {
             let mut work = self.shared.delivery.callback_work();
-            if let Some(stream) = self
-                .stream
-                .get_mut()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take()
-            {
+            if let Some(stream) = self.stream.get_mut().take() {
                 let mut stream = stream;
                 let _ = stream.cleanup_admitted(&mut work);
             }

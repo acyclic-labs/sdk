@@ -77,7 +77,7 @@ impl NativeSourceWatch {
                 recursive,
                 pin_name,
                 maximum_buffer_bytes,
-                reads: Mutex::new(Reads {
+                reads: Custody::new(Reads {
                     overlapped: Box::default(),
                     buffer: Some(buffer(INITIAL_BUFFER_BYTES)),
                     pending: false,

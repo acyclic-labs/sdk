@@ -65,15 +65,14 @@ impl NativeSourceWatch {
                 inbox: Mutex::new(hub::Inbox::default()),
                 retired: Mutex::new(false),
                 retiring: AtomicBool::new(false),
-                ancestors: Mutex::new(Vec::new()),
+                ancestors: Custody::new(Vec::new()),
                 retained_variable_bytes: AtomicU64::new(0),
                 reading: Reading::default(),
-                reading_changed: Condvar::new(),
-                watches: Mutex::new(Vec::new()),
+                watches: Custody::new(Vec::new()),
                 stopping: AtomicBool::new(false),
                 completed: AtomicBool::new(false),
                 controller_alive: AtomicBool::new(true),
-                cleanup: Mutex::new(StartupCleanup::default()),
+                cleanup: Custody::new(StartupCleanup::default()),
                 ownership,
                 delivery,
                 #[cfg(test)]
@@ -145,14 +144,8 @@ impl NativeSourceWatch {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner) = origin;
             }
-            *initialized
-                .ancestors
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner) = std::mem::take(&mut ancestors);
-            *initialized
-                .watches
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner) = std::mem::take(&mut watches);
+            *initialized.ancestors.lock() = std::mem::take(&mut ancestors);
+            *initialized.watches.lock() = std::mem::take(&mut watches);
             // The watch's registrations now withdraw with its other payload.
             initialized
                 .inotify
@@ -165,15 +158,8 @@ impl NativeSourceWatch {
                 .ownership
                 .retain(retained - control_bytes, work)?;
             transferred = true;
-            *initialized
-                .cleanup
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner) = std::mem::take(&mut cleanup);
-            initialized
-                .cleanup
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .reserve_worker(work)?;
+            *initialized.cleanup.lock() = std::mem::take(&mut cleanup);
+            initialized.cleanup.lock().reserve_worker(work)?;
             work.started_io(READ)?;
             drop(startup_reading);
             let cancelled = work.check().err();
@@ -186,13 +172,10 @@ impl NativeSourceWatch {
             Ok((worker, cancelled)) => {
                 let watch = Self {
                     shared: shared.ok_or(DemandError::InvalidRequest)?,
-                    worker: Mutex::new(Some(worker)),
+                    worker: Custody::new(Some(worker)),
                 };
                 if let Some(error) = cancelled {
-                    let stopped = watch.stop_admitted(
-                        &mut watch.worker.lock().unwrap_or_else(PoisonError::into_inner),
-                        work,
-                    );
+                    let stopped = watch.stop_admitted(&mut watch.worker.lock(), work);
                     if let Err(stop_error) = stopped {
                         if !watch.is_stopped() {
                             if let Some(failure) = &startup_failure {
@@ -212,12 +195,7 @@ impl NativeSourceWatch {
                     return Err(error);
                 }
                 if !work.is_native_original() {
-                    watch
-                        .shared
-                        .cleanup
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .cancel(work);
+                    watch.shared.cleanup.lock().cancel(work);
                 }
                 if !work.is_native_original() {
                     work.release(retained)?;
@@ -281,7 +259,6 @@ impl NativeSourceWatch {
         self.shared
             .watches
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .any(|(path, _)| path == directory)
     }
@@ -388,13 +365,13 @@ impl NativeSourceWatch {
         if !prepaid {
             work.check()?;
         }
-        let mut worker = stop_custody(&self.worker, wait)?;
+        let mut worker = self.worker.lock_with_wait(wait)?;
         if wait.is_some_and(crate::CancellationToken::is_cancelled) {
             return Err(DemandError::Cancelled);
         }
         if self.is_stopped() {
             if prepaid {
-                let cleanup = stop_custody(&self.shared.cleanup, wait)?;
+                let cleanup = self.shared.cleanup.lock_with_wait(wait)?;
                 if cleanup.reads < u64::from(worker.is_some()) {
                     return Err(DemandError::NativeWorkUnavailable);
                 }
@@ -409,16 +386,12 @@ impl NativeSourceWatch {
             }
             return result;
         }
-        let reading = match wait {
-            Some(wait) if wait.is_cancelled() => return Err(DemandError::Cancelled),
-            Some(_) => self
-                .shared
-                .try_reading()
-                .ok_or(DemandError::WorkerUnavailable)?,
-            None => self.shared.reading(),
+        let reading = ReadingGuard {
+            raw: self.shared.reading.raw.lock_with_wait(wait)?,
+            _served: OwedService(&self.shared),
         };
-        let watches = stop_custody(&self.shared.watches, wait)?;
-        let ancestors = stop_custody(&self.shared.ancestors, wait)?;
+        let watches = self.shared.watches.lock_with_wait(wait)?;
+        let ancestors = self.shared.ancestors.lock_with_wait(wait)?;
         let records = reading
             .cleanup
             .len()
@@ -439,15 +412,11 @@ impl NativeSourceWatch {
             ..WorkCounters::UNCHARGED
         };
         if prepaid {
-            if !stop_custody(&self.shared.cleanup, wait)?.covers(suffix) {
+            if !self.shared.cleanup.lock_with_wait(wait)?.covers(suffix) {
                 return Err(DemandError::NativeWorkUnavailable);
             }
         } else if self.shared.delivery.birth_matches(work) {
-            self.shared
-                .cleanup
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .extend_for(suffix, work)?;
+            self.shared.cleanup.lock().extend_for(suffix, work)?;
         } else {
             work.admit(suffix)?;
         }
@@ -458,7 +427,6 @@ impl NativeSourceWatch {
             return Err(DemandError::Cancelled);
         }
         self.shared.stopping.store(true, Ordering::Release);
-        self.shared.reading_changed.notify_all();
         drop(ancestors);
         drop(watches);
         drop(reading);
@@ -471,7 +439,6 @@ impl NativeSourceWatch {
         work: &mut W,
     ) -> Result<(), DemandError> {
         self.shared.stopping.store(true, Ordering::Release);
-        self.shared.reading_changed.notify_all();
         let mut result = Ok(());
         if worker.is_some() {
             // A failed service pass may retire this watch concurrently, and
@@ -541,27 +508,19 @@ impl Drop for NativeSourceWatch {
             if self.shared.delivery.ensure_stop_available().is_err() {
                 self.shared.controller_alive.store(false, Ordering::Release);
                 self.shared.stopping.store(true, Ordering::Release);
-                self.shared.reading_changed.notify_all();
                 // The next service pass retires native custody.
                 self.shared.force_service();
                 return;
             }
             let _ = self.stop_accepted_cleanup();
             let completed = {
-                let _cleanup = self
-                    .shared
-                    .cleanup
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
+                let _cleanup = self.shared.cleanup.lock();
                 self.shared.controller_alive.store(false, Ordering::Release);
                 self.is_stopped()
             };
             if completed {
                 let mut work = self.shared.delivery.callback_work();
-                *self
-                    .worker
-                    .get_mut()
-                    .unwrap_or_else(PoisonError::into_inner) = None;
+                *self.worker.get_mut() = None;
                 self.shared.cancel_cleanup(&mut work);
             }
             return;
@@ -641,11 +600,10 @@ impl Shared {
         }
         self.delivery.notify_lost();
         if !self.physically_cleared() {
-            self.reading_changed.notify_all();
             return;
         }
         let orphaned = {
-            let mut cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut cleanup = self.cleanup.lock();
             let keep = u64::from(self.controller_alive.load(Ordering::Acquire));
             let reads = cleanup.reads.min(keep);
             let unused = WorkCounters {
@@ -664,7 +622,6 @@ impl Shared {
         if orphaned {
             self.cancel_cleanup(&mut work);
         }
-        self.reading_changed.notify_all();
     }
 
     /// Payload descriptors still held: the hub registrations and the root.
@@ -688,14 +645,8 @@ impl Drop for Shared {
             return;
         };
         if *self.inotify.get_mut() >= 0 {
-            let watches = self
-                .watches
-                .get_mut()
-                .unwrap_or_else(PoisonError::into_inner);
-            let ancestors = self
-                .ancestors
-                .get_mut()
-                .unwrap_or_else(PoisonError::into_inner);
+            let watches = self.watches.get_mut();
+            let ancestors = self.ancestors.get_mut();
             let _ = hub.withdraw(self.subscriber, watches, ancestors);
         } else {
             hub.unsubscribe(self.subscriber);

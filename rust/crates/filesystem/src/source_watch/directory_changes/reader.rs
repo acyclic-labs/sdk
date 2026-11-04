@@ -42,7 +42,7 @@ impl Shared {
                     self.delivery.failed_with_work(error, &mut work);
                 }
                 if self.retired(&reads) {
-                    self.stop_completed.store(true, Ordering::Release);
+                    self.complete_stop();
                 }
             }
             return;

@@ -163,6 +163,8 @@ pub(crate) use callback::{BorrowedEventHandlerFn, EventBatch, on_queue};
 use callback::{OnQueue, drain, terminal_suffix};
 use hub::{Hub, Registration};
 pub use notify_adapter::FsEventsWatcher;
+#[cfg(test)]
+pub(crate) use stream::BEFORE_DRAIN;
 pub(crate) use stream::{EventStream, StreamTerminal};
 #[cfg(test)]
 mod tests;

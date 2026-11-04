@@ -1,6 +1,12 @@
 use super::*;
 mod start;
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static BEFORE_DRAIN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 pub(crate) trait StreamTerminal: Send + Sync {
     fn stream_stopped(&self);
 }
@@ -145,6 +151,12 @@ impl EventStream {
         if on_queue() {
             return result.and(self.defer_terminal(registration, work));
         }
+        #[cfg(test)]
+        BEFORE_DRAIN.with(|hook| {
+            if let Some(observe) = hook.borrow_mut().take() {
+                observe();
+            }
+        });
         self.hub.drain();
         result = result.and(self.record_cleanup(work, 1, 0));
         drop(registration);

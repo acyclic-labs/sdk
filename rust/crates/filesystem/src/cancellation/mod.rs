@@ -405,6 +405,8 @@ impl CancellationToken {
 #[error("filesystem operation was cancelled")]
 pub struct CancellationError;
 
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+pub(crate) mod custody;
 mod wait;
 pub(crate) use wait::CancellationWaitError;
 pub use wait::Cancelled;

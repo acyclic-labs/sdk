@@ -204,10 +204,7 @@ impl Shared {
                 }
                 let mut ancestor = None;
                 {
-                    let ancestors = self
-                        .ancestors
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner);
+                    let ancestors = self.ancestors.lock();
                     for (watched, on_the_way) in &*ancestors {
                         work.started_io(ITEM)?;
                         if *watched == descriptor {
@@ -246,7 +243,7 @@ impl Shared {
                     != 0;
                 loop {
                     work.check()?;
-                    let watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
+                    let watches = self.watches.lock();
                     let Some((alias, watched)) = watches.get(reading.alias_cursor) else {
                         break;
                     };
@@ -402,7 +399,7 @@ impl Shared {
                     }
                 }
                 if mask & libc::IN_IGNORED != 0 {
-                    let mut watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
+                    let mut watches = self.watches.lock();
                     let mut at = 0;
                     while let Some((_, watched)) = watches.get(at) {
                         work.started_io(ITEM)?;
@@ -434,7 +431,6 @@ impl Shared {
             self.delivery.notify_lost();
         }
         if !reading.blocked {
-            self.reading_changed.notify_all();
             // Records routed while delivery was blocked were left for this pass.
             self.reschedule();
         }
