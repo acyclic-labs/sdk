@@ -243,10 +243,96 @@ async fn native_spilled_flush_cleans_acknowledged_objects_and_reuses_spill()
     let directory = tempfile::tempdir()?;
     let (store, provider) = open_staged(directory.path()).await?;
     let token = CancellationToken::new();
-    let (id, bytes) = spill_fixture(&store, &token).await?;
+    assert!(store.spill_io.read().await.is_none());
+    let mut closure = Vec::new();
+    for marker in 0..3_u8 {
+        let object = HashedObject::new(ObjectKind::BlobChunk, vec![marker; 2 * 1_048_576].into());
+        closure.push(object.object_id());
+        store
+            .put_hashed(
+                object,
+                &mut AuthorityWork::new(native_write_budget(), &token),
+            )
+            .await?;
+    }
+    // Admission crosses the original resident window and writes its real
+    // spill. Publication must authenticate those physical bytes once while
+    // carrying the remaining resident seal without another hash.
+    assert_eq!(store.index().spilled_objects, 2);
+    assert!(store.spill_io.read().await.is_some());
+    let spilled_bytes = store.index().spill_end;
+    for truncated in [false, true] {
+        {
+            let spill = store.spill_io.write().await;
+            let file = spill.as_ref().ok_or("admission did not retain its spill")?;
+            if truncated {
+                file.set_len_async(spilled_bytes - 1, None)
+                    .expect("unmetered truncation construction cannot fail")
+                    .await?;
+            } else {
+                file.write_all_batch_async(vec![OwnedWrite {
+                    offset: 0,
+                    bytes: bytes::Bytes::from_static(&[255]),
+                }])
+                .await?;
+            }
+        }
+        let failed = NativeMaterializationWork::new(native_write_budget(), &token)
+            .map_err(|(error, _)| error)?;
+        assert!(matches!(
+            store
+                .flush_before_publish(
+                    PublicationScope {
+                        objects: &closure,
+                        proven_at: store.collection.sweeps(),
+                    },
+                    &mut AuthorityWork::native(&failed, &token),
+                )
+                .await,
+            Err(ObjectStoreError::Corrupt)
+        ));
+        let verified_prefix = 2 * 1_048_576;
+        assert_eq!(
+            failed.receipt().object_bytes_read,
+            if truncated {
+                spilled_bytes - 1
+            } else {
+                verified_prefix
+            }
+        );
+        assert_eq!(failed.receipt().bytes_hashed, verified_prefix);
+        assert_eq!(failed.receipt().backend_write_operations, 0);
+        assert_eq!(failed.receipt().object_bytes_written, 0);
+        assert_eq!(failed.receipt().durability_operations, 0);
+        assert_eq!(
+            failed.live_allocation_bytes(),
+            NativeMaterializationWork::accounting_state_bytes()
+        );
+        assert_eq!(store.index().objects.len(), closure.len());
+        assert_eq!(store.index().spilled_objects, 2);
+        assert_eq!(store.index().spill_end, spilled_bytes);
+        for &id in &closure {
+            assert!(
+                !store
+                    .inner()
+                    .contains(id, &mut AuthorityWork::new(native_write_budget(), &token),)
+                    .await?
+            );
+        }
+        // Restore only the damaged byte in the same physical spill. The
+        // original staging owns the retry; it must not acknowledge a prefix.
+        let spill = store.spill_io.write().await;
+        spill
+            .as_ref()
+            .ok_or("refused publication discarded its spill")?
+            .write_all_batch_async(vec![OwnedWrite {
+                offset: if truncated { spilled_bytes - 1 } else { 0 },
+                bytes: bytes::Bytes::from_static(if truncated { &[1] } else { &[0] }),
+            }])
+            .await?;
+    }
     let work = NativeMaterializationWork::new(native_write_budget(), &token)
         .map_err(|(error, _)| error)?;
-    let closure = [id];
     let hold = store
         .flush_before_publish(
             PublicationScope {
@@ -259,7 +345,9 @@ async fn native_spilled_flush_cleans_acknowledged_objects_and_reuses_spill()
     assert!(store.index().objects.is_empty());
     assert_eq!(store.index().spilled_objects, 0);
     assert_eq!(store.index().spill_end, 0);
-    assert_eq!(work.receipt().object_bytes_read, bytes.len() as u64);
+    assert!(store.spill_io.read().await.is_none());
+    assert_eq!(work.receipt().object_bytes_read, spilled_bytes);
+    assert_eq!(work.receipt().bytes_hashed, spilled_bytes);
     assert!(work.receipt().backend_read_operations > 0);
     assert!(work.receipt().backend_write_operations > 0);
     drop(hold);
@@ -281,7 +369,9 @@ async fn spill_denial_precedes_physical_write_and_restores_victims()
     let mut ids = Vec::new();
     for marker in 0..3_u8 {
         let (id, bytes) = blob(OwnedBytes::from(vec![marker; 2 * 1_048_576]));
-        store.index_mut().admit_resident(id, bytes)?;
+        store
+            .index_mut()
+            .admit_resident(HashedObject::verify(id, bytes).ok_or(ObjectStoreError::Corrupt)?)?;
         ids.push(id);
     }
     let mut spill_file = store.spill_io.write().await;
@@ -372,153 +462,39 @@ async fn native_flush_spilled_read_denial_keeps_private_remainder()
 }
 
 struct CancelAfterNativePut {
-    inner: crate::MemoryObjectStore,
+    inner: LogicalObjectStore<acyclic_objects::local::LocalObjects>,
     cancel_once: AtomicBool,
+    committed_write_operations: std::sync::atomic::AtomicU64,
 }
 
 impl AsyncObjectStore for CancelAfterNativePut {
-    async fn flush_before_publish(
+    crate::async_storage::forward_object_store!(self => self.inner;
+        requires_child_first_publication,
+        maximum_reference_bytes,
+        prepare_hashed,
+        put,
+        read,
+        read_many,
+        contains,
+        flush_before_publish,
+    );
+
+    async fn put_hashed(
         &self,
-        scope: crate::PublicationScope<'_>,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<crate::PublicationHold, crate::ObjectStoreError> {
-        self.inner.flush_before_publish(scope, context).await
-    }
-    async fn put_many(
-        &self,
-        writes: &[ObjectWrite],
-        context: &mut crate::AuthorityWork<'_>,
+        object: HashedObject,
+        context: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
-        for write in writes {
-            context
-                .accounting()
-                .check()
-                .map_err(crate::async_storage::object_error)?;
-            self.put(write.object_id, write.bytes.clone(), context)
-                .await?;
+        self.inner.put_hashed(object, context).await?;
+        if let Some(original) = context.original
+            && self.cancel_once.swap(false, Ordering::Relaxed)
+        {
+            self.committed_write_operations.store(
+                original.receipt().backend_write_operations,
+                Ordering::Relaxed,
+            );
+            context.cancellation.cancel();
         }
         Ok(())
-    }
-    async fn put(
-        &self,
-        id: ObjectId,
-        bytes: OwnedBytes,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(), crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = context.original {
-            let cancellation = context.cancellation;
-            return async {
-                AsyncObjectStore::put(
-                    &self.inner,
-                    id,
-                    bytes,
-                    &mut crate::AuthorityWork::native(work, cancellation),
-                )
-                .await?;
-                if self.cancel_once.swap(false, Ordering::Relaxed) {
-                    cancellation.cancel();
-                }
-                Ok(())
-            }
-            .await;
-        }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            {
-                let __object_args = (id, bytes, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                let __object_result = AsyncObjectStore::put(
-                    &self.inner,
-                    __object_args.0,
-                    __object_args.1,
-                    &mut __object_work,
-                )
-                .await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
-    }
-    async fn read(
-        &self,
-        id: ObjectId,
-        maximum: u64,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
-        let budget = context.read_budget()?;
-        let cancellation = context.cancellation;
-        let result = async {
-            {
-                let __object_args = (id, maximum, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                let __object_result = AsyncObjectStore::read(
-                    &self.inner,
-                    __object_args.0,
-                    __object_args.1,
-                    &mut __object_work,
-                )
-                .await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
-    }
-    async fn read_many(
-        &self,
-        requests: &[ObjectReadRequest],
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            {
-                let __object_args = (requests, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
-                let __object_result =
-                    AsyncObjectStore::read_many(&self.inner, __object_args.0, &mut __object_work)
-                        .await
-                        .map(|(values, _allocation)| values);
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result).map(|values| (values, None))
-    }
-    async fn contains(
-        &self,
-        id: ObjectId,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<bool, crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            {
-                let __object_args = (id, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
-                let __object_result =
-                    AsyncObjectStore::contains(&self.inner, __object_args.0, &mut __object_work)
-                        .await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
     }
 }
 
@@ -528,8 +504,16 @@ async fn native_flush_cancellation_retains_unacknowledged_batch_for_retry()
     let directory = tempfile::tempdir()?;
     let store = StagedObjects::open(
         CancelAfterNativePut {
-            inner: crate::MemoryObjectStore::default(),
+            inner: LogicalObjectStore::new(Arc::new(
+                acyclic_objects::local::LocalObjects::open(
+                    directory.path().join("objects"),
+                    acyclic_objects::local::LocalObjectsLimits::default(),
+                    None,
+                )
+                .await?,
+            )),
             cancel_once: AtomicBool::new(true),
+            committed_write_operations: std::sync::atomic::AtomicU64::new(0),
         },
         directory.path().to_path_buf(),
     );
@@ -589,7 +573,15 @@ async fn native_flush_cancellation_retains_unacknowledged_batch_for_retry()
             )
             .await?
     );
-    assert_eq!(work.receipt().backend_write_operations, 1);
+    let committed_write_operations = store
+        .inner()
+        .committed_write_operations
+        .load(Ordering::Relaxed);
+    assert!(committed_write_operations > 0);
+    assert_eq!(
+        work.receipt().backend_write_operations,
+        committed_write_operations
+    );
     assert_eq!(
         work.receipt().object_bytes_written,
         first_bytes.len() as u64
@@ -607,34 +599,11 @@ async fn native_flush_cancellation_retains_unacknowledged_batch_for_retry()
         )
         .await?;
     assert!(store.index().objects.is_empty());
-    assert_eq!(retry.receipt().backend_write_operations, 2);
-    assert_eq!(work.receipt().backend_write_operations, 1);
+    assert_eq!(retry.receipt().bytes_hashed, 0);
+    assert_eq!(
+        work.receipt().backend_write_operations,
+        committed_write_operations
+    );
     drop(hold);
-    Ok(())
-}
-
-#[tokio::test]
-async fn only_a_store_with_spilled_objects_holds_a_spill_file()
--> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    let (store, _provider) = open_staged(directory.path()).await?;
-    let token = CancellationToken::new();
-    assert!(store.spill_io.read().await.is_none());
-    let (spilled, _) = spill_fixture(&store, &token).await?;
-    // The probe sees a spill file while an object is spilled.
-    assert!(store.spill_io.read().await.is_some());
-    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
-    let result = store
-        .flush_before_publish(
-            PublicationScope {
-                objects: &[spilled],
-                proven_at: 0,
-            },
-            &mut work,
-        )
-        .await;
-    work.receipt(result)?;
-    assert_eq!(store.index().spilled_objects, 0);
-    assert!(store.spill_io.read().await.is_none());
     Ok(())
 }

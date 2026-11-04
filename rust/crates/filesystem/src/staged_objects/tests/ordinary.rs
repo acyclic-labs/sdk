@@ -53,11 +53,11 @@ async fn flush_vector_and_visit_denial_precede_provider_work()
         let provider = crate::MemoryObjectStore::default();
         let mut direct = AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
         provider.put(id, bytes.clone(), &mut direct).await?;
-        // Count the three staging passes separately from the provider's real
+        // Count the four staging passes separately from the provider's real
         // fixed-width index insertion, using the same object and work path.
         assert_eq!(
             retry.spent().items_examined,
-            direct.spent().items_examined + 3
+            direct.spent().items_examined + 4
         );
         assert_eq!(
             store
@@ -872,13 +872,16 @@ async fn hashed_admission_skips_rehashing_and_unproven_bytes_are_refused()
     assert_eq!(cached.value.downcast_ref::<u32>(), Some(&7));
     let other = DecodedCacheKey::new::<u64>(object.object_id(), DecodeLimits::default());
     assert!(crate::async_storage::cached_value(&store, other)?.is_none());
-    {
+    let published = {
         let __object_args = (
             PublicationScope {
                 objects: &[object.object_id()],
                 proven_at: 0,
             },
-            WorkBudget::UNBOUNDED,
+            WorkBudget {
+                bytes_hashed: 0,
+                ..WorkBudget::UNBOUNDED
+            },
             &token,
         );
         let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
@@ -887,6 +890,7 @@ async fn hashed_admission_skips_rehashing_and_unproven_bytes_are_refused()
             .await;
         __object_work.receipt(__object_result)
     }?;
+    assert_eq!(published.work.bytes_hashed, 0);
     assert!(crate::async_storage::cached_value(&store, key)?.is_none());
     let (object_id, _) = object.into_parts();
     let forged = {
@@ -1020,16 +1024,16 @@ impl<S: AsyncObjectStore> AsyncObjectStore for PausedStore<S> {
         self.stored.fetch_add(1, Ordering::Relaxed);
         self.inner.put(id, bytes, work).await
     }
-    async fn put_many(
+    async fn put_many_hashed(
         &self,
-        writes: &[ObjectWrite],
+        writes: &[HashedObject],
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
         self.stored.fetch_add(writes.len(), Ordering::Relaxed);
         if self.pause_writes {
             self.pause().await;
         }
-        self.inner.put_many(writes, work).await
+        self.inner.put_many_hashed(writes, work).await
     }
     async fn flush_before_publish(
         &self,

@@ -50,28 +50,15 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 maximum: maximum_bytes,
             });
         }
-        let bytes = if let Some(native) = work.original {
-            native.admit(WorkCounters {
-                object_bytes_read: length,
-                bytes_hashed: length,
-                ..WorkCounters::UNCHARGED
-            })?;
-            let requested = usize::try_from(length).map_err(|_| ObjectStoreError::Corrupt)?;
-            let spill = spill_file.as_ref().ok_or(ObjectStoreError::Corrupt)?;
-            let bytes = staged_native_read(spill, offset, requested, native).await?;
-            let observed = byte_length(&bytes);
-            native.record_admitted(WorkCounters {
-                object_bytes_read: observed,
-                ..WorkCounters::UNCHARGED
-            })?;
-            native.charge(WorkCounters {
-                bytes_hashed: observed,
-                ..WorkCounters::UNCHARGED
-            })?;
-            if observed != length || object_id.digest != crate::storage::object_digest(&bytes) {
-                return Err(ObjectStoreError::Corrupt);
-            }
-            bytes
+        let object = if let Some(native) = work.original {
+            read_spilled_native(
+                spill_file.as_ref().ok_or(ObjectStoreError::Corrupt)?,
+                object_id,
+                offset,
+                length,
+                native,
+            )
+            .await?
         } else {
             work.accounting()
                 .charge(WorkCounters {
@@ -88,14 +75,13 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             .await?
             .pop()
             .ok_or(ObjectStoreError::Corrupt)?
-            .into_parts()
-            .1
         };
+        let bytes = object.bytes().clone();
         let mut index = self.index_mut();
         if index.resident_bytes.saturating_add(length) <= MAXIMUM_RESIDENT_BYTES
             && matches!(index.objects.get(&object_id), Some(&Staged::Spilled { offset: current, .. }) if current == offset)
         {
-            index.insert_resident(object_id, bytes.clone())?;
+            index.insert_resident(object)?;
         }
         Ok(ObjectRead {
             bytes,

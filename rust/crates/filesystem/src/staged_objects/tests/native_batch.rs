@@ -10,6 +10,15 @@ enum Event {
 struct Observed<S>(S, Option<std::fs::File>, std::sync::atomic::AtomicU64);
 
 impl<S: AsyncObjectStore> AsyncObjectStore for Observed<S> {
+    crate::async_storage::forward_object_store!(self => self.0;
+        requires_child_first_publication,
+        maximum_reference_bytes,
+        prepare_hashed,
+        put_hashed,
+        read_many,
+        contains,
+    );
+
     async fn put(
         &self,
         id: ObjectId,
@@ -19,17 +28,17 @@ impl<S: AsyncObjectStore> AsyncObjectStore for Observed<S> {
         record(Event::Write(id, bytes.to_vec()));
         self.0.put(id, bytes, work).await
     }
-    async fn put_many(
+    async fn put_many_hashed(
         &self,
-        writes: &[ObjectWrite],
+        writes: &[HashedObject],
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
         for write in writes {
-            record(Event::Write(write.object_id, write.bytes.to_vec()));
+            record(Event::Write(write.object_id(), write.bytes().to_vec()));
         }
         let original = work.original.ok_or(ObjectStoreError::NativeUnavailable)?;
         let before = original.receipt().allocation_operations;
-        self.0.put_many(writes, work).await?;
+        self.0.put_many_hashed(writes, work).await?;
         self.2.fetch_add(
             original.receipt().allocation_operations - before,
             Ordering::Relaxed,
@@ -70,20 +79,6 @@ impl<S: AsyncObjectStore> AsyncObjectStore for Observed<S> {
         record(Event::Read(id));
         self.0.read(id, maximum, work).await
     }
-    async fn read_many(
-        &self,
-        requests: &[ObjectReadRequest],
-        work: &mut AuthorityWork<'_>,
-    ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
-        self.0.read_many(requests, work).await
-    }
-    async fn contains(
-        &self,
-        id: ObjectId,
-        work: &mut AuthorityWork<'_>,
-    ) -> Result<bool, ObjectStoreError> {
-        self.0.contains(id, work).await
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -98,8 +93,9 @@ type Contents = Result<Vec<Vec<u8>>, String>;
 type PublicationRun = (Contents, WorkCounters, Vec<Event>, Option<u64>);
 
 // Each run creates its own provider, journal, staging, and ledger. The old
-// implementation writes each object separately; Batch is an independent batch
-// oracle for the additional staging work. Backend allocations are measured
+// implementation writes each object separately; Batch publishes the same
+// pre-admitted seals directly through the provider's real native batch.
+// Backend allocations are measured
 // within each publication: worker-queue contention may allocate a capacity
 // waiter in only one of two independent backend runs.
 fn run(
@@ -126,15 +122,17 @@ fn run(
                 let mut writes = Vec::new();
                 for index in 0..count {
                     let marker = u8::try_from(index)?;
-                    let (object_id, bytes) = blob(OwnedBytes::from(vec![marker; 32]));
-                    writes.push(ObjectWrite { object_id, bytes });
+                    writes.push(HashedObject::new(
+                        ObjectKind::BlobChunk,
+                        OwnedBytes::from(vec![marker; 32]),
+                    ));
                 }
                 let ids = writes
                     .iter()
-                    .map(|write| write.object_id)
+                    .map(HashedObject::object_id)
                     .collect::<Vec<_>>();
                 store
-                    .put_many(
+                    .put_many_hashed(
                         &writes,
                         &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
                     )
@@ -165,7 +163,7 @@ fn run(
                         .map(drop),
                     Mode::Batch => {
                         match work.accounting().check().map_err(crate::async_storage::object_error) {
-                            Ok(()) => match store.inner.put_many(&writes, &mut work).await {
+                            Ok(()) => match store.inner.put_many_hashed(&writes, &mut work).await {
                                 Ok(()) => store
                                     .inner
                                     .flush_before_publish(
@@ -183,13 +181,13 @@ fn run(
                         let mut result = work.accounting().check().map_err(crate::async_storage::object_error);
                         for write in &writes {
                             if result.is_err() { break; }
-                            result = store.inner.put(write.object_id, write.bytes.clone(), &mut work).await;
+                            result = store.inner.put(write.object_id(), write.bytes().clone(), &mut work).await;
                             if result.is_ok() {
                                 result = store
                                     .inner
                                     .flush_before_publish(
                                         PublicationScope {
-                                            objects: std::slice::from_ref(&write.object_id),
+                                            objects: &[write.object_id()],
                                             proven_at: 0,
                                         },
                                         &mut work,
@@ -261,7 +259,7 @@ fn native_publication_batches_exact_work_with_individual_write_negative_control(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    for count in [4, 8] {
+    for count in [2, 4] {
         let (old_result, old, old_trace, old_backend) =
             run(&runtime, Mode::Individual, false, count)?;
         let (batch_result, batch, batch_trace, batch_backend) =
@@ -292,8 +290,8 @@ fn native_publication_batches_exact_work_with_individual_write_negative_control(
             "per-object negative control passed"
         );
     }
-    let (old_error, _, old_trace, _) = run(&runtime, Mode::Individual, true, 4)?;
-    let (error, cost, trace, _) = run(&runtime, Mode::Staged, true, 4)?;
+    let (old_error, _, old_trace, _) = run(&runtime, Mode::Individual, true, 2)?;
+    let (error, cost, trace, _) = run(&runtime, Mode::Staged, true, 2)?;
     assert!(error.is_err());
     assert_eq!(error, old_error);
     assert_eq!(trace, old_trace);

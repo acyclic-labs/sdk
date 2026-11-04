@@ -89,6 +89,35 @@ pub(super) async fn staged_native_read(
         .map_err(|_| ObjectStoreError::Corrupt)
 }
 
+pub(super) async fn read_spilled_native(
+    spill: &NativeFile,
+    object_id: ObjectId,
+    offset: u64,
+    length: u64,
+    native: &NativeMaterializationWork,
+) -> Result<HashedObject, ObjectStoreError> {
+    native.admit(WorkCounters {
+        object_bytes_read: length,
+        bytes_hashed: length,
+        ..WorkCounters::UNCHARGED
+    })?;
+    let requested = usize::try_from(length).map_err(|_| ObjectStoreError::Corrupt)?;
+    let bytes = staged_native_read(spill, offset, requested, native).await?;
+    let observed = byte_length(&bytes);
+    native.record_admitted(WorkCounters {
+        object_bytes_read: observed,
+        ..WorkCounters::UNCHARGED
+    })?;
+    if observed != length {
+        return Err(ObjectStoreError::Corrupt);
+    }
+    native.charge(WorkCounters {
+        bytes_hashed: length,
+        ..WorkCounters::UNCHARGED
+    })?;
+    HashedObject::verify(object_id, bytes).ok_or(ObjectStoreError::Corrupt)
+}
+
 pub(super) async fn read_spilled(
     spill: &NativeFile,
     spilled: &[(ObjectId, u64, u64)],

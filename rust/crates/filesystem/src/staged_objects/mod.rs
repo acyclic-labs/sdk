@@ -30,7 +30,9 @@ const MAXIMUM_DRAINED_IDENTITIES: usize = 4_096;
 mod index;
 use index::{Index, Lookup, Staged};
 mod io;
-use io::{read_spilled, staged_native_read, staged_owned_bytes, staged_vector};
+use io::{
+    read_spilled, read_spilled_native, staged_native_read, staged_owned_bytes, staged_vector,
+};
 use read::resident_read;
 mod admission;
 mod ordering;
@@ -134,10 +136,10 @@ impl<S> StagedObjects<S> {
         match self.index().objects.get(&object_id) {
             None => Lookup::Absent,
             Some(Staged::Resident {
-                bytes, referenced, ..
+                object, referenced, ..
             }) => {
                 referenced.store(true, Ordering::Relaxed);
-                Lookup::Resident(bytes.clone())
+                Lookup::Resident(object.bytes().clone())
             }
             Some(&Staged::Spilled { offset, length }) => Lookup::Spilled { offset, length },
         }

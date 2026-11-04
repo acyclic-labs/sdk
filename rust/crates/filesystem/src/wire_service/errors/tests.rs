@@ -27,6 +27,15 @@ fn authority(error: AuthorityStoreError) -> WorkspaceError {
 fn object(error: ObjectStoreError) -> WorkspaceError {
     fs(FsError::Object(error))
 }
+fn converted(error: impl Into<ObjectStoreError> + std::fmt::Display) -> WorkspaceError {
+    let message = error.to_string();
+    let error = object(error.into());
+    assert_eq!(status(&error).message(), message);
+    error
+}
+fn converted_decode(error: &CanonicalDecodeError) -> Code {
+    status(&converted(error.clone())).code()
+}
 fn allocation() -> std::collections::TryReserveError {
     let Err(error) = Vec::<u8>::new().try_reserve(usize::MAX) else {
         unreachable!("usize::MAX cannot be a Vec capacity")
@@ -76,13 +85,13 @@ cases! {
     workspace_not_fork: WorkspaceError::NotFork => FailedPrecondition;
     workspace_content_overflow: WorkspaceError::ContentLengthOverflow => InvalidArgument;
 
-    authority_missing: authority(AuthorityStoreError::Missing) => NotFound;
+    authority_missing: converted(AuthorityStoreError::Missing) => NotFound;
     authority_retired: authority(AuthorityStoreError::Retired) => NotFound;
     authority_cancelled: authority(AuthorityStoreError::Cancelled) => Cancelled;
     authority_handoff: authority(AuthorityStoreError::AccountingHandoffActive) => FailedPrecondition;
     authority_stream: authority(AuthorityStoreError::NativeStream(acyclic_stream::StreamError::AccessDenied)) => PermissionDenied;
     authority_codec: authority(AuthorityStoreError::DurableCodec(crate::StreamsAuthorityRecordError::InvalidDomain)) => DataLoss;
-    authority_corrupt_static: authority(AuthorityStoreError::CorruptStatic("invalid durable state")) => DataLoss;
+    authority_corrupt_static: converted(AuthorityStoreError::CorruptStatic("invalid durable state")) => DataLoss;
     authority_rejected_static: authority(AuthorityStoreError::RejectedStatic("rejected")) => FailedPrecondition;
     authority_replay_limit: authority(AuthorityStoreError::InvalidReplayLimit) => InvalidArgument;
     authority_poisoned: authority(AuthorityStoreError::MemoryAuthorityPoisoned) => Internal;
@@ -98,7 +107,7 @@ cases! {
     }) => FailedPrecondition;
     authority_corrupt: authority(AuthorityStoreError::Corrupt("invalid durable state".into())) => DataLoss;
     authority_io: authority(AuthorityStoreError::Io(io(std::io::ErrorKind::ConnectionRefused))) => Unavailable;
-    authority_indeterminate: authority(AuthorityStoreError::Indeterminate {operation: "commit", source: io(std::io::ErrorKind::NotFound)}) => Unavailable;
+    authority_indeterminate: converted(AuthorityStoreError::Indeterminate {operation: "commit", source: io(std::io::ErrorKind::NotFound)}) => Unavailable;
     authority_rejected: authority(AuthorityStoreError::Rejected("rejected".into())) => FailedPrecondition;
     authority_work: authority(AuthorityStoreError::Work(WorkError::BudgetExceeded { counter: "bytes", observed: 2, maximum: 1 })) => ResourceExhausted;
 

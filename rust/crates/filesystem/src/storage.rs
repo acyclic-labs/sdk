@@ -838,6 +838,14 @@ pub enum ObjectStoreError {
     #[cfg(any(test, feature = "distributed"))]
     #[error(transparent)]
     LogicalObjects(#[from] acyclic_objects::Error),
+    /// Canonical bytes failed decoding, including a wrong domain or an
+    /// unsupported codec version.
+    #[error(transparent)]
+    Decode(#[from] crate::kernel::CanonicalDecodeError),
+    /// A filesystem failure raised behind an object-store boundary, kept whole
+    /// so its original cause and wire status survive the conversion.
+    #[error(transparent)]
+    Filesystem(Box<crate::FsError>),
 }
 
 #[cfg(test)]
