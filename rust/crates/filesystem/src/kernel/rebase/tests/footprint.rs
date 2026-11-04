@@ -395,6 +395,43 @@ fn footprint_query_charges_the_exact_bounded_prefix() -> Proof {
         [32, 39, 95],
         "fixed proposal ordering must be validated once per cohort"
     );
+    for (key, total) in [(64, 33), (95, 64)] {
+        let conflict = GenerationDiff {
+            files: vec![FileRecordChange {
+                file_id: id(key),
+                before: Some(file(key, 0)?),
+                after: Some(file(key, 1)?),
+            }],
+            ..empty()
+        };
+        for maximum in 0..=total {
+            let observed = CommitFootprint {
+                reads: None,
+                writes: &proposal,
+            }
+            .independent(
+                CommitFootprint {
+                    reads: None,
+                    writes: &conflict,
+                },
+                maximum,
+            );
+            assert_eq!(observed.items_examined, maximum);
+            assert_eq!(
+                observed.independent,
+                if maximum == total {
+                    Ok(false)
+                } else {
+                    Err(WorkError::BudgetExceeded {
+                        counter: "items_examined",
+                        observed: maximum + 1,
+                        maximum,
+                    })
+                },
+                "shared merge must stop at the original write conflict"
+            );
+        }
+    }
     let sparse = reads([DependencyRegion::FileLength(id(3))])?;
     let dense = reads((1..96).map(|value| {
         if value == 3 {

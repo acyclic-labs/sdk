@@ -1,7 +1,7 @@
 diff --git a/rust/crates/filesystem/src/kernel/rebase/footprint.rs b/rust/crates/filesystem/src/kernel/rebase/footprint.rs
 --- a/rust/crates/filesystem/src/kernel/rebase/footprint.rs
 +++ b/rust/crates/filesystem/src/kernel/rebase/footprint.rs
-@@ -242,6 +242,9 @@ fn writes_disjoint(
+@@ -203,6 +203,9 @@ fn writes_disjoint(
      budget: &mut QueryBudget,
  ) -> Result<bool, WorkError> {
      let (left, right) = (left.0.writes, right.0.writes);
@@ -10,4 +10,4 @@ diff --git a/rust/crates/filesystem/src/kernel/rebase/footprint.rs b/rust/crates
 +    }
      let mut left_files = left.files.iter().peekable();
      let mut right_files = right.files.iter().peekable();
-     while let (Some(a), Some(b)) = (left_files.peek(), right_files.peek()) {
+     if !acyclic_collections::page::merge::overlapping(

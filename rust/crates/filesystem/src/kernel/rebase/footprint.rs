@@ -206,41 +206,31 @@ fn writes_disjoint(
     let (left, right) = (left.0.writes, right.0.writes);
     let mut left_files = left.files.iter().peekable();
     let mut right_files = right.files.iter().peekable();
-    while let (Some(a), Some(b)) = (left_files.peek(), right_files.peek()) {
-        budget.visit()?;
-        match a.file_id.cmp(&b.file_id) {
-            std::cmp::Ordering::Less => {
-                left_files.next();
-            }
-            std::cmp::Ordering::Greater => {
-                right_files.next();
-            }
-            std::cmp::Ordering::Equal => {
-                if !a.directory_children_only() || !b.directory_children_only() {
-                    return Ok(false);
-                }
-                left_files.next();
-                right_files.next();
-            }
-        }
+    if !acyclic_collections::page::merge::overlapping(
+        &mut left_files,
+        &mut right_files,
+        |a, b| {
+            budget.visit()?;
+            Ok(a.file_id.cmp(&b.file_id))
+        },
+        |a, b| {
+            Ok(a.zip(b)
+                .is_none_or(|(a, b)| a.directory_children_only() && b.directory_children_only()))
+        },
+    )? {
+        return Ok(false);
     }
     let mut left_bindings = left.bindings.iter().peekable();
     let mut right_bindings = right.bindings.iter().peekable();
-    while let (Some(a), Some(b)) = (left_bindings.peek(), right_bindings.peek()) {
-        budget.visit()?;
-        match (a.directory_id, &a.name).cmp(&(b.directory_id, &b.name)) {
-            std::cmp::Ordering::Less => {
-                left_bindings.next();
-            }
-            std::cmp::Ordering::Greater => {
-                right_bindings.next();
-            }
-            std::cmp::Ordering::Equal => {
-                return Ok(false);
-            }
-        }
-    }
-    Ok(true)
+    acyclic_collections::page::merge::overlapping(
+        &mut left_bindings,
+        &mut right_bindings,
+        |a, b| {
+            budget.visit()?;
+            Ok((a.directory_id, &a.name).cmp(&(b.directory_id, &b.name)))
+        },
+        |a, b| Ok(a.zip(b).is_none()),
+    )
 }
 
 fn ordered(changes: &GenerationDiff, budget: &mut QueryBudget) -> Result<bool, WorkError> {
