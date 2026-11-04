@@ -1,0 +1,24 @@
+{
+  "id": "pty-cancel-preparation",
+  "workspace": { "kind": "plain", "files": {} },
+  "capacity": { "context_tokens": 4096, "output_tokens": 1024 },
+  "model": {
+    "input_tokens": 64,
+    "steps": [{
+      "when": { "path": "count", "user": "prepare a turn" },
+      "json": { "input_tokens": 64 },
+      "hold": true
+    }]
+  },
+  "inputs": [{
+    "mode": "pty",
+    "actions": [
+      { "when": { "contains": ["GraphCoder"], "cursor": true }, "prompt": "prepare a turn" },
+      { "after_request": { "path": "count", "step": 0 }, "when": { "contains": ["Thinking…"], "bold": "k" } },
+      { "when": { "contains": ["Thinking…"], "bold": "i" }, "send": "\u0003" },
+      { "when": { "contains": ["cancelled"], "absent": ["Thinking…"] }, "send": "\u0004" }
+    ],
+    "exit": 2
+  }],
+  "assert": { "requests": 0 }
+}

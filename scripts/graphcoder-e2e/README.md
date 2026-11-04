@@ -22,8 +22,7 @@ fixtures create their service state below it and bind provider imports to the
 installed modules before moving provider files outside the repository.
 POSIX cleanup requires Python 3 and macOS `ps`; exit waits use Linux pidfds or
 macOS kqueue notifications. Separate service process groups stay owned.
-Every real-terminal run, including `scripts/test-graphcoder-pty.mjs` and
-`scripts/test-graphcoder-resume.mjs`, starts through `Processes.startTerminal`:
+Every real-terminal case starts through `Processes.startTerminal`:
 ConPTY inside the Windows Job, or `owned-process.py --pty` on Linux and macOS. Shipping GraphCoder processes retain their own recovery
 oracle so an external-test cleanup boundary cannot hide orphan-fencing failures.
 Install `scripts/graphcoder-pty` with its frozen Bun lockfile and lifecycle scripts disabled.

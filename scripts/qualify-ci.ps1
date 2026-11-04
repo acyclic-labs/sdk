@@ -201,10 +201,15 @@ bun run --filter '@acyclic-labs/fs' test:composition
 $GraphcoderInstall = Join-Path $env:SDK_TEMP_DIR 'graphcoder-installed'
 cargo install --path rust/crates/harness/src/bin/graphcoder --locked --debug `
     --root $GraphcoderInstall --target-dir $CargoTargetDir
+cargo install --path rust/crates/harness-mock-model --locked --debug `
+    --root $GraphcoderInstall --target-dir $CargoTargetDir
 bun install --cwd scripts/graphcoder-pty --frozen-lockfile --ignore-scripts
 node --test scripts/graphcoder-pty/screen.test.mjs
-node scripts/test-graphcoder.mjs (Join-Path $GraphcoderInstall 'bin/graphcoder.exe')
-node scripts/test-graphcoder-pty.mjs (Join-Path $GraphcoderInstall 'bin/graphcoder.exe')
+foreach ($case in @('pty-conversation', 'pty-markdown', 'pty-slash', 'pty-cancel-ctrl-c',
+    'pty-cancel-preparation', 'kill-during-count', 'pty-kill-and-resume', 'pty-quit-resume', 'provider-error')) {
+    node scripts/graphcoder-e2e/run.mjs (Join-Path $GraphcoderInstall 'bin/graphcoder.exe') `
+        (Join-Path $GraphcoderInstall 'bin/harness-mock-model.exe') $case
+}
 # Native hosts own tools and providers; the shared harness owns their lifecycle.
 npm ci --prefix plugin/tests/hosts --ignore-scripts --no-audit --no-fund
 bun run --cwd plugin/tests/hosts test:shim

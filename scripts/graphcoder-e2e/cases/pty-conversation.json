@@ -28,6 +28,7 @@
   "inputs": [
     {
       "mode": "pty",
+      "text": "first prompt\r\n",
       "actions": [
         {
           "when": {
@@ -36,7 +37,7 @@
             ],
             "cursor": true
           },
-          "prompt": "first prompt"
+          "send": "\u001b[?1;2c\u001b[>0;1;0c\u001b[12;40R"
         },
         {
           "when": {
