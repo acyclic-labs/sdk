@@ -1,5 +1,4 @@
 use crate::*;
-use futures::StreamExt as _;
 
 pub(crate) async fn large_retained_view<P: StreamProvider>(
     provider: &P,
