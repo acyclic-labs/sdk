@@ -175,6 +175,13 @@ async fn a_thousand_records_retain_live_metadata_without_decoder_scratch() -> Re
             0,
             "driver drop releases all index storage"
         );
+        if !native {
+            assert_eq!(
+                io.remaining()?.peak_allocation_bytes,
+                4 * 1024 * 1024,
+                "driver drop releases transferred standalone node custody"
+            );
+        }
     }
     assert_eq!(work.live_allocation_bytes(), baseline);
     assert_eq!(replay_only.indexed_pages.load(Ordering::SeqCst), 32);
@@ -188,7 +195,13 @@ async fn check_index_storage(
     io: &PreparationIo,
     work: Option<&acyclic_fs::NativeMaterializationWork>,
 ) -> Result<()> {
-    let live = || work.map_or_else(|| io.owned_bytes(), |work| Ok(work.live_allocation_bytes()));
+    let allocation_budget = io.remaining()?.peak_allocation_bytes;
+    let live = || {
+        work.map_or_else(
+            || Ok(allocation_budget - io.remaining()?.peak_allocation_bytes),
+            |work| Ok(work.live_allocation_bytes()),
+        )
+    };
     let baseline = live()?;
     let execution = StockExecution {
         io: Some(io),
