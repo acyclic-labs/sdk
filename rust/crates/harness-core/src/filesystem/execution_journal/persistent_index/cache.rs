@@ -1,5 +1,7 @@
 //! A bounded hot cache of pages reachable from the current authenticated roots.
 use super::*;
+use crate::wire_codec::{OwnedIndexAllocation, OwnedIndexWork};
+use acyclic_collections::FixedIndex;
 
 const HOT_PAGES: usize = 128;
 
@@ -38,17 +40,10 @@ impl Drop for CachedNode {
 
 #[derive(Default)]
 pub(in crate::filesystem::execution_journal) struct NodeCache {
-    keys: crate::model::DigestIndex<usize>,
-    values: Vec<Option<CachedNode>>,
-    vacant: Vec<usize>,
-    replacement: usize,
+    values: FixedIndex<CachedNode, OwnedIndexAllocation, 8>,
+    len: usize,
+    replacement: Option<[u8; 8]>,
     io: Option<PreparationIo>,
-}
-
-fn key(sequence: u64) -> [u8; 32] {
-    let mut key = [0; 32];
-    key[..8].copy_from_slice(&sequence.to_be_bytes());
-    key
 }
 
 impl NodeCache {
@@ -57,7 +52,7 @@ impl NodeCache {
             (Some(retained), Some(current)) if retained.shares_ledger(current) => {
                 retained.use_current_context(current);
             }
-            (None, Some(current)) if self.values.capacity() == 0 && self.vacant.capacity() == 0 => {
+            (None, Some(current)) if self.len == 0 => {
                 self.io = Some(current.scoped()?);
             }
             (None, None) => (),
@@ -76,114 +71,80 @@ impl NodeCache {
         reference: NodeRef,
         io: Option<&PreparationIo>,
     ) -> Result<Option<OwnedBytes>> {
-        let Some(position) = self.keys.get(0, &key(reference.sequence), io)? else {
-            return Ok(None);
-        };
+        let node = self.node(reference, io)?;
+        if let Some(node) = node {
+            node.referenced
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(node.map(|node| node.bytes.clone()))
+    }
+
+    fn node(&self, reference: NodeRef, io: Option<&PreparationIo>) -> Result<Option<&CachedNode>> {
         let node = self
             .values
-            .get(position)
-            .and_then(Option::as_ref)
-            .ok_or_else(|| invalid(io, "execution page cache slot is missing"))?;
-        if node.reference != reference {
+            .get(reference.sequence.to_be_bytes(), &mut OwnedIndexWork(io))?;
+        if node.is_some_and(|node| node.reference != reference) {
             return Err(invalid(io, "execution page cache digest differs"));
         }
-        node.referenced
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        Ok(Some(node.bytes.clone()))
+        Ok(node)
     }
 
     pub(super) fn insert(&mut self, reference: NodeRef, bytes: &OwnedBytes) -> Result<()> {
-        if self.get(reference, self.io.as_ref())?.is_some() {
+        if let Some(node) = self.node(reference, self.io.as_ref())? {
+            node.referenced
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             return Ok(());
         }
-        if self.vacant.is_empty() && self.values.len() == HOT_PAGES {
+        if self.len == HOT_PAGES {
             // One second chance per observed page keeps hot immutable roots
             // through unrelated publications. At most HOT_PAGES + 1 probes:
             // this exclusive borrow prevents another get from resetting a bit.
             loop {
                 crate::model::charge_items(self.io.as_ref(), 1)?;
-                let node = self
-                    .values
-                    .get(self.replacement)
-                    .and_then(Option::as_ref)
-                    .ok_or_else(|| {
+                let mut work = OwnedIndexWork(self.io.as_ref());
+                let next = match self.replacement {
+                    Some(after) => self.values.seek_after(after, &mut work)?,
+                    None => self.values.first(&mut work)?,
+                };
+                let (key, node) = match next {
+                    Some(node) => node,
+                    None => self.values.first(&mut work)?.ok_or_else(|| {
                         invalid(self.io.as_ref(), "execution page eviction slot is missing")
-                    })?;
+                    })?,
+                };
                 let referenced = node
                     .referenced
                     .swap(false, std::sync::atomic::Ordering::Relaxed);
                 let reference = node.reference;
-                self.replacement = (self.replacement + 1) % HOT_PAGES;
+                self.replacement = Some(*key);
                 if !referenced {
                     self.remove(reference)?;
                     break;
                 }
             }
         }
-        self.keys.reserve_key(self.io.as_ref())?;
-        if self.vacant.is_empty() && self.values.len() == self.values.capacity() {
-            let capacity = self
-                .values
-                .capacity()
-                .checked_mul(2)
-                .map(|n| n.max(1))
-                .ok_or_else(|| invalid(self.io.as_ref(), "execution page cache overflows"))?;
-            crate::executor::stock_vec_reserve(&mut self.values, capacity, self.io.as_ref())?;
-        }
-        let node = CachedNode::new(reference, bytes, self.io.as_ref())?;
-        let position = self.vacant.last().copied().unwrap_or(self.values.len());
-        self.keys
-            .set(0, key(reference.sequence), Some(position), self.io.as_ref())?;
-        if self.vacant.pop().is_some() {
-            *self.values.get_mut(position).ok_or_else(|| {
-                invalid(self.io.as_ref(), "execution page cache slot is missing")
-            })? = Some(node);
-        } else {
-            self.values.push(Some(node));
-        }
+        self.values.get_or_try_insert_with(
+            reference.sequence.to_be_bytes(),
+            &mut OwnedIndexWork(self.io.as_ref()),
+            |_| CachedNode::new(reference, bytes, self.io.as_ref()),
+        )?;
+        self.len += 1;
         Ok(())
     }
 
     pub(super) fn remove(&mut self, reference: NodeRef) -> Result<()> {
-        if self
-            .keys
-            .get(0, &key(reference.sequence), self.io.as_ref())?
-            .is_none()
-        {
+        if self.node(reference, self.io.as_ref())?.is_none() {
             return Ok(());
         }
-        if self.vacant.len() == self.vacant.capacity() {
-            let capacity = self
-                .vacant
-                .capacity()
-                .checked_mul(2)
-                .map(|n| n.max(1))
-                .ok_or_else(|| {
-                    invalid(self.io.as_ref(), "execution page cache free slots overflow")
-                })?;
-            crate::executor::stock_vec_reserve(&mut self.vacant, capacity, self.io.as_ref())?;
+        let removed = self.values.remove(
+            reference.sequence.to_be_bytes(),
+            &mut OwnedIndexWork(self.io.as_ref()),
+        )?;
+        if removed.is_some() {
+            self.len -= 1;
         }
-        let position = self
-            .keys
-            .remove(0, &key(reference.sequence), self.io.as_ref())?
-            .ok_or_else(|| invalid(self.io.as_ref(), "execution page cache key disappeared"))?;
-        drop(
-            self.values
-                .get_mut(position)
-                .ok_or_else(|| invalid(self.io.as_ref(), "execution page cache slot is missing"))?
-                .take(),
-        );
-        self.vacant.push(position);
+        drop(removed);
         Ok(())
-    }
-}
-
-impl Drop for NodeCache {
-    fn drop(&mut self) {
-        self.keys = Default::default();
-        self.values = Vec::new();
-        self.vacant = Vec::new();
-        drop(self.io.take());
     }
 }
 
@@ -194,7 +155,6 @@ mod tests {
 
     #[derive(Default)]
     struct Settled {
-        slots: usize,
         retained: u64,
         staging: Option<(usize, usize, usize, usize)>,
     }
@@ -215,13 +175,12 @@ mod tests {
                 staging.path.values.capacity(),
             );
             assert_eq!(
-                cache.keys.entries().count(),
+                cache.len,
                 2 * (update as usize + 1).min(32) - 1,
                 "cache retained a replaced tree version"
             );
             if update == 63 {
                 self.staging = Some(sizes);
-                self.slots = cache.values.capacity();
             }
             if update >= 64 {
                 assert_eq!(
@@ -229,18 +188,23 @@ mod tests {
                     self.staging,
                     "settled staging capacities grew with history"
                 );
-                assert_eq!(
-                    cache.values.capacity(),
-                    self.slots,
-                    "replaced pages grew cache slots"
-                );
             }
             if update == 99 {
-                self.retained = cache.io.as_ref().expect("funded cache").owned_bytes()?;
+                self.retained = cache
+                    .io
+                    .as_ref()
+                    .expect("funded cache")
+                    .remaining()?
+                    .peak_allocation_bytes;
             }
             if update >= 100 {
                 assert_eq!(
-                    cache.io.as_ref().expect("funded cache").owned_bytes()?,
+                    cache
+                        .io
+                        .as_ref()
+                        .expect("funded cache")
+                        .remaining()?
+                        .peak_allocation_bytes,
                     self.retained,
                     "settled page metadata grew with update count"
                 );
@@ -291,7 +255,7 @@ mod tests {
         } else {
             PreparationIo::from_budget(budget, &cancellation)?
         };
-        let baseline = io.owned_bytes()?;
+        let baseline = io.remaining()?.peak_allocation_bytes;
         let mut cache = NodeCache::default();
         let mut root = None;
         let mut tail = 0;
@@ -325,14 +289,7 @@ mod tests {
                 )?;
                 assert_eq!(reads, 0, "hot index update reread committed pages");
             } else {
-                assert!(
-                    cache.keys.entries().count() <= HOT_PAGES,
-                    "historical pages stayed resident"
-                );
-                assert!(
-                    cache.values.capacity() <= HOT_PAGES,
-                    "historical page slots stayed resident"
-                );
+                assert!(cache.len <= HOT_PAGES, "historical pages stayed resident");
                 assert!(
                     reads <= 2 * 257,
                     "update exceeded two fixed-width key paths"
@@ -387,7 +344,7 @@ mod tests {
         drop(scratch);
         drop(provider);
         assert_eq!(
-            io.owned_bytes()?,
+            io.remaining()?.peak_allocation_bytes,
             baseline,
             "page cache retained allocation after drop"
         );
@@ -404,26 +361,82 @@ mod tests {
 
     #[test]
     fn frequently_read_page_survives_unrelated_publication_churn() -> Result<()> {
+        for native in [
+            false,
+            #[cfg(not(target_arch = "wasm32"))]
+            true,
+        ] {
+            check_churn(native)?;
+        }
+        Ok(())
+    }
+
+    fn check_churn(_native: bool) -> Result<()> {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::work_budget(256 * 1024 * 1024, 4 * 1024 * 1024);
+        #[cfg(not(target_arch = "wasm32"))]
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        #[cfg(target_arch = "wasm32")]
+        let io = PreparationIo::from_budget(budget, &cancellation)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let io = if _native {
+            PreparationIo::from_native_work(&work)?
+        } else {
+            PreparationIo::from_budget(budget, &cancellation)?
+        };
+        let baseline = io.remaining()?.peak_allocation_bytes;
         let mut cache = NodeCache::default();
-        let bytes = OwnedBytes::from_static(b"immutable fixture page");
+        cache.bind(Some(&io))?;
+        // Capture an actual page encoder output; cache admission never decodes it.
+        let (bytes, _) = Node::Leaf {
+            key: [0; 32],
+            value: b"immutable fixture page",
+            segmented: false,
+        }
+        .encode(None)?;
         let hot = NodeRef {
             sequence: 0,
             digest: *blake3::hash(&bytes).as_bytes(),
         };
         cache.insert(hot, &bytes)?;
         let mut misses = 0;
+        let mut maximum_items = 0;
+        let mut maximum_allocations = 0;
         for sequence in 1..=1000 {
-            if cache.get(hot, None)?.is_none() {
+            if cache.get(hot, Some(&io))?.is_none() {
                 misses += 1;
             }
-            cache.insert(NodeRef { sequence, ..hot }, &bytes)?;
-            assert!(cache.keys.entries().count() <= HOT_PAGES);
-            assert!(cache.values.capacity() <= HOT_PAGES);
+            let before = io.receipt();
+            cache.insert(
+                NodeRef {
+                    sequence: sequence.reverse_bits(),
+                    ..hot
+                },
+                &bytes,
+            )?;
+            let after = io.receipt();
+            maximum_items = maximum_items.max(after.items_examined - before.items_examined);
+            maximum_allocations =
+                maximum_allocations.max(after.allocation_operations - before.allocation_operations);
+            assert_eq!(
+                after.bytes_copied, before.bytes_copied,
+                "page cache insertion copied prior backing"
+            );
+            assert!(cache.len <= HOT_PAGES);
         }
-        eprintln!("publication churn=1000 hot_page_misses={misses}");
+        eprintln!(
+            "publication churn=1000 native={_native} hot_page_misses={misses} maximum_items={maximum_items} maximum_allocations={maximum_allocations}"
+        );
         assert_eq!(
             misses, 0,
             "frequently read page was evicted by publication order"
+        );
+        drop(cache);
+        assert_eq!(
+            io.remaining()?.peak_allocation_bytes,
+            baseline,
+            "page cache retained its original node or payload funding"
         );
         Ok(())
     }
