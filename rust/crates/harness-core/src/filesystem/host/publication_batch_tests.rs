@@ -3,6 +3,8 @@ use crate::core::{AggregateKind, AuthorityRoot};
 use crate::{AgentId, conversation::VolumeOwner, core::Authority};
 
 fn publication_grants(volume: &VolumeRef, agent: AgentId) -> Result<(ContentGrant, ContentGrant)> {
+    use acyclic_fs::access::{Action, Capability};
+
     let issuer = AuthorityRoot::host_owned(
         "batch",
         [41; 32],
@@ -13,10 +15,19 @@ fn publication_grants(volume: &VolumeRef, agent: AgentId) -> Result<(ContentGran
     );
     let scope = issuer.bootstrap_scope(
         "batch-owner",
-        &crate::Capabilities::new([
-            volume.capability(VolumeOperation::Write, &mut None)?,
-            volume.capability(VolumeOperation::Read, &mut None)?,
-        ]),
+        &crate::Capabilities::new([Capability::whole_volume(
+            None,
+            &[
+                Action::List,
+                Action::Read,
+                Action::ReadHistory,
+                Action::Create,
+                Action::Write,
+                Action::Delete,
+            ],
+        )
+        .to_scope_label()
+        .map_err(|error| Error::Invalid(error.to_string()))?]),
         Some(agent),
         &mut None,
     )?;
@@ -476,25 +487,26 @@ impl InternalPublicationCase<'_> {
 #[tokio::test]
 async fn internal_publication_has_one_metadata_and_recovery_record_for_every_adapter() -> Result<()>
 {
-    for class in [
-        InternalContentClass::Interaction,
-        InternalContentClass::Execution,
-        InternalContentClass::ToolResult,
-    ] {
-        for adapter in 0..3 {
-            let provider =
-                ProviderRef::new("batch".into(), "filesystem".into(), "1".into(), &mut None)?;
-            let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
-            let agent = crate::AgentId::from_bytes([37; 16]);
-            let volume = VolumeRef::new(
-                provider.clone(),
-                "private".into(),
-                VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(agent),
-                &mut None,
-            )?;
-            host.create_volume(&volume).await?;
-            let (write, read) = publication_grants(&volume, agent)?;
+    for adapter in 0..3 {
+        let provider =
+            ProviderRef::new("batch".into(), "filesystem".into(), "1".into(), &mut None)?;
+        let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+        let agent = crate::AgentId::from_bytes([37; 16]);
+        let volume = VolumeRef::new(
+            provider.clone(),
+            "private".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+            &mut None,
+        )?;
+        host.create_volume(&volume).await?;
+        let (write, read) = publication_grants(&volume, agent)?;
+        let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
+        for class in [
+            InternalContentClass::Interaction,
+            InternalContentClass::Execution,
+            InternalContentClass::ToolResult,
+        ] {
             let cancellation = acyclic_fs::CancellationToken::new();
             let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
             let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
@@ -504,7 +516,6 @@ async fn internal_publication_has_one_metadata_and_recovery_record_for_every_ada
                 1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
                 _ => Some(PreparationIo::from_native_work(&native)?),
             };
-            let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
             let case = InternalPublicationCase {
                 host: &host,
                 volume: &volume,
