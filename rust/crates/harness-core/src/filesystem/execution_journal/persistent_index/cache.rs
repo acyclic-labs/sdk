@@ -403,7 +403,7 @@ mod tests {
         let mut misses = 0;
         let mut maximum_items = 0;
         let mut maximum_allocations = 0;
-        for sequence in 1..=1000 {
+        for sequence in 1..=1_000_u64 {
             if cache.get(hot, Some(&io))?.is_none() {
                 misses += 1;
             }
