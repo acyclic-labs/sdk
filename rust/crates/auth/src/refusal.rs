@@ -148,16 +148,9 @@ impl Refusal {
         canonical: Canonical<'_>,
         cause: Option<Cause>,
     ) -> Option<Self> {
-        let product = |name: &http::HeaderName| {
-            name.as_str().starts_with(METADATA_PREFIX) && !canonical.owned.contains(&name.as_str())
-        };
-        let original = (code != canonical.code
-            || message != canonical.message
-            || details != canonical.details
-            || metadata.keys().any(product))
-        .then(|| {
+        let original = differs(code, message, details, metadata, canonical).then(|| {
             let mut retained = HeaderMap::new();
-            for (name, value) in metadata.iter().filter(|(name, _)| product(name)) {
+            for (name, value) in metadata.iter().filter(|(name, _)| product(name, canonical)) {
                 retained.append(name, value.clone());
             }
             Parts {
@@ -167,6 +160,45 @@ impl Refusal {
                 metadata: retained,
             }
         });
+        Self::retain(cause, original)
+    }
+
+    /// Captures already owned status parts with the same admission as
+    /// [`Self::capture`], moving the message and detail buffer without copying
+    /// them. Only unowned product metadata is retained.
+    #[must_use]
+    pub fn capture_owned(
+        mut parts: Parts,
+        canonical: Canonical<'_>,
+        cause: Option<Cause>,
+    ) -> Option<Self> {
+        let original = differs(
+            parts.code,
+            &parts.message,
+            &parts.details,
+            &parts.metadata,
+            canonical,
+        )
+        .then(|| {
+            if !parts.metadata.keys().all(|name| product(name, canonical)) {
+                let mut retained = HeaderMap::new();
+                let mut key = None;
+                for (name, value) in parts.metadata {
+                    if let Some(name) = name {
+                        key = Some(name);
+                    }
+                    if let Some(name) = key.as_ref().filter(|name| product(name, canonical)) {
+                        retained.append(name, value);
+                    }
+                }
+                parts.metadata = retained;
+            }
+            parts
+        });
+        Self::retain(cause, original)
+    }
+
+    fn retain(cause: Option<Cause>, original: Option<Parts>) -> Option<Self> {
         (cause.is_some() || original.is_some()).then(|| Self(Arc::new(Said { cause, original })))
     }
 
@@ -208,6 +240,23 @@ impl Refusal {
             Parts::clone,
         )
     }
+}
+
+fn product(name: &http::HeaderName, canonical: Canonical<'_>) -> bool {
+    name.as_str().starts_with(METADATA_PREFIX) && !canonical.owned.contains(&name.as_str())
+}
+
+fn differs(
+    code: i32,
+    message: &str,
+    details: &[u8],
+    metadata: &HeaderMap,
+    canonical: Canonical<'_>,
+) -> bool {
+    code != canonical.code
+        || message != canonical.message
+        || details != canonical.details
+        || metadata.keys().any(|name| product(name, canonical))
 }
 
 impl std::fmt::Display for Refusal {

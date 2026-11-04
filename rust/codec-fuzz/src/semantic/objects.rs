@@ -321,6 +321,36 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
     if !name.starts_with("acyclic.objects.v1.") {
         return;
     }
+    if name == "acyclic.objects.v1.ErrorDetail" {
+        let mut original = Error::from(wire::ErrorCode::Unavailable).status_parts();
+        original.details = Bytes::copy_from_slice(bytes);
+        let message = original.message.as_ptr();
+        let details = original.details.as_ptr();
+        let expected = original.clone();
+        let admitted = Error::from_status_parts(original);
+        assert_eq!(
+            admitted.status_parts(),
+            expected,
+            "original member status bytes"
+        );
+        if let Some(original) = admitted
+            .refusal
+            .as_ref()
+            .and_then(|refusal| refusal.original())
+        {
+            assert_eq!(
+                original.message.as_ptr(),
+                message,
+                "owned status message moves"
+            );
+            assert_eq!(
+                original.details.as_ptr(),
+                details,
+                "owned status details move"
+            );
+        }
+        assert_eq!(Error::from_status_parts(admitted.status_parts()), admitted);
+    }
     // Syntax equivalence and a scripted response cannot detect a server that
     // refuses every request. Admit the original service writers once per
     // process before comparing arbitrary packets through the same client.
@@ -736,6 +766,10 @@ fn writer_seeds() -> Result<(Vec<Seed>, AvailabilityCursor), Box<dyn std::error:
 mod tests {
     #[test]
     fn original_service_writers_satisfy_the_semantic_oracle() {
+        let captured =
+            acyclic_proto_build::golden::frame("corpus/protobuf/acyclic.objects.v1.ErrorDetail")
+                .expect("retained original service detail writer");
+        super::check("acyclic.objects.v1.ErrorDetail", &captured[8..]);
         let captured = acyclic_proto_build::golden::frame(
             "corpus/protobuf/acyclic.objects.v1.PutBlobRequest-created",
         )

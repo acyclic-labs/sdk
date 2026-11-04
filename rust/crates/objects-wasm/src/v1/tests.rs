@@ -49,6 +49,36 @@ export function truncateReply(port) { port.truncate = true; }
 export function malformedRevision(port) { port.badRevision = true; }
 export function ownersBalanced(port) { return port.opened === port.closed; }
 export function opened(port) { return port.opened; }
+export function refusalPort(error) {
+    return {
+        opened: 0, closed: 0,
+        open() {
+            ++this.opened;
+            let closed = false;
+            return {
+                next: () => Promise.reject(error),
+                close: () => { if (!closed) { closed = true; ++this.closed; } },
+            };
+        },
+    };
+}
+export function corruptRefusal(error, cut) {
+    const raw = error.refusal;
+    switch (cut) {
+        case 0: raw.status = NaN; break;
+        case 1: raw.message = 1; break;
+        case 2: raw.details = {}; break;
+        case 3: raw.metadata = {}; break;
+        case 4: raw.metadata = [{}]; break;
+        case 5: raw.metadata = [['acyclic-test', new Uint8Array(), 0]]; break;
+        case 6: raw.metadata = [['bad\\nname', new Uint8Array()]]; break;
+        case 7: raw.metadata = [['acyclic-test', {}]]; break;
+        case 8: raw.metadata = [['acyclic-test', new Uint8Array([10])]]; break;
+        case 9: Object.defineProperty(raw, 'status', { get() { throw new Error('original getter failure'); } }); break;
+        case 10: structuredClone(raw.details.buffer, {transfer: [raw.details.buffer]}); break;
+    }
+    return error;
+}
 ")]
 extern "C" {
     #[wasm_bindgen(js_name = accountPort)]
@@ -63,6 +93,10 @@ extern "C" {
     #[wasm_bindgen(js_name = ownersBalanced)]
     fn owners_balanced(port: &JsValue) -> bool;
     fn opened(port: &JsValue) -> u32;
+    #[wasm_bindgen(js_name = refusalPort)]
+    fn refusal_port(error: JsValue) -> JsValue;
+    #[wasm_bindgen(js_name = corruptRefusal)]
+    fn corrupt_refusal(error: JsValue, cut: u32) -> JsValue;
 }
 
 #[wasm_bindgen_test::wasm_bindgen_test]
@@ -210,4 +244,51 @@ async fn original_javascript_account_preserves_results_and_cancellation() {
         "original provider refusal survives JavaScript"
     );
     assert!(owners_balanced(&bounded_port));
+
+    // Derived adversarial operands of that original provider refusal, never
+    // captures of additional provider causes or externally issued metadata.
+    use acyclic_objects::{Error, binary::javascript::js_error};
+    use prost::Message as _;
+    for future in [false, true] {
+        let mut detail = wire::ErrorDetail::from(&expected);
+        if future {
+            detail.reason.push_str("_future");
+        }
+        let mut parts = expected.status_parts();
+        let mut bytes = detail.encode_to_vec();
+        // An unknown protobuf field must survive even though ErrorDetail
+        // admission has no field for it.
+        bytes.extend_from_slice(&[0xa0, 0x06, 0x01]);
+        parts.details = bytes.into();
+        parts
+            .metadata
+            .append("acyclic-original-bin", "AQI=".parse().unwrap());
+        parts
+            .metadata
+            .append("acyclic-original-bin", "AwQ=".parse().unwrap());
+        let error = Error::from_status_parts(parts.clone());
+        let port = refusal_port(js_error(error.clone()));
+        let client = BinaryObjects::new(JavaScriptTransport::new(port.clone()).unwrap());
+        let actual = client.head(digest).await.unwrap_err();
+        assert_eq!(
+            actual, error,
+            "original and future causes survive JavaScript"
+        );
+        assert_eq!(
+            actual.status_parts(),
+            parts,
+            "unknown raw diagnostic bytes survive"
+        );
+        assert!(owners_balanced(&port));
+    }
+    for cut in 0..11 {
+        let port = refusal_port(corrupt_refusal(js_error(expected.clone()), cut));
+        let client = BinaryObjects::new(JavaScriptTransport::new(port.clone()).unwrap());
+        assert_eq!(
+            client.head(digest).await.unwrap_err(),
+            Error::from(wire::ErrorCode::Unavailable),
+            "malformed diagnostic terminates with a typed failure at cut {cut}",
+        );
+        assert!(owners_balanced(&port));
+    }
 }
