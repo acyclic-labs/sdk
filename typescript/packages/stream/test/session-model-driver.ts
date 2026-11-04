@@ -88,8 +88,8 @@ async function command(action: string, hex?: string, path?: string,
       if (scenario === "rejection") {
         rejectWrite = true;
         peer.disconnect();
-        void records!.next().then(() => { settled = true; }, error => { settled = true; rejected = error; });
-        await peer.until(() => observedRejection || settled);
+        const terminal = records!.next().then(() => { settled = true; }, error => { settled = true; rejected = error; });
+        await Promise.race([peer.until(() => observedRejection), terminal]);
       }
       break;
     // Lifetime controls: a command that never settles while client work stays scheduled, a client that keeps
