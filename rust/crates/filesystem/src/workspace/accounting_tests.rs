@@ -306,12 +306,10 @@ async fn generation_parents_keep_original_work_and_result_custody()
         } else {
             assert!(matches!(
                 result,
-                Err(WorkspaceError::Filesystem(FsError::Work(
-                    crate::WorkError::BudgetExceeded {
-                        counter: "backend_read_operations",
-                        ..
-                    }
-                )))
+                Err(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
+                    counter: "backend_read_operations",
+                    ..
+                }))
             ));
         }
         assert_eq!(spent.backend_read_operations, reads);
