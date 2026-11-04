@@ -1,7 +1,9 @@
 //! Native full and data-only flushes of a held descriptor, each returning its first result.
 use std::io;
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd as _;
 #[cfg(unix)]
-use std::os::fd::{AsRawFd as _, BorrowedFd};
+use std::os::fd::BorrowedFd;
 #[cfg(windows)]
 use std::os::windows::io::{AsRawHandle as _, BorrowedHandle};
 

@@ -1,6 +1,6 @@
 use super::*;
 use std::io::Write as _;
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 
 const CHILD: &str = "native_mount::darwin_mount::tests::reclaim::crashed_owner";
 
