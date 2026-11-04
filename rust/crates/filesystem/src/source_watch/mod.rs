@@ -234,8 +234,7 @@ pub(crate) struct Delivery {
 /// A failed startup retaining its actual native owner.
 pub struct SourceWatchStartupFailure {
     cause: std::sync::OnceLock<DemandError>,
-    watch: std::sync::Mutex<Option<NativeSourceWatch>>,
-    stopped: AtomicBool,
+    watch: std::sync::OnceLock<NativeSourceWatch>,
     _ownership: SourcePayloadOwnership,
 }
 

@@ -1,25 +1,5 @@
 use super::*;
 
-struct FailedWatchLease<'a> {
-    owner: Option<NativeSourceWatch>,
-    failure: &'a SourceWatchStartupFailure,
-}
-
-impl Drop for FailedWatchLease<'_> {
-    fn drop(&mut self) {
-        if let Some(watch) = self.owner.take() {
-            self.failure
-                .stopped
-                .store(watch.is_stopped(), Ordering::Release);
-            *self
-                .failure
-                .watch
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(watch);
-        }
-    }
-}
-
 impl std::fmt::Debug for SourceWatchStartupFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut debug = formatter.debug_struct("SourceWatchStartupFailure");
@@ -59,12 +39,10 @@ impl SourceWatchStartupFailure {
             self.cause.set(error).is_ok(),
             "one startup control retains one actual native owner"
         );
-        let watch = platform;
-        self.stopped.store(watch.is_stopped(), Ordering::Release);
-        *self
-            .watch
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(watch);
+        assert!(
+            self.watch.set(platform).is_ok(),
+            "one startup control retains one actual native owner"
+        );
         DemandError::SourceWatchStartup(Arc::clone(self))
     }
 
@@ -81,57 +59,19 @@ impl SourceWatchStartupFailure {
         &self,
         wait: &crate::CancellationToken,
     ) -> Result<(), DemandError> {
-        self.stop_original_with_wait(Some(wait))
+        self.owner()?.stop_with_cleanup_wait(wait)
     }
 
     /// Retires only the retained owner's already-accepted physical resources.
     pub fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
-        self.stop_original_with_wait(None)
+        self.owner()?.stop_accepted_cleanup()
     }
 
-    fn stop_original_with_wait(
-        &self,
-        wait: Option<&crate::CancellationToken>,
-    ) -> Result<(), DemandError> {
-        if let Some(wait) = wait {
-            wait.check().map_err(|_| DemandError::Cancelled)?;
-        }
-        let (owner, poisoned) = match self.watch.try_lock() {
-            Ok(mut custody) => (custody.take(), false),
-            Err(std::sync::TryLockError::WouldBlock) => return Err(DemandError::WorkerUnavailable),
-            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
-                (poisoned.into_inner().take(), true)
-            }
-        };
-        let Some(owner) = owner else {
-            return if poisoned {
-                Err(DemandError::OriginalWorkPoisoned)
-            } else if self.is_stopped() {
-                Ok(())
-            } else {
-                Err(DemandError::WorkerUnavailable)
-            };
-        };
-        let lease = FailedWatchLease {
-            owner: Some(owner),
-            failure: self,
-        };
-        let native = lease
-            .owner
-            .as_ref()
-            .ok_or(DemandError::NativeWorkUnavailable)?;
-        let result = match wait {
-            Some(wait) => native.stop_with_cleanup_wait(wait),
-            None => native.stop_accepted_cleanup(),
-        };
-        if poisoned {
-            result.and(Err(DemandError::OriginalWorkPoisoned))
-        } else {
-            result
-        }
+    fn owner(&self) -> Result<&NativeSourceWatch, DemandError> {
+        self.watch.get().ok_or(DemandError::NativeWorkUnavailable)
     }
 
-    /// Uses the same retained-owner lease and original native cleanup engine.
+    /// Uses the same retained owner and original native cleanup engine.
     pub(crate) fn stop_with_work<W: SourceDemandReadWork>(
         &self,
         work: &mut W,
@@ -144,27 +84,7 @@ impl SourceWatchStartupFailure {
         work: &mut W,
         retiring: bool,
     ) -> Result<(), DemandError> {
-        work.check()?;
-        let owner = self
-            .watch
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        let Some(owner) = owner else {
-            return if self.is_stopped() {
-                Ok(())
-            } else {
-                Err(DemandError::WorkerUnavailable)
-            };
-        };
-        let lease = FailedWatchLease {
-            owner: Some(owner),
-            failure: self,
-        };
-        let owner = lease
-            .owner
-            .as_ref()
-            .ok_or(DemandError::NativeWorkUnavailable)?;
+        let owner = self.owner()?;
         if retiring {
             owner.retire_with_work(work)
         } else {
@@ -175,6 +95,6 @@ impl SourceWatchStartupFailure {
     /// True only after the retained native owner has actually quiesced.
     #[must_use]
     pub fn is_stopped(&self) -> bool {
-        self.stopped.load(Ordering::Acquire)
+        self.watch.get().is_some_and(NativeSourceWatch::is_stopped)
     }
 }
