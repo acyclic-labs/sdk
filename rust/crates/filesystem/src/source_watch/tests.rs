@@ -306,14 +306,30 @@ fn a_fence_delivers_every_change_completed_before_it() -> TestResult {
 #[test]
 fn lost_changes_are_reported_as_everything() -> TestResult {
     let root = tempfile::tempdir()?;
+    #[cfg(target_os = "linux")]
+    let mut flood_files = [
+        std::fs::File::create(root.path().join("flood-a"))?,
+        std::fs::File::create(root.path().join("flood-b"))?,
+    ];
     let (watch, recorded) = watch(root.path())?;
     {
         let _paused = watch.paused();
         // More than the host queues: inotify's default queue holds 16384
         // events; a directory read buffer holds 64 KiB of reports.
         let flood = if cfg!(windows) { 3_000 } else { 20_000 };
-        for index in 0..flood {
-            std::fs::write(root.path().join(format!("flood-{index:05}")), b"")?;
+        for _index in 0..flood {
+            // Alternate names so queued writes cannot coalesce; the real
+            // overflow needs events, rather than one inode per event.
+            #[cfg(target_os = "linux")]
+            {
+                use std::io::Write as _;
+                // Keep the create/close pair's two queued events per iteration.
+                for file in &mut flood_files {
+                    file.write_all(b"x")?;
+                }
+            }
+            #[cfg(windows)]
+            std::fs::write(root.path().join(format!("flood-{_index:05}")), b"")?;
         }
     }
     watch.fence()?;
