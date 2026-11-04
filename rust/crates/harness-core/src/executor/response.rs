@@ -208,11 +208,7 @@ impl StockExecution<'_> {
                     "compacted context has no request accounting",
                 )
             })?;
-            crate::context::validate_projected_context(
-                &retained.context,
-                self.stock.limits,
-                self.io,
-            )?;
+            crate::context::validate_projected_request(&retained.context, &request, self.io)?;
             if retained.canonical != projection.canonical {
                 return Err(stock_boundary(
                     self.io,
