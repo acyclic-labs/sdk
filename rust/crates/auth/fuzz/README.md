@@ -65,6 +65,11 @@ All signing keys are public deterministic test keys. The records cover a foreign
 account keyring/checkpoint, an advanced selected-account floor and consecutive
 environment rotations. A record is tried intact before separator-based sequences,
 since signed wire bytes may contain the sequence separator.
+The signed `environment-bootstrap` record starts and retains key9 at sequence1;
+it covers an already-authenticated environment whose external bootstrap input
+subsequently changes. `python3 negative-control.py trust-reanchor` removes the
+production bootstrap-only replacement guard, requires the original frontier
+preservation oracle to fail, then restores the source and replays the same input.
 
 Replay keeps only records admitted by the original selected-account scope and
 compares custody with the actual follower, rather than with a local writer that

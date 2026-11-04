@@ -151,6 +151,7 @@ fn trust_record_corpus_and_dropped_publication_control() {
     let records: &[&[u8]] = &[
         include_bytes!("../../fuzz/corpus/trust_record/environment-rotation"),
         include_bytes!("../../fuzz/corpus/trust_record/environment-successor"),
+        include_bytes!("../../fuzz/corpus/trust_record/environment-bootstrap"),
         include_bytes!("../../fuzz/corpus/trust_record/foreign-checkpoint"),
         include_bytes!("../../fuzz/corpus/trust_record/foreign-keyring"),
         include_bytes!("../../fuzz/corpus/trust_record/selected-epoch"),
