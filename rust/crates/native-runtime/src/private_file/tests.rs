@@ -90,7 +90,11 @@ fn every_publication_cut_exposes_only_complete_private_records() -> io::Result<(
                 }
             },
         );
-        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().kind(),
+            io::ErrorKind::Interrupted,
+            "publication cut {failed:?}"
+        );
         assert!(
             !temporary.exists(),
             "unpublished staging owner did not retire"
@@ -116,23 +120,28 @@ fn every_publication_cut_exposes_only_complete_private_records() -> io::Result<(
         )
         .is_err()
     );
-    let mut staged = StagedFile::create(root.path(), "original-")?;
-    staged.as_file_mut().write_all(b"original publication")?;
-    let retained = staged.publish_retained(&path, crate::RenameMode::NoReplace)?;
-    let mut replacement = StagedFile::create(root.path(), "replacement-")?;
-    replacement
-        .as_file_mut()
-        .write_all(b"replacement publication")?;
-    replacement.publish(&path, crate::RenameMode::Replace)?;
-    let mut held = retained.as_file();
-    held.rewind()?;
-    let mut bytes = Vec::new();
-    held.read_to_end(&mut bytes)?;
-    assert_eq!(bytes, b"original publication");
-    // Negative control: reopening the selected name observes a different owner.
-    assert_eq!(fs::read(&path)?, b"replacement publication");
-    drop(retained);
-    assert_eq!(fs::read(&path)?, b"replacement publication");
+    // Cover every UTF-16 tail alignment through the real publisher. In
+    // particular, an aligned name leaves no implicit packet padding for NUL.
+    for padding in 0..4 {
+        let path = root.path().join(format!("retained{}", "x".repeat(padding)));
+        let mut staged = StagedFile::create(root.path(), "original-")?;
+        staged.as_file_mut().write_all(b"original publication")?;
+        let retained = staged.publish_retained(&path, crate::RenameMode::NoReplace)?;
+        let mut replacement = StagedFile::create(root.path(), "replacement-")?;
+        replacement
+            .as_file_mut()
+            .write_all(b"replacement publication")?;
+        replacement.publish(&path, crate::RenameMode::Replace)?;
+        let mut held = retained.as_file();
+        held.rewind()?;
+        let mut bytes = Vec::new();
+        held.read_to_end(&mut bytes)?;
+        assert_eq!(bytes, b"original publication");
+        // Negative control: reopening the selected name observes a different owner.
+        assert_eq!(fs::read(&path)?, b"replacement publication");
+        drop(retained);
+        assert_eq!(fs::read(&path)?, b"replacement publication");
+    }
     Ok(())
 }
 

@@ -356,18 +356,23 @@ fn unscoped_physical_workers_leave_the_driver_available_to_reply() {
     // Every physical worker is waiting for this driver. Its first poll must
     // yield before any reply is sent, even though none belongs to this Host.
     assert!(drive.as_mut().poll(&mut cx).is_pending());
+    for (index, reply) in replies.into_iter().enumerate() {
+        reply.send(index).unwrap();
+    }
+    // These unscoped jobs have no simulated clock custody. Join their original
+    // physical terminals after replying, before competing with a paused timer;
+    // dispatch latency outside the scope cannot advance its logical deadline.
+    executor::complete_io(async {
+        for (index, completion) in occupants.into_iter().enumerate() {
+            assert_eq!(completion.await.unwrap(), index);
+        }
+    });
     runtime.block_on(schedule.scope(async {
         let deadline = tokio::time::sleep(std::time::Duration::from_secs(30));
         tokio::pin!(deadline);
-        for (index, reply) in replies.into_iter().enumerate() {
-            reply.send(index).unwrap();
-        }
         let completed = async {
             drive.await.unwrap();
             assert_eq!(completion.await.unwrap().unwrap(), 42);
-            for (index, completion) in occupants.into_iter().enumerate() {
-                assert_eq!(completion.await.unwrap(), index);
-            }
         };
         tokio::pin!(completed);
         loop {

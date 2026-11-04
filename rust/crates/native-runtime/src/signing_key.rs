@@ -169,11 +169,25 @@ impl SigningKeyReference {
         key.entry
             .set_secret(seed)
             .map_err(|error| error::backend("write", error))?;
+        // Observe a lost acknowledgement after the selected store actually
+        // accepted the write, including explicit private-file custody.
+        #[cfg(test)]
+        fixture::check_fault(
+            blake3::Hash::from_bytes(reference.0).to_hex().as_str(),
+            fixture::Fault::WriteAcknowledgement,
+        )
+        .map_err(|error| error::backend("write", error))?;
         let stored = SecretBytes(
             key.entry
                 .get_secret()
                 .map_err(|error| error::backend("verify", error))?,
         );
+        #[cfg(test)]
+        fixture::check_fault(
+            blake3::Hash::from_bytes(reference.0).to_hex().as_str(),
+            fixture::Fault::StoredRead,
+        )
+        .map_err(|error| error::backend("verify", error))?;
         if !bool::from(stored.0.as_slice().ct_eq(seed)) {
             return Err(unavailable());
         }
@@ -513,8 +527,7 @@ mod tests {
         Ok(())
     }
 
-    /// The custody contract runs against the same in-process fixture backend as
-    /// integration tests, never the user's real OS credential service.
+    /// Preserve the selected custody policy, including immutable file entries.
     #[test]
     fn custody_retains_original_seed_and_rejects_missing_or_replaced_entries() -> io::Result<()> {
         let seed = Zeroizing::new(new_key()?);
@@ -536,6 +549,9 @@ mod tests {
                 .any(|window| window == seed.as_slice())
         );
         let replacement = Zeroizing::new(new_key()?);
+        // File custody deliberately refuses overwrites. Replace the entry
+        // through deletion and creation, as an external custodian could.
+        entry.delete_credential().map_err(|_| unavailable())?;
         entry.set_secret(&*replacement).map_err(|_| unavailable())?;
         assert!(
             reference
@@ -558,9 +574,14 @@ mod tests {
 
     #[test]
     fn abandoned_keys_and_failed_custody_admission_leave_zero_entries() -> io::Result<()> {
-        let mut references = Vec::new();
-        for _ in 0..256 {
-            let key = SigningKeyReference::create(SigningCustody::Configured)?;
+        let root = tempfile::tempdir()?;
+        let directory = root.path().join("custody");
+        for custody in [
+            SigningCustody::Configured,
+            SigningCustody::PrivateFile(&directory),
+        ] {
+            let mut references = Vec::new();
+            let key = SigningKeyReference::create(custody)?;
             references.push(key.reference());
             drop(key);
 
@@ -572,14 +593,16 @@ mod tests {
                 let reference = SigningKeyReference(*blake3::hash(&*seed).as_bytes());
                 let name = blake3::Hash::from_bytes(reference.0).to_hex();
                 fixture::fail_once(name.as_str(), fault);
-                assert!(SigningKeyReference::retain(&seed, SigningCustody::Configured).is_err());
+                assert!(SigningKeyReference::retain(&seed, custody).is_err());
                 references.push(reference);
             }
+            let retained = references.iter().try_fold(0, |count, reference| {
+                Ok::<_, io::Error>(
+                    count + usize::from(matches!(reference.select(custody)?, Selection::Held(..))),
+                )
+            })?;
+            assert_eq!(retained, 0, "abandoned or refused custody leaked an entry");
         }
-        let retained = references.iter().try_fold(0, |count, reference| {
-            Ok::<_, io::Error>(count + usize::from(reference.entry()?.get_secret().is_ok()))
-        })?;
-        assert_eq!(retained, 0, "abandoned or refused custody leaked an entry");
         Ok(())
     }
 }
