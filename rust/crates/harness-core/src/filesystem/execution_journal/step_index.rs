@@ -106,6 +106,12 @@ impl Pending {
             PendingState::One(first) => {
                 // Preserve the inline value on every failed promotion. New
                 // nodes retain the same original owner's funding throughout.
+                if let Some(io) = io {
+                    io.charge(acyclic_fs::WorkCounters {
+                        bytes_copied: std::mem::size_of::<Entry>() as u64,
+                        ..Default::default()
+                    })?;
+                }
                 let mut indexed = PendingIndex::default();
                 indexed.push(first.entry, io)?;
                 indexed.push(entry, io)?;
