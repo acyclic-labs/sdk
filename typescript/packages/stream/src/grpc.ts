@@ -6,7 +6,7 @@ import { StreamSessions } from "./session.js";
 import { SessionQueue } from "./session-queue.js";
 import { StreamSessionService, SessionFrameSchema, type SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
 import { connect as connectTls, rootCertificates } from "node:tls";
-import type { ClientHttp2Session, IncomingHttpHeaders } from "node:http2";
+import type { Http2Session, IncomingHttpHeaders } from "node:http2";
 import { createClient, ConnectError, Code, type CallOptions } from "@connectrpc/connect";
 import { createDeadlineSignal, createLinkedAbortController } from "@connectrpc/connect/protocol";
 import { create, fromBinary, toBinary, type MessageInitShape } from "@bufbuild/protobuf";
@@ -91,7 +91,7 @@ function createStreamGrpcTransport(options: Omit<StreamGrpcOptions, keyof Creden
     session(input: AsyncIterable<SessionFrame>, signal: AbortSignal) {
       // Retain this RPC's original connection, even if the shared manager has
       // already opened its successor. A peer status always remains terminal.
-      let connection: ClientHttp2Session | undefined;
+      let connection: Http2Session | undefined;
       let statusReceived = false;
       const receiveStatus = (headers: IncomingHttpHeaders): void => {
         statusReceived ||= headers["grpc-status"] !== undefined;
