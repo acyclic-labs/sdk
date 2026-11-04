@@ -4,13 +4,14 @@ use crate::native_host::publish_probe;
 #[test]
 fn immutable_bytes_survive_each_publication_kill_and_reject_changed_content()
 -> Result<(), DemandError> {
+    let directory = tempfile::tempdir()?;
+    let held = hold_root(directory.path())?;
     for (durability, step) in [NativeDurability::Visibility, NativeDurability::Durable]
         .into_iter()
         .flat_map(|durability| (0..publish_probe::STEPS).map(move |step| (durability, step)))
     {
-        let directory = tempfile::tempdir()?;
-        let held = hold_root(directory.path())?;
-        let leaf = Path::new("request.json");
+        let name = format!("request-{durability:?}-{step}.json");
+        let leaf = Path::new(&name);
         let bytes = br#"{"request":"complete"}"#;
         publish_probe::kill_at(Some(step));
         assert!(held.publish_immutable(leaf, bytes, durability).is_err());
