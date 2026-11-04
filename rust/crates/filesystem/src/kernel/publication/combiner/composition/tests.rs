@@ -136,7 +136,8 @@ async fn core(
     let config = crate::VolumeConfig::portable(crate::Lifecycle::Durable);
     let volume = fs
         .create_volume(config, WorkBudget::UNBOUNDED, cancellation)
-        .await?
+        .await
+        .inspect_err(|error| eprintln!("publication volume creation: {error:?}"))?
         .value;
     let checkout = volume
         .checkout(
@@ -145,7 +146,8 @@ async fn core(
             WorkBudget::UNBOUNDED,
             cancellation,
         )
-        .await?
+        .await
+        .inspect_err(|error| eprintln!("publication initial checkout: {error:?}"))?
         .value;
     let root_id = ObjectId {
         storage: None,

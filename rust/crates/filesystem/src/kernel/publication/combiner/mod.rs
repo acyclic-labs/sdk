@@ -39,7 +39,7 @@ pub(super) struct SharedSeal {
 }
 
 struct Prepared {
-    authentication: Option<Retained<super::authenticate::Authenticated>>,
+    authentication: Option<super::authenticate::Authenticated>,
     publication_pin: Option<crate::collection::Hold>,
     append: Option<GuardedAppend>,
     outcome: Option<AppendOutcome>,
@@ -54,7 +54,7 @@ struct Prepared {
 // The existing proposal, retained by the authority producer, owns these guards
 // across reply withdrawal. No client borrow owns accepted publication custody.
 pub(super) struct SubmittedPublication {
-    pub(super) authentication: Retained<super::authenticate::Authenticated>,
+    pub(super) authentication: super::authenticate::Authenticated,
     pub(super) custody: PublicationCustody,
 }
 

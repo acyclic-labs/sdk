@@ -41,6 +41,7 @@ test('original native receipt corpus rejects corruptions and planted admission l
     '!integer(value.failure.error.raw_os_error)',
   ];
   for (const [guard, replacement] of [...guards.map(guard => [guard, 'false']),
+    ['if (hostStatus !== undefined &&', 'if (false &&'],
     ['return value;', 'return {...value, failure: value.failure && {...value.failure, error: {...value.failure.error, raw_os_error: null}}};'],
     ['return value;', 'throw invalid();']]) {
     const planted = source.replace(guard, replacement);

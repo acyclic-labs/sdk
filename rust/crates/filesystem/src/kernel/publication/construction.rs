@@ -1,16 +1,5 @@
 use super::*;
-use crate::kernel::allocation::retained::{Retained, RetainedAllocation};
-
-struct PublicationPayload {
-    bytes: Retained<Vec<u8>>,
-    _original_evidence: Option<acyclic_stream::OwnedBytes>,
-    _allocation: RetainedAllocation,
-}
-impl AsRef<[u8]> for PublicationPayload {
-    fn as_ref(&self) -> &[u8] {
-        &self.bytes.value
-    }
-}
+use crate::kernel::allocation::retained::Retained;
 pub(super) fn prepare_publication_commit(
     request: PublishGenerationRequest,
     effective: Option<ObjectId>,
@@ -45,14 +34,7 @@ pub(super) fn prepare_publication_commit(
     let bytes = Retained::from_owned(payload, accounting)?;
     cancellation.check()?;
     accounting.check()?;
-    let control_bytes =
-        acyclic_auth::operation::bytes_owner_allocation_bytes::<PublicationPayload>() as u64;
-    let allocation = RetainedAllocation::claim(control_bytes, 1, accounting)?;
-    let payload = Bytes::from_owner(PublicationPayload {
-        bytes,
-        _original_evidence: original_evidence,
-        _allocation: allocation,
-    });
+    let payload = bytes.into_bytes(original_evidence, accounting)?;
     Ok(ProposedCommit {
         publication: None,
         operation_id: request.operation_id,

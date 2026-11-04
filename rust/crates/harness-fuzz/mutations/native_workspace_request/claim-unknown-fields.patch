@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness/src/local/host_owner/agents.rs b/rust/crates/harness/src/local/host_owner/agents.rs
+--- a/rust/crates/harness/src/local/host_owner/agents.rs
++++ b/rust/crates/harness/src/local/host_owner/agents.rs
+@@ -182,7 +182,7 @@
+         brief: FileRef,
+     },
+     /// Claim the next input.
+-    Claim {},
++    Claim,
+     /// Settle the claimed input.
+     Complete {
+         /// The claim's operation.

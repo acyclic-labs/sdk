@@ -110,20 +110,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             accounting,
         )?;
         fact.retire(accounting)?;
-        let cached_bytes = publication
-            .as_ref()
-            .map_or(0, VerifiedPublication::retained_bytes);
-        let cached = if let Some(publication) = publication {
-            let bytes = if accounting.standalone_parts().is_some() {
-                cached_bytes
-            } else {
-                0
-            };
-            let allocation = accounting.claim_owned(bytes, 0)?;
-            Some(Owned::new(publication, allocation, bytes))
-        } else {
-            None
-        };
+        let cached = publication;
         let head = self
             .retention_head_with_accounting(authority_id, accounting, cancellation)
             .await;
@@ -141,7 +128,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     sequence == Sequence::new(1) && fingerprint == commit.fingerprint
                 }) {
                     if let Some(cached) = cached {
-                        cached.retire(accounting)?;
+                        drop(cached);
                     }
                     return Ok(());
                 }
@@ -152,16 +139,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let limits = closure_limits(volume.config);
         let cached = match cached {
             Some(proof)
-                if self.same_deployment(&proof.value.filesystem)
-                    && proof.value.generation_root == generation_root
-                    && proof.value.volume_id == volume.id
-                    && proof.value.limits == limits
-                    && proof.value.proven_at == self.inner.objects.collection_sweeps() =>
+                if self.same_deployment(&proof.filesystem)
+                    && proof.generation_root == generation_root
+                    && proof.volume_id == volume.id
+                    && proof.limits == limits
+                    && proof.proven_at == self.inner.objects.collection_sweeps() =>
             {
                 Some(proof)
             }
             Some(proof) => {
-                proof.retire(accounting)?;
+                drop(proof);
                 None
             }
             None => None,
@@ -169,24 +156,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let publication = if let Some(proof) = cached {
             proof
         } else {
-            self.retention_publication_with_accounting(
-                volume,
-                generation_root,
-                accounting,
-                cancellation,
-            )
-            .await?
+            self.retention_publication_with_accounting(volume, generation_root, accounting)
+                .await?
         };
         let result = self
             .publish_retention_with_accounting(
                 authority_id,
                 commit,
-                &publication.value,
+                &publication,
                 accounting,
                 cancellation,
             )
             .await;
-        publication.retire(accounting)?;
+        drop(publication);
         if result? {
             Ok(())
         } else {
@@ -234,15 +216,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         volume: &Volume<A, O>,
         root: ObjectId,
         accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<Owned<VerifiedPublication<A, O>>, WorkspaceError> {
+    ) -> Result<VerifiedPublication<A, O>, WorkspaceError> {
         self.publication_proof(
             root,
             self.inner.objects.collection_sweeps(),
             volume.id,
             volume.config,
             accounting,
-            cancellation,
         )
         .await
         .map_err(|error| match error {

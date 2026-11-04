@@ -488,8 +488,8 @@ if (mode === 'signal-owner') {
   for (const [guard, replacement, control = terminalControls] of [
     [".catch(error => retain('terminal', error))", '.catch(() => {})'],
     ["} catch (error) { retain('terminal', error); }", '} catch (error) {}'],
-    ['hostStatus.signal !== null || hostStatus.code === null\n          || (hostStatus.code >>> 0) !== completion.host_exit_code',
-      'false', statusBindingControl],
+    ["decodeCompletion(await readFile(receipt, 'utf8'), invocation, hostStatus)",
+      "decodeCompletion(await readFile(receipt, 'utf8'), invocation)", statusBindingControl],
   ]) {
     const planted = production.replace(guard, replacement);
     assert.notEqual(planted, production, `production process guard missing: ${guard}`);

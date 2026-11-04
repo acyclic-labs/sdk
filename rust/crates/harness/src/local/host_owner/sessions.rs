@@ -47,6 +47,7 @@ pub enum SessionAction {
     Observe,
     /// Where prompt `id`, accepted at inbox sequence `inbox`, stands: the
     /// shared committed reply, with the outcome its settled turn recorded.
+    /// The response carries that outcome once in `reply`, without `results`.
     Reply {
         /// The prompt's message identity, returned by Spawn or Send.
         id: IntentId,
@@ -140,6 +141,7 @@ impl HostWorkspaceOwner {
             }
         }
         self.attach(&child).await?;
+        let include_result = !matches!(&action, SessionAction::Reply { .. });
         let (mut accepted, mut fence) = (None, None);
         match action {
             SessionAction::Observe => {}
@@ -206,7 +208,7 @@ impl HostWorkspaceOwner {
         } else {
             None
         };
-        let mut value = self.session_value(&child).await?;
+        let mut value = self.session_value(&child, include_result).await?;
         if let Some(object) = value.as_object_mut() {
             if let Some(Value::Object(accepted)) = accepted {
                 object.extend(accepted);
@@ -253,7 +255,9 @@ impl HostWorkspaceOwner {
         } else if session.control != Control::Resume || session.running.is_none() {
             return Ok(Value::Null);
         } else {
-            self.native.request(child, operation, &Event::Claim).await?;
+            self.native
+                .request(child, operation, &Event::Claim {})
+                .await?;
         }
         let (state, session) = self.native.session(child).await?;
         let Some(Running {
@@ -361,15 +365,31 @@ impl HostWorkspaceOwner {
         Ok(quiescence)
     }
 
-    /// The plugin's view of one session.
-    pub(super) async fn session_value(&self, child: &AgentPath) -> Result<Value> {
+    /// The plugin's view of one session. A prompt-specific reply carries its
+    /// own outcome, so it does not also resolve the latest session result.
+    pub(super) async fn session_value(
+        &self,
+        child: &AgentPath,
+        include_result: bool,
+    ) -> Result<Value> {
         let (state, session) = self.native.session(child).await?;
         let pending = session.pending(&state);
-        Ok(json!({"task":child,"cwd":self.view(child)?.path(),
+        let mut value = json!({"task":child,"cwd":self.view(child)?.path(),
             "status":{"settled":session.claimed().is_none(),"turn":session.settled},
-            "control":session.control,"events":session.events,"results":session.result.into_iter()
-                .map(|outcome| json!({ "outcome": outcome })).collect::<Vec<_>>(),
-            "pending":pending}))
+            "control":session.control,"events":session.events,"pending":pending});
+        if include_result {
+            let result = match &session.result {
+                Some(result) => Some(self.native.outcome(&state, result).await?),
+                None => None,
+            };
+            value["results"] = json!(
+                result
+                    .into_iter()
+                    .map(|outcome| json!({ "outcome": outcome }))
+                    .collect::<Vec<_>>()
+            );
+        }
+        Ok(value)
     }
 
     /// The open children `parent` spawned, by parent-local name: the whole

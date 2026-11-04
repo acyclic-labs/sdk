@@ -37,7 +37,10 @@ pub mod validation;
 
 /// Reserved inside the host's existing writable workspace; never a state path.
 pub const DIRECTORY: &str = ".acyclic-sdk/host-files";
-const MAXIMUM_BYTES: u64 = 65_536;
+
+// Allocation protection for writable input projections, far above the native
+// prompt/event bounds. Published results have no independent envelope cap.
+const MAXIMUM_REQUEST_BYTES: u64 = 64 * 1024 * 1024;
 
 // Both endpoints observe their own reads. Admit only events that can change
 // the projection, so opening a file cannot schedule another read of itself.
@@ -199,7 +202,7 @@ impl Shared {
             return;
         }
         let leaf = format!("{operation}.json");
-        let reply = match regular_bytes(&self.status.join(&leaf)) {
+        let reply = match regular_bytes(&self.status.join(&leaf), u64::MAX) {
             Ok(bytes) => crate::client::decode_command_result(operation, 0, &bytes),
             Err(Error::NotFound(_)) => match std::fs::symlink_metadata(self.requests.join(&leaf)) {
                 Ok(_) => return,
@@ -580,11 +583,6 @@ fn request_operation(
             action,
         };
         let bytes = serde_json::to_vec(&request).map_err(storage)?;
-        if bytes.len() as u64 > MAXIMUM_BYTES {
-            return Err(Error::Invalid(
-                "native host request exceeds file bound".into(),
-            ));
-        }
         let (waiter, delivery) = mpsc::sync_channel(1);
         let waiting = bridge.wait(operation, waiter)?;
         let request_path = bridge
@@ -669,7 +667,7 @@ fn notified_operations(
 fn discover(cwd: &Path) -> Result<(PathBuf, Endpoint)> {
     for ancestor in cwd.ancestors() {
         let directory = ancestor.join(DIRECTORY);
-        match regular_bytes(&directory.join("owner.json")) {
+        match regular_bytes(&directory.join("owner.json"), MAXIMUM_REQUEST_BYTES) {
             Ok(bytes) => {
                 let endpoint: Endpoint = serde_json::from_slice(&bytes).map_err(storage)?;
                 if endpoint.version != 3 {
@@ -944,7 +942,7 @@ impl Served {
         }
         // Request projections are writable by native tools. Invalid input
         // must not terminate the trusted owner or dispatch another action.
-        let request = regular_bytes(&path).and_then(|bytes| {
+        let request = regular_bytes(&path, MAXIMUM_REQUEST_BYTES).and_then(|bytes| {
             let request: Request = serde_json::from_slice(&bytes).map_err(storage)?;
             if request.session != session || request.operation != operation {
                 return Err(Error::Unauthorized(
@@ -1041,11 +1039,10 @@ impl Served {
             drop(tracked.remove());
             return Ok(());
         }
-        let bytes =
-            match crate::client::encode_command_result(0, operation, &outcome, MAXIMUM_BYTES) {
-                Ok(bytes) => bytes,
-                Err(error) => return Error::after_cleanup(outcome.map(drop), Err(error)),
-            };
+        let bytes = match crate::client::encode_command_result(0, operation, &outcome, u64::MAX) {
+            Ok(bytes) => bytes,
+            Err(error) => return Error::after_cleanup(outcome.map(drop), Err(error)),
+        };
         match status.publish_immutable(
             Path::new(&format!("{operation}.json")),
             &bytes,
@@ -1115,37 +1112,39 @@ fn remove_projection(path: &Path) -> Result<()> {
     }
 }
 
-fn regular_bytes(path: &Path) -> Result<Vec<u8>> {
-    bounded_bytes(path, MAXIMUM_BYTES)
-}
-
-fn bounded_bytes(path: &Path, maximum: u64) -> Result<Vec<u8>> {
+fn regular_bytes(path: &Path, maximum: u64) -> Result<Vec<u8>> {
     let (parent, leaf) = projection_parent(path)?;
     let file = parent.open_file(&leaf, false).map_err(native_file_error)?;
     let metadata = file.metadata().map_err(storage)?;
-    if !metadata.is_file() || metadata.len() > maximum {
+    if !metadata.is_file() {
         return Err(Error::Invalid(
-            "native file projection must be a bounded regular file".into(),
+            "native file projection must be a regular file".into(),
+        ));
+    }
+    // Publication is immutable. Bound the read by its opened length, with
+    // allocation protection checked before reserving untrusted input bytes.
+    let length = metadata.len();
+    if length > maximum {
+        return Err(Error::Invalid(
+            "native input projection exceeds allocation protection".into(),
         ));
     }
     let mut bytes = Vec::new();
-    file.take(maximum + 1)
+    bytes
+        .try_reserve_exact(usize::try_from(length).map_err(storage)?)
+        .map_err(storage)?;
+    file.take(length.saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(storage)?;
-    if bytes.len() as u64 > maximum {
+    if bytes.len() as u64 != length {
         return Err(Error::Invalid(
-            "native file projection grew beyond its bound".into(),
+            "native file projection length changed while reading".into(),
         ));
     }
     Ok(bytes)
 }
 
 fn immutable(path: &Path, bytes: &[u8]) -> Result<()> {
-    if bytes.len() as u64 > MAXIMUM_BYTES {
-        return Err(Error::Invalid(
-            "native file projection exceeds its bound".into(),
-        ));
-    }
     let (parent, leaf) = projection_parent(path)?;
     parent
         .publish_immutable(&leaf, bytes, acyclic_fs::NativeDurability::Durable)

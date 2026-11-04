@@ -1,0 +1,25 @@
+{
+  "files": [
+    {
+      "sha256": "d9ff2359858ac77ca398765702271ceeed7a0db32061bd68b3f04cc897e58e69",
+      "bytes": 763,
+      "path": "corpus/native_workspace_request/native-storage-session.json"
+    },
+    {
+      "sha256": "54da317bbf8672995fc8467ae2f5ab1411bb54d9da7304b7eb57f11e4e450f3b",
+      "bytes": 65536,
+      "path": "corpus/native_workspace_request/native-storage-event.json"
+    }
+  ],
+  "producer": {
+    "platform": "Linux x86_64",
+    "capture": "Test-only stdout announcements of the actual committed Session and its original immutable admitted Event bytes, without reserialization.",
+    "command": "cargo nextest run --locked -p acyclic-harness --lib --no-default-features --features filesystem-local,native-execution -E 'test(local::host_owner::tests::codex_native_session_lifecycle)' --nocapture",
+    "commit": "891f333a0e229e8ac2e277d59d1f261c68cb81ae",
+    "receipt_sha256": "f525a730056d55d6a72c24437297e484f2617919e99f3a0da256465a2f78c2c2",
+    "run_result": "The capture completed; the lifecycle later failed with NotFound(native agent view) because the restarted fixture had not reopened its view. These files establish input provenance, not a passing lifecycle or platform qualification.",
+    "content_sha256": "29b0fb15c620724d7ebdeb75fd2a0206ecb35a444d8a6b079f482e4ccf61654c"
+  },
+  "version": 1,
+  "binding": "The Session completion FileRef descriptor SHA256 equals the exact 65536-byte Event capture SHA256."
+}

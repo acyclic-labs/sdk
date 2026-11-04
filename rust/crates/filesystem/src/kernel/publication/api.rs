@@ -51,7 +51,7 @@ pub(crate) async fn publish_generation_async_guarded<P, E, F, Fut>(
     before_publication: &mut F,
     resolved: Option<crate::foundation::DurableCommit>,
     mut prepare_roots: Option<PublicationRootPreparation<'_, E>>,
-) -> Result<RetainedPublication<()>, OperationFailure<E>>
+) -> Result<RetainedPublication<ProofGuard>, OperationFailure<E>>
 where
     P: PublicationOwner,
     E: From<crate::FsError> + Send,
@@ -124,13 +124,7 @@ where
         },
     )
     .await;
-    result
-        .map(|output| RetainedPublication {
-            receipt: output.receipt,
-            published: output.published,
-            allocation: (),
-        })
-        .map_err(|error| OperationFailure::new(error, accounting.spent()))
+    result.map_err(|error| OperationFailure::new(error, accounting.spent()))
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -1,0 +1,11 @@
+diff --git a/rust/crates/filesystem/src/distributed/accounting.rs b/rust/crates/filesystem/src/distributed/accounting.rs
+--- a/rust/crates/filesystem/src/distributed/accounting.rs
++++ b/rust/crates/filesystem/src/distributed/accounting.rs
+@@ -33,6 +33,6 @@
+             .read_records(authority, after, limit, &mut scope)
+             .await?;
+         Ok(crate::async_storage::authority_parts(
+-            scope.finish_owned(value).map_err(authority_error)?,
++            value,
+         ))
+     }

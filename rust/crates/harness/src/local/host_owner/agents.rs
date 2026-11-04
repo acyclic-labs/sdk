@@ -26,13 +26,13 @@ use futures::TryStreamExt as _;
 
 mod steps;
 use steps::{apply, idle, reject, start, waiting};
+#[cfg(any(test, feature = "test-support"))]
+pub(super) mod validation;
 
 /// Host name of the inbox records this owner writes for a native session.
 const HOST: &str = "native";
 /// Bound of one session event, prompt or native resume reference.
 pub(super) const MAXIMUM_BYTES: u64 = 65_536;
-/// Bound of a recorded failure description.
-const MAXIMUM_MESSAGE: usize = 4096;
 
 /// Requested lifecycle of a native session.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,11 +75,28 @@ pub struct TurnClaim {
     pub turn: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+enum SessionVersion {
+    #[default]
+    #[serde(rename = "1")]
+    V1,
+}
+
+/// A completion already lives in its immutable admitted request file.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(super) enum StoredOutcome {
+    /// The exact admitted completion, including its original output fields.
+    Complete(FileRef),
+    /// An input stopped before a process claimed it has no completion event.
+    Cancelled,
+}
+
 /// A native session's state: the open turn's checkpoint while one runs,
 /// otherwise the output of its last conversation entry.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Session {
+    version: SessionVersion,
     /// Parent-local name of a spawned session, from its brief.
     pub(super) reference: Option<String>,
     /// Parent-local names of its children still open, in spawn order.
@@ -89,7 +106,7 @@ pub(super) struct Session {
     /// Settled turns.
     pub(super) settled: u64,
     /// The last settled turn's outcome.
-    pub(super) result: Option<crate::Outcome<TurnOutput>>,
+    pub(super) result: Option<StoredOutcome>,
     /// The last settled turn's native event log: every event its host
     /// emitted, so each conversation entry carries its turn's own.
     #[serde(default)]
@@ -103,6 +120,10 @@ pub(super) struct Session {
 }
 
 impl Session {
+    fn decode(bytes: &[u8]) -> serde_json::Result<Self> {
+        serde_json::from_slice(bytes)
+    }
+
     /// The claim of the input its open turn runs.
     pub(super) fn claimed(&self) -> Option<OperationId> {
         self.running.as_ref().and_then(|running| running.claimed)
@@ -160,7 +181,7 @@ pub(super) enum Event {
         brief: FileRef,
     },
     /// Claim the next input.
-    Claim,
+    Claim {},
     /// Settle the claimed input.
     Complete {
         /// The claim's operation.
@@ -181,6 +202,21 @@ pub(super) enum Event {
         /// Requested state.
         control: Control,
     },
+}
+
+impl Event {
+    fn decode(bytes: &[u8]) -> serde_json::Result<Self> {
+        serde_json::from_slice(bytes)
+    }
+
+    fn completed(self) -> Result<crate::Outcome<TurnOutput>> {
+        match self {
+            Self::Complete { outcome, .. } => Ok(outcome),
+            _ => Err(Error::Conflict(
+                "native result does not name a completion".into(),
+            )),
+        }
+    }
 }
 
 /// Content access of one agent over its own volumes.
@@ -239,15 +275,23 @@ impl HostDriver {
 
     /// Reads one file on the agent's own volumes, or the exact brief its
     /// adoption named.
-    pub(super) async fn read(&self, agent: &AgentState, file: &FileRef) -> Result<Vec<u8>> {
-        let content = self
-            .content(agent, MAXIMUM_BYTES, agent.brief_grant(file))
-            .await?;
+    async fn read(&self, agent: &AgentState, file: &FileRef, bound: u64) -> Result<Vec<u8>> {
+        let content = self.content(agent, bound, agent.brief_grant(file)).await?;
         Ok(content
             .reader
-            .read(file, MAXIMUM_BYTES, None, None)?
+            .read(file, bound, None, None)?
             .await?
             .to_vec())
+    }
+
+    /// Reads the owner's committed snapshot at its exact published size.
+    async fn read_session(&self, agent: &AgentState, file: &FileRef) -> Result<Session> {
+        Session::decode(
+            &self
+                .read(agent, file, file.descriptor().byte_length())
+                .await?,
+        )
+        .map_err(storage)
     }
 
     /// Stages `bytes` once on the agent's private volume under `operation`.
@@ -256,8 +300,9 @@ impl HostDriver {
         agent: &AgentState,
         operation: OperationId,
         bytes: &[u8],
+        bound: u64,
     ) -> Result<FileRef> {
-        let content = self.content(agent, MAXIMUM_BYTES, &[]).await?;
+        let content = self.content(agent, bound, &[]).await?;
         Ok(content
             .writer
             .stage_once(
@@ -310,7 +355,7 @@ impl HostDriver {
             prompt: prompt.into(),
         })
         .map_err(storage)?;
-        self.stage(agent, operation, &bytes).await
+        self.stage(agent, operation, &bytes, MAXIMUM_BYTES).await
     }
 
     /// Stages the native event log of the turn claimed under `claim` once.
@@ -346,7 +391,7 @@ impl HostDriver {
     /// or the output of its own last conversation entry.
     pub(super) async fn session(&self, agent: &AgentState) -> Result<Session> {
         if let Some(turn) = &agent.turn {
-            return serde_json::from_slice(&turn.checkpoint).map_err(storage);
+            return Session::decode(&turn.checkpoint).map_err(storage);
         }
         if agent.conversation_tail <= agent.conversation_base {
             return Ok(Session::default());
@@ -370,7 +415,7 @@ impl HostDriver {
             return Err(Error::Conflict("native session entry is missing".into()));
         };
         let entry = ConversationEntry::decode(&record.value).map_err(storage)?;
-        serde_json::from_slice(&self.read(agent, &entry.output).await?).map_err(storage)
+        self.read_session(agent, &entry.output).await
     }
 
     async fn turn(&self, agent: &AgentState, input: Option<Queued>) -> Result<TurnStep> {
@@ -382,7 +427,7 @@ impl HostDriver {
         let (mut outs, mut drops) = (Vec::new(), None);
         let settled = match &input {
             TurnInput::Brief { brief } => {
-                let bytes = self.read(agent, brief).await?;
+                let bytes = self.read(agent, brief, MAXIMUM_BYTES).await?;
                 let brief = serde_json::from_slice::<Brief>(&bytes).map_err(storage)?;
                 session.reference = Some(brief.reference);
                 None
@@ -403,18 +448,18 @@ impl HostDriver {
                 return Ok(idle(Vec::new()));
             }
             TurnInput::Hook { host, id, event } if host == HOST => {
-                let bytes = self.read(agent, event).await?;
-                match serde_json::from_slice::<Event>(&bytes) {
-                    Ok(event) => {
+                let bytes = self.read(agent, event, MAXIMUM_BYTES).await?;
+                match Event::decode(&bytes) {
+                    Ok(decoded) => {
                         // A stop drops every input queued before it.
                         drops = matches!(
-                            event,
+                            decoded,
                             Event::Control {
                                 control: Control::Cancel | Control::Archive
                             }
                         )
                         .then_some(inbox);
-                        apply(agent, &mut session, id, event, &mut outs)?
+                        apply(agent, &mut session, id, event, decoded, &mut outs)?
                     }
                     Err(error) => reject(&mut session, id, &error.to_string()),
                 }
@@ -437,7 +482,10 @@ impl HostDriver {
             None => (inbox, input),
         };
         let bytes = serde_json::to_vec(&session).map_err(storage)?;
-        let output = self.stage(agent, snapshot(agent, inbox), &bytes).await?;
+        // Input admission bounds one event, not the session that contains it.
+        let output = self
+            .stage(agent, snapshot(agent, inbox), &bytes, bytes.len() as u64)
+            .await?;
         let entry = ConversationEntry {
             inbox,
             input,
@@ -638,7 +686,20 @@ impl NativeAgents {
     }
 
     pub(super) async fn read(&self, agent: &AgentState, file: &FileRef) -> Result<Vec<u8>> {
-        self.driver.read(agent, file).await
+        self.driver.read(agent, file, MAXIMUM_BYTES).await
+    }
+
+    pub(super) async fn outcome(
+        &self,
+        agent: &AgentState,
+        stored: &StoredOutcome,
+    ) -> Result<crate::Outcome<TurnOutput>> {
+        match stored {
+            StoredOutcome::Cancelled => Ok(crate::Outcome::Cancelled),
+            StoredOutcome::Complete(file) => Event::decode(&self.read(agent, file).await?)
+                .map_err(storage)?
+                .completed(),
+        }
     }
 
     /// Delivers `event` to `agent` as request `operation`, then runs its turn.
@@ -656,7 +717,10 @@ impl NativeAgents {
                 "native session event exceeds its bound".into(),
             ));
         }
-        let file = self.driver.stage(&state, operation, &bytes).await?;
+        let file = self
+            .driver
+            .stage(&state, operation, &bytes, MAXIMUM_BYTES)
+            .await?;
         self.deliver(
             agent,
             InboxRecord::Hook(Hook {
@@ -692,7 +756,12 @@ impl NativeAgents {
         hasher.finalize_xof().fill(&mut bytes);
         let body = self
             .driver
-            .stage(&state, OperationId::from_bytes(bytes), prompt.as_bytes())
+            .stage(
+                &state,
+                OperationId::from_bytes(bytes),
+                prompt.as_bytes(),
+                MAXIMUM_BYTES,
+            )
             .await?;
         self.deliver(
             agent,
@@ -721,10 +790,12 @@ impl NativeAgents {
                     sequence, entry, ..
                 } => {
                     let state = self.state(agent).await?;
-                    let settled: Session =
-                        serde_json::from_slice(&self.driver.read(&state, &entry.output).await?)
-                            .map_err(storage)?;
-                    json!({"kind": "answered", "sequence": sequence, "outcome": settled.result})
+                    let settled = self.driver.read_session(&state, &entry.output).await?;
+                    let outcome = match &settled.result {
+                        Some(result) => Some(self.outcome(&state, result).await?),
+                        None => None,
+                    };
+                    json!({"kind": "answered", "sequence": sequence, "outcome": outcome})
                 }
                 crate::agent::Reply::Pending | crate::agent::Reply::Continuing { .. } => {
                     json!({ "kind": "pending" })

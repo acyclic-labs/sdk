@@ -79,6 +79,21 @@ impl Fixture {
             )
             .await
     }
+
+    async fn restart(&mut self, child: &AgentPath) -> Result<()> {
+        let local = Arc::clone(&self.owner.local);
+        let previous = std::mem::replace(&mut self.owner, HostWorkspaceOwner::new(local)?);
+        drop(previous);
+        self.owner
+            .dispatch(
+                OperationId::new(),
+                HostAction::Reopen {
+                    task: child.clone(),
+                },
+            )
+            .await?;
+        Ok(())
+    }
 }
 
 fn claim(turn: &Value) -> Result<TurnClaim> {
@@ -181,31 +196,39 @@ not json naming a session_id
     )
     .map_err(storage)?;
     native_write(&view.join("child.txt"), b"native")?;
+    // The original scale child emits a full retained stderr tail after its
+    // exit description. Settlement must preserve both through the owner.
+    let diagnostic = format!(
+        "native failed after write\n{}\ndiagnostic-tail-{host}",
+        "e".repeat(4096)
+    );
     let failed = fixture
         .session(
             "child",
             SessionAction::Complete {
                 claim: claim(&first)?,
                 outcome: crate::Outcome::Failed {
-                    message: "native failed after write".into(),
+                    message: diagnostic.clone(),
                 },
             },
         )
         .await?;
     assert_eq!(failed.pointer("/status/settled"), Some(&json!(true)));
+    assert_eq!(
+        failed.pointer("/results/0/outcome/Failed/message"),
+        Some(&json!(diagnostic))
+    );
     // A new owner over the same harness reopens the same agent and view.
-    let local = Arc::clone(&fixture.owner.local);
-    let previous = std::mem::replace(&mut fixture.owner, HostWorkspaceOwner::new(local)?);
-    drop(previous);
-    fixture
-        .owner
-        .dispatch(
-            OperationId::new(),
-            HostAction::Reopen {
-                task: child.clone(),
-            },
-        )
-        .await?;
+    fixture.restart(&child).await?;
+    assert_eq!(
+        fixture
+            .owner
+            .session_value(&child, true)
+            .await?
+            .pointer("/results/0/outcome/Failed/message"),
+        Some(&json!(diagnostic)),
+        "owner restart must preserve the complete native outcome"
+    );
     let next = fixture.session("child", SessionAction::Next).await?;
     assert_eq!(next["turn"], 2);
     assert_eq!(next["prompt"], "follow-up");
@@ -251,6 +274,114 @@ not json naming a session_id
             .await?
             .is_null()
     );
+    fixture
+        .session(
+            "child",
+            SessionAction::Send {
+                prompt: "complete output".into(),
+            },
+        )
+        .await?;
+    let final_turn = fixture.session("child", SessionAction::Next).await?;
+    let final_claim = claim(&final_turn)?;
+    // Use the original staged event log as an attachment, not a fabricated file.
+    let mut output = crate::executor::TurnOutput::new(String::new(), json!({"native": host}), 1);
+    output.attachments.push(crate::conversation::Attachment {
+        file: serde_json::from_value(failed["events"].clone()).map_err(storage)?,
+        label: Some("original native log".into()),
+    });
+    let overhead = serde_json::to_vec(&agents::Event::Complete {
+        operation: final_claim.operation,
+        outcome: crate::Outcome::Succeeded(output.clone()),
+        events: None,
+    })
+    .map_err(storage)?
+    .len();
+    output.text = "s".repeat(agents::MAXIMUM_BYTES as usize - overhead);
+    assert_eq!(
+        serde_json::to_vec(&agents::Event::Complete {
+            operation: final_claim.operation,
+            outcome: crate::Outcome::Succeeded(output.clone()),
+            events: None,
+        })
+        .map_err(storage)?
+        .len(),
+        agents::MAXIMUM_BYTES as usize
+    );
+    let mut oversized = output.clone();
+    oversized.text.push('x');
+    assert!(matches!(
+        fixture
+            .session(
+                "child",
+                SessionAction::Complete {
+                    claim: final_claim.clone(),
+                    outcome: crate::Outcome::Succeeded(oversized),
+                }
+            )
+            .await,
+        Err(Error::Invalid(_))
+    ));
+    let outcome = crate::Outcome::Succeeded(output);
+    let expected = serde_json::to_value(&outcome).map_err(storage)?;
+    let completed = fixture
+        .session(
+            "child",
+            SessionAction::Complete {
+                claim: final_claim,
+                outcome,
+            },
+        )
+        .await?;
+    assert_eq!(completed.pointer("/results/0/outcome"), Some(&expected));
+    let (state, stored) = fixture.owner.native.session(&child).await?;
+    let stored_bytes = serde_json::to_vec(&stored).map_err(storage)?;
+    agents::validation::check_native_session_storage(&stored_bytes);
+    if let Some(agents::StoredOutcome::Complete(file)) = &stored.result {
+        let event_bytes = fixture.owner.native.read(&state, file).await?;
+        agents::validation::check_native_session_storage(&event_bytes);
+    } else {
+        panic!("completed session did not retain its admitted event");
+    }
+    fixture.restart(&child).await?;
+    assert_eq!(
+        fixture
+            .owner
+            .session_value(&child, true)
+            .await?
+            .pointer("/results/0/outcome"),
+        Some(&expected)
+    );
+    let sent = fixture
+        .session(
+            "child",
+            SessionAction::Send {
+                prompt: "after complete output".into(),
+            },
+        )
+        .await?;
+    assert_eq!(sent.pointer("/results/0/outcome"), Some(&expected));
+    let after = fixture.session("child", SessionAction::Next).await?;
+    assert_eq!(after["turn"], 4);
+    assert_eq!(after["prompt"], "after complete output");
+    assert_eq!(
+        fixture
+            .owner
+            .session_value(&child, true)
+            .await?
+            .pointer("/results/0/outcome"),
+        Some(&expected),
+        "an open follow-up must retain the complete previous outcome"
+    );
+    fixture
+        .session(
+            "child",
+            SessionAction::Complete {
+                claim: claim(&after)?,
+                outcome: crate::Outcome::Cancelled,
+            },
+        )
+        .await?;
     fixture.merge("child").await?;
     assert_eq!(
         std::fs::read(fixture.checkout.path().join("child.txt")).map_err(storage)?,

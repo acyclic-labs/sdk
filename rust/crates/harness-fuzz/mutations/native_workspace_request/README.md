@@ -7,13 +7,22 @@ and withdrawal through physical file removal. No second decoder or transition
 model is used. The shared `WorkspaceInput` owns one reusable canonical workspace
 and held status directory; every input retires all request and reply state.
 
-The corpus consists of authored generator inputs, not external host captures:
+The scheduling seeds are authored generator inputs, not external host captures:
 empty selects completion followed by reply retirement; byte `1` withdraws before
 dispatch; byte `2` withdraws while running. Input bytes also select session and
 operation identities and independently reach the original file reader/decoder.
-Each invocation generates one accepted request and two distinct foreign
+Each invocation generates two accepted requests and two distinct foreign
 identities with the shipping writer. Reject-all cannot pass. Repeated keyed
 notifications and replacement bytes must not dispatch accepted work again.
+
+The retained `native-storage-session.json` and `native-storage-event.json` are
+original SDK-produced bytes. Their exact provenance and hashes are recorded in
+`native-session-storage-corpus.json`. The same target also checks the production
+session and event codecs, required storage version, strict unknown-field
+admission and complete outcome projection. Every input takes one unwithdrawn
+reply path as well as its selected withdrawal schedule. The reply carries that
+input through the production result encoder, opened-file reader and strict
+decoder; the captured 65,536-byte event detects a secondary envelope cap.
 
 From the repository root:
 
@@ -25,6 +34,14 @@ Apply each retained production patch separately and run this SAME command with
 the unchanged oracle and corpus. Session/operation guard omissions must fail
 identity equality, duplicate admission must fail dispatch cardinality, and
 withdrawn reply publication must fail the physical reply-presence assertion.
+`omit-large-reply.patch` must fail full reply decoding on the original large
+event; `claim-unknown-fields.patch` must fail unknown-field rejection through
+the actual event codec, including the production-generated empty claim.
+`omit-input-protection.patch` must fail the original opened-file refusal for a
+64 MiB + 1 sparse input projection. The same construction checks that production
+admission withdraws this untrusted file without dispatching an action. This
+protective allocation bound is independent of native event admission and does
+not cap published reply envelopes. It adds no syscall, allocation or copy.
 Compilation/setup failures do not count as detected defects. Reverse each patch
 before another mutation or the positive run.
 
@@ -37,7 +54,7 @@ coverage; matching-toolchain branch exports must identify uncovered production
 branches separately.
 
 Production adds zero syscalls, barriers, round trips, allocations or copies.
-Validation uses four fixed cases per input with at most two initial keyed
+Validation uses five fixed cases per input with at most two initial keyed
 notifications each; reads/writes and durable retirement/publication use the
 original filesystem primitives. Byte work scales with input size; keyed state
 has at most one operation, no history growth, directory scan or polling. No

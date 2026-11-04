@@ -68,8 +68,7 @@ where
     let (appended, authentication, published, _projection_fence, _publication_hold) =
         if let Some(ticket) = candidate.ticket.as_mut() {
             let publication = combiner::SubmittedPublication {
-                authentication: authenticate::retain_authentication(authentication, accounting)
-                    .map_err(E::from)?,
+                authentication,
                 custody: combiner::PublicationCustody {
                     published: None,
                     projection_fence,
@@ -91,13 +90,9 @@ where
                 changes.retire(accounting).map_err(E::from)?;
             }
             let (appended, publication) = result?;
-            let crate::kernel::allocation::retained::Retained { value, allocation } =
-                publication.authentication;
-            drop(allocation);
-            retain(accounting, value.guard.retained_bytes()).map_err(E::from)?;
             (
                 appended,
-                value,
+                publication.authentication,
                 publication.custody.published,
                 publication.custody.projection_fence,
                 publication.custody.publication_hold,
@@ -127,7 +122,7 @@ where
         .map_err(E::from)?;
         let root = decoded.publication.generation_root;
         if root != output.0.generation_id.object_id() {
-            authenticate::retire(output, accounting).map_err(E::from)?;
+            drop(output);
             let authenticated = authenticate::prove(
                 objects,
                 root,

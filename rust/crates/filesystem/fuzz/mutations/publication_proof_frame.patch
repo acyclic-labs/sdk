@@ -1,0 +1,16 @@
+diff --git a/rust/crates/filesystem/src/facade/fork.rs b/rust/crates/filesystem/src/facade/fork.rs
+--- a/rust/crates/filesystem/src/facade/fork.rs
++++ b/rust/crates/filesystem/src/facade/fork.rs
+@@ -157,7 +157,11 @@
+         let cache = Some(&self.inner.publication_proof.inner);
+         let (proof, guard, pending) = {
+             let mut frame = crate::async_storage::AuthorityFrame::borrow(accounting)?;
+-            let meter = ProofMeter::from_accounting(frame.accounting())?;
++            let meter = if std::env::var_os("ACYCLIC_FS_PROOF_FRAME_OMISSION").is_some() {
++                ProofMeter::standalone(frame.remaining()?, frame.cancellation)?
++            } else {
++                ProofMeter::from_accounting(frame.accounting())?
++            };
+             let mut context = ProofContext::new(&self.inner.objects, limits, meter);
+             match fork_of {
+                 Some(source) => context.prove_fork(generation_root, cache, source).await?,

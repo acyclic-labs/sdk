@@ -250,7 +250,7 @@ async fn conflict_reply_recovers_only_its_missing_prefix_without_head_probes() -
             "recovery probed an already known tail"
         );
         let mut expected_work = AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
-        let (prefix, allocation) = store
+        let prefix = store
             .read_records(
                 authority,
                 Sequence::new(5),
@@ -263,10 +263,13 @@ async fn conflict_reply_recovers_only_its_missing_prefix_without_head_probes() -
             .await?;
         assert_eq!(
             recovered.digest,
-            prefix.first().ok_or("missing reference record")?.digest
+            prefix
+                .value
+                .first()
+                .ok_or("missing reference record")?
+                .digest
         );
-        drop(prefix);
-        drop(allocation);
+        prefix.retire(&mut expected_work.accounting())?;
     }
     Ok(())
 }
