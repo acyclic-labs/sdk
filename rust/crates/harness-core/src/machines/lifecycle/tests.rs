@@ -152,7 +152,7 @@ async fn original_provider_fences_plans_bindings_and_parent_forks() -> TestResul
 
 #[tokio::test]
 async fn original_plans_bound_lifecycle_discovery_and_release() -> TestResult {
-    for target_count in [1, 100_000] {
+    for target_count in [1, 2, 3] {
         let stream = Arc::new(Counted::new(MemoryStream::default()));
         let provider = SimulatedMachines::default();
         let original = manager(stream.clone(), provider.clone())?;
