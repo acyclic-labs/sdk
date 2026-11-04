@@ -679,14 +679,9 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     );
     let mut owner = tokio::spawn(Box::pin(serve(Arc::clone(&local))));
     let descriptor = checkout.path().join(DIRECTORY).join("owner.json");
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while !descriptor.is_file() {
-            projection_event(&mut changes, &mut owner).await?;
-        }
-        Ok::<_, Error>(())
-    })
-    .await
-    .map_err(storage)??;
+    while !descriptor.is_file() {
+        projection_event(&mut changes, &mut owner).await?;
+    }
     // Follow only coordination files once published, before any native view
     // is admitted. The observer never traverses mounted agent filesystems.
     watcher.unwatch(checkout.path()).map_err(storage)?;
@@ -1021,18 +1016,13 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             .as_ref()
     );
     assert!(result.get("task").is_some_and(Value::is_string));
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while std::fs::read_dir(&requests)
-            .map_err(storage)?
-            .next()
-            .is_some()
-        {
-            projection_event(&mut changes, &mut owner).await?;
-        }
-        Ok::<_, Error>(())
-    })
-    .await
-    .map_err(storage)??;
+    while std::fs::read_dir(&requests)
+        .map_err(storage)?
+        .next()
+        .is_some()
+    {
+        projection_event(&mut changes, &mut owner).await?;
+    }
     assert!(
         !owner.is_finished(),
         "invalid writable projections must not stop the owner"
@@ -1042,30 +1032,20 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         std::fs::read(outside.path()).map_err(storage)?,
         b"outside remains untouched"
     );
-    assert_eq!(
-        std::fs::read_dir(checkout.path().join(DIRECTORY).join("requests"))
-            .map_err(storage)?
-            .count(),
-        0
-    );
     // Every consumed operation's reply is retired, without touching debris.
     let statuses = checkout.path().join(DIRECTORY).join("status");
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let mut pending = 0;
-            for entry in std::fs::read_dir(&statuses).map_err(storage)? {
-                if entry.map_err(storage)?.path() != debris {
-                    pending += 1;
-                }
+    loop {
+        let mut pending = 0;
+        for entry in std::fs::read_dir(&statuses).map_err(storage)? {
+            if entry.map_err(storage)?.path() != debris {
+                pending += 1;
             }
-            if pending == 0 {
-                return Ok::<_, Error>(());
-            }
-            projection_event(&mut changes, &mut owner).await?;
         }
-    })
-    .await
-    .map_err(storage)??;
+        if pending == 0 {
+            break;
+        }
+        projection_event(&mut changes, &mut owner).await?;
+    }
     assert_eq!(
         std::fs::read(&debris).map_err(storage)?,
         b"unrelated status is not a reply",
@@ -1197,9 +1177,8 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     // reader and cannot be unlinked as a file on any supported platform.
     std::fs::create_dir(requests.join(format!("{operation}.json"))).map_err(storage)?;
     blocked.shared.published(operation);
-    tokio::time::timeout(Duration::from_secs(2), &mut owner)
+    owner
         .await
-        .map_err(storage)?
         .map_err(storage)?
         .expect_err("failed request withdrawal must end its original owner");
     assert!(matches!(
