@@ -301,9 +301,14 @@ async fn peer_unavailability_ends_the_original_session_and_allows_a_caller_reope
     fixture
         .controls
         .send(Err(Status::unavailable("application refusal")))?;
+    let error = records
+        .next()
+        .await
+        .ok_or("the original application refusal became EOF")?
+        .expect_err("the original application refusal must be returned");
     assert_eq!(
-        records.next().await,
-        Some(Err(StreamError::InvalidResponse))
+        grpc::tests::original(&crate::wire_codec::error_status(&error)),
+        grpc::tests::original(&Status::unavailable("application refusal"))
     );
     assert!(records.next().await.is_none());
     fixture

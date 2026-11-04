@@ -144,52 +144,55 @@ impl Pool {
         });
         self.dials.insert(
             name.clone(),
-            Box::pin(context.scope(async move {
-                let mut attempt = 0_u32;
-                let outcome = loop {
-                    let result = observation
-                        .operation
-                        .clone()
-                        .scope(async {
-                            let endpoint = match &channel {
-                                Some(channel) => channel.clone(),
-                                None => connect(node.clone()).await?,
-                            };
-                            handshake(
-                                endpoint,
-                                &name,
-                                identity.clone(),
-                                credentials.clone(),
-                                interest.clone(),
-                                Arc::clone(&progress),
-                            )
-                            .await
-                        })
-                        .await;
-                    match result {
-                        Ok((node, mut link, response)) => {
-                            link.observation = Some(observation);
-                            break Ok((node, link, response));
-                        }
-                        Err(error) => {
-                            observation.finish(Some(&error));
-                            // Admission carries the request. An effectful call
-                            // may have committed before transport failed.
-                            if error != StreamError::Unavailable || !replayable {
-                                break Err(error);
+            Dial {
+                opening: Arc::clone(&progress),
+                future: Box::pin(context.scope(async move {
+                    let mut attempt = 0_u32;
+                    let outcome = loop {
+                        let result = observation
+                            .operation
+                            .clone()
+                            .scope(async {
+                                let endpoint = match &channel {
+                                    Some(channel) => channel.clone(),
+                                    None => connect(node.clone()).await?,
+                                };
+                                handshake(
+                                    endpoint,
+                                    &name,
+                                    identity.clone(),
+                                    credentials.clone(),
+                                    interest.clone(),
+                                    Arc::clone(&progress),
+                                )
+                                .await
+                            })
+                            .await;
+                        match result {
+                            Ok((node, mut link, response)) => {
+                                link.observation = Some(observation);
+                                break Ok((node, link, response));
                             }
-                            attempt = attempt.saturating_add(1);
-                            executor.sleep(10).await;
-                            let retry = Observation::session(attempt);
-                            retry
-                                .operation
-                                .follows_from_same_subscriber(&observation.operation);
-                            observation = retry;
+                            Err(error) => {
+                                observation.finish(Some(&error));
+                                // Admission carries the request. An effectful call
+                                // may have committed before transport failed.
+                                if error != StreamError::Unavailable || !replayable {
+                                    break Err(error);
+                                }
+                                attempt = attempt.saturating_add(1);
+                                executor.sleep(10).await;
+                                let retry = Observation::session(attempt);
+                                retry
+                                    .operation
+                                    .follows_from_same_subscriber(&observation.operation);
+                                observation = retry;
+                            }
                         }
-                    }
-                };
-                (name, epoch, outcome)
-            })),
+                    };
+                    (name, epoch, outcome)
+                })),
+            },
         );
     }
     pub(super) fn dial_owner(&self, node: &str) -> Option<u64> {
@@ -349,11 +352,25 @@ impl Pool {
                 generation: route.generation,
             },
         )?;
-        if !self.node_interested(&node) {
-            self.dials.remove(&node);
-            self.links.remove(&node);
-            if node == self.home {
-                self.reset_home();
+        // Each cancelled sibling has its own queued removal. Consult the node
+        // index once rather than scanning those siblings on every withdrawal.
+        if self.routes.on_node(&node).next().is_none() {
+            let admitted = self.admissions.interested(&node);
+            if !admitted
+                || self
+                    .dials
+                    .get(&node)
+                    .is_some_and(|dial| dial.opening.opening_admitted())
+            {
+                // A queued Open owns its future admission, not the retired
+                // request already carried by this dial's Hello.
+                self.dials.remove(&node);
+            }
+            if !admitted {
+                self.links.remove(&node);
+                if node == self.home {
+                    self.reset_home();
+                }
             }
         }
         Ok(())
@@ -439,17 +456,16 @@ impl Pool {
             },
             Some(link.channel.clone()),
         );
-        if registering && let Some(dial) = self.dials.remove(destination) {
+        if registering && let Some(mut dial) = self.dials.remove(destination) {
             let executor = self.executor.clone();
             // Back off after EOF so a repeatedly disconnected transport yields
             // to cancellation and other work before opening another RPC.
-            self.dials.insert(
-                destination.into(),
-                Box::pin(async move {
-                    executor.sleep(10).await;
-                    dial.await
-                }),
-            );
+            let opening = dial.future;
+            dial.future = Box::pin(async move {
+                executor.sleep(10).await;
+                opening.await
+            });
+            self.dials.insert(destination.into(), dial);
         }
         Ok(())
     }
@@ -463,6 +479,7 @@ async fn handshake(
     interest: wire::SessionInterest,
     progress: Arc<Progress>,
 ) -> Result<Ready, StreamError> {
+    progress.reset_opening();
     let sender = Arc::new(Outbound::new(crate::MAX_ITEMS, crate::MAX_COMMAND_BYTES));
     let credit = wire::SessionWindow {
         bytes: crate::MAX_COMMAND_BYTES as u64,
@@ -521,7 +538,7 @@ async fn handshake(
         |(sender, opening)| async move {
             let mut frame = sender.next().await.ok()?;
             if let Some(progress) = opening
-                && progress.cancelled()
+                && !progress.admit_opening()
                 && let Some(Body::Hello(hello)) = &mut frame.body
                 && let Some(interest) = &mut hello.interest
             {

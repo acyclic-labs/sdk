@@ -627,8 +627,7 @@ pub fn verify_node_dials(fault: u8) {
                 // Keep the real map entry and cancellation path, substituting
                 // only the opaque I/O future so tonic's large async stack does
                 // not become part of the Loom scheduler's coroutine stack.
-                pool.dials
-                    .insert("bad".into(), Box::pin(Blocked(Arc::clone(&dropped))));
+                pool.dials.get_mut("bad").unwrap().future = Box::pin(Blocked(Arc::clone(&dropped)));
                 let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
                 assert!(poll_dials(&mut pool.dials, &mut cx).is_pending());
             }
@@ -732,8 +731,7 @@ pub fn verify_terminal_cursor_dial(broken: bool) {
         assert!(pool.dials.contains_key("good"));
         // Only opaque network I/O is substituted. Entry ownership, its drop,
         // cursor cancellation and the removal wake are the production paths.
-        pool.dials
-            .insert("good".into(), Box::pin(future::pending()));
+        pool.dials.get_mut("good").unwrap().future = Box::pin(future::pending());
         let withdrawal = loom::thread::spawn(move || drop(a));
         if !broken {
             pool.close_idle();

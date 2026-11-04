@@ -33,11 +33,11 @@ impl Admissions {
             .remove(&id);
         Ok(())
     }
-    pub(super) fn cancel(&self, id: u64, progress: &Progress) {
+    pub(super) fn cancel(&self, id: u64, progress: &Progress, removed: &signal::Signal<u64>) {
         // Withdrawal precedes visible cancellation, including when an Open has
         // not reached the pool. Poisoning already makes interested fail closed.
         let _ = self.remove(id);
-        progress.cancel();
+        progress.cancel_and_remove(removed, id);
     }
     pub(super) fn bind_home(&self, node: &str) -> Result<(), StreamError> {
         let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
@@ -63,6 +63,7 @@ pub fn verify_admission_cancellation(broken: bool) {
     loom::model(move || {
         let admissions = Arc::new(Admissions::new());
         let progress = Arc::new(Progress::new(0));
+        let removed = Arc::new(signal::Signal::new());
         admissions.insert(1).unwrap();
         let withdrawing = Arc::clone(&admissions);
         let cancelled = Arc::clone(&progress);
@@ -71,7 +72,7 @@ pub fn verify_admission_cancellation(broken: bool) {
                 cancelled.cancel();
                 withdrawing.remove(1).unwrap();
             } else {
-                withdrawing.cancel(1, &cancelled);
+                withdrawing.cancel(1, &cancelled, &removed);
             }
         });
         admissions.bind_home("node").unwrap();

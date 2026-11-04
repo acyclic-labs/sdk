@@ -39,9 +39,14 @@ impl<T> Signal<T> {
         }
     }
     pub(crate) fn send(&self, value: T) -> Result<(), StreamError> {
+        self.send_with(|| value)
+    }
+    /// Creates the event under the same lock used to receive it. The closure
+    /// may update atomics, but must not acquire locks or wake tasks.
+    pub(crate) fn send_with(&self, value: impl FnOnce() -> T) -> Result<(), StreamError> {
         let wake = {
             let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
-            state.0.push_back(value);
+            state.0.push_back(value());
             state.1.take()
         };
         if let Some(wake) = wake {

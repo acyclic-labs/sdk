@@ -1,5 +1,8 @@
 use super::{AtomicU64, Mutex, Ordering, StreamError};
 
+const CANCELLED: u64 = 1;
+const OPENING_ADMITTED: u64 = 2;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Position {
     pub(super) next: u64,
@@ -18,7 +21,9 @@ pub(super) struct Progress {
     // lock or hold it across an await; sequence, opaque cursor and checked
     // preceding commit form one cut. Received-but-unconsumed records never enter it.
     state: Mutex<State>,
-    cancelled: AtomicU64,
+    // The opening frame's handoff and withdrawal share one atomic order. The
+    // dial borrows this owner, so no separate handshake allocation is needed.
+    ownership: AtomicU64,
     // Set before a finite channel's route drops its sender: the cursor's
     // channel EOF is then the channel's clean end, not transport loss.
     ended: AtomicU64,
@@ -54,7 +59,7 @@ impl Progress {
                 track_records: preceding.is_some(),
                 bootstrap: None,
             }),
-            cancelled: AtomicU64::new(0),
+            ownership: AtomicU64::new(0),
             ended: AtomicU64::new(0),
         }
     }
@@ -69,10 +74,38 @@ impl Progress {
         self.ended.load(Ordering::Acquire) != 0
     }
     pub(super) fn cancel(&self) {
-        self.cancelled.store(1, Ordering::Release);
+        self.ownership.fetch_or(CANCELLED, Ordering::AcqRel);
+    }
+    pub(super) fn cancel_and_remove(&self, removed: &super::signal::Signal<u64>, id: u64) {
+        // Once cancellation is visible, the pool's next queue drain must see
+        // this removal before admitting another route to the retiring dial.
+        if removed
+            .send_with(|| {
+                self.cancel();
+                id
+            })
+            .is_err()
+        {
+            // A poisoned signal terminates the pool; still fence the cursor.
+            self.cancel();
+        }
     }
     pub(super) fn cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire) != 0
+        self.ownership.load(Ordering::Acquire) & CANCELLED != 0
+    }
+    pub(super) fn reset_opening(&self) {
+        self.ownership
+            .fetch_and(!OPENING_ADMITTED, Ordering::AcqRel);
+    }
+    pub(super) fn admit_opening(&self) -> bool {
+        self.ownership
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+                (state & CANCELLED == 0).then_some(state | OPENING_ADMITTED)
+            })
+            .is_ok()
+    }
+    pub(super) fn opening_admitted(&self) -> bool {
+        self.ownership.load(Ordering::Acquire) & OPENING_ADMITTED != 0
     }
     pub(super) fn next(&self) -> Result<u64, StreamError> {
         Ok(self

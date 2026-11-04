@@ -59,7 +59,10 @@ pub use progress::verify_latest_progress;
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod tests;
 type Ready = (String, Link, Response);
-type Dial = BoxProviderFuture<'static, (String, u64, Result<Ready, StreamError>)>;
+struct Dial {
+    opening: Arc<Progress>,
+    future: BoxProviderFuture<'static, (String, u64, Result<Ready, StreamError>)>,
+}
 type Response = transport::Responses;
 type Read = BoxProviderFuture<'static, (String, u64, Response, Option<Result<Frame, StreamError>>)>;
 const QUEUE: usize = RECEIVE_FRAMES;
@@ -88,8 +91,7 @@ pub(crate) struct PoolHandle {
 
 impl PoolHandle {
     fn cancel_interest(&self, id: u64, progress: &Progress) {
-        self.admissions.cancel(id, progress);
-        let _ = self.removed.send(id);
+        self.admissions.cancel(id, progress, &self.removed);
     }
     fn retire_interest(&self, id: u64, progress: &Progress) {
         self.cancel_interest(id, progress);
@@ -890,7 +892,8 @@ impl Cursor {
 }
 impl Drop for Cursor {
     fn drop(&mut self) {
-        self.receiver.close();
+        // Receiver field destruction follows publication of the removal. An
+        // early close would expose retirement before the queue could drain it.
         if let Some(input) = &self.input {
             if !self.progress.ended() {
                 input.close(StreamError::Unavailable);

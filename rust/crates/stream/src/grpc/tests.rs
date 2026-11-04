@@ -436,9 +436,13 @@ async fn application_unavailability_returns_without_retry_and_preserves_a_caller
         }
     })?;
     let key = IdempotencyKey::unique();
+    let error = client
+        .inspect_idempotency(key.clone())
+        .await
+        .expect_err("the original application refusal must be returned");
     assert_eq!(
-        client.inspect_idempotency(key.clone()).await,
-        Err(StreamError::Unavailable)
+        original(&error_status(&error)),
+        original(&Status::unavailable("application refusal"))
     );
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
     // The same live server accepts the caller's next request. An automatic
@@ -702,7 +706,7 @@ fn member_refusals() -> Vec<Status> {
     ]
 }
 
-fn original(status: &Status) -> (Code, String, Vec<u8>, Vec<(String, Vec<u8>)>) {
+pub(crate) fn original(status: &Status) -> (Code, String, Vec<u8>, Vec<(String, Vec<u8>)>) {
     let metadata = status
         .metadata()
         .as_ref()

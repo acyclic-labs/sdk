@@ -208,8 +208,7 @@ impl ApplicationDelivery {
 impl Drop for ApplicationDelivery {
     fn drop(&mut self) {
         if let Some(completion) = self.completion.take() {
-            self.progress.cancel();
-            let _ = self.removed.send(self.id);
+            self.progress.cancel_and_remove(&self.removed, self.id);
             let _ = completion.send(Err(StreamError::Unavailable));
         }
     }
