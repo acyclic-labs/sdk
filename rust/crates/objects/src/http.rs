@@ -319,11 +319,11 @@ impl HttpObjects {
             Ok(bytes) => bytes,
             Err(error) => return error,
         };
-        if let Ok(detail) = json::decode::<wire::ErrorDetail>("ErrorDetail", &bytes, self.maximum)
-            && let Ok(code) = wire::ErrorCode::try_from(detail.code)
-            && code != wire::ErrorCode::Unspecified
+        if let Some(error) = json::decode::<wire::ErrorDetail>("ErrorDetail", &bytes, self.maximum)
+            .ok()
+            .and_then(Error::from_detail)
         {
-            return code.into();
+            return error;
         }
         match status {
             400 => wire::ErrorCode::InvalidArgument,

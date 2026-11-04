@@ -19,6 +19,7 @@ pub(crate) fn status(error: &Status) -> StreamError {
             error.details(),
             error.metadata().as_ref(),
             UNAVAILABLE,
+            None,
         )
         .map_or(StreamError::Unavailable, StreamError::Refused),
         category => category,

@@ -261,12 +261,9 @@ fn canonical(code: wire::ErrorCode, detail: &[u8]) -> acyclic_auth::refusal::Can
     }
 }
 
-fn detail(code: wire::ErrorCode) -> Vec<u8> {
-    wire::ErrorDetail {
-        code: code as i32,
-        request_id: String::new(),
-    }
-    .encode_to_vec()
+/// The canonical detail for `error`'s code and cause.
+fn detail(error: &Error) -> Vec<u8> {
+    wire::ErrorDetail::from(error).encode_to_vec()
 }
 
 /// Maps canonical service details, falling back to stable transport
@@ -277,38 +274,38 @@ fn error_from_status(status: &tonic::Status) -> Error {
     {
         return (*stopped).into();
     }
-    let code = wire::ErrorDetail::decode(status.details())
+    let mut error = wire::ErrorDetail::decode(status.details())
         .ok()
-        .and_then(|detail| wire::ErrorCode::try_from(detail.code).ok())
-        .filter(|code| *code != wire::ErrorCode::Unspecified)
-        .unwrap_or(match status.code() {
-            tonic::Code::InvalidArgument => wire::ErrorCode::InvalidArgument,
-            tonic::Code::NotFound => wire::ErrorCode::NotFound,
-            tonic::Code::PermissionDenied | tonic::Code::Unauthenticated => {
-                wire::ErrorCode::AccessDenied
+        .and_then(Error::from_detail)
+        .unwrap_or_else(|| {
+            match status.code() {
+                tonic::Code::InvalidArgument => wire::ErrorCode::InvalidArgument,
+                tonic::Code::NotFound => wire::ErrorCode::NotFound,
+                tonic::Code::PermissionDenied | tonic::Code::Unauthenticated => {
+                    wire::ErrorCode::AccessDenied
+                }
+                tonic::Code::ResourceExhausted => wire::ErrorCode::QuotaExceeded,
+                tonic::Code::OutOfRange => wire::ErrorCode::RangeNotSatisfiable,
+                tonic::Code::Unimplemented => wire::ErrorCode::Unsupported,
+                tonic::Code::DataLoss => wire::ErrorCode::Corrupt,
+                tonic::Code::DeadlineExceeded => wire::ErrorCode::DeadlineElapsed,
+                _ => wire::ErrorCode::Unavailable,
             }
-            tonic::Code::ResourceExhausted => wire::ErrorCode::QuotaExceeded,
-            tonic::Code::OutOfRange => wire::ErrorCode::RangeNotSatisfiable,
-            tonic::Code::Unimplemented => wire::ErrorCode::Unsupported,
-            tonic::Code::DataLoss => wire::ErrorCode::Corrupt,
-            tonic::Code::DeadlineExceeded => wire::ErrorCode::DeadlineElapsed,
-            _ => wire::ErrorCode::Unavailable,
+            .into()
         });
-    Error {
-        code,
-        stopped: None,
-        refusal: acyclic_auth::refusal::Refusal::capture(
-            status.code() as i32,
-            status.message(),
-            status.details(),
-            status.metadata().as_ref(),
-            canonical(code, &detail(code)),
-        ),
-    }
+    error.refusal = acyclic_auth::refusal::Refusal::capture(
+        status.code() as i32,
+        status.message(),
+        status.details(),
+        status.metadata().as_ref(),
+        canonical(error.code, &detail(&error)),
+        error.cause().cloned(),
+    );
+    error
 }
 
 fn status(error: Error) -> tonic::Status {
-    let detail = detail(error.code);
+    let detail = detail(&error);
     let parts = acyclic_auth::refusal::Refusal::encode(
         error.refusal.as_ref(),
         canonical(error.code, &detail),

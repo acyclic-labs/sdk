@@ -1,10 +1,11 @@
-//! A member's original refusal diagnostics, shared by every primitive's
-//! status conversion.
+//! What a server said about a failure beyond its category, shared by every
+//! primitive's status conversion.
 //!
 //! A typed failure category names what happened; a refusal is everything else
-//! the member said about it: its status code, message, details and product
-//! response metadata (the `acyclic-` keys). Decoding keeps those verbatim and
-//! encoding reproduces them, so a category plus its refusal round-trips the
+//! the server said about it: the [`Cause`] it attributes the failure to, and
+//! the member's original status code, message, details and product response
+//! metadata (the `acyclic-` keys). Decoding keeps that status verbatim and
+//! encoding reproduces it, so a category plus its refusal round-trips the
 //! original status exactly. Transport framing (`content-type`, `grpc-*`) and
 //! keys a primitive's own protocol consumes are not part of a refusal.
 //!
@@ -19,7 +20,66 @@ use http::HeaderMap;
 /// Namespace of product response metadata a refusal retains.
 pub const METADATA_PREFIX: &str = "acyclic-";
 
-/// The status one category encodes to when it carries no refusal.
+/// A server's attribution of one remote failure, shared by every service error.
+///
+/// `component` and `reason` are closed snake_case tokens the server chooses,
+/// such as `objects.medium` and `failed`: never prose, paths or topology.
+/// `request_id` names the server's request. An empty part was not reported.
+/// A service error exposes its cause through [`std::error::Error::source`],
+/// so a consumer needs no service crate.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Cause {
+    /// Server component that failed.
+    pub component: String,
+    /// Why that component failed.
+    pub reason: String,
+    /// The server's identity for the failed request.
+    pub request_id: String,
+}
+
+impl Cause {
+    /// A server-side cause from two closed tokens.
+    #[must_use]
+    pub fn new(component: &str, reason: &str) -> Self {
+        Self {
+            component: component.to_owned(),
+            reason: reason.to_owned(),
+            request_id: String::new(),
+        }
+    }
+
+    /// The cause a peer reported, or `None` when it reported no part.
+    #[must_use]
+    pub fn reported(component: String, reason: String, request_id: String) -> Option<Self> {
+        (!(component.is_empty() && reason.is_empty() && request_id.is_empty())).then_some(Self {
+            component,
+            reason,
+            request_id,
+        })
+    }
+}
+
+impl std::fmt::Display for Cause {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let attributed = !(self.component.is_empty() && self.reason.is_empty());
+        match (self.component.as_str(), self.reason.as_str()) {
+            ("", "") => {}
+            (component, "") => formatter.write_str(component)?,
+            ("", reason) => formatter.write_str(reason)?,
+            (component, reason) => write!(formatter, "{component}: {reason}")?,
+        }
+        match self.request_id.as_str() {
+            "" => Ok(()),
+            id if attributed => write!(formatter, ", request {id}"),
+            id => write!(formatter, "request {id}"),
+        }
+    }
+}
+
+impl std::error::Error for Cause {}
+
+/// The status one category encodes to when it carries no original status.
+/// A primitive whose status carries a [`Cause`] builds it with that cause.
 #[derive(Clone, Copy, Debug)]
 pub struct Canonical<'a> {
     /// gRPC status code number.
@@ -45,16 +105,35 @@ pub struct Parts {
     pub metadata: HeaderMap,
 }
 
-/// Original diagnostics beyond a category. Only [`Refusal::capture`] makes
-/// one, and only when the status said something its category's canonical
-/// status does not, so a refusal never encodes to that canonical status.
+/// What a server said beyond a category: its [`Cause`], the member's original
+/// status, or both, and never neither. The original status is kept only when
+/// it said something its category's canonical status, cause included, does
+/// not, so it never encodes to that canonical status.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Refusal(Arc<Parts>);
+pub struct Refusal(Arc<Said>);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Said {
+    cause: Option<Cause>,
+    original: Option<Parts>,
+}
 
 impl Refusal {
-    /// Retains what a status says beyond `canonical`, or `None` when it says
-    /// nothing more. Work and allocation are linear in this status's own
-    /// diagnostic bytes; a canonical status allocates nothing.
+    /// The server's attribution alone; it encodes to its category's canonical
+    /// status carrying `cause`.
+    #[must_use]
+    pub fn caused(cause: Cause) -> Self {
+        Self(Arc::new(Said {
+            cause: Some(cause),
+            original: None,
+        }))
+    }
+
+    /// Retains the `cause` a primitive decoded from one status and whatever
+    /// that status says beyond `canonical`, which already carries `cause`;
+    /// `None` when there is neither. Work and allocation are linear in this
+    /// status's own diagnostic bytes; a canonical status without a cause
+    /// allocates nothing.
     #[must_use]
     pub fn capture(
         code: i32,
@@ -62,56 +141,71 @@ impl Refusal {
         details: &[u8],
         metadata: &HeaderMap,
         canonical: Canonical<'_>,
+        cause: Option<Cause>,
     ) -> Option<Self> {
         let product = |name: &http::HeaderName| {
             name.as_str().starts_with(METADATA_PREFIX) && !canonical.owned.contains(&name.as_str())
         };
-        if code == canonical.code
-            && message == canonical.message
-            && details == canonical.details
-            && !metadata.keys().any(product)
-        {
-            return None;
-        }
-        let mut retained = HeaderMap::new();
-        for (name, value) in metadata.iter().filter(|(name, _)| product(name)) {
-            retained.append(name, value.clone());
-        }
-        Some(Self(Arc::new(Parts {
-            code,
-            message: message.to_owned(),
-            details: Bytes::copy_from_slice(details),
-            metadata: retained,
-        })))
+        let original = (code != canonical.code
+            || message != canonical.message
+            || details != canonical.details
+            || metadata.keys().any(product))
+        .then(|| {
+            let mut retained = HeaderMap::new();
+            for (name, value) in metadata.iter().filter(|(name, _)| product(name)) {
+                retained.append(name, value.clone());
+            }
+            Parts {
+                code,
+                message: message.to_owned(),
+                details: Bytes::copy_from_slice(details),
+                metadata: retained,
+            }
+        });
+        (cause.is_some() || original.is_some()).then(|| Self(Arc::new(Said { cause, original })))
     }
 
-    /// The member's original status parts.
+    /// The server's attribution, when it reported one.
     #[must_use]
-    pub fn original(&self) -> &Parts {
-        &self.0
+    pub fn cause(&self) -> Option<&Cause> {
+        self.0.cause.as_ref()
     }
 
-    /// The status to emit: a refusal's original parts verbatim, else `canonical`.
+    /// The member's original status parts, when they said more than the
+    /// canonical status.
+    #[must_use]
+    pub fn original(&self) -> Option<&Parts> {
+        self.0.original.as_ref()
+    }
+
+    /// The status to emit: a refusal's original parts verbatim, else
+    /// `canonical`, which carries the refusal's cause.
     #[must_use]
     pub fn encode(refusal: Option<&Self>, canonical: Canonical<'_>) -> Parts {
-        refusal.map_or_else(
+        refusal.and_then(Self::original).map_or_else(
             || Parts {
                 code: canonical.code,
                 message: canonical.message.to_owned(),
                 details: Bytes::copy_from_slice(canonical.details),
                 metadata: HeaderMap::new(),
             },
-            |refusal| Parts::clone(&refusal.0),
+            Parts::clone,
         )
     }
 }
 
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let parts = self.original();
-        write!(f, ": status {} {:?}", parts.code, parts.message)?;
-        for (name, value) in &parts.metadata {
-            write!(f, " {name}={value:?}")?;
+        let mut separator = ": ";
+        if let Some(cause) = self.cause() {
+            write!(f, "{separator}{cause}")?;
+            separator = ", ";
+        }
+        if let Some(parts) = self.original() {
+            write!(f, "{separator}status {} {:?}", parts.code, parts.message)?;
+            for (name, value) in &parts.metadata {
+                write!(f, " {name}={value:?}")?;
+            }
         }
         Ok(())
     }
