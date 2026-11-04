@@ -2,12 +2,36 @@
 use super::{IndexReadWork, IndexWork};
 use std::ops::Range;
 
+/// A stable borrowed byte view of an immutable entry. Implementations must
+/// return the same bytes throughout the index's lifetime.
+pub trait PrefixKey<V> {
+    /// Borrows the entry's key without allocating or copying it.
+    fn bytes<'a>(&self, entry: &'a V) -> &'a [u8];
+}
+
+impl<V, F: Fn(&V) -> &[u8]> PrefixKey<V> for F {
+    fn bytes<'a>(&self, entry: &'a V) -> &'a [u8] {
+        self(entry)
+    }
+}
+
+/// The zero-sized key view used by already sorted byte entries.
+#[derive(Debug)]
+pub struct EntryBytes;
+
+impl<V: AsRef<[u8]>> PrefixKey<V> for EntryBytes {
+    fn bytes<'a>(&self, entry: &'a V) -> &'a [u8] {
+        entry.as_ref()
+    }
+}
+
 /// A compilation refusal, before publishing any index.
 #[derive(Debug)]
 pub enum CompiledPrefixError<E> {
     /// The original caller's admission error.
     Work(E),
-    /// Keys must be distinct and in unsigned byte order.
+    /// Keys must be distinct; `from_sorted` also requires unsigned byte order.
+    /// The position identifies an entry in the original input vector.
     Order(usize),
     /// The supplied table cannot be represented by the native address space.
     Capacity,
@@ -43,9 +67,10 @@ pub struct PrefixMatches<'a, V> {
 /// Unlike mutable indexes this table needs no node allocation or retirement per
 /// edit: compile a new immutable policy when its original owner changes it.
 #[derive(Debug)]
-pub struct CompiledPrefixIndex<V, A> {
+pub struct CompiledPrefixIndex<V, A, K = EntryBytes> {
     entries: Vec<V>,
     nodes: Vec<Node>,
+    key: K,
     // All entries and physical backing retire before their original funding.
     _allocation: Option<A>,
 }
@@ -59,13 +84,103 @@ impl<V: AsRef<[u8]>, A> CompiledPrefixIndex<V, A> {
         entries: Vec<V>,
         work: &mut W,
     ) -> Result<Self, CompiledPrefixError<W::Error>> {
+        Self::compile(entries, EntryBytes, |position| position, work)
+    }
+}
+
+impl<V, A> CompiledPrefixIndex<V, A> {
+    /// Compiles distinct borrowed keys while retaining the exact original
+    /// vector and entry order. `work` funds a temporary sort permutation and
+    /// the retained node table. The permutation retires before return; keys
+    /// and values are never copied. The key view must remain stable.
+    pub fn from_entries<K: Fn(&V) -> &[u8], W: IndexWork<Allocation = A>>(
+        entries: Vec<V>,
+        key: K,
+        work: &mut W,
+    ) -> Result<CompiledPrefixIndex<V, A, K>, CompiledPrefixError<W::Error>> {
+        use CompiledPrefixError::{Allocation, Capacity, Work};
+        work.check().map_err(Work)?;
+        let bytes = entries
+            .len()
+            .checked_mul(std::mem::size_of::<usize>())
+            .ok_or(Capacity)?;
+        let allocation = if bytes == 0 {
+            None
+        } else {
+            Some(work.claim(bytes as u64).map_err(Work)?)
+        };
+        // Declared after its funding so backing retires first on every error.
+        let mut order = Vec::new();
+        order.try_reserve_exact(entries.len()).map_err(Allocation)?;
+        order.extend(0..entries.len());
+        sort(&mut order, &mut |&left, &right| {
+            let left = key.bytes(&entries[left]);
+            let right = key.bytes(&entries[right]);
+            work.charge_items(left.len().min(right.len()) as u64 + 1)?;
+            Ok::<_, W::Error>(left.cmp(right))
+        })
+        .map_err(Work)?;
+        let index = CompiledPrefixIndex::compile(entries, key, |position| order[position], work)?;
+        drop(order);
+        drop(allocation);
+        Ok(index)
+    }
+}
+
+// In-place heapsort permits an immediate typed refusal before each comparison.
+// An infallible comparator cannot stop work safely when its admission is lost.
+fn sort<T, E>(
+    items: &mut [T],
+    compare: &mut impl FnMut(&T, &T) -> Result<std::cmp::Ordering, E>,
+) -> Result<(), E> {
+    fn sift<T, E>(
+        items: &mut [T],
+        mut root: usize,
+        compare: &mut impl FnMut(&T, &T) -> Result<std::cmp::Ordering, E>,
+    ) -> Result<(), E> {
+        while root < items.len() / 2 {
+            let mut child = root * 2 + 1;
+            if child + 1 < items.len() && compare(&items[child], &items[child + 1])?.is_lt() {
+                child += 1;
+            }
+            if !compare(&items[root], &items[child])?.is_lt() {
+                break;
+            }
+            items.swap(root, child);
+            root = child;
+        }
+        Ok(())
+    }
+    for root in (0..items.len() / 2).rev() {
+        sift(&mut *items, root, compare)?;
+    }
+    for end in (1..items.len()).rev() {
+        items.swap(0, end);
+        sift(&mut items[..end], 0, compare)?;
+    }
+    Ok(())
+}
+
+impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
+    fn key(&self, position: usize) -> &[u8] {
+        self.key.bytes(&self.entries[position])
+    }
+
+    fn compile<W: IndexWork<Allocation = A>>(
+        entries: Vec<V>,
+        key: K,
+        position: impl Fn(usize) -> usize,
+        work: &mut W,
+    ) -> Result<Self, CompiledPrefixError<W::Error>> {
         use CompiledPrefixError::{Allocation, Capacity, Order, Work};
         work.check().map_err(Work)?;
-        for (index, pair) in entries.windows(2).enumerate() {
-            work.charge_items(pair[0].as_ref().len().min(pair[1].as_ref().len()) as u64 + 1)
+        for index in 1..entries.len() {
+            let left = key.bytes(&entries[position(index - 1)]);
+            let right = key.bytes(&entries[position(index)]);
+            work.charge_items(left.len().min(right.len()) as u64 + 1)
                 .map_err(Work)?;
-            if pair[0].as_ref() >= pair[1].as_ref() {
-                return Err(Order(index + 1));
+            if left >= right {
+                return Err(Order(position(index)));
             }
         }
         let capacity = entries.len().checked_mul(2).ok_or(Capacity)?;
@@ -80,6 +195,7 @@ impl<V: AsRef<[u8]>, A> CompiledPrefixIndex<V, A> {
         let mut result = Self {
             entries,
             nodes: Vec::new(),
+            key,
             _allocation: allocation,
         };
         result
@@ -102,22 +218,22 @@ impl<V: AsRef<[u8]>, A> CompiledPrefixIndex<V, A> {
             let node = &result.nodes[cursor];
             let end = node.end;
             let before = node.children.end;
-            let mut from = node.key;
-            if result.entries[from].as_ref().len() == end {
+            let mut from = node.children.start;
+            if result.key(position(from)).len() == end {
                 from += 1;
             }
             let first_child = result.nodes.len();
             while from < before {
-                let first = result.entries[from].as_ref();
+                let first = result.key(position(from));
                 let mut to = from + 1;
                 while to < before {
                     work.charge_items(1).map_err(Work)?;
-                    if result.entries[to].as_ref()[end] != first[end] {
+                    if result.key(position(to))[end] != first[end] {
                         break;
                     }
                     to += 1;
                 }
-                let last = result.entries[to - 1].as_ref();
+                let last = result.key(position(to - 1));
                 let mut common = end;
                 while common < first.len().min(last.len()) {
                     work.charge_items(1).map_err(Work)?;
@@ -134,12 +250,13 @@ impl<V: AsRef<[u8]>, A> CompiledPrefixIndex<V, A> {
                 from = to;
             }
             result.nodes[cursor].children = first_child..result.nodes.len();
+            result.nodes[cursor].key = position(result.nodes[cursor].key);
             cursor += 1;
         }
         Ok(result)
     }
 
-    /// Borrows the original entries in byte order, without traversing nodes.
+    /// Borrows entries in their original input order, without traversing nodes.
     pub fn entries(&self) -> &[V] {
         &self.entries
     }
@@ -169,7 +286,7 @@ impl<V: AsRef<[u8]>, A> CompiledPrefixIndex<V, A> {
             work.examine(1)?;
             let node = &self.nodes[cursor];
             let entry = &self.entries[node.key];
-            let key = entry.as_ref();
+            let key = self.key.bytes(entry);
             let end = node.end.min(query.len());
             work.examine((end - from) as u64)?;
             if query[from..end] != key[from..end] || query.len() < node.end {
@@ -194,7 +311,7 @@ impl<V: AsRef<[u8]>, A> CompiledPrefixIndex<V, A> {
                 }
                 let middle = children.start + children.len() / 2;
                 work.examine(1)?;
-                let observed = self.entries[self.nodes[middle].key].as_ref()[node.end];
+                let observed = self.key(self.nodes[middle].key)[node.end];
                 match byte.cmp(&observed) {
                     std::cmp::Ordering::Less => children.end = middle,
                     std::cmp::Ordering::Greater => children.start = middle + 1,
