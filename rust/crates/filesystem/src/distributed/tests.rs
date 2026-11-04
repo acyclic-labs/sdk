@@ -267,24 +267,9 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
         drop(replay);
         work.allocations.release_owned(retained)?;
         assert_eq!(work.allocations.scratch_bytes(), 29);
-        let reservation = store
-            .reserve_publication(
-                authority,
-                head,
-                OperationId::from_bytes([94; 16]),
-                &mut work,
-            )
-            .await?;
-        let ReservationOutcome::Reserved(reservation) = reservation else {
-            return Err("expected the original publication reservation".into());
-        };
-        assert_eq!(work.allocations.scratch_bytes(), 29);
-        store.release_publication(reservation, &mut work).await?;
-        assert_eq!(
-            work.allocations.scratch_bytes(),
-            29,
-            "request cleanup retired caller scratch"
-        );
+        // Reservation publications retain real provider backing and have their
+        // own physical-retirement property. This finite frame repeats reads.
+        assert_eq!(work.allocations.live_bytes(), baseline);
     }
     assert!(work.spent().authority_records_read >= 32 * 2);
     let before_retirement = work.allocations.live_bytes();
