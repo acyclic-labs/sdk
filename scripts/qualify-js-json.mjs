@@ -22,8 +22,8 @@ const test = bytes ? "external JSON bytes preserve engine tokens or refuse befor
   : retirement ? "canonical admission releases JavaScript references after intrinsic failures"
   : "canonical admission selects entries before evaluating their values";
 const testFile = `typescript/packages/harness/test/${bytes ? "json-bytes" : retirement ? "json-retirement" : "json-admission"}.test.ts`;
-const fail = (step, detail) => {
-  throw new Error(`${step}: ${detail}\nRecovery after correcting the cause: ${recovery}`);
+const fail = (step, detail, command = recovery) => {
+  throw new Error(`${step}: ${detail}\nRecovery after correcting the cause: ${command}`);
 };
 const run = (step, command, parameters, options = {}) => {
   console.log(`${step}: ${JSON.stringify([command, ...parameters])}`);
@@ -35,7 +35,8 @@ if (args.some(arg => !["--red", "--retirement", "--bytes", "--quoted", "--metada
   || new Set(args).size !== args.length || Number(retirement) + Number(bytes) + Number(metadata) + Number(array) + Number(number) > 1 || quoted && !(bytes && red)
   || args.filter(arg => arg.startsWith("--reuse=")).length > 1 || args.includes("--reuse=") || reuse && red || revoked && !(retirement && red)
   || red && !selectedControl) {
-  fail("arguments", "expected at most one control (--retirement, --bytes, --metadata, --array or --number); --red requires a control, --quoted requires --bytes --red, --revoked requires --retirement --red, and --reuse=<receipt> excludes --red");
+  fail("arguments", "expected at most one control (--retirement, --bytes, --metadata, --array or --number); --red requires a control, --quoted requires --bytes --red, --revoked requires --retirement --red, and --reuse=<receipt> excludes --red",
+    "node scripts/qualify-js-json.mjs --array --red");
 }
 
 const production = new URL("../rust/crates/harness/src/wasm/json.rs", import.meta.url);
