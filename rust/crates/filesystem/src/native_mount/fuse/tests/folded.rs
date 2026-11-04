@@ -85,7 +85,9 @@ pub(super) fn lookup(
 fn folded_legacy_collisions_cannot_reuse_a_warm_inode() -> TestResult {
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
     let (checkout, [first, _]) =
-        runtime.block_on(crate::facade::test_fixtures::legacy_folded_checkout())?;
+        runtime.block_on(crate::facade::test_fixtures::legacy_folded_checkout([
+            "Straße", "STRASSE",
+        ]))?;
     let config = checkout.volume_config();
     let source = Arc::new(
         crate::native_mount::adapter::tests::access::bind_test_access(
