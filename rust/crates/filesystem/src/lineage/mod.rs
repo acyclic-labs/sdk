@@ -349,7 +349,10 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         child: WorkspaceId,
         parent: WorkspaceId,
     ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
-        let record = self.required(child).await?;
+        let record = self
+            .lookup(child)
+            .await?
+            .ok_or(WorkspaceLineageError::IncompatibleState)?;
         if record.parent_workspace_id != Some(parent) {
             return Err(WorkspaceLineageError::UnauthorizedJoin);
         }
@@ -361,7 +364,9 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         &self,
         workspace: WorkspaceId,
     ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
-        self.required(workspace).await
+        self.lookup(workspace)
+            .await?
+            .ok_or(WorkspaceLineageError::IncompatibleState)
     }
 
     /// Returns the direct-parent chain, nearest parent first.
@@ -375,6 +380,8 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
 
     /// Authenticate a workspace below an already authenticated repository root.
     /// The root itself need not have a lineage record: it is the caller's anchor.
+    /// Each visited workspace is loaded once; an absent starting workspace is
+    /// refused from that same observation, without a second presence check.
     pub async fn authorize_descendant(
         &self,
         workspace: WorkspaceId,
@@ -401,15 +408,14 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             if !seen.insert(id) || records.len() >= maximum as usize {
                 return Err(WorkspaceLineageError::TraversalLimit);
             }
-            let record = match self.required(id).await {
+            let record = match self.lookup(id).await? {
                 // A workspace this lineage never registered is outside it,
                 // which is a definite refusal rather than corrupt state.
-                Err(WorkspaceLineageError::IncompatibleState)
-                    if ancestor.is_some() && id == workspace && !self.registered(id).await? =>
-                {
+                None if ancestor.is_some() && id == workspace => {
                     return Err(WorkspaceLineageError::UnauthorizedJoin);
                 }
-                record => record?,
+                None => return Err(WorkspaceLineageError::IncompatibleState),
+                Some(record) => record,
             };
             next = record.parent_workspace_id;
             if id != workspace {
@@ -423,34 +429,25 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         }
     }
 
-    async fn registered(
+    async fn lookup(
         &self,
         workspace_id: WorkspaceId,
-    ) -> Result<bool, WorkspaceLineageError<S::Error>> {
-        self.store
-            .load(workspace_id)
-            .await
-            .map(|record| record.is_some())
-            .map_err(WorkspaceLineageError::Store)
-    }
-
-    async fn required(
-        &self,
-        workspace_id: WorkspaceId,
-    ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
-        let record = self
+    ) -> Result<Option<WorkspaceLineageRecord>, WorkspaceLineageError<S::Error>> {
+        let Some(record) = self
             .store
             .load(workspace_id)
             .await
             .map_err(WorkspaceLineageError::Store)?
-            .ok_or(WorkspaceLineageError::IncompatibleState)?;
+        else {
+            return Ok(None);
+        };
         if record.workspace_id != workspace_id || !lineage_shape_is_valid(&record) {
             return Err(WorkspaceLineageError::IncompatibleState);
         }
         if !record.ready {
             return Err(WorkspaceLineageError::IncompatibleState);
         }
-        Ok(record)
+        Ok(Some(record))
     }
 
     async fn register(
