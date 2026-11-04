@@ -257,7 +257,7 @@ export class Processes {
           }
           if (control?.failure()) throw control.failure();
           return await spawnOptions.scopeCapture?.(result);
-          } finally { await control?.close(); }
+        } finally { await control?.close(); }
       } });
     const selected = running => ({ ...running, killExecutable: () => control ? control.stop() : running.input.end() });
     return owned instanceof Promise ? owned.then(selected) : selected(owned);
