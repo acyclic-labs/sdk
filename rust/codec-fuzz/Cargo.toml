@@ -113,6 +113,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "call_record"
+path = "fuzz_targets/call_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "filesystem_codecs"
 path = "fuzz_targets/filesystem_codecs.rs"
 test = false

@@ -282,29 +282,20 @@ mod schedules {
     };
 
     #[test]
-    fn append_racing_replay_and_park_cannot_lose_ready_work() {
+    fn wake_racing_replay_and_park_cannot_lose_ready_work() {
         loom::model(|| {
             let set = ReadySet::default();
             let registration = set.register(7).unwrap();
             let work = set.take().unwrap();
             let wake = registration.waker();
-            let tail = Arc::new(AtomicUsize::new(0));
-            let consumed = Arc::new(AtomicUsize::new(0));
-            let reader_tail = Arc::clone(&tail);
-            let reader_consumed = Arc::clone(&consumed);
-            let reader = thread::spawn(move || {
-                reader_consumed.store(reader_tail.load(Ordering::SeqCst), Ordering::SeqCst);
-                drop(work);
-            });
-            let writer = thread::spawn(move || {
-                tail.store(1, Ordering::SeqCst);
-                wake.wake();
-            });
+            let reader = thread::spawn(move || drop(work));
+            let writer = thread::spawn(move || wake.wake());
             reader.join().unwrap();
             writer.join().unwrap();
-            assert!(
-                consumed.load(Ordering::SeqCst) == 1 || set.counts().1 == 1,
-                "committed input must be replayed or remain ready across parking"
+            assert_eq!(
+                set.counts(),
+                (1, 1),
+                "wake must remain ready across parking"
             );
         });
     }
@@ -323,7 +314,11 @@ mod schedules {
             writer.join().unwrap();
             cancel.join().unwrap();
             stale.wake();
-            assert_eq!(set.counts(), (1, 1));
+            assert_eq!(
+                set.counts(),
+                (1, 1),
+                "cancelled registration must leave only the current placement"
+            );
             let work = set.take().unwrap();
             assert_eq!(*work.key(), 2, "stale wake cannot substitute old placement");
             drop(work);

@@ -107,6 +107,9 @@ pub fn exercise(target: &str, bytes: &[u8]) -> Result<(), String> {
         "auth" => auth(bytes),
         "identities" => identities(bytes),
         "actor_codecs" => actor_codecs(bytes),
+        "call_record" => {
+            futures::executor::block_on(acyclic_actors::call::model::check(bytes))?;
+        }
         "filesystem_codecs" => filesystem_codecs(bytes),
         "filesystem_pages" => filesystem_pages::check(bytes),
         "machine_journal" => {
@@ -434,7 +437,775 @@ pub fn identities(bytes: &[u8]) {
     }
 }
 
+/// Capture the deployed Actors writers and require their original values to
+/// survive admission. The fuzz oracle shares these producers with capture so
+/// a decoder which rejects everything cannot vacuously satisfy round trips.
+pub fn actor_seeds()
+-> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn std::error::Error>> {
+    use acyclic_actors::{
+        domain,
+        guest::{self, Handler as _, wire},
+        invocation::Invocation,
+        local::{State, Store},
+    };
+    use acyclic_auth::addressing::ActorReference;
+    use acyclic_stream::{CommitId, CommitMutation, MemoryStream, StreamPath};
+    use bytes::Bytes;
+    use std::{collections::BTreeMap, sync::Arc};
+
+    let actor = ActorReference::new(b"account", b"namespace", b"codec")?;
+    let invocation = Invocation::new(
+        StreamPath::new("invoke-control/caller")?,
+        actor.clone(),
+        "inbox".into(),
+        Bytes::from_static(b"operation"),
+        Bytes::from_static(b"request"),
+    )?;
+    // Fix time at the provider boundary; retain all other metadata from the
+    // original Store acceptance instead of constructing a wire envelope.
+    struct Clock;
+    impl acyclic_stream::UnixMillisClock for Clock {
+        fn now_unix_millis(&self) -> u64 {
+            42
+        }
+    }
+    let clock: Arc<dyn acyclic_stream::UnixMillisClock> = Arc::new(Clock);
+    let input = StreamPath::new("codec/actors/inbox")?;
+    let ticket = futures::executor::block_on(async {
+        use acyclic_actors::local::{PreparedPublish, Subscription};
+        use acyclic_stream::{IdempotencyKey, MemoryLimits, StreamProviderExt as _};
+
+        let provider = Arc::new(MemoryStream::new_with_clock(
+            MemoryLimits::default(),
+            Arc::clone(&clock),
+        ));
+        let store = Store::new(Arc::clone(&provider), StreamPath::new("codec/actors")?);
+        let mut create =
+            PreparedPublish::foreign(IdempotencyKey::new(b"codec/invocation/create".to_vec())?);
+        for effect in store.create(
+            &actor,
+            BTreeMap::from([(
+                "inbox".into(),
+                Subscription {
+                    path: input.clone(),
+                    cursor: 0,
+                },
+            )]),
+            None,
+        )? {
+            create.join(effect)?;
+        }
+        PreparedPublish::settle(&provider.commit(create.into_request()?).await?)?;
+        Ok::<_, Box<dyn std::error::Error>>(store.enqueue_invoke(&invocation).await?)
+    })?;
+    assert_eq!(ticket.invocation(), &invocation);
+    assert_eq!(ticket.record().origin, input);
+    assert_eq!(ticket.record().sequence, 0);
+    assert_eq!(ticket.record().committed_at_micros, 42_000);
+    let invocation_bytes =
+        acyclic_stream::wire_codec::record_wire(ticket.record().clone(), None).encode_to_vec();
+    let record = acyclic_stream::wire_codec::record(
+        acyclic_stream::wire::Record::decode(invocation_bytes.as_slice())?,
+        None,
+    )?;
+    assert_eq!(
+        record,
+        *ticket.record(),
+        "wire must retain original acceptance"
+    );
+    assert_eq!(
+        Invocation::decode(&record)?,
+        Some(invocation),
+        "invocation writer must be admitted"
+    );
+    let mut seeds = vec![(
+        "invocation-committed-v2",
+        invocation_bytes,
+        "Store::enqueue_invoke original InvocationTicket::record and wire_codec::record_wire",
+    )];
+    for (name, bytes) in
+        futures::executor::block_on(acyclic_actors::call::model::codec_seeds(clock))?
+    {
+        seeds.push((
+            name,
+            bytes,
+            "CallPath builders, MemoryStream commit/follow and wire_codec::record_wire",
+        ));
+    }
+    for (name, bytes) in acyclic_actors::reservation::codec_fuzz::seeds()? {
+        seeds.push((
+            name,
+            bytes,
+            "actors::reservation canonical request/decision/checkpoint encoder",
+        ));
+    }
+    let artifact = guest::Checkpoint {
+        codec: guest::CodecIdentity {
+            name: "codec".into(),
+            version: "1".into(),
+        },
+        bytes: Bytes::from_static(b"checkpoint"),
+    };
+    let bytes = serde_json::to_vec(&artifact)?;
+    assert_eq!(
+        serde_json::from_slice::<guest::Checkpoint>(&bytes)?,
+        artifact
+    );
+    seeds.push((
+        "artifact-checkpoint",
+        bytes,
+        "serde_json::to_vec(guest::Checkpoint) with current artifact codec identity",
+    ));
+    let package = acyclic_actors::reservation::Package::new(
+        domain::CodeSha256::new(vec![1; 32])?,
+        domain::ActorLimits::new(1, 1024, 4096)?,
+    );
+    let manifest = package.manifest();
+    let bytes = wire::encode_manifest(manifest);
+    let admitted = wire::decode_manifest(&bytes)?;
+    assert_eq!(admitted.code, manifest.code);
+    assert_eq!(admitted.codec, manifest.codec);
+    assert_eq!(admitted.subscriptions, manifest.subscriptions);
+    assert_eq!(admitted.interrupts, manifest.interrupts);
+    assert_eq!(admitted.bindings, manifest.bindings);
+    assert_eq!(admitted.limits, manifest.limits);
+    seeds.push((
+        "manifest",
+        bytes,
+        "guest::wire::encode_manifest(reservation::Package::manifest)",
+    ));
+    let store = Store::new(
+        Arc::new(MemoryStream::default()),
+        StreamPath::new("codec/actors")?,
+    );
+    let checkpoint = acyclic_actors::reservation::initial_checkpoint(7)?;
+    let effects = store.create(&actor, BTreeMap::new(), Some(checkpoint.clone()))?;
+    let CommitMutation::Append { records, .. } = &effects[0].mutation else {
+        return Err("actor creation did not append state".into());
+    };
+    let bytes = records
+        .first()
+        .ok_or("actor creation emitted no state")?
+        .value
+        .to_vec();
+    let state = State::decode(&bytes)?;
+    assert_eq!(state.checkpoint(), Some(&checkpoint));
+    assert_eq!(state.epoch(), 0);
+    assert!(state.subscriptions().is_empty());
+    assert_eq!(state.encode(), bytes);
+    seeds.push(("state-v2", bytes, "local::Store::create state encoder"));
+    let delivery = guest::Delivery {
+        actor,
+        epoch: 1,
+        trigger: guest::Trigger::Alarm {
+            generation: 1,
+            now_unix_ms: 42,
+        },
+        now_unix_ms: 42,
+        record: None,
+        subscriptions: guest::SubscriptionCuts::new(
+            StreamPath::new("codec/actors/state")?,
+            CommitId::from_bytes([1; 32]),
+            BTreeMap::new(),
+        ),
+    };
+    let bytes = wire::encode_delivery(&delivery, Some(&checkpoint));
+    assert_eq!(
+        wire::decode_delivery(&bytes)?,
+        (delivery, Some(checkpoint.clone()))
+    );
+    seeds.push(("delivery", bytes, "guest::wire::encode_delivery"));
+    let mut transition = guest::Transition {
+        response: None,
+        checkpoint,
+        alarm: guest::AlarmChange::Keep,
+        effects: effects.into(),
+        participant: None,
+    };
+    for (name, alarm) in [
+        ("transition-state-v2", guest::AlarmChange::Keep),
+        (
+            "transition-set-zero",
+            guest::AlarmChange::Set {
+                deadline_unix_ms: 0,
+            },
+        ),
+        (
+            "transition-set",
+            guest::AlarmChange::Set {
+                deadline_unix_ms: 42,
+            },
+        ),
+        (
+            "transition-set-max",
+            guest::AlarmChange::Set {
+                deadline_unix_ms: u64::MAX,
+            },
+        ),
+        ("transition-clear", guest::AlarmChange::Clear),
+    ] {
+        transition.alarm = alarm;
+        let bytes = wire::encode_transition(&transition)?;
+        assert_eq!(
+            wire::decode_transition(&bytes)?,
+            transition,
+            "transition writer must retain its alarm"
+        );
+        seeds.push((name, bytes, "guest::wire::encode_transition"));
+    }
+    seeds.extend(futures::executor::block_on(actor_alarm_seeds())?);
+    seeds.extend(actor_socket_seeds()?);
+    seeds.extend(actor_socket_input_seeds()?);
+    seeds.extend(actor_socket_ledger_seeds()?);
+    Ok(seeds)
+}
+
+fn actor_socket_ledger_seeds()
+-> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn std::error::Error>> {
+    use acyclic_actors::local::socket_ledger_codec as codec;
+    let captures: serde_json::Value =
+        serde_json::from_str(include_str!("../captures/socket-ledger.capture"))?;
+    let mut seeds = Vec::new();
+    for name in [
+        "socket-ledger-epoch-initial",
+        "socket-ledger-epoch-fenced",
+        "socket-ledger-epoch-recovered",
+        "socket-ledger-opened",
+        "socket-ledger-closed",
+    ] {
+        let capture = &captures[name];
+        let bytes: Vec<u8> = serde_json::from_value(capture["bytes"].clone())?;
+        let mut noncanonical = bytes.clone();
+        noncanonical.extend_from_slice(&[0x78, 1]);
+        if capture["kind"] == "epoch" {
+            let segment = capture["segment"].as_u64().ok_or("original segment")?;
+            let from = capture["from"].as_u64().ok_or("original frontier")?;
+            assert_eq!(
+                codec::epoch(&bytes)?,
+                (segment, from, segment + 1),
+                "socket epoch retains the committed writer frontier"
+            );
+            assert!(
+                codec::epoch(&noncanonical).is_err(),
+                "socket epoch rejects unknown fields"
+            );
+            let unversioned = bytes
+                .strip_prefix(&[8, 1])
+                .ok_or("original epoch version")?;
+            assert!(
+                codec::epoch(unversioned).is_err(),
+                "socket epoch rejects unknown version"
+            );
+        } else {
+            let connection = capture["connection"]
+                .as_str()
+                .ok_or("original connection")?
+                .to_owned();
+            let target = if capture["kind"] == "opened" {
+                Some((
+                    serde_json::from_value(capture["actor"].clone())?,
+                    capture["inbox"]
+                        .as_str()
+                        .ok_or("original inbox")?
+                        .to_owned(),
+                ))
+            } else {
+                None
+            };
+            assert_eq!(
+                codec::entry(&bytes)?,
+                (connection, target),
+                "socket ledger retains the committed writer target"
+            );
+            assert!(
+                codec::entry(&noncanonical).is_err(),
+                "socket ledger rejects unknown fields"
+            );
+        }
+        seeds.push((
+            name,
+            bytes,
+            "local::Sockets::open/commit_open/commit_close -> LocalStream",
+        ));
+    }
+    for (name, segment, from) in [
+        ("socket-ledger-exhausted-zero-frontier", u64::MAX, 0),
+        ("socket-ledger-exhausted", u64::MAX, u64::MAX),
+        ("socket-ledger-last-incarnation", u64::MAX - 1, u64::MAX),
+        ("socket-ledger-invalid-frontier", 1, u64::MAX),
+    ] {
+        let bytes = codec::write_epoch(segment, from);
+        let next = u128::from(segment) + 1;
+        let expected = next <= u128::from(u64::MAX) && u128::from(from) <= next;
+        let actual = codec::epoch(&bytes);
+        assert_eq!(
+            actual.is_ok(),
+            expected,
+            "socket epoch checks format capacity and frontier"
+        );
+        if let Ok(actual) = actual {
+            assert_eq!(actual, (segment, from, next as u64));
+        }
+        seeds.push((name, bytes.to_vec(), "local::sockets::epoch_record"));
+    }
+    for tail in [0, 1, u64::MAX - 2, u64::MAX - 1, u64::MAX] {
+        let expected = u128::from(tail) + 2;
+        let actual = codec::reserve_epochs(tail);
+        assert_eq!(
+            actual.is_ok(),
+            expected <= u128::from(u64::MAX),
+            "socket ownership reserves both epoch positions"
+        );
+        if let Ok(actual) = actual {
+            assert_eq!(u128::from(actual), expected);
+        }
+    }
+    Ok(seeds)
+}
+
+fn actor_socket_input_seeds()
+-> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn std::error::Error>> {
+    use acyclic_actors::guest::wire;
+    // Original Runtime deliveries, captured at SocketPackage::on_record while
+    // the shared physical conformance suite checks its independently sent events.
+    let captures: serde_json::Value =
+        serde_json::from_str(include_str!("../captures/socket-deliveries.capture"))?;
+    let mut seeds = Vec::new();
+    for name in [
+        "socket-input-open",
+        "socket-input-text",
+        "socket-input-binary",
+        "socket-input-close-peer",
+        "socket-input-close-actor",
+        "socket-input-close-runtime",
+    ] {
+        let capture = &captures[name];
+        let bytes: Vec<u8> = serde_json::from_value(capture["bytes"].clone())?;
+        let (delivery, checkpoint) = wire::decode_delivery(&bytes)?;
+        assert_eq!(wire::encode_delivery(&delivery, checkpoint.as_ref()), bytes);
+        let socket = delivery
+            .socket()?
+            .ok_or("socket input writer must be admitted")?;
+        assert_eq!(
+            socket.connection_id,
+            capture["connection"].as_str().unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(socket.event)?,
+            capture["event"],
+            "socket input must retain the original runtime event"
+        );
+        actor_socket_input_refusals(&delivery)?;
+        seeds.push((
+            name,
+            bytes,
+            "Runtime::run -> SocketPackage::on_record -> guest::wire::encode_delivery",
+        ));
+    }
+    Ok(seeds)
+}
+
+fn actor_socket_input_refusals(
+    delivery: &acyclic_actors::guest::Delivery,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_actors::{guest::Trigger, sockets::SOCKET_RECORD};
+    let mut invalid = delivery.clone();
+    let Trigger::Record { sequence, .. } = &mut invalid.trigger else {
+        return Err("original socket capture is not a record delivery".into());
+    };
+    *sequence ^= 1;
+    assert!(
+        invalid.socket().is_err(),
+        "socket input rejects wrong sequence"
+    );
+    invalid.trigger = Trigger::Alarm {
+        generation: 1,
+        now_unix_ms: delivery.now_unix_ms,
+    };
+    assert!(
+        invalid.socket().is_err(),
+        "socket input rejects alarm trigger"
+    );
+
+    let mut invalid = delivery.clone();
+    let record = invalid
+        .record
+        .as_mut()
+        .ok_or("socket capture has no record")?;
+    let mut attributes = record
+        .headers
+        .attributes()
+        .iter()
+        .map(|a| a.to_owned())
+        .collect::<Vec<_>>();
+    if let Some(marker) = attributes.iter_mut().find(|a| a.name == SOCKET_RECORD) {
+        marker.value = bytes::Bytes::from_static(b"0").into();
+        record.headers =
+            acyclic_stream::RecordHeaders::new(record.headers.keys().to_vec(), attributes)?;
+        assert!(
+            invalid.socket().is_err(),
+            "socket input rejects unknown version"
+        );
+
+        let mut invalid = delivery.clone();
+        invalid
+            .record
+            .as_mut()
+            .ok_or("socket capture has no record")?
+            .sequence = u64::MAX;
+        if let Trigger::Record { sequence, .. } = &mut invalid.trigger {
+            *sequence = u64::MAX;
+        }
+        assert!(
+            invalid.socket().is_err(),
+            "socket input rejects offset overflow"
+        );
+    }
+    Ok(())
+}
+
+fn actor_socket_open() -> &'static acyclic_actors::sockets::SocketOpen {
+    static OPEN: std::sync::LazyLock<acyclic_actors::sockets::SocketOpen> =
+        std::sync::LazyLock::new(|| acyclic_actors::sockets::SocketOpen {
+            actor: acyclic_auth::addressing::ActorReference::new(
+                b"account",
+                b"namespace",
+                b"socket",
+            )
+            .unwrap(),
+            subscription: "sockets".into(),
+            app_channel: Some("presence".into()),
+            subprotocols: vec!["chat".into()],
+            headers: vec![("x-device".into(), "desktop".into())],
+            resume_after: u64::MAX,
+            reconnected: true,
+        });
+    &OPEN
+}
+
+fn actor_socket_verdict(bytes: &[u8]) {
+    use acyclic_actors::{guest::GuestEventResult, sockets::socket_verdict};
+    let actual = socket_verdict(bytes, actor_socket_open());
+    match serde_json::from_slice::<GuestEventResult>(bytes) {
+        Ok(GuestEventResult::SocketAccept {
+            subprotocol: Some(selected),
+            ..
+        }) if selected != "chat" => {
+            assert!(
+                actual.is_err(),
+                "socket verdict must refuse unoffered subprotocols"
+            );
+        }
+        Ok(expected) => assert_eq!(
+            actual.unwrap(),
+            expected,
+            "socket verdict must retain its reply"
+        ),
+        Err(_) => assert!(actual.is_err(), "socket verdict must refuse invalid JSON"),
+    }
+}
+
+fn actor_socket_seeds()
+-> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn std::error::Error>> {
+    use acyclic_actors::{
+        guest::{GuestEventResult, SocketCloseInitiator, SocketPayload},
+        sockets::{SocketFrame, SocketOpen, socket_reply},
+    };
+    use bytes::Bytes;
+    let open = actor_socket_open();
+    let bytes = open.encode();
+    assert_eq!(
+        SocketOpen::decode(&bytes)?,
+        *open,
+        "socket open writer must be admitted"
+    );
+    let mut seeds = vec![(
+        "socket-open-v1",
+        bytes.to_vec(),
+        "sockets::SocketOpen::encode",
+    )];
+    for (name, frame) in [
+        (
+            "socket-text-v1",
+            SocketFrame::Message(SocketPayload::Text {
+                text: "ping".into(),
+            }),
+        ),
+        (
+            "socket-binary-v1",
+            SocketFrame::Message(SocketPayload::Binary {
+                binary: Bytes::from_static(b"\0\xff"),
+            }),
+        ),
+        (
+            "socket-close-peer-v1",
+            SocketFrame::Close {
+                code: 1000,
+                reason: "bye".into(),
+                initiator: SocketCloseInitiator::Peer,
+            },
+        ),
+        (
+            "socket-close-actor-v1",
+            SocketFrame::Close {
+                code: 1001,
+                reason: "actor".into(),
+                initiator: SocketCloseInitiator::Actor,
+            },
+        ),
+        (
+            "socket-close-runtime-v1",
+            SocketFrame::Close {
+                code: u16::MAX,
+                reason: "runtime".into(),
+                initiator: SocketCloseInitiator::Runtime,
+            },
+        ),
+        (
+            "socket-accepted-v1",
+            SocketFrame::Accepted {
+                subprotocol: Some("chat".into()),
+            },
+        ),
+        (
+            "socket-accepted-none-v1",
+            SocketFrame::Accepted { subprotocol: None },
+        ),
+        (
+            "socket-rejected-v1",
+            SocketFrame::Rejected {
+                status: 403,
+                reason: "denied".into(),
+            },
+        ),
+    ] {
+        let bytes = frame.clone().encode();
+        assert_eq!(
+            SocketFrame::decode(&bytes)?,
+            frame,
+            "socket frame writer must retain its fields"
+        );
+        seeds.push((name, bytes.to_vec(), "sockets::SocketFrame::encode"));
+    }
+    for (name, reply) in [
+        (
+            "socket-verdict-accept-v1",
+            GuestEventResult::SocketAccept {
+                subprotocol: Some("chat".into()),
+                attachment: Bytes::from_static(b"attachment"),
+                tags: vec!["room".into()],
+            },
+        ),
+        (
+            "socket-verdict-none-v1",
+            GuestEventResult::SocketAccept {
+                subprotocol: None,
+                attachment: Bytes::new(),
+                tags: Vec::new(),
+            },
+        ),
+        (
+            "socket-verdict-unoffered-v1",
+            GuestEventResult::SocketAccept {
+                subprotocol: Some("unoffered".into()),
+                attachment: Bytes::new(),
+                tags: Vec::new(),
+            },
+        ),
+        (
+            "socket-verdict-reject-v1",
+            GuestEventResult::SocketReject {
+                status: 403,
+                reason: "denied".into(),
+            },
+        ),
+        (
+            "socket-verdict-reply-v1",
+            GuestEventResult::Reply {
+                payload: Bytes::from_static(b"reply"),
+            },
+        ),
+    ] {
+        let bytes = socket_reply(&reply)?;
+        assert_eq!(
+            serde_json::from_slice::<GuestEventResult>(&bytes)?,
+            reply,
+            "socket reply writer must be admitted"
+        );
+        actor_socket_verdict(&bytes);
+        seeds.push((name, bytes.to_vec(), "sockets::socket_reply"));
+    }
+    Ok(seeds)
+}
+
+// Obtain persisted tuples from the original Store publication path, rather
+// than manufacturing State fields or a parallel alarm record format.
+async fn actor_alarm_seeds()
+-> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn std::error::Error>> {
+    use acyclic_actors::{
+        guest::{AlarmChange, Effect, Transition, Trigger},
+        local::{PreparedPublish, State, Store, Subscription},
+    };
+    use acyclic_auth::addressing::ActorReference;
+    use acyclic_stream::{
+        CommitCondition, CommitMutation, IdempotencyKey, MemoryStream, ReadRequest, StreamPath,
+        StreamProvider as _, StreamProviderExt as _,
+    };
+    use bytes::Bytes;
+    use futures::TryStreamExt as _;
+    use std::{collections::BTreeMap, sync::Arc};
+
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), StreamPath::new("codec/alarms")?);
+    let actor = ActorReference::new(b"account", b"namespace", b"alarm-codec")?;
+    let input = StreamPath::new("codec/alarm-input")?;
+    let checkpoint = acyclic_actors::reservation::initial_checkpoint(7)?;
+    let mut create = PreparedPublish::foreign(IdempotencyKey::unique());
+    for effect in store.create(
+        &actor,
+        BTreeMap::from([(
+            "inbox".into(),
+            Subscription {
+                path: input.clone(),
+                cursor: 0,
+            },
+        )]),
+        Some(checkpoint.clone()),
+    )? {
+        create.join(effect)?;
+    }
+    create.join(Effect {
+        conditions: vec![CommitCondition::Absent {
+            path: input.clone(),
+        }],
+        mutation: CommitMutation::Append {
+            path: input.clone(),
+            records: vec![
+                Bytes::from_static(b"set").into(),
+                Bytes::from_static(b"clear").into(),
+            ],
+        },
+    })?;
+    PreparedPublish::settle(&provider.commit(create.into_request()?).await?)?;
+    let inputs: Vec<_> = provider
+        .read(ReadRequest {
+            key: None,
+            path: input,
+            from: 0,
+            limit: 2,
+            at_least: Default::default(),
+        })
+        .await?
+        .try_collect()
+        .await?;
+    assert_eq!(inputs.len(), 2, "alarm seed inputs must be committed");
+    let mut snapshot = store
+        .claim(&store.load(&actor).await?, 1, IdempotencyKey::unique())
+        .await?;
+    let mut seeds = Vec::new();
+    for (name, trigger, alarm, cursor, generation, deadline, pending) in [
+        (
+            "state-alarm-set-v2",
+            Trigger::Record {
+                subscription: "inbox".into(),
+                sequence: 0,
+            },
+            AlarmChange::Set {
+                deadline_unix_ms: 42,
+            },
+            1,
+            1,
+            Some(42),
+            Some(42),
+        ),
+        (
+            "state-alarm-delivered-v2",
+            Trigger::Alarm {
+                generation: 1,
+                now_unix_ms: 42,
+            },
+            AlarmChange::Keep,
+            1,
+            1,
+            Some(42),
+            None,
+        ),
+        (
+            "state-alarm-clear-v2",
+            Trigger::Record {
+                subscription: "inbox".into(),
+                sequence: 1,
+            },
+            AlarmChange::Clear,
+            2,
+            2,
+            None,
+            None,
+        ),
+    ] {
+        let delivered = match &trigger {
+            Trigger::Record { sequence, .. } => Some(&inputs[usize::try_from(*sequence)?]),
+            Trigger::Alarm { .. } => None,
+        };
+        store
+            .publish(
+                &snapshot,
+                1,
+                &trigger,
+                delivered,
+                Transition {
+                    response: None,
+                    checkpoint: checkpoint.clone(),
+                    alarm,
+                    effects: Vec::new(),
+                    participant: None,
+                },
+                IdempotencyKey::unique(),
+            )
+            .await?;
+        snapshot = store.load(&actor).await?;
+        let state = snapshot.state().ok_or("published alarm state is absent")?;
+        assert_eq!(
+            (
+                state.cursor("inbox"),
+                state.alarm().generation(),
+                state.alarm().deadline_unix_ms(),
+                state.alarm().pending()
+            ),
+            (Some(cursor), generation, deadline, pending),
+            "persisted alarm writer must retain its committed tuple"
+        );
+        assert_eq!(state.checkpoint(), Some(&checkpoint));
+        assert_eq!(state.epoch(), 1);
+        let bytes = state.encode();
+        assert_eq!(State::decode(&bytes)?, *state);
+        seeds.push((
+            name,
+            bytes,
+            "local::Store::publish and local::State::encode",
+        ));
+    }
+    Ok(seeds)
+}
+
 pub fn actor_codecs(bytes: &[u8]) {
+    static WRITERS: std::sync::LazyLock<()> = std::sync::LazyLock::new(|| {
+        actor_seeds().expect("Actors decoders must admit their production writers");
+    });
+    std::sync::LazyLock::force(&WRITERS);
+    use acyclic_actors::sockets::{SocketFrame, SocketOpen};
+    if let Ok(open) = SocketOpen::decode(bytes) {
+        assert_eq!(
+            open.encode().as_ref(),
+            bytes,
+            "socket open retains every field"
+        );
+    }
+    if let Ok(frame) = SocketFrame::decode(bytes) {
+        assert_eq!(SocketFrame::decode(&frame.clone().encode()).unwrap(), frame);
+    }
+    actor_socket_verdict(bytes);
+    acyclic_actors::local::socket_ledger_codec::check(bytes);
     use acyclic_actors::{guest::wire, local::State};
     assert!(acyclic_actors::reservation::codec_fuzz::check(bytes));
     if let Ok(checkpoint) = serde_json::from_slice::<acyclic_actors::guest::Checkpoint>(bytes) {
@@ -471,6 +1242,7 @@ pub fn actor_codecs(bytes: &[u8]) {
         );
     }
     if let Ok((value, checkpoint)) = wire::decode_delivery(bytes) {
+        let _ = value.socket();
         let canonical = wire::encode_delivery(&value, checkpoint.as_ref());
         assert_eq!(
             canonical.as_slice(),
@@ -497,8 +1269,18 @@ pub fn actor_codecs(bytes: &[u8]) {
     }
     if let Ok(value) = acyclic_stream::wire::Record::decode(bytes)
         && let Ok(record) = acyclic_stream::wire_codec::record(value, None)
-        && let Ok(Some(invocation)) = acyclic_actors::invocation::Invocation::decode(&record)
     {
+        // Both readers consume this same committed Stream wire envelope.
+        let _ = acyclic_actors::call::Entry::decode(&record);
+        let _ = acyclic_actors::call::fence(&record);
+        let mut journal = acyclic_actors::call::Journal::default();
+        let before = journal.clone();
+        if journal.apply(&record).is_err() {
+            assert_eq!(journal, before, "refusal must preserve the call reader");
+        }
+        let Ok(Some(invocation)) = acyclic_actors::invocation::Invocation::decode(&record) else {
+            return;
+        };
         let encoded = invocation
             .record(&acyclic_stream::StreamPath::new("codec/state").unwrap())
             .unwrap();

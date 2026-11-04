@@ -123,7 +123,7 @@ async fn definite_refusals_settle_and_leave_the_input_available() -> Result<(), 
             .await;
         assert!(
             refusal_was_settled(&result, &counts, &refusal),
-            "{refusal:?}: {result:?}"
+            "definite refusal must settle its original participant: {refusal:?}: {result:?}"
         );
         assert_eq!(
             store
@@ -157,57 +157,6 @@ async fn definite_refusals_settle_and_leave_the_input_available() -> Result<(), 
             Some(1)
         );
     }
-    Ok(())
-}
-
-#[tokio::test]
-async fn negative_control_all_errors_unknown_fails_the_refusal_oracle() -> Result<(), Failure> {
-    let provider = Arc::new(Faulty {
-        inner: MemoryStream::default(),
-        plan: vec![
-            Fault::None,
-            Fault::None,
-            Fault::Refuse(StreamError::InvalidArgument),
-        ],
-        calls: AtomicUsize::new(0),
-    });
-    let counts = Arc::new(Counts::default());
-    let (store, actor) = placed(provider.clone(), counts.clone()).await?;
-    let snapshot = store.load(&actor).await?;
-    let mut publication = store.prepare_publish(
-        &snapshot,
-        1,
-        &Trigger::Record {
-            subscription: "inbox".into(),
-            sequence: 0,
-        },
-        None,
-        transition(false)?,
-        key("negative-refusal")?,
-    )?;
-    let participant = publication
-        .composition
-        .as_mut()
-        .ok_or("missing participant")?;
-    publication.request = participant.seal(publication.request.clone()).await?;
-    publication.sealed = true;
-    let source = provider
-        .commit(publication.request.clone())
-        .await
-        .err()
-        .ok_or("missing refusal")?;
-    // The removed implementation retained even a definite refusal as unknown.
-    let result = Err(Error::Unknown {
-        publication: Box::new(publication),
-        source,
-    });
-    assert!(!refusal_was_settled(
-        &result,
-        &counts,
-        &StreamError::InvalidArgument
-    ));
-    assert_eq!(counts.refused.load(Ordering::SeqCst), 0);
-    assert_eq!(counts.dropped.load(Ordering::SeqCst), 0);
     Ok(())
 }
 

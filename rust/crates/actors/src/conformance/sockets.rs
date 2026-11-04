@@ -20,7 +20,7 @@ use acyclic_stream::{
     ProviderPlatform, StreamError, StreamPath, StreamProvider,
 };
 use bytes::Bytes;
-use futures::{FutureExt as _, StreamExt as _, TryFutureExt as _};
+use futures::FutureExt as _;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -329,31 +329,14 @@ impl<'a, T: SocketBackend + ?Sized> Case<'a, T> {
 
     /// Follow the journal until it holds `count` events after creation.
     async fn journal(&self, count: usize) -> Result<Vec<String>, Failure> {
-        let clock = self.target.clock();
-        let mut deadline = clock.sleep_until(clock.now_unix_ms().saturating_add(BUDGET_MS));
-        let mut follow = self
-            .target
-            .store()
-            .provider()
-            .follow(acyclic_stream::FollowRequest::new(self.outbox.clone(), 1))
-            .map_ok(acyclic_stream::records_only)
-            .await
-            .map_err(Error::from)?;
-        let mut lines = Vec::new();
-        while lines.len() < count {
-            futures::select_biased! {
-                record = follow.next().fuse() => match record {
-                    Some(Ok(record)) => lines.push(String::from_utf8_lossy(&record.value).into_owned()),
-                    Some(Err(error)) => return Err(Error::from(error).into()),
-                    None => break,
-                },
-                result = (&mut deadline).fuse() => {
-                    result.map_err(Error::from)?;
-                    break;
-                },
-            }
-        }
-        Ok(lines)
+        super::observe(
+            self.target.store().provider().as_ref(),
+            self.target.clock(),
+            acyclic_stream::FollowRequest::new(self.outbox.clone(), 1),
+            count,
+            BUDGET_MS,
+        )
+        .await
     }
 
     /// The journal reaches exactly `expected`, and a fresh mark lands right
@@ -431,6 +414,10 @@ pub async fn verify<T: SocketBackend + ?Sized>(target: &T) -> Result<(), Failure
         peer.send(text(&format!("echo {word}"))).await?;
         case.expect_frame(&mut peer, Some(text(word))).await?;
     }
+    peer.send(SocketFrame::Message(SocketPayload::Binary {
+        binary: Bytes::from_static(b"\0\xffsocket"),
+    }))
+    .await?;
     peer.send(SocketFrame::Close {
         code: 1000,
         reason: "done".into(),
@@ -444,6 +431,7 @@ pub async fn verify<T: SocketBackend + ?Sized>(target: &T) -> Result<(), Failure
         "open",
         "message echo one",
         "message echo two",
+        "message binary",
         "close peer 1000",
     ])
     .await?;
@@ -491,8 +479,8 @@ pub async fn verify<T: SocketBackend + ?Sized>(target: &T) -> Result<(), Failure
     peer.send(text("echo ready")).await?;
     case.expect_frame(&mut peer, Some(text("ready"))).await?;
     peer.send(text("ping")).await?;
-    case.expect_frame(&mut peer, Some(text("pong"))).await?;
     peer.send(text("echo after")).await?;
+    case.expect_frame(&mut peer, Some(text("pong"))).await?;
     case.expect_frame(&mut peer, Some(text("after"))).await?;
     case.expect(&[
         "open",

@@ -5,9 +5,13 @@ use crate::local::{Runtime, SystemClock};
 use acyclic_auth::contract::{ResourceGrant, ResourcePattern};
 use acyclic_stream::runtime::PlatformExecutor;
 use acyclic_stream::session::{ActorSocket, Client, testing};
-use acyclic_stream::{BoxProviderFuture, MemoryStream};
+use acyclic_stream::{BoxProviderFuture, LocalStream, MemoryStream};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+thread_local! {
+    pub(super) static LEDGER_ENCODINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 fn root() -> Result<StreamPath, StreamError> {
     StreamPath::new("harness/actors")
@@ -19,20 +23,36 @@ struct Host {
     client: Client,
 }
 
+impl Drop for Host {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 /// `local::Runtime` plus `local::Sockets` behind the socket suite, reached
-/// through an in-process session exactly as a network peer would be.
+/// through the shared in-process session.
 struct LocalSockets {
-    store: Store<MemoryStream>,
-    host: fn(Sockets<MemoryStream>) -> Arc<dyn SocketHost>,
+    store: Store<LocalStream>,
+    host: fn(Sockets<LocalStream>) -> Arc<dyn SocketHost>,
     /// The current host is last. Crashed hosts stay alive, holding their
     /// sockets, as a crashed process's peers would.
     hosts: std::sync::Mutex<Vec<Host>>,
 }
 
 impl LocalSockets {
-    async fn start(host: fn(Sockets<MemoryStream>) -> Arc<dyn SocketHost>) -> Result<Self, Error> {
+    async fn start(
+        host: fn(Sockets<LocalStream>) -> Arc<dyn SocketHost>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let directory = Arc::new(tempfile::tempdir()?);
+        // The original provider owner also outlives detached journal work.
+        let provider = LocalStream::open_with_ownership_anchor(
+            directory.path(),
+            Default::default(),
+            acyclic_native_runtime::OwnershipAnchor::new(Arc::clone(&directory)),
+        )
+        .await?;
         let backend = Self {
-            store: Store::new(Arc::new(MemoryStream::default()), root()?),
+            store: Store::new(Arc::new(provider), root()?),
             host,
             hosts: std::sync::Mutex::new(Vec::new()),
         };
@@ -66,7 +86,8 @@ impl LocalSockets {
             Arc::new(PlatformExecutor),
             None,
         );
-        client.register_credential(
+        let host = Host { task, client };
+        host.client.register_credential(
             0,
             testing::credential_with_grants(vec![ResourceGrant {
                 resource: ResourcePattern {
@@ -79,7 +100,7 @@ impl LocalSockets {
         self.hosts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(Host { task, client });
+            .push(host);
         Ok(())
     }
 
@@ -110,8 +131,8 @@ impl Peer for SessionPeer {
 }
 
 impl SocketBackend for LocalSockets {
-    type Provider = MemoryStream;
-    fn store(&self) -> &Store<MemoryStream> {
+    type Provider = LocalStream;
+    fn store(&self) -> &Store<LocalStream> {
         &self.store
     }
     fn account(&self) -> &[u8] {
@@ -144,15 +165,87 @@ impl SocketBackend for LocalSockets {
     }
 }
 
-fn faithful(sockets: Sockets<MemoryStream>) -> Arc<dyn SocketHost> {
+fn faithful(sockets: Sockets<LocalStream>) -> Arc<dyn SocketHost> {
     Arc::new(sockets)
 }
 
-async fn local_backend() -> Result<LocalSockets, Error> {
+async fn local_backend() -> Result<LocalSockets, Box<dyn std::error::Error>> {
     LocalSockets::start(faithful).await
 }
 
 conformance::suite!(socket_conformance_passes_on_local_runtime, local_backend);
+
+#[tokio::test]
+async fn socket_ledger_exhaustion_preserves_committed_history() -> TestResult {
+    for segment in [u64::MAX, u64::MAX - 1] {
+        let directory = Arc::new(tempfile::tempdir()?);
+        let provider = Arc::new(
+            LocalStream::open_with_ownership_anchor(
+                directory.path(),
+                Default::default(),
+                acyclic_native_runtime::OwnershipAnchor::new(Arc::clone(&directory)),
+            )
+            .await?,
+        );
+        let store = Store::new(Arc::clone(&provider), root()?);
+        let layout = Layout::new(&store)?;
+        // Persist the real epoch format at its representable boundary.
+        let record = EpochWire {
+            version: 1,
+            segment,
+            from: segment,
+        }
+        .encode_to_vec();
+        assert!(
+            commit(
+                &store,
+                &PlatformExecutor,
+                layout.key(&[b"exhausted-epoch"])?,
+                vec![append(
+                    layout.epochs.clone(),
+                    vec![record.clone().into()],
+                    Vec::new()
+                )],
+            )
+            .await?
+        );
+        let opened = Sockets::open(store, Arc::new(PlatformExecutor), Arc::new(SystemClock)).await;
+        let expected = if segment == u64::MAX {
+            assert!(matches!(
+                opened,
+                Err(Error::Invalid("socket ledger counter exhausted"))
+            ));
+            1
+        } else {
+            let sockets = opened?;
+            assert_eq!(sockets.shared.incarnation, u64::MAX);
+            assert!(matches!(
+                sockets.shared.compact().await,
+                Err(Error::Invalid("socket ledger counter exhausted"))
+            ));
+            3
+        };
+        assert_eq!(provider.head(layout.epochs.clone()).await?.tail, expected);
+        assert_eq!(
+            provider
+                .read(ReadRequest {
+                    key: None,
+                    path: layout.epochs,
+                    from: 0,
+                    limit: 1,
+                    at_least: RevisionCut::default(),
+                })
+                .await?
+                .try_collect::<Vec<_>>()
+                .await?[0]
+                .value
+                .as_ref(),
+            record.as_slice(),
+            "exhaustion must retain the original committed frontier"
+        );
+    }
+    Ok(())
+}
 
 #[tokio::test]
 async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> TestResult {
@@ -268,7 +361,7 @@ async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> T
 
 /// A host that forgets the auto-response pair wakes the actor for every
 /// keepalive: the broken behaviour the suite must reject.
-struct ForgetsAutoResponse(Sockets<MemoryStream>);
+struct ForgetsAutoResponse(Sockets<LocalStream>);
 
 impl SocketHost for ForgetsAutoResponse {
     fn accept_web_socket(
@@ -377,6 +470,63 @@ async fn records<P: StreamProvider + ?Sized>(
 
 #[tokio::test]
 async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
+    for count in [1, 2 * PAGE as usize + 1] {
+        let provider = Arc::new(ControlledStream::default());
+        let sockets = Sockets::open(
+            Store::new(Arc::clone(&provider), root()?),
+            Arc::new(HeldCloseExecutor::default()),
+            Arc::new(SystemClock),
+        )
+        .await?;
+        let shared = &sockets.shared;
+        for index in 0..count {
+            admitted_close_fixture(&sockets, &format!("paged-{index}")).await?;
+        }
+        LEDGER_ENCODINGS.set(0);
+        let (allocation, allocated) = provider.pause_write(false);
+        let mut compact = Box::pin(shared.compact());
+        paused(&mut compact, allocated).await?;
+        let (first_page, copying) = provider.pause_write(false);
+        allocation.send(()).map_err(|_| "lost allocation request")?;
+        paused(&mut compact, copying).await?;
+        assert_eq!(
+            LEDGER_ENCODINGS.get(),
+            count.min(PAGE as usize),
+            "compaction encoded beyond its current page"
+        );
+        first_page.send(()).map_err(|_| "lost page request")?;
+        compact.await?;
+        assert_eq!(LEDGER_ENCODINGS.get(), count);
+        assert_eq!(shared.live.load(Ordering::Acquire), count);
+        assert_eq!(shared.written.load(Ordering::Acquire), count);
+        let mut contents = [Vec::new(), Vec::new()];
+        for from in (0..count).step_by(PAGE as usize) {
+            for (segment, records) in [1, 2].into_iter().zip(&mut contents) {
+                records.extend(
+                    provider
+                        .read(ReadRequest {
+                            key: None,
+                            path: shared.layout.segment(segment)?,
+                            from: from as u64,
+                            limit: PAGE,
+                            at_least: RevisionCut::default(),
+                        })
+                        .await?
+                        .map_ok(|record| record.value)
+                        .try_collect::<Vec<_>>()
+                        .await?,
+                );
+            }
+        }
+        for records in &mut contents {
+            records.sort_by(|left, right| left.as_ref().cmp(right.as_ref()));
+        }
+        assert_eq!(
+            contents[0], contents[1],
+            "compaction changed original writer bytes"
+        );
+    }
+
     for (committed, lose_reply) in [(false, false), (true, false), (true, true)] {
         let provider = Arc::new(ControlledStream::default());
         let executor = Arc::new(HeldCloseExecutor::default());
@@ -391,17 +541,15 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
             admitted_close_fixture(&sockets, "unrelated-close").await?;
         let (connection, inbox, _last, open, _frames) =
             close_fixture(&sockets, "delayed-open").await?;
-        let release = provider.pause_write(committed);
+        let (release, entered) = provider.pause_write(committed);
         let mut opening = Box::pin(shared.commit_open(&connection, &open));
-        assert!(futures::poll!(&mut opening).is_pending());
-        assert!(provider.pause.lock().unwrap().is_none());
+        paused(&mut opening, entered).await?;
         let release = if lose_reply {
-            let retry = executor.pause_retry();
+            let (retry, entered) = executor.pause_retry();
             // Acceptance is real; losing its reply returns Unavailable to the
             // original retry path. Keep that retry parked until after rotation.
             drop(release);
-            assert!(futures::poll!(&mut opening).is_pending());
-            assert!(executor.retry.lock().unwrap().is_none());
+            paused(&mut opening, entered).await?;
             retry
         } else {
             release
@@ -414,11 +562,7 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
                 .try_write()
                 .map_err(|_| "delayed Open blocked compaction")?,
         );
-        let mut compact = Box::pin(shared.compact());
-        match futures::poll!(&mut compact) {
-            std::task::Poll::Ready(result) => result?,
-            std::task::Poll::Pending => return Err("delayed Open blocked compaction I/O".into()),
-        }
+        shared.compact().await?;
         assert_eq!(
             shared.live.load(Ordering::Acquire),
             1 + usize::from(committed)
@@ -433,11 +577,9 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
                 Close::new(1000, "independent", SocketCloseInitiator::Actor),
             )
             .ok_or("missing original Close owner")?;
-        let mut closing = executor.take()?;
-        assert!(
-            futures::poll!(&mut closing).is_ready(),
-            "delayed Open blocked an unrelated Close"
-        );
+        // The original Open remains parked while this producer completes.
+        // Completion may require executor turns even with no contended lock.
+        executor.take()?.await;
         completion.await?;
         assert!(matches!(
             SocketFrame::decode(&last.await?)?,
@@ -460,7 +602,6 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
             copied + 1,
             "a delayed reply counted an Open already copied by compaction"
         );
-        drop(compact);
         drop(sockets);
         let recovered = Sockets::open(
             Store::new(provider, root()?),
@@ -494,7 +635,7 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
             admitted_close_fixture(&sockets, "delayed-close").await?;
         let (unrelated, unrelated_inbox, unrelated_last, _frames) =
             admitted_close_fixture(&sockets, "unrelated-close").await?;
-        let release = provider.pause_write(committed);
+        let (release, entered) = provider.pause_write(committed);
         let completion = shared
             .begin_close(
                 &connection,
@@ -502,13 +643,11 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
             )
             .ok_or("missing delayed Close owner")?;
         let mut closing = executor.take()?;
-        assert!(futures::poll!(&mut closing).is_pending());
-        assert!(provider.pause.lock().unwrap().is_none());
+        paused(&mut closing, entered).await?;
         let release = if lose_reply {
-            let retry = executor.pause_retry();
+            let (retry, entered) = executor.pause_retry();
             drop(release);
-            assert!(futures::poll!(&mut closing).is_pending());
-            assert!(executor.retry.lock().unwrap().is_none());
+            paused(&mut closing, entered).await?;
             retry
         } else {
             release
@@ -519,11 +658,7 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
                 .try_write()
                 .map_err(|_| "delayed Close blocked compaction")?,
         );
-        let mut compact = Box::pin(shared.compact());
-        match futures::poll!(&mut compact) {
-            std::task::Poll::Ready(result) => result?,
-            std::task::Poll::Pending => return Err("delayed Close blocked compaction I/O".into()),
-        }
+        shared.compact().await?;
         let copied = 2 - usize::from(committed);
         assert_eq!(shared.live.load(Ordering::Acquire), copied);
         assert_eq!(
@@ -538,21 +673,14 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
                 Close::new(1000, "independent", SocketCloseInitiator::Actor),
             )
             .ok_or("missing unrelated Close owner")?;
-        let mut independent_work = executor.take()?;
-        assert!(
-            futures::poll!(&mut independent_work).is_ready(),
-            "delayed Close blocked another socket's Close"
-        );
+        executor.take()?.await;
         independent.await?;
         assert!(matches!(
             SocketFrame::decode(&unrelated_last.await?)?,
             SocketFrame::Close { code: 1000, .. }
         ));
         release.send(()).map_err(|_| "lost delayed Close request")?;
-        assert!(
-            futures::poll!(&mut closing).is_ready(),
-            "Close did not settle after rotation"
-        );
+        closing.await;
         completion.await?;
         assert!(matches!(
             SocketFrame::decode(&last.await?)?,
@@ -573,7 +701,6 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
                 .len(),
             copied + 1 + usize::from(!committed)
         );
-        drop(compact);
         drop(sockets);
         let recovered = Sockets::open(
             Store::new(provider, root()?),
@@ -667,7 +794,7 @@ struct ControlledStream {
     inner: MemoryStream,
     meet: Option<tokio::sync::Barrier>,
     reads: std::sync::atomic::AtomicUsize,
-    pause: std::sync::Mutex<Option<(bool, oneshot::Receiver<()>)>>,
+    pause: std::sync::Mutex<Option<(bool, oneshot::Sender<()>, oneshot::Receiver<()>)>>,
     /// Captured from the actual MemoryStream acceptance, before its reply.
     accepted:
         std::sync::Mutex<Option<(acyclic_stream::WriteRequest, acyclic_stream::WriteOutcome)>>,
@@ -675,16 +802,31 @@ struct ControlledStream {
 }
 
 impl ControlledStream {
-    fn pause_write(&self, after: bool) -> oneshot::Sender<()> {
+    fn pause_write(&self, after: bool) -> (oneshot::Sender<()>, oneshot::Receiver<()>) {
         let (release, resumed) = oneshot::channel();
+        let (entered, observed) = oneshot::channel();
         assert!(
             self.pause
                 .lock()
                 .unwrap()
-                .replace((after, resumed))
+                .replace((after, entered, resumed))
                 .is_none()
         );
-        release
+        (release, observed)
+    }
+}
+
+/// Drive actual work to its held event, including executor yields. A lost
+/// producer is an error; an early completion cannot count as a parked request.
+async fn paused(
+    work: impl std::future::Future + Unpin,
+    entered: oneshot::Receiver<()>,
+) -> TestResult {
+    match futures::future::select(entered, work).await {
+        futures::future::Either::Left((result, _)) => Ok(result?),
+        futures::future::Either::Right(_) => {
+            Err("operation completed before its controlled wait".into())
+        }
     }
 }
 
@@ -757,11 +899,12 @@ impl StreamProvider for ControlledStream {
                 return Ok(result);
             }
             match pause {
-                Some((false, resumed)) => {
+                Some((false, entered, resumed)) => {
+                    entered.send(()).expect("lost held-write observer");
                     resumed.await.map_err(|_| StreamError::Unavailable)?;
                     self.inner.write(request).await
                 }
-                Some((true, resumed)) => {
+                Some((true, entered, resumed)) => {
                     let original = request.clone();
                     let result = self.inner.write(request).await;
                     if let Ok(outcome) = &result {
@@ -774,6 +917,7 @@ impl StreamProvider for ControlledStream {
                         ));
                         *self.accepted.lock().unwrap() = Some((original, outcome.clone()));
                     }
+                    entered.send(()).expect("lost accepted-write observer");
                     resumed.await.map_err(|_| StreamError::Unavailable)?;
                     result
                 }
@@ -815,7 +959,7 @@ async fn concurrent_hosts_cannot_share_an_incarnation() -> TestResult {
 #[derive(Default)]
 struct HeldCloseExecutor {
     tasks: std::sync::Mutex<VecDeque<BoxProviderFuture<'static, ()>>>,
-    retry: std::sync::Mutex<Option<oneshot::Receiver<()>>>,
+    retry: std::sync::Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
 }
 
 impl Executor for HeldCloseExecutor {
@@ -826,18 +970,26 @@ impl Executor for HeldCloseExecutor {
     fn sleep(&self, milliseconds: u32) -> BoxProviderFuture<'static, ()> {
         let retry = self.retry.lock().unwrap().take();
         Box::pin(async move {
-            let retry = retry.expect("a decided socket operation must not retry");
+            let (entered, retry) = retry.expect("a decided socket operation must not retry");
             assert_eq!(milliseconds, 1, "unexpected additional transport retry");
+            entered.send(()).expect("lost transport-retry observer");
             retry.await.expect("lost original transport-retry producer");
         })
     }
 }
 
 impl HeldCloseExecutor {
-    fn pause_retry(&self) -> oneshot::Sender<()> {
+    fn pause_retry(&self) -> (oneshot::Sender<()>, oneshot::Receiver<()>) {
         let (release, retry) = oneshot::channel();
-        assert!(self.retry.lock().unwrap().replace(retry).is_none());
-        release
+        let (entered, observed) = oneshot::channel();
+        assert!(
+            self.retry
+                .lock()
+                .unwrap()
+                .replace((entered, retry))
+                .is_none()
+        );
+        (release, observed)
     }
 
     fn take(&self) -> Result<BoxProviderFuture<'static, ()>, &'static str> {
@@ -1117,7 +1269,8 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
     }
     let first = Close::new(1000, "first", SocketCloseInitiator::Peer);
     shared.peer_close(&connection, first)?;
-    for _ in 0..100_000 {
+    // Repeated refusal must leave the original queue and its owner unchanged.
+    for _ in 0..2 {
         shared.peer_close(
             &connection,
             Close::new(1001, "later", SocketCloseInitiator::Peer),
@@ -1128,8 +1281,6 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
                 text: "after".into(),
             },
         )?;
-    }
-    {
         let table = shared.lock(&connection);
         let entry = table
             .sockets

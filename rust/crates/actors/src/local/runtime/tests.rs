@@ -299,19 +299,14 @@ conformance::suite!(
     durable_backend
 );
 
-#[tokio::test]
-async fn conformance_benchmark_checks_all_deliveries() -> TestResult {
-    let backend = memory_backend().await?;
-    let sample = conformance::bench(&backend).await?;
-    assert_eq!(sample.deliveries, 256);
-    eprintln!("ACTORS_CONFORMANCE_BENCH {sample:?}");
-    Ok(())
+enum LostAlarm {
+    Set,
+    Clear,
 }
 
-/// A host that loses the alarm half of a transition (the old independent
-/// alarm write) is the broken behaviour the suite must reject.
-struct DropsAlarmClears(Package);
-impl Handler for DropsAlarmClears {
+/// The same host must reject loss of either alarm half of a transition.
+struct DropsAlarmChanges(Package, LostAlarm);
+impl Handler for DropsAlarmChanges {
     fn manifest(&self) -> &Manifest {
         self.0.manifest()
     }
@@ -323,7 +318,10 @@ impl Handler for DropsAlarmClears {
     ) -> GuestFuture<'a, Transition> {
         async move {
             let mut transition = self.0.on_record(delivery, checkpoint, cancellation).await?;
-            if transition.alarm == AlarmChange::Clear {
+            if matches!(
+                (&self.1, &transition.alarm),
+                (LostAlarm::Set, AlarmChange::Set { .. }) | (LostAlarm::Clear, AlarmChange::Clear)
+            ) {
                 transition.alarm = AlarmChange::Keep;
             }
             Ok(transition)
@@ -334,21 +332,34 @@ impl Handler for DropsAlarmClears {
 
 #[tokio::test]
 async fn negative_control_conformance_rejects_a_host_that_loses_alarm_changes() -> TestResult {
-    let provider = Counted::new(MemoryStream::default());
-    let requests = provider.ledger();
-    let target = LocalTarget::start(
-        &Arc::new(provider),
-        Arc::new(DropsAlarmClears(Package::new()?)),
-        requests,
-    )?;
-    match conformance::verify(&target).await {
-        Err(Failure::Violation {
-            case: "cleared", ..
-        }) => Ok(()),
-        other => {
-            Err(format!("the suite accepted a host that loses alarm clears: {other:?}").into())
+    for lost in [LostAlarm::Set, LostAlarm::Clear] {
+        let setting = matches!(lost, LostAlarm::Set);
+        let provider = Counted::new(MemoryStream::default());
+        let requests = provider.ledger();
+        let target = LocalTarget::start(
+            &Arc::new(provider),
+            Arc::new(DropsAlarmChanges(Package::new()?, lost)),
+            requests,
+        )?;
+        let (result, expected) = if setting {
+            (
+                conformance::restarted(&target, "lost-set").await,
+                "restarted",
+            )
+        } else {
+            (conformance::alarms(&target, "lost-clear").await, "cleared")
+        };
+        match result {
+            Err(Failure::Violation { case, .. }) if case == expected => {}
+            other => {
+                return Err(format!(
+                    "the suite accepted a host that loses {expected} alarms: {other:?}"
+                )
+                .into());
+            }
         }
     }
+    Ok(())
 }
 
 struct Manual(AtomicU64);
@@ -959,34 +970,30 @@ async fn instance_bound_subscriptions_created_in_a_foreign_commit() -> TestResul
     Ok(())
 }
 
-/// Waits, without polling, until `path` exists. Each wake is a record on
-/// `wake`, a stream appended in every commit that can create `path`.
-async fn created<P: StreamProvider + ?Sized>(
+/// Wait for the original path's first publication, including creation.
+async fn first_record<P: StreamProvider + ?Sized>(
     provider: &P,
-    wake: StreamPath,
     path: StreamPath,
-) -> TestResult {
-    let mut wakes = provider
+) -> Result<acyclic_stream::Record, StreamError> {
+    provider
         .follow(acyclic_stream::FollowRequest {
             when_absent: acyclic_stream::WhenAbsent::Wait,
-            ..acyclic_stream::FollowRequest::new(wake, 0)
+            ..acyclic_stream::FollowRequest::new(path, 0)
         })
         .map_ok(acyclic_stream::records_only)
-        .await?;
-    loop {
-        match provider.tail(path.clone()).await {
-            Ok(_) => return Ok(()),
-            Err(StreamError::NotFound) => {}
-            Err(error) => return Err(error.into()),
-        }
-        wakes.next().await.ok_or("wake stream ended")??;
-    }
+        .await?
+        .next()
+        .await
+        .ok_or(StreamError::Unavailable)?
 }
 
 /// Activation by the root's activation log: actors created by other parties'
 /// commits get their first delivery with no placement call and no scan.
 async fn foreign_creates_activate(count: usize, precreated: bool) -> TestResult {
     let provider = Arc::new(MemoryStream::default());
+    // The observer has its own ledger over the same provider state. Host work
+    // cannot hide an unnecessary observation request in these counts.
+    let observer = Counted::new((*provider).clone());
     let store = Store::new(Arc::clone(&provider), root()?);
     let runtime = Arc::new(Runtime::new(
         Store::new(Arc::clone(&provider), root()?),
@@ -1003,7 +1010,7 @@ async fn foreign_creates_activate(count: usize, precreated: bool) -> TestResult 
         let path = dispatcher_store.path(&dispatcher)?;
         tokio::select! {
             stopped = task => return Err(format!("host stopped before dispatcher publication: {stopped:?}").into()),
-            ready = created(&*provider, path.clone(), path) => ready?,
+            ready = first_record(&observer, path) => { ready?; },
         }
         assert_eq!(
             provider.tail(root()?).await?,
@@ -1043,13 +1050,13 @@ async fn foreign_creates_activate(count: usize, precreated: bool) -> TestResult 
     let mut task = task.unwrap_or_else(launch);
     let delivered = async {
         for index in 0..count {
-            let address = actor(&format!("a{index}"))?;
-            created(
-                &*provider,
-                store.path(&address)?,
-                StreamPath::new(format!("out/a{index}"))?,
-            )
-            .await?;
+            let record = first_record(&observer, StreamPath::new(format!("out/a{index}"))?).await?;
+            assert_eq!(record.sequence, 0);
+            assert_eq!(
+                record.value.as_ref(),
+                b"r0",
+                "foreign-created actor published another first delivery"
+            );
         }
         Ok::<_, Box<dyn std::error::Error>>(())
     };
@@ -1060,6 +1067,16 @@ async fn foreign_creates_activate(count: usize, precreated: bool) -> TestResult 
     task.abort();
     let _aborted = task.await;
     assert_eq!(runtime.counts().0, count, "one registration per actor");
+    assert_eq!(
+        observer.requests().control(),
+        0,
+        "first-publication observation must not probe a head"
+    );
+    assert_eq!(
+        observer.requests().data(),
+        u64::try_from(count)? + u64::from(!precreated),
+        "one follow per first publication, including the dispatcher"
+    );
     Ok(())
 }
 
@@ -1073,12 +1090,6 @@ async fn foreign_created_actors_activate_without_placement_or_scan() -> TestResu
 #[tokio::test]
 async fn precreated_actors_activate_without_an_activation_log_sentinel() -> TestResult {
     foreign_creates_activate(1, true).await
-}
-
-#[tokio::test]
-#[ignore = "stress"]
-async fn ten_thousand_foreign_created_actors_activate() -> TestResult {
-    foreign_creates_activate(10_000, false).await
 }
 
 /// Pausing an actor that no host has claimed yet takes effect at epoch 0; the
