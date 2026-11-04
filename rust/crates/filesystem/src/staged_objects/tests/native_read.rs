@@ -178,6 +178,50 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
             maximum_bytes: durable[1].1.len() as u64,
         },
     ];
+    // Measure the real provider's retained batch and the same private wait's
+    // scratch separately. The mixed wait must retain both, including the
+    // provider vector after its first result has moved into the output.
+    let private_live = {
+        let work = NativeMaterializationWork::new(native_read_budget(), &token)
+            .map_err(|(error, _)| error)?;
+        let baseline = work.live_allocation_bytes();
+        let private_requests = [requests[1]; 3];
+        let spill_file = store.spill_io.write().await;
+        let mut context = AuthorityWork::native(&work, &token);
+        let mut read = Box::pin(store.read_many(&private_requests, &mut context));
+        assert!(futures::poll!(read.as_mut()).is_pending());
+        let live = work.live_allocation_bytes() - baseline;
+        drop(read);
+        drop(spill_file);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+        live
+    };
+    let provider_live = {
+        let work = NativeMaterializationWork::new(native_read_budget(), &token)
+            .map_err(|(error, _)| error)?;
+        let baseline = work.live_allocation_bytes();
+        let (values, allocation) = store
+            .inner()
+            .read_many(
+                &[requests[0], requests[2]],
+                &mut AuthorityWork::native(&work, &token),
+            )
+            .await?;
+        assert_eq!(values[0].bytes, durable[0].1);
+        assert_eq!(values[1].bytes, durable[1].1);
+        assert_eq!(
+            allocation
+                .as_ref()
+                .expect("native provider allocation")
+                .bytes(),
+            (values.capacity() * std::mem::size_of::<ObjectRead>()) as u64
+        );
+        let live = work.live_allocation_bytes() - baseline;
+        drop(values);
+        drop(allocation);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+        live
+    };
     for (batch, mixed, exit) in [
         (false, false, 0),
         (true, false, 0),
@@ -234,6 +278,13 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
             }
         );
         assert!(work.live_allocation_bytes() > NativeMaterializationWork::accounting_state_bytes());
+        if mixed {
+            assert_eq!(
+                work.live_allocation_bytes(),
+                NativeMaterializationWork::accounting_state_bytes() + private_live + provider_live,
+                "the pending mixed batch must retain the original provider backing"
+            );
+        }
         if exit == 0 {
             drop(future);
             drop(spill_file);
