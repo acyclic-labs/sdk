@@ -386,7 +386,6 @@ fn distribute(group: &Group, outcome: crate::AppendGroupOutcome) -> Result<(), c
                         .authentication
                         .as_mut()
                         .ok_or(crate::FsError::InvalidAuthorityHistory)?
-                        .value
                         .pending
                         .take()
                         .and_then(|pending| pending.publish(&outcome));
