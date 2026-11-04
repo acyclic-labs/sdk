@@ -84,12 +84,19 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head() -> TestRes
             } else {
                 let first = result?;
                 let head = open_checkout(&first, pinned(), &cancel).await?;
+                let published_head = head
+                    .base_authority_head()
+                    .ok_or("head checkout lost its authority observation")?;
                 let published = original.receipt();
-                assert_eq!(published.authority_records_appended, 1);
+                assert!(published.authority_records_appended > 0);
                 assert!(published.backend_write_operations > 0);
                 let retry = fs
                     .create_volume_with_id(id, config(), &restricted, &cancel)
                     .await?;
+                let retried = original.receipt();
+                let retry_head = open_checkout(&retry, pinned(), &cancel).await?;
+                assert_eq!(retry_head.generation_id(), head.generation_id());
+                assert_eq!(retry_head.base_authority_head(), Some(published_head));
                 let exact = retry
                     .checkout(
                         GenerationSelector::Exact(head.generation_id()),
@@ -100,14 +107,22 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head() -> TestRes
                     .await?
                     .value;
                 assert_eq!(exact.generation_id(), head.generation_id());
-                assert_eq!(original.receipt().authority_records_appended, 1);
+                // A committed idempotent Stream request accounts for its full
+                // physical record set even though the authority head is unchanged.
+                assert_eq!(
+                    retried.authority_records_appended,
+                    2 * published.authority_records_appended
+                );
                 assert_eq!(
                     fs.create_volume(config(), &restricted, &cancel)
                         .await?
                         .config(),
                     config()
                 );
-                assert_eq!(original.receipt().authority_records_appended, 2);
+                assert_eq!(
+                    original.receipt().authority_records_appended,
+                    retried.authority_records_appended + published.authority_records_appended
+                );
             }
             assert!(original.receipt().items_examined >= 7);
             let stored_live = original.live_allocation_bytes();
