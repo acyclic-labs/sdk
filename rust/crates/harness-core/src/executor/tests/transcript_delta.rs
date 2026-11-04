@@ -43,6 +43,7 @@ async fn a_thousand_request_deltas_write_only_the_suffix_and_reopen_exact_bytes(
     let mut prepared = request(&[message(1)])?;
     let mut previous = None;
     let mut largest_delta = 0;
+    let mut total_files = 0;
     for step in 1..=1000 {
         if step > 1 {
             let mut continuation = prepared.into_continuation();
@@ -66,16 +67,24 @@ async fn a_thousand_request_deltas_write_only_the_suffix_and_reopen_exact_bytes(
             usize::from(step > 2)
         );
         let prefix = format!("{operation}:{key}");
-        let children = format!("{prefix}:");
-        let (files, bytes) = journal
-            .1
-            .lock()
-            .unwrap()
+        let (files, bytes) = {
+            let stored = journal.1.lock().unwrap();
+            let (files, bytes) = [
+                format!("{prefix}:header"),
+                format!("{prefix}:messages"),
+                prefix,
+            ]
             .iter()
-            .filter(|(key, _)| key.starts_with(&children) || **key == prefix)
-            .fold((0, 0), |(files, bytes), (_, (_, value))| {
+            .filter_map(|key| stored.get(key))
+            .fold((0, 0), |(files, bytes), (_, value)| {
                 (files + 1, bytes + value.len())
             });
+            // This journal is dedicated to the immutable request writer. The
+            // total also catches unexpected files without scanning old steps.
+            total_files += files;
+            assert_eq!(stored.len(), total_files, "unaccounted request files");
+            (files, bytes)
+        };
         assert_eq!(
             files,
             match step {
