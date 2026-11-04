@@ -6,6 +6,38 @@ use prost_types::{
 };
 
 #[test]
+fn descriptor_authorization_rejects_undeclared_actions() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    for (action, admitted) in [
+        ("streams/follow", true),
+        ("streams/raed", false),
+        ("execution/actor-turn", false),
+    ] {
+        let source = format!(
+            "syntax = \"proto3\"; package test; import \"validation/v1/options.proto\"; message Empty {{}} service Test {{ rpc Call(Empty) returns (Empty) {{ option (acyclic.validation.v1.auth) = {{ action: {action:?} resource: \"stream_path\" }}; }} }}"
+        );
+        let input = root.path().join("test.proto");
+        let output = root.path().join("test.bin");
+        std::fs::write(&input, source)?;
+        config()?.file_descriptor_set_path(&output).load_fds(
+            &[input],
+            &[
+                root.path().to_owned(),
+                shared_protocols(),
+                protoc_bin_vendored::include_path()?,
+            ],
+        )?;
+        let bytes = std::fs::read(&output)?;
+        assert_eq!(
+            canonicalize(&bytes, &["test.proto"]).is_ok(),
+            admitted,
+            "{action}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn every_compiled_descriptor_is_byte_identical_to_its_wire_baseline()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

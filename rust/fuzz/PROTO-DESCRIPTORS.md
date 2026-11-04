@@ -23,4 +23,12 @@ cargo +nightly fuzz run --fuzz-dir . proto_descriptors --no-default-features --f
 
 `mutations/proto-descriptors-reject-all.patch` changes the actual production canonicalizer to reject nonempty inputs. The old conditional oracle admits this defect; the repaired oracle must fail with `canonical production writer descriptor refused`. Restore production source before running the healthy corpus. A compiler failure is not defect detection.
 
+The oracle also changes one action byte in each selected compiler output that
+carries the shared authorization catalog, retaining protobuf framing and every
+other captured byte. `mutations/proto-descriptors-undeclared-action.patch`
+removes production vocabulary admission; the unchanged oracle must fail with
+`descriptor must refuse an undeclared action`. The property
+`descriptor_authorization_rejects_undeclared_actions` separately compiles real
+method options through protoc and the public canonicalizer.
+
 The generated source-location/field-number property remains: its generated domain is not subsumed by retained compiler outputs. Finite execution and feedback counters do not establish complete source branches, unknown-option preservation, malformed-input refusal, compiler version independence or deployed service behavior. Source branch coverage and additional semantic mutations remain open.

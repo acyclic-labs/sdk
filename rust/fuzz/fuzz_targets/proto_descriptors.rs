@@ -35,6 +35,20 @@ fuzz_target!(|bytes: &[u8]| {
         Some(*writer),
         "canonical production writer descriptor refused or changed"
     );
+    // Mutate captured compiler output while preserving protobuf framing.
+    // Contracts without authorization metadata do not carry this catalog.
+    let action = b"actors/invoke";
+    if let Some(position) = writer
+        .windows(action.len())
+        .position(|value| value == action)
+    {
+        let mut undeclared = writer.to_vec();
+        undeclared[position + action.len() - 1] = b'!';
+        assert!(
+            acyclic_proto_build::canonicalize(&undeclared, roots).is_err(),
+            "descriptor must refuse an undeclared action"
+        );
+    }
     if let Ok(canonical) = acyclic_proto_build::canonicalize(bytes, roots) {
         assert_eq!(
             acyclic_proto_build::canonicalize(&canonical, roots)

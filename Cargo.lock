@@ -163,6 +163,7 @@ name = "acyclic-auth-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-auth-action",
  "acyclic-auth-wasm",
  "ed25519-dalek 3.0.0",
  "libfuzzer-sys",
