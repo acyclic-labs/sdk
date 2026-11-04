@@ -1,0 +1,14 @@
+diff --git a/rust/crates/harness-core/src/model/instruction_reads.rs b/rust/crates/harness-core/src/model/instruction_reads.rs
+--- a/rust/crates/harness-core/src/model/instruction_reads.rs
++++ b/rust/crates/harness-core/src/model/instruction_reads.rs
+@@ -74,6 +74,10 @@
+                 else {
+                     continue;
+                 };
++                for earlier in prior.iter().flat_map(|message| message.content.parts()) {
++                    std::hint::black_box(earlier);
++                    super::instruction_index::step(io, 1)?;
++                }
+                 let key = hash_bytes(call_id.as_bytes(), io)?;
+                 // Consume every result, including non-string/partial/non-read results.
+                 let paired = calls
