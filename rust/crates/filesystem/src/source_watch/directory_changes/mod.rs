@@ -237,10 +237,7 @@ impl Shared {
     }
     /// The caller owns this watch's sole blocking wait. Its original
     /// collector registration also wakes the wait on producer loss.
-    fn wait_for(
-        &self,
-        mut ready: impl FnMut() -> Result<bool, DemandError>,
-    ) -> Result<bool, DemandError> {
+    fn wait_for(&self, ready: impl Fn() -> Result<bool, DemandError>) -> Result<bool, DemandError> {
         if ready()? {
             return Ok(true);
         }

@@ -56,7 +56,7 @@ static PORT: OnceLock<Result<Port, i32>> = OnceLock::new();
 
 /// Set once the port's thread has ended; nothing collects packets after it.
 static LOST: AtomicBool = AtomicBool::new(false);
-/// The watches whose callers block in `await_completion`, by key. The
+/// The watches whose callers block in `wait_for`, by key. The
 /// thread's end wakes each one; it sets `LOST` before reading this set.
 static WAITING: LazyLock<Mutex<HashSet<usize>>> = LazyLock::new(Mutex::default);
 
@@ -77,8 +77,8 @@ fn waiting() -> MutexGuard<'static, HashSet<usize>> {
     WAITING.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// One caller blocked on a watch's next collection, registered so the
-/// thread's end can wake it. Only one holder of a watch's reads waits.
+/// One caller blocked on a watch's next publication, registered so the
+/// thread's end can wake it. The caller owns the watch's sole blocking wait.
 pub(super) struct Waiting<'a>(&'a Shared);
 
 impl<'a> Waiting<'a> {
