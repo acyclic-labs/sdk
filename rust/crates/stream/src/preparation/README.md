@@ -25,3 +25,26 @@ git apply -R rust/crates/stream/src/preparation/repeated_search.patch
 The planted mutation restores the production binary search. Require the runtime
 assertion `selection searched settled history again`; a compilation failure is
 not detection. Restore the exact source and require the same property to pass.
+
+## Canonical shape membership
+
+Normalization sorts conditions and mutations and rejects duplicate paths before
+shape validation. Condition selection advances one cursor over that original
+condition slice. Each comparison consumes a condition or finishes one mutation,
+so there are at most C + M comparisons for C conditions and M mutations.
+The first soft append that needs a carrier checks the original mutation slice;
+subsequent soft appends reuse that result. Requests without such a soft append
+do no carrier scan. Both operations allocate and copy nothing, and add no wait.
+Fork-descendant overlap validation is unchanged and has a separate cost.
+
+The same property now covers 768 canonical mixed and soft-only-prefix requests,
+with carriers both before and after soft appends and unmatched conditions on
+both sides of mutation paths. The production shape validator's observer counts
+condition comparisons and carrier examinations independently. The public entry
+point runs that same implementation with a zero-sized observer.
+
+The retained `repeated_shape_search.patch` restores both repeated walks in the
+production validator. Apply it, run the same exact property command above, and
+require `shape validation repeated scans: carrier and condition excess` with
+nonzero excess in both fields. Restore with `git apply -R` and require the same
+property to pass. Compilation failures are not detection.
