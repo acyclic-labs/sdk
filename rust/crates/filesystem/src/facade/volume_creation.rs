@@ -97,29 +97,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         measured(result, &accounting)
     }
     /// Opens one volume using its authenticated immutable configuration.
-    pub async fn open_volume(
+    /// Reads and temporary backing use the supplied work source; native work
+    /// retains its original admission and cancellation through authority replay.
+    pub async fn open_volume<W: FsWork>(
         &self,
         volume_id: VolumeId,
-        budget: WorkBudget,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> FsResult<Volume<A, O>> {
-        cancellation
-            .check()
-            .map_err(|error| OperationFailure::before_work(error.into()))?;
-        let observed = self
-            .read_creation_record(volume_id, budget, cancellation)
-            .await?;
-        let config = observed.value.0.config;
-        validate_volume_capabilities(config, self.inner.capabilities)
-            .map_err(|error| OperationFailure::new(error, observed.work))?;
-        Ok(OperationReceipt {
-            value: Volume {
+    ) -> W::Output<Volume<A, O>, FsError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = async {
+            let config = self
+                .read_creation(volume_id, &mut accounting, cancellation)
+                .await?
+                .0
+                .config;
+            validate_volume_capabilities(config, self.inner.capabilities)?;
+            Ok(Volume {
                 fs: self.clone(),
                 id: volume_id,
                 config,
-            },
-            work: observed.work,
-        })
+            })
+        }
+        .await;
+        work.finish(result, &accounting)
     }
     /// Restores a volume authority from a fully imported immutable generation.
     pub async fn restore_volume(
