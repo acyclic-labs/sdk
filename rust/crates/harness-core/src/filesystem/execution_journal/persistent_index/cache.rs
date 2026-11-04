@@ -190,21 +190,11 @@ mod tests {
                 );
             }
             if update == 99 {
-                self.retained = cache
-                    .io
-                    .as_ref()
-                    .expect("funded cache")
-                    .remaining()?
-                    .peak_allocation_bytes;
+                self.retained = cache.io.as_ref().expect("funded cache").owned_bytes()?;
             }
             if update >= 100 {
                 assert_eq!(
-                    cache
-                        .io
-                        .as_ref()
-                        .expect("funded cache")
-                        .remaining()?
-                        .peak_allocation_bytes,
+                    cache.io.as_ref().expect("funded cache").owned_bytes()?,
                     self.retained,
                     "settled page metadata grew with update count"
                 );
@@ -403,6 +393,7 @@ mod tests {
         let mut misses = 0;
         let mut maximum_items = 0;
         let mut maximum_allocations = 0;
+        let mut settled = None;
         for sequence in 1..=1_000_u64 {
             if cache.get(hot, Some(&io))?.is_none() {
                 misses += 1;
@@ -424,6 +415,14 @@ mod tests {
                 "page cache insertion copied prior backing"
             );
             assert!(cache.len <= HOT_PAGES);
+            if cache.len == HOT_PAGES {
+                let remaining = io.remaining()?.peak_allocation_bytes;
+                assert_eq!(
+                    remaining,
+                    *settled.get_or_insert(remaining),
+                    "fixed page residency grew its original node or payload funding"
+                );
+            }
         }
         eprintln!(
             "publication churn=1000 native={_native} hot_page_misses={misses} maximum_items={maximum_items} maximum_allocations={maximum_allocations}"
