@@ -76,6 +76,10 @@ impl Progress {
     pub(super) fn cancel(&self) {
         self.ownership.fetch_or(CANCELLED, Ordering::AcqRel);
     }
+    pub(super) fn cancel_and_remove(&self, removed: &super::signal::Signal<u64>, id: u64) {
+        self.cancel();
+        let _ = removed.send(id);
+    }
     pub(super) fn cancelled(&self) -> bool {
         self.ownership.load(Ordering::Acquire) & CANCELLED != 0
     }

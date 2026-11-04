@@ -91,8 +91,7 @@ pub(crate) struct PoolHandle {
 
 impl PoolHandle {
     fn cancel_interest(&self, id: u64, progress: &Progress) {
-        self.admissions.cancel(id, progress);
-        let _ = self.removed.send(id);
+        self.admissions.cancel(id, progress, &self.removed);
     }
     fn retire_interest(&self, id: u64, progress: &Progress) {
         self.cancel_interest(id, progress);

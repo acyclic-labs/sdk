@@ -38,6 +38,45 @@ fn opening_retirement_negative_control_erases_the_transport_handoff() {
     verify_opening_retirement(true);
 }
 
+/// Pool dispatch drains this real queue before admitting a successor. Visible
+/// cancellation must therefore publish its removal under the queue's lock.
+#[cfg(test)]
+fn verify_retirement_publication(broken: bool) {
+    loom::model(move || {
+        let progress = Arc::new(Progress::new(0));
+        let removed = Arc::new(super::super::signal::Signal::new());
+        let retiring = Arc::clone(&progress);
+        let queue = Arc::clone(&removed);
+        let retirement = loom::thread::spawn(move || {
+            if broken {
+                retiring.cancel();
+                queue.send(1).unwrap();
+            } else {
+                retiring.cancel_and_remove(&queue, 1);
+            }
+        });
+        if progress.cancelled() {
+            assert_eq!(
+                removed.try_next().unwrap(),
+                Some(1),
+                "visible retirement must precede successor admission"
+            );
+        }
+        retirement.join().unwrap();
+    });
+}
+
+#[test]
+fn opening_retirement_publishes_removal_with_cancellation() {
+    verify_retirement_publication(false);
+}
+
+#[test]
+#[should_panic(expected = "visible retirement must precede successor admission")]
+fn opening_retirement_negative_control_separates_removal_from_cancellation() {
+    verify_retirement_publication(true);
+}
+
 /// One application thread races one placement fence over the production lock.
 /// No Tokio synchronization or transport state is substituted for this cut.
 pub fn verify_latest_progress(broken: bool) {
