@@ -223,7 +223,7 @@ not json naming a session_id
     assert_eq!(
         fixture
             .owner
-            .session_value(&child)
+            .session_value(&child, true)
             .await?
             .pointer("/results/0/outcome/Failed/message"),
         Some(&json!(diagnostic)),
@@ -347,7 +347,7 @@ not json naming a session_id
     assert_eq!(
         fixture
             .owner
-            .session_value(&child)
+            .session_value(&child, true)
             .await?
             .pointer("/results/0/outcome"),
         Some(&expected)
@@ -367,7 +367,7 @@ not json naming a session_id
     assert_eq!(
         fixture
             .owner
-            .session_value(&child)
+            .session_value(&child, true)
             .await?
             .pointer("/results/0/outcome"),
         Some(&expected),

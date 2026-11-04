@@ -1140,7 +1140,8 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             inbox: spawned["inbox"].as_u64().unwrap(),
         })?;
         assert_eq!(reply["reply"]["outcome"], expected);
-        assert_eq!(reply["results"][0]["outcome"], expected);
+        assert!(reply.get("results").is_none(), "a reply carries its outcome once");
+        assert_eq!(session(SessionAction::Observe)?["results"][0]["outcome"], expected);
         // A replayed completion of the settled turn is idempotent.
         assert_eq!(complete(claim)?["status"]["turn"], 1);
         assert!(session(SessionAction::Next)?.is_null());
