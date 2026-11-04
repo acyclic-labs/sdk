@@ -170,7 +170,7 @@ impl HostRoot {
             stable_object_ids(unique)
         };
         #[cfg(windows)]
-        let generation = stable_object_ids(reports_every_change(&self.directory(), work)?);
+        let generation = stable_object_ids(reports_every_change(&self.directory_handle(), work)?);
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         let generation = stable_object_ids(false);
         #[cfg(target_os = "linux")]
