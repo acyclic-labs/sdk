@@ -13,7 +13,7 @@ use acyclic_harness::{
     interaction::ApprovalBinding,
     tui::{
         Action, AppAction, Editor, InputEffect, PromptInput, QueryController, QueryPage, Screen,
-        TranscriptRows, Viewport,
+        Thinking, TranscriptRows, Viewport,
         key_event::InputEvent,
         ratatui::{
             layout::{Position, Rect, Size},
@@ -602,6 +602,16 @@ pub async fn run(
             query::load(Arc::clone(&conversation), rows, source.clone())
         });
         tokio::select! {
+            () = async {
+                if areas.animation {
+                    // A visible activity label owns its next frame. Idle and
+                    // reduced-motion views keep waiting on input or updates.
+                    let delay = Thinking::FRAME_MS - now % Thinking::FRAME_MS;
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                } else {
+                    std::future::pending().await
+                }
+            } => {}
             (query, result) = async {
                 match usage_future.as_mut().as_pin_mut() {
                     Some(query) => query.await,
