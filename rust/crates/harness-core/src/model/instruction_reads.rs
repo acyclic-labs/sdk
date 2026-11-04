@@ -6,30 +6,30 @@ pub(crate) fn deduplicate_reads(
     messages: &mut [ModelMessage],
     io: Option<&PreparationIo>,
 ) -> Result<bool> {
-    let mut parts_count = 0usize;
     let mut instructions = false;
-    for message in messages.iter() {
+    'presence: for message in messages.iter() {
         super::instruction_index::step(io, 1)?;
         for part in message.content.parts() {
             super::instruction_index::step(io, 1)?;
-            parts_count = parts_count
-                .checked_add(1)
-                .ok_or_else(super::inventory::overflow)?;
-            instructions |= matches!(
+            if matches!(
                 part,
                 ModelContentPart::File {
                     policy: FileProjectionPolicy::ProjectInstructions(_),
                     ..
                 }
-            );
+            ) {
+                instructions = true;
+                break 'presence;
+            }
         }
     }
     if !instructions {
         return Ok(false);
     }
     with_history_io(io, |work| {
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let mut index_map = super::instruction_index::Index::new(parts_count, &mut quota)?;
+        let original = crate::wire_codec::BorrowedIndexWork::new(work);
+        let mut sources = acyclic_collections::FixedIndex::<(usize, usize), _, 32>::default();
+        let mut calls = acyclic_collections::FixedIndex::<(usize, usize), _, 32>::default();
         let mut changed = false;
         for index in 0..messages.len() {
             super::instruction_index::step(io, 1)?;
@@ -51,15 +51,16 @@ pub(crate) fn deduplicate_reads(
                             source.path(),
                             io,
                         )?;
-                        index_map.set(0, key, Some((index, part_index)), io)?;
+                        *sources.get_or_try_insert_with(key, &mut &original, |_| {
+                            Ok((index, part_index))
+                        })? = (index, part_index);
                     }
                     ModelContentPart::ToolCall(call) => {
-                        index_map.set(
-                            1,
+                        *calls.get_or_try_insert_with(
                             hash_bytes(call.call_id.as_bytes(), io)?,
-                            Some((index, part_index)),
-                            io,
-                        )?;
+                            &mut &original,
+                            |_| Ok((index, part_index)),
+                        )? = (index, part_index);
                     }
                     _ => {}
                 }
@@ -72,9 +73,10 @@ pub(crate) fn deduplicate_reads(
                     continue;
                 };
                 let key = hash_bytes(call_id.as_bytes(), io)?;
-                let paired = index_map.get(1, &key, io)?;
                 // Consume every result, including non-string/partial/non-read results.
-                index_map.set(1, key, None, io)?;
+                let paired = calls
+                    .remove(key, &mut &original)?
+                    .map(|entry| *entry.value());
                 let Some((call_message, call_part)) = paired else {
                     continue;
                 };
@@ -152,7 +154,7 @@ pub(crate) fn deduplicate_reads(
                 }
                 let key =
                     super::instruction_index::source_key(read_file.volume(), read_file.path(), io)?;
-                let Some((source_message, source_part)) = index_map.get(0, &key, io)? else {
+                let Some(&(source_message, source_part)) = sources.get(key, &mut &original)? else {
                     continue;
                 };
                 let Some(ModelContentPart::File {
@@ -189,7 +191,6 @@ pub(crate) fn deduplicate_reads(
                 changed = true;
             }
         }
-        drop(index_map);
         Ok(changed)
     })
 }

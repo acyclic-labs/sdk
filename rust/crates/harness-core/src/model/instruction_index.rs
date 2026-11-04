@@ -49,19 +49,6 @@ impl<T: Copy> Index<T> {
         }
         Ok(())
     }
-    pub(super) fn new(
-        parts: usize,
-        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-    ) -> Result<Self> {
-        let capacity = parts
-            .checked_mul(2)
-            .ok_or_else(super::inventory::overflow)?;
-        Ok(Self {
-            nodes: crate::core::reserve_copy_vector(capacity, quota)?,
-            roots: [None; 2],
-            vacant: Vec::new(),
-        })
-    }
     pub(crate) fn get(
         &self,
         domain: usize,
