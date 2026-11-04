@@ -17,6 +17,9 @@ use std::sync::Arc;
 use bytes::Bytes;
 use http::HeaderMap;
 
+#[cfg(all(feature = "javascript", target_arch = "wasm32"))]
+pub mod javascript;
+
 /// Namespace of product response metadata a refusal retains.
 pub const METADATA_PREFIX: &str = "acyclic-";
 
