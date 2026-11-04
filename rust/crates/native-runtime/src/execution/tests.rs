@@ -508,7 +508,7 @@ fn native_preparation_preserves_original_operation_admission_and_late_failures()
 
 #[cfg(target_os = "linux")]
 #[test]
-fn bound_grant_proofs_use_original_operation_and_allocation_credits() {
+fn compiled_prefix_grant_proofs_use_original_operation_and_allocation_credits() {
     use std::sync::atomic::Ordering;
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");
@@ -564,6 +564,18 @@ fn bound_grant_proofs_use_original_operation_and_allocation_credits() {
                 return;
             }
             Err(error) => panic!("bound-object control failed: {error}"),
+        }
+        if path == &workspace {
+            let mut denied = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+            denied.item_limit = Some(0);
+            let error = ceiling
+                .check_attenuation_controlled(&requested, Some(&denied))
+                .unwrap_err();
+            assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+            // The workspace proof completes; denied index examinations cannot
+            // reach a selected read root's open or native subtree resolution.
+            assert_eq!(denied.read_attempts.load(Ordering::Acquire), 2);
+            assert_eq!(denied.memory.load(Ordering::Acquire), 0);
         }
         let admission = (0..=operations).map(|limit| (limit, None));
         let recording = (1..=operations).map(|failure| (u64::MAX, Some(failure)));
@@ -628,6 +640,18 @@ fn bound_grant_proofs_use_original_operation_and_allocation_credits() {
             assert_eq!(denied.memory.load(Ordering::Acquire), 0);
         }
     }
+    // An exact stale root must refuse even though its broader ancestor still
+    // authorizes newly created descendants. Indexing cannot skip that fence.
+    let replaced = ExecutionGrant::new(
+        &workspace,
+        ExecutionAccess::ReadOnly,
+        [external_nested],
+        ExecutionNetwork::Off,
+    )
+    .unwrap();
+    let error = ceiling.check_attenuation(&replaced).unwrap_err();
+    assert!(error.to_string().contains("root was replaced"));
+
     // A shared textual prefix is not a component ancestor. Neither that
     // sibling nor the parent of every selected root acquires read authority.
     for selection in [neighbor.as_path(), root.path()] {

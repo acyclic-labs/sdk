@@ -83,12 +83,17 @@ refuse subtree attenuation until an equivalent native operation is available;
 retaining the same verified roots can still remove writes or network authority.
 Explicit read-root matches are verified before overlapping subtree proofs, so
 retaining a granted root does not require subtree support from its ancestor.
-Descendant read proofs search only component ancestors in the original sorted
-root collection, rather than scanning every unrelated root. For a path with
-`D` ancestors and `R` declared roots this takes `O(D log R)` path comparisons,
-with no additional allocation, native operation or per-agent state. Overlapping
-roots retain their original shallowest-ancestor proof order; every selected
-object still undergoes the same native identity and rooted-resolution checks.
+Read roots compile once into the shared immutable byte-prefix radix table.
+One traversal finds the exact root and shallowest component ancestor in
+`O(requested path bytes)`, independently of unrelated root count. Canonical
+path bytes stay in their original bound roots; labels borrow those bytes and
+the flat node backing needs at most two nodes per root. Lookup allocates
+nothing and charges node/byte examinations to the original admission ledger.
+There is no fixed key width, hash, root scan or repeated ancestor search.
+Overlapping roots retain their original shallowest-ancestor proof order;
+every selected object still undergoes the same native identity and rooted
+resolution checks. Grant construction remains explicitly unmetered; the
+shared table also supports original caller-funded compilation.
 `ExecutionGrant::check_attenuation_async` runs that one object proof on the
 shared native workers. The task owns clones of the original grants and the
 original invocation meter until terminal completion. The checkout admission

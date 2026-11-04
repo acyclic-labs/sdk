@@ -2,6 +2,7 @@ use super::*;
 use proptest::prelude::*;
 use std::collections::BTreeMap;
 
+mod compiled_prefix;
 mod prefix;
 mod preparation;
 

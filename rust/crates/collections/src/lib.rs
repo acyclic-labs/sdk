@@ -1,15 +1,18 @@
 //! Caller-funded indexes and immutable page mechanics shared by primitives.
 //!
-//! Branch bits strictly increase along every path. Lookup therefore examines
-//! at most eight branches per key byte and one leaf, independent of entry count.
-//! Key widths share insertion, accounting, lookup and constant-space retirement.
+//! Radix lookup is bounded by the supplied key bytes, independently of entry
+//! count. Mutable fixed-width indexes share insertion and constant-space
+//! retirement; compiled variable-width prefixes retain one flat node table.
+//! Both carry the original caller's allocation and read admission.
 
 #[cfg(test)]
 acyclic_test_support::counting_allocator!();
 
 mod arc;
+mod compiled_prefix;
 pub mod page;
 pub use arc::arc_allocation_bytes;
+pub use compiled_prefix::{CompiledPrefixError, CompiledPrefixIndex, PrefixMatches};
 
 mod recent;
 pub use recent::RecentIndex;
@@ -24,13 +27,13 @@ mod keyed;
 pub use keyed::{BinaryKeyError, KeyedIndex, binary_key};
 
 /// Original admission for an allocation-free index read. The same issuing
-/// owner checks cancellation and accounts for every examined fixed-width key.
+/// owner checks cancellation and accounts for node and key examinations.
 pub trait IndexReadWork {
     /// The issuing owner's typed refusal or cancellation.
     type Error;
     /// Checks the original admission even for an empty index.
     fn validate(&mut self) -> Result<(), Self::Error>;
-    /// Accounts examined nodes and fixed-width key comparisons before use.
+    /// Accounts examined nodes and key comparisons before use.
     fn examine(&mut self, items: u64) -> Result<(), Self::Error>;
 }
 
