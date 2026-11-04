@@ -1,5 +1,24 @@
 use super::*;
 
+/// Canonically ordered portable paths for the selected stable file identities.
+/// The original work source funds these paths until this value is dropped.
+pub struct FileIdentityPaths {
+    paths: crate::kernel::allocation::retained::Retained<Vec<(FileId, Vec<String>)>>,
+    complete: bool,
+}
+
+impl FileIdentityPaths {
+    /// Selected identities and their admitted aliases, in canonical order.
+    pub fn entries(&self) -> &[(FileId, Vec<String>)] {
+        &self.paths.value
+    }
+
+    /// Whether every selected identity's authenticated aliases were returned.
+    pub const fn is_complete(&self) -> bool {
+        self.complete
+    }
+}
+
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<A, O> {
     pub(super) async fn first_path_at_with_accounting(
         &self,
@@ -39,53 +58,33 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation<A, O> {
-    /// Finds paths for one stable file identity under supplied work limits.
-    pub async fn paths_for_file_id(
+    /// Finds portable paths through each selected identity's authenticated parent edges.
+    /// Limits and cancellation apply to both traversal and portable projection.
+    pub async fn paths_for_file_ids<W: crate::facade::FsWork>(
         &self,
-        file_id: FileId,
+        file_ids: impl IntoIterator<Item = FileId>,
         maximum_entries: u32,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<Vec<String>>, WorkspaceError> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<FileIdentityPaths, WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
         let result = async {
-            let search = self
-                .namespace_records_with_accounting(
-                    &[file_id],
-                    maximum_entries,
-                    &mut accounting,
-                    cancellation,
-                )
+            let paths = self
+                .unaccounted_paths_for_file_ids(file_ids, maximum_entries)
                 .await?;
-            let mut paths = crate::kernel::Owned::allocate(0, &mut accounting)?;
-            if let Some(records) =
-                binary_search_with_accounting(&search.0.records, &mut accounting, |record| {
-                    record.0.cmp(&file_id)
-                })?
-                .ok()
-                .and_then(|index| search.0.records.get(index))
-                .map(|(_, records)| records)
-            {
-                for (path, _) in records {
-                    paths.ensure_for_push(records.len(), &mut accounting)?;
-                    let (text, mut allocation) =
-                        path.unicode_text_with_accounting(&mut accounting, cancellation)?;
-                    paths.allocation.absorb(&mut allocation)?;
-                    paths.bytes = paths
-                        .bytes
-                        .checked_add(text.capacity() as u64)
-                        .ok_or(crate::WorkError::Overflow)?;
-                    paths.value.push(text);
-                }
-            }
-            Ok(paths.value)
+            let mut retained =
+                crate::kernel::allocation::retained::Retained::allocate(0, &mut accounting)?;
+            retained.value = paths.into_iter().collect();
+            Ok(FileIdentityPaths {
+                paths: retained,
+                complete: true,
+            })
         }
         .await;
-        crate::facade::measured(result, &accounting)
+        work.finish(result, &accounting)
     }
 
-    /// Finds portable paths through each selected identity's authenticated parent edges.
-    pub async fn paths_for_file_ids(
+    async fn unaccounted_paths_for_file_ids(
         &self,
         file_ids: impl IntoIterator<Item = FileId>,
         maximum_entries: u32,

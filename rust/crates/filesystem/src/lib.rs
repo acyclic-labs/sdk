@@ -419,11 +419,12 @@ pub use windows_usn::{
 };
 pub use workspace::{
     ApplyOptions, ChangeSet, ChangedPath, ChangedPathEntry, ChangedPaths, DrivenJoinError,
-    FileCondition, ForkOptions, Generation, IdempotencyKey, JoinApplication, JoinBuilder,
-    JoinHistory, JoinOutcome, JoinPlan, Transaction, TransactionCommit, TransactionRebase,
-    Workspace, WorkspaceDelete, WorkspaceError, WorkspaceExtentKind, WorkspaceExtentPlan,
-    WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata, WorkspaceName, WorkspaceNameError,
-    WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase, WorkspaceRestore, WorkspaceStat,
+    FileCondition, FileIdentityPaths, ForkOptions, Generation, IdempotencyKey, JoinApplication,
+    JoinBuilder, JoinHistory, JoinOutcome, JoinPlan, Transaction, TransactionCommit,
+    TransactionRebase, Workspace, WorkspaceDelete, WorkspaceError, WorkspaceExtentKind,
+    WorkspaceExtentPlan, WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata, WorkspaceName,
+    WorkspaceNameError, WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase,
+    WorkspaceRestore, WorkspaceStat,
 };
 pub use workspace_context::{
     MemoryWorkspaceContextStore, MemoryWorkspaceContextStoreError, WorkspaceContext,
