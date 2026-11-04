@@ -181,7 +181,7 @@ pub(super) enum Event {
         brief: FileRef,
     },
     /// Claim the next input.
-    Claim,
+    Claim {},
     /// Settle the claimed input.
     Complete {
         /// The claim's operation.

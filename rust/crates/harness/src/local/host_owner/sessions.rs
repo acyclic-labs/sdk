@@ -253,7 +253,9 @@ impl HostWorkspaceOwner {
         } else if session.control != Control::Resume || session.running.is_none() {
             return Ok(Value::Null);
         } else {
-            self.native.request(child, operation, &Event::Claim).await?;
+            self.native
+                .request(child, operation, &Event::Claim {})
+                .await?;
         }
         let (state, session) = self.native.session(child).await?;
         let Some(Running {

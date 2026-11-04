@@ -75,7 +75,7 @@ pub(super) fn apply(
             });
             session.spawned.push(reference);
         }
-        Event::Claim => {
+        Event::Claim {} => {
             let reason = match &session.running {
                 None => Some("native session has no pending input"),
                 Some(running) if running.claimed.is_some() => Some("native input already claimed"),
