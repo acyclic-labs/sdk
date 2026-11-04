@@ -10,7 +10,7 @@
 use super::shared::{SharedViewEntry, SharedViews, run_shared_invalidator};
 use super::*;
 use crate::NativeMaterializationWork;
-use crate::native_mount::shared::instances::{Instance, Instances};
+use crate::native_mount::shared::instances::{Instances, Registration};
 use crate::native_mount::{
     MountDestinationGuard, detach_native_mount_destination_after_crash, native_mount_control_paths,
 };
@@ -31,6 +31,8 @@ pub(in crate::native_mount) struct SharedFuseInstance {
     state: Mutex<InstanceState>,
     // The instance's own meter: it outlives the view that started it.
     work: NativeMaterializationWork,
+    // The physical owner releases the root only after its native teardown.
+    _registration: Registration<Self>,
 }
 
 #[derive(Default)]
@@ -90,11 +92,12 @@ impl InstanceState {
 pub(in crate::native_mount) struct SharedFuseView {
     // Field order: the view retires before its instance reference drops.
     pub(super) entry: SharedViewEntry,
-    pub(super) _instance: Arc<Instance<SharedFuseInstance>>,
+    pub(super) _instance: Arc<SharedFuseInstance>,
 }
 
 impl SharedFuseInstance {
-    fn start(root: &Path) -> Result<Self, NativeMountError> {
+    fn start(registration: Registration<Self>) -> Result<Self, NativeMountError> {
+        let root = registration.root();
         let cancellation = crate::CancellationToken::new();
         let work = NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, _)| NativeMountError::from(cause))?;
@@ -120,7 +123,9 @@ impl SharedFuseInstance {
             path,
             state: Mutex::new(InstanceState::default()),
             work,
+            _registration: registration,
         };
+        let root = &instance.root;
         // Every failure below drops `instance`, whose teardown undoes the
         // steps already taken.
         let views = Arc::clone(&instance.views);

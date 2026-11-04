@@ -1,11 +1,11 @@
 //! The process's shared instances, one per root directory.
 //!
-//! An instance exists only while a view holds it: the registry keeps weak
-//! references, every view keeps a strong one, and dropping the last view
-//! tears the instance down, then unregisters it. Starts wait for that root's
-//! startup or teardown, so two instances never serve one root.
-//! A failed start drops the half-built instance outside the registry, so
-//! its teardown undoes only the steps it took.
+//! The registry keeps weak observer references. The factory owns the root's
+//! exclusive registration and retains it through native startup and physical
+//! teardown. Starts wait for that registration's publication or removal, so
+//! two instances never serve one root, including while physical cleanup
+//! outlives the last observer. Failed startup disposes its partial native
+//! owner outside the registry mutex before releasing the registration.
 
 use crate::native_mount::NativeMountError;
 use std::collections::HashMap;
@@ -18,32 +18,28 @@ pub(crate) struct Instances<I: 'static> {
 }
 
 struct Slot<I: 'static> {
-    instance: Weak<Instance<I>>,
+    instance: Weak<I>,
     // An empty weak reference means startup or physical teardown is pending.
     // The same registration publishes startup and acknowledges teardown.
-    changed: Arc<Condvar>,
+    state: Arc<RegistrationState>,
 }
 
-/// One registered instance. Dropping the last reference runs the adapter's
-/// teardown (its `Drop`) and only then frees the root for a new start.
-pub(crate) struct Instance<I: 'static> {
-    // Rust drops fields in declaration order: adapter teardown finishes before
-    // the registration releases the root to another instance.
-    inner: I,
-    _registration: Registration<I>,
-}
-
-struct Registration<I: 'static> {
-    root: PathBuf,
-    changed: Arc<Condvar>,
+/// The native owner's exclusive registration for one root. Keep it through
+/// partial startup cleanup and physical teardown; dropping it permits the
+/// next instance to start.
+pub(crate) struct Registration<I: 'static> {
+    state: Arc<RegistrationState>,
     registry: &'static Instances<I>,
 }
 
-impl<I> std::ops::Deref for Instance<I> {
-    type Target = I;
+struct RegistrationState {
+    root: PathBuf,
+    changed: Condvar,
+}
 
-    fn deref(&self) -> &I {
-        &self.inner
+impl<I> Registration<I> {
+    pub(crate) fn root(&self) -> &Path {
+        &self.state.root
     }
 }
 
@@ -56,13 +52,13 @@ impl<I> Drop for Registration<I> {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             if slots
-                .get(&self.root)
-                .is_some_and(|slot| Arc::ptr_eq(&slot.changed, &self.changed))
+                .get(&self.state.root)
+                .is_some_and(|slot| Arc::ptr_eq(&slot.state, &self.state))
             {
-                slots.remove(&self.root);
+                slots.remove(&self.state.root);
             }
         }
-        self.changed.notify_all();
+        self.state.changed.notify_all();
     }
 }
 
@@ -74,12 +70,12 @@ impl<I> Instances<I> {
     }
 
     /// Returns the live instance for `root`, or starts one with `start`,
-    /// which receives the canonical root.
+    /// which owns the canonical root registration until physical teardown.
     pub(crate) fn acquire(
         &'static self,
         root: &Path,
-        start: impl FnOnce(&Path) -> Result<I, NativeMountError>,
-    ) -> Result<Arc<Instance<I>>, NativeMountError> {
+        start: impl FnOnce(Registration<I>) -> Result<I, NativeMountError>,
+    ) -> Result<Arc<I>, NativeMountError> {
         // Canonicalize the parent only: a crash-left root may be a dead
         // mount whose own lookup fails, and its start must still reap it.
         let (Some(parent), Some(name)) = (root.parent(), root.file_name()) else {
@@ -98,38 +94,42 @@ impl<I> Instances<I> {
                 // The registration owns either startup publication or physical
                 // teardown. Both change this predicate under the same mutex;
                 // constructor failure or unwind removes the slot as well.
-                let changed = Arc::clone(&slot.changed);
+                let state = Arc::clone(&slot.state);
                 #[cfg(all(test, not(loom)))]
                 tests::before_wait();
-                drop(changed.wait(slots).unwrap_or_else(PoisonError::into_inner));
+                drop(
+                    state
+                        .changed
+                        .wait(slots)
+                        .unwrap_or_else(PoisonError::into_inner),
+                );
                 continue;
             }
-            let registration = Registration {
+            let state = Arc::new(RegistrationState {
                 root,
-                changed: Arc::new(Condvar::new()),
-                registry: self,
-            };
+                changed: Condvar::new(),
+            });
             slots.insert(
-                registration.root.clone(),
+                state.root.clone(),
                 Slot {
                     instance: Weak::new(),
-                    changed: Arc::clone(&registration.changed),
+                    state: Arc::clone(&state),
                 },
             );
             drop(slots);
             // The placeholder excludes another start for this root without
             // holding the registry across native startup or partial cleanup.
-            let instance = Arc::new(Instance {
-                inner: start(&registration.root)?,
-                _registration: registration,
-            });
+            let instance = Arc::new(start(Registration {
+                state: Arc::clone(&state),
+                registry: self,
+            })?);
             let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
             slots
-                .get_mut(&instance._registration.root)
+                .get_mut(&state.root)
                 .expect("startup owns the root registration")
                 .instance = Arc::downgrade(&instance);
             drop(slots);
-            instance._registration.changed.notify_all();
+            state.changed.notify_all();
             return Ok(instance);
         }
     }
@@ -166,12 +166,14 @@ mod tests {
 
     struct Counted {
         root: PathBuf,
+        _registration: Registration<Self>,
     }
 
-    fn start(root: &Path) -> Result<Counted, NativeMountError> {
+    fn start(registration: Registration<Counted>) -> Result<Counted, NativeMountError> {
         STARTS.fetch_add(1, Ordering::SeqCst);
         Ok(Counted {
-            root: root.to_owned(),
+            root: registration.root().to_owned(),
+            _registration: registration,
         })
     }
 
@@ -205,8 +207,8 @@ mod tests {
                 let starting_root = &first_root;
                 let pending = scope.spawn(move || {
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        INSTANCES.acquire(starting_root, |root| {
-                            let instance = start(root)?;
+                        INSTANCES.acquire(starting_root, |registration| {
+                            let instance = start(registration)?;
                             entered.send(()).expect("startup observer is present");
                             released.recv().expect("startup release is present");
                             match startup {

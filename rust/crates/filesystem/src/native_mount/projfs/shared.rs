@@ -23,7 +23,7 @@
 //!   joins the service and detaches the root. A process that dies leaves its
 //!   root to the shared-root reaper, which detaches and removes it.
 
-use super::super::shared::instances::{Instance, Instances};
+use super::super::shared::instances::{Instances, Registration};
 use super::super::shared::view_table::ViewLease;
 use super::super::shared::views::{NamedView, NamedViews};
 use super::*;
@@ -247,9 +247,7 @@ fn shared_callbacks() -> PRJ_CALLBACKS {
 static INSTANCES: Instances<SharedProjFsInstance> = Instances::new();
 
 #[cfg(test)]
-pub(super) fn acquire_instance(
-    root: &Path,
-) -> Result<Arc<Instance<SharedProjFsInstance>>, NativeMountError> {
+pub(super) fn acquire_instance(root: &Path) -> Result<Arc<SharedProjFsInstance>, NativeMountError> {
     INSTANCES.acquire(root, SharedProjFsInstance::start)
 }
 
@@ -261,6 +259,8 @@ pub(super) struct SharedProjFsInstance {
     staging: PathBuf,
     context: Option<PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT>,
     service: Option<super::service::ProjectorService>,
+    // The physical owner releases the root only after its native teardown.
+    _registration: Registration<Self>,
 }
 
 // SAFETY: the context is an opaque handle valid until the instance stops
@@ -270,14 +270,17 @@ unsafe impl Send for SharedProjFsInstance {}
 unsafe impl Sync for SharedProjFsInstance {}
 
 impl SharedProjFsInstance {
-    fn start(root: &Path) -> Result<Self, NativeMountError> {
+    fn start(registration: Registration<Self>) -> Result<Self, NativeMountError> {
+        let root = registration.root();
         let mut instance = Self {
             views: Arc::new(SharedViews::new(u64::MAX)),
             root: root.to_path_buf(),
             staging: staging_path(root),
             context: None,
             service: None,
+            _registration: registration,
         };
+        let root = &instance.root;
         // Every failure below drops `instance`, whose teardown undoes the
         // steps already taken.
         match std::fs::create_dir(&instance.staging) {
@@ -374,7 +377,7 @@ pub(in crate::native_mount) struct SharedProjFsView {
     directory: PathBuf,
     vacated: HashSet<Vec<u16>>,
     finished: bool,
-    instance: Arc<Instance<SharedProjFsInstance>>,
+    instance: Arc<SharedProjFsInstance>,
 }
 
 impl SharedProjFsView {
