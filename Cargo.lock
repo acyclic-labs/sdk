@@ -125,6 +125,8 @@ dependencies = [
  "futures",
  "http",
  "js-sys",
+ "napi",
+ "napi-derive",
  "proptest",
  "prost",
  "prost-reflect",
@@ -1334,6 +1336,7 @@ dependencies = [
 name = "acyclic-stream-napi"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth",
  "acyclic-stream",
  "async-trait",
  "futures",

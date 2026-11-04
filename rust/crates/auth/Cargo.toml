@@ -12,6 +12,7 @@ description = "Shared capability chain contract and verification"
 
 [features]
 javascript = ["dep:js-sys", "dep:wasm-bindgen"]
+native-javascript = ["dep:napi", "dep:napi-derive"]
 js-credential = ["javascript", "dep:wasm-bindgen-futures", "dep:web-sys"]
 grpc = ["dep:tonic", "dep:rustls", "dep:rustls-platform-verifier", "tokio/time"]
 test-support = ["dep:acyclic-differential"]
@@ -38,6 +39,8 @@ serde_json.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+napi = { workspace = true, optional = true }
+napi-derive = { workspace = true, optional = true }
 tonic = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 rustls-platform-verifier = { workspace = true, optional = true }

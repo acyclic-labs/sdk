@@ -20,6 +20,9 @@ use http::HeaderMap;
 #[cfg(all(feature = "javascript", target_arch = "wasm32"))]
 pub mod javascript;
 
+#[cfg(all(feature = "native-javascript", not(target_arch = "wasm32")))]
+pub mod native;
+
 /// Namespace of product response metadata a refusal retains.
 pub const METADATA_PREFIX: &str = "acyclic-";
 
