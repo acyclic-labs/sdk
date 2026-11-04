@@ -6,7 +6,7 @@ From the repository root:
 
 ```
 git apply rust/crates/filesystem/src/kernel/rebase/tests/repeated_order_validation.patch
-cargo nextest run --manifest-path rust/Cargo.toml --locked -p acyclic-fs --lib -E 'test(=kernel::rebase::footprint::tests::footprint_query_charges_the_exact_bounded_prefix)'
+cargo nextest run --locked -p acyclic-fs --lib -E 'test(=kernel::rebase::footprint::tests::footprint_query_charges_the_exact_bounded_prefix)'
 git apply -R rust/crates/filesystem/src/kernel/rebase/tests/repeated_order_validation.patch
 ```
 
