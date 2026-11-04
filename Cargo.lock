@@ -1140,6 +1140,7 @@ dependencies = [
  "acyclic-stream",
  "futures",
  "js-sys",
+ "prost",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
