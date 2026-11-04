@@ -8,19 +8,21 @@ use std::sync::{
 
 /// Publish retained diagnostics even when the original operation failed.
 /// A secondary publication failure cannot replace that original error.
-pub(super) fn retain_diagnostics<T, E: std::fmt::Display>(
+/// The inner result retains the operation's error type. An outer error reports
+/// failed diagnostics only when the operation itself succeeded.
+pub(super) fn retain_diagnostics<T, E, D: std::fmt::Display>(
     result: Result<T, E>,
-    publish: impl FnOnce() -> Result<(), E>,
+    publish: impl FnOnce() -> Result<(), D>,
     recovery: &str,
-) -> Result<T, E> {
+) -> Result<Result<T, E>, D> {
     let diagnostic = publish();
     match result {
-        Ok(value) => diagnostic.map(|()| value),
+        Ok(value) => diagnostic.map(|()| Ok(value)),
         Err(error) => {
             if let Err(diagnostic) = diagnostic {
                 eprintln!("STEP_FAILED diagnostic publication: {diagnostic}; recovery: {recovery}");
             }
-            Err(error)
+            Ok(Err(error))
         }
     }
 }
@@ -352,7 +354,7 @@ mod tests {
 
             let recovery = "cargo test --locked -p acyclic-conformance --test main native_projection::tests::original_task_projection_preserves_inline_work_and_abandonment -- --exact";
             let mut output = Vec::new();
-            let original = retain_diagnostics::<(), _>(
+            let original = retain_diagnostics::<(), _, _>(
                 Err(error),
                 || {
                     serde_json::to_writer(&mut output, &projection.snapshot())
@@ -360,6 +362,7 @@ mod tests {
                 },
                 recovery,
             )
+            .unwrap()
             .unwrap_err();
             assert_eq!(original.raw_os_error(), Some(code));
             let exported: serde_json::Value =
@@ -376,10 +379,12 @@ mod tests {
                 serde_json::to_writer(&mut writer, &projection.snapshot())
                     .map_err(std::io::Error::other)
             };
-            let original =
-                retain_diagnostics::<(), _>(Err(missing), &mut publish, recovery).unwrap_err();
+            let original = retain_diagnostics::<(), _, _>(Err(missing), &mut publish, recovery)
+                .unwrap()
+                .unwrap_err();
             assert_eq!(original.raw_os_error(), Some(original_code));
-            let sink = retain_diagnostics(Ok(()), &mut publish, recovery).unwrap_err();
+            let sink = retain_diagnostics(Ok::<_, std::io::Error>(()), &mut publish, recovery)
+                .unwrap_err();
             assert!(
                 sink.get_ref()
                     .and_then(|error| error.downcast_ref::<serde_json::Error>())

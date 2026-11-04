@@ -1,6 +1,5 @@
 use super::{
     actor_delivery::{Entries, EntryError},
-    calibrate::Floors,
     population::{Fixture, id, key, require_root},
     report::{Measurements, Observation, Quantiles, RawSamples, Result, Terms, emit, ns},
 };
@@ -58,9 +57,7 @@ macro_rules! timed {
             let start = Instant::now();
             let result = future.await;
             let elapsed = start.elapsed();
-            let observed = $rows.stop(before)?;
-            $rows.record($name, $floor, elapsed, observed, identity)?;
-            result
+            $rows.record_terminal($name, $floor, (elapsed, before), identity, result, emit)?
         } else {
             future.await
         }
@@ -89,7 +86,6 @@ pub(super) async fn run(
     fixture: &Fixture,
     agents: usize,
     samples: usize,
-    floors: &Floors,
     recovery: &str,
     operations: &[Operation],
 ) -> Result<(bool, acyclic_test_support::scale::Point)> {
@@ -105,45 +101,56 @@ pub(super) async fn run(
             .iter()
             .any(|operation| family.contains(operation))
     };
-    if any(&[
-        Operation::ObjectPut,
-        Operation::ObjectGet,
-        Operation::ObjectHead,
-        Operation::ObjectList,
-    ]) {
-        objects(fixture, samples, &mut rows).await?;
+    let result: Result = async {
+        if any(&[
+            Operation::ObjectPut,
+            Operation::ObjectGet,
+            Operation::ObjectHead,
+            Operation::ObjectList,
+        ]) {
+            objects(fixture, samples, &mut rows).await?;
+        }
+        if any(&[
+            Operation::StreamAppend,
+            Operation::StreamRead,
+            Operation::StreamFollow,
+        ]) {
+            streams(fixture, samples, &mut rows).await?;
+        }
+        if any(&[
+            Operation::ActorCreate,
+            Operation::ActorDurableWrite,
+            Operation::ActorWarmRead,
+        ]) {
+            actors(fixture, samples, &mut rows).await?;
+        }
+        if rows.includes(Operation::ActorWake) {
+            actor_delivery(fixture, agents, samples, &mut rows).await?;
+        }
+        if any(&[
+            Operation::PinnedRead,
+            Operation::StagedWrite,
+            Operation::Fsync,
+        ]) {
+            filesystem(fixture, samples, &mut rows).await?;
+        }
+        if rows.includes(Operation::SessionStart) {
+            sessions(fixture, agents, samples, &mut rows).await?;
+        }
+        Ok(())
     }
-    if any(&[
-        Operation::StreamAppend,
-        Operation::StreamRead,
-        Operation::StreamFollow,
-    ]) {
-        streams(fixture, samples, &mut rows).await?;
+    .await;
+    if let Err(error) = result {
+        return super::durability::retain_diagnostics(
+            Err(error),
+            || rows.publish_partial(&mut std::io::stdout().lock()),
+            recovery,
+        )?;
     }
-    if any(&[
-        Operation::ActorCreate,
-        Operation::ActorDurableWrite,
-        Operation::ActorWarmRead,
-    ]) {
-        actors(fixture, samples, &mut rows).await?;
-    }
-    if rows.includes(Operation::ActorWake) {
-        actor_delivery(fixture, agents, samples, &mut rows).await?;
-    }
-    if any(&[
-        Operation::PinnedRead,
-        Operation::StagedWrite,
-        Operation::Fsync,
-    ]) {
-        filesystem(fixture, samples, &mut rows).await?;
-    }
-    if rows.includes(Operation::SessionStart) {
-        sessions(fixture, agents, samples, &mut rows).await?;
-    }
-    rows.finish(floors)
+    rows.finish()
 }
 
-async fn objects(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> Result {
+async fn objects(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>) -> Result {
     let mut first = fixture
         .objects
         .list(None, 1)
@@ -238,7 +245,7 @@ async fn objects(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> 
     Ok(())
 }
 
-async fn streams(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> Result {
+async fn streams(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>) -> Result {
     let stream = Stream::new(fixture.stream.clone(), "benchmark/stream")?;
     let payload = Bytes::from(vec![0x5a; 1024]);
     let seed = stream.append(payload.clone(), key("stream-seed")?).await?;
@@ -343,7 +350,7 @@ async fn streams(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> 
     Ok(())
 }
 
-async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> Result {
+async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>) -> Result {
     let store = Store::new(fixture.stream.clone(), StreamPath::new("benchmark/actors")?);
     let mut address = None;
     let creates = if rows.includes(Operation::ActorCreate) {
@@ -551,7 +558,7 @@ async fn actor_delivery(
     fixture: &Fixture,
     agents: usize,
     samples: usize,
-    rows: &mut Measurements,
+    rows: &mut Measurements<'_>,
 ) -> Result {
     use acyclic_harness_core::agent::{
         AgentPath, Control, Delivered, INBOX, InboxRecord, IntentId, Phase, Sender,
@@ -722,7 +729,7 @@ async fn actor_delivery(
     })
 }
 
-async fn filesystem(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> Result {
+async fn filesystem(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>) -> Result {
     let cancellation = CancellationToken::new();
     let volume = fixture.volume(&id(0)?)?;
     let name = volume.volume.storage_name(&mut None)?;
@@ -829,7 +836,7 @@ async fn sessions(
     fixture: &Fixture,
     agents: usize,
     samples: usize,
-    rows: &mut Measurements,
+    rows: &mut Measurements<'_>,
 ) -> Result {
     use acyclic_harness_core::agent::{AgentPath, IntentId};
     for index in 0..samples {

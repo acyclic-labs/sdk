@@ -1,4 +1,4 @@
-use super::report::{Quantiles, RawSamples, Result, Terms, emit, ns};
+use super::report::{Quantiles, RawSamples, Result, emit, ns};
 use acyclic_native_runtime::{Durability, read_at, sync_data, sync_parent};
 use divan::black_box;
 use std::{
@@ -13,42 +13,12 @@ const CALL_BATCH: u32 = 4096;
 const COPY_BATCH: u32 = 4096;
 const HASH_BATCH: u32 = 64;
 
-pub(super) struct Floors {
-    flush: f64,
-    wake: f64,
-    call: f64,
-    copy_per_byte: f64,
-    hash_per_byte: f64,
-    read: f64,
-    timer: Quantiles,
-    minimum_positive_timer_ns: f64,
-}
-
-impl Floors {
-    pub(super) fn timer(&self) -> Quantiles {
-        self.timer
-    }
-
-    pub(super) fn minimum_positive_timer_ns(&self) -> f64 {
-        self.minimum_positive_timer_ns
-    }
-
-    pub(super) fn compose(&self, terms: Terms) -> f64 {
-        self.flush * f64::from(terms.flushes)
-            + self.wake * f64::from(terms.wakes)
-            + self.call * f64::from(terms.calls)
-            + self.read * f64::from(terms.read_syscalls)
-            + self.copy_per_byte * (f64::from(terms.copy_bytes) + f64::from(terms.encode_bytes))
-            + self.hash_per_byte * f64::from(terms.hash_bytes)
-    }
-}
-
 fn measured(
     name: &str,
     values: Vec<f64>,
     bytes: Option<u32>,
     operations_per_observation: u32,
-) -> Result<Quantiles> {
+) -> Result {
     let quantiles = Quantiles::new(&mut values.clone())?;
     if name != "C_timer" && quantiles.p50_ns == 0.0 {
         return Err(format!(
@@ -70,7 +40,7 @@ fn measured(
         }),
         raw_ns: &values,
     })?;
-    Ok(quantiles)
+    Ok(())
 }
 
 #[inline(never)]
@@ -78,7 +48,7 @@ fn call(value: u64) -> u64 {
     black_box(value)
 }
 
-pub(super) fn run(root: &Path, samples: usize) -> Result<Floors> {
+pub(super) fn run(root: &Path, samples: usize) -> Result {
     let mut file = OpenOptions::new()
         .create_new(true)
         .read(true)
@@ -155,22 +125,21 @@ pub(super) fn run(root: &Path, samples: usize) -> Result<Floors> {
         .filter(|value| *value > 0.0)
         .min_by(f64::total_cmp)
         .ok_or("all timer-only samples were below timestamp resolution")?;
-    let timer_quantiles = measured("C_timer", timer, None, 1)?;
+    measured("C_timer", timer, None, 1)?;
     emit(serde_json::json!({
         "schema": 1, "kind": "negative_control",
         "control": "timer-only observation without product work",
         "result": "retained as resolution bound; no floor inflation or quantile subtraction",
+        "minimum_positive_timer_ns": minimum_positive_timer_ns,
+        "scope": "timestamp pair only; async polling and other instrumentation add cost; no subtraction",
     }))?;
-    Ok(Floors {
-        timer: timer_quantiles,
-        minimum_positive_timer_ns,
-        flush: measured("F_flush", flush, None, 1)?.p50_ns,
-        wake: measured("W_wake", wake, None, 1)?.p50_ns,
-        call: measured("C_call", calls, None, CALL_BATCH)?.p50_ns,
-        copy_per_byte: measured("B_copy", copy, Some(1024), COPY_BATCH)?.p50_ns / 1024.0,
-        hash_per_byte: measured("B_hash", hash, Some(1024), HASH_BATCH)?.p50_ns / 1024.0,
-        read: measured("R_sys", read, Some(1024), 1)?.p50_ns,
-    })
+    measured("F_flush", flush, None, 1)?;
+    measured("W_wake", wake, None, 1)?;
+    measured("C_call", calls, None, CALL_BATCH)?;
+    measured("B_copy", copy, Some(1024), COPY_BATCH)?;
+    measured("B_hash", hash, Some(1024), HASH_BATCH)?;
+    measured("R_sys", read, Some(1024), 1)?;
+    Ok(())
 }
 
 /// A rendezvous channel is an OS-backed cross-thread handoff. The receiver

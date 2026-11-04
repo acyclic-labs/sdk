@@ -217,7 +217,7 @@ fn run() -> Result {
         "population_scope": "initial settled dormant roots; creation samples retain new durable identities; session samples add resident roots",
         "operations": options.operations.iter().map(|operation| operation.name()).collect::<Vec<_>>(),
     }))?;
-    let floors = calibrate::run(&options.root, options.samples)?;
+    calibrate::run(&options.root, options.samples)?;
     use acyclic_native_runtime::obs::{Metrics, Operations};
     use std::sync::Arc;
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -259,7 +259,6 @@ fn run() -> Result {
                     &fixture,
                     agents,
                     options.samples,
-                    &floors,
                     &recovery,
                     &options.operations,
                 )
@@ -289,10 +288,10 @@ fn run() -> Result {
                     "task_scope": "terminal samples only; queued=false means inline execution; outcome and panic are independent; absent admission, queue delay, physical owner/group, active tasks and final backing retirement remain unknown; not Worker execution coverage",
                 }))?;
             }
-            Ok(())
+            Result::Ok(())
         },
         &recovery,
-    )?;
+    )??;
     let findings = counts.qualification_findings(&options.operations, &recovery);
     let counts_complete = findings.is_empty();
     for finding in findings {
