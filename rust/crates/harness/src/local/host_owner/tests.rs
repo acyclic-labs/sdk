@@ -150,8 +150,9 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
         .await?;
     assert_eq!(sent["pending"], 2);
     let operation = OperationId::new();
+    let parent = fixture.parent.clone();
     let next = || HostAction::Session {
-        parent: fixture.parent.clone(),
+        parent: parent.clone(),
         reference: "child".into(),
         action: SessionAction::Next,
         next: false,
@@ -159,21 +160,35 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
     let first = fixture.owner.dispatch(operation, next()).await?;
     assert_eq!(first["prompt"], "initial");
     assert_eq!(first["turn"], 1);
+    assert_eq!(fixture.owner.dispatch(operation, next()).await?, first);
+    let retired = cwd(&first)?;
     // Recover an accepted claim whose reply was lost, using its original
     // operation after the workspace owner has been replaced.
     let local = Arc::clone(&fixture.owner.local);
     let previous = std::mem::replace(&mut fixture.owner, HostWorkspaceOwner::new(local)?);
     drop(previous);
-    assert_eq!(fixture.owner.dispatch(operation, next()).await?, first);
+    let recovered = fixture.owner.dispatch(operation, next()).await?;
+    let view = cwd(&recovered)?;
+    // A remounted view has a fresh, never-reused name. Only the physical
+    // location changes; the accepted claim and its entire payload survive.
+    assert_ne!(view, retired);
+    assert!(matches!(
+        std::fs::metadata(&retired),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    ));
+    let mut expected = first;
+    expected["cwd"] = json!(view);
+    assert_eq!(recovered, expected);
+    let first = recovered;
     assert!(matches!(
         fixture.session("child", SessionAction::Next).await,
         Err(Error::Conflict(_))
     ));
+    assert_eq!(fixture.owner.dispatch(operation, next()).await?, first);
     assert!(
         fixture.merge("child").await.is_err(),
         "a running session cannot merge"
     );
-    let view = cwd(&first)?;
     assert_eq!(
         std::fs::read(view.join("instructions.md")).map_err(storage)?,
         b"discovered in child view"

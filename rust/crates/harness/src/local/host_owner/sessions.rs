@@ -26,8 +26,9 @@ pub enum SessionAction {
         /// Message body.
         prompt: String,
     },
-    /// Claim the next input, after the preceding process is quiescent. A
-    /// claimed input is refused: only a fenced handoff hands it out again.
+    /// Claim the next input, after the preceding process is quiescent. The
+    /// accepting request may replay its claim; another request requires a
+    /// fenced handoff. A reply always names the current physical view.
     Next,
     /// Capture and settle a process that has exited, including failed writes.
     /// The native resume id is derived from the turn's own custodied event

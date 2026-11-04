@@ -154,8 +154,8 @@ impl HostWorkspaceOwner {
         })
     }
 
-    /// Keeps each native request's saved result until its reply under
-    /// `directory`'s `results` is durable: the reply then answers a replay.
+    /// Keeps each native filesystem request's saved result until its client
+    /// withdraws the request under `directory/requests` after reading its reply.
     #[must_use]
     pub fn with_requests(mut self, directory: std::path::PathBuf) -> Self {
         self.requests = Some(directory);
