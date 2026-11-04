@@ -1,6 +1,8 @@
 //! Authenticated per-step observation chains survive a fresh stock driver.
 use super::*;
 use crate::executor::ExecutionRecordQuery;
+use crate::wire_codec::{OwnedIndexAllocation, OwnedIndexWork};
+use acyclic_collections::FixedIndex;
 use persistent_index::{Funded, NodeRef, Reader, Writer, node::Node};
 
 mod custody;
@@ -21,16 +23,59 @@ struct Entries {
 
 #[derive(Default)]
 pub(super) struct Pending {
-    entries: Vec<PendingEntry>,
-    // Ordinary publication has one pending entry and needs no second index.
-    // A recovered raw tail gets fixed-width keys and per-step links, so a
-    // lookup never scans unrelated steps in that tail.
-    heads: summary_map::SummaryMap<[u8; 32], usize>,
+    state: PendingState,
+}
+
+#[derive(Default)]
+enum PendingState {
+    #[default]
+    Empty,
+    // Ordinary publication needs no allocation or second index.
+    One(PendingEntry),
+    Indexed(PendingIndex),
+}
+
+#[derive(Default)]
+struct PendingIndex {
+    entries: FixedIndex<PendingEntry, OwnedIndexAllocation, 8>,
+    heads: FixedIndex<u64, OwnedIndexAllocation, 32>,
 }
 
 struct PendingEntry {
     entry: Entry,
-    previous: Option<usize>,
+    previous: Option<u64>,
+}
+
+impl PendingIndex {
+    fn push(&mut self, entry: Entry, io: Option<&PreparationIo>) -> Result<()> {
+        let step_key = key(entry.step, entry.tool.map(|tool| tool.0));
+        let sequence = entry.sequence.to_be_bytes();
+        let mut work = OwnedIndexWork(io);
+        if let Some(head) = self.heads.get_mut(step_key, &mut work)? {
+            self.entries
+                .get_or_try_insert_with(sequence, &mut work, |_| {
+                    Ok(PendingEntry {
+                        entry,
+                        previous: Some(*head),
+                    })
+                })?;
+            *head = entry.sequence;
+        } else {
+            self.heads
+                .get_or_try_insert_with(step_key, &mut work, |work| {
+                    self.entries.get_or_try_insert_with(sequence, work, |_| {
+                        Ok(PendingEntry {
+                            entry,
+                            previous: None,
+                        })
+                    })?;
+                    // Both outer node admissions precede this constructor;
+                    // only infallible head publication follows the entry.
+                    Ok(entry.sequence)
+                })?;
+        }
+        Ok(())
+    }
 }
 
 impl Pending {
@@ -43,44 +88,36 @@ impl Pending {
         tool: Option<([u8; 32], bool)>,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        if self.entries.len() == self.entries.capacity() {
-            let capacity = self
-                .entries
-                .capacity()
-                .checked_mul(2)
-                .ok_or_else(|| invalid(io))?
-                .max(1);
-            crate::executor::stock_vec_reserve(&mut self.entries, capacity, io)?;
+        crate::model::charge_items(io, 1)?;
+        let entry = Entry {
+            step,
+            sequence,
+            retry,
+            digest,
+            tool,
+        };
+        match &mut self.state {
+            PendingState::Empty => {
+                self.state = PendingState::One(PendingEntry {
+                    entry,
+                    previous: None,
+                });
+            }
+            PendingState::One(first) => {
+                // Preserve the inline value on every failed promotion. New
+                // nodes retain the same original owner's funding throughout.
+                let mut indexed = PendingIndex::default();
+                indexed.push(first.entry, io)?;
+                indexed.push(entry, io)?;
+                self.state = PendingState::Indexed(indexed);
+            }
+            PendingState::Indexed(indexed) => indexed.push(entry, io)?,
         }
-        if self.entries.len() == 1 {
-            let first = self.entries.first().ok_or_else(|| invalid(io))?;
-            self.heads.insert(
-                key(first.entry.step, first.entry.tool.map(|tool| tool.0)),
-                0,
-                io,
-            )?;
-        }
-        let step_key = key(step, tool.map(|tool| tool.0));
-        let previous = self.heads.get(&step_key, io)?.copied();
-        if !self.entries.is_empty() {
-            self.heads.insert(step_key, self.entries.len(), io)?;
-        }
-        self.entries.push(PendingEntry {
-            entry: Entry {
-                step,
-                sequence,
-                retry,
-                digest,
-                tool,
-            },
-            previous,
-        });
         Ok(())
     }
 
     pub(super) fn clear(&mut self) {
-        self.entries.clear();
-        self.heads = Default::default();
+        self.state = PendingState::Empty;
     }
 
     fn collect(
@@ -91,30 +128,75 @@ impl Pending {
         entries: &mut Funded<Entry>,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        let mut next = if self.entries.len() == 1 {
-            self.entries
-                .first()
-                .filter(|value| {
-                    key(value.entry.step, value.entry.tool.map(|tool| tool.0)) == key(step, call)
-                })
-                .map(|_| 0)
-        } else {
-            self.heads.get(&key(step, call), io)?.copied()
+        crate::model::charge_items(io, 1)?;
+        let wanted = key(step, call);
+        let mut next = match &self.state {
+            PendingState::Empty => None,
+            PendingState::One(value) => Some(value),
+            PendingState::Indexed(indexed) => {
+                match indexed.heads.get(wanted, &mut OwnedIndexWork(io))? {
+                    Some(sequence) => Some(
+                        indexed
+                            .entries
+                            .get(sequence.to_be_bytes(), &mut OwnedIndexWork(io))?
+                            .ok_or_else(|| invalid(io))?,
+                    ),
+                    None => None,
+                }
+            }
         };
         let before = entries.values.len();
-        while let Some(position) = next {
-            crate::model::charge_items(io, 1)?;
-            let value = self.entries.get(position).ok_or_else(|| invalid(io))?;
-            if key(value.entry.step, value.entry.tool.map(|tool| tool.0)) != key(step, call)
-                || entries.values.len() - before >= maximum
-                || value.previous.is_some_and(|previous| previous >= position)
+        while let Some(value) = next {
+            crate::model::charge_items(io, 33)?;
+            if key(value.entry.step, value.entry.tool.map(|tool| tool.0)) != wanted {
+                return if matches!(self.state, PendingState::One(_)) {
+                    Ok(())
+                } else {
+                    Err(invalid(io))
+                };
+            }
+            if entries.values.len() - before >= maximum
+                || value
+                    .previous
+                    .is_some_and(|previous| previous >= value.entry.sequence)
             {
                 return Err(invalid(io));
             }
             entries.push(value.entry)?;
-            next = value.previous;
+            next = match value.previous {
+                Some(sequence) => {
+                    let PendingState::Indexed(indexed) = &self.state else {
+                        return Err(invalid(io));
+                    };
+                    Some(
+                        indexed
+                            .entries
+                            .get(sequence.to_be_bytes(), &mut OwnedIndexWork(io))?
+                            .ok_or_else(|| invalid(io))?,
+                    )
+                }
+                None => None,
+            };
         }
         Ok(())
+    }
+
+    fn after(&self, after: Option<u64>, io: Option<&PreparationIo>) -> Result<Option<&Entry>> {
+        crate::model::charge_items(io, 1)?;
+        match &self.state {
+            PendingState::Empty => Ok(None),
+            PendingState::One(value) => Ok(after.is_none().then_some(&value.entry)),
+            PendingState::Indexed(indexed) => {
+                let mut work = OwnedIndexWork(io);
+                let next = match after {
+                    Some(sequence) => indexed
+                        .entries
+                        .seek_after(sequence.to_be_bytes(), &mut work),
+                    None => indexed.entries.first(&mut work),
+                }?;
+                Ok(next.map(|(_, value)| &value.entry))
+            }
+        }
     }
 
     pub(super) async fn stage<P: crate::store::JournalProvider + ?Sized>(
@@ -122,8 +204,9 @@ impl Pending {
         writer: &mut Writer<'_, P>,
         mut root: Option<NodeRef>,
     ) -> Result<Option<NodeRef>> {
-        for pending in &self.entries {
-            let entry = &pending.entry;
+        let mut after = None;
+        while let Some(entry) = self.after(after, writer.reader().io)? {
+            after = Some(entry.sequence);
             let key = key(entry.step, entry.tool.map(|tool| tool.0));
             let reader = writer.reader();
             let previous = reader.get(root, &key).await?.map(|read| read.reference());
