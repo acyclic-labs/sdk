@@ -160,7 +160,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             .await
             .map_err(|failure| failure.error)?
             .value;
-        self.register(WorkspaceLineageRecord {
+        self.register_absent(WorkspaceLineageRecord {
             version: LINEAGE_VERSION,
             revision: 1,
             ready: true,
@@ -474,6 +474,15 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             }
             return Err(WorkspaceLineageError::ConflictingRegistration);
         }
+        self.register_absent(record).await
+    }
+
+    // Absence has already been observed. A rejected creation must observe the
+    // winner, but another read before the conditional write buys no guarantee.
+    async fn register_absent(
+        &self,
+        record: WorkspaceLineageRecord,
+    ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
         if self
             .store
             .compare_and_swap(record.workspace_id, 0, record.clone())

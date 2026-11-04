@@ -114,55 +114,50 @@ async fn direct_parent_authorization_and_recursive_walk_are_durable() {
     ));
 }
 
+#[derive(Default)]
+struct ObservedStore {
+    inner: MemoryWorkspaceLineageStore,
+    reads: std::sync::atomic::AtomicUsize,
+    contend: std::sync::atomic::AtomicBool,
+}
+impl ObservedStore {
+    fn take_reads(&self) -> usize {
+        self.reads.swap(0, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+impl WorkspaceLineageStore for ObservedStore {
+    type Error = MemoryWorkspaceLineageStoreError;
+
+    async fn load(&self, id: WorkspaceId) -> Result<Option<WorkspaceLineageRecord>, Self::Error> {
+        self.reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.load(id).await
+    }
+
+    async fn compare_and_swap(
+        &self,
+        id: WorkspaceId,
+        revision: u64,
+        replacement: WorkspaceLineageRecord,
+    ) -> Result<bool, Self::Error> {
+        if self
+            .contend
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            // A real competing conditional publication wins before ours.
+            assert!(
+                self.inner
+                    .compare_and_swap(id, revision, replacement.clone())
+                    .await?
+            );
+        }
+        self.inner.compare_and_swap(id, revision, replacement).await
+    }
+}
+
 #[tokio::test]
 async fn descendant_authorization_stops_at_the_authenticated_anchor() {
-    struct ObservedStore {
-        inner: MemoryWorkspaceLineageStore,
-        reads: std::sync::atomic::AtomicUsize,
-        contend: std::sync::atomic::AtomicBool,
-    }
-    impl ObservedStore {
-        fn take_reads(&self) -> usize {
-            self.reads.swap(0, std::sync::atomic::Ordering::Relaxed)
-        }
-    }
-    impl WorkspaceLineageStore for ObservedStore {
-        type Error = MemoryWorkspaceLineageStoreError;
-
-        async fn load(
-            &self,
-            id: WorkspaceId,
-        ) -> Result<Option<WorkspaceLineageRecord>, Self::Error> {
-            self.reads
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            self.inner.load(id).await
-        }
-
-        async fn compare_and_swap(
-            &self,
-            id: WorkspaceId,
-            revision: u64,
-            replacement: WorkspaceLineageRecord,
-        ) -> Result<bool, Self::Error> {
-            if self
-                .contend
-                .swap(false, std::sync::atomic::Ordering::Relaxed)
-            {
-                // A real competing conditional publication wins before ours.
-                assert!(
-                    self.inner
-                        .compare_and_swap(id, revision, replacement.clone())
-                        .await?
-                );
-            }
-            self.inner.compare_and_swap(id, revision, replacement).await
-        }
-    }
-    let graph = WorkspaceGraph::new(ObservedStore {
-        inner: MemoryWorkspaceLineageStore::new(),
-        reads: std::sync::atomic::AtomicUsize::new(0),
-        contend: std::sync::atomic::AtomicBool::new(false),
-    });
+    let graph = WorkspaceGraph::new(ObservedStore::default());
     let root = workspace("unregistered-anchor");
     let child = workspace("registered-child");
     let grandchild = workspace("registered-grandchild");
@@ -303,8 +298,13 @@ async fn a_durable_planned_child_is_completed_by_retry_after_a_crash() {
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)
         .expect("root");
-    let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
+    let graph = WorkspaceGraph::new(ObservedStore::default());
     graph.register_root(&parent).await.expect("register root");
+    assert_eq!(
+        graph.store().take_reads(),
+        1,
+        "root creation uses its original absence"
+    );
     let parent_head = parent
         .head(
             crate::WorkBudget::UNBOUNDED,
