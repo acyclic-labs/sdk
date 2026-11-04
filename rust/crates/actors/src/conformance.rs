@@ -1382,7 +1382,7 @@ pub(crate) async fn restarted<T: Backend + ?Sized>(target: &T, run: &str) -> Res
     }
     target.restart().await?;
     restarted.send("emit").await?;
-    restarted.expect(&["r0", "r2"]).await?;
+    target.complete(&restarted.actor).await?;
     target
         .advance_to(target.clock().now_unix_ms().saturating_add(2 * ALARM_MS))
         .await?;
