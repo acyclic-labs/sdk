@@ -2,8 +2,7 @@ use super::*;
 use crate::test_support::ScriptedModelProvider;
 use proptest::prelude::*;
 
-async fn open(directory: &Path) -> Result<LocalHarness> {
-    let volume = super::super::tests::volume(directory).await?;
+async fn open(directory: &Path, volume: crate::conversation::VolumeRef) -> Result<LocalHarness> {
     LocalHarness::open(
         super::super::tests::volume_config(
             directory,
@@ -62,7 +61,10 @@ fn standalone_workspace_updates_do_not_checkpoint_each_transaction() {
         .unwrap();
     let _entered = runtime.enter();
     let directory = tempfile::tempdir().unwrap();
-    let local = runtime.block_on(open(directory.path())).unwrap();
+    let volume = runtime
+        .block_on(super::super::tests::volume(directory.path()))
+        .unwrap();
+    let local = runtime.block_on(open(directory.path(), volume)).unwrap();
     let workspace = local.workspace.as_ref().unwrap();
     let id = workspace.view().workspace().id();
     let old = LocalCoreStateStore::new(directory.path().join("shared-negative-control"));
@@ -115,7 +117,8 @@ fn standalone_workspace_updates_do_not_checkpoint_each_transaction() {
 #[tokio::test]
 async fn standalone_core_owner_survives_clones_and_reopens_after_release() -> Result<()> {
     let directory = tempfile::tempdir().map_err(storage)?;
-    let local = open(directory.path()).await?;
+    let volume = super::super::tests::volume(directory.path()).await?;
+    let local = open(directory.path(), volume).await?;
     let store = local.workspace.as_ref().unwrap().store.clone();
     let id = local.workspace.as_ref().unwrap().view().workspace().id();
     let path = store.root().to_owned();
@@ -139,7 +142,8 @@ async fn standalone_core_owner_survives_clones_and_reopens_after_release() -> Re
 #[tokio::test]
 async fn standalone_reopen_joins_the_owner_retained_by_a_saved_view() -> Result<()> {
     let directory = tempfile::tempdir().map_err(storage)?;
-    let local = open(directory.path()).await?;
+    let volume = super::super::tests::volume(directory.path()).await?;
+    let local = open(directory.path(), volume.clone()).await?;
     let workspace = local.workspace.as_ref().unwrap();
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
@@ -154,7 +158,7 @@ async fn standalone_reopen_joins_the_owner_retained_by_a_saved_view() -> Result<
         .await
         .map_err(storage)?;
     drop(local);
-    let reopened = open(directory.path()).await?;
+    let reopened = open(directory.path(), volume).await?;
     let store = &reopened.workspace.as_ref().unwrap().store;
     let id = view.workspace().id();
     update_work(store, id, 1).await?;
