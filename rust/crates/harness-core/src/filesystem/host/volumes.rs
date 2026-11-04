@@ -226,20 +226,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 
     /// Configuration and initial access policy of every harness volume.
-    /// Independent producers compose disjoint writes through the authority;
-    /// observed data, policy and explicit generation conditions remain exact.
     pub(in crate::filesystem) fn volume_initialization(
         &self,
     ) -> acyclic_fs::VolumeInitialization<'static> {
         acyclic_fs::VolumeInitialization {
-            config: acyclic_fs::VolumeConfig {
-                concurrency: acyclic_fs::model::ConcurrencyMode::SerializedAuthority,
-                ..acyclic_fs::VolumeConfig::portable(if self.filesystem.capabilities().durable {
-                    acyclic_fs::Lifecycle::Durable
-                } else {
-                    acyclic_fs::Lifecycle::Ephemeral
-                })
-            },
+            config: acyclic_fs::VolumeConfig::portable(if self.filesystem.capabilities().durable {
+                acyclic_fs::Lifecycle::Durable
+            } else {
+                acyclic_fs::Lifecycle::Ephemeral
+            }),
             access_policy: Some(access::INITIAL_POLICY),
         }
     }
