@@ -680,7 +680,7 @@ fn every_member_refusal_round_trips_its_original_status() -> TestResult {
 
 #[tokio::test]
 async fn a_servers_cause_reaches_the_grpc_client() -> TestResult {
-    let store = crate::Store::new(crate::tests::Faulty::default());
+    let store = crate::Store::new(crate::tests::Faulty::with_barriers());
     let account: Arc<dyn Blobs> = Arc::new(store.account(b"cause")?);
     let resolve: AccountResolver = Arc::new(move |_| Ok(Arc::clone(&account)));
     let client = resolved_client(resolve, "cause");
@@ -701,5 +701,6 @@ async fn a_servers_cause_reaches_the_grpc_client() -> TestResult {
         );
         assert!(error.to_string().contains(&cause.to_string()));
     }
+    crate::tests::failed_batch(&client, store.medium()).await?;
     Ok(())
 }

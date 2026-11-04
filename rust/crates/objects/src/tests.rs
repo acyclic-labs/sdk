@@ -288,11 +288,22 @@ async fn a_dropped_root_reopens_while_a_forked_copy_of_its_lock_lives()
 /// before losing its reply; otherwise the original value remains. Bit 4 loses a
 /// root removal reply; bit 5 applies that removal before losing its reply.
 /// Bit 6 loses only a root-batch create reply, after its indexes were admitted.
+/// Bit 7 fails the durability barrier without acknowledging its keys.
 #[derive(Default)]
 pub(crate) struct Faulty {
     inner: MemoryMedium,
     pub(crate) faults: AtomicU8,
     replacements: AtomicUsize,
+    volatile: bool,
+}
+
+impl Faulty {
+    pub(crate) fn with_barriers() -> Self {
+        Self {
+            volatile: true,
+            ..Self::default()
+        }
+    }
 }
 
 /// Fails a root release on the server's medium through `client`, one of the
@@ -327,6 +338,43 @@ pub(crate) async fn failed_release(
         }
     );
     Ok(error)
+}
+
+/// One failed durability barrier reaches every covered batch member through
+/// the shipping transport; an independent admission refusal stays in order.
+pub(crate) async fn failed_batch(
+    client: &dyn Blobs,
+    server: &Faulty,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    server.faults.store(128, Ordering::SeqCst);
+    let results = client
+        .put_batch(vec![
+            (b"batch cause first".as_slice().into(), Vec::new()),
+            (
+                b"batch cause missing".as_slice().into(),
+                vec![Digest::of(b"batch cause absent reference")],
+            ),
+            (b"batch cause last".as_slice().into(), Vec::new()),
+        ])
+        .await;
+    server.faults.store(0, Ordering::SeqCst);
+    assert_eq!(results.len(), 3);
+    let errors = results
+        .into_iter()
+        .map(Result::unwrap_err)
+        .collect::<Vec<_>>();
+    assert_eq!(errors[1].code, ErrorCode::MissingReference);
+    assert_eq!(errors[1].cause(), None);
+    let cause = acyclic_auth::refusal::Cause::new("objects.medium", "failed");
+    for error in [&errors[0], &errors[2]] {
+        assert_eq!(error.code, ErrorCode::Unavailable);
+        assert_eq!(error.cause(), Some(&cause));
+    }
+    // A fresh request on the same transport progresses after the barrier fails.
+    client
+        .put(b"after batch failure".as_slice().into(), Vec::new())
+        .await?;
+    Ok(())
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
@@ -395,10 +443,13 @@ impl Medium for Faulty {
         self.inner.list(prefix, after, limit).await
     }
     async fn flush(&self, keys: &[String]) -> Result<(), MediumError> {
+        if self.faults.load(Ordering::SeqCst) & 128 != 0 {
+            return Err(MediumError::Failed(std::io::ErrorKind::BrokenPipe.into()));
+        }
         self.inner.flush(keys).await
     }
     fn volatile(&self) -> bool {
-        self.inner.volatile()
+        self.volatile
     }
     fn recovered(&self) -> bool {
         self.inner.recovered()

@@ -335,7 +335,7 @@ fn the_request_bound_covers_every_encoded_batch() -> TestResult {
 #[tokio::test]
 async fn a_servers_cause_reaches_the_http_client() -> TestResult {
     let service = Service {
-        store: crate::Store::new(crate::tests::Faulty::default()),
+        store: crate::Store::new(crate::tests::Faulty::with_barriers()),
         granted: Arc::new(AtomicBool::new(true)),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -368,5 +368,8 @@ async fn a_servers_cause_reaches_the_http_client() -> TestResult {
         );
         assert!(error.to_string().contains(&cause.to_string()));
     }
+    crate::tests::failed_batch(&client, service.store.medium())
+        .await
+        .map_err(|error| error as Box<dyn std::error::Error>)?;
     Ok(())
 }
