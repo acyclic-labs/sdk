@@ -91,21 +91,11 @@ pub(crate) async fn count(
     #[cfg(not(target_arch = "wasm32"))]
     let mut admission = work
         .map(|work| {
-            let (mut bytes, nodes) = request.projection_shape();
-            for message in &request.request().messages {
-                bytes = bytes
-                    .checked_add(crate::files::extra_bytes(
-                        &message.content,
-                        provider.files.maximum_bytes,
-                    )? as u64)
-                    .ok_or_else(|| boundary(Some(work), "model file size overflow"))?;
-            }
-            crate::native::reserve(
+            crate::native::reserve_request(
+                provider,
+                request,
+                (auth.0.as_deref(), auth.1.as_deref()),
                 work,
-                bytes,
-                nodes,
-                auth.0.as_ref().map_or(0, |key| key.len() as u64)
-                    + auth.1.as_ref().map_or(0, |account| account.len() as u64),
             )
         })
         .transpose()?;
@@ -119,7 +109,7 @@ pub(crate) async fn count(
         // Retain table custody until after its projected generation is encoded.
         let _name_custody;
         let mut files =
-            crate::files::resolve(&provider.files, request.request(), content_io.as_ref()).await?;
+            crate::files::resolve(&provider.files, request, content_io.as_ref()).await?;
         let names = {
             let (names, custody) = crate::tool_names::Names::funded(request.request(), work)?;
             _name_custody = custody;

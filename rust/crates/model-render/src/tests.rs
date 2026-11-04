@@ -99,30 +99,32 @@ fn bytes(header: &Header, items: &[WireItem]) -> Vec<u8> {
 
 // Independent reference: JSON values and a full array, not seg/render or a
 // copy of their iterator. Semantic equality is checked separately from exact
-// raw-byte and prefix preservation.
-fn reference(target: Family, provider: &str, items: &[WireItem]) -> Value {
+// raw-byte and prefix preservation. Each record comes from the actual persisted
+// bytes, decoded once before comparing the target/provider pairs.
+fn reference(target: Family, provider: &str, records: &[Value]) -> Value {
     let mut inputs = Vec::new();
-    for item in items {
-        let record = serde_json::to_value(item).unwrap();
-        let same_owner = item.provenance().family == target
-            && item.provenance().provider == provider
-            && item.provenance().endpoint == "https://example.invalid/v1"
-            && item.provenance().credential_scope == Some([9; 32]);
+    let family = serde_json::to_value(target).unwrap();
+    let scope = serde_json::to_value([9u8; 32]).unwrap();
+    for record in records {
+        let provenance = &record["provenance"];
+        let same_family = provenance["family"] == family;
+        let same_owner = same_family
+            && provenance["provider"] == provider
+            && provenance["endpoint"] == "https://example.invalid/v1"
+            && provenance["credential_scope"] == scope;
         if record.get("kind").unwrap() == "reasoning" && !same_owner {
             continue;
         }
-        let stored = if item.provenance().family == target
-            && (record.get("kind").unwrap() != "guarded_message" || same_owner)
-        {
-            record.get("wire").unwrap()
-        } else {
-            let key = serde_json::to_value(target).unwrap();
-            record
-                .get("projections")
-                .unwrap()
-                .get(key.as_str().unwrap())
-                .unwrap()
-        };
+        let stored =
+            if same_family && (record.get("kind").unwrap() != "guarded_message" || same_owner) {
+                record.get("wire").unwrap()
+            } else {
+                record
+                    .get("projections")
+                    .unwrap()
+                    .get(family.as_str().unwrap())
+                    .unwrap()
+            };
         inputs.push(serde_json::from_str::<Value>(stored.as_str().unwrap()).unwrap());
     }
     let field = match target {
@@ -142,46 +144,43 @@ proptest! {
     fn append_fork_and_alloy_schedules_match_reference(
         schedule in prop::collection::vec((prop::sample::select(&FAMILIES), 0..3_u8, any::<bool>(), any::<bool>(), any::<bool>(), ".{0,80}"), 0..100),
     ) {
-        let targets: Vec<_> = FAMILIES.into_iter().flat_map(|family| ["producing-provider", "other-provider"].map(move |provider| {
-            let field = match family { Family::Responses => "input", Family::Gemini => "contents", _ => "messages" };
-            (family, provider, header_for(family, provider), field)
-        })).collect();
-        let closer = tail();
-        let initial = (
-            Vec::new(),
-            targets.iter().map(|(_, _, header, _)| bytes(header, &[])).collect::<Vec<_>>(),
-            targets.iter().map(|(family, provider, _, _)| reference(*family, provider, &[])).collect::<Vec<_>>(),
-        );
-        let mut branches = [initial.clone(), initial];
+        let closing = tail();
+        let rendered = |header: &Header, items: &[WireItem]| {
+            let mut out = Vec::new();
+            render(header, items, &closing, &mut out).unwrap();
+            out
+        };
+        let targets: Vec<_> = FAMILIES.into_iter().flat_map(|family|
+            ["producing-provider", "other-provider"].map(move |provider|
+                (family, provider, header_for(family, provider)))).collect();
+        let empty: Vec<_> = targets.iter().map(|(_, _, header)| rendered(header, &[])).collect();
+        let expected: Vec<_> = targets.iter().map(|(family, provider, _)| reference(*family, provider, &[])).collect();
+        // A fork retains the independently checked semantic history and exact
+        // output of its parent. Only the new persisted record extends the oracle;
+        // every append still reopens and checks the entire rendered branch.
+        let mut branches = [(Vec::new(), empty.clone(), expected.clone()), (Vec::new(), empty, expected)];
         for (family, kind, fork, child, other_provider, text) in schedule {
             let [parent, child_branch] = &mut branches;
             if fork { *child_branch = parent.clone(); }
             let (branch, previous, expected) = if child { child_branch } else { parent };
             let kind = match kind { 0 => ItemKind::Message, 1 => ItemKind::Reasoning, _ => ItemKind::GuardedMessage };
-            let next = item_for(family, kind, &text, if other_provider { "other-provider" } else { "producing-provider" });
-            // The reference retains the original inputs, independently of the
-            // persisted/reopened branch. Only the new item needs projection.
-            for ((target, provider, _, field), expected) in targets.iter().zip(expected.iter_mut()) {
-                let addition = reference(*target, provider, std::slice::from_ref(&next));
-                expected[*field].as_array_mut().unwrap().extend(addition[*field].as_array().unwrap().iter().cloned());
-            }
-            branch.push(next);
+            branch.push(item_for(family, kind, &text, if other_provider { "other-provider" } else { "producing-provider" }));
             // Serialization is the actual persisted representation. Reopening
             // validates the raw bytes again without normalizing them.
             let stored = serde_json::to_vec(branch).unwrap();
             let reopened: Vec<WireItem> = serde_json::from_slice(&stored).unwrap();
-            for ((_, _, header, _), (previous, expected)) in targets.iter().zip(previous.iter_mut().zip(expected.iter())) {
-                let mut out = Vec::new();
-                render(header, &reopened, &closer, &mut out).unwrap();
-                prop_assert_eq!(&serde_json::from_slice::<Value>(&out).unwrap(), expected);
-                let prefix = previous.get(..previous.len() - closer.bytes().len()).unwrap();
+            let records: Vec<Value> = serde_json::from_slice(&stored).unwrap();
+            let appended = std::slice::from_ref(records.last().unwrap());
+            for (((target, provider, header), previous), expected) in targets.iter().zip(previous).zip(expected) {
+                let field = match target { Family::Responses => "input", Family::Gemini => "contents", _ => "messages" };
+                let added = reference(*target, provider, appended);
+                expected[field].as_array_mut().unwrap().extend(added[field].as_array().unwrap().iter().cloned());
+                let out = rendered(header, &reopened);
+                prop_assert_eq!(&serde_json::from_slice::<Value>(&out).unwrap(), &*expected,
+                    "wire output differs from persisted reference");
+                let prefix = previous.get(..previous.len() - closing.bytes().len()).unwrap();
                 prop_assert!(out.starts_with(prefix), "append changed an earlier segment");
                 *previous = out;
-            }
-        }
-        for (branch, _, expected) in branches {
-            for ((target, provider, _, _), expected) in targets.iter().zip(expected) {
-                prop_assert_eq!(expected, reference(*target, provider, &branch));
             }
         }
     }
@@ -404,60 +403,20 @@ fn missing_foreign_message_binding_refuses_instead_of_dropping_history() {
 }
 
 #[test]
-fn sink_failure_returns_at_the_failed_write_without_retrying() {
-    struct Closed {
-        writes: usize,
-        accept: usize,
-    }
-    impl Write for Closed {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.writes += 1;
-            if self.writes > self.accept {
-                Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed consumer"))
-            } else {
-                Ok(bytes.len())
-            }
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            unreachable!("rendering never flushes")
-        }
-    }
-    let source = item(Family::Responses, ItemKind::Message, "message");
-    let mut closed = Closed {
-        writes: 0,
-        accept: 0,
-    };
-    assert!(
-        matches!(render(&header(Family::Responses), [&source], &tail(), &mut closed), Err(RenderError::Write(error)) if error.kind() == io::ErrorKind::BrokenPipe)
-    );
-    assert_eq!(closed.writes, 1);
-    // Fail in the prefix, separator and borrowed instruction serializer. Each
-    // failure must leave the original sink error typed and end immediately.
-    for accept in 0..6 {
-        let mut sink = Closed { writes: 0, accept };
-        assert!(
-            matches!(render_summary(&header(Family::Responses), [&source], "summarize", &summary_tail(Family::Responses), &mut sink), Err(RenderError::Write(error)) if error.kind() == io::ErrorKind::BrokenPipe)
-        );
-        assert_eq!(sink.writes, accept + 1);
-    }
-    // A retrying consumer would violate this same operation-count oracle.
-    assert!(closed.write(b"retry").is_err());
-    assert_ne!(closed.writes, 1);
-}
-
-#[test]
 fn interrupted_and_partial_writers_preserve_progress_and_exact_bytes() {
     struct Writer {
         writes: usize,
-        fail_at: Option<usize>,
+        fail_at: Option<(usize, io::ErrorKind)>,
         chunk: usize,
         bytes: Vec<u8>,
     }
     impl Write for Writer {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             self.writes += 1;
-            if self.fail_at == Some(self.writes) {
-                return Err(io::ErrorKind::Interrupted.into());
+            if let Some((position, kind)) = self.fail_at
+                && position == self.writes
+            {
+                return Err(kind.into());
             }
             let length = bytes.len().min(self.chunk);
             self.bytes.extend_from_slice(&bytes[..length]);
@@ -520,16 +479,18 @@ fn interrupted_and_partial_writers_preserve_progress_and_exact_bytes() {
             // Every failure position, including JSON instruction escaping, is
             // finite. The writer would succeed on the next call: retrying here
             // would silently convert an interrupted request into a successful one.
-            for fail_at in 1..=expected.len() {
+            for (fail_at, kind) in (1..=expected.len()).flat_map(|position| {
+                [io::ErrorKind::Interrupted, io::ErrorKind::BrokenPipe].map(|kind| (position, kind))
+            }) {
                 let mut interrupted = Writer {
                     writes: 0,
-                    fail_at: Some(fail_at),
+                    fail_at: Some((fail_at, kind)),
                     chunk: 1,
                     bytes: Vec::new(),
                 };
                 assert!(
                     matches!(run(&mut interrupted), Err(RenderError::Write(error))
-                if error.kind() == io::ErrorKind::Interrupted)
+                if error.kind() == kind)
                 );
                 assert_eq!(interrupted.writes, fail_at);
                 assert_eq!(interrupted.bytes, expected[..fail_at - 1]);
@@ -549,7 +510,7 @@ fn interrupted_and_partial_writers_preserve_progress_and_exact_bytes() {
     // the incorrect success with a finite producer, without a hang or timeout.
     let mut former = Writer {
         writes: 0,
-        fail_at: Some(1),
+        fail_at: Some((1, io::ErrorKind::Interrupted)),
         chunk: usize::MAX,
         bytes: Vec::new(),
     };
@@ -866,7 +827,11 @@ fn rendering_writes_only_the_selected_items_without_flush_or_lookbehind() {
             assert!(borrowed_segments(&sink.writes, selected));
             assert_eq!(
                 serde_json::from_slice::<Value>(&sink.bytes).unwrap(),
-                reference(family, "producing-provider", selected)
+                reference(
+                    family,
+                    "producing-provider",
+                    serde_json::to_value(selected).unwrap().as_array().unwrap(),
+                )
             );
             match phase {
                 "first" => first = sink.bytes.clone(),

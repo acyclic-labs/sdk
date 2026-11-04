@@ -160,10 +160,17 @@ impl Cursor {
         let Some(call) = calls.get(*next) else {
             return admit(None);
         };
-        let result = admit(Some((*next, call)))?;
-        *next += 1;
-        self.used += 1;
-        Ok(result)
+        match admit(Some((*next, call))) {
+            Ok(result) => {
+                *next += 1;
+                self.used += 1;
+                Ok(result)
+            }
+            Err(error) => {
+                self.next.retire_if(key, |next| *next == 0);
+                Err(error)
+            }
+        }
     }
 
     #[cfg(test)]
@@ -318,13 +325,12 @@ impl ReplayAdmission<'_> {
 impl Drop for ReplayAdmission<'_> {
     fn drop(&mut self) {
         if !self.accepted {
-            if let Some(selection) = self.owner.lock().dispatches.get_retained_mut(
-                dispatch_key(self.dispatch),
-                |selection| matches!(selection, Some(ReplaySelection::Pending)),
-                |_| {},
-            ) {
-                *selection = None;
-            }
+            self.owner
+                .lock()
+                .dispatches
+                .retire_if(dispatch_key(self.dispatch), |selection| {
+                    matches!(selection, Some(ReplaySelection::Pending))
+                });
         }
     }
 }
@@ -444,9 +450,16 @@ impl RecordedModel {
                 }
                 *selection = Some(ReplaySelection::Recorded { key, index });
                 Ok(Some(output))
-            })?
+            })
         } else {
-            None
+            Ok(None)
+        };
+        let output = match output {
+            Ok(output) => output,
+            Err(error) => {
+                dispatches.retire_if(dispatch_key(dispatch), Option::is_none);
+                return Err(error);
+            }
         };
         match output {
             Some(output) => Ok(ReplayPreparation::Recorded(output)),
@@ -985,12 +998,25 @@ mod tests {
             let refused = NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(error, _)| error)?;
             let trial = trial();
+            let retained = refused.live_allocation_bytes();
             assert!(
                 matches!(
                     trial.generate_with_native_work(&request, dispatch, &refused),
                     Err(Error::NativeWork { .. })
                 ),
                 "returned-object admission must refuse synchronously at allocation {allocations}",
+            );
+            assert_eq!(
+                refused.live_allocation_bytes(),
+                retained,
+                "refused returned-object admission retained index funding"
+            );
+            assert!(
+                trial
+                    .lock()
+                    .dispatches
+                    .get(dispatch_key(dispatch), &mut CursorWork(None))?
+                    .is_none()
             );
             assert_eq!(
                 trial.unused(),
@@ -1175,10 +1201,26 @@ mod tests {
             Arc::new(Recording::default()),
             divergences.clone(),
         );
-        assert!(matches!(
-            live_trial.generate_with_native_work(&request, dispatch, &funded),
-            Err(Error::NativeBoundary { .. })
-        ));
+        let retained = funded.live_allocation_bytes();
+        for step in 0..3 {
+            let refused_dispatch = ModelDispatch { step, ..dispatch };
+            assert!(matches!(
+                live_trial.generate_with_native_work(&request, refused_dispatch, &funded),
+                Err(Error::NativeBoundary { .. })
+            ));
+            assert_eq!(
+                funded.live_allocation_bytes(),
+                retained,
+                "refused live builder retained index funding"
+            );
+            assert!(
+                live_trial
+                    .lock()
+                    .dispatches
+                    .get(dispatch_key(refused_dispatch), &mut CursorWork(None))?
+                    .is_none()
+            );
+        }
         assert!(!live_trial.diverged());
         let ReplayPreparation::Live(pending) =
             live_trial.prepare(&request, dispatch, None, |_| Ok(()))?
@@ -1192,6 +1234,14 @@ mod tests {
             Err(Error::Conflict(_))
         ));
         drop(pending);
+        assert!(
+            live_trial
+                .lock()
+                .dispatches
+                .get(dispatch_key(dispatch), &mut CursorWork(None))?
+                .is_none(),
+            "dropping unaccepted admission retained its index entry"
+        );
         assert!(!live_trial.diverged());
         let mut portable = live_trial.generate(&request, dispatch);
         assert!(

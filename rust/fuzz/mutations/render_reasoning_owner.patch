@@ -1,0 +1,11 @@
+diff --git a/rust/crates/model-render/src/selection.rs b/rust/crates/model-render/src/selection.rs
+--- a/rust/crates/model-render/src/selection.rs
++++ b/rust/crates/model-render/src/selection.rs
+@@ -13,6 +13,6 @@
+ pub(crate) fn select(kind: ItemKind, same_family: bool, same_owner: bool) -> Selection {
+     match kind {
+-        ItemKind::Reasoning if !same_family || !same_owner => Selection::Drop,
++        ItemKind::Reasoning if !same_family => Selection::Drop,
+         ItemKind::GuardedMessage if !same_family || !same_owner => Selection::Projection,
+         _ if same_family => Selection::Native,
+         _ => Selection::Projection,

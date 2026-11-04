@@ -88,6 +88,7 @@ core = ["dep:acyclic-harness-core", "dep:futures"]
 native-answer = ["core", "dep:acyclic-native-runtime"]
 code-mode = ["core", "acyclic-harness-core/filesystem", "dep:tokio"]
 native-skill-records = ["core", "acyclic-harness-core/filesystem-local", "acyclic-harness-core/native-execution"]
+replay = ["core", "acyclic-harness-core/filesystem"]
 runtime = ["core", "filesystem-local", "native-execution", "dep:acyclic-harness", "dep:acyclic-native-runtime", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:tempfile", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
 # Harness sources included by `#[path]` gate native helpers on these features;
 # the fuzz runtime compiles them as the native harness it depends on does.
@@ -273,6 +274,14 @@ bench = false
 name = "model_request"
 path = "fuzz_targets/model_request.rs"
 required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "recorded_replay"
+path = "fuzz_targets/recorded_replay.rs"
+required-features = ["replay"]
 test = false
 doc = false
 bench = false

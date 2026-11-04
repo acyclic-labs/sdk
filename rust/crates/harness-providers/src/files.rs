@@ -2,7 +2,7 @@ use crate::invalid;
 use acyclic_harness_core::{
     Error, Result,
     conversation::{ContentResidencyVerifier, FileRef, Limits, verified_content_bytes},
-    model::{FileProjectionPolicy, ModelContent, ModelRequest},
+    model::{FileProjectionPolicy, ModelContent, PreparedModelRequest},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::sync::Arc;
@@ -64,23 +64,14 @@ impl FileText {
     }
 }
 
-// Every projection, including native media, pays through the same pre-I/O
-// subtraction. Work is admitted source bytes (framed bytes for instructions).
-fn charge(remaining: &mut u64, bytes: u64, kind: &str) -> Result<()> {
-    *remaining = remaining
-        .checked_sub(bytes)
-        .ok_or_else(|| invalid(&format!("model files exceed projection {kind} limit")))?;
-    Ok(())
-}
-
 pub(crate) fn extra_bytes(content: &ModelContent, maximum: u64) -> Result<usize> {
     let mut extra = 0usize;
     for (file, policy) in content.file_parts() {
-        policy.validate_projection(file, maximum)?;
+        let bytes = policy.projected_bytes(file, maximum)?;
         if !matches!(policy, FileProjectionPolicy::Reference) {
             // Planning never performs I/O. Six bytes covers JSON escaping of
             // every source byte, including control characters.
-            let bytes = usize::try_from(policy.projected_bytes(file)?)
+            let bytes = usize::try_from(bytes)
                 .ok()
                 .and_then(|bytes| bytes.checked_mul(6))
                 .ok_or_else(|| invalid("model file token estimate overflow"))?;
@@ -94,25 +85,13 @@ pub(crate) fn extra_bytes(content: &ModelContent, maximum: u64) -> Result<usize>
 
 pub(crate) async fn resolve(
     files: &Files,
-    request: &ModelRequest,
+    request: &PreparedModelRequest,
     io: Option<&acyclic_harness_core::conversation::ContentIo>,
 ) -> Result<FileText> {
     // Reject the entire unsupported request before invoking any owner reader.
-    let mut remaining = files.maximum_bytes;
-    for message in &request.messages {
-        for (file, policy) in message.content.file_parts() {
-            policy.validate_projection(file, files.maximum_bytes)?;
-            if !matches!(policy, FileProjectionPolicy::Reference) {
-                charge(
-                    &mut remaining,
-                    policy.projected_bytes(file)?,
-                    "aggregate byte",
-                )?;
-            }
-        }
-    }
+    request.projected_file_bytes(files.maximum_bytes)?;
     let mut text = Vec::new();
-    for message in &request.messages {
+    for message in &request.request().messages {
         for (file, policy) in message.content.file_parts() {
             if matches!(policy, FileProjectionPolicy::Reference) {
                 continue;

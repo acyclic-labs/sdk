@@ -36,11 +36,10 @@ impl InputStats {
             }
             for (file, policy) in message.content.file_parts() {
                 charge_items(io, 1)?;
-                policy.validate_projection(file, u64::MAX)?;
+                let bytes = policy.projected_bytes(file, u64::MAX)?;
                 self.native |= matches!(policy, FileProjectionPolicy::Native(_));
                 if !matches!(policy, FileProjectionPolicy::Reference) {
-                    self.extra = policy
-                        .projected_bytes(file)?
+                    self.extra = bytes
                         .checked_mul(6)
                         .and_then(|bytes| self.extra.checked_add(bytes))
                         .ok_or_else(|| invalid(io, "input footprint size overflows"))?;
@@ -91,6 +90,20 @@ impl Input {
 }
 
 impl PreparedModelRequest {
+    /// Total admitted source bytes, including instruction framing, bounded by
+    /// the reader's aggregate credit before any file I/O. Reference-only
+    /// attachments contribute zero. Warm requests never revisit history.
+    pub fn projected_file_bytes(&self, maximum: u64) -> Result<u64> {
+        let bytes = self.input.stats(&self.request)?.extra / 6;
+        if bytes > maximum {
+            return Err(invalid(
+                None,
+                "model files exceed projection aggregate byte limit",
+            ));
+        }
+        Ok(bytes)
+    }
+
     /// Canonical input plus a conservative JSON expansion of pinned bodies.
     /// Reads no files and never serializes or hashes admitted messages.
     pub fn input_bytes(&self) -> Result<u64> {

@@ -207,8 +207,7 @@ async fn summary_files_keep_source_then_instruction_resolution_order() -> Result
                 }),
             });
             let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
-            let mut files =
-                crate::files::resolve(&provider.files, prepared.request(), None).await?;
+            let mut files = crate::files::resolve(&provider.files, &prepared, None).await?;
             let actual = projection::body_with_files(&provider, prepared.request(), &mut files)?;
             assert!(files.0.next().is_none());
             assert_eq!(reader.source_reader.reads.load(Ordering::SeqCst), 1);
@@ -234,7 +233,7 @@ async fn summary_files_keep_source_then_instruction_resolution_order() -> Result
 
             // The old instruction-first consumer either swaps both text files
             // or encounters a native/text type mismatch before rendering.
-            let reversed = crate::files::resolve(&provider.files, prepared.request(), None).await?;
+            let reversed = crate::files::resolve(&provider.files, &prepared, None).await?;
             let mut reversed: Vec<_> = reversed.0.collect();
             reversed.reverse();
             let wrong = projection::body_with_files(
@@ -295,7 +294,7 @@ async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> 
             reader: Some(reader.clone()),
             maximum_bytes: 4096,
         };
-        let mut files = crate::files::resolve(&provider.files, prepared.request(), None).await?;
+        let mut files = crate::files::resolve(&provider.files, &prepared, None).await?;
         let actual = projection::body_with_files(&provider, prepared.request(), &mut files)?;
         assert!(
             files.0.next().is_none(),
@@ -609,6 +608,10 @@ async fn invalid_file_policies_lengths_utf8_and_digests_fail_before_http() -> Re
             FileProjectionPolicy::BoundedFull,
         ),
         (
+            file(b"123", "text/plain")?,
+            FileProjectionPolicy::BoundedFull,
+        ),
+        (
             file(b"ok", "application/zip")?,
             FileProjectionPolicy::Native(Box::new(
                 acyclic_harness_core::model::NativeMediaPolicy {
@@ -786,8 +789,9 @@ fn unresolved_fulltext_is_never_silently_omitted() -> Result<()> {
     Ok(())
 }
 
-async fn resolved_instruction(body: &str, path: &str, broken: bool) -> Result<String> {
-    let (provider, _) = provider(Adapter::Chat, 200);
+fn resolved_instruction(body: &str, path: &str, broken: bool) -> Result<String> {
+    let (mut provider, _) = provider(Adapter::Chat, 200);
+    provider.files.maximum_bytes = 4096;
     let file = file(body.as_bytes(), "text/plain")?;
     let policy = FileProjectionPolicy::ProjectInstructions(Box::new(
         acyclic_harness::model::InstructionIdentity::new(file.volume().clone(), path.into())?,
@@ -807,17 +811,50 @@ async fn resolved_instruction(body: &str, path: &str, broken: bool) -> Result<St
         data: body.as_bytes().to_vec(),
         reads: AtomicUsize::new(0),
     });
-    let mut resolved = crate::files::resolve(
-        &crate::files::Files {
-            reader: Some(reader.clone()),
-            maximum_bytes: 4096,
+    let (result, trace) = acyclic_test_support::differential::observe::<_, _, (&'static str, u64)>(
+        || (),
+        |()| {
+            let extra = request.input_bytes()? - request.bytes().len() as u64;
+            assert_eq!(request.projected_file_bytes(extra / 6)?, extra / 6);
+            if extra > 0 {
+                assert!(request.projected_file_bytes(extra / 6 - 1).is_err());
+            }
+            let cancel = acyclic_fs::CancellationToken::new();
+            let work = super::native_tests::work(&cancel)?;
+            let baseline = work.live_allocation_bytes();
+            let admitted =
+                crate::native::reserve_request(&provider, &request, (None, None), &work)?;
+            let resolved = futures::executor::block_on(crate::files::resolve(
+                &crate::files::Files {
+                    reader: Some(reader.clone()),
+                    maximum_bytes: 4096,
+                },
+                &request,
+                None,
+            ))?;
+            drop(admitted);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+            Ok::<_, Error>((resolved, extra))
         },
-        request.request(),
-        None,
-    )
-    .await?;
+    );
+    let (mut resolved, extra) = result?;
+    assert_eq!(
+        trace
+            .iter()
+            .filter(|(kind, _)| *kind == "instruction frame plans")
+            .map(|(_, count)| count)
+            .sum::<u64>(),
+        if broken { 0 } else { 1 },
+        "instruction projection revisited the immutable request"
+    );
     assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
-    resolved.project(&file, &policy)
+    let actual = resolved.project(&file, &policy)?;
+    assert_eq!(extra, actual.len() as u64 * 6);
+    let peer = request.clone();
+    assert_eq!(peer.projected_file_bytes(extra / 6)?, extra / 6);
+    let recovered = PreparedModelRequest::decode(request.bytes(), Limits::default(), None)?;
+    assert_eq!(recovered.projected_file_bytes(extra / 6)?, extra / 6);
+    Ok(actual)
 }
 
 fn check_instruction_frame(actual: &str, path: &str, body: &str) {
@@ -839,7 +876,7 @@ proptest! {
     ) {
         let body: String = body.into_iter().collect();
         let path = if nested { "nested/AGENTS.md" } else { "CLAUDE.md" };
-        let actual = futures::executor::block_on(resolved_instruction(&body, path, false)).unwrap();
+        let actual = resolved_instruction(&body, path, false).unwrap();
         check_instruction_frame(&actual, path, &body);
     }
 }
@@ -847,7 +884,6 @@ proptest! {
 #[test]
 #[should_panic(expected = "instruction framing was lost")]
 fn raw_instruction_projection_negative_control() {
-    let actual =
-        futures::executor::block_on(resolved_instruction("body", "AGENTS.md", true)).unwrap();
+    let actual = resolved_instruction("body", "AGENTS.md", true).unwrap();
     check_instruction_frame(&actual, "AGENTS.md", "body");
 }

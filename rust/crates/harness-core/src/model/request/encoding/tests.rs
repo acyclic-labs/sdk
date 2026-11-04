@@ -207,6 +207,9 @@ fn continuation_finish_keeps_the_hash_cut_bound_to_its_canonical_bytes() -> Resu
             let (delta, work) = input_work(|| prepared.input_since(anchor));
             assert_eq!(work, (0, 0), "retained input rebuilt its observed prefix");
             assert_eq!(delta?, Some(prepared.input_bytes()? - anchored_bytes));
+            let (files, work) = input_work(|| prepared.projected_file_bytes(0));
+            assert_eq!(files?, 0);
+            assert_eq!(work, (0, 0), "file admission revisited retained history");
             assert!(prepared.input_has_byte_bound()?);
             assert!(!prepared.input_has_native_media()?);
             assert_eq!(

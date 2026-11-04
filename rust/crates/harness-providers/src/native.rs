@@ -28,20 +28,7 @@ async fn encode(
     Option<acyclic_harness_core::executor::ModelCacheObservation>,
 )> {
     let (key, account) = auth;
-    let (mut bytes, nodes) = request.projection_shape();
-    for message in &request.request().messages {
-        bytes = bytes
-            .checked_add(
-                crate::files::extra_bytes(&message.content, provider.files.maximum_bytes)? as u64,
-            )
-            .ok_or_else(|| invalid("model file size overflow"))?;
-    }
-    let mut allocation = reserve(
-        work,
-        bytes,
-        nodes,
-        key.map_or(0, |key| key.len() as u64) + account.map_or(0, |account| account.len() as u64),
-    )?;
+    let mut allocation = reserve_request(provider, request, auth, work)?;
     let io = acyclic_harness_core::filesystem::PreparationIo::from_native_work(work)?;
     let origin = provider.reasoning_origin(key, account);
     let body = diagnostic(
@@ -150,6 +137,25 @@ pub(crate) fn reserve(
             ..Default::default()
         },
     )?)
+}
+
+/// Count and generation admit the same immutable request projection before
+/// resolving its files or constructing the protocol graph.
+pub(crate) fn reserve_request(
+    provider: &ResolvedModel,
+    request: &PreparedModelRequest,
+    (key, account): (Option<&str>, Option<&str>),
+    work: &NativeMaterializationWork,
+) -> Result<NativeAllocation> {
+    request.projected_file_bytes(provider.files.maximum_bytes)?;
+    let bytes = request.input_bytes()?;
+    let (_, nodes) = request.projection_shape();
+    reserve(
+        work,
+        bytes,
+        nodes,
+        key.map_or(0, |key| key.len() as u64) + account.map_or(0, |account| account.len() as u64),
+    )
 }
 
 pub(crate) fn retain(allocation: &mut NativeAllocation, bytes: u64) -> Result<()> {
