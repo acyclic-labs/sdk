@@ -36,8 +36,4 @@ fn authentication_comparison_checks_the_complete_value() {
         let (prefix, _) = original.split_at(index);
         assert!(!authentication_eq(&original, prefix));
     }
-    // A prefix-only comparison would accept this planted partial signature.
-    let truncated = &original[..32];
-    assert!(original.starts_with(truncated));
-    assert!(!authentication_eq(&original, truncated));
 }
