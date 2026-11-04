@@ -142,18 +142,19 @@ pub(super) fn linux_shared_views_are_independent_namespaces_of_one_mount()
     assert_eq!(listing(&root.join("b"))?, ["directory"]);
     assert_eq!(mounts_at(&root)?, 1, "the other view keeps the mount");
 
-    let worker = b
-        .driver
-        .as_ref()
-        .ok_or("shared driver")?
-        .state
-        .lock()
-        .map_err(|_| "shared state poisoned")?
-        .shared
-        .as_ref()
-        .ok_or("shared view")?
-        ._instance
-        .worker_lifetime();
+    let (worker, physical, views) = {
+        let state = b
+            .driver
+            .as_ref()
+            .ok_or("shared driver")?
+            .state
+            .lock()
+            .map_err(|_| "shared state poisoned")?;
+        let instance = &state.shared.as_ref().ok_or("shared view")?._instance;
+        let (worker, physical) = instance.physical_owner();
+        (worker, physical, Arc::clone(&instance.views))
+    };
+    assert_ne!(physical, std::thread::current().id());
     assert!(worker.upgrade().is_some(), "the native worker is live");
     // Keep the original kernel connection busy through last-view retirement.
     // Lazy namespace detach must still stop and join its packet worker before
@@ -166,6 +167,11 @@ pub(super) fn linux_shared_views_are_independent_namespaces_of_one_mount()
     assert!(
         worker_retired,
         "shared root releases custody only after worker exit"
+    );
+    assert_eq!(
+        views.retirement_thread.get(),
+        Some(&physical),
+        "the existing physical service owns root cleanup"
     );
     assert_eq!(mounts_at(&root)?, 0, "the last view's retirement unmounts");
     let [fence, ..] = crate::native_mount_control_paths(&root.canonicalize()?)?;

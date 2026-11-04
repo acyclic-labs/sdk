@@ -38,6 +38,8 @@ pub(super) struct SharedViews {
     notifier: OnceLock<CacheNotifier>,
     pending: Mutex<PendingInvalidations>,
     invalidation: Condvar,
+    #[cfg(test)]
+    pub(super) retirement_thread: OnceLock<std::thread::ThreadId>,
 }
 
 #[derive(Default)]
@@ -131,6 +133,8 @@ impl SharedViews {
             notifier: OnceLock::new(),
             pending: Mutex::new(PendingInvalidations::default()),
             invalidation: Condvar::new(),
+            #[cfg(test)]
+            retirement_thread: OnceLock::new(),
         })
     }
 
