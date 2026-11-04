@@ -20,11 +20,12 @@
   "expect":{
     "text":"done",
     "requests":[
-      {"/tools":[{"name":"mcp__docs__search"}]},
       {
-        "/tools":[{"name":"mcp__docs__search"}],
-        "/messages/1/content/0":{"type":"tool_use","id":"call","name":"mcp__docs__search","input":{"query":"wren"}},
-        "/messages/2/content/0":{"type":"tool_result","tool_use_id":"call","content":{"$json":{"query":"wren"}}}
+        "/tools":[{"name":"code"}]
+      },
+      {
+        "/tools":[{"name":"code"}],
+        "/messages":[{"content":[{"type":"tool_use","id":"call","name":"mcp__docs__search","input":{"query":"wren"}}]},{"content":[{"type":"tool_result","tool_use_id":"call","content":"tool execution failed: tool `mcp__docs__search` is not available; call one of the declared tools","is_error":true}]}]
       }
     ],
     "events":[
@@ -40,6 +41,7 @@
       ,
       [
         {"kind":"content","delta":"done"},
+        {"kind":"text_part","text":"done"},
         {"kind":"completed","metadata":{"usage":{"input_tokens":5,"output_tokens":1}}}
       ]
     ]

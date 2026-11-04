@@ -53,7 +53,8 @@ fn transcript(units: &[(u8, u8, String)]) -> Vec<ModelMessage> {
             })
         };
         let mut parts = Vec::new();
-        if family != "gemini" {
+        // Reasoning needs a call or nonempty text output immediately after it.
+        if family != "gemini" && (*kind == 3 || !text.is_empty()) {
             parts.push(ModelContentPart::Reasoning {
                 block: ReasoningBlock {
                     kind: reasoning_kind,

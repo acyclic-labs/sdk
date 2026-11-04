@@ -20,10 +20,7 @@
             "text":"think",
             "origin":{
               "provider":"chat","model":"model",
-              "credential_scope":[
-                52,23,172,124,246,104,8,138,97,112,233,125,170,80,110,31,20,103,94,98,36,183,16,173,
-                159,180,32,27,76,49,112,206
-              ]
+              "credential_scope":null
             },
             "continuity":[
               123,34,114,101,97,115,111,110,105,110,103,95,99,111,110,116,101,110,116,34,58,34,116,104,
@@ -32,6 +29,7 @@
             "outcome":"preserved-readable"
           }
         },
+        {"kind":"text_part","text":"hé🦀"},
         {"kind":"completed","metadata":{"usage":{"prompt_tokens":5,"completion_tokens":1}}}
       ]
     ]

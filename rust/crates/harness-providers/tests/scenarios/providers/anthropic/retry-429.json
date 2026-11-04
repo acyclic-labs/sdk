@@ -27,6 +27,7 @@
      "kind": "content",
      "delta": "🦀"
     },
+    {"kind":"text_part","text":"hé🦀"},
     {
      "kind": "completed",
      "metadata": {

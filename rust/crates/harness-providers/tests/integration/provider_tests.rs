@@ -11,6 +11,12 @@ proptest! {
         object.remove("driver");
         object.insert("prompt".into(), text.clone().into());
         let case: ProviderCase = serde_json::from_value(value)?;
+        if case.validate().is_ok() {
+            futures::executor::block_on(providers::parsed(
+                &case,
+                super::provider_http::Recorded::new(&case),
+            )).map_err(|error| TestCaseError::fail(error.to_string()))?;
+        }
         let encoded = serde_json::to_vec(&case)?;
         prop_assert_eq!(serde_json::from_slice::<ProviderCase>(&encoded)?, case);
         let events = vec![ModelEvent::Content { delta: text }, ModelEvent::Completed { metadata: serde_json::Value::Null }];
@@ -25,39 +31,48 @@ proptest! {
     fn reasoning_oracle_binds_every_continuity_byte_and_credential_scope(
         bytes in prop::collection::vec(any::<u8>(), 0..64),
         inserted in any::<u8>(), position in 0usize..65, scope_byte in 0usize..32,
+        credential_scope in prop::option::of(any::<[u8; 32]>()),
     ) {
         use acyclic_harness::model::{ReasoningBlock, ReasoningKind, ReasoningOrigin, ReasoningOutcome};
         let event = ModelEvent::ReasoningBlock { block: ReasoningBlock {
             kind: ReasoningKind::Opaque, text: None,
-            origin: ReasoningOrigin { provider: "fixture".into(), model: "model".into(), credential_scope: Some([73; 32]) },
+            origin: ReasoningOrigin { provider: "fixture".into(), model: "model".into(), credential_scope },
             continuity: bytes, outcome: ReasoningOutcome::PreservedOpaque,
         }};
         let expected = vec![serde_json::to_value(&event)?];
         prop_assert!(providers::check_events(&expected, std::slice::from_ref(&event)).is_ok());
-        for scope in [false, true] {
+        for mutation in 0..3 {
             let mut broken = event.clone();
             let ModelEvent::ReasoningBlock { block } = &mut broken else { unreachable!() };
-            if scope {
-                if let Some(byte) = block.origin.credential_scope.as_mut().and_then(|scope| scope.get_mut(scope_byte)) {
-                    *byte ^= 1;
-                }
-            } else {
-                block.continuity.insert(position.min(block.continuity.len()), inserted);
+            match mutation {
+                0 => block.continuity.insert(position.min(block.continuity.len()), inserted),
+                1 => block.origin.credential_scope.get_or_insert([73; 32])[scope_byte] ^= 1,
+                _ => block.origin.credential_scope = credential_scope.is_none().then_some([73; 32]),
             }
             prop_assert!(providers::check_events(&expected, &[broken]).is_err());
         }
     }
 
     #[test]
-    fn request_oracle_rejects_lost_results_and_changed_provider_ids(id in "[a-z]{1,16}") {
+    fn request_oracle_rejects_lost_results_and_changed_provider_ids(id in "[a-z]{1,16}", notices in 0usize..4) {
         use serde_json::json;
-        let entry = json!({"call_id":id,"output":"result"});
-        let body = json!({"history":[entry]});
-        let expected = std::collections::BTreeMap::from([("/history/0".into(), entry)]);
+        let arguments = json!({"query":id});
+        let entry = json!({"call_id":id,"output":"result","arguments":serde_json::to_string(&arguments)?});
+        let mut history = vec![json!({"notice":"tools.changed"}); notices];
+        history.push(entry.clone());
+        let body = json!({"history":history});
+        let expected = std::collections::BTreeMap::from([("/history".into(), json!([{"call_id":id,"output":"result","arguments":{"$json":arguments}}]))]);
         prop_assert!(providers::check_request(&expected, &body).is_ok());
         prop_assert!(providers::check_request(&expected, &json!({"history":[]})).is_err(), "accepted a missing result");
-        prop_assert!(providers::check_request(&expected, &json!({"history":[{"call_id":format!("{id}!"),"output":"result"}]})).is_err(), "accepted a mismatched ID");
-        prop_assert!(providers::check_request(&expected, &json!({"history":[{"call_id":id,"output":"corrupted"}]})).is_err(), "accepted corrupted result bytes");
+        let mut changed = body.clone();
+        changed["history"][notices]["call_id"] = format!("{id}!").into();
+        prop_assert!(providers::check_request(&expected, &changed).is_err(), "accepted a mismatched ID");
+        let mut changed = body.clone();
+        changed["history"][notices]["output"] = "corrupted".into();
+        prop_assert!(providers::check_request(&expected, &changed).is_err(), "accepted corrupted result bytes");
+        let mut injected = body;
+        injected["history"][notices]["arguments"] = serde_json::to_string(&json!({"query":id,"injected":true}))?.into();
+        prop_assert!(providers::check_request(&expected, &injected).is_err(), "accepted extra encoded arguments");
     }
 
 }

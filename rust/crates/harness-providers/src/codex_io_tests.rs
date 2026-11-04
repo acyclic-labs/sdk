@@ -1,6 +1,6 @@
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkCounters};
-use futures::{FutureExt as _, StreamExt as _, future::Either};
+use futures::{StreamExt as _, future::Either};
 
 /// Exercise the original OAuth decoder with the native body producer held at
 /// its terminal boundary. No filesystem publication or endpoint is involved.
