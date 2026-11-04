@@ -2,6 +2,7 @@ import { create, equals, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
 import { acknowledge, serve, spend } from "./model-driver.js";
 import { SessionNode, checkpoint } from "./session-node.js";
+import { StreamError } from "../src/types.js";
 
 // Test-only fault injection changes the actual module loaded by Bun. Each
 // negative control must fail its stated invariant, not merely start a process.
@@ -22,6 +23,7 @@ const { StreamSessions } = await import("../src/session.js");
 const peer = new SessionNode(spend);
 let rejectWrite = false;
 let observedRejection = false;
+let failedSends = 0;
 const sessions = new StreamSessions(async (node, signal) => {
   const transport = await peer.connect(node, signal);
   return { ...transport, async send(bytes, writeSignal) {
@@ -29,10 +31,11 @@ const sessions = new StreamSessions(async (node, signal) => {
     const interest = frame.body.case === "hello" ? frame.body.value.interest
       : frame.body.case === "interest" ? frame.body.value : undefined;
     if (rejectWrite && interest?.upsert.some(item => item.kind.case === "follow" && item.kind.value.resource === "streams:/events")) {
+      if (failedSends++ === 0) throw new StreamError("unavailable", "Streams session is closed");
       observedRejection = true;
       for (const notify of peer.changed) notify();
       if (fault === "rejection") await new Promise<void>(() => {});
-      throw new Error("subscription rejected");
+      peer.refuse = "unavailable";
     }
     return transport.send(bytes, writeSignal);
   } };
@@ -85,8 +88,8 @@ async function command(action: string, hex?: string, path?: string,
       if (scenario === "rejection") {
         rejectWrite = true;
         peer.disconnect();
-        await peer.until(() => observedRejection);
         void records!.next().then(() => { settled = true; }, error => { settled = true; rejected = error; });
+        await peer.until(() => observedRejection || settled);
       }
       break;
     // Lifetime controls: a command that never settles while client work stays scheduled, a client that keeps
@@ -143,7 +146,7 @@ async function command(action: string, hex?: string, path?: string,
   }
   await checkpoint();
   if (rejected !== undefined && scenario !== "rejection") throw rejected;
-  return { settled, code: (rejected as { code?: string } | undefined)?.code,
+  return { settled, failedSends, code: (rejected as { code?: string } | undefined)?.code,
     active: peer.active, outstanding: peer.outstandingFrames };
 }
 await serve((input: { action: string; hex?: string; path?: string; work?: Parameters<typeof command>[3]; count?: number }) =>
