@@ -15,6 +15,39 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+pub(crate) struct FrameObservation<'a> {
+    pub(crate) owner: Option<&'a crate::kernel::ProofDataCustody>,
+    pub(crate) bytes: u64,
+}
+impl FrameObservation<'_> {
+    pub(crate) fn admitted(&mut self, bytes: u64) -> Result<(), crate::FsError> {
+        if let Some(owner) = self.owner {
+            owner.record_heap_future_event(crate::heap_future::HeapFutureEvent::Admitted(
+                crate::WorkCounters {
+                    allocation_operations: u64::from(bytes != 0),
+                    peak_allocation_bytes: bytes,
+                    ..crate::WorkCounters::UNCHARGED
+                },
+            ))?;
+            self.bytes = bytes;
+        }
+        Ok(())
+    }
+}
+impl Drop for FrameObservation<'_> {
+    #[allow(
+        clippy::expect_used,
+        reason = "The frame releases exactly the bytes admitted by its observer."
+    )]
+    fn drop(&mut self) {
+        if let Some(owner) = self.owner.filter(|_| self.bytes != 0) {
+            owner
+                .record_heap_future_event(crate::heap_future::HeapFutureEvent::Released(self.bytes))
+                .expect("the actual path frame dies before its observation retires");
+        }
+    }
+}
+
 // The future and everything it captures die before its allocation charge.
 pub(crate) struct OwnedFuture<F: ?Sized, A> {
     future: Pin<Box<F>>,
@@ -89,7 +122,7 @@ impl<F: Future, A> OwnedFuture<F, A> {
 }
 
 impl<F> OwnedFuture<F, ()> {
-    fn with_allocation<A>(self, allocation: A) -> OwnedFuture<F, A> {
+    pub(crate) fn with_allocation<A>(self, allocation: A) -> OwnedFuture<F, A> {
         OwnedFuture {
             future: self.future,
             _allocation: allocation,

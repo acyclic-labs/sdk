@@ -10,13 +10,14 @@ use super::{
 use crate::async_storage::{self, AsyncObjectStore};
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
+use crate::heap_future::FrameObservation;
 use crate::lock_order::MutexGuard;
 #[cfg(test)]
 use crate::model::FilesystemProfile;
 use crate::model::{VolumeConfig, VolumeConfigError};
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
-    ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError,
+    ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError,
 };
 use crate::sync::Mutex;
 use acyclic_stream::OwnedBytes;

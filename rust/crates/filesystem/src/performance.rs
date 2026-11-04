@@ -233,14 +233,12 @@ impl WorkCounters {
     /// unbounded counter that holds a reservation has exactly that much less left, so
     /// refunding it restores the limit. Any underflow is an error, never clamped. The
     /// peak allocation keeps `self`'s value.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn checked_sub_cumulative(&self, other: &Self) -> Result<Self, WorkError> {
         self.exact_cumulative(other, &Self::default(), u64::checked_sub)
     }
 
     /// `apply` on every additive counter, except that a counter `unbounded` leaves at
     /// `u64::MAX` keeps `self`'s value.
-    #[cfg(not(target_arch = "wasm32"))]
     fn exact_cumulative(
         &self,
         other: &Self,

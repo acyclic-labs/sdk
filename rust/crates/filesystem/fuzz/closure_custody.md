@@ -154,3 +154,21 @@ transfer and must fail that relation. Payload funding remains independent; no
 payload scan, receipt merge, replacement admission or new wait is needed. This
 container transfer does not establish the separate public accounting-page facts
 or historical decoder allocation contract.
+
+Operation caches borrow the same read frame. Their slot tables and retained
+owned payloads carry original leases, including across cache growth; refusing
+an insertion leaves the read owned and funded in its caller's frame. Single
+cold page reads use the same read boundary as batches, and their boxed futures
+retire their original backing after the future itself is destroyed. No cache
+residency is reconstructed from counters or claimed a second time.
+
+`owned_cache_batches_preserve_original_funding_at_every_capacity` uses the
+shipped local object provider with empty, full and partially occupied caches.
+It checks exact batch, cached-payload and single-page retirement while an
+independent allocation stays live. Apply
+`mutations/operation_cache_original_custody.patch` to replace the cache miss's
+frame with a separate ledger and transfer only counters. The real owned-read
+relation must reject the missing original funding. Restore the patch before
+requiring the relation to pass. Cache admission adds no payload copy, object
+read, durability barrier or wait; each payload transfers its existing lease
+once, and one slot lease replaces the former residency reconciliation.

@@ -1,17 +1,16 @@
 use super::*;
+use crate::kernel::allocation::retained::{Retained, RetainedAllocation};
 
 struct CachedObject {
     object_id: ObjectId,
     bytes: OwnedBytes,
+    _allocation: Option<RetainedAllocation>,
 }
 pub(super) struct CacheState {
-    slots: ReadOwned<Vec<Option<CachedObject>>>,
+    slots: Retained<Vec<Option<CachedObject>>>,
 
     entry_count: usize,
     pub(super) retained_owned_bytes: u64,
-    /// Standalone slots already present in the caller's allocation ledger.
-    pub(super) accounted_bytes: u64,
-    pub(super) accounted_slot_bytes: u64,
 }
 pub(super) struct OperationReadCache<'a, S> {
     pub(super) store: &'a S,
@@ -39,7 +38,7 @@ impl<'a, S> OperationReadCache<'a, S> {
         usize_to_u64(slot_limit)
             .checked_mul(size_of::<Option<CachedObject>>() as u64)
             .ok_or(WorkError::Overflow)?;
-        let mut slots = reserve_slots::<Option<CachedObject>>(
+        let slots = reserve_slots::<Option<CachedObject>>(
             slot_limit.min(INITIAL_CACHE_SLOTS),
             accounting,
             data_custody,
@@ -47,6 +46,10 @@ impl<'a, S> OperationReadCache<'a, S> {
         let bytes = usize_to_u64(slots.value.capacity())
             .checked_mul(size_of::<Option<CachedObject>>() as u64)
             .ok_or(WorkError::Overflow)?;
+        let mut slots = Retained::from_owned(
+            crate::kernel::Owned::new(slots.value, slots.custody, bytes),
+            accounting,
+        )?;
         slots
             .value
             .resize_with(slot_limit.min(INITIAL_CACHE_SLOTS), || None);
@@ -59,8 +62,6 @@ impl<'a, S> OperationReadCache<'a, S> {
                 slots,
                 entry_count: 0,
                 retained_owned_bytes: 0,
-                accounted_bytes: bytes,
-                accounted_slot_bytes: bytes,
             }),
             maximum_entries,
             slot_limit,
@@ -76,13 +77,6 @@ impl<'a, S> OperationReadCache<'a, S> {
         usize_to_u64(state.slots.value.capacity())
             .checked_mul(size_of::<Option<CachedObject>>() as u64)
             .ok_or(WorkError::Overflow)
-    }
-    pub(super) fn extra_resident(&self) -> Result<u64, ObjectStoreError> {
-        let state = self.lock_state();
-        Self::slot_bytes(&state)?
-            .checked_add(state.retained_owned_bytes)
-            .and_then(|bytes| bytes.checked_sub(state.accounted_bytes))
-            .ok_or(WorkError::Overflow.into())
     }
     pub(super) fn probe(
         &self,
@@ -135,8 +129,15 @@ impl<'a, S> OperationReadCache<'a, S> {
                 .checked_mul(2)
                 .ok_or(WorkError::Overflow)?
                 .min(self.slot_limit);
-            let mut grown =
+            let grown =
                 reserve_slots::<Option<CachedObject>>(length, accounting, self.data_custody)?;
+            let grown_bytes = usize_to_u64(grown.value.capacity())
+                .checked_mul(size_of::<Option<CachedObject>>() as u64)
+                .ok_or(WorkError::Overflow)?;
+            let mut grown = Retained::from_owned(
+                crate::kernel::Owned::new(grown.value, grown.custody, grown_bytes),
+                accounting,
+            )?;
             grown.value.resize_with(length, || None);
             let old_bytes = Self::slot_bytes(&state)?;
             // Charge all rehash probes before moving each old entry. On failure,
@@ -158,10 +159,6 @@ impl<'a, S> OperationReadCache<'a, S> {
             }
             let old = std::mem::replace(&mut state.slots, grown);
             drop(old);
-            release_standalone(
-                accounting,
-                old_bytes.saturating_sub(state.accounted_slot_bytes),
-            )?;
             if let Some(owner) = self.data_custody {
                 owner.add_operation_cache_bytes(
                     Self::slot_bytes(&state)?
@@ -173,6 +170,19 @@ impl<'a, S> OperationReadCache<'a, S> {
                 vacant = probe_slots(&state.slots.value, object_id, accounting, None)?.1;
             }
         }
+        let retained_owned_bytes = state
+            .retained_owned_bytes
+            .checked_add(owned_bytes)
+            .ok_or(WorkError::Overflow)?;
+        let allocation = if owned_bytes == 0 {
+            None
+        } else {
+            Some(RetainedAllocation::transfer(
+                &mut KernelOwnedAllocation::Standalone,
+                owned_bytes,
+                accounting,
+            )?)
+        };
         *state
             .slots
             .value
@@ -180,53 +190,14 @@ impl<'a, S> OperationReadCache<'a, S> {
             .ok_or(ObjectStoreError::Corrupt)? = Some(CachedObject {
             object_id,
             bytes: bytes.clone(),
+            _allocation: allocation,
         });
         state.entry_count += 1;
-        state.retained_owned_bytes = state
-            .retained_owned_bytes
-            .checked_add(owned_bytes)
-            .ok_or(WorkError::Overflow)?;
+        state.retained_owned_bytes = retained_owned_bytes;
         if let Some(owner) = self.data_custody {
             owner.add_operation_cache_bytes(owned_bytes)?;
         }
         Ok(true)
-    }
-    pub(super) fn reconcile(
-        &self,
-        accounting: &mut KernelAccounting<'_>,
-    ) -> Result<(), crate::FsError> {
-        match accounting {
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelAccounting::NativeOriginal { .. } => Ok(()),
-            _ => {
-                let mut state = self.lock_state();
-                let actual = Self::slot_bytes(&state)?
-                    .checked_add(state.retained_owned_bytes)
-                    .ok_or(WorkError::Overflow)?;
-                // Growth's standalone callback releases its own old-slot claim;
-                // the caller retains the old baseline until this short leaf.
-                let (allocations, work, budget, _) = accounting
-                    .standalone_parts()
-                    .ok_or(crate::ObjectStoreError::Corrupt)?;
-                if actual >= state.accounted_bytes {
-                    allocations
-                        .record_owned_bytes(actual - state.accounted_bytes, work)
-                        .map_err(|error| {
-                            error.into_work_or(crate::FsError::HandleAllocationFailed)
-                        })?;
-                } else {
-                    allocations
-                        .release(state.accounted_bytes - actual)
-                        .map_err(|error| {
-                            error.into_work_or(crate::FsError::HandleAllocationFailed)
-                        })?;
-                }
-                work.verify(budget)?;
-                state.accounted_bytes = actual;
-                state.accounted_slot_bytes = Self::slot_bytes(&state)?;
-                Ok(())
-            }
-        }
     }
 }
 impl<S> Drop for OperationReadCache<'_, S> {

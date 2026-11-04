@@ -13,11 +13,8 @@ use crate::async_storage::{
 };
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
-use crate::heap_future::in_heap;
 use crate::performance::{WorkBudget, WorkCounters, WorkError};
-use crate::storage::{
-    ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError,
-};
+use crate::storage::{ObjectId, ObjectRead, ObjectReadRequest, ObjectStoreError};
 use std::future::Future;
 use std::marker::PhantomData;
 use std::mem::size_of;
@@ -85,13 +82,6 @@ impl<F: Format> OwnedPage<F> {
 
 fn allocation_error(error: AllocationError) -> FsError {
     error.into_work_or(CanonicalDecodeError::AllocationFailed.into())
-}
-
-fn retained_bytes(read: &ObjectRead) -> u64 {
-    match read.retention {
-        ObjectReadRetention::Shared => 0,
-        ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
-    }
 }
 
 fn invalid_batch_result() -> FsError {

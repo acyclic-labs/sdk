@@ -122,7 +122,7 @@ pub struct AuthorityWork<'a> {
     pub original: Option<&'a crate::NativeMaterializationWork>,
     pub(crate) allocations: crate::kernel::allocation::AllocationLedger,
     pub(crate) scratch_floor: u64,
-    pub(crate) read_observation: Option<(&'a crate::kernel::ProofDataCustody, u64)>,
+    pub(crate) read_observation: Option<&'a crate::kernel::ProofDataCustody>,
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg(any(test, feature = "distributed"))]
     pub(crate) request_allocation: Option<crate::NativeAllocation>,
@@ -237,67 +237,20 @@ impl<'a> AuthorityWork<'a> {
             .map_err(|error| OperationFailure::new(error, self.spent()))
     }
 
-    /// Admits a read against the original ledger, including live and resident bytes.
+    /// Admits a read against the original ledger, including its live backing.
     pub fn read_budget(&mut self) -> Result<WorkBudget, ObjectStoreError> {
-        let mut remaining = self.remaining().map_err(ObjectStoreError::from)?;
-        if let Some((_, standing)) = self.read_observation {
-            let Some(peak) = remaining.peak_allocation_bytes.checked_sub(standing) else {
-                self.read_observation = None;
-                return Err(WorkError::BudgetExceeded {
-                    counter: "peak_allocation_bytes",
-                    observed: standing,
-                    maximum: remaining.peak_allocation_bytes,
-                }
-                .into());
-            };
-            remaining.peak_allocation_bytes = peak;
-        }
-        Ok(remaining)
+        self.remaining().map_err(ObjectStoreError::from)
     }
 
-    /// Borrows original read custody with its existing resident-byte allowance.
+    /// Borrows the original read custody without reconstructing residency.
     pub(crate) fn read_accounting(
         &mut self,
     ) -> Result<crate::kernel::allocation::KernelAccounting<'_>, ObjectStoreError> {
-        use crate::kernel::allocation::KernelAccounting;
         if !self.is_native() {
             self.read_budget()?;
         }
-        let standing = self.read_observation.map_or(0, |(_, standing)| standing);
-        let mut accounting = self.accounting();
-        if let KernelAccounting::BorrowedStandalone { budget, .. } = &mut accounting {
-            budget.peak_allocation_bytes = budget
-                .peak_allocation_bytes
-                .checked_sub(standing)
-                .ok_or(WorkError::Overflow)?;
-        }
-        Ok(accounting)
+        Ok(self.accounting())
     }
-
-    pub(crate) fn read_receipt(
-        &self,
-        result: Result<ObjectRead, ObjectStoreError>,
-    ) -> ObjectResult<ObjectRead> {
-        let mut work = self.spent();
-        if let Some((observation, standing)) = self.read_observation {
-            observation
-                .record_completed_leaf_work(work)
-                .map_err(|error| crate::ObjectFailure::new(error.into(), work))?;
-            if standing != 0 {
-                work = WorkCounters::UNCHARGED
-                    .with_backend(work, standing)
-                    .map_err(|error| crate::ObjectFailure::new(error.into(), work))?;
-                if result.is_ok() {
-                    work.verify_within(&self.budget)
-                        .map_err(|error| crate::ObjectFailure::new(error.into(), work))?;
-                }
-            }
-        }
-        result
-            .map(|value| crate::OperationReceipt { value, work })
-            .map_err(|error| crate::ObjectFailure::new(error, work))
-    }
-
     pub(crate) fn check(&self) -> Result<(), AuthorityStoreError> {
         self.admit(WorkCounters::UNCHARGED)
     }

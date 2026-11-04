@@ -58,7 +58,8 @@ where
                 custody: KernelOwnedAllocation::Standalone,
             });
         }
-        let mut frame = batch_in_heap(accounting, |accounting| {
+        let mut owner = crate::heap_future::AdmittedFrame::new(accounting);
+        let mut frame = batch_in_heap(&mut owner, data_custody, |accounting| {
             crate::kernel::file_read::read_objects_with_accounting(
                 store,
                 &plan.requests,
@@ -66,9 +67,9 @@ where
                 cancellation,
             )
         })?;
-        let result = frame.value.as_mut().await;
+        let result = frame.as_mut().await;
         drop(frame);
-        result
+        owner.finish(result)
     }
     .await;
     let cold = match cold {
@@ -239,25 +240,31 @@ fn batch_container<T>(
     Ok((values, bytes, allocation))
 }
 
-pub(super) fn batch_in_heap<'a, 'accounting, F: Future>(
-    accounting: &'a mut KernelAccounting<'accounting>,
+pub(super) fn batch_in_heap<'a, 'borrow, 'accounting, 'observer, F: Future>(
+    frame: &'a mut crate::heap_future::AdmittedFrame<'borrow, KernelAccounting<'accounting>>,
+    owner: Option<&'observer crate::kernel::ProofDataCustody>,
     create: impl FnOnce(&'a mut KernelAccounting<'accounting>) -> F,
-) -> Result<ReadOwned<crate::heap_future::OwnedFuture<F, ()>>, FsError> {
+) -> Result<
+    crate::heap_future::OwnedFuture<F, crate::heap_future::FrameObservation<'observer>>,
+    FsError,
+> {
     #[cfg(not(target_arch = "wasm32"))]
-    let custody = if accounting.native_work().is_some() {
-        let bytes = usize_to_u64(size_of::<F>());
-        accounting.claim_owned(bytes, u64::from(bytes != 0))?
+    let owner = if frame.accounting().native_work().is_some() {
+        None
     } else {
-        KernelOwnedAllocation::Standalone
+        owner
     };
-    #[cfg(target_arch = "wasm32")]
-    let custody = KernelOwnedAllocation::Standalone;
-    Ok(ReadOwned {
-        value: in_heap(|| create(accounting)),
-        custody,
-    })
+    let mut observation = crate::heap_future::FrameObservation { owner, bytes: 0 };
+    let (future, _) = crate::heap_future::in_heap_admitted(
+        frame,
+        |frame, bytes| {
+            frame.admit(bytes)?;
+            observation.admitted(bytes)
+        },
+        |frame| create(frame.accounting()),
+    )?;
+    Ok(future.with_allocation(observation))
 }
-
 impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
     pub(crate) fn next_with_accounting(
         &mut self,

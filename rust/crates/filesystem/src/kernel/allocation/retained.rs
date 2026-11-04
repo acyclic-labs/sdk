@@ -348,7 +348,7 @@ impl RetainedAllocation {
         }
     }
 
-    fn transfer(
+    pub(crate) fn transfer(
         allocation: &mut KernelOwnedAllocation,
         bytes: u64,
         accounting: &mut KernelAccounting<'_>,

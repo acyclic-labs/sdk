@@ -141,6 +141,14 @@ impl ProofDataCustody {
         std::mem::size_of::<Self>() as u64
     }
 
+    /// Reports a completed prefix already measured on the original ledger.
+    /// Its peak includes every live frame, cache entry and retained output.
+    pub(crate) fn record_original_work(&self, work: WorkCounters) -> Result<(), WorkError> {
+        let mut completed = self.completed_data_work.lock();
+        completed.pending = completed.pending.checked_add(work)?;
+        Ok(())
+    }
+
     pub(crate) fn record_data_work(&self, mut work: WorkCounters) -> Result<(), WorkError> {
         let mut completed = self.completed_data_work.lock();
         work.peak_allocation_bytes = work
