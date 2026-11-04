@@ -679,35 +679,20 @@ impl Shape {
 #[tokio::test(flavor = "multi_thread")]
 async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
     let directory = tempfile::tempdir().unwrap();
-    // The approver is the principal the endpoint credential authenticates,
-    // read from a minted credential rather than assumed.
-    let principal = {
-        let model = model(directory.path()).await;
-        let home = Home::new(directory.path(), "probe");
-        let mut server = Running::start(home.command(&model, None, &["serve", "127.0.0.1:0"]));
-        let endpoint = served(&mut server).await;
-        server.kill().await;
-        endpoint["principal"].as_str().unwrap().to_owned()
-    };
-    let policy = |name: &str, principal: &str| {
-        let path = directory.path().join(format!("{name}-policy.json"));
-        std::fs::write(
-            &path,
-            serde_json::to_vec(&json!({"approvers": [
-                {"kind": "rules", "principal": "policy:conformance",
-                 "rules": [{"tool": "shell", "arguments": null, "verdict": "ask"}],
-                 "fallback": "allow"},
-                {"kind": "human", "principal": principal},
-            ]}))
-            .unwrap(),
-        )
-        .unwrap();
-        path
-    };
-    // LocalUser authenticates decisions as its one human. Served clients
-    // authenticate as the principal in their minted session credential.
-    let local_policy = policy("local", acyclic_harness::approvals::HUMAN_APPROVER);
-    let endpoint_policy = policy("endpoint", &principal);
+    // Every transport reaches the same LocalUser platform: it authenticates
+    // decisions as its one human, separately from the session principal.
+    let policy = directory.path().join("policy.json");
+    std::fs::write(
+        &policy,
+        serde_json::to_vec(&json!({"approvers": [
+            {"kind": "rules", "principal": "policy:conformance",
+             "rules": [{"tool": "shell", "arguments": null, "verdict": "ask"}],
+             "fallback": "allow"},
+            {"kind": "human", "principal": acyclic_harness::approvals::HUMAN_APPROVER},
+        ]}))
+        .unwrap(),
+    )
+    .unwrap();
     let mut shapes = Vec::new();
     // The seams' server: the same entry point with this package's own
     // verifier injected.
@@ -715,11 +700,6 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
     for name in ["local", "endpoint", "seams"] {
         let model = model(&directory.path().join(name)).await;
         let home = Home::new(directory.path(), name);
-        let policy = if name == "local" {
-            &local_policy
-        } else {
-            &endpoint_policy
-        };
         let (backend, server) = if name == "local" {
             (Backend::Local, None)
         } else {
@@ -731,18 +711,17 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
             let mut server = Running::start(home.command_of(
                 &binary,
                 &model,
-                Some(policy),
+                Some(&policy),
                 &["serve", "127.0.0.1:0"],
             ));
             let endpoint = served(&mut server).await;
-            assert_eq!(endpoint["principal"], principal.as_str());
             let backend = Backend::Endpoint {
                 url: endpoint["endpoint"].as_str().unwrap().to_owned(),
                 credential: endpoint["credential"].as_str().unwrap().to_owned(),
             };
             (backend, Some(server))
         };
-        let answer = scenario(&home, &model, policy, &backend).await;
+        let answer = scenario(&home, &model, &policy, &backend).await;
         if let Some(mut server) = server {
             // The injected seam admitted the tree.
             if name == "seams" {
