@@ -78,13 +78,9 @@ async fn read_many_representation<R: ReadRepresentation, S: AsyncObjectStore + ?
         .map_err(crate::ObjectStoreError::from)?;
     for request in requests {
         let read = R::read(store, request, batch).await?;
-        let bytes = match read.retention {
-            crate::storage::ObjectReadRetention::Shared => 0,
-            crate::storage::ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
-        };
         values.bytes = values
             .bytes
-            .checked_add(bytes)
+            .checked_add(read.retention.owned_bytes())
             .ok_or(crate::WorkError::Overflow)?;
         values.value.push(read);
     }

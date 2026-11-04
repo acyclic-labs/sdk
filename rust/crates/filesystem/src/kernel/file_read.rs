@@ -394,10 +394,7 @@ pub(crate) async fn read_object_with_accounting<S: AsyncObjectStore>(
         .read(object, maximum, &mut work)
         .await
         .map_err(read_store_error)?;
-    let bytes = match read.retention {
-        crate::storage::ObjectReadRetention::Shared => 0,
-        crate::storage::ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
-    };
+    let bytes = read.retention.owned_bytes();
     let owned = work.finish_owned(crate::kernel::Owned::new(
         read,
         KernelOwnedAllocation::Standalone,
@@ -468,12 +465,8 @@ pub(crate) fn retained_object_reads_bytes(
         .map(usize_to_u64)
         .ok_or(crate::WorkError::Overflow)?;
     reads.iter().try_fold(container, |total, read| {
-        let bytes = match read.retention {
-            crate::storage::ObjectReadRetention::Shared => 0,
-            crate::storage::ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
-        };
         total
-            .checked_add(bytes)
+            .checked_add(read.retention.owned_bytes())
             .ok_or_else(|| crate::WorkError::Overflow.into())
     })
 }
