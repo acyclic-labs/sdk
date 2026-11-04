@@ -285,11 +285,9 @@ impl Drop for StandaloneLease {
 }
 
 impl RetainedAllocation {
-    pub(crate) fn standalone_ledger(
-        &self,
-    ) -> Option<std::sync::Weak<Mutex<SharedAllocationBytes>>> {
+    pub(crate) fn standalone_ledger(&self) -> Option<&Arc<Mutex<SharedAllocationBytes>>> {
         match self {
-            Self::Standalone { _lease } => Some(Arc::downgrade(&_lease.ledger)),
+            Self::Standalone { _lease } => Some(&_lease.ledger),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { .. } => None,
         }
