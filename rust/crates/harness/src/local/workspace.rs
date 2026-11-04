@@ -21,9 +21,6 @@ pub(in crate::local) use children::LazyForkCuts;
 pub(super) mod projection;
 mod task_views;
 pub(super) mod volumes;
-#[cfg(test)]
-#[cfg(all(any(test, feature = "native-execution"), unix))]
-pub(super) use crate::sync::owned::lock_owned;
 pub(super) use crate::sync::owned::{Arc as StateArc, Mutex as AsyncMutex};
 
 pub(super) struct MountedVolume {
