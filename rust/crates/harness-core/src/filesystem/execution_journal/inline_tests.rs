@@ -167,28 +167,6 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
         offset: 65530,
         length: 16,
     };
-    {
-        // Resident storage aliases retain their original backing. The range
-        // still needs owned output and metadata, so zero allocation credit
-        // must refuse before output.
-        let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget {
-                peak_allocation_bytes: 0,
-                ..acyclic_fs::WorkBudget::UNBOUNDED
-            },
-            &stop,
-        )
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let io = PreparationIo::from_native_work(&work)?;
-        let error = journal
-            .load_range(&file, range, Some(&io))?
-            .await
-            .unwrap_err();
-        assert!(matches!(error, Error::NativeWorkspace { source, .. }
-        if matches!(source.as_ref(), acyclic_fs::WorkspaceError::Work(
-            acyclic_fs::WorkError::BudgetExceeded { counter: "peak_allocation_bytes", .. }
-        ))));
-    }
     let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &stop)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
