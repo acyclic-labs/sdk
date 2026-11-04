@@ -15,6 +15,7 @@ const metadata = args.includes("--metadata");
 const array = args.includes("--array");
 const number = args.includes("--number");
 const revoked = args.includes("--revoked");
+const selectedControl = retirement || bytes || metadata || array || number;
 const reuse = args.find(arg => arg.startsWith("--reuse="))?.slice("--reuse=".length);
 const recovery = `node scripts/qualify-js-json.mjs${retirement ? " --retirement" : bytes ? " --bytes" : metadata ? " --metadata" : array ? " --array" : number ? " --number" : ""}${red ? " --red" : ""}${quoted ? " --quoted" : ""}${revoked ? " --revoked" : ""}${reuse ? ` --reuse=${JSON.stringify(reuse)}` : ""}`;
 const test = bytes ? "external JSON bytes preserve engine tokens or refuse before rounding"
@@ -32,8 +33,9 @@ const run = (step, command, parameters, options = {}) => {
 };
 if (args.some(arg => !["--red", "--retirement", "--bytes", "--quoted", "--metadata", "--array", "--number", "--revoked"].includes(arg) && !arg.startsWith("--reuse="))
   || new Set(args).size !== args.length || Number(retirement) + Number(bytes) + Number(metadata) + Number(array) + Number(number) > 1 || quoted && !(bytes && red)
-  || args.filter(arg => arg.startsWith("--reuse=")).length > 1 || args.includes("--reuse=") || reuse && red || revoked && !(retirement && red)) {
-  fail("arguments", "expected one control (--retirement, --bytes, --metadata, --array or --number), optional --red, --quoted only with --bytes --red, --revoked only with --retirement --red, or --reuse=<receipt> without --red");
+  || args.filter(arg => arg.startsWith("--reuse=")).length > 1 || args.includes("--reuse=") || reuse && red || revoked && !(retirement && red)
+  || red && !selectedControl) {
+  fail("arguments", "expected at most one control (--retirement, --bytes, --metadata, --array or --number); --red requires a control, --quoted requires --bytes --red, --revoked requires --retirement --red, and --reuse=<receipt> excludes --red");
 }
 
 const production = new URL("../rust/crates/harness/src/wasm/json.rs", import.meta.url);
@@ -43,7 +45,7 @@ let mutation;
 let artifactsCustody;
 let reused;
 try {
-  if ((bytes || metadata || array || number || retirement) && red) {
+  if (red) {
     try { original = readFileSync(production, "utf8"); }
     catch (error) { fail("read production admission source", String(error)); }
     const entrance = retirement ? revoked ? "    let array = is_array(value)?;"
@@ -146,8 +148,8 @@ try {
         : "external JSON input admission disagrees with engine token oracle" : retirement
         ? "JavaScript refusal retained original input" : number
           ? "canonical admission accepted an unsafe JavaScript Number" : array
-          ? "canonical admission did not retain selected Array entries" : metadata
-          ? "canonical Map admission evaluated unrelated size metadata" : "canonical admission revisited an appended Map entry")
+          ? "canonical admission did not retain selected Array entries"
+          : "canonical Map admission evaluated unrelated size metadata")
       && /0 pass\b/u.test(output) && /1 fail\b/u.test(output)
     : result.status === 0 && new RegExp(`\\b${restoredBoundary ? 2 : 1} pass\\b`, "u").test(output) && /0 fail\b/u.test(output);
   if (!expected) fail("JSON admission", "the exact unchanged semantic control did not produce the required result");
