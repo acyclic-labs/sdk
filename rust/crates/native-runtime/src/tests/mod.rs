@@ -69,20 +69,42 @@ pub(crate) fn complete<T>(future: impl Future<Output = io::Result<T>>) -> io::Re
 }
 
 const EXCLUSIVE_CHILD: &str = "ACYCLIC_NATIVE_RUNTIME_EXCLUSIVE_TEST";
+static EXCLUSIVE_PROCESS: AtomicBool = AtomicBool::new(false);
 
-/// Whether this process runs a single test started by
+/// Whether this process runs a single test claimed by
 /// [`passed_in_exclusive_process`], so that test owns the process-global pools.
 pub(crate) fn in_exclusive_process() -> bool {
-    std::env::var_os(EXCLUSIVE_CHILD).is_some()
+    EXCLUSIVE_PROCESS.load(Ordering::Acquire) || std::env::var_os(EXCLUSIVE_CHILD).is_some()
 }
 
-/// Runs `test` alone in a fresh test process and returns true here once it
-/// passed there; returns false inside that process, which runs the body.
+/// Reuses a process selecting exactly `test`, or runs it alone in a fresh
+/// process and returns true once it passed there. Returns false in the process
+/// that owns the test body.
 ///
 /// The worker pools are process-global, so a test that asserts exact charges
 /// or forces admission order must not share them with concurrent tests.
 pub(crate) fn passed_in_exclusive_process(test: &str) -> io::Result<bool> {
+    let test = test
+        .strip_prefix(concat!(env!("CARGO_CRATE_NAME"), "::"))
+        .unwrap_or(test);
+    let started = format!("native exclusive test started: {test}\n");
     if std::env::var_os(EXCLUSIVE_CHILD).is_some_and(|name| name == test) {
+        eprint!("{started}");
+        return Ok(false);
+    }
+    let (mut exact, mut selected) = (false, false);
+    let single = std::env::args_os().skip(1).all(|argument| {
+        match argument.to_str() {
+            Some("--exact") => exact = true,
+            Some("--nocapture" | "--test-threads=1" | "--include-ignored" | "--ignored") => {}
+            Some(name) if name == test && !selected => selected = true,
+            _ => return false,
+        }
+        true
+    });
+    if single && exact && selected {
+        EXCLUSIVE_PROCESS.store(true, Ordering::Release);
+        eprintln!("using existing single-test process for {test}");
         return Ok(false);
     }
     let output = crate::process_output(
@@ -99,7 +121,25 @@ pub(crate) fn passed_in_exclusive_process(test: &str) -> io::Result<bool> {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    if !output
+        .stderr
+        .windows(started.len())
+        .any(|bytes| bytes == started.as_bytes())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "exclusive-test-start: {test} did not claim its process; recovery: cargo test --locked -p acyclic-native-runtime --all-features --lib -- --list"
+            ),
+        ));
+    }
     Ok(true)
+}
+
+#[test]
+fn an_unselected_exclusive_test_cannot_report_success() {
+    let error = passed_in_exclusive_process("tests::missing_exclusive_test").unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::NotFound);
 }
 
 /// Holds every worker of a pool and fills its queue, so the next submission
@@ -562,10 +602,4 @@ fn prepared_metadata_task(
         },
         Some((meter, true)),
     )
-}
-
-#[test]
-fn an_unselected_exclusive_test_cannot_report_success() {
-    let error = passed_in_exclusive_process("tests::missing_exclusive_test").unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::NotFound);
 }
