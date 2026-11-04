@@ -143,6 +143,67 @@ impl<T> Owned<Vec<T>> {
     }
 }
 
+impl Owned<Vec<u8>> {
+    pub(crate) fn copy_from_slice(
+        source: &[u8],
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Self, crate::FsError> {
+        let mut owned = super::file_read::OriginalReadAccounting::new(accounting)?;
+        let delta = crate::WorkCounters {
+            output_bytes: crate::foundation::usize_to_u64(source.len()),
+            ..crate::WorkCounters::UNCHARGED
+        };
+        let result = (|| {
+            owned.admit(delta)?;
+            let value = super::codec::copy_bytes::<crate::FsError>(
+                source,
+                u64::from(!source.is_empty()),
+                &mut |step| owned.observe(step),
+            )?;
+            owned.record_completed(delta)?;
+            Ok(value)
+        })();
+        match result {
+            Ok(value) => {
+                let (allocation, bytes) = owned.into_parts();
+                Ok(Self::new(value, allocation, bytes))
+            }
+            Err(error) => {
+                owned.release_failed()?;
+                Err(error)
+            }
+        }
+    }
+}
+
+impl Owned<String> {
+    pub(crate) fn copy_from_str(
+        source: &str,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Self, crate::FsError> {
+        let reserved = Owned::<Vec<u8>>::allocate(source.len(), accounting)?;
+        // The reserved vector is empty: conversion transfers its capacity,
+        // without allocating, copying or revalidating the source text.
+        let text = String::from_utf8(reserved.value)
+            .unwrap_or_else(|_| unreachable!("reserved vector is empty"));
+        let mut owned = Self::new(text, reserved.allocation, reserved.bytes);
+        let bytes = crate::foundation::usize_to_u64(source.len());
+        let result = accounting.perform(
+            crate::WorkCounters {
+                bytes_copied: bytes,
+                output_bytes: bytes,
+                ..crate::WorkCounters::UNCHARGED
+            },
+            || owned.value.push_str(source),
+        );
+        if let Err(error) = result {
+            owned.retire(accounting)?;
+            return Err(error);
+        }
+        Ok(owned)
+    }
+}
+
 pub(crate) fn split_allocation(
     allocation: &mut KernelOwnedAllocation,
     _bytes: u64,

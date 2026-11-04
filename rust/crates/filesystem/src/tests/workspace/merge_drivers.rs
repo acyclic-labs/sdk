@@ -1,5 +1,945 @@
 use super::*;
 
+#[tokio::test]
+async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<(), Box<dyn Error>>
+{
+    merge_directory_staging_credit().await?;
+    let fs = Fs::memory();
+    let main = unbounded!(fs, create_workspace("directory-main"))?;
+    let longest_conflict = format!("/{}", "%".repeat(255));
+    main.write_text(&longest_conflict, "base\0").await?;
+    for (path, content) in [
+        ("/text", "base\n"),
+        ("/binary", "base\n"),
+        ("/deleted", "base"),
+        ("/replaced", "base\0"),
+    ] {
+        main.write_text(path, content).await?;
+    }
+    {
+        let mut transaction = unbounded!(main, begin_transaction(IdempotencyKey::new()))?;
+        unbounded!(transaction, create_dir_all("/pkg"))?;
+        commit(&mut transaction).await?;
+    }
+    let agent = fork_workspace(
+        &main,
+        "directory-child",
+        ForkOptions::from_generation(unbounded!(main, head())?, IdempotencyKey::new()),
+    )
+    .await?;
+    main.write_text("/text", "ours\n").await?;
+    agent.write_text("/text", "theirs\n").await?;
+    // Classify the last side as binary after two valid text bodies. Earlier
+    // text must not become a partial text proposal when this side is reached.
+    main.write_text("/binary", "ours\n").await?;
+    agent.write_text("/binary", "theirs\0").await?;
+    main.write_text(&longest_conflict, "ours\0").await?;
+    agent.write_text(&longest_conflict, "theirs\0").await?;
+    main.write_text("/deleted", "modified").await?;
+    agent.remove("/deleted").await?;
+    main.write_text("/replaced", "ours\0").await?;
+    agent.remove("/replaced").await?;
+    agent.write_text("/replaced", "replacement\0").await?;
+    let replacement = unbounded!(agent, stat("/replaced"))?.file_id;
+    assert_ne!(replacement, unbounded!(main, stat("/replaced"))?.file_id);
+    for (workspace, mode) in [(&main, 0o700), (&agent, 0o770)] {
+        let mut transaction = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+        unbounded!(
+            transaction,
+            set_metadata(
+                "/pkg",
+                FileMetadata {
+                    posix_mode: MetadataField::Value(mode),
+                    ..FileMetadata::default()
+                }
+            )
+        )?;
+        commit(&mut transaction).await?;
+    }
+    for index in 0..7 {
+        agent
+            .write_text(&format!("/clean-{index}"), "clean")
+            .await?;
+    }
+    // A source component at the accepted limit must remain stageable after
+    // adding the proposal suffix, even when every byte needs escaping.
+    let longest_path = format!("/{}", ".".repeat(255));
+    agent.write_text(&longest_path, "long clean path").await?;
+    let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
+    let pins = (
+        join.common_ancestor(),
+        join.target_head(),
+        join.source_head(),
+    );
+    let cancellation = CancellationToken::new();
+    let options = ApplyOptions {
+        if_target: join.target_head(),
+        idempotency_key: IdempotencyKey::new(),
+    };
+    let preview = value!(
+        join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+    )?;
+    let staging = unbounded!(fs, create_workspace("directory-staging"))?;
+    // Adopting an advanced cursor would silently omit its earlier rows while
+    // plan.json still advertised the original complete conflict count.
+    for cursor in 0..3 {
+        let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
+        let mut advanced = value!(
+            join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+        )?;
+        match cursor {
+            0 => assert!(
+                advanced
+                    .next_conflict()
+                    .map_err(|failure| failure.error)?
+                    .value
+                    .is_some()
+            ),
+            1 => {
+                advanced
+                    .clean_step()
+                    .await
+                    .map_err(|failure| failure.error)?;
+            }
+            _ => {
+                advanced
+                    .peek_clean()
+                    .await
+                    .map_err(|failure| failure.error)?;
+            }
+        }
+        assert!(matches!(
+            advanced.directory(staging.clone(), IdempotencyKey::new().operation_id()),
+            Err(WorkspaceError::InvalidMergeResolution)
+        ));
+    }
+    let mut directory = preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
+    let mut conflict_paths = BTreeMap::new();
+    for name in ["text", "binary", "deleted", "pkg", "replaced"] {
+        let id = unbounded!(main, stat(&format!("/{name}")))?.file_id;
+        let key = if name == "pkg" {
+            ConflictKey::Metadata(id)
+        } else {
+            ConflictKey::File(id)
+        };
+        conflict_paths.insert(name, directory.conflict_file_path(&key)?);
+    }
+    let text_path = &conflict_paths["text"];
+    let longest_key = ConflictKey::File(unbounded!(main, stat(&longest_conflict))?.file_id);
+    let longest_proposal = directory.conflict_file_path(&longest_key)?;
+    let step = std::num::NonZeroU32::new(1).ok_or("zero page")?;
+    let mut pages = 0;
+    while !directory.plan().complete {
+        let before = directory.plan().examined_clean + directory.plan().exposed_conflicts;
+        let section = if directory.plan().conflicts_complete {
+            MergeDirectorySection::Clean
+        } else {
+            MergeDirectorySection::Conflicts
+        };
+        directory
+            .write_page(section, step, crate::PublicationPermit::Unrestricted)
+            .await?;
+        if pages == 0 {
+            assert_eq!(
+                directory.plan().clean,
+                0,
+                "conflict discovery drained clean paths"
+            );
+            assert_eq!(directory.plan().exposed_conflicts, 1);
+            assert!(!directory.plan().clean_complete);
+        }
+        let after = directory.plan().examined_clean + directory.plan().exposed_conflicts;
+        assert!(
+            after - before <= 1,
+            "a one-row page expanded the whole merge"
+        );
+        pages += 1;
+    }
+    assert!(
+        pages > 7,
+        "negative control: the fixture must require multiple pages"
+    );
+    assert_eq!(directory.plan().clean, 8);
+    assert!(directory.plan().conflicts >= 5);
+    assert_eq!(
+        directory.plan().exposed_conflicts,
+        directory.plan().conflicts
+    );
+    let root = directory.path().to_owned();
+    let encoded = unbounded!(staging, read(&format!("{root}/plan.json"), 16384))?;
+    crate::workspace::check_merge_directory_resolution(&encoded);
+    let document: MergeDirectoryPlan = serde_json::from_slice(&encoded)?;
+    assert_eq!(document, *directory.plan());
+    assert_eq!((document.base, document.ours, document.theirs), pins);
+    // Read the producer's persisted clean descriptor through the ordinary
+    // bounded directory/read path, rather than fabricating its wire format.
+    let pinned_staging = unbounded!(staging, head())?;
+    let (clean_page, _clean_allocation) = unbounded!(
+        pinned_staging,
+        list_directory(&format!("{root}/clean"), None, 1)
+    )?;
+    let clean_entry = clean_page
+        .entries
+        .first()
+        .ok_or("clean descriptor missing")?;
+    let clean_name = value!(
+        clean_entry
+            .name
+            .unicode_text(WorkBudget::UNBOUNDED, &cancellation)
+    )?;
+    let clean_path = format!("{root}/clean/{clean_name}");
+    let clean_bytes = unbounded!(pinned_staging, read(&clean_path, 16384))?;
+    let mut clean_document: serde_json::Value = serde_json::from_slice(&clean_bytes)?;
+    assert_eq!(
+        clean_document["version"],
+        serde_json::json!(1),
+        "persisted clean descriptors must declare their format"
+    );
+    let _: MergeCleanFile = serde_json::from_slice(&clean_bytes)?;
+    crate::workspace::check_merge_directory_resolution(&clean_bytes);
+    for version in [0, 2, 255] {
+        clean_document["version"] = version.into();
+        assert!(serde_json::from_value::<MergeCleanFile>(clean_document.clone()).is_err());
+    }
+    clean_document
+        .as_object_mut()
+        .ok_or("clean object")?
+        .remove("version");
+    assert!(serde_json::from_value::<MergeCleanFile>(clean_document).is_err());
+    let text = unbounded!(staging, read(text_path, 16384))?;
+    assert!(crate::text_merge::has_conflict_markers(
+        std::str::from_utf8(&text)?
+    ));
+    let longest_document = unbounded!(
+        staging,
+        read(&format!("{longest_proposal}.conflict.json"), 16384)
+    )?;
+    let longest_document: MergeConflictFile = serde_json::from_slice(&longest_document)?;
+    assert_eq!(
+        longest_document.conflict.path.as_deref(),
+        Some(longest_conflict.as_str())
+    );
+    for path in ["binary", "deleted", "pkg", "replaced"] {
+        let bytes = unbounded!(
+            staging,
+            read(&format!("{}.conflict.json", conflict_paths[path]), 16384)
+        )?;
+        let document: MergeConflictFile = serde_json::from_slice(&bytes)?;
+        crate::workspace::check_merge_directory_resolution(&bytes);
+        assert_eq!(document.version, 1);
+        assert_eq!(
+            document.conflict.path.as_deref(),
+            Some(format!("/{path}").as_str())
+        );
+        assert!(!matches!(document.conflict.ours, ConflictValue::Binary(_)));
+        assert!(!matches!(
+            document.conflict.theirs,
+            ConflictValue::Binary(_)
+        ));
+        if path == "pkg" {
+            assert_eq!(document.kind, MergeConflictFileKind::Mode);
+            assert!(matches!(document.conflict.key, ConflictKey::Metadata(_)));
+        }
+        if path == "replaced" {
+            assert_eq!(document.kind, MergeConflictFileKind::Binary);
+            assert_eq!(
+                document.conflict.theirs,
+                ConflictValue::Record {
+                    generation: pins.2,
+                    file_id: replacement,
+                },
+                "replacement descriptor substituted the absent original identity"
+            );
+        }
+    }
+    assert_eq!(unbounded!(main, head())?.id(), pins.1);
+    assert_eq!(unbounded!(agent, head())?.id(), pins.2);
+
+    // Admit preparation and exactly one cursor step. Rendering the selected
+    // file must charge its real record reads to that same original allowance.
+    {
+        let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
+        let mut calibration = value!(
+            join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+        )?;
+        let prepared_items = calibration.work().items_examined;
+        assert!(
+            matches!(
+                calibration
+                    .peek_conflict()
+                    .map_err(|failure| failure.error)?
+                    .value,
+                Some(MergeConflict::File(_))
+            ),
+            "the control must select a real file-record conflict"
+        );
+        drop(calibration);
+        let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
+        let mut preview = value!(
+            join.preview_pages(
+                options,
+                WorkBudget {
+                    items_examined: prepared_items.checked_add(1).ok_or("item count overflow")?,
+                    ..WorkBudget::UNBOUNDED
+                },
+                &cancellation,
+            )
+            .await
+        )?;
+        let conflict = preview
+            .next_conflict()
+            .map_err(|failure| failure.error)?
+            .value
+            .ok_or("missing selected conflict")?;
+        assert!(
+            matches!(
+                preview
+                    .describe_conflict_file(conflict.value().clone())
+                    .await,
+                Err(WorkspaceError::Work(
+                    crate::WorkError::BudgetExceeded { .. }
+                ))
+            ),
+            "selected conflict rendering minted another read allowance"
+        );
+    }
+
+    // Use an actual selected-body size and a complete rendering receipt, so
+    // path admission cannot mask an independently unfunded body read.
+    {
+        let conflict = MergeConflict::File(unbounded!(main, stat("/binary"))?.file_id);
+        let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
+        let mut calibration = value!(
+            join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+        )?;
+        let record = calibration
+            .conflict_record(&conflict, ConflictSide::Base)
+            .await
+            .map_err(|failure| failure.error)?
+            .value
+            .ok_or("binary control lost an original record")?;
+        let body_bytes = match record.payload {
+            FilePayload::InlineRegular(bytes) => bytes.as_bytes().len() as u64,
+            FilePayload::Regular { logical_bytes, .. } => logical_bytes,
+            _ => return Err("binary control selected a non-regular body".into()),
+        };
+        drop(calibration);
+        let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
+        let mut calibration = value!(
+            join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+        )?;
+        let before_body = calibration.work();
+        let rendered = calibration.describe_conflict_file(conflict.clone()).await?;
+        let view = &rendered.value;
+        assert_eq!(view.kind, ConflictKind::Binary);
+        assert!(
+            calibration.work().output_bytes > before_body.output_bytes,
+            "the selected body was absent from the original work receipt"
+        );
+        let without_body = calibration
+            .work()
+            .output_bytes
+            .checked_sub(body_bytes)
+            .ok_or("selected body was missing from the actual receipt")?;
+        drop(rendered);
+        drop(calibration);
+        let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
+        let mut bounded = value!(
+            join.preview_pages(
+                options,
+                WorkBudget {
+                    output_bytes: without_body,
+                    ..WorkBudget::UNBOUNDED
+                },
+                &cancellation,
+            )
+            .await
+        )?;
+        assert!(
+            matches!(
+                bounded.describe_conflict_file(conflict).await,
+                Err(WorkspaceError::Work(
+                    crate::WorkError::BudgetExceeded { .. }
+                ))
+            ),
+            "selected body reading minted another output allowance"
+        );
+        assert!(matches!(
+            bounded.next_conflict().map_err(|failure| failure.error),
+            Err(WorkspaceError::Filesystem(FsError::InvalidDiff))
+        ));
+    }
+
+    // Presentation and replacement lookup share the original path allowance;
+    // an ordinary binary conflict must not bypass it with a fresh frame.
+    for path in ["/binary", "/replaced"] {
+        let conflict = MergeConflict::File(unbounded!(main, stat(path))?.file_id);
+        let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
+        let mut calibration = value!(
+            join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+        )?;
+        let prepared_components = calibration.work().source_path_components;
+        let rendered = calibration.describe_conflict_file(conflict.clone()).await?;
+        let view = &rendered.value;
+        assert_eq!(view.kind, ConflictKind::Binary);
+        assert_eq!(view.path.as_deref(), Some(path));
+        if path == "/replaced" {
+            assert_eq!(
+                view.theirs,
+                ConflictValue::Record {
+                    generation: pins.2,
+                    file_id: replacement
+                }
+            );
+        }
+        assert!(calibration.work().source_path_components > prepared_components);
+        drop(calibration);
+        let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
+        let mut bounded = value!(
+            join.preview_pages(
+                options,
+                WorkBudget {
+                    source_path_components: prepared_components,
+                    ..WorkBudget::UNBOUNDED
+                },
+                &cancellation,
+            )
+            .await
+        )?;
+        assert!(
+            matches!(
+                bounded.describe_conflict_file(conflict).await,
+                Err(WorkspaceError::Work(
+                    crate::WorkError::BudgetExceeded { .. }
+                ))
+            ),
+            "selected path presentation minted another path allowance: {path}"
+        );
+    }
+
+    // A real selected text view may outlive the preview. Every escaping text
+    // and path buffer must keep its original native allocation until it drops.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let conflict = MergeConflict::File(unbounded!(main, stat("/text"))?.file_id);
+        let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
+        let mut preview = value!(join.preview_pages(options, &original, &cancellation).await)?;
+        let rendered = preview.describe_conflict_file(conflict).await?;
+        let view = &rendered.value;
+        assert_eq!(view.kind, ConflictKind::Text);
+        let mut capacity = view.path.as_ref().ok_or("text path missing")?.capacity() as u64;
+        for value in [&view.base, &view.ours, &view.theirs] {
+            let ConflictValue::Text(text) = value else {
+                return Err("text view lost an original body".into());
+            };
+            capacity = capacity
+                .checked_add(text.capacity() as u64)
+                .ok_or("capacity overflow")?;
+        }
+        drop(preview);
+        let live = original.live_allocation_bytes();
+        assert!(live >= capacity, "escaping text backing was not funded");
+        drop(rendered);
+        assert_eq!(
+            live.checked_sub(original.live_allocation_bytes()),
+            Some(capacity),
+            "dropping the real output must release exactly its original backing"
+        );
+    }
+
+    // A foreign edit to plan.json cannot be silently overwritten by a later
+    // page. Failure terminates the advanced cursor; no partial page appears.
+    {
+        let join = unbounded!(agent.join_into(&main), plan())?;
+        let options = ApplyOptions {
+            if_target: join.target_head(),
+            idempotency_key: IdempotencyKey::new(),
+        };
+        let preview = value!(
+            join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+        )?;
+        let mut directory =
+            preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
+        directory
+            .write_page(
+                MergeDirectorySection::Clean,
+                step,
+                crate::PublicationPermit::Unrestricted,
+            )
+            .await?;
+        let plan_path = format!("{}/plan.json", directory.path());
+        staging.write_text(&plan_path, "foreign").await?;
+        let before = unbounded!(staging, head())?.id();
+        assert!(matches!(
+            directory
+                .write_page(
+                    MergeDirectorySection::Clean,
+                    step,
+                    crate::PublicationPermit::Unrestricted
+                )
+                .await,
+            Err(WorkspaceError::StaleIdentity)
+        ));
+        assert_eq!(unbounded!(staging, head())?.id(), before);
+        assert!(matches!(
+            directory
+                .write_page(
+                    MergeDirectorySection::Clean,
+                    step,
+                    crate::PublicationPermit::Unrestricted
+                )
+                .await,
+            Err(WorkspaceError::InvalidMergeResolution)
+        ));
+    }
+
+    let JoinOutcome::Conflicted {
+        conflicts,
+        truncated,
+    } = directory
+        .join()
+        .apply(
+            options,
+            BTreeMap::new(),
+            crate::PublicationPermit::Unrestricted,
+        )
+        .await?
+    else {
+        return Err("expected retained original conflicts".into());
+    };
+    let typed = directory
+        .join()
+        .describe_conflicts(conflicts, truncated)
+        .await?;
+    // Feed actual producer conflict views and raw user documents into the same
+    // kept fuzz entry point, including ambiguous and malformed documents.
+    for view in &typed.conflicts {
+        for bytes in [
+            br#"{"take":"theirs"}"#.as_slice(),
+            br#"{"take":"theirs","content":"substituted"}"#,
+            br#"{"remove":true}"#,
+            br#"{"remove":false}"#,
+            br#"{"content":"<<<<<<< ours\nunresolved\n=======\ntheirs\n>>>>>>> theirs"}"#,
+            br#"{"take":"theirs""#,
+        ] {
+            crate::workspace::check_merge_directory_resolution(&serde_json::to_vec(&(
+                view, bytes,
+            ))?);
+        }
+    }
+    let text_key = &typed
+        .conflicts
+        .iter()
+        .find(|view| view.path.as_deref() == Some("/text"))
+        .ok_or("text conflict missing")?
+        .key;
+    let staged = unbounded!(staging, head())?;
+    assert!(matches!(
+        directory.resolution(&staged, text_key).await,
+        Err(DrivenJoinError::Workspace(
+            WorkspaceError::InvalidMergeResolution
+        ))
+    ));
+    let binary_key = &typed
+        .conflicts
+        .iter()
+        .find(|view| view.path.as_deref() == Some("/binary"))
+        .ok_or("binary conflict missing")?
+        .key;
+    staging
+        .write_text(
+            &format!("{}.resolve.json", conflict_paths["binary"]),
+            r#"{"take":"theirs","content":"substituted"}"#,
+        )
+        .await?;
+    let staged = unbounded!(staging, head())?;
+    assert!(directory.resolution(&staged, binary_key).await.is_err());
+    assert_eq!(unbounded!(main, head())?.id(), pins.1);
+
+    // Read each proposal from one immutable staging head, then use the same
+    // domain candidate and atomic publisher as every other workspace join.
+    staging.write_text(text_path, "resolved\n").await?;
+    staging
+        .write_text(
+            &format!("{}.resolve.json", conflict_paths["binary"]),
+            r#"{"take":"theirs"}"#,
+        )
+        .await?;
+    staging
+        .write_text(
+            &format!("{}.resolve.json", conflict_paths["deleted"]),
+            r#"{"remove":true}"#,
+        )
+        .await?;
+    staging
+        .write_text(
+            &format!("{}.resolve.json", conflict_paths["pkg"]),
+            r#"{"take":"theirs"}"#,
+        )
+        .await?;
+    staging
+        .write_text(
+            &format!("{}.resolve.json", conflict_paths["replaced"]),
+            r#"{"take":"theirs"}"#,
+        )
+        .await?;
+    staging
+        .write_text(
+            &format!("{longest_proposal}.resolve.json"),
+            r#"{"take":"theirs"}"#,
+        )
+        .await?;
+    let staged = unbounded!(staging, head())?;
+    // Stable workspace labels are not authority to read another deployment's
+    // proposal, even when both labels derive the same workspace identity.
+    let foreign_fs = Fs::memory();
+    let foreign_staging = unbounded!(foreign_fs, create_workspace("directory-staging"))?;
+    assert_eq!(foreign_staging.id(), staging.id());
+    {
+        let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
+        let preview = value!(
+            join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+        )?;
+        assert!(matches!(
+            preview.directory(
+                foreign_staging.clone(),
+                IdempotencyKey::new().operation_id()
+            ),
+            Err(WorkspaceError::IncompatibleWorkspace)
+        ));
+    }
+    {
+        let mut transaction =
+            unbounded!(foreign_staging, begin_transaction(IdempotencyKey::new()))?;
+        unbounded!(transaction, create_dir_all(&format!("{root}/conflicts")))?;
+        unbounded!(
+            transaction,
+            write(
+                &format!("{}.resolve.json", conflict_paths["binary"]),
+                br#"{"take":"ours"}"#.to_vec()
+            )
+        )?;
+        commit(&mut transaction).await?;
+    }
+    let foreign = unbounded!(foreign_staging, head())?;
+    assert!(matches!(
+        directory.resolution(&foreign, binary_key).await,
+        Err(DrivenJoinError::StaleCandidate)
+    ));
+    let mut resolutions = BTreeMap::new();
+    for view in &typed.conflicts {
+        resolutions.insert(
+            view.key.clone(),
+            directory.resolution(&staged, &view.key).await?,
+        );
+    }
+    // The retained preview owns admission even after its last page. A fresh
+    // token cannot revive it while reading a valid pinned proposal.
+    cancellation.cancel();
+    assert!(matches!(
+        directory.resolution(&staged, binary_key).await,
+        Err(DrivenJoinError::Workspace(WorkspaceError::Cancelled(_)))
+    ));
+    let candidate = crate::UnpublishedMergeCandidate {
+        plan: typed,
+        resolutions,
+    };
+    let mut foreign = candidate.clone();
+    foreign.plan.theirs = pins.0;
+    let before_publish = unbounded!(main, head())?.id();
+    assert!(matches!(
+        directory
+            .join()
+            .apply_candidate(options, &foreign, crate::PublicationPermit::Unrestricted)
+            .await,
+        Err(DrivenJoinError::StaleCandidate)
+    ));
+    assert_eq!(unbounded!(main, head())?.id(), before_publish);
+    assert!(matches!(
+        directory
+            .join()
+            .apply_candidate(options, &candidate, crate::PublicationPermit::Unrestricted)
+            .await?,
+        JoinOutcome::Applied(_)
+    ));
+    assert_eq!(
+        unbounded!(main, read("/text", 1024))?.as_ref(),
+        b"resolved\n"
+    );
+    assert_eq!(
+        unbounded!(main, read("/binary", 1024))?.as_ref(),
+        b"theirs\0"
+    );
+    assert_eq!(
+        unbounded!(main, read("/replaced", 1024))?.as_ref(),
+        b"replacement\0"
+    );
+    assert_eq!(
+        unbounded!(main, read(&longest_conflict, 1024))?.as_ref(),
+        b"theirs\0"
+    );
+    assert_eq!(
+        unbounded!(main, read(&longest_path, 1024))?.as_ref(),
+        b"long clean path"
+    );
+    assert!(matches!(
+        unbounded!(main, stat("/deleted")),
+        Err(WorkspaceError::NotFound)
+    ));
+    assert_eq!(
+        unbounded!(main, stat("/pkg"))?.metadata.posix_mode,
+        Some(0o770)
+    );
+    assert_eq!(unbounded!(agent, head())?.id(), pins.2);
+    let published = unbounded!(main, head())?.id();
+    assert!(matches!(
+        directory
+            .join()
+            .apply_candidate(
+                ApplyOptions {
+                    if_target: pins.1,
+                    idempotency_key: IdempotencyKey::new(),
+                },
+                &candidate,
+                crate::PublicationPermit::Unrestricted
+            )
+            .await?,
+        JoinOutcome::StaleTarget(_)
+    ));
+    assert_eq!(unbounded!(main, head())?.id(), published);
+    merge_directory_opaque_bindings().await?;
+    Ok(())
+}
+
+async fn merge_directory_staging_credit() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let target = unbounded!(fs, create_workspace("staging-credit-target"))?;
+    target.write_text("/file", "base").await?;
+    let source = fork_workspace(
+        &target,
+        "staging-credit-source",
+        ForkOptions::from_generation(unbounded!(target, head())?, IdempotencyKey::new()),
+    )
+    .await?;
+    source.write_text("/file", "changed").await?;
+    let staging = unbounded!(fs, create_workspace("staging-credit-output"))?;
+    let cancellation = CancellationToken::new();
+    let join = unbounded!(source.join_into(&target), plan())?;
+    let options = ApplyOptions {
+        if_target: join.target_head(),
+        idempotency_key: IdempotencyKey::new(),
+    };
+    let mut calibration = value!(
+        join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+    )?;
+    assert_eq!(calibration.conflict_count(), 0);
+    let allowance = calibration
+        .work()
+        .items_examined
+        .checked_add(1)
+        .ok_or("item count overflow")?;
+    drop(calibration);
+    let step = std::num::NonZeroU32::new(1).ok_or("zero page")?;
+    let before = unbounded!(staging, head())?.id();
+    let join = unbounded!(source.join_into(&target), plan())?;
+    let preview = value!(
+        join.preview_pages(
+            options,
+            WorkBudget {
+                items_examined: allowance,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .await
+    )?;
+    let mut bounded = preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
+    // EOF consumes one cursor item but renders no record, path or body. A
+    // refusal here must be staging work, not a renderer's earlier boundary.
+    assert!(matches!(
+        bounded
+            .write_page(
+                MergeDirectorySection::Conflicts,
+                step,
+                crate::PublicationPermit::Unrestricted,
+            )
+            .await,
+        Err(WorkspaceError::Work(
+            crate::WorkError::BudgetExceeded { .. }
+        ))
+    ));
+    assert_eq!(unbounded!(staging, head())?.id(), before);
+    assert!(matches!(
+        bounded
+            .write_page(
+                MergeDirectorySection::Conflicts,
+                step,
+                crate::PublicationPermit::Unrestricted,
+            )
+            .await,
+        Err(WorkspaceError::InvalidMergeResolution)
+    ));
+
+    let join = unbounded!(source.join_into(&target), plan())?;
+    let preview = value!(
+        join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+    )?;
+    let mut admitted = preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
+    admitted
+        .write_page(
+            MergeDirectorySection::Conflicts,
+            step,
+            crate::PublicationPermit::Unrestricted,
+        )
+        .await?;
+    assert!(admitted.plan().conflicts_complete);
+    let bytes = unbounded!(
+        staging,
+        read(&format!("{}/plan.json", admitted.path()), 16384)
+    )?;
+    let plan: MergeDirectoryPlan = serde_json::from_slice(&bytes)?;
+    assert!(plan.conflicts_complete);
+    assert_eq!(plan.exposed_conflicts, 0);
+    assert_ne!(unbounded!(staging, head())?.id(), before);
+    Ok(())
+}
+
+async fn merge_directory_opaque_bindings() -> Result<(), Box<dyn Error>> {
+    use crate::kernel::{LogicalName, NameEncoding};
+
+    for (profile, encoding, bytes) in [
+        (
+            crate::model::FilesystemProfile::Posix,
+            NameEncoding::PosixBytes,
+            vec![0xff],
+        ),
+        (
+            crate::model::FilesystemProfile::Windows,
+            NameEncoding::WindowsUtf16Le,
+            0xd800_u16.to_le_bytes().to_vec(),
+        ),
+    ] {
+        let fs = Fs::memory();
+        let config = VolumeConfig {
+            profile,
+            ..VolumeConfig::portable(Lifecycle::Ephemeral)
+        };
+        let main = unbounded!(fs, create_workspace_with_config("opaque-merge", config))?;
+        let agent = fork_workspace(
+            &main,
+            "opaque-child",
+            ForkOptions::from_generation(unbounded!(main, head())?, IdempotencyKey::new()),
+        )
+        .await?;
+        let path = NamespacePath::new(
+            vec![LogicalName::new(
+                encoding,
+                bytes.clone(),
+                config.limits.maximum_component_bytes,
+            )?],
+            config.limits,
+        )?;
+        let cancellation = CancellationToken::new();
+        for (workspace, content) in [(&main, "ours"), (&agent, "theirs")] {
+            let mut transaction = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+            transaction
+                .checkout
+                .create(
+                    crate::AuthoredMutation::CreateFile {
+                        path: path.clone(),
+                        bytes: Bytes::copy_from_slice(content.as_bytes()).into(),
+                        metadata: FileMetadata::default(),
+                    },
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await?;
+            commit(&mut transaction).await?;
+        }
+        let join = unbounded!(agent.join_into(&main), plan())?;
+        let options = ApplyOptions {
+            if_target: join.target_head(),
+            idempotency_key: IdempotencyKey::new(),
+        };
+        let JoinOutcome::Conflicted {
+            conflicts,
+            truncated,
+        } = join
+            .apply(
+                options,
+                BTreeMap::new(),
+                crate::PublicationPermit::Unrestricted,
+            )
+            .await?
+        else {
+            return Err("opaque binding did not produce a real merge conflict".into());
+        };
+        let typed = join.describe_conflicts(conflicts, truncated).await?;
+        assert_eq!(typed.conflicts.len(), 1);
+        let view = &typed.conflicts[0];
+        assert_eq!(
+            view.path, None,
+            "opaque names must not be projected lossily"
+        );
+        let ConflictKey::Binding { name, .. } = &view.key else {
+            return Err("opaque binding lost its exact key".into());
+        };
+        assert_eq!(name[0], encoding.tag());
+        assert_eq!(&name[1..], bytes);
+        let staging = unbounded!(fs, create_workspace("opaque-staging"))?;
+        let preview = value!(
+            join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+        )?;
+        let mut directory =
+            preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
+        let step = std::num::NonZeroU32::new(1).ok_or("zero page")?;
+        while !directory.plan().complete {
+            let section = if directory.plan().conflicts_complete {
+                MergeDirectorySection::Clean
+            } else {
+                MergeDirectorySection::Conflicts
+            };
+            directory
+                .write_page(section, step, crate::PublicationPermit::Unrestricted)
+                .await?;
+        }
+        let proposal = directory.conflict_file_path(&view.key)?;
+        let bytes = unbounded!(staging, read(&format!("{proposal}.conflict.json"), 16384))?;
+        let decoded: MergeConflictFile = serde_json::from_slice(&bytes)?;
+        assert_eq!(decoded.conflict, *view);
+        staging
+            .write_text(&format!("{proposal}.resolve.json"), r#"{"take":"theirs"}"#)
+            .await?;
+        let staged = unbounded!(staging, head())?;
+        let resolution = directory.resolution(&staged, &view.key).await?;
+        let candidate = crate::UnpublishedMergeCandidate {
+            plan: typed.clone(),
+            resolutions: BTreeMap::from([(view.key.clone(), resolution)]),
+        };
+        assert!(matches!(
+            directory
+                .join()
+                .apply_candidate(options, &candidate, crate::PublicationPermit::Unrestricted)
+                .await?,
+            JoinOutcome::Applied(_)
+        ));
+    }
+    Ok(())
+}
+
 struct SelectTheirsDriver;
 
 impl crate::MergeDriver for SelectTheirsDriver {

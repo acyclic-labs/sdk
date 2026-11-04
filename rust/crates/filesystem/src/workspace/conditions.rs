@@ -27,14 +27,24 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
         cancellation: &CancellationToken,
     ) -> W::Output<(), WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
-        let result = async {
-            self.require(path, condition, &mut accounting, cancellation)
-                .await?;
-            self.write_with_accounting(path, bytes, &mut accounting, cancellation)
-                .await
-        }
-        .await;
+        let result = self
+            .write_if_with_accounting(path, bytes, condition, &mut accounting, cancellation)
+            .await;
         work.finish(result, &accounting)
+    }
+
+    pub(super) async fn write_if_with_accounting(
+        &mut self,
+        path: &str,
+        bytes: impl Into<acyclic_stream::OwnedBytes>,
+        condition: FileCondition,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), WorkspaceError> {
+        self.require(path, condition, accounting, cancellation)
+            .await?;
+        self.write_with_accounting(path, bytes, accounting, cancellation)
+            .await
     }
 
     /// Removes one binding only while `condition` holds. `Absent` never holds

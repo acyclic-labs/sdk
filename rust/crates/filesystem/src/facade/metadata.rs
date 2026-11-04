@@ -47,6 +47,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         workspace: &Volume<A, O>,
         record: FileRecord,
+        cancellation: &CancellationToken,
     ) -> Result<Vec<u8>, WorkspaceError> {
         let read = self
             .inner
@@ -54,7 +55,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .read(
                 record.metadata,
                 workspace.config.limits.maximum_object_bytes,
-                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()),
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation),
             )
             .await
             .map_err(WorkspaceError::engine)?;

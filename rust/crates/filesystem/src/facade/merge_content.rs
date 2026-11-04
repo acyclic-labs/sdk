@@ -85,21 +85,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .map(|(record, _allocation)| record)
         .map_err(WorkspaceError::engine)
     }
-    pub(crate) async fn workspace_conflict_bytes(
+    pub(crate) async fn workspace_conflict_body(
         &self,
         workspace: &Volume<A, O>,
         record: FileRecord,
-    ) -> Result<Option<acyclic_stream::OwnedBytes>, WorkspaceError> {
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<crate::kernel::FileRangeRead>, WorkspaceError> {
         let logical_bytes = match record.payload {
-            FilePayload::InlineRegular(data) => data.as_bytes().len() as u64,
+            FilePayload::InlineRegular(data) => {
+                crate::foundation::usize_to_u64(data.as_bytes().len())
+            }
+
             FilePayload::Regular { logical_bytes, .. } => logical_bytes,
             _ => return Ok(None),
         };
         if logical_bytes > workspace.config.limits.maximum_read_bytes {
             return Ok(None);
         }
-        let cancellation = CancellationToken::new();
-        let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
         self.workspace_merge_range_with_accounting(
             workspace,
             record,
@@ -107,11 +110,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 offset: 0,
                 length: logical_bytes,
             },
-            &mut accounting,
-            &cancellation,
+            accounting,
+            cancellation,
         )
         .await
-        .map(|read| Some(read.bytes))
+        .map(Some)
     }
 
     pub(crate) async fn workspace_merge_range_with_accounting(

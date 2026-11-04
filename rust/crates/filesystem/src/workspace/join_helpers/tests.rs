@@ -3,6 +3,20 @@ use crate::kernel::NameEncoding;
 use crate::model::VolumeLimits;
 use proptest::prelude::*;
 
+fn logical_name_text(
+    name: &LogicalName,
+    cancellation: &CancellationToken,
+) -> Result<String, WorkspaceError> {
+    let text = name
+        .unicode_text(crate::WorkBudget::UNBOUNDED, cancellation)
+        .ok()
+        .map(|receipt| receipt.value);
+    cancellation.check()?;
+    text.ok_or_else(|| {
+        WorkspaceError::path("non-Unicode path cannot be projected as a portable string")
+    })
+}
+
 // Original workspace projection, independent of the shared path renderer.
 fn original_text(path: &NamespacePath) -> Result<String, String> {
     if path.is_root() {
@@ -11,7 +25,7 @@ fn original_text(path: &NamespacePath) -> Result<String, String> {
     let components = path
         .components()
         .iter()
-        .map(logical_name_text)
+        .map(|name| logical_name_text(name, &CancellationToken::new()))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
     Ok(format!("/{}", components.join("/")))
@@ -54,11 +68,13 @@ fn check(path: &NamespacePath) {
     for name in path.components() {
         let mut expected = vec![original_tag(name.encoding())];
         expected.extend_from_slice(name.as_bytes());
-        let encoded = canonical_name_key(name);
-        assert_eq!(encoded, expected);
+        let cancellation = CancellationToken::new();
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let encoded = canonical_name_key(name, &mut accounting).unwrap();
+        assert_eq!(encoded.value, expected);
         let key = ConflictKey::Binding {
             directory_id,
-            name: encoded,
+            name: encoded.value.clone(),
         };
         assert_eq!(
             kernel_conflict(&key, u32::MAX).unwrap(),
@@ -83,6 +99,7 @@ fn check(path: &NamespacePath) {
                 Err(DrivenJoinError::StaleCandidate)
             ));
         }
+        encoded.retire(&mut accounting).unwrap();
     }
 
     #[cfg(feature = "native-watch")]

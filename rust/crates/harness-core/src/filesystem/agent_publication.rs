@@ -10,16 +10,23 @@ use acyclic_fs::{
 use std::collections::BTreeMap;
 
 /// Plans one child root using its ignores and the destination's tracked paths.
+/// Returns the same retained join alongside its coordinator receipt: callers
+/// page `preview_pages().directory()` without reopening mutable workspace heads
+/// or collecting the complete changed-path set.
 pub async fn plan_agent_merge(
     filesystem: &LocalFs,
     state: &LocalCoreStateStore,
     source: &LocalLazyWorkspace,
     target: &Workspace<LocalAuthorityBackend, LocalObjectBackend>,
     repository: WorkspaceId,
-) -> Result<MultiRootMergeRoot> {
+) -> Result<(
+    MultiRootMergeRoot,
+    acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>,
+)> {
     let workspace = source.workspace();
     let plan = workspace
         .join_into(target)
+        .git_metadata()
         .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
         .map_err(|failure| Error::from(failure.error))?
@@ -69,7 +76,7 @@ pub async fn plan_agent_merge(
             &CancellationToken::new(),
         )
         .await?;
-    Ok(MultiRootMergeRoot {
+    let root = MultiRootMergeRoot {
         source_workspace_id: workspace.id(),
         merge_workspace_id: None,
         source_generation: plan.source_head(),
@@ -77,7 +84,8 @@ pub async fn plan_agent_merge(
         target_generation: plan.target_head(),
         base_generation: plan.common_ancestor(),
         child_wins_bindings,
-    })
+    };
+    Ok((root, plan))
 }
 
 /// Records each applied root once. Repositories map root IDs to parent/child IDs.

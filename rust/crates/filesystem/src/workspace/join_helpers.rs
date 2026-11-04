@@ -1,50 +1,50 @@
 use super::*;
+use crate::kernel::Owned;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
 pub(super) fn binding_conflict_view<A, O>(
     plan: &JoinPlan<A, O>,
-    conflict: MergeConflict,
-) -> crate::ConflictView {
-    match conflict {
-        MergeConflict::File(file_id) => crate::ConflictView {
-            key: ConflictKey::File(file_id),
-            path: None,
-            kind: ConflictKind::Record,
-            base: ConflictValue::RecordReference {
-                generation: plan.base.id,
-                file_id,
-            },
-            ours: ConflictValue::RecordReference {
-                generation: plan.target_head.id,
-                file_id,
-            },
-            theirs: ConflictValue::RecordReference {
-                generation: plan.source_head.id,
-                file_id,
-            },
-        },
-        MergeConflict::Binding { directory_id, name } => {
-            let name = canonical_name_key(&name);
-            let value = |generation| ConflictValue::BindingReference {
-                generation,
+    directory_id: FileId,
+    name: &LogicalName,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<Owned<crate::ConflictView>, WorkspaceError> {
+    let name = canonical_name_key(name, accounting)?;
+    let mut view = Owned::new(
+        crate::ConflictView {
+            key: ConflictKey::Binding {
                 directory_id,
-                name: name.clone(),
-            };
-            crate::ConflictView {
-                key: ConflictKey::Binding {
-                    directory_id,
-                    name: name.clone(),
-                },
-                path: None,
-                kind: ConflictKind::Binding,
-                base: value(plan.base.id),
-                ours: value(plan.target_head.id),
-                theirs: value(plan.source_head.id),
-            }
-        }
+                name: name.value,
+            },
+            path: None,
+            kind: ConflictKind::Binding,
+            base: ConflictValue::Absent,
+            ours: ConflictValue::Absent,
+            theirs: ConflictValue::Absent,
+        },
+        name.allocation,
+        name.bytes,
+    );
+    let ConflictKey::Binding { name, .. } = &view.value.key else {
+        unreachable!("binding view retains its original binding key")
+    };
+    for (value, generation) in [
+        &mut view.value.base,
+        &mut view.value.ours,
+        &mut view.value.theirs,
+    ]
+    .into_iter()
+    .zip([plan.base.id, plan.target_head.id, plan.source_head.id])
+    {
+        let copy = Owned::<Vec<u8>>::copy_from_slice(name, accounting)?;
+        *value = ConflictValue::BindingReference {
+            generation,
+            directory_id,
+            name: copy.transfer_to(&mut view.allocation, &mut view.bytes, accounting)?,
+        };
     }
+    Ok(view)
 }
 
 pub(super) fn record_conflict_view<A, O>(
@@ -67,23 +67,32 @@ pub(super) fn record_conflict_view<A, O>(
     }
 }
 
-fn canonical_name_key(name: &LogicalName) -> Vec<u8> {
-    let mut key = Vec::with_capacity(name.as_bytes().len().saturating_add(1));
-    key.push(name.encoding().tag());
-    key.extend_from_slice(name.as_bytes());
-    key
-}
-
-pub(super) fn logical_name_text(name: &LogicalName) -> Result<String, WorkspaceError> {
-    name.unicode_text(
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )
-    .ok()
-    .map(|receipt| receipt.value)
-    .ok_or_else(|| {
-        WorkspaceError::path("non-Unicode path cannot be projected as a portable string")
-    })
+fn canonical_name_key(
+    name: &LogicalName,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<Owned<Vec<u8>>, crate::FsError> {
+    let length = name
+        .as_bytes()
+        .len()
+        .checked_add(1)
+        .ok_or(crate::WorkError::Overflow)?;
+    let mut key = Owned::<Vec<u8>>::allocate(length, accounting)?;
+    let result = accounting.perform(
+        crate::WorkCounters {
+            bytes_copied: crate::foundation::usize_to_u64(name.as_bytes().len()),
+            output_bytes: crate::foundation::usize_to_u64(length),
+            ..crate::WorkCounters::UNCHARGED
+        },
+        || {
+            key.value.push(name.encoding().tag());
+            key.value.extend_from_slice(name.as_bytes());
+        },
+    );
+    if let Err(error) = result {
+        key.retire(accounting)?;
+        return Err(error);
+    }
+    Ok(key)
 }
 
 pub(super) fn namespace_path_text(path: &NamespacePath) -> Result<String, WorkspaceError> {
@@ -91,11 +100,22 @@ pub(super) fn namespace_path_text(path: &NamespacePath) -> Result<String, Worksp
         return Ok("/".to_owned());
     }
     let cancellation = crate::CancellationToken::new();
-    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-    path.unicode_text_with_accounting(&mut accounting, &cancellation)
+    namespace_path_text_with_cancellation(path, &cancellation)
+}
+
+pub(super) fn namespace_path_text_with_cancellation(
+    path: &NamespacePath,
+    cancellation: &CancellationToken,
+) -> Result<String, WorkspaceError> {
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation);
+    path.unicode_text_with_accounting(&mut accounting, cancellation)
         .map(|(text, _)| text)
         .map_err(|_| {
-            WorkspaceError::path("non-Unicode path cannot be projected as a portable string")
+            if cancellation.is_cancelled() {
+                WorkspaceError::Cancelled(crate::CancellationError)
+            } else {
+                WorkspaceError::path("non-Unicode path cannot be projected as a portable string")
+            }
         })
 }
 
