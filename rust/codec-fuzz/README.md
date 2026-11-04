@@ -892,3 +892,20 @@ assertion, then restore production and run the same named corpus check. Syntax
 control qualification, owned typed-layout bounds, complete branches and platform
 composition remain separate obligations; this borrowed-document check establishes
 neither arbitrary schema completeness nor physical allocation bounds.
+
+The shared `bounded_json` relation checks borrowed typed admission before
+materializing a `serde_json::Value`. The retained `raw_large_exponent` and
+`raw_deep` inputs are authored JSON syntax operands: `1e400` and 129 nested
+arrays, respectively. They extend the five existing inputs without claiming
+external producer provenance. Byte/value/canonical comparisons remain within
+the independent Value materializer's accepted domain. All five existing charge
+refusal frontiers still share the same helper; the writer-derived syntax check
+retains its diagnostic-admission assertion.
+
+To check that the oracle detects accidental materialization of borrowed raw
+JSON, run `python3 rust/crates/harness-fuzz/typed-json-negative-control.py
+--raw-domain-prior <prior-oracle-revision>`. The same named corpus test runs the
+retained production mutation with the prior oracle, with the current oracle,
+and after exact restoration. A prior miss, current semantic failure and
+restored pass are required. This is finite domain conformance, not a complete
+branch report or coverage-guided campaign.

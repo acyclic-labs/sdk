@@ -853,6 +853,8 @@ mod object_work {
             include_bytes!("../../../../harness-fuzz/corpus/bounded_json/duplicates"),
             include_bytes!("../../../../harness-fuzz/corpus/bounded_json/wide"),
             include_bytes!("../../../../harness-fuzz/corpus/bounded_json/compact_growth"),
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/raw_large_exponent"),
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/raw_deep"),
         ] {
             oracle::check(bytes);
         }

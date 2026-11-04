@@ -28,10 +28,6 @@ pub fn check(input: &[u8]) {
         );
         return;
     };
-    let Ok(mut expected) = serde_json::from_slice::<Value>(input) else {
-        return;
-    };
-    expected.sort_all_objects();
     let mut admissions = 0;
     let mut scratch = 0_u64;
     let decoded = json_from_slice_bounded(
@@ -50,10 +46,17 @@ pub fn check(input: &[u8]) {
             Ok(())
         },
     )
-    .unwrap();
+    .expect("typed raw JSON must admit independently valid raw input");
     assert_eq!(decoded.get(), raw.get());
     assert_eq!(admissions, 1, "typed JSON decode must request admission");
     assert_eq!(scratch, 0, "typed JSON admission must release its scratch");
+    for frontier in 0..5 {
+        check_refusal(input, bounds, frontier);
+    }
+    let Ok(mut expected) = serde_json::from_slice::<Value>(input) else {
+        return;
+    };
+    expected.sort_all_objects();
     let mut compact = json_bytes_bounded(&raw, bounds, None, &mut |_| Ok(())).unwrap();
     assert_eq!(serde_json::from_slice::<Value>(&compact).unwrap(), expected);
     let bytes = canonical_json_bytes_bounded(&raw, bounds, None, &mut |_| Ok(())).unwrap();
@@ -65,65 +68,64 @@ pub fn check(input: &[u8]) {
     // Reuse the actual writer output to reach complete-source syntax failure,
     // independently of which malformed inputs a byte campaign discovers.
     compact.extend_from_slice(b" null");
-    for (source, frontier) in (0..5)
-        .map(|frontier| (input, frontier))
-        .chain(std::iter::once((compact.as_slice(), 5)))
-    {
-        let mut refused_once = false;
-        let mut scratch = 0_u64;
-        let refused = json_from_slice_bounded(
-            std::marker::PhantomData::<&serde_json::value::RawValue>,
-            source,
-            bounds,
-            None,
-            None,
-            &mut |event| {
-                if frontier == 5 {
-                    match event {
-                        JsonCodecCharge::Admission {
-                            maximum_owned_bytes,
-                            ..
-                        } => {
-                            assert_eq!(maximum_owned_bytes, 0);
-                        }
-                        JsonCodecCharge::Retain { bytes } => {
-                            scratch = scratch.checked_add(bytes).unwrap()
-                        }
-                        JsonCodecCharge::Release { bytes } => {
-                            scratch = scratch.checked_sub(bytes).unwrap()
-                        }
-                        _ => {}
+    check_refusal(&compact, bounds, 5);
+}
+
+fn check_refusal(source: &[u8], bounds: JsonBounds, frontier: usize) {
+    let mut refused_once = false;
+    let mut scratch = 0_u64;
+    let refused = json_from_slice_bounded(
+        std::marker::PhantomData::<&serde_json::value::RawValue>,
+        source,
+        bounds,
+        None,
+        None,
+        &mut |event| {
+            if frontier == 5 {
+                match event {
+                    JsonCodecCharge::Admission {
+                        maximum_owned_bytes,
+                        ..
+                    } => {
+                        assert_eq!(maximum_owned_bytes, 0);
                     }
+                    JsonCodecCharge::Retain { bytes } => {
+                        scratch = scratch.checked_add(bytes).unwrap()
+                    }
+                    JsonCodecCharge::Release { bytes } => {
+                        scratch = scratch.checked_sub(bytes).unwrap()
+                    }
+                    _ => {}
                 }
-                if !refused_once
-                    && matches!(
-                        (frontier, event),
-                        (0, JsonCodecCharge::Read { .. })
-                            | (1, JsonCodecCharge::Work { .. })
-                            | (2, JsonCodecCharge::Retain { .. })
-                            | (3, JsonCodecCharge::Release { .. })
-                            | (4 | 5, JsonCodecCharge::Admission { .. })
-                    )
-                {
-                    refused_once = true;
-                    Err(acyclic_harness::Error::Invalid(
-                        "caller refused JSON charge".into(),
-                    ))
-                } else {
-                    Ok(())
-                }
-            },
-        );
-        assert!(
-            matches!(refused, Err(acyclic_harness::Error::Invalid(reason))
+            }
+            if !refused_once
+                && matches!(
+                    (frontier, event),
+                    (0, JsonCodecCharge::Read { .. })
+                        | (1, JsonCodecCharge::Work { .. })
+                        | (2, JsonCodecCharge::Retain { .. })
+                        | (3, JsonCodecCharge::Release { .. })
+                        | (4 | 5, JsonCodecCharge::Admission { .. })
+                )
+            {
+                refused_once = true;
+                Err(acyclic_harness::Error::Invalid(
+                    "caller refused JSON charge".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        },
+    );
+    assert!(
+        matches!(refused, Err(acyclic_harness::Error::Invalid(reason))
         if reason == "caller refused JSON charge"),
-            "typed JSON decode must preserve caller charge refusal at frontier {frontier}"
+        "typed JSON decode must preserve caller charge refusal at frontier {frontier}"
+    );
+    if frontier == 5 {
+        assert_eq!(
+            scratch, 0,
+            "typed JSON syntax admission must release its scratch"
         );
-        if frontier == 5 {
-            assert_eq!(
-                scratch, 0,
-                "typed JSON syntax admission must release its scratch"
-            );
-        }
     }
 }
