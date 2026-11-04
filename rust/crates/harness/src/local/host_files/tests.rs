@@ -876,11 +876,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     std::fs::create_dir_all(debris.parent().expect("status parent")).map_err(storage)?;
     std::fs::write(&debris, b"unrelated status is not a reply").map_err(storage)?;
     std::fs::write(requests.join("malformed.json"), b"{not a request").map_err(storage)?;
-    std::fs::write(
-        requests.join("oversized.json"),
-        vec![b'x'; usize::try_from(MAXIMUM_BYTES).map_err(storage)? + 1],
-    )
-    .map_err(storage)?;
+    std::fs::write(requests.join("oversized.json"), vec![b'x'; 65_537]).map_err(storage)?;
     let foreign = OperationId::new();
     std::fs::write(
         requests.join(format!("{foreign}.json")),
@@ -1140,8 +1136,8 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         assert_eq!(settled["pending"], 0);
         assert_eq!(settled["results"][0]["outcome"], expected);
         let reply = session(SessionAction::Reply {
-            id: serde_json::from_value(turn["id"].clone()).map_err(storage)?,
-            inbox: turn["inbox"].as_u64().unwrap(),
+            id: serde_json::from_value(spawned["id"].clone()).map_err(storage)?,
+            inbox: spawned["inbox"].as_u64().unwrap(),
         })?;
         assert_eq!(reply["reply"]["outcome"], expected);
         assert_eq!(reply["results"][0]["outcome"], expected);

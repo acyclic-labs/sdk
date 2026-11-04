@@ -73,10 +73,7 @@ impl WorkspaceInput {
         if let Ok(value) = serde_json::from_slice::<Value>(input) {
             let canonical = serde_json::to_vec(&value).map_err(storage)?;
             // Value removes duplicate members. Only compare lossless parses.
-            if input.len() as u64 <= MAXIMUM_BYTES
-                && canonical.len() as u64 <= MAXIMUM_BYTES
-                && serde_json::from_slice::<Endpoint>(input).is_ok()
-            {
+            if serde_json::from_slice::<Endpoint>(input).is_ok() {
                 assert_eq!(raw.is_ok(), self.admit(&canonical).is_ok());
             }
         }
@@ -154,12 +151,25 @@ impl WorkspaceInput {
                         remove_projection(&path)?;
                         served.observe(&self.requests, session, &leaf)?;
                     }
-                    served.answer(&self.status, operation, Ok(Value::Null))?;
+                    // The file carrier must preserve the entire reply through
+                    // the same encoder, opened-file reader and strict decoder.
+                    let outcome = Value::String(String::from_utf8_lossy(input).into_owned());
+                    served.answer(&self.status, operation, Ok(outcome.clone()))?;
                     assert_eq!(
                         reply.try_exists().map_err(storage)?,
                         schedule & 2 == 0,
                         "only an unwithdrawn dispatch may publish its reply"
                     );
+                    if schedule & 2 == 0 {
+                        assert_eq!(
+                            crate::client::decode_command_result(
+                                operation,
+                                0,
+                                &regular_bytes(&reply)?,
+                            )?,
+                            outcome,
+                        );
+                    }
                 }
                 remove_projection(&path)?;
                 served.observe(&self.requests, session, &leaf)?;
