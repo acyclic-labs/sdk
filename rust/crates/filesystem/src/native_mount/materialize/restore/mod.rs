@@ -77,18 +77,9 @@ pub(super) async fn finish_restore(
         };
         let stage_identity = stage_root.identity();
         drop(stage_root);
-        let cleanup = {
-            #[cfg(unix)]
-            {
-                stage_owner.remove(&stage_name.0, Some(stage_identity), work)
-            }
-            #[cfg(windows)]
-            {
-                crate::native_host::with_wide_path(&stage_name.0, work, |path, work| {
-                    stage_owner.remove(path, Some(stage_identity), work)
-                })
-            }
-        }
+        let cleanup = crate::native_host::host_path(&stage_name.0, work, |path, work| {
+            stage_owner.remove(path, Some(stage_identity), work)
+        })
         .and_then(|()| stage_owner.sync_directory(work));
         match (result, cleanup) {
             (Ok(value), Ok(())) => Ok(value),
@@ -164,16 +155,9 @@ pub(super) fn prepare_restore(
             HostRoot::open(&stage_parent_path.0, work).map_err(MaterializeError::from)?
         }
         HostPathReplacement::LiveMount => {
-            #[cfg(unix)]
-            {
-                destination_parent.open_child(Path::new(""), work)
-            }
-            #[cfg(windows)]
-            {
-                crate::native_host::with_wide_path(Path::new(""), work, |path, work| {
-                    destination_parent.open_child(path, work)
-                })
-            }
+            crate::native_host::host_path(Path::new(""), work, |path, work| {
+                destination_parent.open_child(path, work)
+            })
         }
         .map_err(MaterializeError::from)?,
     };
@@ -186,18 +170,9 @@ pub(super) fn prepare_restore(
         Err(error) => {
             let identity = stage_root.identity();
             drop(stage_root);
-            let _ = {
-                #[cfg(unix)]
-                {
-                    stage_owner.remove(&stage_name.0, Some(identity), work)
-                }
-                #[cfg(windows)]
-                {
-                    crate::native_host::with_wide_path(&stage_name.0, work, |path, work| {
-                        stage_owner.remove(path, Some(identity), work)
-                    })
-                }
-            }
+            let _ = crate::native_host::host_path(&stage_name.0, work, |path, work| {
+                stage_owner.remove(path, Some(identity), work)
+            })
             .and_then(|()| stage_owner.sync_directory(work));
             return Err(error);
         }
@@ -249,34 +224,17 @@ pub(super) fn publish_restore(
             )?,
         }
     } else {
-        {
-            #[cfg(unix)]
-            {
-                crate::native_host::rename_held(
-                    &(stage_parent).directory(),
-                    name,
-                    &(destination_parent).directory(),
-                    name,
-                    acyclic_native_runtime::RenameMode::Replace,
-                    None,
-                    work,
-                )
-            }
-            #[cfg(windows)]
-            {
-                crate::native_host::with_wide_path(name, work, |name, work| {
-                    crate::native_host::rename_held(
-                        &stage_parent.directory(),
-                        name,
-                        &destination_parent.directory(),
-                        name,
-                        acyclic_native_runtime::RenameMode::Replace,
-                        None,
-                        work,
-                    )
-                })
-            }
-        }
+        crate::native_host::host_path(name, work, |name, work| {
+            crate::native_host::rename_held(
+                &stage_parent.directory(),
+                name,
+                &destination_parent.directory(),
+                name,
+                acyclic_native_runtime::RenameMode::Replace,
+                None,
+                work,
+            )
+        })
         .map_err(MaterializeError::from)?;
         destination_parent
             .sync_directory(work)
@@ -333,18 +291,12 @@ pub(super) fn create_restore_stage(
             .map_err(|_| MaterializeError::InvalidOptions)?;
         work.record(delta).map_err(MaterializeError::from)?;
         let name = (PathBuf::from(name), allocation);
-        #[cfg(unix)]
-        let created = parent.create_dir(&name.0, work);
-        #[cfg(windows)]
-        let created = crate::native_host::with_wide_path(&name.0, work, |path, work| {
+        let created = crate::native_host::host_path(&name.0, work, |path, work| {
             parent.create_dir(path, work)
         });
         match created {
             Ok(()) => {
-                #[cfg(unix)]
-                let opened = parent.open_child(&name.0, work);
-                #[cfg(windows)]
-                let opened = crate::native_host::with_wide_path(&name.0, work, |path, work| {
+                let opened = crate::native_host::host_path(&name.0, work, |path, work| {
                     parent.open_child(path, work)
                 });
                 let root = match opened {
@@ -356,18 +308,9 @@ pub(super) fn create_restore_stage(
                 if let Err(error) = parent.sync_directory(work).map_err(MaterializeError::from) {
                     let identity = root.identity();
                     drop(root);
-                    let _ = {
-                        #[cfg(unix)]
-                        {
-                            parent.remove(&name.0, Some(identity), work)
-                        }
-                        #[cfg(windows)]
-                        {
-                            crate::native_host::with_wide_path(&name.0, work, |path, work| {
-                                parent.remove(path, Some(identity), work)
-                            })
-                        }
-                    }
+                    let _ = crate::native_host::host_path(&name.0, work, |path, work| {
+                        parent.remove(path, Some(identity), work)
+                    })
                     .and_then(|()| parent.sync_directory(work));
                     return Err(error);
                 }

@@ -279,18 +279,9 @@ pub(super) fn validate_native_working_set_root(
     if expected.is_some_and(|identity| identity != root.identity()) {
         return Err(MountSourceError::Stale.into());
     }
-    if !{
-        #[cfg(unix)]
-        {
-            root.stat(selected_root, &mut &*work)
-        }
-        #[cfg(windows)]
-        {
-            crate::native_host::with_wide_path(selected_root, &mut &*work, |path, work| {
-                root.stat(path, work)
-            })
-        }
-    }?
+    if !crate::native_host::host_path(selected_root, &mut &*work, |path, work| {
+        root.stat(path, work)
+    })?
     .is_dir()
     {
         return Err(MountLifecycleError::NativePolicy(

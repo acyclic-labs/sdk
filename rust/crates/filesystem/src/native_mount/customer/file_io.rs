@@ -25,15 +25,7 @@ pub fn native_file_io<T>(
     }
     let parent_path = path.parent().ok_or(Error::InvalidLayout)?;
     let leaf = Path::new(path.file_name().ok_or(Error::InvalidLayout)?);
-    #[cfg(unix)]
-    let directory = crate::native_host::directory_path(
-        &root.directory(),
-        parent_path,
-        write && parents,
-        &mut &*work,
-    )?;
-    #[cfg(windows)]
-    let directory = crate::native_host::with_wide_path(parent_path, &mut &*work, |path, work| {
+    let directory = crate::native_host::host_path(parent_path, &mut &*work, |path, work| {
         crate::native_host::directory_path(&root.directory(), path, write && parents, work)
     })?;
     let options = if !write {
@@ -51,12 +43,8 @@ pub fn native_file_io<T>(
     let result = operation(&mut file, work);
     let after = crate::native_host::stat_file(&file, &mut &*work)?;
     let parent = HostRoot::from_parts(directory, root.identity());
-    #[cfg(unix)]
-    let named = parent.stat(leaf, &mut &*work)?;
-    #[cfg(windows)]
-    let named = crate::native_host::with_wide_path(leaf, &mut &*work, |path, work| {
-        parent.stat(path, work)
-    })?;
+    let named =
+        crate::native_host::host_path(leaf, &mut &*work, |path, work| parent.stat(path, work))?;
     if before.identity() != after.identity()
         || after.identity() != named.identity()
         || (write && after.nlink() != 1)

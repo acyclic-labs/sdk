@@ -116,7 +116,7 @@ impl NativeSourceWatch {
                     )
                 };
                 state.complete.store(
-                    crate::native_host::reports_every_change(&directory, work)?,
+                    crate::native_host::reports_every_change(directory, work)?,
                     Ordering::Release,
                 );
             }

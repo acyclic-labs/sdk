@@ -187,11 +187,8 @@ impl MountDestinationGuard {
         if guard.is_some() || !destination.is_absolute() {
             return Err(NativeMountError::InvalidDestination);
         }
-        #[cfg(unix)]
-        let name = Self::fence_name(destination, None, false, native, true)?;
-        #[cfg(windows)]
         let name =
-            crate::native_host::with_wide_path(destination, &mut &*native, |canonical, _work| {
+            crate::native_host::host_path(destination, &mut &*native, |canonical, _work| {
                 Ok(Self::fence_name(canonical, None, false, native, true))
             })??;
         let (cleanup_name, birth_cleanup) = Self::prepare_cleanup(&name, native)?;
