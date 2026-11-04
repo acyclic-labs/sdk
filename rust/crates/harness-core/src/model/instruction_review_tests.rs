@@ -127,11 +127,12 @@ proptest! {
                 // semantic baseline has no native custody implementation; check
                 // that protocol separately, rather than fabricating its events.
                 prop_assert_eq!(trace.iter().filter(|(name,_)|*name=="verify").copied().collect::<Vec<_>>(),baseline_trace);
-                let custody:Vec<_>=trace.iter().filter(|(name,_)|name.starts_with("custody-")).map(|(name,_)|*name).collect();
-                let expected_custody=if native {
-                    ["custody-take"].repeat(count)
-                } else { Vec::new() };
-                prop_assert_eq!(custody,expected_custody);
+                let custody:Vec<_>=trace.iter().filter(|(name,_)|name.starts_with("custody-")).copied().collect();
+                prop_assert_eq!(custody.len(),if native { 2*count } else { 0 });
+                for transfer in custody.chunks_exact(2) {
+                    prop_assert_eq!(transfer[0].0,"custody-take");
+                    prop_assert_eq!(transfer[1],("custody-absorb",result_body(&baseline[2]).len() as u64));
+                }
                 prop_assert_eq!(serde_json::to_vec(&output).unwrap(),serde_json::to_vec(&baseline).unwrap());
                 let (_, broken): (_,Vec<(&'static str,u64)>) = observe(||fixture(count), |mut messages| super::instruction_index::traced(|| {
                     // Deliberately restore a whole-history visit before each result.

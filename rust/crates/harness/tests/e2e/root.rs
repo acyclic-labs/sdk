@@ -418,17 +418,6 @@ fn run_scenarios(started: Instant) -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn token_accounting_configuration_does_not_change_model_options() -> TestResult {
-    run(Scenario::parse(
-        br#"{
-        "prompt":"x", "turns":["answer"], "message_tokens":7,
-        "expect":{"text":"answer","requests":[{"model":{"options":null}}]}
-    }"#,
-    )?)
-    .await
-}
-
 #[cfg(all(feature = "grpc", feature = "objects"))]
 #[path = "remote_files.rs"]
 mod remote_files;

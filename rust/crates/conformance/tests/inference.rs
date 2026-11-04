@@ -1,5 +1,13 @@
 //! The real Linux llama.cpp recording must pass every shared inference vector.
 
+#[path = "support/inference_manifest.rs"]
+mod manifest_oracle;
+
+#[test]
+fn captured_manifest_requires_original_provenance_and_rejects_unknown_fields() {
+    manifest_oracle::recorded();
+}
+
 async fn captured_backend()
 -> acyclic_harness_core::Result<impl acyclic_harness_core::model::conformance::Backend> {
     let path = acyclic_test_support::crate_path!("fixtures/inference/llamacpp/manifest.json");

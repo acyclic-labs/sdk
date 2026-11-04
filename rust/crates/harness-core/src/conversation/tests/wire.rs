@@ -138,7 +138,7 @@ async fn composite_manifest_admission_routes_members_to_exact_providers() -> Res
         file: member.clone(),
         label: None,
     }];
-    let bytes = serde_json::to_vec(&items).map_err(|error| Error::Invalid(error.to_string()))?;
+    let bytes = encode_attachment_manifest(&items)?;
     let manifest = FileRef::new(
         VolumeRef::new(
             manifest_provider.clone(),
@@ -273,8 +273,7 @@ async fn composite_manifest_admission_routes_members_to_exact_providers() -> Res
         file: same_provider_member.clone(),
         label: None,
     }];
-    let same_provider_bytes = serde_json::to_vec(&same_provider_items)
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let same_provider_bytes = encode_attachment_manifest(&same_provider_items)?;
     let same_provider_manifest = FileRef::new(
         manifest.volume().clone(),
         ("attachments/other-owner-list.json").into(),

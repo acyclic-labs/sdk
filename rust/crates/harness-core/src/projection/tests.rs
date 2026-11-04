@@ -381,6 +381,7 @@ async fn native_manifest_resolution_rejects_foreign_bytes() -> Result<()> {
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 async fn native_manifest_resolution(foreign_bytes: bool) -> Result<()> {
     struct NativeResolver {
+        bytes: acyclic_stream::OwnedBytes,
         ordinary: AtomicUsize,
         native: AtomicUsize,
         foreign_bytes: bool,
@@ -411,7 +412,7 @@ async fn native_manifest_resolution(foreign_bytes: bool) -> Result<()> {
                 if !self.foreign_bytes
                     && let Some(work) = work
                 {
-                    let (mut bytes, custody) = work.copy_bytes(b"[]")?;
+                    let (mut bytes, custody) = work.copy_bytes(&self.bytes)?;
                     return acyclic_stream::OwnedBytes::from_vec_with_guard_in_place(
                         &mut bytes,
                         &mut Some(custody),
@@ -419,10 +420,11 @@ async fn native_manifest_resolution(foreign_bytes: bool) -> Result<()> {
                     )
                     .map_err(|error| work.runtime_error(error).into());
                 }
-                Ok(acyclic_stream::OwnedBytes::from_static(b"[]"))
+                Ok(self.bytes.clone())
             })
         }
     }
+    let bytes = crate::conversation::encode_attachment_manifest(&[])?;
     let agent = AgentId::new();
     let mut message = message(
         1,
@@ -435,11 +437,12 @@ async fn native_manifest_resolution(foreign_bytes: bool) -> Result<()> {
             agent,
             "manifest.json",
             "application/vnd.acyclic.harness.attachments+json",
-            b"[]",
+            &bytes,
         )?,
         item_count: 1,
     };
     let resolver = NativeResolver {
+        bytes: bytes.into(),
         ordinary: AtomicUsize::new(0),
         native: AtomicUsize::new(0),
         foreign_bytes,
