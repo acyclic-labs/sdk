@@ -101,6 +101,11 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
     let worker_cleaned = Arc::clone(&cleaned);
     let destination = scratch.destination.clone();
     let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::seeded(71);
+    // The existing native admission was issued on the real clock before this
+    // scope; keep that clock origin while controlling cleanup submission.
+    schedule.set_unix_millis(acyclic_stream::UnixMillisClock::now_unix_millis(
+        &acyclic_stream::SystemUnixMillisClock,
+    ));
     let mut cancelled = Box::pin(schedule.scope(native_scope(mounts, async |claims| {
         tokio::task::spawn_blocking(move || {
             write_projected(&destination.join("data"), b"unverified").unwrap();

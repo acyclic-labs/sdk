@@ -2,8 +2,9 @@
 
 `cancelled_command_retires_before_next_entrant_and_preserves_acknowledged_head`
 uses the actual native projection, worker, acknowledged volume head and next
-entrant. Its seeded scope must retain the cleanup task after the original
-waiter disappears. The worker releases its channel before retirement; the next
+entrant. Its seeded scope uses the existing native admission's real clock
+origin and must retain the cleanup task after the original waiter disappears.
+The worker releases its channel before retirement; the next
 entrant waits on the same execution guard, and drain waits on the accepted
 task's completion. Every scheduler boundary is released by that test's driver.
 
