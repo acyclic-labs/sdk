@@ -17,6 +17,7 @@ fn flushes(writes: &[DurableWrite]) -> (usize, usize) {
                     | "file:sync_all"
                     | "file:sync_parent"
                     | "file:sync_filesystem"
+                    | "file:sync_checkpoint_batch"
             );
             (barriers, drains + usize::from(drain))
         }
@@ -155,24 +156,77 @@ fn reply_publication_drains_follow_commits_and_not_history_or_event_count() -> R
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
 #[test]
-fn negative_control_filesystem_wide_flush_is_counted() -> Result<()> {
+fn negative_control_native_drains_are_counted() -> Result<()> {
+    use acyclic_fs::{LocalCoreStateStore, WorkspaceLineageRecord, WorkspaceLineageStore};
+
     let directory = tempfile::tempdir().map_err(storage)?;
-    std::fs::write(directory.path().join("dirty"), b"durable").map_err(storage)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .map_err(storage)?;
+    let workspace_id = acyclic_fs::WorkspaceId::from_bytes([1; 16]);
+    let generation = acyclic_fs::GenerationId::new(acyclic_objects::Digest::from_bytes([2; 32]));
+    let record = WorkspaceLineageRecord {
+        version: 1,
+        revision: 1,
+        ready: true,
+        workspace_id,
+        workspace_name: "checkpoint".into(),
+        parent_workspace_id: None,
+        parent_workspace_name: None,
+        fork_generation: generation,
+        initial_generation: generation,
+    };
+    runtime.block_on(async {
+        // An owned commit leaves its durable WAL for the next owner's replay.
+        let store = LocalCoreStateStore::open_owned(directory.path()).map_err(storage)?;
+        assert!(
+            WorkspaceLineageStore::compare_and_swap(&store, workspace_id, 0, record.clone())
+                .await
+                .map_err(storage)?
+        );
+        Ok::<_, Error>(())
+    })?;
     let (schedule, _) = acyclic_native_runtime::testing::Schedule::seeded(71);
-    runtime
-        .block_on(
-            schedule.scope(async { acyclic_native_runtime::sync_filesystem(directory.path()) }),
-        )
-        .map_err(storage)?;
+    runtime.block_on(schedule.scope(async {
+        let store = LocalCoreStateStore::open_owned(directory.path()).map_err(storage)?;
+        assert_eq!(
+            WorkspaceLineageStore::load(&store, workspace_id)
+                .await
+                .map_err(storage)?,
+            Some(record)
+        );
+        Ok::<_, Error>(())
+    }))?;
+    let writes = schedule.durable_writes();
+    let operation = if cfg!(target_os = "macos") {
+        "file:sync_checkpoint_batch"
+    } else {
+        "file:sync_all"
+    };
+    let checkpoint = writes
+        .iter()
+        .find(|write| write.operation == operation)
+        .expect("the reopened durable WAL must checkpoint its record");
     assert_eq!(
-        flushes(&schedule.durable_writes()),
+        flushes(std::slice::from_ref(checkpoint)),
         (0, 1),
-        "the oracle missed the native filesystem-wide drain"
+        "the oracle missed the native checkpoint drain"
     );
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::write(directory.path().join("dirty"), b"durable").map_err(storage)?;
+        let start = schedule.durable_write_count();
+        runtime
+            .block_on(
+                schedule.scope(async { acyclic_native_runtime::sync_filesystem(directory.path()) }),
+            )
+            .map_err(storage)?;
+        assert_eq!(
+            flushes(&schedule.durable_writes()[start..]),
+            (0, 1),
+            "the oracle missed the native filesystem-wide drain"
+        );
+    }
     Ok(())
 }
