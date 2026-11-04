@@ -80,7 +80,17 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
             allowed()?,
         )?
         .with_max_output_tokens(1024)?;
+        #[cfg(feature = "filesystem")]
+        let storage =
+            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+        #[cfg(feature = "filesystem")]
+        let journal = storage.journal();
+        #[cfg(feature = "filesystem")]
+        let journal = journal.as_ref();
+        #[cfg(not(feature = "filesystem"))]
         let journal = Journal::default();
+        #[cfg(not(feature = "filesystem"))]
+        let journal = &journal;
         let operation = OperationId::new();
         let source = crate::context::Context {
             messages: vec![ModelMessage {
@@ -92,12 +102,12 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
         let instruction = ModelContent::Text("Summarize this context".into());
         for _ in 0..2 {
             assert!(
-                matches!(executor.summarize(&journal, operation, source.clone(), instruction.clone()).await,
+                matches!(executor.summarize(journal, operation, source.clone(), instruction.clone()).await,
                 Err(Error::Indeterminate(id)) if id == operation)
             );
         }
         let summary = executor
-            .summarize(&journal, operation, source.clone(), instruction.clone())
+            .summarize(journal, operation, source.clone(), instruction.clone())
             .await?;
         assert_eq!(
             journal.load(&summary.output, None)?.await?.as_ref(),
@@ -105,7 +115,7 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
         );
         assert_eq!(
             executor
-                .summarize(&journal, operation, source, instruction)
+                .summarize(journal, operation, source, instruction)
                 .await?,
             summary
         );
@@ -764,7 +774,17 @@ async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<(
         ToolRegistry::default(),
     )
     .with_max_output_tokens(1024)?;
+    #[cfg(feature = "filesystem")]
+    let storage =
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+    #[cfg(feature = "filesystem")]
+    let journal = storage.journal();
+    #[cfg(feature = "filesystem")]
+    let journal = journal.as_ref();
+    #[cfg(not(feature = "filesystem"))]
     let journal = Journal::default();
+    #[cfg(not(feature = "filesystem"))]
+    let journal = &journal;
     let operation = OperationId::new();
     let source = crate::context::Context {
         messages: vec![ModelMessage {
@@ -777,7 +797,7 @@ async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<(
     let instruction = ModelContent::Text("Summarize the preceding projection.".into());
     assert!(
         executor
-            .summarize(&journal, operation, source.clone(), instruction.clone())
+            .summarize(journal, operation, source.clone(), instruction.clone())
             .await
             .is_err()
     );
@@ -785,13 +805,24 @@ async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<(
     changed.messages[0].content = ModelContent::Text("different source".into());
     assert!(
         executor
-            .summarize(&journal, operation, changed, instruction.clone())
+            .summarize(journal, operation, changed, instruction.clone())
+            .await
+            .is_err()
+    );
+    assert!(
+        executor
+            .summarize(
+                journal,
+                operation,
+                source.clone(),
+                ModelContent::Text("different instruction".into()),
+            )
             .await
             .is_err()
     );
     assert_eq!(provider.reconciliations().len(), 0);
     let summary = executor
-        .summarize(&journal, operation, source.clone(), instruction.clone())
+        .summarize(journal, operation, source.clone(), instruction.clone())
         .await?;
     assert_eq!(
         summary.source_digest,
@@ -803,7 +834,7 @@ async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<(
     );
     assert_eq!(
         executor
-            .summarize(&journal, operation, source, instruction)
+            .summarize(journal, operation, source, instruction)
             .await?,
         summary
     );

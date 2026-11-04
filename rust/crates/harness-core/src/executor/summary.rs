@@ -55,7 +55,8 @@ impl StockExecution<'_> {
             input: instruction,
             selected_context: None,
         };
-        self.validate_summary_capacity(&executor, journal, &input, step)
+        let prepared = self
+            .prepare_summary_admission(&executor, journal, &input, step)
             .await?;
         executor.validate_turn_input(journal, &input).await?;
         if let Some(parent) = parent {
@@ -84,7 +85,10 @@ impl StockExecution<'_> {
                 journal,
                 &input,
                 step,
-                request::ModelStepHistory::Selected(&[]),
+                request::ModelStepRequest {
+                    history: request::ModelStepHistory::Selected(&[]),
+                    prepared,
+                },
                 ModelPurpose::Summary,
                 phase,
             )?
