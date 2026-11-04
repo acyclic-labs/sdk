@@ -28,6 +28,7 @@ struct GatedStore {
     gate: futures::future::Shared<futures::channel::oneshot::Receiver<()>>,
     reads: Arc<AtomicUsize>,
     reads_before_gate: usize,
+    complete_before_gate: bool,
 }
 
 #[derive(Clone)]
@@ -176,6 +177,11 @@ impl AsyncObjectStore for GatedStore {
     ) -> Result<ObjectRead, ObjectStoreError> {
         work.read_budget()?;
         ordinary(work)?;
+        let completed = if self.complete_before_gate {
+            Some(self.inner.read(id, maximum, work).await?)
+        } else {
+            None
+        };
         if self.reads.fetch_add(1, Ordering::AcqRel) >= self.reads_before_gate {
             self.gate.clone().await.map_err(|_| {
                 std::io::Error::new(
@@ -184,7 +190,10 @@ impl AsyncObjectStore for GatedStore {
                 )
             })?;
         }
-        self.inner.read(id, maximum, work).await
+        match completed {
+            Some(read) => Ok(read),
+            None => self.inner.read(id, maximum, work).await,
+        }
     }
     async fn read_many(
         &self,

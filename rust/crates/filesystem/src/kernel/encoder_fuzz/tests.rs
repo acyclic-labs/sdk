@@ -302,24 +302,6 @@ proptest! {
     }
 }
 
-#[test]
-fn missing_completion_is_detected_by_the_independent_receipt() {
-    let wire = fixture(0, &[], 0);
-    for mode in modes() {
-        let panic = std::panic::catch_unwind(|| check_inner::<1, true>(&input(0, mode, &wire)))
-            .expect_err("omitting completed work must fail the oracle");
-        let message = panic
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| panic.downcast_ref::<&str>().copied())
-            .unwrap_or("");
-        assert!(
-            message.contains("exact independent encoding receipt"),
-            "{message}"
-        );
-    }
-}
-
 fn prefix_control<const MUTANT: u8>() {
     let wire = fixture(0, &[], 0);
     for mode in modes() {

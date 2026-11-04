@@ -210,10 +210,10 @@ async fn many_file_creation(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> crate::MeasuredResult<crate::OperationReceipt<crate::GenerationId>, WorkspaceError> {
-    // The requested 10k-file creation also rewrites its root record. Declare
-    // this volume's atomic capacity explicitly; production defaults stay 2048.
+    // The larger fixture crosses the directory page boundary and also rewrites
+    // its root record. Declare that atomic capacity explicitly.
     let mut volume = VolumeConfig::portable(Lifecycle::Ephemeral);
-    volume.limits.maximum_mutations_per_batch = 10_001;
+    volume.limits.maximum_mutations_per_batch = 2_049;
     let config = crate::VolumeInitialization {
         config: volume,
         access_policy: Some(crate::access::INITIAL_POLICY),
@@ -251,13 +251,13 @@ fn assert_linear_work(count: usize, work: u64, previous: &mut Option<u64>) {
 /// Exercise public recovery, including parsing, lookups, byte verification and
 /// the complete paged root, under a per-file item allowance.
 #[tokio::test]
-async fn ten_thousand_file_creation_retry_has_linear_work() -> Result<(), Box<dyn Error>> {
+async fn paged_file_creation_retry_has_linear_work() -> Result<(), Box<dyn Error>> {
     let cancellation = CancellationToken::new();
     let mut previous = None;
     let mut previous_reversed = None;
-    for count in [5_000_usize, 10_000] {
-        // Compact names keep the complete atomic change envelope within the
-        // public Stream command limit at 10k; provider limits are unchanged.
+    for count in [1_024_usize, 2_048] {
+        // Both sizes fill a directory page; doubling crosses its split boundary.
+        // The exact work ceiling and growth ratio reject the pairwise scan.
         let names: Vec<_> = (0..count).map(|index| format!("/f{index:04}")).collect();
         let mut files: Vec<_> = names
             .iter()

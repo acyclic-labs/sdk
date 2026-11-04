@@ -112,12 +112,13 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
         maximum_bytes: u64,
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<ObjectRead, ObjectStoreError> {
-        let mut work = crate::AuthorityWork::new(context.read_budget()?, context.cancellation);
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            work.original = context.original;
-        }
-        let result = async {
+        let mut accounting = context.read_accounting()?;
+        let mut scope = accounting
+            .allocation_scope()
+            .map_err(crate::async_storage::object_error)?;
+        let read = {
+            let mut work = crate::async_storage::AuthorityFrame::borrow(&mut scope)
+                .map_err(crate::async_storage::object_error)?;
             work.accounting()
                 .charge(cache_probe_work())
                 .map_err(crate::async_storage::object_error)?;
@@ -133,9 +134,11 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
                     shared_read(bytes?, maximum_bytes)
                 }
             }
-        }
-        .await;
-        context.accept(work.receipt(result))
+        }?;
+        scope
+            .keep_bytes(read.retention.owned_bytes())
+            .map_err(crate::async_storage::object_error)?;
+        Ok(read)
     }
 
     async fn read_many(
@@ -143,12 +146,13 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
         requests: &[ObjectReadRequest],
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
-        let mut work = crate::AuthorityWork::new(context.read_budget()?, context.cancellation);
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            work.original = context.original;
-        }
-        let result = async {
+        let mut accounting = context.read_accounting()?;
+        let mut scope = accounting
+            .allocation_scope()
+            .map_err(crate::async_storage::object_error)?;
+        let (values, allocation, retained) = {
+            let mut work = crate::async_storage::AuthorityFrame::borrow(&mut scope)
+                .map_err(crate::async_storage::object_error)?;
             let mut prepared = self.prepare_batch(requests, &mut work)?;
             let leaders = self.load_batch_leaders(&mut prepared, &mut work).await?;
             let mut values = Owned::allocate(requests.len(), &mut work.accounting())
@@ -171,15 +175,14 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
                     })
                     .map_err(crate::async_storage::object_error)?;
             }
-            let allocation = match values.allocation {
-                KernelOwnedAllocation::Standalone => None,
-                #[cfg(not(target_arch = "wasm32"))]
-                KernelOwnedAllocation::NativeOriginal(allocation) => Some(allocation),
-            };
-            Ok((values.value, allocation))
-        }
-        .await;
-        context.accept(work.receipt(result))
+            let retained = values.bytes;
+            let (values, allocation) = crate::async_storage::authority_parts(values);
+            (values, allocation, retained)
+        };
+        scope
+            .keep_bytes(retained)
+            .map_err(crate::async_storage::object_error)?;
+        Ok((values, allocation))
     }
 
     async fn contains(

@@ -77,26 +77,7 @@ async fn read_many_representation<R: ReadRepresentation, S: AsyncObjectStore + ?
         .vec_owned(requests.len())
         .map_err(crate::ObjectStoreError::from)?;
     for request in requests {
-        let mut read_work = batch.operation().map_err(crate::ObjectStoreError::from)?;
-        let read = R::read(store, request, &mut read_work).await;
-        if !batch.is_native() {
-            batch.record_completed(read_work.spent())?;
-            let retained = match &read {
-                Ok(ObjectRead {
-                    retention: crate::storage::ObjectReadRetention::Owned { logical_bytes },
-                    ..
-                }) => *logical_bytes,
-                _ => 0,
-            };
-            batch
-                .allocations
-                .record_owned_bytes(retained, &mut batch.work)
-                .map_err(|error| {
-                    error.into_work_or(crate::ObjectStoreError::SdkAllocationFailed)
-                })?;
-            batch.work.verify(batch.budget)?;
-        }
-        values.value.push(read?);
+        values.value.push(R::read(store, request, batch).await?);
     }
     batch.check().map_err(crate::ObjectStoreError::from)?;
     batch

@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/kernel/codec/accounting.rs
++++ b/rust/crates/filesystem/src/kernel/codec/accounting.rs
+@@ -28,7 +28,7 @@
+         match step {
+             EncodeWorkStep::Check => self.accounting.check(),
+             EncodeWorkStep::Admit(delta) => self.admit(*delta),
+-            EncodeWorkStep::Completed(delta) => self.record_completed(*delta),
++            EncodeWorkStep::Completed(_) => self.accounting.check(),
+             EncodeWorkStep::Allocation(EncodeAllocationStep::Reserve { capacity }) => {
+                 let requested = usize_to_u64(*capacity);
+                 let next_owned = self

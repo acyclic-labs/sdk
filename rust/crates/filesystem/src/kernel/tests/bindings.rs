@@ -83,6 +83,7 @@ fn binding_pages_preserve_aliases_sealed_children_and_original_credit()
             storage: None,
         },
         &bytes,
+        DecodeLimits::default(),
         &mut accounting,
         |reference| {
             references.push(reference);
@@ -160,6 +161,21 @@ proptest! {
         let (bytes, guard) = encode(&page, &mut accounting).unwrap();
         let decoded = decode_binding_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, CanonicalDecodeError>(())).unwrap();
         prop_assert_eq!(&decoded, &page);
+        for limits in [
+            DecodeLimits::default(),
+            DecodeLimits { maximum_page_items: 1, ..DecodeLimits::default() },
+            DecodeLimits { maximum_name_bytes: 1, ..DecodeLimits::default() },
+        ] {
+            let expected = decode_binding_page(&bytes, limits, &mut |_| Ok::<_, CanonicalDecodeError>(())).is_ok();
+            let observed = super::super::visit_object_references(
+                ObjectId { kind: ObjectKind::BindingPage, digest: crate::object_digest(&bytes), storage: None },
+                &bytes,
+                limits,
+                &mut accounting,
+                |_| Ok(()),
+            ).is_ok();
+            prop_assert_eq!(observed, expected, "reference enumeration must preserve the caller's decode limits: {:?}", limits);
+        }
         for end in 0..bytes.len() {
             prop_assert!(decode_binding_page(&bytes[..end], DecodeLimits::default(), &mut |_| Ok::<_, CanonicalDecodeError>(())).is_err());
         }

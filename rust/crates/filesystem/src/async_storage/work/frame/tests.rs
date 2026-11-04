@@ -86,10 +86,6 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
                 .map_err(crate::async_storage::object_error),
             Err(ObjectStoreError::AccountingHandoffActive)
         ));
-        assert!(matches!(
-            borrowed.operation(),
-            Err(AuthorityStoreError::AccountingHandoffActive)
-        ));
         assert_eq!(borrowed.spent(), before);
         held.restore(&mut borrowed.accounting())?;
         crate::performance::VERIFICATION_PASSES.with(|passes| passes.set(0));
@@ -212,7 +208,7 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
             Err(AuthorityStoreError::Cancelled)
         ));
         assert!(matches!(
-            caller.operation(),
+            caller.scope(),
             Err(AuthorityStoreError::Cancelled)
         ));
         assert_eq!(native.receipt(), before);

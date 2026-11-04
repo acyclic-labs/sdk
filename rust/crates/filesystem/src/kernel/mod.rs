@@ -43,7 +43,7 @@ mod mark;
 mod merge;
 mod metadata;
 mod references;
-pub(crate) use references::visit_object_references;
+pub(crate) use references::{visit_object_references, visit_record_references};
 mod mutation;
 mod namespace_path;
 mod path_access;

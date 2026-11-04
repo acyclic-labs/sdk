@@ -1,0 +1,15 @@
+--- a/rust/crates/filesystem/src/kernel/references.rs
++++ b/rust/crates/filesystem/src/kernel/references.rs
+@@ -5,10 +5,11 @@
+ pub(crate) fn visit_object_references(
+     id: ObjectId,
+     bytes: &[u8],
+-    limits: DecodeLimits,
++    _limits: DecodeLimits,
+     work: &mut KernelAccounting<'_>,
+     mut visit: impl FnMut(ObjectId) -> Result<(), FsError>,
+ ) -> Result<(), FsError> {
++    let limits = DecodeLimits::for_object_bytes(bytes.len());
+     macro_rules! decode {
+         ($decoder:path, $body:expr) => {{
+             let mut allocated = 0u64;
