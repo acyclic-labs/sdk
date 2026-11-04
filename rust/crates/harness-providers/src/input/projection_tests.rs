@@ -53,7 +53,8 @@ fn transcript(units: &[(u8, u8, String)]) -> Vec<ModelMessage> {
             })
         };
         let mut parts = Vec::new();
-        if family != "gemini" {
+        // An empty text turn supplies no output to pair with native reasoning.
+        if family != "gemini" && (*kind == 3 || !text.is_empty()) {
             parts.push(ModelContentPart::Reasoning {
                 block: ReasoningBlock {
                     kind: reasoning_kind,
@@ -112,7 +113,11 @@ proptest! {
     fn mixed_origin_transcripts_project_to_each_targets_accepted_grammar(
         units in prop::collection::vec((0u8..5,0u8..32,prop::collection::vec(any::<char>(),0..32).prop_map(|chars|chars.into_iter().collect::<String>())),0..12)
     ) {
-        let messages=transcript(&units);
+        // Keep the empty-output boundary in every generated conversation.
+        let mut boundary_units = (0..4).map(|source| (4, source, String::new())).collect::<Vec<_>>();
+        boundary_units.push((1, 0, "next turn".into()));
+        boundary_units.extend(units);
+        let messages=transcript(&boundary_units);
         for adapter in [Adapter::Anthropic,Adapter::Responses,Adapter::Chat,Adapter::Gemini] {
             let (provider,_)=crate::tests::provider(adapter,200);
             let (prepared,_)=crate::tests::request(&provider).unwrap();
@@ -126,6 +131,35 @@ proptest! {
             prop_assert_eq!(&body, &crate::projection::body(&provider, &replay).unwrap());
             prop_assert_eq!(validate_input(adapter,&body),Vec::<&str>::new(),"adapter {:?}, wire {}",adapter,body);
         }
+    }
+}
+
+#[test]
+fn removing_the_output_from_a_native_exchange_refuses_projection() {
+    let (provider, _) = crate::tests::provider(Adapter::Responses, 200);
+    let (prepared, _) = crate::tests::request(&provider).unwrap();
+    let mut request = prepared.request().clone();
+    request.messages = transcript(&[(4, 1, "answer".into())]);
+    assert!(crate::projection::body(&provider, &request).is_ok());
+    let ModelContent::Parts(parts) = &mut request.messages[0].content else {
+        unreachable!();
+    };
+    for part in parts {
+        if let ModelContentPart::Text { text, .. } = part {
+            text.clear();
+        }
+    }
+    for interrupted in [false, true] {
+        if interrupted {
+            request.messages.push(ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("next turn".into()),
+            });
+        }
+        assert!(matches!(
+            crate::projection::body(&provider, &request),
+            Err(acyclic_harness_core::Error::Invalid(_))
+        ));
     }
 }
 
