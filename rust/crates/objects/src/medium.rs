@@ -34,6 +34,13 @@ pub trait Medium: acyclic_stream::ProviderPlatform + 'static {
         key: &str,
         range: Option<Range<u64>>,
     ) -> Result<Option<OwnedBytes>, MediumError>;
+    /// New backing allocated by a read, excluding an alias of storage the
+    /// medium already owns. Aliases retain that original storage owner.
+    /// Allocating adapters report the full backing capacity, including bytes
+    /// outside a visible slice; adapters returning resident aliases report zero.
+    fn read_allocation_bytes(&self, bytes: &OwnedBytes) -> usize {
+        bytes.retained_capacity().unwrap_or(bytes.len())
+    }
     /// Removes `key`, reporting whether it existed.
     async fn remove(&self, key: &str) -> Result<bool, MediumError>;
     /// Reads complete bytes and their original key-bound provider version.
@@ -164,6 +171,11 @@ impl MemoryMedium {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Medium for MemoryMedium {
+    fn read_allocation_bytes(&self, _: &OwnedBytes) -> usize {
+        // Reads clone or slice the immutable owner already held by the key.
+        0
+    }
+
     async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
         let mut keys = self.write();
         if keys.keys.contains_key(key) {

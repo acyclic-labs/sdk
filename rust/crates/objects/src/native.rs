@@ -105,8 +105,10 @@ impl<M: Medium> Medium for Metered<M> {
     ) -> Result<Option<OwnedBytes>, MediumError> {
         self.charge(self.meter.admit_read(0))?;
         let read = self.inner.read(key, range).await?;
-        let length = read.as_ref().map_or(0, OwnedBytes::len);
-        self.hold(length)?;
+        let allocated = read
+            .as_ref()
+            .map_or(0, |bytes| self.inner.read_allocation_bytes(bytes));
+        self.hold(allocated)?;
         Ok(read)
     }
 
@@ -119,7 +121,10 @@ impl<M: Medium> Medium for Metered<M> {
         self.charge(self.meter.admit_read(0))?;
         let observed = self.inner.observe(key).await?;
         if let Some(observed) = &observed {
-            self.hold(observed.bytes.len() + observed.observation.version_bytes())?;
+            self.hold(
+                self.inner.read_allocation_bytes(&observed.bytes)
+                    + observed.observation.version_bytes(),
+            )?;
         }
         Ok(observed)
     }
