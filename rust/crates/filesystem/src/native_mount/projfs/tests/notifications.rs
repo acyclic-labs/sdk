@@ -1,5 +1,6 @@
+use super::MountFilesystem;
 use super::{
-    Arc, Barrier, Bytes, CancellationToken, FileMetadata, HashSet, IdempotencyKey, MountFilesystem,
+    Arc, Barrier, Bytes, CancellationToken, FileMetadata, HashSet, IdempotencyKey,
     MountSourceError, PRJ_NOTIFICATION_PRE_DELETE, PRJ_NOTIFICATION_PRE_RENAME,
     PRJ_NOTIFICATION_PRE_SET_HARDLINK, PRJ_NOTIFY_FILE_OPENED, WorkBudget, authorize_open,
     authorize_pre_operation, local_workspace, manual_mount_options, mount_source,

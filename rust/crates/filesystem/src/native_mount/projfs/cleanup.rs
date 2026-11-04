@@ -1,7 +1,7 @@
+use super::HR_DIRECTORY_NOT_EMPTY;
 use super::{
-    FILE_ATTRIBUTE_REPARSE_POINT, HR_DIRECTORY_NOT_EMPTY, HostRoot, MountFilesystem, MountNodeKind,
-    MountPath, NativeHostWork, NativeMountError, WriteOperations, delete_through, reparse_tag_held,
-    size_of,
+    FILE_ATTRIBUTE_REPARSE_POINT, HostRoot, MountFilesystem, MountNodeKind, MountPath,
+    NativeHostWork, NativeMountError, WriteOperations, delete_through, reparse_tag_held, size_of,
 };
 
 // Actual held entries, authenticated root handle, backing capacity and birth

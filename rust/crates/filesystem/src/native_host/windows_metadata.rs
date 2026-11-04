@@ -2,9 +2,9 @@
     any(target_os = "linux", target_os = "macos", windows),
     any(feature = "native-mount", test)
 ))]
+use super::NativeMetadataError;
 use super::{
-    DemandError, NativeHostWork, NativeMetadataError, WRITE, windows_set_information,
-    windows_stat_information,
+    DemandError, NativeHostWork, WRITE, windows_set_information, windows_stat_information,
 };
 #[cfg(all(windows, any(feature = "native-mount", test)))]
 use super::{FILE_BASIC_INFO, unix_nanoseconds_to_filetime};

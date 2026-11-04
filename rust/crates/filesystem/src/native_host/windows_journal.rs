@@ -1,8 +1,9 @@
 #[cfg(test)]
+use super::test_root;
 use super::{
     DemandError, DemandWork, Dir, File, HostStat, ITEM, NativeHostWork, NativeMaterializationWork,
     NativeRootIdentity, OsStr, Path, READ, WRITE, WorkCounters, buffer, copy_work,
-    directory_identity, file_identity_and_length, fs, io, nt, test_root, win, windows_name_packet,
+    directory_identity, file_identity_and_length, fs, io, nt, win, windows_name_packet,
 };
 #[cfg(any(test, feature = "local", feature = "native-watch"))]
 use super::{WorkBudget, ordinary_work};
