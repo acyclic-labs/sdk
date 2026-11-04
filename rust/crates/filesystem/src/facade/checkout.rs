@@ -311,7 +311,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                     "fresh checkout owns its dependency map"
                 );
                 let (base, _allocation) =
-                    crate::collection::clone_generation_root_with_accounting(&root, accounting)?;
+                    crate::kernel::clone_generation_root_with_accounting(&root, accounting)?;
                 dependencies.base_root_control =
                     ProofDataClaim::control(&dependencies.data_custody, root_parent_bytes(&base)?);
                 let mut root = crate::collection::CheckoutRoots::new(

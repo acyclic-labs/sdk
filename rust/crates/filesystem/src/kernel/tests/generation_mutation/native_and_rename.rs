@@ -124,6 +124,7 @@ async fn original_root_clone_denial_releases_parents_without_copy()
     );
     let held = crate::kernel::Owned::<Vec<u8>>::allocate(4096, &mut standalone)?;
     let baseline = standalone.standalone_parts().unwrap().0.live_bytes();
+    let before = standalone.spent();
     assert!(clone_generation_root_with_accounting(&root, &mut standalone).is_err());
     assert_eq!(standalone.spent().bytes_copied, 0);
     assert_eq!(
@@ -131,6 +132,7 @@ async fn original_root_clone_denial_releases_parents_without_copy()
         baseline,
         "denied parent copy retained standalone scratch"
     );
+    assert_eq!(standalone.spent(), before);
     held.retire(&mut standalone)?;
     assert_eq!(standalone.standalone_parts().unwrap().0.live_bytes(), 0);
     let original = crate::NativeMaterializationWork::new(
@@ -143,6 +145,7 @@ async fn original_root_clone_denial_releases_parents_without_copy()
     .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let before = original.receipt();
     let error = clone_generation_root_with_accounting(&root, &mut accounting)
         .err()
         .ok_or("zero original copy budget cloned parents")?;
@@ -156,6 +159,7 @@ async fn original_root_clone_denial_releases_parents_without_copy()
     assert_eq!(original.receipt().backend_read_operations, 0);
     assert_eq!(original.receipt().backend_write_operations, 0);
     assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.receipt(), before);
     Ok(())
 }
 
