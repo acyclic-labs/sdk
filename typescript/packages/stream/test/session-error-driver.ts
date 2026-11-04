@@ -43,11 +43,7 @@ const codes = streamErrorCodes();
 assert.deepEqual(Object.keys(statuses).sort(), [...codes].sort());
 let failure: ConnectError | undefined;
 const identity = tlsIdentity();
-let transientFailures = 0;
-const fixture = await grpcFixture(identity, () => {
-  if (failure?.code === Code.Unavailable) return transientFailures++ < 2 ? failure : undefined;
-  return failure;
-});
+const fixture = await grpcFixture(identity, () => failure);
 try {
   const provider = new GrpcStreamProvider(fixture.options);
   for (const code of codes as StreamErrorCode[]) {
@@ -57,23 +53,13 @@ try {
     const before = fixture.counts.sessions;
     const follow = provider.follow("events", { from: 0n })[Symbol.asyncIterator]();
     const next = follow.next();
-    let error: unknown;
-    if (code === "unavailable") {
-      // Two actual refusals precede a healthy peer; there is no client retry window.
-      await fixture.node.until(() => fixture.node.active === 1);
-      fixture.node.append("events");
-      assert.equal((await next).value?.sequence, 0n);
-    } else {
-      error = await next.then(() => undefined, error => error);
-    }
+    const error = await next.then(() => undefined, error => error);
     assert(observed.length > 0, "error never crossed the JS transport");
     assert(observed.every(value => value === code), `JS transport must emit canonical Rust code: ${code}; received ${observed}`);
-    if (code !== "unavailable") {
-      assert(error instanceof StreamError, `missing public error for ${code}`);
-      assert.equal(error.code, publicHttpErrorCode(code, "session"), `public result for ${code}`);
-    }
+    assert(error instanceof StreamError, `missing public error for ${code}`);
+    assert.equal(error.code, publicHttpErrorCode(code, "session"), `public result for ${code}`);
     // Missing paths and other terminal errors must not be retried as outages.
-    assert.equal(fixture.counts.sessions - before, code === "unavailable" ? 3 : 1, `retry meaning for ${code}`);
+    assert.equal(fixture.counts.sessions - before, 1, `a peer refusal never requests retry for ${code}`);
     await follow.return?.();
   }
   assert.equal(fixture.counts.legacyFollows, 0);

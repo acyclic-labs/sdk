@@ -66,16 +66,21 @@ fn method(object: &JsValue, name: &str) -> Result<Function, StreamError> {
         .and_then(|value| value.dyn_into::<Function>())
         .map_err(|_| StreamError::Unavailable)
 }
-fn failure(error: JsValue) -> StreamError {
-    Reflect::get(&error, &JsValue::from_str("code"))
+fn failure(error: JsValue) -> transport::Failure {
+    let transient = Reflect::get(&error, &JsValue::from_str("transient"))
+        .ok()
+        .and_then(|value| value.as_bool())
+        == Some(true);
+    let error = Reflect::get(&error, &JsValue::from_str("code"))
         .ok()
         .and_then(|code| code.as_string())
         .as_deref()
         .and_then(StreamError::from_code)
-        .unwrap_or(StreamError::Unavailable)
+        .unwrap_or(StreamError::Unavailable);
+    transport::Failure { error, transient }
 }
 impl Connection {
-    fn call(&self, method_name: &str, value: &JsValue) -> Result<JsFuture, StreamError> {
+    fn call(&self, method_name: &str, value: &JsValue) -> Result<JsFuture, transport::Failure> {
         let value = method(&self.io, method_name)?
             .call1(&self.io, value)
             .map_err(failure)?;
@@ -98,7 +103,7 @@ impl Responses {
     fn poll(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<wire::SessionFrame, StreamError>>> {
+    ) -> Poll<Option<Result<wire::SessionFrame, transport::Failure>>> {
         if self.ended {
             return Poll::Ready(None);
         }
@@ -112,7 +117,9 @@ impl Responses {
                         self.write = None;
                         if let Ok(Err(error)) = result {
                             let error = failure(error);
-                            if let Some(writing) = writing.filter(|writing| writing.subscription) {
+                            if let Some(writing) =
+                                writing.filter(|writing| writing.subscription && !error.transient)
+                            {
                                 // A rejected interest never installed its channel. Surface
                                 // that local failure through the engine's terminal path;
                                 // sibling interests keep their physical connection.
@@ -121,7 +128,7 @@ impl Responses {
                                     generation: writing.channel.generation,
                                     body: Some(wire::session_frame::Body::Closed(
                                         wire::SessionClosed {
-                                            code: error.code().into(),
+                                            code: error.error.code().into(),
                                             ..Default::default()
                                         },
                                     )),
@@ -172,13 +179,15 @@ impl Responses {
                     return Poll::Ready(None);
                 }
                 if !value.is_instance_of::<Uint8Array>() {
-                    return Poll::Ready(Some(Err(StreamError::InvalidResponse)));
+                    return Poll::Ready(Some(Err(StreamError::InvalidResponse.into())));
                 }
                 let bytes = Uint8Array::new(&value);
                 if bytes.length() as usize > MAX_COMMAND_BYTES {
-                    return Poll::Ready(Some(Err(StreamError::LimitExceeded)));
+                    return Poll::Ready(Some(Err(StreamError::LimitExceeded.into())));
                 }
-                Poll::Ready(Some(wire_codec::session::decode_frame(&bytes.to_vec())))
+                Poll::Ready(Some(
+                    wire_codec::session::decode_frame(&bytes.to_vec()).map_err(Into::into),
+                ))
             }
         }
     }
@@ -193,7 +202,7 @@ impl Drop for Responses {
     }
 }
 impl Stream for Responses {
-    type Item = Result<crate::session::Frame, StreamError>;
+    type Item = Result<crate::session::Frame, transport::Failure>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let result = self.poll(cx);
         if matches!(result, Poll::Ready(None | Some(Err(_)))) {
@@ -244,17 +253,14 @@ impl transport::Transport for Endpoint {
                 .map_err(failure)?;
             let writing = Rc::new(RefCell::new(None));
             *self.writing.borrow_mut() = Rc::downgrade(&writing);
-            Ok(Box::pin(
-                Responses {
-                    writing,
-                    connection,
-                    source,
-                    read: None,
-                    write: None,
-                    ended: false,
-                }
-                .map(|frame| frame.map_err(Into::into)),
-            ) as transport::Responses<transport::Failure>)
+            Ok(Box::pin(Responses {
+                writing,
+                connection,
+                source,
+                read: None,
+                write: None,
+                ended: false,
+            }) as transport::Responses<transport::Failure>)
         })
     }
 }

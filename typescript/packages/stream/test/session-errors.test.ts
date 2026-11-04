@@ -16,7 +16,7 @@ for (const broken of [false, true]) {
       if (child.status !== 0) throw new Error(child.stderr || child.stdout);
       const result = JSON.parse(child.stdout);
       expect(result.connections).toBe(1);
-      expect(result.sessions).toBe(result.codes + 2);
+      expect(result.sessions).toBe(result.codes);
     }
   });
 }
