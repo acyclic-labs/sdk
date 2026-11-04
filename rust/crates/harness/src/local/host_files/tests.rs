@@ -987,7 +987,7 @@ async fn saved_command_result_follows_its_original_request_directory() -> Result
     let original_reply = original_status.join(&leaf);
     assert_eq!(
         std::fs::read(&original_reply).map_err(storage)?,
-        crate::client::encode_command_result(0, &Ok(committed.clone()), MAXIMUM_REQUEST_BYTES)?
+        crate::client::encode_command_result(0, operation, &Ok(committed.clone()), u64::MAX)?
     );
     let ready = files.served.start();
     assert_eq!(ready.len(), 1);
@@ -1711,8 +1711,23 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         remove_projection(&rejected).expect_err("file withdrawal cannot remove a directory");
     assert_eq!(causes.primary().to_string(), admission.to_string());
     assert_eq!(causes.cleanup().to_string(), withdrawal.to_string());
-    assert!(matches!(response.try_recv(),
-        Ok(Delivery::Reply(Err(ref error))) if error.to_string() == admission.to_string()));
+    let Delivery::Reply(Err(observed)) = response
+        .try_recv()
+        .expect("the rejected reply must settle its original waiter")
+    else {
+        panic!("the rejected reply must retain its admission cause");
+    };
+    assert_eq!(observed.request_operation_id(), Some(operation));
+    let Error::Command(failure) = observed else {
+        panic!("the rejected reply must retain its typed request identity");
+    };
+    assert_eq!(
+        failure
+            .original()
+            .expect("original admission cause")
+            .to_string(),
+        admission.to_string()
+    );
     // Client observation already retained the original admission cause. Join
     // the actual owner-lock producer before asserting its separate retirement.
     lock(&blocked.observer)

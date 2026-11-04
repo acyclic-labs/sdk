@@ -211,11 +211,13 @@ impl Shared {
         let leaf = Path::new(&leaf);
         let reply = match held_bytes(&self.status, leaf, u64::MAX) {
             Ok(bytes) => crate::client::decode_command_result(operation, 0, &bytes),
-            Err(Error::NotFound(_)) => match self.requests.open_file(leaf, false).map_err(native_file_error) {
+            Err(Error::NotFound(_)) => match self
+                .requests
+                .open_file(leaf, false)
+                .map_err(native_file_error)
+            {
                 Ok(_) => return,
-                Err(Error::NotFound(_)) => {
-                    Err(Error::Indeterminate(operation))
-                }
+                Err(Error::NotFound(_)) => Err(Error::Indeterminate(operation)),
                 Err(error) => Err(Error::reply_unavailable(operation, error)),
             },
             Err(error) => Err(Error::reply_unavailable(operation, error)),
@@ -581,7 +583,9 @@ fn request_operation(
         let waiting = bridge.wait(operation, waiter)?;
         let leaf = format!("{operation}.json");
         let leaf = Path::new(&leaf);
-        bridge.shared.requests
+        bridge
+            .shared
+            .requests
             .publish_immutable(leaf, &bytes, acyclic_fs::NativeDurability::Durable)
             .map_err(native_file_error)?;
         // A writable reply may predate registration. Watching before this read
@@ -606,7 +610,10 @@ fn request_operation(
         drop(waiting);
         // Withdrawing the request retires its reply and any saved result. Every
         // effect is an agent commit keyed by this operation.
-        Error::after_cleanup(result, remove_held_projection(&bridge.shared.requests, leaf))
+        Error::after_cleanup(
+            result,
+            remove_held_projection(&bridge.shared.requests, leaf),
+        )
     })();
     result.map_err(|error: Error| error.for_request(operation))
 }
