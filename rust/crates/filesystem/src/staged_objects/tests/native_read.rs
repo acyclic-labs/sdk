@@ -150,41 +150,116 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
         assert!(matches!(store.lookup(id), Lookup::Spilled { .. }));
     }
 
-    for batch in [false, true] {
-        let work = NativeMaterializationWork::new(native_read_budget(), &token)
+    let durable = [
+        blob(OwnedBytes::from_static(b"completed before private wait")),
+        blob(OwnedBytes::from_static(b"retained after private wait")),
+    ];
+    for (id, bytes) in &durable {
+        store
+            .inner()
+            .put(
+                *id,
+                bytes.clone(),
+                &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
+            )
+            .await?;
+    }
+    let requests = [
+        ObjectReadRequest {
+            object_id: durable[0].0,
+            maximum_bytes: durable[0].1.len() as u64,
+        },
+        ObjectReadRequest {
+            object_id: id,
+            maximum_bytes: bytes.len() as u64,
+        },
+        ObjectReadRequest {
+            object_id: durable[1].0,
+            maximum_bytes: durable[1].1.len() as u64,
+        },
+    ];
+    for (batch, mixed, exit) in [
+        (false, false, 0),
+        (true, false, 0),
+        (true, true, 0),
+        (true, true, 1),
+        (true, true, 2),
+    ] {
+        let caller = CancellationToken::new();
+        let original_token = CancellationToken::new();
+        let work = NativeMaterializationWork::new(native_read_budget(), &original_token)
             .map_err(|(error, _)| error)?;
         let spill_file = store.spill_io.write().await;
-        let mut future = Box::pin(async {
-            let mut work = AuthorityWork::native(&work, &token);
+        let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::new();
+        let driver = tokio::spawn(async move {
+            while let Some(boundary) = events.recv().await {
+                boundary.release();
+            }
+        });
+        let mut future = Box::pin(schedule.scope(async {
+            let mut work = AuthorityWork::native(&work, &caller);
             if batch {
-                store
-                    .read_many(
-                        &[ObjectReadRequest {
-                            object_id: id,
-                            maximum_bytes: bytes.len() as u64,
-                        }],
-                        &mut work,
-                    )
-                    .await
-                    .map(drop)
+                let requests = if mixed {
+                    requests.as_slice()
+                } else {
+                    &requests[1..2]
+                };
+                store.read_many(requests, &mut work).await.map(drop)
             } else {
                 store
                     .read(id, bytes.len() as u64, &mut work)
                     .await
                     .map(drop)
             }
-        });
-        assert!(
-            Future::poll(
-                future.as_mut(),
-                &mut std::task::Context::from_waker(std::task::Waker::noop())
-            )
-            .is_pending()
+        }));
+        assert!(futures::poll!(future.as_mut()).is_pending());
+        // Complete the original durable jobs, then let their caller retain the
+        // actual results while the private member waits on this spill lease.
+        tokio::select! {
+            _ = schedule.drained() => {}
+            _ = future.as_mut() => panic!("read ended before the spill lease was released"),
+        }
+        assert!(futures::poll!(future.as_mut()).is_pending());
+        let prefix = work.receipt();
+        assert_eq!(prefix.object_probes, if mixed { 2 } else { 0 });
+        if !mixed {
+            assert_eq!(prefix.backend_read_operations, 0);
+        }
+        assert_eq!(
+            prefix.object_bytes_read,
+            if mixed {
+                (durable[0].1.len() + durable[1].1.len()) as u64
+            } else {
+                0
+            }
         );
         assert!(work.live_allocation_bytes() > NativeMaterializationWork::accounting_state_bytes());
-        drop(future);
-        drop(spill_file);
-        assert_eq!(work.receipt().backend_read_operations, 0);
+        if exit == 0 {
+            drop(future);
+            drop(spill_file);
+        } else {
+            if exit == 1 {
+                caller.cancel();
+            } else {
+                original_token.cancel();
+            }
+            drop(spill_file);
+            let result = future.await;
+            if exit == 1 {
+                assert!(matches!(result, Err(ObjectStoreError::Cancelled)));
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(ObjectStoreError::Native(
+                        NativeTreeMaterializationError::Cancelled
+                    ))
+                ));
+            }
+        }
+        schedule.drained().await;
+        driver.abort();
+        let _ = driver.await;
+        assert_eq!(work.receipt(), prefix);
         assert_eq!(
             work.live_allocation_bytes(),
             NativeMaterializationWork::accounting_state_bytes()
