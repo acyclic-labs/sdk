@@ -15,7 +15,7 @@ test("selected Windows owner requires its original bound physical completion", {
     "step=admit-native-completion-producer; recovery=set E2E_PROCESS_HOST to the absolute installed acyclic-process-host executable");
   const root = mkdtempSync(join(realpathSync(tmpdir()), "process-completion-"));
   try {
-    for (const mode of ["plain", "reported-input", "wrong-invocation", "missing", "incomplete", "refused"]) {
+    for (const mode of ["plain", "reported-input", "cancel-input", "cancel-owner", "wrong-invocation", "missing", "incomplete", "refused"]) {
       let running, original, failure, captured;
       const exitCode = mode === "reported-input" ? 0xc0000005 : 17;
       const directory = join(root, mode);
@@ -34,15 +34,27 @@ test("selected Windows owner requires its original bound physical completion", {
           writeFileSync(receipt, JSON.stringify(mutated));
         }
       } });
+      const cancellation = mode.startsWith("cancel-");
       const options = { env: { ...process.env, E2E_PROCESS_HOST: host }, scopeCapture: result => { captured = result; },
-        scopeInheritInput: mode === "reported-input" };
+        scopeInheritInput: mode === "reported-input" || cancellation };
       // No native report producer is substituted for the selected executable.
       try {
-        running = mode === "reported-input"
-          ? await scope.startReportedOwned(process.execPath, ["-e", `process.exit(${exitCode})`], options)
+        running = mode === "reported-input" || cancellation
+          ? await scope.startReportedOwned(process.execPath, ["-e", cancellation
+            ? 'require("node:readline").createInterface({input: process.stdin}).once("line", input => process.stdout.write(JSON.stringify({input}) + "\\n"));'
+            : `process.exit(${exitCode})`], options)
           : scope.startOwned(mode === "refused" ? join(directory, "missing.exe") : process.execPath,
             ["-e", `process.exit(${exitCode})`], options);
-        if (["wrong-invocation", "missing", "incomplete"].includes(mode)) {
+        if (cancellation) {
+          const accepted = new Spool(running.child.stdout, running.closed).next(event => event.input);
+          running.input.write("original selected stdin\n");
+          assert.deepEqual(await accepted, { input: "original selected stdin" });
+          // Negative control: killing the receipt producer cannot certify the
+          // same execution's physical completion, even when its tree dies.
+          if (mode === "cancel-owner") running.child.kill("SIGKILL");
+          else running.killExecutable();
+        }
+        if (["wrong-invocation", "missing", "incomplete", "cancel-owner"].includes(mode)) {
           await assert.rejects(running.closed, error => {
             failure = error;
             assert.equal(error.code, "PROCESS_COMPLETION_INVALID");
@@ -62,12 +74,18 @@ test("selected Windows owner requires its original bound physical completion", {
           assert.equal(captured, result, "the original observer receives the validated selected process result");
           assert.equal(typeof result.completion, "object", "root exit requires the original bound physical completion");
           assert.deepEqual(result.completion, JSON.parse(original));
-          assert.equal(result.code, exitCode);
+          if (cancellation) {
+            assert.notEqual(result.code, 0);
+            assert.equal(result.completion.cancelled, true);
+            assert.equal(result.hostStatus.code >>> 0, 124);
+          } else {
+            assert.equal(result.code, exitCode);
+            assert.equal(result.hostStatus.code >>> 0, exitCode);
+          }
           assert.equal(result.signal, null);
           assert.equal(result.completion.platform, "windows");
           assert.equal(result.completion.process_tree_retired, true);
           assert.equal(result.completion.failure, null);
-          assert.equal(result.hostStatus.code >>> 0, exitCode);
           assert.equal(result.hostStatus.signal, null);
           if (mode === "plain") t.diagnostic(JSON.stringify({completion_base64: original.toString("base64")}));
         }

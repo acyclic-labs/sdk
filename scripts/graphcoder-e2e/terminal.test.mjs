@@ -62,7 +62,7 @@ const launch = ["--workspace", process.cwd(), "--settings-root", process.cwd(), 
 test("real ConPTY carries typed options, raw input, output and the exit code", conpty, async t => {
   const processes = new Processes();
   try {
-    const running = processes.startTerminal(cmd, [...launch, "--resume", "--operation", "op 1"]);
+    const running = await processes.startTerminal(cmd, [...launch, "--resume", "--operation", "op 1"]);
     await shown(running, ">");
     running.child.stdin.write("echo po^ng %CMDCMDLINE%\r\nexit 7\r\n");
     const result = await bounded(t, running.closed);
@@ -78,14 +78,17 @@ test("ConPTY refuses launches outside admitted native custody", conpty, async t 
     const direct = await bounded(t, processes.start(host, conptyArgs(cmd, launch)).closed);
     assert.equal(direct.code, 125);
     assert.match(direct.stderr, /step=conpty-native-custody/);
-    const untyped = await bounded(t, processes.startOwned(host, [...conptyArgs(cmd, launch), "-p", "x"], { scopeInheritInput: true }).closed);
+    const untypedLaunch = await processes.startOwned(host, [...conptyArgs(cmd, launch), "-p", "x"], { scopeInheritInput: true });
+    const untyped = await bounded(t, untypedLaunch.closed);
     assert.equal(untyped.code, 125);
     assert.match(untyped.stderr, /step=conpty-arguments/);
-    const binary = await bounded(t, processes.startTerminal(`${host}.missing.exe`, launch).closed);
+    const binaryLaunch = await processes.startTerminal(`${host}.missing.exe`, launch);
+    const binary = await bounded(t, binaryLaunch.closed);
     assert.equal(binary.code, 125);
     assert.match(binary.stderr, /step=conpty-terminal-create/);
     process.env.E2E_CONPTY_HOST = `${host}.missing.exe`;
-    const admission = await bounded(t, processes.startTerminal(cmd, launch).closed);
+    const admissionLaunch = await processes.startTerminal(cmd, launch);
+    const admission = await bounded(t, admissionLaunch.closed);
     assert.equal(admission.code, 125);
     assert.match(admission.stderr, /step=process-host-admission/);
   } finally { process.env.E2E_CONPTY_HOST = host; await processes.close(); }
