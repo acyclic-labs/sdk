@@ -11,6 +11,30 @@ extern "C" {
     fn is_array(value: &JsValue) -> Result<bool, JsValue>;
 }
 
+// Capture identity primitives before a getter can replace their public methods.
+// The set is private to one traversal; shared children leave it on path exit.
+#[wasm_bindgen(inline_js = "
+const Ancestors = WeakSet;
+const hasAncestor = Function.prototype.call.bind(Ancestors.prototype.has);
+const addAncestor = Function.prototype.call.bind(Ancestors.prototype.add);
+const deleteAncestor = Function.prototype.call.bind(Ancestors.prototype.delete);
+export function newJsonAncestors() { return new Ancestors(); }
+export function enterJsonAncestor(ancestors, value) {
+    if (hasAncestor(ancestors, value)) return false;
+    addAncestor(ancestors, value);
+    return true;
+}
+export function leaveJsonAncestor(ancestors, value) { deleteAncestor(ancestors, value); }
+")]
+extern "C" {
+    #[wasm_bindgen(catch, js_name = newJsonAncestors)]
+    fn new_json_ancestors() -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(catch, js_name = enterJsonAncestor)]
+    fn enter_json_ancestor(ancestors: &JsValue, value: &JsValue) -> Result<bool, JsValue>;
+    #[wasm_bindgen(catch, js_name = leaveJsonAncestor)]
+    fn leave_json_ancestor(ancestors: &JsValue, value: &JsValue) -> Result<(), JsValue>;
+}
+
 /// Parses canonical JSON without passing full-width integer literals through
 /// JavaScript Number. Large serde integers are returned as `BigInt`.
 #[wasm_bindgen(js_name = decodeCanonicalJson)]
@@ -113,8 +137,7 @@ pub fn encode_canonical_json(value: JsValue) -> Result<Vec<u8>, JsValue> {
 }
 
 pub(super) fn js_json_value(value: &JsValue) -> Result<serde_json::Value, JsValue> {
-    let mut ancestors = Vec::new();
-    snapshot_js_json(value, &mut ancestors)
+    snapshot_js_json(value, None)
 }
 
 /// Hashes the same bounded canonical JSON bytes used by native admissions.
@@ -141,9 +164,9 @@ pub(super) fn checked_js_string(value: JsValue, field: &str) -> Result<String, J
     clippy::too_many_lines,
     reason = "one exhaustive traversal owns JS JSON admission"
 )]
-pub(super) fn snapshot_js_json(
+fn snapshot_js_json(
     value: &JsValue,
-    ancestors: &mut Vec<JsValue>,
+    ancestors: Option<&JsValue>,
 ) -> Result<serde_json::Value, JsValue> {
     if value.is_undefined() {
         return Err(JsValue::from_str("undefined is not canonical JSON"));
@@ -209,10 +232,14 @@ pub(super) fn snapshot_js_json(
                 .collect(),
         ));
     }
-    if ancestors
-        .iter()
-        .any(|ancestor| js_sys::Object::is(ancestor, value))
-    {
+    let owned;
+    let ancestors = if let Some(ancestors) = ancestors {
+        ancestors
+    } else {
+        owned = new_json_ancestors()?;
+        &owned
+    };
+    if !enter_json_ancestor(ancestors, value)? {
         return Err(JsValue::from_str("cyclic values are not canonical JSON"));
     }
     let array = is_array(value)?;
@@ -225,12 +252,11 @@ pub(super) fn snapshot_js_json(
             return Err(JsValue::from_str("only plain objects are canonical JSON"));
         }
     }
-    ancestors.push(value.clone());
     let snapshot = if array {
         let items = js_sys::Array::from_iterable(value.unchecked_ref::<js_sys::Array>())?;
         let mut snapshot = Vec::with_capacity(items.length() as usize);
         for item in items.iter() {
-            snapshot.push(snapshot_js_json(&item, ancestors)?);
+            snapshot.push(snapshot_js_json(&item, Some(ancestors))?);
         }
         serde_json::Value::Array(snapshot)
     } else if is_map {
@@ -245,7 +271,7 @@ pub(super) fn snapshot_js_json(
         let mut snapshot = serde_json::Map::new();
         for (key, child) in entries {
             let key = checked_js_string(key, "JSON object key")?;
-            let admitted = snapshot_js_json(&child, ancestors)?;
+            let admitted = snapshot_js_json(&child, Some(ancestors))?;
             snapshot.insert(key, admitted);
         }
         serde_json::Value::Object(snapshot)
@@ -254,14 +280,14 @@ pub(super) fn snapshot_js_json(
         for key in object_keys(value)?.iter() {
             let key_text = checked_js_string(key.clone(), "JSON object key")?;
             let child = js_sys::Reflect::get(value, &key)?;
-            let admitted = snapshot_js_json(&child, ancestors)?;
+            let admitted = snapshot_js_json(&child, Some(ancestors))?;
             if snapshot.insert(key_text, admitted).is_some() {
                 return Err(JsValue::from_str("duplicate JSON object key"));
             }
         }
         serde_json::Value::Object(snapshot)
     };
-    ancestors.pop();
+    leave_json_ancestor(ancestors, value)?;
     Ok(snapshot)
 }
 

@@ -37,6 +37,41 @@ const snapshots = fc.memo<Snapshot>(depth => {
 });
 
 test("canonical admission selects entries before evaluating their values", () => {
+  // Count the shipping identity binding, without a timing or scale loop.
+  // A shared child is valid on separate paths; only an active ancestor cycles.
+  for (const depth of [4, 16]) {
+    let input: unknown = 7n;
+    for (let index = 0; index < depth; ++index) input = { child: input };
+    const same = Object.is;
+    let comparisons = 0;
+    let canonical: Uint8Array;
+    Object.is = (left, right) => { ++comparisons; return same(left, right); };
+    try { canonical = contracts.encodeCanonicalJson(input); }
+    finally { Object.is = same; }
+    assert.deepEqual(contracts.decodeClientJson(canonical), input);
+    assert.ok(comparisons <= 2 * depth, "canonical admission rescanned its ancestors");
+  }
+  const shared = { value: 7n };
+  assert.deepEqual(contracts.decodeClientJson(contracts.encodeCanonicalJson([shared, shared])),
+    [shared, shared], "canonical admission confused shared children with cycles");
+  const constructor = Object.getOwnPropertyDescriptor(globalThis, "WeakSet")!;
+  const methods = Object.getOwnPropertyDescriptors(WeakSet.prototype);
+  const prototype = WeakSet.prototype;
+  const input = Object.defineProperty({}, "child", { enumerable: true, get() {
+    const poison = () => { throw new Error("JSON called a replaced identity primitive"); };
+    for (const name of ["has", "add", "delete"]) Object.defineProperty(prototype, name, { value: poison });
+    Object.defineProperty(globalThis, "WeakSet", { value: poison });
+    // Reentry must also use the captured constructor, with independent custody.
+    contracts.encodeCanonicalJson(shared);
+    return shared;
+  } });
+  try {
+    assert.deepEqual(contracts.decodeClientJson(contracts.encodeCanonicalJson(input)), { child: shared });
+  } finally {
+    Object.defineProperties(prototype, methods);
+    Object.defineProperty(globalThis, "WeakSet", constructor);
+  }
+
   for (const selected of [new Map<string, unknown>(), [] as unknown[]]) {
     const kind = Array.isArray(selected) ? "Array" : "Map";
     let reads = 0;
