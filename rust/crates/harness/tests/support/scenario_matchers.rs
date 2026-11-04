@@ -14,14 +14,17 @@ pub fn subset(expected: &Value, actual: &Value) -> bool {
     }
     match (expected, actual) {
         (Value::Object(expected), Value::String(actual)) if expected.len() == 1 => {
-            expected.get("$json").is_some_and(|expected| {
-                serde_json::from_str(actual).is_ok_and(|actual| subset(expected, &actual))
-            })
+            encoded_json(expected, actual, false)
         }
         (Value::Object(expected), Value::Object(actual)) => expected.iter().all(|(key, value)| {
             actual.get(key).is_some_and(|actual| {
                 if key == "arguments" {
-                    value == actual
+                    match (value, actual) {
+                        (Value::Object(expected), Value::String(actual)) if expected.len() == 1 => {
+                            encoded_json(expected, actual, true)
+                        }
+                        _ => value == actual,
+                    }
                 } else {
                     subset(value, actual)
                 }
@@ -38,6 +41,18 @@ pub fn subset(expected: &Value, actual: &Value) -> bool {
         }
         _ => expected == actual,
     }
+}
+
+fn encoded_json(expected: &serde_json::Map<String, Value>, actual: &str, exact: bool) -> bool {
+    expected.get("$json").is_some_and(|expected| {
+        serde_json::from_str(actual).is_ok_and(|actual| {
+            if exact {
+                expected == &actual
+            } else {
+                subset(expected, &actual)
+            }
+        })
+    })
 }
 
 fn contains_text(actual: &Value, needle: &str) -> bool {
