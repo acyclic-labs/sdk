@@ -5,7 +5,7 @@ use super::{Delivery, HostChange};
 use crate::demand::{SourceDemandReadWork, SourcePayloadOwnership};
 use crate::fsevents::{
     EventBatch, EventStream, ITEM_CREATED, ITEM_REMOVED, ITEM_RENAMED, KERNEL_DROPPED, MOUNT,
-    MUST_SCAN_SUBDIRS, UNMOUNT, USER_DROPPED,
+    MUST_SCAN_SUBDIRS, ROOT_CHANGED, UNMOUNT, USER_DROPPED,
 };
 use crate::native_host::{buffer, clone_path};
 use crate::{DemandError, WorkCounters};

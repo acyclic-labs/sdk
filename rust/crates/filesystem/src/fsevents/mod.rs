@@ -74,13 +74,14 @@ unsafe extern "C" {
 const CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
 const EVENT_ID_SINCE_NOW: u64 = u64::MAX;
 const CREATE_NO_DEFER: u32 = 0x02;
+const CREATE_WATCH_ROOT: u32 = 0x04;
 const CREATE_FILE_EVENTS: u32 = 0x10;
 
 pub(crate) const MUST_SCAN_SUBDIRS: u32 = 0x0000_0001;
 pub(crate) const USER_DROPPED: u32 = 0x0000_0002;
 pub(crate) const KERNEL_DROPPED: u32 = 0x0000_0004;
 const HISTORY_DONE: u32 = 0x0000_0010;
-const ROOT_CHANGED: u32 = 0x0000_0020;
+pub(crate) const ROOT_CHANGED: u32 = 0x0000_0020;
 pub(crate) const MOUNT: u32 = 0x0000_0040;
 pub(crate) const UNMOUNT: u32 = 0x0000_0080;
 pub(crate) const ITEM_CREATED: u32 = 0x0000_0100;

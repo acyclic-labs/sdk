@@ -438,7 +438,7 @@ impl Hub {
                 paths,
                 since,
                 0.0,
-                CREATE_FILE_EVENTS | CREATE_NO_DEFER,
+                CREATE_FILE_EVENTS | CREATE_NO_DEFER | CREATE_WATCH_ROOT,
             )
         };
         // SAFETY: path_array returned the owned CF reference released exactly once here.
@@ -492,7 +492,10 @@ impl Hub {
                 }
                 shard.last_id = shard.last_id.max(id);
                 let mut route = |route: &Route| {
-                    if id <= route.floor || !route.registration.live.load(Ordering::Acquire) {
+                    // RootChanged has id zero and must survive replay filtering.
+                    if (id <= route.floor && flag & ROOT_CHANGED == 0)
+                        || !route.registration.live.load(Ordering::Acquire)
+                    {
                         return;
                     }
                     let slot = *slots

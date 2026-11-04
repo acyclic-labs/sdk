@@ -42,15 +42,17 @@ impl NativeWatch {
         remaining: &mut u32,
         excluded: &[&str],
     ) -> Result<(), NativeWatchError> {
-        let original = self
-            .original_work
-            .as_ref()
-            .ok_or(NativeWatchError::NativeWorkUnavailable)?;
-        original.admit(WorkCounters::UNCHARGED)?;
+        if let Some(original) = &self.original_work {
+            original.admit(WorkCounters::UNCHARGED)?;
+        }
         if self.has_subtree_registration() {
             return Ok(());
         }
-        let original = original.clone();
+        let original = self
+            .original_work
+            .as_ref()
+            .ok_or(NativeWatchError::NativeWorkUnavailable)?
+            .clone();
         if *remaining == 0 {
             return Err(NativeWatchError::InvalidOptions);
         }
