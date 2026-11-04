@@ -213,44 +213,6 @@ fn unchanged_alarm_keeps_the_waiter_but_popped_or_suspended_alarm_reinstalls()
 
 #[cfg(not(loom))]
 #[test]
-fn replay_coalescing_and_hibernation_have_bounded_ownership() -> Result<(), super::super::Error> {
-    let set = ReadySet::default();
-    let registration = set.register(7)?;
-    assert_eq!(
-        set.counts(),
-        (1, 1),
-        "registered subscriptions must start with replay"
-    );
-    let wake = registration.waker();
-    for _ in 0..100 {
-        wake.wake_by_ref();
-    }
-    assert_eq!(set.counts(), (1, 1));
-    let work = set
-        .take()
-        .ok_or(super::super::Error::Invalid("missing initial replay"))?;
-    assert_eq!(*work.key(), 7);
-    wake.wake_by_ref();
-    drop(work);
-    assert_eq!(
-        set.counts(),
-        (1, 1),
-        "append during replay must survive parking"
-    );
-    drop(set.take());
-    assert_eq!(set.counts(), (1, 0));
-    drop(registration);
-    wake.wake_by_ref();
-    assert_eq!(
-        set.counts(),
-        (0, 0),
-        "retired wake cannot recreate registration"
-    );
-    Ok(())
-}
-
-#[cfg(not(loom))]
-#[test]
 fn dormant_population_retains_no_work_and_unlinks_cancelled_ready_entries()
 -> Result<(), super::super::Error> {
     let set = ReadySet::default();
@@ -286,8 +248,13 @@ mod schedules {
         loom::model(|| {
             let set = ReadySet::default();
             let registration = set.register(7).unwrap();
-            let work = set.take().unwrap();
             let wake = registration.waker();
+            assert_eq!(set.counts(), (1, 1));
+            wake.wake_by_ref();
+            wake.wake_by_ref();
+            assert_eq!(set.counts(), (1, 1), "queued wakes must coalesce");
+            let work = set.take().unwrap();
+            assert_eq!(*work.key(), 7);
             let reader = thread::spawn(move || drop(work));
             let writer = thread::spawn(move || wake.wake());
             reader.join().unwrap();
