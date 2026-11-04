@@ -236,7 +236,7 @@ try:
     if any(hashlib.sha256(path.read_bytes()).digest() != digest
            for path, digest in oracle_hashes.items()):
         raise RuntimeError("Auth oracle changed during the negative control")
-    if choice in ("trust-target", "trust-reanchor"):
+    if choice in ("authorization-action", "trust-target", "trust-reanchor"):
         step = "admit the original " + choice + " input after restoring the production guard"
         restored = subprocess.run(
             command, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
