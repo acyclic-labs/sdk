@@ -108,6 +108,7 @@ impl WorkspaceInput {
         let schedule = input.first().copied().unwrap_or_default();
         for (index, bytes) in [
             original.as_slice(),
+            original.as_slice(),
             foreign_session.as_slice(),
             foreign_operation.as_slice(),
             input,
@@ -115,6 +116,9 @@ impl WorkspaceInput {
         .into_iter()
         .enumerate()
         {
+            // Keep the original happy path for every payload as well as the
+            // input-selected withdrawal schedule in the second iteration.
+            let schedule = if index == 0 { 0 } else { schedule };
             let mut served = Served::default();
             std::fs::write(&path, bytes).map_err(storage)?;
             for _ in 0..2 {
@@ -126,8 +130,8 @@ impl WorkspaceInput {
                 assert_eq!(admitted.operation, operation);
             }
             match index {
-                0 => assert_eq!(served.ready.len(), 1, "original request must be admitted"),
-                1 | 2 => assert!(served.ready.is_empty(), "foreign identity dispatched"),
+                0 | 1 => assert_eq!(served.ready.len(), 1, "original request must be admitted"),
+                2 | 3 => assert!(served.ready.is_empty(), "foreign identity dispatched"),
                 _ => {}
             }
             if schedule & 1 != 0 {
