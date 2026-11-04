@@ -17,7 +17,7 @@ def main():
     refund = newline.join([b"drop(order);", b"        drop(allocation);"])
     controls = [
         ("original-position", order, b"", 1,
-         "compiled_prefix_matches_original_keys_and_refuses_original_read_credit", "Test failed:"),
+         "compiled_prefix_matches_original_keys_and_refuses_original_read_credit", "assertion failed: `(left == right)`"),
         ("sort-funding", refund,
          newline.join([b"drop(allocation);", b"        drop(order);"]), 1,
          "compiled_prefix_cost_and_backing_do_not_grow_with_unrelated_keys", "early_refund"),
@@ -38,6 +38,7 @@ def main():
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             print(f"{step}: exit={result.returncode}\n{result.stdout}", flush=True)
             if not (result.returncode == 100 and "0 passed, 1 failed" in result.stdout
+                    and f"test tests::compiled_prefix::{test} ... FAILED" in result.stdout
                     and expected in result.stdout):
                 raise ValueError("unchanged semantic oracle did not reject the defect")
             path.write_bytes(source)
