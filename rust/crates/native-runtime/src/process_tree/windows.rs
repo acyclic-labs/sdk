@@ -581,7 +581,7 @@ fn denied_job_cleanup_retains_child_and_reports_failure() {
             .contains("already collected")
     );
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
-    super::tests::assert_no_escape(temporary.path());
+    super::tests::assert_descendant_retired(temporary.path());
 }
 
 #[test]

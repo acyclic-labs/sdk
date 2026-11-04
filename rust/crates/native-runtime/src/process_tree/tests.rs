@@ -264,7 +264,7 @@ use super::{ProcessCommand, ProcessStdio};
 use std::fs;
 use std::io::{Read as _, Write as _};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const MODE: &str = "ACYCLIC_PROCESS_TREE_TEST_MODE";
 const ROOT: &str = "ACYCLIC_PROCESS_TREE_TEST_ROOT";
@@ -309,11 +309,25 @@ fn tree_exited(tree: &mut ProcessTree) -> bool {
     tree.try_wait(None).map_or(true, |status| status.is_some())
 }
 
-/// Asks any descendant that outlived its tree's cleanup to mark its escape, then checks that none did.
-pub(super) fn assert_no_escape(root: &std::path::Path) {
-    fs::write(root.join("probe"), b"probe").expect("escape probe");
-    thread::sleep(Duration::from_millis(500));
-    assert!(!root.join("escaped").exists());
+/// The original grandchild owns this lock until process exit. Its kernel
+/// release event observes that lifetime without a probe, timer or reused PID.
+fn descendant_lifetime(root: &std::path::Path) -> io::Result<crate::FileLock> {
+    Ok(crate::FileLock::new(
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(root.join("descendant.lock"))?,
+    ))
+}
+
+pub(super) fn assert_descendant_retired(root: &std::path::Path) {
+    // Unix containment sends the group its signal and reaps the leader. The
+    // original descendant's exit releases this lock, including when its parent
+    // exits first. Wait for that kernel event rather than sampling too early.
+    descendant_lifetime(root)
+        .expect("original descendant lifetime file")
+        .lock(crate::FileLockMode::Exclusive)
+        .expect("original descendant retirement event");
 }
 
 #[test]
@@ -328,14 +342,18 @@ fn process_tree_helper() {
     let root = std::path::PathBuf::from(std::env::var_os(ROOT).expect("helper root"));
     match mode.as_str() {
         "grandchild" => {
+            let _lifetime = crate::FileLock::acquire(
+                fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
+                    .open(root.join("descendant.lock"))
+                    .expect("original descendant lifetime file"),
+                crate::FileLockMode::Exclusive,
+            )
+            .expect("original descendant lifetime lock");
             fs::write(root.join("grandchild-ready"), b"ready").expect("grandchild ready");
-            let deadline = Instant::now() + Duration::from_secs(60);
-            while !root.join("probe").exists() && Instant::now() < deadline {
-                thread::sleep(Duration::from_millis(5));
-            }
-            if root.join("probe").exists() {
-                fs::write(root.join("escaped"), b"descendant survived").expect("escaped marker");
-            }
+            wait_for_owner_stop();
         }
         "child" | "child-cancel" | "exit-parent" => {
             let mut grandchild = command("grandchild", &root);
@@ -526,13 +544,21 @@ fn cleanup_is_idempotent_and_drop_contains_descendants() {
         let mut tree =
             ProcessTree::spawn(&mut command("child", temporary.path())).expect("spawn tree");
         ready(temporary.path(), "tree-ready", || tree_exited(&mut tree));
+        assert_eq!(
+            descendant_lifetime(temporary.path())
+                .expect("original descendant lifetime file")
+                .try_lock(crate::FileLockMode::Exclusive)
+                .expect_err("live original descendant reported retirement")
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
         if explicit {
             tree.terminate(None).expect("terminate tree");
             tree.terminate(None).expect("repeat termination");
             assert!(tree.child.is_none());
         }
         drop(tree);
-        assert_no_escape(temporary.path());
+        assert_descendant_retired(temporary.path());
     }
 }
 
@@ -584,7 +610,7 @@ fn capture_check_failure_cleans_up_the_owned_tree() {
         "the complete live tree acknowledged readiness"
     );
     assert!(error.cleanup_completed && tree.is_reaped());
-    assert_no_escape(temporary.path());
+    assert_descendant_retired(temporary.path());
 }
 
 #[test]
@@ -637,7 +663,9 @@ fn graceful_cleanup_handles_an_exited_leader_and_its_descendants() {
             assert_eq!(status.code(), Some(7));
         }
         assert!(tree.child.is_none());
-        assert_no_escape(temporary.path());
+        if mode != "exit-code" {
+            assert_descendant_retired(temporary.path());
+        }
     }
 }
 
@@ -802,9 +830,6 @@ fn queued_stdin_backpressure_keeps_cancellation_and_exclusive_custody() {
     let mut command = command("stdin-stall", temporary.path());
     command.stdin(ProcessStdio::piped());
     let mut tree = ProcessTree::spawn(&mut command).expect("spawn stalled reader");
-    ready(temporary.path(), "stdin-stall-ready", || {
-        tree_exited(&mut tree)
-    });
     tree.queue_stdin(vec![b'x'; BULK_BYTES])
         .expect("queue blocked prompt");
     assert!(!tree.pump_stdin().expect("one bounded nonblocking write"));
@@ -1306,7 +1331,9 @@ fn capture_timeout_and_output_overflow_reap_owned_tree() {
         }
         assert!(tree.child.is_none());
         tree.terminate(None).expect("repeat cleanup");
-        assert_no_escape(temporary.path());
+        if mode == "child" {
+            assert_descendant_retired(temporary.path());
+        }
     }
 }
 
@@ -1330,7 +1357,7 @@ fn exited_parent_does_not_leave_descendant_holding_output_open() {
         .expect("collect exited parent");
     assert!(output.status.success());
     ready(temporary.path(), "tree-ready", || true);
-    assert_no_escape(temporary.path());
+    assert_descendant_retired(temporary.path());
 }
 
 /// An admitted kernel wait still runs if its completion accounting fails.
