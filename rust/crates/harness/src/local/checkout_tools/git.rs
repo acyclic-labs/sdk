@@ -68,11 +68,11 @@ impl CheckoutTools {
 /// paths and continuing or aborting. Every other git command belongs to shell.
 fn child_lifecycle(arguments: &[String]) -> bool {
     match arguments {
-        [operation, branch] if matches!(operation.as_str(), "diff" | "merge" | "discard") => branch
-            .strip_prefix("agents/")
-            .is_some_and(|name| !name.is_empty()),
-        [operation, option] if operation == "merge" => {
-            matches!(option.as_str(), "--continue" | "--abort")
+        [operation, argument] if matches!(operation.as_str(), "diff" | "merge" | "discard") => {
+            (operation == "merge" && matches!(argument.as_str(), "--continue" | "--abort"))
+                || argument
+                    .strip_prefix("agents/")
+                    .is_some_and(|name| !name.is_empty())
         }
         [operation, paths @ ..] if operation == "add" => {
             !paths.is_empty() && paths.iter().all(|path| !path.starts_with('-'))
@@ -112,7 +112,15 @@ mod tests {
         let granted = RuntimeScope::new(harness.signed.capabilities().clone(), Default::default())?;
         let denied = RuntimeScope::new(Default::default(), Default::default())?;
         let mut refused = Vec::new();
-        for target in ["", "--volume home "] {
+        for (target, volume) in [("", None), ("--volume home ", Some("home"))] {
+            let (_, mount) = tools.workspace.mounts.named(volume)?;
+            let read_only = RuntimeScope::new(
+                Capabilities::new([mount
+                    .view
+                    .volume
+                    .capability(VolumeOperation::Read, &mut None)?]),
+                Default::default(),
+            )?;
             for command in [
                 "diff agents/child",
                 "merge agents/child",
@@ -132,6 +140,17 @@ mod tests {
                     ),
                     "child command bypassed volume authority: {command}"
                 );
+                if command.ends_with("diff agents/child") {
+                    assert!(tools.fs_arguments(&command, &read_only).is_ok());
+                } else {
+                    assert!(
+                        matches!(
+                            tools.fs_arguments(&command, &read_only),
+                            Err(Error::Unauthorized(_))
+                        ),
+                        "child mutation bypassed write authority: {command}"
+                    );
+                }
             }
             for command in ["merge main", "diff agents/", "add --all", "status"] {
                 let command = format!("{target}{command}");
