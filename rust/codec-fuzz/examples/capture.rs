@@ -190,6 +190,16 @@ fn capture() -> Result<(), Box<dyn Error>> {
         capture_actors(&mut manifest)?;
         return finish_latest(&manifest, prefix);
     }
+    if std::env::args().any(|arg| arg == "--only-resources") {
+        let prefix = "harness_codecs/resource-";
+        let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
+            .lines()
+            .filter(|line| !line.starts_with(prefix))
+            .map(|line| format!("{line}\n"))
+            .collect::<String>();
+        capture_resources(&mut manifest)?;
+        return finish(&manifest, prefix);
+    }
     if std::env::args().any(|arg| arg == "--only-agents") {
         let prefix = agent_prefix();
         let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
@@ -364,6 +374,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
     )?;
     capture_agents(&mut manifest)?;
     capture_agent_controls(&mut manifest)?;
+    capture_resources(&mut manifest)?;
     for (name, bytes) in acyclic_harness_core::filesystem::execution_codec_fuzz::seeds()? {
         save(
             "harness_codecs",
@@ -843,6 +854,23 @@ fn finish_latest(manifest: &str, replaced_prefix: &str) -> Result<(), Box<dyn Er
         .map(|line| format!("{line}\n"))
         .collect::<String>();
     finish(&manifest, replaced_prefix)
+}
+
+fn capture_resources(manifest: &mut String) -> Result<(), Box<dyn Error>> {
+    for (name, bytes) in acyclic_codec_fuzz::harness_resources::seeds()? {
+        save(
+            "harness_codecs",
+            &format!("resource-{name}"),
+            &bytes,
+            if name.ends_with("-positional") {
+                "harness_resources::seeds: Snapshot::encode payload fields in serde positional spelling, admitted by original Snapshot::decode; original MemoryStream envelope; no provider attribution or transport authentication claim"
+            } else {
+                "harness_resources::seeds: cache/summary serde writers and Snapshot::encode; genesis envelope from MemoryStream commit/read; no provider attribution or transport authentication claim"
+            },
+            manifest,
+        )?;
+    }
+    Ok(())
 }
 
 fn finish(manifest: &str, replaced_prefix: &str) -> Result<(), Box<dyn Error>> {

@@ -22,6 +22,7 @@ acyclic-harness-core = { path = "../crates/harness-core", default-features = fal
 acyclic-harness-client = { path = "../crates/harness-client", features = ["agents"] }
 acyclic-inference = { path = "../crates/inference", default-features = false, features = ["http-codec"] }
 acyclic-machines = { path = "../crates/machines", default-features = false, features = ["test-support", "grpc"] }
+acyclic-model-render = { path = "../crates/model-render" }
 acyclic-native-runtime = { path = "../crates/native-runtime" }
 acyclic-objects = { path = "../crates/objects", default-features = false, features = ["binary", "json", "test-support"] }
 acyclic-protobuf-json = { path = "../crates/protobuf-json" }

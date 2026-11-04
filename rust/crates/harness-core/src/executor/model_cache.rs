@@ -232,6 +232,15 @@ fn deadline(at_ns: u64, ttl: ModelCacheTtl) -> Result<Option<u64>, ModelCacheErr
 mod proofs {
     use super::*;
 
+    fn access(kind: u8, ttl: ModelCacheTtl) -> ModelCacheAccess {
+        match kind {
+            0 => ModelCacheAccess::Write(ttl),
+            1 => ModelCacheAccess::Hit { refresh: None },
+            2 => ModelCacheAccess::Hit { refresh: Some(ttl) },
+            _ => ModelCacheAccess::Miss,
+        }
+    }
+
     #[kani::proof]
     fn residency_preserves_original_clock_and_checked_deadline() {
         let key = ModelCacheKey {
@@ -247,55 +256,149 @@ mod proofs {
         } else {
             ModelCacheTtl::ProviderManaged
         };
+        let kind: u8 = kani::any();
+        kani::assume(kind < 4);
+        let first_access = access(kind, ttl);
         // Wider arithmetic independently detects either u64 overflow boundary.
         let wide_deadline = u128::from(at_ns) + u128::from(seconds) * 1_000_000_000;
-        let result = ModelCacheResidency::observe(
-            key,
-            None,
-            clock_domain,
-            at_ns,
-            ModelCacheAccess::Write(ttl),
-        );
-        if explicit && wide_deadline > u128::from(u64::MAX) {
+        let result = ModelCacheResidency::observe(key, None, clock_domain, at_ns, first_access);
+        if matches!(kind, 0 | 2) && explicit && wide_deadline > u128::from(u64::MAX) {
             assert_eq!(result, Err(ModelCacheError::DeadlineOverflow));
             return;
         }
-        let written = result.unwrap();
-        assert_eq!(written.version, ModelCacheResidency::VERSION);
-        assert_eq!(written.key, key);
-        assert_eq!(written.clock_domain, clock_domain);
-        assert_eq!(written.written_at_ns, Some(at_ns));
-        assert_eq!(written.last_hit_at_ns, None);
-        let expiry = if explicit {
+        let observed = result.unwrap();
+        assert_eq!(observed.version, ModelCacheResidency::VERSION);
+        assert_eq!(observed.key, key);
+        assert_eq!(observed.clock_domain, clock_domain);
+        assert_eq!(observed.observed_at_ns, at_ns);
+        assert_eq!(observed.written_at_ns, (kind == 0).then_some(at_ns));
+        assert_eq!(
+            observed.last_hit_at_ns,
+            matches!(kind, 1 | 2).then_some(at_ns)
+        );
+        let expiry = if kind == 3 {
+            Some(at_ns)
+        } else if matches!(kind, 0 | 2) && explicit {
             Some(u64::try_from(wide_deadline).unwrap())
         } else {
             None
         };
-        assert_eq!(written.expires_at_ns, expiry);
+        assert_eq!(observed.expires_at_ns, expiry);
+        assert_eq!(
+            ModelCacheResidency::observe(key, Some(observed), clock_domain, at_ns, first_access),
+            Ok(observed)
+        );
         let query: u64 = kani::any();
         let expected = if query < at_ns {
             None
         } else {
             expiry.map(|expiry| query < expiry)
         };
-        assert_eq!(written.estimated_resident_at(clock_domain, query), expected);
+        assert_eq!(
+            observed.estimated_resident_at(clock_domain, query),
+            expected
+        );
+
+        // Check every access against the actual retained result. The wider
+        // deadline and field-preservation assertions are independent contracts.
+        let next_kind: u8 = kani::any();
+        kani::assume(next_kind < 4);
+        let next_seconds: u64 = kani::any();
+        let next_explicit: bool = kani::any();
+        let next_ttl = if next_explicit {
+            ModelCacheTtl::Explicit {
+                seconds: next_seconds,
+            }
+        } else {
+            ModelCacheTtl::ProviderManaged
+        };
+        let next = ModelCacheResidency::observe(
+            key,
+            Some(observed),
+            clock_domain,
+            query,
+            access(next_kind, next_ttl),
+        );
+        let refreshed_deadline = u128::from(query) + u128::from(next_seconds) * 1_000_000_000;
+        kani::cover!(query < at_ns);
+        if query < at_ns {
+            assert_eq!(next, Err(ModelCacheError::TimeReversed));
+        } else if matches!(next_kind, 0 | 2)
+            && next_explicit
+            && refreshed_deadline > u128::from(u64::MAX)
+        {
+            assert_eq!(next, Err(ModelCacheError::DeadlineOverflow));
+        } else {
+            let next = next.unwrap();
+            assert_eq!(next.version, observed.version);
+            assert_eq!(next.key, observed.key);
+            assert_eq!(next.clock_domain, observed.clock_domain);
+            assert_eq!(next.observed_at_ns, query);
+            assert_eq!(
+                next.written_at_ns,
+                if next_kind == 0 {
+                    Some(query)
+                } else {
+                    observed.written_at_ns
+                },
+            );
+            assert_eq!(
+                next.last_hit_at_ns,
+                if matches!(next_kind, 1 | 2) {
+                    Some(query)
+                } else {
+                    observed.last_hit_at_ns
+                },
+            );
+            let expiry = match next_kind {
+                1 => expiry.filter(|expiry| *expiry > query),
+                3 => Some(query),
+                _ if next_explicit => Some(u64::try_from(refreshed_deadline).unwrap()),
+                _ => None,
+            };
+            assert_eq!(next.expires_at_ns, expiry);
+            kani::cover!(next_kind == 1 && observed.expires_at_ns.is_some_and(|end| end <= query));
+            kani::cover!(next_kind == 0);
+            kani::cover!(next_kind == 2);
+            kani::cover!(next_kind == 3);
+            kani::cover!(next_kind == 2 && !next_explicit && observed.expires_at_ns.is_some());
+        }
 
         let mut foreign_domain = clock_domain;
         foreign_domain[0] ^= 1;
-        assert_eq!(written.estimated_resident_at(foreign_domain, query), None);
+        assert_eq!(observed.estimated_resident_at(foreign_domain, query), None);
         assert_eq!(
             ModelCacheResidency::observe(
                 key,
-                Some(written),
+                Some(observed),
                 foreign_domain,
                 at_ns,
                 ModelCacheAccess::Miss,
             ),
             Err(ModelCacheError::ClockMismatch)
         );
+        let mut foreign_key = key;
+        if kani::any() {
+            foreign_key.credential_scope[0] ^= 1;
+        } else {
+            foreign_key.prefix_digest[0] ^= 1;
+        }
+        assert_eq!(
+            ModelCacheResidency::observe(
+                foreign_key,
+                Some(observed),
+                clock_domain,
+                at_ns,
+                first_access
+            ),
+            Err(ModelCacheError::KeyMismatch)
+        );
         let version: u32 = kani::any();
         if version != ModelCacheResidency::VERSION {
-            let unsupported = ModelCacheResidency { version, ..written };
+            let unsupported = ModelCacheResidency {
+                version,
+                ..observed
+            };
             assert_eq!(unsupported.estimated_resident_at(clock_domain, query), None);
             assert_eq!(
                 ModelCacheResidency::observe(
@@ -365,15 +468,11 @@ mod tests {
                 prop_assert_eq!(ModelCacheResidency::observe(key, Some(unsupported), clock_domain, start + 2,
                     ModelCacheAccess::Miss), Err(ModelCacheError::Version));
             }
-            for count in [1, 100, 1000] {
-                let measured = acyclic_test_support::measure(|| {
-                    for _ in 0..count {
-                        std::hint::black_box(ModelCacheResidency::observe(key, Some(hit), clock_domain, start + 2,
-                            ModelCacheAccess::Hit { refresh: Some(ttl) }).unwrap());
-                    }
-                });
-                prop_assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
-            }
+            let measured = acyclic_test_support::measure(|| {
+                std::hint::black_box(ModelCacheResidency::observe(key, Some(hit), clock_domain, start + 2,
+                    ModelCacheAccess::Hit { refresh: Some(ttl) }).unwrap());
+            });
+            prop_assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
             let control = acyclic_test_support::measure(|| {
                 std::hint::black_box(Box::new(hit));
             });

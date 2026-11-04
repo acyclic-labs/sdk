@@ -153,6 +153,50 @@ snapshots must refuse a live wait without source progress or settlement.
 These are SDK writer captures, not hosted traffic or
 evidence of authentication, dispatch, restart or distributed progress.
 
+Capture cache facts, summary references and epoch snapshots through their original
+writers with `cargo run --locked --example capture -- --only-resources --extend-goldens`.
+The existing `harness_codecs` target checks their public decoders, round trips,
+unsupported versions, mandatory portable text, native provenance and snapshot
+source/range/preparation identity. Its genesis envelope comes from a real
+`MemoryStream` commit/read; fuzz mutations replace only the value. These internal
+writer captures do not qualify stream authentication, hosted transport, provider
+cache attribution or physical producer retirement.
+Five additional inputs use serde's positional SnapshotWire fields derived from
+the original writer payloads. Each must pass the production decoder first.
+The oracle builds mutations from the successfully re-encoded snapshot, so all
+accepted field spellings use the writer's canonical object shape. A protective
+writer refusal still leaves source and settled-prefix checks exercised; the
+writer-dependent mutation checks apply only when encoding succeeds.
+
+Run the retained production mutations with
+`python3 mutations/resource-codecs.py`. It first captures and checks the writer
+inputs, then removes each production admission guard while keeping the fuzz
+oracle unchanged. Rejection requires that guard's semantic diagnostic at the
+resource oracle's source location; an unrelated assertion, compiler or tool
+failure does not count.
+Use `--only snapshot-generation` (or another listed guard) to qualify a changed
+oracle without repeating unrelated mutation controls. The pending-generation
+challenge changes only the pending field, reaching `State::restore` through
+`Snapshot::decode` while leaving the earlier epoch parity fence satisfied.
+The two pending-range challenges recompute the content address with the original
+`SummaryKey::digest` writer, so the later identity fence cannot mask an omitted
+range check. They require the original typed range refusal at the covered cursor
+and beyond the source head. The settled-epoch prefix check remains separate;
+pending-state range checks run only through these typed oracles. Select both with
+`--only snapshot-range-start snapshot-range-end`; one original writer replay
+precedes only those two mutations.
+Corpus capture, executed coverage and mutation results must be recorded separately;
+the presence of a target does not establish complete format or state coverage.
+
+The residency harness in `harness-core/src/executor/model_cache.rs` calls the
+production reducer under `cfg(kani)`. It checks every initial access followed by
+every retained access, with independent explicit/managed lifetimes, full-width
+deadline arithmetic, field preservation, source-order and foreign-key/clock
+refusals. This is a two-transition scope from an empty entry, not induction over
+arbitrary histories or arbitrary restored entries. Neither this proof nor the
+codec oracle establishes original provider attribution, funding, physical release
+or whole-system constant cost. Running the codec target does not run Kani.
+
 Agent capture names include the shared record version. Previous captures and
 their provenance stay unchanged; waiting-status and checkpoint seeds retain
 both a retained action binding and an explicit absent binding for external hosts.

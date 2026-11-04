@@ -8,6 +8,7 @@ mod auth_resource;
 pub mod auth_socket;
 pub mod filesystem_pages;
 mod harness_manifest;
+pub mod harness_resources;
 pub mod inference_http;
 pub mod log_frame;
 mod mcp;
@@ -128,6 +129,7 @@ pub fn harness_codecs(bytes: &[u8]) {
     acyclic_harness_core::agent::codec_fuzz::check(bytes);
     acyclic_harness_core::filesystem::execution_codec_fuzz::check(bytes);
     harness_manifest::check(bytes);
+    harness_resources::check(bytes);
     acyclic_harness_core::mcp::http::codec_fuzz::check(bytes);
     acyclic_harness_core::mcp::stdio::codec_fuzz::check(bytes);
     mcp::check(bytes);
