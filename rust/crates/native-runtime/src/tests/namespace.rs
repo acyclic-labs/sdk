@@ -129,6 +129,46 @@ fn no_replace_preserves_both_entries() -> io::Result<()> {
         io::ErrorKind::Other
     );
     assert_eq!(observer.memory.load(Ordering::Acquire), 0);
+    #[cfg(windows)]
+    // Both normalized paths, the rename packet, and the source open precede
+    // the actual rename admission. A refused prefix must not report that write
+    // or its durability attempt, invoke the custody callback, or retain credit.
+    for (allocation_limit, operation_limit, present) in (0..=4)
+        .map(|limit| (limit, u64::MAX, true))
+        .chain((0..=2).map(|limit| (u64::MAX, limit, true)))
+        .chain([(u64::MAX, u64::MAX, false)])
+    {
+        let mut limits = ReadBudgetMeter::new(operation_limit, 0);
+        limits.allocation_limit = allocation_limit;
+        let observer = Arc::new(limits);
+        let meter: Arc<dyn NativeReadMeter> = observer.clone();
+        let missing = directory.path().join("missing");
+        let renamed = std::cell::Cell::new(false);
+        let error = crate::namespace::durable_rename_observed(
+            if present { &source } else { &missing },
+            &destination,
+            RenameMode::Replace,
+            Some(&meter),
+            || renamed.set(true),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            if present {
+                io::ErrorKind::Other
+            } else {
+                io::ErrorKind::NotFound
+            },
+        );
+        assert_eq!(
+            observer.used_operations.load(Ordering::Acquire),
+            u64::from(!present || (operation_limit > 0 && operation_limit < 3))
+        );
+        assert_eq!(observer.memory.load(Ordering::Acquire), 0);
+        assert!(!renamed.get());
+        assert_eq!(std::fs::read(&source)?, b"source");
+        assert_eq!(std::fs::read(&destination)?, b"destination");
+    }
     assert_eq!(std::fs::read(source)?, b"source");
     assert_eq!(std::fs::read(destination)?, b"destination");
     Ok(())

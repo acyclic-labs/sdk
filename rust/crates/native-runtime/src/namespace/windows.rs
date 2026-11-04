@@ -1,5 +1,39 @@
 //! Windows namespace publication and DOS path normalization.
 use super::*;
+use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+use windows_sys::Win32::Storage::FileSystem::{FileRenameInfoEx, SetFileInformationByHandle};
+
+/// Prepared resources precede attempt admission. Field order retires the
+/// packet before its allocation credit, including a refused admission.
+pub(super) struct PreparedRename {
+    handle: OwnedHandle,
+    packet: Vec<usize>,
+    _allocation: Option<ReadAllocation>,
+    length: u32,
+}
+
+impl PreparedRename {
+    #[allow(
+        unsafe_code,
+        reason = "passes a retained write-through handle and aligned rename packet to Win32"
+    )]
+    pub(super) fn rename(self) -> io::Result<()> {
+        // SAFETY: the write-through handle and initialized, aligned packet
+        // remain live through the single atomic rename. No retry or unlink occurs.
+        if unsafe {
+            SetFileInformationByHandle(
+                self.handle.as_raw_handle(),
+                FileRenameInfoEx,
+                self.packet.as_ptr().cast(),
+                self.length,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
 
 /// Replace a name while original readers retain the old file. The source is
 /// opened write-through: NTFS flushes rename metadata as part of that request,
@@ -9,13 +43,12 @@ use super::*;
     unsafe_code,
     reason = "passes held paths and an aligned bounded rename packet to Win32"
 )]
-pub(super) fn rename(
+pub(super) fn prepare_rename(
     from: &[u16],
     to: &[u16],
     mode: RenameMode,
     meter: Option<&Arc<dyn NativeReadMeter>>,
-) -> io::Result<()> {
-    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+) -> io::Result<PreparedRename> {
     use windows_sys::Wdk::Storage::FileSystem::{
         FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS,
     };
@@ -24,8 +57,7 @@ pub(super) fn rename(
         Storage::FileSystem::{
             CreateFileW, DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
             FILE_FLAG_WRITE_THROUGH, FILE_RENAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ,
-            FILE_SHARE_WRITE, FileRenameInfoEx, OPEN_EXISTING, SYNCHRONIZE,
-            SetFileInformationByHandle,
+            FILE_SHARE_WRITE, OPEN_EXISTING, SYNCHRONIZE,
         },
     };
 
@@ -101,20 +133,12 @@ pub(super) fn rename(
     }
     // SAFETY: transfer the successful open to exactly one closing owner.
     let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
-    // SAFETY: the write-through handle and the initialized, aligned packet
-    // remain live through the single atomic rename. No retry or unlink occurs.
-    if unsafe {
-        SetFileInformationByHandle(
-            handle.as_raw_handle(),
-            FileRenameInfoEx,
-            packet.as_ptr().cast(),
-            length,
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+    Ok(PreparedRename {
+        handle,
+        packet,
+        _allocation: allocation,
+        length,
+    })
 }
 
 /// Keep allocation custody for both the encoded input and the normalized
