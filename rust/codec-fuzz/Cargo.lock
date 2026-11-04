@@ -66,6 +66,7 @@ dependencies = [
  "bytes",
  "ed25519-dalek",
  "futures",
+ "http",
  "js-sys",
  "prost",
  "rustls",
