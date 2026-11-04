@@ -33,7 +33,7 @@ pub(super) fn fail_once(name: &str, fault: Fault) {
 }
 
 #[cfg(test)]
-fn check_fault(name: &str, fault: Fault) -> keyring::Result<()> {
+pub(super) fn check_fault(name: &str, fault: Fault) -> keyring::Result<()> {
     let mut faults = faults().lock().unwrap_or_else(|error| error.into_inner());
     if faults.get(name) == Some(&fault) {
         faults.remove(name);
@@ -73,8 +73,6 @@ impl CredentialApi for Credential {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .insert(self.name.clone(), Zeroizing::new(secret.to_vec()));
-        #[cfg(test)]
-        check_fault(&self.name, Fault::WriteAcknowledgement)?;
         Ok(())
     }
 
@@ -84,8 +82,6 @@ impl CredentialApi for Credential {
         }
         let secrets = secrets().lock().unwrap_or_else(|error| error.into_inner());
         let secret = secrets.get(&self.name).ok_or(Error::NoEntry)?;
-        #[cfg(test)]
-        check_fault(&self.name, Fault::StoredRead)?;
         Ok(secret.to_vec())
     }
 

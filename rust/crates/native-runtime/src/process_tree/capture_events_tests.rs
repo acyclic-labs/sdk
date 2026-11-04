@@ -82,7 +82,15 @@ fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_
 -> io::Result<()> {
     use crate::NativeReadMeter as _;
     use std::os::windows::io::AsHandle as _;
-    let mut process = child("metered-write")?;
+    let failure = |step: &str, cause: io::Error| {
+        io::Error::new(
+            cause.kind(),
+            format!(
+                "step=pending-stdin/{step}; cause={cause}; recovery=cargo test --locked -p acyclic-native-runtime --lib pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_poll"
+            ),
+        )
+    };
+    let mut process = child("metered-write").map_err(|cause| failure("spawn", cause))?;
     let bytes = [b'w'; 64 * 1024];
     let meter = crate::tests::ReadBudgetMeter::shared(u64::MAX, bytes.len() as u64);
     let (recorded, completion) = std::sync::mpsc::channel();
@@ -91,19 +99,30 @@ fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_
     // One real unmetered fixture write fills the pipe before the measured
     // write, rather than assuming an empty pipe cannot accept a full chunk.
     let (prefilled, operation) =
-        platform::write_pipe(pipe, &mut process.writer, &bytes, None, None)?;
+        platform::write_pipe(pipe, &mut process.writer, &bytes, None, None)
+            .map_err(|cause| failure("prefill", cause))?;
     operation?;
     assert_eq!(prefilled, Some(bytes.len()));
     process.queue_stdin(bytes.to_vec())?;
     let owner: Arc<dyn crate::NativeReadMeter> = meter.clone();
     assert!(
-        !process.pump_stdin_controlled(Some(&owner))?,
+        !process
+            .pump_stdin_controlled(Some(&owner))
+            .map_err(|cause| failure("submit", cause))?,
         "the child must block on its real stderr pipe"
     );
     // The child's full stderr is an actual ready output source and keeps it
     // from reading stdin. That output must not settle an input-only wait.
-    process.readiness()?.0.block().into_result()?;
-    let input_ready = process.stdin_readiness()?;
+    process
+        .readiness()
+        .map_err(|cause| failure("output-arm", cause))?
+        .0
+        .block()
+        .into_result()
+        .map_err(|cause| failure("output-wait", cause))?;
+    let input_ready = process
+        .stdin_readiness()
+        .map_err(|cause| failure("input-arm", cause))?;
     assert!(
         !input_ready.0.fired(),
         "unread child output cannot report stdin progress"
@@ -122,7 +141,10 @@ fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_
     let mut output = [0; 128 * 1024];
     let mut remaining = output.as_mut_slice();
     while !remaining.is_empty() {
-        match process.read_output_controlled(remaining, None, true)? {
+        match process
+            .read_output_controlled(remaining, None, true)
+            .map_err(|cause| failure("stderr-read", cause))?
+        {
             Some(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
             Some(count) => remaining = &mut remaining[count..],
             None => {
@@ -138,16 +160,24 @@ fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_
                         events::Source::Exit(child.as_handle()),
                     ],
                     None,
-                )?
+                )
+                .map_err(|cause| failure("stderr-arm", cause))?
                 .block()
-                .into_result()?;
+                .into_result()
+                .map_err(|cause| failure("stderr-wait", cause))?;
             }
         }
     }
     assert!(output.iter().all(|byte| *byte == b'x'));
-    input_ready.0.block().into_result()?;
+    input_ready
+        .0
+        .block()
+        .into_result()
+        .map_err(|cause| failure("input-wait", cause))?;
     let result = completion.recv().map_err(io::Error::other);
-    process.terminate(None)?;
+    process
+        .terminate(None)
+        .map_err(|cause| failure("retire", cause))?;
     assert_eq!(result?, (bytes.len() as u64, bytes.len() as u64));
     assert_eq!(meter.used_bytes.load(Ordering::Acquire), bytes.len() as u64);
     assert!(

@@ -274,7 +274,7 @@ async function treeControl(run, host, interruption) {
   const stop = new AbortController(), input = new PassThrough();
   const inputClosed = once(input, 'close');
   const reason = new Error('original caller cancellation');
-  let peer, peerClosed, pending = '', originalHost, spawns = 0;
+  let peer, peerClosed, peerFailure, pending = '', originalHost, spawns = 0;
   // Observe Node's original ChildProcess; no replacement spawn or host is used.
   const spawned = ({process}) => { originalHost = process; spawns++; };
   subscribe('child_process', spawned);
@@ -287,7 +287,8 @@ async function treeControl(run, host, interruption) {
         pending += bytes.toString('utf8');
         if (!pending.endsWith('\n')) return;
         peer = createConnection({host: '127.0.0.1', port: Number(pending.trim())});
-        peerClosed = once(peer, 'close');
+        peer.on('error', error => { peerFailure = error; });
+        peerClosed = new Promise(resolve => peer.once('close', resolve));
         const accepted = peer.iterator({destroyOnReturn: false});
         const first = await accepted.next();
         await accepted.return();
@@ -316,7 +317,9 @@ async function treeControl(run, host, interruption) {
       });
     } else await execute(stop.signal);
   } finally { unsubscribe('child_process', spawned); }
-  await peerClosed; // Native custody, including owner loss, produces this EOF.
+  await peerClosed; // Forced native retirement can produce EOF or a TCP reset.
+  assert.ok(!peerFailure || peerFailure.code === 'ECONNRESET',
+    `original descendant connection failed: ${peerFailure}`);
   assert.ok(peer, 'the descendant must actually have accepted a connection');
   assert.ok(input.destroyed);
   if (interruption !== 'host-loss') {
