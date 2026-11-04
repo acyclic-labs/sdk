@@ -18,6 +18,7 @@ fn local_turn<'a>(
     schedule: &'a acyclic_native_runtime::testing::Schedule,
     first_turn_write: &'a Cell<Option<usize>>,
     dispatch_write: Arc<AtomicUsize>,
+    cut_first_write: bool,
 ) -> EntryFuture<'a, Result<()>> {
     entry(async move {
         let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
@@ -32,7 +33,11 @@ fn local_turn<'a>(
         let config = local_harness_config(directory.join("checkout"), (model, provider))?
             .state_directory(directory.join("state"));
         let harness = Arc::new(entry(LocalHarness::open(config)).await?);
-        first_turn_write.set(Some(schedule.durable_write_count()));
+        first_turn_write.set(Some(if cut_first_write {
+            schedule.cut_next(DurableFault::After)
+        } else {
+            schedule.durable_write_count()
+        }));
         prompt(&harness, "first", "finish this turn", "done").await?;
         Ok(())
     })
@@ -45,43 +50,45 @@ fn crash_reopen(point: Cut) -> Result<()> {
         .map_err(storage)?;
     runtime.block_on(async {
         tokio::time::pause();
-        let baseline_directory = tempfile::tempdir().map_err(storage)?;
-        std::fs::create_dir(baseline_directory.path().join("checkout")).map_err(storage)?;
-        let mut baseline = Driver::new(71, None);
-        let marker = Cell::new(None);
-        let schedule = baseline.schedule.clone();
-        let dispatched = Arc::new(AtomicUsize::new(usize::MAX));
-        match baseline
-            .run(local_turn(
-                baseline_directory.path(),
-                &schedule,
-                &marker,
-                dispatched.clone(),
-            ))
-            .await
-        {
-            Outcome::Completed(result) => result?,
-            Outcome::Crashed(cause) => panic!("uncut local turn crashed: {cause}"),
-        }
-        let start = marker.get().expect("local turn was never admitted");
-        let dispatched = dispatched.load(Ordering::SeqCst);
-        assert_ne!(dispatched, usize::MAX, "provider dispatch was bypassed");
-        let cut = match point {
-            Cut::FirstTurnWrite => start,
-            Cut::DispatchIntent => dispatched
-                .checked_sub(1)
-                .expect("missing durable dispatch intent"),
+        let baseline = match point {
+            Cut::FirstTurnWrite => None,
+            Cut::DispatchIntent => {
+                let directory = tempfile::tempdir().map_err(storage)?;
+                std::fs::create_dir(directory.path().join("checkout")).map_err(storage)?;
+                let mut baseline = Driver::new(71, None);
+                let marker = Cell::new(None);
+                let schedule = baseline.schedule.clone();
+                let dispatched = Arc::new(AtomicUsize::new(usize::MAX));
+                match baseline
+                    .run(local_turn(
+                        directory.path(),
+                        &schedule,
+                        &marker,
+                        dispatched.clone(),
+                        false,
+                    ))
+                    .await
+                {
+                    Outcome::Completed(result) => result?,
+                    Outcome::Crashed(cause) => panic!("uncut local turn crashed: {cause}"),
+                }
+                let start = marker.get().expect("local turn was never admitted");
+                let dispatched = dispatched.load(Ordering::SeqCst);
+                assert_ne!(dispatched, usize::MAX, "provider dispatch was bypassed");
+                let cut = dispatched
+                    .checked_sub(1)
+                    .expect("missing durable dispatch intent");
+                assert!(cut >= start, "cut precedes turn admission");
+                assert!(
+                    schedule.durable_write_count() > cut,
+                    "turn made no durable writes"
+                );
+                Some((start, cut))
+            }
         };
-        assert!(cut >= start, "cut precedes turn admission");
-        assert!(
-            baseline.schedule.durable_write_count() > cut,
-            "turn made no durable writes"
-        );
-        drop(baseline);
-        drop(schedule);
         let directory = tempfile::tempdir().map_err(storage)?;
         std::fs::create_dir(directory.path().join("checkout")).map_err(storage)?;
-        let mut crash = Driver::new(71, Some((cut, DurableFault::After)));
+        let mut crash = Driver::new(71, baseline.map(|(_, cut)| (cut, DurableFault::After)));
         let schedule = crash.schedule.clone();
         let marker = Cell::new(None);
         let Outcome::Crashed(cause) = crash
@@ -90,14 +97,23 @@ fn crash_reopen(point: Cut) -> Result<()> {
                 &schedule,
                 &marker,
                 Arc::new(AtomicUsize::new(usize::MAX)),
+                matches!(point, Cut::FirstTurnWrite),
             ))
             .await
         else {
             panic!("turn escaped its durable write cut");
         };
-        assert_eq!(cause.ordinal, cut);
         assert_eq!(cause.fault, DurableFault::After);
-        assert_eq!(marker.get(), Some(start), "crashed a different operation");
+        if let Some((start, cut)) = baseline {
+            assert_eq!(cause.ordinal, cut);
+            assert_eq!(marker.get(), Some(start), "crashed a different operation");
+        } else {
+            assert_eq!(
+                marker.get(),
+                Some(cause.ordinal),
+                "crashed a different operation"
+            );
+        }
         drop(schedule);
         drop(crash);
         // This epoch derives from the same seed. Its providers, stores, clocks,
@@ -111,6 +127,7 @@ fn crash_reopen(point: Cut) -> Result<()> {
                 &schedule,
                 &marker,
                 Arc::new(AtomicUsize::new(usize::MAX)),
+                false,
             ))
             .await
         {

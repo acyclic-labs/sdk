@@ -109,7 +109,7 @@ fn turns(
     })
 }
 
-/// Observe four settled reply windows and the independent commit. Teardown
+/// Observe open, settled replies, the independent commit and reopen. Teardown
 /// drains every accepted worker outside those windows.
 fn measure(replies: [ScriptedTurn; 6]) -> Result<Windows> {
     let runtime = tokio::runtime::Builder::new_current_thread()
