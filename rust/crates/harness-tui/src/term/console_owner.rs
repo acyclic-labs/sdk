@@ -507,21 +507,22 @@ mod tests {
     }
     struct Cancellation {
         original: Option<thread::ThreadId>,
-        wrong_target: bool,
         started: Option<loom::sync::mpsc::Sender<()>>,
     }
     loom::lazy_static! {
         static ref CANCELLATIONS: Mutex<Cancellation> = Mutex::new(Cancellation {
             original: None,
-            wrong_target: false,
             started: None,
         });
     }
 
     fn record_cancel(worker: &JoinHandle<()>) {
         let mut calls = CANCELLATIONS.lock().unwrap_or_else(|e| panic!("{e}"));
-        let wrong_target = calls.original.as_ref() != Some(&worker.thread().id());
-        calls.wrong_target |= wrong_target;
+        assert_eq!(
+            calls.original.as_ref(),
+            Some(&worker.thread().id()),
+            "cancel reached replacement worker"
+        );
         if let Some(started) = calls.started.take() {
             started.send(()).unwrap_or_else(|e| panic!("{e}"));
         }
@@ -558,7 +559,7 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{e}"))
                 .original = Some(original_id);
             let cancelling_owner = Arc::clone(&owner);
-            let canceller = thread::spawn(move || {
+            thread::spawn(move || {
                 cancelling_owner
                     .quiesce_generation(true, Some(generation))
                     .unwrap_or_else(|e| panic!("{e}"));
@@ -575,21 +576,9 @@ mod tests {
                 Owner::submit(&owner, &mut state, false, |_| Ok(()))
                     .unwrap_or_else(|e| panic!("{e}"));
             }
-            canceller
-                .join()
-                .unwrap_or_else(|e| std::panic::resume_unwind(e));
-            let mut state = owner.state.lock().unwrap_or_else(|e| panic!("{e}"));
-            while !state.acknowledged {
-                state = owner.wake.wait(state).unwrap_or_else(|e| panic!("{e}"));
-            }
-            drop(state);
-            assert!(
-                !CANCELLATIONS
-                    .lock()
-                    .unwrap_or_else(|e| panic!("{e}"))
-                    .wrong_target,
-                "cancel reached replacement worker"
-            );
+            // Loom runs every spawned thread to completion before accepting a
+            // schedule. The callback checks every cancellation at its source;
+            // an observer join and a second acknowledgement wait add no claim.
         });
     }
 
