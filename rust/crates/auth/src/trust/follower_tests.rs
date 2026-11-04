@@ -8,8 +8,8 @@ use futures::FutureExt;
 
 const NOW: u64 = 1_000;
 
-#[path = "../../tests/common/reanchor.rs"]
-mod reanchor_check;
+#[path = "../../tests/common/trust_record.rs"]
+mod trust_record_check;
 
 thread_local! {
     static VERIFYING_KEYRING: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
