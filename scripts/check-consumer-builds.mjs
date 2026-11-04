@@ -2,12 +2,13 @@
 // Code generation is a separate boundary from `cargo check`: async layout
 // queries can overflow only when a downstream executable is monomorphized.
 // One package per invocation keeps unrelated workspace features out of it.
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { selectionWorker, workerEnv } from './check-feature-matrix.mjs';
 import { workspaceDefaults } from './workspace-defaults.mjs';
+import { runCommand } from './run-command.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const libraryKinds = new Set(['lib', 'rlib', 'dylib', 'cdylib', 'staticlib', 'proc-macro']);
@@ -69,15 +70,11 @@ export async function main(args = process.argv.slice(2)) {
       const started = performance.now();
       // Separate Cargo invocations prevent feature unification while
       // retaining compiled dependencies; the library precedes its examples.
-      const child = spawn('cargo', command, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
-      let output = '';
-      child.stdout.on('data', chunk => { output += chunk; });
-      child.stderr.on('data', chunk => { output += chunk; });
-      const status = await new Promise((accept, reject) => child.on('error', reject).on('close', accept));
+      const status = await runCommand('cargo', command, { cwd: root, env });
       if (status === 0) passed++;
       else {
         failures.push(command);
-        process.stderr.write(`FAILED cargo ${command.join(' ')}\n${output}\n`);
+        process.stderr.write(`FAILED cargo ${command.join(' ')}\n`);
       }
       console.log(`consumer build: worker=${index} seconds=${((performance.now() - started) / 1000).toFixed(3)} rc=${status} cargo ${command.join(' ')}`);
     }

@@ -1,10 +1,11 @@
 // Each Cargo invocation selects exactly one workspace member, so another
 // member's features cannot make its tests compile. Each worker owns a stable
 // target directory so Cargo and target-store leases permit actual overlap.
-import { spawn, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { workspaceDefaults } from "./workspace-defaults.mjs";
+import { runCommand } from "./run-command.mjs";
 
 export function workspacePackages(metadata) {
   return workspaceDefaults(metadata).map(pkg => pkg.name);
@@ -31,16 +32,10 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     ["metadata", "--locked", "--no-deps", "--format-version", "1"], { encoding: "utf8" })));
   const target = process.env.CARGO_TARGET_DIR ?? "target";
   const failures = await checkCrateTests(packages, Number(process.argv[2] ?? 2), target, async (args, buildDirectory) => {
-    const child = spawn("cargo", args, {
+    process.stdout.write(`CARGO_BUILD_BUILD_DIR=${buildDirectory}\ncargo ${args.join(" ")}\n`);
+    return runCommand("cargo", args, {
       env: { ...process.env, CARGO_BUILD_BUILD_DIR: buildDirectory },
-      windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
     });
-    let output = "";
-    child.stdout.on("data", chunk => { output += chunk; });
-    child.stderr.on("data", chunk => { output += chunk; });
-    const status = await new Promise((resolve, reject) => child.on("error", reject).on("close", resolve));
-    process.stdout.write(`CARGO_BUILD_BUILD_DIR=${buildDirectory}\ncargo ${args.join(" ")}\n${output}`);
-    return status ?? 1;
   });
   console.log(`Standalone test checks: ${packages.length} crates, ${failures.length} failures`);
   if (failures.length) {

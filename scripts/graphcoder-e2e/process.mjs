@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { close, closeSync, createWriteStream, mkdtempSync, openSync, readFileSync, readSync, write, writev } from "node:fs";
+import { closeSync, createWriteStream, mkdtempSync, openSync, readFileSync, readSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { finished, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
@@ -11,6 +11,7 @@ import { ProcessReport } from "./process-report.mjs";
 import { listenReportPipe } from "./report-pipe.mjs";
 import { Lines } from "./lines.mjs";
 import { decodeCompletion } from "../../typescript/packages/sdk/native/process-completion.mjs";
+import { transcript } from "./transcript.mjs";
 
 export async function schedule(items, platform, execute) {
   if (platform !== "win32") return Promise.all(items.map(execute));
@@ -126,7 +127,14 @@ export class Processes {
       child.kill(scopeKillSignal);
     };
     this.started++;
-    const written = Promise.all([transcript(child.stdout, stdoutFd, observe, "stdout"), transcript(child.stderr, stderrFd, observe, "stderr")]);
+    const writes = [transcript(child.stdout, stdoutFd, observe, "stdout"), transcript(child.stderr, stderrFd, observe, "stderr")];
+    // Stop the original producer on either failed sink, then join BOTH actual
+    // descriptors. Promise.all would lose the other writer's retirement.
+    let writeFailure;
+    for (const writing of writes) writing.catch(error => { writeFailure ??= error; kill(); });
+    const written = Promise.allSettled(writes).then(() => {
+      if (writeFailure) throw writeFailure;
+    });
     // Exit is the owner-death barrier. Close may wait for inherited pipes in
     // surviving descendants, which recovery must be allowed to fence first.
     const exited = new Promise((resolve, reject) => {
@@ -172,14 +180,12 @@ export class Processes {
     });
     // The caller may be waiting for a ready/screen event instead of exit.
     closed.catch(error => { if (scopeCapture) this.#observationFailure ??= error; });
-    if (observe || scopeCapture) {
-      // Retain only active original terminal joins. A child can be physically
-      // reaped while its transcript and final observer are still pending.
-      const joined = Promise.allSettled([written, reaped, closed]);
-      const joins = this.#terminalJoins ??= new Set();
-      joins.add(joined);
-      joined.then(() => joins.delete(joined));
-    }
+    // A reaped child can still own pending transcript handles. Retain only
+    // active original joins, including captures without a progress observer.
+    const joined = Promise.allSettled([written, reaped, closed]);
+    const joins = this.#terminalJoins ??= new Set();
+    joins.add(joined);
+    joined.then(() => joins.delete(joined));
     this.children.set(child, { kill, reaped, report,
       cancel: process.platform === "win32" ? undefined : () => child.kill("SIGTERM") });
     return { child, input, exited, closed, reportReady: report?.ready,
@@ -350,39 +356,6 @@ export function conptyArgs(binary, args) {
   const operation = flags.get("--operation");
   return [binary, workspace, catalog, settings, model, ...(resume ? ["--resume"] : []),
     ...(operation === undefined ? [] : ["--operation", operation])];
-}
-
-// A stream's bytes go straight to its transcript file; nothing is decoded or
-// kept in memory. Resolves once the file holds every byte. On a file failure
-// the source keeps draining so the child is never blocked on a full pipe.
-function transcript(stream, fd, observe, channel) {
-  let first = true;
-  const completed = observe ? callback => (error, count, buffers) => {
-    if (!error && count > 0 && first) { first = false; observe(`${channel}-first-write`); }
-    callback(error, count, buffers);
-  } : undefined;
-  // Observe the SAME file writer's first successful byte transfer. This is
-  // transcript write completion, not the OS pipe-read timestamp. Later writes
-  // use the original callback directly; no reader, payload copy or history.
-  const file = createWriteStream(null, { fd, ...(observe ? { fs: {
-    close,
-    write(fd, buffer, offset, length, position, callback) {
-      return write(fd, buffer, offset, length, position, first ? completed(callback) : callback);
-    },
-    writev(fd, buffers, position, callback) {
-      return writev(fd, buffers, position, first ? completed(callback) : callback);
-    },
-  } } : {}) });
-  stream.pipe(file);
-  if (observe) stream.once("end", () => observe(`${channel}-eof`));
-  // A source destroyed without an end never ends its pipe: end the file so
-  // its finish still arrives.
-  stream.once("close", () => { observe?.(`${channel}-close`); if (!stream.readableEnded) file.end(); });
-  return new Promise((resolve, reject) => {
-    file.once("finish", observe ? () => { observe(`${channel}-finish`); resolve(); } : resolve);
-    file.once("error", error => { stream.unpipe(file); stream.resume(); reject(error); });
-    stream.once("error", reject);
-  });
 }
 
 // A settled process result. Its output is the explicit historical query of
@@ -611,22 +584,53 @@ export class Spool {
     if (this.#state.open) this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   }
-  // Every event so far that `match` accepts, read from the transcript.
-  async history(match = () => true) {
+  // Incrementally read one completed prefix, with at most one chunk ahead of
+  // the current record. Returning closes the original file descriptor.
+  async *records(match = () => true) {
     assert.ok(this.#path, "event history requires a transcript");
     await this.#written;
     if (this.#broken) throw this.#broken;
     // Exactly the completed lines: a later write may already have put part
     // of its line in the file.
-    const bytes = Buffer.alloc(this.#completed), fd = openSync(this.#path, "r");
+    const completed = this.#completed;
+    if (completed === 0) return;
+    let fd;
     try {
-      for (let at = 0; at < bytes.length;) {
-        const read = readSync(fd, bytes, at, bytes.length - at, at);
-        if (read === 0) throw new SpoolEnded("spool", `transcript ${this.#path} ends at byte ${at} of ${bytes.length} written`, { at, completed: bytes.length });
+      fd = openSync(this.#path, "r");
+      const bytes = Buffer.allocUnsafe(Math.min(completed, 64 * 1024));
+      const decoder = new StringDecoder("utf8"), parts = [];
+      for (let at = 0; at < completed;) {
+        if (this.#broken) throw this.#broken;
+        const read = readSync(fd, bytes, 0, Math.min(bytes.length, completed - at), at);
+        if (read === 0) throw new SpoolEnded("spool", `transcript ${this.#path} ends at byte ${at} of ${completed} written`, { at, completed });
         at += read;
+        const text = decoder.write(bytes.subarray(0, read));
+        let start = 0;
+        for (let end = text.indexOf("\n"); end !== -1; end = text.indexOf("\n", start)) {
+          parts.push(text.slice(start, end));
+          const line = parts.join("");
+          parts.length = 0;
+          if (line) {
+            if (this.#broken) throw this.#broken;
+            const event = JSON.parse(line);
+            if (match(event)) yield event;
+          }
+          start = end + 1;
+        }
+        if (start < text.length) parts.push(text.slice(start));
       }
-    } finally { closeSync(fd); }
-    return bytes.toString("utf8").split("\n").filter(Boolean).map(line => JSON.parse(line)).filter(match);
+      if (this.#broken) throw this.#broken;
+      if (parts.length || decoder.end()) throw new SpoolEnded("spool", `transcript ${this.#path} lacks a complete final event`, { completed });
+    } catch (error) {
+      if (error instanceof SpoolEnded) throw error;
+      throw new SpoolEnded("spool", `step=read transcript ${this.#path}; recovery=restore the original transcript and rerun ${JSON.stringify(process.argv)}`, error);
+    } finally { if (fd !== undefined) closeSync(fd); }
+  }
+  // Collect only selected output; scanning and framing share the cursor above.
+  async history(match = () => true) {
+    const result = [];
+    for await (const event of this.records(match)) result.push(event);
+    return result;
   }
 }
 

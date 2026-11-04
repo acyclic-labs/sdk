@@ -1,8 +1,7 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildContractTargets, contractTargetOutputs } from "./contract-targets.mjs";
+import { buildContractTargets, captureContractCommand, contractTargetOutputs } from "./contract-targets.mjs";
 import { workspaceManifests } from "./package-closure.mjs";
 
 // Rust-owned contracts mirrored into TypeScript. Each module lists the Rust
@@ -65,9 +64,7 @@ saveReport();
 try {
   report.phase = "source";
   saveReport();
-  const source = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" });
-  if (source.error || source.status !== 0) throw new Error("cannot identify contract source checkout");
-  report.source_commit = source.stdout.trim();
+  report.source_commit = captureContractCommand(root, "git", ["rev-parse", "HEAD"], "source").trim();
   if (process.env.CI_HEAD_SHA && report.source_commit !== process.env.CI_HEAD_SHA) throw new Error("contract checkout differs from CI_HEAD_SHA");
   report.phase = "imports";
   saveReport();
@@ -77,9 +74,9 @@ try {
   const features = [...new Set(generators.flatMap(generator => generator.rustFeatures ?? []))];
   const executables = targets.length === 0 ? [] : buildContractTargets(root, targets, process.env.ACYCLIC_CARGO_BIN || "cargo", report, saveReport, features);
   const targetIndex = new Map(targets.map((target, index) => [JSON.stringify(target), index]));
-  const rawTargets = new Set(generators.filter(generator => generator.rustPayload === undefined)
-    .flatMap(generator => (generator.rust ?? []).map(target => targetIndex.get(JSON.stringify(target)))));
-  const outputFor = contractTargetOutputs(root, executables, rawTargets);
+  const consumers = generators.flatMap(generator => (generator.rust ?? [])
+    .map(target => [targetIndex.get(JSON.stringify(target)), generator.rustPayload]));
+  const outputFor = contractTargetOutputs(root, executables, consumers);
 
   const stale = [];
   for (const [index, generator] of generators.entries()) {

@@ -24,6 +24,18 @@ describe("Machines simulation", () => {
   });
 
   test("normalizes public identities through the Rust contract", async () => {
+    for (const [kind, value, expected] of [
+      ["machine", "machine-label", "f505efb2-cd64-5ea0-9974-9ba4f3406d41"],
+      ["idempotency", "caller-key", "17349194-b4fc-57e4-8d9b-9b394f7ef694"],
+      ["checkpoint", "checkpoint-label", "35d49ad2-6173-566b-899b-3b9e7ca6dd8f"],
+      ["operation", "operation-label", "e244134d-f2b2-5427-966f-fed03a393176"],
+      ["machine", "00000000-0000-0000-0000-000000000000", "1e2580b5-4e09-54f6-8a53-c545d68d48f0"],
+      ["machine", "λ/東京", "f7b55a84-f196-5927-b8d1-b58c87631e9c"],
+      ["operation", "machine-label", "ce6b2acf-3009-5161-80df-3e82cd99b3ea"],
+      ["machine", "{01020304-0506-4708-890A-0B0C0D0E0F10}", "01020304-0506-4708-890a-0b0c0d0e0f10"],
+    ] as const) {
+      expect(rustNormalizeIdentity(kind, value)).toBe(expected);
+    }
     expect(idempotencyKey("caller-key")).toBe(rustNormalizeIdentity("idempotency", "caller-key"));
     expect(machineId("machine-label")).toBe(rustNormalizeIdentity("machine", "machine-label"));
     expect(checkpointId("checkpoint-label")).toBe(rustNormalizeIdentity("checkpoint", "checkpoint-label"));

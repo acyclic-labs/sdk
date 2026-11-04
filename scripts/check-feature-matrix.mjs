@@ -12,12 +12,12 @@
 // Use --each-feature for isolated feature checks.
 // Every extra worker uses its own target directory, so Cargo's build lock never
 // serializes them; the compiler cache still deduplicates their dependencies.
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { metadata } from "./publish-cargo-crates.mjs";
 import { featureSets, selectCargoFeatures, cargoFeatureArguments } from "./cargo-feature-selection.mjs";
+import { runCommand } from "./run-command.mjs";
 export { enabled, featureSets } from "./cargo-feature-selection.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -91,21 +91,15 @@ async function main() {
     for (const { args: set, selection } of queues[index]) {
       const checkStarted = Date.now();
       let succeeded = true;
-      let rebuilt = 0;
       for (const command of windows ? windowsCommands(selection) : linuxCommands(selection)) {
-        const child = spawn("cargo", command, { cwd: root, env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-        let output = "";
-        child.stdout.on("data", chunk => (output += chunk));
-        child.stderr.on("data", chunk => (output += chunk));
-        const status = await new Promise((done, reject) => child.on("error", reject).on("close", done));
-        rebuilt += [...output.matchAll(/^\s+(?:Checking|Compiling) /gmu)].length;
+        const status = await runCommand("cargo", command, { cwd: root, env });
         if (status !== 0) {
           succeeded = false;
           failures.push(`cargo ${command.join(" ")}`);
-          process.stderr.write(`FAILED cargo ${command.join(" ")}\n${output}\n`);
+          process.stderr.write(`FAILED cargo ${command.join(" ")}\n`);
         }
       }
-      console.log(`feature check: worker=${index} seconds=${((Date.now() - checkStarted) / 1000).toFixed(1)} rebuilt=${rebuilt} manifest=${set[3]} flags=${set.slice(5).join(" ") || "defaults"}`);
+      console.log(`feature check: worker=${index} seconds=${((Date.now() - checkStarted) / 1000).toFixed(1)} manifest=${set[3]} flags=${set.slice(5).join(" ") || "defaults"}`);
       if (succeeded) passed += 1;
     }
   }

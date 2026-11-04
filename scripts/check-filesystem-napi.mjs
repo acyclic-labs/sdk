@@ -2,9 +2,9 @@ import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { createRequire } from "node:module";
-import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { sha256File } from "./file-digest.mjs";
+import { runCommand } from "./run-command.mjs";
 
 const libraryNames = {
   win32: "acyclic_fs_napi.dll",
@@ -45,22 +45,17 @@ const temporary = await mkdtemp(join(tmpdir(), "acyclic-fs-napi-"));
 const bindingPath = join(temporary, `${basename(libraryName)}.node`);
 try {
   await copyFile(source, bindingPath);
-  await /** @type {Promise<void>} */ (new Promise((resolveChild, rejectChild) => {
-    const child = spawn(process.execPath, [fileURLToPath(import.meta.url)], {
-      env: {
-        ...process.env,
-        ACYCLIC_FS_NAPI_CHILD_BINDING: bindingPath,
-        ACYCLIC_FS_NAPI_CHILD_ROOT: join(temporary, "engine"),
-        ACYCLIC_FS_NAPI_CHILD_ADAPTER: adapter ? "1" : "0",
-      },
-      stdio: "inherit",
-    });
-    child.once("error", rejectChild);
-    child.once("exit", (code, signal) => {
-      if (code === 0) resolveChild();
-      else rejectChild(new Error(`N-API child exited with code ${code} and signal ${signal}`));
-    });
-  }));
+  const status = await runCommand(process.execPath, [fileURLToPath(import.meta.url)], {
+    env: {
+      ...process.env,
+      ACYCLIC_FS_NAPI_CHILD_BINDING: bindingPath,
+      ACYCLIC_FS_NAPI_CHILD_ROOT: join(temporary, "engine"),
+      ACYCLIC_FS_NAPI_CHILD_ADAPTER: adapter ? "1" : "0",
+    },
+  });
+  if (status !== 0) throw new Error(
+    `step=qualify N-API child: exited with ${status}; recovery: node scripts/check-filesystem-napi.mjs${adapter ? " --adapter" : ""}`,
+  );
   if (output !== undefined) {
     // Retain the private copy loaded by the successful child, never recopy the build output.
     await mkdir(dirname(output), { recursive: true });

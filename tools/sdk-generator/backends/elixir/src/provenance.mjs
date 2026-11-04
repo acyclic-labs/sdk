@@ -4,16 +4,21 @@ import { gunzipSync } from "node:zlib";
 import { tarEntries } from "../../../../../scripts/archive-utils.mjs";
 import { canonical, inventory, sha256 } from "../../../shared/authority.mjs";
 
+const envelopeFields = new Set(["CHECKSUM", "VERSION", "contents.tar.gz", "metadata.config"]);
+
 export function readDependencies(cache, pins) {
   const admitted = new Map();
   for (const pin of pins.dependencies) {
     if (!/^[a-z_]+$/.test(pin.name) || !/^[0-9.]+$/.test(pin.version) || admitted.has(pin.name)) throw new Error("unsafe or duplicate dependency coordinate");
     const filename = `${pin.name}-${pin.version}.tar`, bytes = readFileSync(join(cache, filename));
     if (bytes.length > 16 * 1024 * 1024 || sha256(bytes) !== pin.archive_sha256) throw new Error("dependency archive differs: " + filename);
-    const outer = tarEntries(bytes), names = outer.map(entry => entry.path).sort();
-    if (JSON.stringify(names) !== JSON.stringify(["CHECKSUM", "VERSION", "contents.tar.gz", "metadata.config"])
-      || outer.some(entry => entry.type !== "0")) throw new Error("Hex envelope differs");
-    const get = name => outer.find(entry => entry.path === name).body;
+    const outer = new Map();
+    for (const entry of tarEntries(bytes)) {
+      if (entry.type !== "0" || !envelopeFields.has(entry.path) || outer.has(entry.path)) throw new Error("Hex envelope differs");
+      outer.set(entry.path, entry.body);
+    }
+    if (outer.size !== envelopeFields.size) throw new Error("Hex envelope differs");
+    const get = name => outer.get(name);
     const expanded = gunzipSync(get("contents.tar.gz"), { maxOutputLength: 32 * 1024 * 1024 });
     const payload = new Map(), folded = new Set();
     for (const entry of tarEntries(expanded)) {

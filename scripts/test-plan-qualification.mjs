@@ -9,6 +9,9 @@ import YAML from "./vendor/yaml.cjs";
 import { compatibilityArtifacts, packagedSourceCopies } from "./generated-bindings.mjs";
 import { languageGeneratorBackends, parseGeneratorBackends } from "./plan-qualification.mjs";
 import { runShellFixture } from "./shell-fixture.mjs";
+import { clippySelections } from "./clippy-feature-sets.mjs";
+import { cargoFeatureArguments } from "./cargo-feature-selection.mjs";
+import { localCargoPackages } from "./publish-cargo-crates.mjs";
 
 const lanes = JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"));
 
@@ -230,22 +233,23 @@ test("clippy refuses invalid worker counts before Cargo can start", () => {
 });
 
 test("four clippy workers retain every feature invocation and fail when any worker fails", async () => {
-  const source = readFileSync("scripts/clippy-feature-sets.mjs", "utf8").replace('import { spawn } from "node:child_process";', "");
+  const script = readFileSync("scripts/clippy-feature-sets.mjs", "utf8");
+  const source = script.slice(script.indexOf("async function main()"), script.lastIndexOf("if (process.argv[1]"));
+  const packages = localCargoPackages();
   const execute = async (workers, failFirst = false) => {
     const calls = [];
     let active = 0, maximum = 0;
     const process = { argv: ["node", "script", String(workers)], env: { CARGO_TARGET_DIR: "target", CARGO_BUILD_JOBS: "4" }, stderr: { write() {} }, exitCode: 0 };
-    const spawn = (command, args, { env }) => {
+    const runCommand = (command, args, { env }) => {
       calls.push({ command, args, target: env.CARGO_TARGET_DIR, jobs: env.CARGO_BUILD_JOBS });
       maximum = Math.max(maximum, ++active);
       const status = failFirst && calls.length === 1 ? 7 : 0;
-      const child = { stdout: { on() {} }, stderr: { on() {} }, on(event, callback) {
-        if (event === "close") queueMicrotask(() => { --active; callback(status); });
-        return child;
-      } };
-      return child;
+      return new Promise(resolve => queueMicrotask(() => { --active; resolve(status); }));
     };
-    await runInNewContext(`(async () => { ${source} })()`, { spawn, process });
+    await runInNewContext(`(async () => { ${source}; await main(); })()`, {
+      runCommand, process, root: resolve("."), clippySelections, cargoFeatureArguments,
+      localCargoPackages: () => packages,
+    });
     return { calls, maximum, exitCode: process.exitCode };
   };
   const serial = await execute(1);
@@ -256,7 +260,7 @@ test("four clippy workers retain every feature invocation and fail when any work
   assert.deepEqual([...new Set(parallel.calls.map(call => call.target))].sort(), ["target", "target-clippy-1", "target-clippy-2", "target-clippy-3"]);
   assert.ok(parallel.calls.every(call => call.command === "cargo" && call.jobs === "4"));
   assert.ok(parallel.calls.some(call => JSON.stringify(call.args) === JSON.stringify([
-    "clippy", "-p", "acyclic-harness", "-p", "acyclic-harness-core", "-p", "acyclic-harness-search", "--features", "filesystem", "--all-targets", "--locked", "--", "-D", "warnings",
+    "clippy", "-p", "acyclic-harness", "-p", "acyclic-harness-core", "-p", "acyclic-harness-search", "--all-targets", "--features", "filesystem", "--locked", "--", "-D", "warnings",
   ])));
   assert.equal(parallel.exitCode, 0);
   const failed = await execute(4, true);

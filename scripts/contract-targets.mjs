@@ -3,6 +3,28 @@ import { join } from "node:path";
 
 const identity = target => JSON.stringify(target);
 
+export function parseContractJson(text, context) {
+  try { return JSON.parse(text); }
+  catch (cause) {
+    throw new Error(`STEP_FAILED ${context}; recovery: bun scripts/generate-contracts.mjs check`, { cause });
+  }
+}
+
+export function captureContractCommand(root, executable, args, phase) {
+  const result = spawnSync(executable, args, {
+    cwd: root, encoding: "utf8", maxBuffer: Infinity, stdio: ["ignore", "pipe", "inherit"],
+  });
+  if (result.error || result.status !== 0) {
+    // Cargo diagnostics and exporter refusals share stdout. Keep the original
+    // completion metadata as well as its text, including signal-only exits.
+    throw Object.assign(new Error(
+      `STEP_FAILED contract-${phase}: ${executable} failed with status ${result.status ?? "unknown"}, signal ${result.signal ?? "none"}${result.error ? `; ${result.error.message}` : ""}; recovery: bun scripts/generate-contracts.mjs check\n${result.stdout ?? ""}`,
+      { cause: result.error },
+    ), { executable, args, status: result.status, signal: result.signal, stdout: result.stdout });
+  }
+  return result.stdout;
+}
+
 // Cargo remains the authority for source, toolchain, lockfile and feature
 // freshness. Never discover or execute a binary by guessing its target path.
 /** @param {{ phase?: string, toolchain_ms?: number, rustc_ms?: number, cargo_version?: string, rustc_version?: string, rustc_error?: string, target_directory?: string, metadata_ms?: number, build_ms?: number, artifacts?: { package_id: string, name: string, kinds: string[], features: string[], fresh: boolean, executable: string | null, requested: boolean }[] }} report */
@@ -12,18 +34,12 @@ export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_
     report.phase = phase;
     saveProgress();
     const started = performance.now();
-    const result = spawnSync(executable, args, {
-      cwd: root, encoding: "utf8", maxBuffer: Infinity, stdio: ["ignore", "pipe", "inherit"],
-    });
-    report[`${phase}_ms`] = performance.now() - started;
-    saveProgress();
-    if (result.error) throw result.error;
-    if (result.status !== 0) {
-      // Cargo's JSON diagnostics are on stdout, so discarding a failed capture
-      // would erase the compiler error while retaining only its exit status.
-      throw new Error(`Rust contract command failed with status ${result.status ?? "unknown"}\n${result.stdout}`);
+    try {
+      return captureContractCommand(root, executable, args, phase);
+    } finally {
+      report[`${phase}_ms`] = performance.now() - started;
+      saveProgress();
     }
-    return result.stdout;
   };
   const manifest = ["--manifest-path", join(root, "Cargo.toml"), "--locked"];
   report.cargo_version = capture("toolchain", ["--version"]).trim();
@@ -35,7 +51,7 @@ export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_
     report.rustc_error = String(error);
     saveProgress();
   }
-  const metadata = JSON.parse(capture("metadata", ["metadata", ...manifest, "--no-deps", "--format-version=1"]));
+  const metadata = parseContractJson(capture("metadata", ["metadata", ...manifest, "--no-deps", "--format-version=1"]), `contract-metadata: malformed output from ${cargo}`);
   const packages = new Map(metadata.packages.map(pkg => [pkg.name, pkg]));
   /** @type {Map<string, string | undefined>} */
   const requested = new Map();
@@ -66,7 +82,7 @@ export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_
   report.phase = "artifact-discovery";
   saveProgress();
   for (const line of output.split(/\r?\n/).filter(line => line.startsWith("{"))) {
-    const message = JSON.parse(line);
+    const message = parseContractJson(line, `contract-artifact: malformed output from ${cargo}`);
     if (message.reason !== "compiler-artifact") continue;
     const selected = message.target.kind.some(kind => requested.has(identity([message.package_id, kind, message.target.name])));
     report.artifacts.push({ package_id: message.package_id, name: message.target.name, kinds: message.target.kind, features: message.features, fresh: message.fresh, executable: message.executable, requested: selected });
@@ -87,28 +103,56 @@ export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_
 }
 
 export function runContractTarget(root, executable) {
-  const result = spawnSync(executable, { cwd: root, encoding: "utf8", maxBuffer: Infinity, stdio: ["ignore", "pipe", "inherit"] });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`Rust contract target ${executable} failed with status ${result.status ?? "unknown"}`);
-  return result.stdout;
+  return captureContractCommand(root, executable, [], "run");
 }
 
-// Slots identify executables admitted by the same Cargo build. Keep exact raw
-// output only for declared raw consumers; bundle consumers share one decode.
-export function contractTargetOutputs(root, executables, rawTargets) {
+// Slots identify executables admitted by the same Cargo build. The selected
+// consumers own output only until its last use; bundle consumers share one decode.
+export function contractTargetOutputs(root, executables, consumers) {
+  const remaining = new Map();
+  for (const [slot, payload] of consumers) {
+    if (!remaining.has(slot)) remaining.set(slot, new Map());
+    const counts = remaining.get(slot);
+    counts.set(payload, (counts.get(payload) ?? 0) + 1);
+  }
   const executed = new Map();
   return (slot, payload) => {
+    const counts = remaining.get(slot);
+    if (!counts?.has(payload)) {
+      throw new Error(`STEP_FAILED contract-consumption: undeclared or exhausted target ${slot}/${payload ?? "raw"}; recovery: bun scripts/generate-contracts.mjs check`);
+    }
     if (!executed.has(slot)) executed.set(slot, { stdout: runContractTarget(root, executables[slot]) });
     const output = executed.get(slot);
-    if (payload === undefined) return output.stdout;
-    if (!Object.hasOwn(output, "payloads")) {
-      try { output.payloads = JSON.parse(output.stdout); }
-      catch { throw new Error(`STEP_FAILED contract-payload: malformed bundle from ${executables[slot]}; recovery: bun scripts/generate-contracts.mjs check`); }
-      if (!rawTargets.has(slot)) delete output.stdout;
+    let value;
+    if (payload === undefined) value = output.stdout;
+    else {
+      if (!Object.hasOwn(output, "payloads")) {
+        output.payloads = parseContractJson(output.stdout, `contract-payload: malformed bundle from ${executables[slot]}`);
+        if (!counts.has(undefined)) delete output.stdout;
+        // No selected renderer owns an unrequested bundle member.
+        if (output.payloads && typeof output.payloads === "object") {
+          for (const key in output.payloads) {
+            if (Object.hasOwn(output.payloads, key) && !counts.has(key)) delete output.payloads[key];
+          }
+        }
+      }
+      if (!output.payloads || !Object.hasOwn(output.payloads, payload) || typeof output.payloads[payload] !== "string") {
+        throw new Error(`STEP_FAILED contract-payload: missing ${payload}; recovery: bun scripts/generate-contracts.mjs check`);
+      }
+      value = output.payloads[payload];
     }
-    if (!output.payloads || !Object.hasOwn(output.payloads, payload) || typeof output.payloads[payload] !== "string") {
-      throw new Error(`STEP_FAILED contract-payload: missing ${payload}; recovery: bun scripts/generate-contracts.mjs check`);
+    const count = counts.get(payload);
+    if (count > 1) counts.set(payload, count - 1);
+    else {
+      counts.delete(payload);
+      if (payload === undefined) {
+        if (Object.hasOwn(output, "payloads")) delete output.stdout;
+      } else delete output.payloads[payload];
     }
-    return output.payloads[payload];
+    if (counts.size === 0) {
+      executed.delete(slot);
+      remaining.delete(slot);
+    }
+    return value;
   };
 }

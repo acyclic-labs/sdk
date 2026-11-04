@@ -6,6 +6,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { gzipSync } from "node:zlib";
+import { tarEntries, tarPayload } from "./archive-utils.mjs";
+import { fuzz as fuzzTar } from "./archive-utils.fuzz.mjs";
+import { verifyArchive as verifyGoArchive } from "../tools/sdk-generator/backends/go/src/qualify.mjs";
+import { readDependencies } from "../tools/sdk-generator/backends/elixir/src/provenance.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const qualification = join(root, "scripts/typescript-qualification.mjs");
@@ -26,6 +31,120 @@ function packageEntries() {
 }
 
 const entries = packageEntries();
+
+test("native tar admission visits one member at a time and rejects late corruption", t => {
+  const work = mkdtempSync(join(tmpdir(), "acyclic-tar-cursor-"));
+  try {
+    const source = join(work, "source"), archive = join(work, "original.tar");
+    mkdirSync(source);
+    const names = Array.from({ length: 128 }, (_, index) => `member-${index}`);
+    for (const name of names) writeFileSync(join(source, name), `original ${name}`);
+    // Capture the platform's actual tar output; no hand-written archive fixture.
+    const packed = spawnSync("tar", ["--format=ustar", "-cf", "original.tar", "-C", "source", ...names], { cwd: work, encoding: "utf8" });
+    assert.equal(packed.status, 0, `step=capture tar fixture; recovery=cd ${JSON.stringify(work)} && tar --format=ustar -cf original.tar -C source ${names.join(" ")}; ${packed.stderr}`);
+    const bytes = readFileSync(archive), subarray = bytes.subarray.bind(bytes);
+    let headers = 0;
+    bytes.subarray = (start, end) => {
+      if (end - start === 512) headers++;
+      return subarray(start, end);
+    };
+    const onlyCurrent = () => assert.equal(headers, 1, "reading one member must not visit later headers");
+    for (const entry of tarEntries(bytes)) {
+      assert.equal(entry.path, names[0]);
+      assert.equal(entry.body.toString(), `original ${names[0]}`);
+      onlyCurrent();
+      break;
+    }
+    headers = 0;
+    // Restoring aggregate entry materialization visits every later header
+    // before its first consumer, independently of the returned collection type.
+    const aggregate = [...tarEntries(bytes)];
+    assert.throws(onlyCurrent, /must not visit later headers/);
+    assert.deepEqual(aggregate.map(entry => entry.path), names);
+    assert.equal(headers, names.length + 1);
+    const expectedNames = new Set(names);
+    const payload = tarPayload(bytes, name => expectedNames.has(name));
+    assert.deepEqual([...payload.keys()], names);
+    for (const name of names) assert.equal(payload.get(name).toString(), `original ${name}`);
+
+    // Both mutations are made to the captured original bytes. Neither can
+    // return a partially admitted payload despite all earlier valid members.
+    const corrupt = Buffer.from(bytes);
+    corrupt[(names.length - 1) * 1024] ^= 1;
+    assert.throws(() => tarPayload(corrupt, () => true), /checksum mismatch/);
+    const trailer = Buffer.from(bytes);
+    trailer[trailer.length - 1] = 1;
+    assert.throws(() => tarPayload(trailer, () => true), /invalid end marker/);
+    assert.throws(() => tarPayload(bytes.subarray(0, names.length * 1024), () => true), /lacks an end marker/);
+    // Keep the byte target on the exact native producer capture. Exercise each
+    // header field, body boundary and end marker, rather than a second parser.
+    assert.equal(fuzzTar(bytes), true);
+    for (const start of [0, (names.length - 1) * 1024]) {
+      for (const field of [0, 99, 100, 124, 135, 148, 155, 156, 257, 345, 499, 511, 512, 513, 1023]) {
+        const mutation = Buffer.from(bytes);
+        mutation[start + field] ^= 255;
+        fuzzTar(mutation);
+        fuzzTar(bytes.subarray(0, start + field));
+      }
+    }
+    assert.equal(fuzzTar(trailer), false);
+    assert.equal(fuzzTar(bytes.subarray(0, names.length * 1024)), false);
+    t.diagnostic(JSON.stringify({ members: names.length, first_member_headers: 1, aggregate_headers: names.length + 1 }));
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});
+
+test("native tar consumers retain admitted Go files and select the exact Hex envelope", () => {
+  const work = mkdtempSync(join(tmpdir(), "acyclic-tar-consumers-"));
+  try {
+    const source = join(work, "source"), envelope = join(work, "envelope");
+    mkdirSync(source); mkdirSync(envelope);
+    const files = new Map([["go.mod", Buffer.from("module example.test/control\n")], ["source.txt", Buffer.from("λ終\n")]]);
+    const digest = bytes => createHash("sha256").update(bytes).digest("hex");
+    for (const [name, bytes] of files) writeFileSync(join(source, name), bytes);
+    const capture = (output, directory, names) => {
+      // The platform tar produces both original archives. These bytes qualify
+      // archive admission, not a Go compiler or an installed Hex package.
+      const args = ["--format=ustar", "-cf", output, "-C", directory, ...names];
+      const result = spawnSync("tar", args, { cwd: work, encoding: "utf8" });
+      assert.equal(result.status, 0, `step=capture consumer archive; recovery=tar ${args.join(" ")}; ${result.stderr}`);
+      return readFileSync(join(work, output));
+    };
+    const inner = capture("source.tar", "source", [...files.keys()]);
+    const packagePath = join(work, "package.tar.gz");
+    const receipt = { outputs: [...files.keys()], output_sha256: Object.fromEntries([...files].map(([name, bytes]) => [name, digest(bytes)])) };
+    const admitGo = bytes => {
+      const compressed = gzipSync(bytes);
+      writeFileSync(packagePath, compressed);
+      return verifyGoArchive(packagePath, digest(compressed), receipt);
+    };
+    // Iterating after verification must still yield every original file.
+    assert.deepEqual(new Map([...admitGo(inner)].map(entry => [entry.path, entry.body])), files);
+
+    const outerFiles = new Map([
+      ["CHECKSUM", Buffer.from(digest(inner))], ["VERSION", Buffer.from("3")],
+      ["contents.tar.gz", gzipSync(inner)], ["metadata.config", Buffer.from("archive admission control")],
+    ]);
+    for (const [name, bytes] of outerFiles) writeFileSync(join(envelope, name), bytes);
+    const outer = capture("control-1.0.0.tar", "envelope", [...outerFiles.keys()]);
+    const pins = { dependencies: [{ name: "control", version: "1.0.0", archive_sha256: digest(outer) }] };
+    const selected = readDependencies(work, pins).get("control");
+    assert.deepEqual(selected.payload, files);
+    assert.deepEqual(selected.metadata, outerFiles.get("metadata.config"));
+    assert.equal(selected.innerChecksum, digest(inner));
+
+    // A valid earlier member cannot hide a corrupt final header or trailer.
+    const corrupt = Buffer.from(inner); corrupt[1024] ^= 1;
+    assert.throws(() => admitGo(corrupt), /checksum mismatch/);
+    const trailer = Buffer.from(outer); trailer[trailer.length - 1] = 1;
+    writeFileSync(join(work, "control-1.0.0.tar"), trailer);
+    pins.dependencies[0].archive_sha256 = digest(trailer);
+    assert.throws(() => readDependencies(work, pins), /invalid end marker/);
+    // Duplicate envelope fields from the real producer remain a refusal.
+    const duplicate = capture("control-1.0.0.tar", "envelope", [...outerFiles.keys(), "VERSION"]);
+    pins.dependencies[0].archive_sha256 = digest(duplicate);
+    assert.throws(() => readDependencies(work, pins), /Hex envelope differs/);
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});
 
 for (const command of ["create", "verify"]) {
   test(`${command} rejects an oversized receipt before inspecting archives or source`, () => {

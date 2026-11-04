@@ -3,9 +3,7 @@
 #![cfg(target_arch = "wasm32")]
 
 use acyclic_machines::{MAX_PAGE_SIZE, SimulatedMachines};
-use sha2::{Digest as _, Sha256};
 use tsify::Tsify;
-use uuid::Uuid;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
@@ -27,32 +25,9 @@ pub(crate) fn js_error(code: &str, message: impl AsRef<str>) -> JsValue {
 /// Normalize a caller identity to a retained UUID or a deterministic UUIDv5-like value.
 /// Valid non-nil UUID strings are preserved byte-for-byte in canonical form.
 #[wasm_bindgen]
-#[allow(
-    clippy::needless_pass_by_value,
-    clippy::indexing_slicing,
-    reason = "wasm-bindgen exports owned JavaScript strings and SHA-256 output is fixed-width"
-)]
-pub fn normalize_identity(kind: String, value: String) -> Result<String, JsValue> {
-    if let Ok(parsed) = Uuid::parse_str(&value)
-        && !parsed.is_nil()
-    {
-        return Ok(parsed.to_string());
-    }
-    if value.is_empty() {
-        return Err(js_error("invalid", "identity value is required"));
-    }
-    let mut digest = Sha256::new();
-    digest.update(b"acyclic-machines-identity-v1\0");
-    digest.update(kind.as_bytes());
-    digest.update([0]);
-    digest.update(value.as_bytes());
-    let digest = digest.finalize();
-    let mut bytes = [0_u8; 16];
-    // SHA-256 always produces 32 bytes; the first half is the UUID material.
-    bytes.copy_from_slice(&digest[..16]);
-    bytes[6] = (bytes[6] & 0x0f) | 0x50;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    Ok(Uuid::from_bytes(bytes).to_string())
+pub fn normalize_identity(kind: &str, value: &str) -> Result<String, JsValue> {
+    acyclic_machines::normalize_identity(kind, value)
+        .map_err(|_| js_error("invalid", "identity value is required"))
 }
 
 /// Validates the canonical Machines page-size policy before any provider is
