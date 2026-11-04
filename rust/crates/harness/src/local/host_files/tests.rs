@@ -1462,7 +1462,7 @@ fn request_observation_failure_preserves_accepted_work_until_real_withdrawal() -
             served.answer(&held, operation, Ok(serde_json::json!({"original": true})))?;
         }
         let answer = (phase == 2)
-            .then(|| regular_bytes(&reply_path(&status, operation)))
+            .then(|| regular_bytes(&reply_path(&status, operation), u64::MAX))
             .transpose()?;
         // A successful observation cannot retire accepted work.
         served.touch(&requests, session, touched())?;
@@ -1505,7 +1505,10 @@ fn request_observation_failure_preserves_accepted_work_until_real_withdrawal() -
         );
         assert_eq!(served.rescans, 0);
         if let Some(answer) = answer {
-            assert_eq!(regular_bytes(&reply_path(&status, operation))?, answer);
+            assert_eq!(
+                regular_bytes(&reply_path(&status, operation), u64::MAX)?,
+                answer
+            );
         }
         // Recovery observes the same input; only its actual removal withdraws.
         #[cfg(unix)]
