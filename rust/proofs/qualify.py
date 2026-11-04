@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qualify a production ownership/event oracle and its retained mutation."""
+"""Qualify a production oracle and its retained mutation."""
 import argparse
 import os
 from pathlib import Path
@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind"])
 claim = parser.parse_args().claim
 if claim == "retained-credit":
     source = "rust/crates/filesystem/src/kernel/allocation.rs"
@@ -22,12 +22,18 @@ if claim == "retained-credit":
     test = "kernel::allocation::retained::tests::retained_credit_conserves_full_width_ownership_transitions"
     diagnostic = "scratch retirement accepted retained credit"
     features = []
-else:
+elif claim == "settlement-terminal":
     source = "rust/crates/harness/src/local/tests/agents.rs"
     crate = "acyclic-harness"
     test = "local::tests::agents::lost_model_producer_closes_local_session_without_settling_input"
     diagnostic = "settlement bypassed the original runtime terminal event"
     features = ["--features", "filesystem-local,native-execution,test-support,grpc,search-http"]
+else:
+    source = "rust/crates/stream/src/session/client/admissions.rs"
+    crate = "acyclic-stream"
+    test = "session::client::admissions::tests::home_rebinding_preserves_pending_memberships_without_allocating"
+    diagnostic = "home rebinding allocated per pending membership"
+    features = ["--no-default-features", "--features", "session"]
 SOURCE = ROOT / source
 COMMAND = ["cargo", "test", "--locked", "-p", crate, *features, "--lib", test,
            "--", "--exact", "--nocapture"]
@@ -62,10 +68,10 @@ def main():
             "check mutation anchors")
     try:
         require(subprocess.run(["git", "apply", patch], cwd=ROOT).returncode == 0,
-                "apply original ownership/event mutation")
+                "apply production mutation")
         code, output = run("mutated")
         require(code == 101 and diagnostic in output and "0 passed; 1 failed" in output,
-                "unchanged oracle rejects ownership/event loss")
+                "unchanged oracle rejects production mutation")
     finally:
         SOURCE.write_bytes(original)
     require(SOURCE.read_bytes() == original, "restore exact original source")
