@@ -613,6 +613,52 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
             }
         }
     }
+    // The real provider still has both durable identities in its index, but
+    // its original pinned log can no longer supply their bytes. A private
+    // member must not make that completed failure wait on its spill lease.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(directory.path().join("objects").join("log"))?
+        .set_len(0)?;
+    for native in [false, true] {
+        for stored in [false, true] {
+            let original = NativeMaterializationWork::new(native_read_budget(), &token)
+                .map_err(|(error, _)| error)?;
+            let baseline = original.live_allocation_bytes();
+            let mut work = if native {
+                AuthorityWork::native(&original, &token)
+            } else {
+                AuthorityWork::new(native_read_budget(), &token)
+            };
+            let spill_file = store.spill_io.write().await;
+            assert!(matches!(store.lookup(first), Lookup::Spilled { .. }));
+            let failed_requests = [
+                durable_requests[0],
+                ObjectReadRequest {
+                    object_id: first,
+                    maximum_bytes: first_bytes.len() as u64,
+                },
+                durable_requests[1],
+            ];
+            let result = if stored {
+                store.read_many_stored(&failed_requests, &mut work).await
+            } else {
+                store.read_many(&failed_requests, &mut work).await
+            };
+            let Err(ObjectStoreError::LogicalObjects(error)) = result else {
+                panic!("the original durable read must report its unavailable log");
+            };
+            assert_eq!(error.code, acyclic_objects::wire::ErrorCode::Unavailable);
+            assert_eq!(work.spent().object_probes, 2);
+            assert_eq!(work.spent().object_bytes_read, 0);
+            assert_eq!(work.spent().bytes_hashed, 0);
+            assert_eq!(work.spent().items_returned, 0);
+            drop(error);
+            assert_eq!(work.allocations.live_bytes(), 0);
+            assert_eq!(original.live_allocation_bytes(), baseline);
+            drop(spill_file);
+        }
+    }
     let work =
         NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
     let requests = [
