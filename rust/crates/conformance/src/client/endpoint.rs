@@ -200,7 +200,21 @@ pub async fn verify_with_reply_wait(
     }
     let answer = wait_reply(&session, &controls, &agent, &scenario.id, inbox, waiting).await?;
     let Reply::Answered { entry, .. } = answer else {
-        return Err(failure("model_turn", "accepted prompt was dropped"));
+        let AgentReply::Settlement { phase, .. } = execute(
+            &controls,
+            &AgentCommand::Settlement {
+                agent: agent.clone(),
+            },
+        )
+        .await
+        .map_err(|error| exchange_failure("model_turn", error))?
+        else {
+            return Err(failure("model_turn", "missing committed settlement phase"));
+        };
+        return Err(failure(
+            "model_turn",
+            format!("accepted prompt was dropped: {phase:?}"),
+        ));
     };
     let descriptor = entry.output.descriptor().clone();
     let target = ReadTarget::File { file: entry.output };
