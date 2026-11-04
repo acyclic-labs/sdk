@@ -803,12 +803,28 @@ the respective production identity checks; the unchanged property must reject
 each omission. This qualifies request identity, not all range, content,
 transport or topology branches.
 
-The Objects-only export refreshes the first eight bytes that select a generated
+The Objects-only and Actors-only exports refresh the first eight bytes that select a generated
 test decoder when earlier schema entries move. The original protobuf or JSON
 payload after that selector must stay unchanged, as must unrelated corpus rows
 and producer provenance. The exporter uses the same pair writer, admission and
 golden comparison as other protobuf captures; consecutive exports must keep
 both indexes and selected packets byte-identical.
+
+The Actors attribution corpus comes from `ServiceError` and the canonical
+`acyclic_actors::grpc::error_status` writer. Capture it with:
+
+```sh
+cargo run --locked --manifest-path rust/codec-fuzz/Cargo.toml -p acyclic-codec-fuzz --example capture -- --only-actors-protobuf --extend-goldens
+```
+
+The shared protobuf and protobuf JSON oracles enter the owned client status
+conversion, retain malformed and unknown detail bytes, and compare canonical
+Cause values and all three original attribution string pointers. The retained
+`actors_cause_metadata.patch` and `actors_cause_copy.patch` production mutations
+must respectively fail the same property at `original Actors cause` and
+`original Actors attribution backing`. Restore production before admitting the
+positive writer. Source-generated writer packets do not represent a deployed
+service capture.
 
 The Objects controls below extend the same semantic writer property or persisted
 writer property. Each uses the production entry point and independently held
