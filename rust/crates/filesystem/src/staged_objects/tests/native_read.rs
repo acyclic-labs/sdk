@@ -437,7 +437,7 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
                     let closure = [draining];
                     let mut publication =
                         AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &token);
-                    store
+                    let hold = store
                         .flush_before_publish(
                             PublicationScope {
                                 objects: &closure,
@@ -447,6 +447,7 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
                         )
                         .await?;
                     assert!(matches!(store.lookup(draining), Lookup::Absent));
+                    drop(hold);
                 }
                 for boundary in held {
                     boundary.release();
