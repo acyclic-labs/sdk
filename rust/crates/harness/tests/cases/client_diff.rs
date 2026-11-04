@@ -621,7 +621,7 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
         &mut None,
     )?;
     let scope = fixture
-        .issuer
+        ._issuer
         .bootstrap_scope(
             "reader",
             &Capabilities::new([other.capability(VolumeOperation::Read, &mut None)?]),
