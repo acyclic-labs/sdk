@@ -223,8 +223,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let (path_allocation, admitted) = accounting.record_actual_owned(path_bytes)?;
             let paths = Owned::new(paths, path_allocation, path_bytes);
             admitted?;
-            let destination_id =
-                self.workspace_id_for_name(&destination, accounting, cancellation)?;
+            let destination_id = self.workspace_id_for_name(&destination, accounting)?;
             let volume_id = destination_id.volume_id();
             let config = source.workspace.volume.config;
             let (fork_root, source_root, pending, filtered) = self

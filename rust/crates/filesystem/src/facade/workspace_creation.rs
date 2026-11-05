@@ -60,7 +60,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let mut accounting = budget.accounting(cancellation);
         let result = async {
             let config = initialization.config;
-            let (name, id) = self.workspace_name(name.as_ref(), &mut accounting, cancellation)?;
+            let (name, id) = self.workspace_name(name.as_ref(), &mut accounting)?;
             validate_volume_capabilities(config, self.inner.capabilities)?;
             let observed = self
                 .read_creation(id.volume_id(), &mut accounting, cancellation)
@@ -184,7 +184,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> W::Output<Option<crate::Generation<A, O>>, WorkspaceError> {
         let mut accounting = budget.accounting(cancellation);
         let result = async {
-            let (name, id) = self.workspace_name(name.as_ref(), &mut accounting, cancellation)?;
+            let (name, id) = self.workspace_name(name.as_ref(), &mut accounting)?;
             let (creation, operation) = match self
                 .read_creation(id.volume_id(), &mut accounting, cancellation)
                 .await
@@ -242,7 +242,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> MeasuredResult<OperationReceipt<crate::Workspace<A, O>>, WorkspaceError> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         let result = async {
-            let (name, id) = self.workspace_name(name.as_ref(), &mut accounting, cancellation)?;
+            let (name, id) = self.workspace_name(name.as_ref(), &mut accounting)?;
             let (volume, _) = self
                 .create_volume_operation::<FsError, ()>(
                     id.volume_id(),
@@ -282,7 +282,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> W::Output<crate::Workspace<A, O>, WorkspaceError> {
         let mut accounting = budget.accounting(cancellation);
         let result = (async {
-            let (name, id) = self.workspace_name(name.as_ref(), &mut accounting, cancellation)?;
+            let (name, id) = self.workspace_name(name.as_ref(), &mut accounting)?;
             let (creation, _) = self
                 .read_creation(id.volume_id(), &mut accounting, cancellation)
                 .await
