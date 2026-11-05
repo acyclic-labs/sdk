@@ -28,7 +28,10 @@ export function checkCopies(guide, llms) {
   }
 }
 
-function checkReadmes() {
+// The sources check reads only checked-in files, so it runs on any source tree (the merge gate's policy step).
+// Compiling the examples resolves package sources that import generated modules, so only a caller that has run
+// `bun run generate` asks for it (`check:docs`, which `check` runs after generating).
+function checkSources() {
   const read = file => readFileSync(resolve(root, file), "utf8");
   for (const [file, { source, generated }] of generatedReadmes(read)) {
     if (source !== generated) throw new Error(`STEP_FAILED README drift: ${file}; recovery: node scripts/generate-sdk-readmes.mjs write`);
@@ -36,6 +39,10 @@ function checkReadmes() {
   const guide = examples(read("typescript/packages/sdk/README.md"), "ts");
   checkCopies(guide, examples(read("llms.txt"), "ts"));
   examples(read("rust/README.md"), "rust,no_run");
+  return guide;
+}
+
+function compileExamples(guide) {
   const directory = resolve(root, ".tools/sdk-readme-examples");
   mkdirSync(directory, { recursive: true });
   for (const [name, code] of guide) writeFileSync(resolve(directory, `${name}.mts`), code);
@@ -64,4 +71,10 @@ function checkReadmes() {
   console.log(`${services.length} TypeScript README/llms.txt examples compiled; ${services.length} generated Rust doctests inventoried`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) checkReadmes();
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  const mode = process.argv.slice(2);
+  if (mode.length > 1 || (mode.length === 1 && mode[0] !== "compile")) throw new Error("usage: check-sdk-readmes.mjs [compile]");
+  const guide = checkSources();
+  if (mode[0] === "compile") compileExamples(guide);
+  else console.log(`${services.length} README/llms.txt examples match their sources; compile with: node scripts/check-sdk-readmes.mjs compile`);
+}
