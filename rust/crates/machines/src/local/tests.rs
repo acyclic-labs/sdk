@@ -169,16 +169,10 @@ async fn local_machine_spawns_public_command_once_and_returns_original_custody()
         failure.classification(),
         &ProviderError::CommandIndeterminate(machine)
     );
-    assert!(
-        std::error::Error::source(&failure).is_some(),
-        "native owner loss erased its original source: {failure}"
-    );
-    assert!(
-        failure
-            .to_string()
-            .contains("injected native capture owner loss"),
-        "native owner loss erased its original panic diagnostic: {failure}"
-    );
+    let original = std::error::Error::source(&failure)
+        .and_then(|cause| cause.downcast_ref::<io::Error>())
+        .expect("native owner loss erased its original launch error");
+    assert_eq!(original.kind(), io::ErrorKind::BrokenPipe);
     assert!(
         matches!(lost.finish().await, Err(ProviderError::CommandIndeterminate(id)) if id == machine)
     );
