@@ -2,14 +2,14 @@ use super::*;
 
 pub(crate) const SOURCE: &str = "key-seek/source";
 
-pub(crate) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), StreamError> {
+pub(crate) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), Failure> {
     verify_with(provider, async |request| provider.read(request).await).await
 }
 
 pub(crate) async fn verify_with<P: StreamProvider + ?Sized>(
     provider: &P,
     mut read_records: impl AsyncFnMut(ReadRequest) -> Result<crate::RecordStream, StreamError>,
-) -> Result<(), StreamError> {
+) -> Result<(), Failure> {
     let source = path(SOURCE)?;
     let record =
         |key: &'static [u8], value: &'static [u8]| -> Result<crate::AppendRecord, StreamError> {
@@ -49,16 +49,8 @@ pub(crate) async fn verify_with<P: StreamProvider + ?Sized>(
             records: vec![record(b"a", b"later")?],
         })
         .await?;
-    let first = pinned
-        .next()
-        .await
-        .transpose()?
-        .ok_or(StreamError::Unavailable)?;
-    let second = pinned
-        .next()
-        .await
-        .transpose()?
-        .ok_or(StreamError::Unavailable)?;
+    let first = pinned.next().await.transpose()?.ok_or(violated!())?;
+    let second = pinned.next().await.transpose()?.ok_or(violated!())?;
     if first.sequence != 0
         || second.sequence != 2
         || second.value.as_ref() != b"opaque\0\xff"
@@ -74,14 +66,14 @@ pub(crate) async fn verify_with<P: StreamProvider + ?Sized>(
             .await
             .is_some()
     {
-        return Err(StreamError::Unavailable);
+        return Err(violated!());
     }
     let resumed: Vec<_> = read_records(read(b"a", 3, 4, 1))
         .await?
         .try_collect()
         .await?;
     if resumed.len() != 1 || resumed[0].sequence != 3 {
-        return Err(StreamError::Unavailable);
+        return Err(violated!());
     }
     Ok(())
 }
