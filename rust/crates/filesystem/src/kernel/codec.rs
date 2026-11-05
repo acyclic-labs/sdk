@@ -279,10 +279,6 @@ impl<E: From<CanonicalDecodeError>, O: FnMut(ReadAllocationStep) -> Result<(), E
 }
 
 impl<'a> Decoder<'a> {
-    pub(crate) fn remaining_bytes(&self) -> usize {
-        self.bytes.len() - self.cursor
-    }
-
     pub(crate) fn new<E: From<CanonicalDecodeError>>(
         bytes: &'a [u8],
         domain: &[u8],
