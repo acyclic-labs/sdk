@@ -1,7 +1,7 @@
 diff --git a/rust/crates/harness/src/local/tests/agents.rs b/rust/crates/harness/src/local/tests/agents.rs
 --- a/rust/crates/harness/src/local/tests/agents.rs
 +++ b/rust/crates/harness/src/local/tests/agents.rs
-@@ -253,11 +253,5 @@ pub(super) async fn settled(harness: &Arc<LocalHarness>, root: &AgentPath) -> Result
+@@ -253,10 +253,4 @@ pub(super) async fn settled(harness: &Arc<LocalHarness>, root: &AgentPath) -> Result
      };
 -    tokio::select! {
 -        biased;
@@ -14,4 +14,3 @@ diff --git a/rust/crates/harness/src/local/tests/agents.rs b/rust/crates/harness
 +    drop(completion);
 +    observation.await
  }
- 

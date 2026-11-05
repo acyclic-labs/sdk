@@ -1,9 +1,7 @@
 diff --git a/rust/crates/filesystem/src/kernel/allocation.rs b/rust/crates/filesystem/src/kernel/allocation.rs
 --- a/rust/crates/filesystem/src/kernel/allocation.rs
 +++ b/rust/crates/filesystem/src/kernel/allocation.rs
-@@ -63,14 +63,6 @@ impl SharedAllocationBytes {
-     }
- 
+@@ -65,12 +65,4 @@ impl SharedAllocationBytes {
      fn release_scratch_bytes(&mut self, bytes: u64) -> Result<(), AllocationError> {
 -        if self
 -            .allocations

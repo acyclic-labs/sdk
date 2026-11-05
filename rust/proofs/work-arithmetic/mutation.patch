@@ -1,7 +1,7 @@
 diff --git a/rust/crates/filesystem/src/performance.rs b/rust/crates/filesystem/src/performance.rs
 --- a/rust/crates/filesystem/src/performance.rs
 +++ b/rust/crates/filesystem/src/performance.rs
-@@ -346,9 +346,9 @@ impl WorkCounters {
+@@ -346,8 +346,8 @@ impl WorkCounters {
              };
          }
          let combined = additive_counters!(sum);
@@ -11,4 +11,3 @@ diff --git a/rust/crates/filesystem/src/performance.rs b/rust/crates/filesystem/
          }
          Ok(combined)
      }
- 
