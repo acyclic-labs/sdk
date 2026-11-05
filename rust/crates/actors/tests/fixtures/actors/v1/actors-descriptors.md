@@ -139,3 +139,10 @@ cargo run --locked -p sdk-proto-codegen -- canonicalize actors target/actor-opti
 The Rust output was copied to both Rust descriptor paths; the independently
 generated Buf output was copied to its own fixture. Manifest digests were
 recorded by `node scripts/check-compatibility-digests.mjs write`.
+
+The 2026-11-05 capture at source `c2f6bfd053a3` composes the optional Actor
+limits with the current imported authorization contracts. The Actors family
+of `scripts/capture-descriptors.mjs` invokes the same pinned Rust compiler,
+independent Buf build and canonicalizer shown above. Its actual Rust output
+was retained at both Rust descriptor paths, and the independent Buf output
+at its own fixture. The shared digest writer records their current hashes.
