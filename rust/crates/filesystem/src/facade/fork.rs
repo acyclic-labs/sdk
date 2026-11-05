@@ -190,108 +190,86 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         ))
     }
     /// Forks one immutable generation under its publication guard and work context.
-    pub(crate) async fn fork_workspace<W, G, E>(
+    pub(crate) async fn fork_workspace<G, E>(
         &self,
         destination: crate::WorkspaceName,
         source: &crate::Generation<A, O>,
         idempotency_key: crate::IdempotencyKey,
-        paths: Option<Vec<String>>,
+        paths: Owned<Option<Vec<String>>>,
         permit: PublicationPermit,
-        budget: W,
-        cancellation: &CancellationToken,
+        accounting: &mut KernelAccounting<'_>,
         guard: Option<&mut G>,
-    ) -> W::Output<crate::Workspace<A, O>, E>
+    ) -> Result<crate::Workspace<A, O>, E>
     where
-        W: FsWork,
         G: crate::AuthorityGuard,
         G::Error: Into<E>,
         E: From<FsError> + From<WorkspaceError> + Send,
     {
-        let mut accounting = budget.accounting(cancellation);
-        let result = async {
-            let accounting = &mut accounting;
-            let name_bytes = if readonly_standalone_live(accounting).is_some() {
-                destination.retained_bytes()
-            } else {
-                0
-            };
-            let (_name_allocation, admitted) = accounting.record_actual_owned(name_bytes)?;
-            admitted?;
-            let path_bytes = paths.as_ref().map_or(Ok(0), |paths| {
-                crate::workspace::workspace_owned_strings_bytes(paths)
-            })?;
-            let (path_allocation, admitted) = accounting.record_actual_owned(path_bytes)?;
-            let paths = Owned::new(paths, path_allocation, path_bytes);
-            admitted?;
-            let destination_id = self.workspace_id_for_name(&destination, accounting)?;
-            let volume_id = destination_id.volume_id();
-            let config = source.workspace.volume.config;
-            let (fork_root, source_root, pending, filtered) = self
-                .materialize_forked_generation_root(
-                    source,
-                    destination_id,
-                    paths,
+        let cancellation = accounting.cancellation();
+        let destination_id = self.workspace_id_for_name(&destination, accounting)?;
+        let volume_id = destination_id.volume_id();
+        let config = source.workspace.volume.config;
+        let (fork_root, source_root, pending, filtered) = self
+            .materialize_forked_generation_root(
+                source,
+                destination_id,
+                paths,
+                accounting,
+                cancellation,
+            )
+            .await?;
+        let original_root = fork_root.generation_root;
+        let (created, operation) = match self
+            .read_creation(volume_id, accounting, cancellation)
+            .await
+            .map_err(WorkspaceError::from)
+        {
+            Ok(created) => created,
+            Err(WorkspaceError::Filesystem(FsError::Authority(AuthorityStoreError::Missing))) => {
+                self.publish_fork(
+                    ForkPublication {
+                        source,
+                        destination_id,
+                        fork_root: &fork_root,
+                        source_root,
+                        filtered,
+                        idempotency_key,
+                        permit,
+                    },
                     accounting,
                     cancellation,
+                    guard,
                 )
                 .await?;
-            let original_root = fork_root.generation_root;
-            let (created, operation) = match self
-                .read_creation(volume_id, accounting, cancellation)
-                .await
-                .map_err(WorkspaceError::from)
-            {
-                Ok(created) => created,
-                Err(WorkspaceError::Filesystem(FsError::Authority(
-                    AuthorityStoreError::Missing,
-                ))) => {
-                    self.publish_fork(
-                        ForkPublication {
-                            source,
-                            destination_id,
-                            fork_root: &fork_root,
-                            source_root,
-                            filtered,
-                            idempotency_key,
-                            permit,
-                        },
-                        accounting,
-                        cancellation,
-                        guard,
-                    )
-                    .await?;
-                    self.read_creation(volume_id, accounting, cancellation)
-                        .await
-                        .map_err(WorkspaceError::from)?
-                }
-                Err(error) => return Err(error.into()),
-            };
-            drop(fork_root);
-            if operation != idempotency_key.operation_id()
-                || created.volume_id != volume_id
-                || created.config != config
-                || created.initial_generation_root != original_root
-            {
-                return Err(WorkspaceError::from(FsError::CreationRejected).into());
+                self.read_creation(volume_id, accounting, cancellation)
+                    .await
+                    .map_err(WorkspaceError::from)?
             }
-            if let Some(pending) = pending {
-                pending.created();
-            }
-            Ok(crate::Workspace {
-                name: destination,
-                id: destination_id,
-                volume: Volume {
-                    fs: self.clone(),
-                    id: volume_id,
-                    config,
-                },
-                #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-                source: None,
-                access: None,
-            })
+            Err(error) => return Err(error.into()),
+        };
+        drop(fork_root);
+        if operation != idempotency_key.operation_id()
+            || created.volume_id != volume_id
+            || created.config != config
+            || created.initial_generation_root != original_root
+        {
+            return Err(WorkspaceError::from(FsError::CreationRejected).into());
         }
-        .await;
-        budget.finish(result, &accounting)
+        if let Some(pending) = pending {
+            pending.created();
+        }
+        Ok(crate::Workspace {
+            name: destination,
+            id: destination_id,
+            volume: Volume {
+                fs: self.clone(),
+                id: volume_id,
+                config,
+            },
+            #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+            source: None,
+            access: None,
+        })
     }
 
     async fn publish_fork<G, E>(

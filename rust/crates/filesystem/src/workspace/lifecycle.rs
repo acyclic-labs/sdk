@@ -32,73 +32,25 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                         .as_ref()
                         .map_or(Ok(0), workspace_owned_strings_bytes)
                         .map_err(E::from)?;
-                    let (mut allocation, admitted) = accounting.record_actual_owned(bytes)?;
+                    let (allocation, admitted) = accounting.record_actual_owned(bytes)?;
                     admitted?;
                     if options.generation.workspace.id != self.id {
                         return Err(WorkspaceError::ForeignGeneration.into());
                     }
                     let name = WorkspaceName::with_accounting(destination.as_ref(), accounting)
                         .map_err(E::from)?;
-                    accounting.release_owned(&mut allocation, bytes)?;
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(original) = accounting.native_work() {
-                        return self
-                            .volume
-                            .fs
-                            .fork_workspace(
-                                name,
-                                &options.generation,
-                                options.idempotency_key,
-                                options.paths,
-                                permit,
-                                original,
-                                cancellation,
-                                Some(&mut guard),
-                            )
-                            .await;
-                    }
-                    // The facade takes over the name's payload; this operation retains its Arc control.
-                    accounting.release_owned(
-                        &mut KernelOwnedAllocation::Standalone,
-                        name.retained_bytes(),
-                    )?;
-                    let forked = self
-                        .volume
+                    self.volume
                         .fs
                         .fork_workspace(
                             name,
                             &options.generation,
                             options.idempotency_key,
-                            options.paths,
+                            crate::kernel::Owned::new(options.paths, allocation, bytes),
                             permit,
-                            accounting.remaining()?,
-                            cancellation,
+                            accounting,
                             Some(&mut guard),
                         )
-                        .await;
-                    let backend = match &forked {
-                        Ok(receipt) => receipt.work,
-                        Err(failure) => *failure.work,
-                    };
-                    let (allocations, spent, budget, _) = accounting
-                        .standalone_parts()
-                        .ok_or_else(|| E::from(WorkspaceError::from(crate::WorkError::Overflow)))?;
-                    let prior = *spent;
-                    *spent = prior
-                        .with_backend(backend, allocations.live_bytes())
-                        .map_err(|error| {
-                            E::from(WorkspaceError::WorkMerge {
-                                prior: Box::new(prior),
-                                backend: Box::new(backend),
-                                error,
-                            })
-                        })?;
-                    spent
-                        .verify(budget)
-                        .map_err(|error| E::from(WorkspaceError::from(error)))?;
-                    forked
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| failure.error)
+                        .await
                 },
             )?;
             let result = future.as_mut().await;
