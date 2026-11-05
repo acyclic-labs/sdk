@@ -185,13 +185,19 @@ impl AgentPath {
 
     /// The child `id` nested under this agent.
     pub fn child(&self, id: &AgentId) -> Result<Self, Error> {
+        let depth = self.child_depth()?;
+        Ok(Self {
+            text: format!("{}/{CHILDREN}/{id}", self.text),
+            depth,
+        })
+    }
+
+    /// Validate the next depth before constructing or copying an address.
+    pub(super) fn child_depth(&self) -> Result<usize, Error> {
         if self.depth >= MAX_DEPTH {
             return Err(Error::Path("agent nesting exceeds MAX_DEPTH"));
         }
-        Ok(Self {
-            text: format!("{}/{CHILDREN}/{id}", self.text),
-            depth: self.depth + 1,
-        })
+        Ok(self.depth + 1)
     }
 
     /// The parent agent, `None` for a root.
@@ -376,6 +382,7 @@ fn stream(text: &str) -> Result<StreamPath, Error> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::{AgentRecord as _, ForkAdopted, InboxRecord};
     use super::*;
     use std::hint::black_box;
 
@@ -452,6 +459,28 @@ mod tests {
                         path.parent().as_ref() == candidate
                     );
                 }
+            }
+            for parent in [tree_root, &parent, &parsed] {
+                let agent = AgentId::from_bytes(leaf);
+                let expected = parent.child(&agent).is_ok();
+                let adoption = InboxRecord::ForkAdopted(Box::new(ForkAdopted {
+                    agent,
+                    parent: Some(parent.clone()),
+                    profile: None,
+                    forked_at: 0,
+                    conversation_tail: 0,
+                    checkpoint: None,
+                    volumes: Vec::new(),
+                    brief: None,
+                    policy: None,
+                }));
+                let admission = acyclic_test_support::measure(|| {
+                    assert_eq!(black_box(&adoption).check().is_ok(), expected);
+                });
+                assert_eq!(
+                    admission.count_total, 0,
+                    "adoption validation constructed a discarded child address"
+                );
             }
             // The former parser allocated an owned id for each ancestor.
             let owned_ids = acyclic_test_support::measure(|| {

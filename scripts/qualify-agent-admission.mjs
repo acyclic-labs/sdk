@@ -9,6 +9,9 @@ const writer = 'agent::codec_fuzz::tests::writer_corpus_satisfies_the_shared_age
 const membershipOnly = process.argv[2] === '--membership';
 const borrowedOnly = process.argv[2] === '--borrowed';
 const parentOnly = process.argv[2] === '--parent';
+const adoptionOnly = process.argv[2] === '--adoption';
+const bindingOnly = parentOnly || adoptionOnly;
+const testFeatures = adoptionOnly ? [] : ['--features', features];
 
 function command(executable, args, expected, capture = false) {
   const result = spawnSync(executable, args, {encoding: 'utf8', maxBuffer: 32 * 1024 * 1024});
@@ -34,7 +37,7 @@ function mutations(cases, binary = ['--lib']) {
     for (const [name] of cases) {
       command('git', ['apply', `rust/codec-fuzz/mutations/${name}.patch`]);
     }
-    command('cargo', ['nextest', 'run', '--locked', '--no-fail-fast', '-p', 'acyclic-harness-core', '--features', features,
+    command('cargo', ['nextest', 'run', '--locked', '--no-fail-fast', '-p', 'acyclic-harness-core', ...testFeatures,
       ...binary, '-E', cases.map(([, , test]) => `test(=${test})`).join(' | ')],
       cases.map(([, , , assertion]) => assertion));
   } finally {
@@ -43,19 +46,22 @@ function mutations(cases, binary = ['--lib']) {
 }
 
 try {
-  if (!borrowedOnly && !parentOnly) {
+  if (!borrowedOnly && !bindingOnly) {
     mutations([['agent-membership-allocation', 'rust/crates/harness-core/src/agent/children.rs', membership,
       'cached membership lookup allocated identity or branch storage']]);
   }
   if (!membershipOnly) {
-    mutations([
+    mutations(adoptionOnly ? [
+      ['agent-adoption-copy', 'rust/crates/harness-core/src/agent/records.rs', ancestry,
+        'adoption validation constructed a discarded child address'],
+    ] : [
       ...(!parentOnly ? [['agent-membership-insert-copy', 'rust/crates/harness-core/src/agent/children.rs', membership,
         'cached duplicate insertion copied its borrowed address']] : []),
       ['agent-parent-copy', 'rust/crates/harness-core/src/agent/layout.rs', ancestry,
         'immediate parent admission copied its borrowed address'],
     ]);
   }
-  if (!membershipOnly && !borrowedOnly && !parentOnly) {
+  if (!membershipOnly && !borrowedOnly && !bindingOnly) {
     mutations([['agent-membership-scan', 'rust/crates/harness-core/src/agent/children.rs', membership,
       'membership operation scanned beyond its fixed node credit']]);
     mutations([['agent-record-version', 'rust/crates/harness-core/src/agent/records.rs', writer,
@@ -64,7 +70,7 @@ try {
       'agent_model::runtime::a_spawn_retry_after_later_steps_names_the_same_child',
       'request budget exceeded for control']], ['--test', 'main']);
   }
-  const tests = parentOnly ? [ancestry, writer] : membershipOnly ? [membership] : borrowedOnly ? [membership,
+  const tests = bindingOnly ? [ancestry, writer] : membershipOnly ? [membership] : borrowedOnly ? [membership,
     ancestry,
     'agent_model::awaited_children_are_scoped_to_their_parent'] : [membership, writer,
     'agent_model::a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it',
@@ -75,8 +81,8 @@ try {
     'agent_model::runtime::a_spawn_reply_is_the_outcome_the_parent_step_committed',
     'agent_model::runtime::a_spawn_retry_after_later_steps_names_the_same_child',
     'agent_model::runtime::a_root_crosses_the_former_child_ceiling_with_a_paged_checkpoint'];
-  const positive = command('cargo', ['nextest', 'run', '--locked', '-p', 'acyclic-harness-core', '--features', features,
-    '--lib', ...(membershipOnly || parentOnly ? [] : ['--test', 'main']),
+  const positive = command('cargo', ['nextest', 'run', '--locked', '-p', 'acyclic-harness-core', ...testFeatures,
+    '--lib', ...(membershipOnly || bindingOnly ? [] : ['--test', 'main']),
     '-E', tests.map(test => `test(=${test})`).join(' | ')]);
   if (!positive.includes(`${tests.length} ${tests.length === 1 ? 'test' : 'tests'} run: ${tests.length} passed`)) {
     throw new Error('selected test inventory differs; recovery=cargo nextest list --locked -p acyclic-harness-core --lib --test main');
@@ -85,7 +91,7 @@ try {
     command('cargo', ['check', '--locked', '-p', 'acyclic-harness', '-p', 'acyclic-harness-client', '--lib',
       '--features', features.split(',').map(feature => `acyclic-harness/${feature}`).join(',')]);
   }
-  if (!membershipOnly && !borrowedOnly && !parentOnly) {
+  if (!membershipOnly && !borrowedOnly && !bindingOnly) {
     command('cargo', ['check', '--locked', '-p', 'acyclic-harness', '--lib', '--features', features]);
     const output = command('cargo', ['run', '--quiet', '--locked', '-p', 'acyclic-harness-core',
       '--features', features, '--example', 'agent-record-corpus', '--', '--codecs'], undefined, true);
@@ -96,6 +102,6 @@ try {
     process.stdout.write(`Captured production agent writer output: ${destination}\n`);
   }
 } catch (error) {
-  process.stderr.write(`step=qualify agent admission; recovery=node scripts/qualify-agent-admission.mjs${membershipOnly ? ' --membership' : borrowedOnly ? ' --borrowed' : parentOnly ? ' --parent' : ''}; ${error.message}\n`);
+  process.stderr.write(`step=qualify agent admission; recovery=node scripts/qualify-agent-admission.mjs${membershipOnly ? ' --membership' : borrowedOnly ? ' --borrowed' : parentOnly ? ' --parent' : adoptionOnly ? ' --adoption' : ''}; ${error.message}\n`);
   process.exitCode = 1;
 }

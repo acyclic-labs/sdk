@@ -675,7 +675,7 @@ impl AgentRecord for InboxRecord {
                 if adopted
                     .parent
                     .as_ref()
-                    .is_some_and(|parent| parent.child(&adopted.agent).is_err())
+                    .is_some_and(|parent| parent.child_depth().is_err())
                 {
                     return Err(Error::Record("adopted child exceeds MAX_DEPTH"));
                 }
