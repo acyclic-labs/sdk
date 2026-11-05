@@ -43,6 +43,7 @@ mod input;
 use input::HookInput;
 
 fuzz_target!(|bytes: &[u8]| {
+    acyclic_harness_core::native_settings::codec_fuzz::check(bytes).unwrap();
     futures::executor::block_on(acyclic_harness_core::hooks::chain_model::check(bytes)).unwrap();
     if let Ok(fields) = serde_json::from_slice::<Value>(bytes) {
         let invocation = tool::ToolInvocation {

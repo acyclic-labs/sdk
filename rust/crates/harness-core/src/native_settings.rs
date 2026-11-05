@@ -10,6 +10,9 @@ use std::{
     io::Read as _,
     path::{Path, PathBuf},
 };
+#[cfg(all(feature = "hooks", any(test, feature = "test-support")))]
+#[doc(hidden)]
+pub mod codec_fuzz;
 mod model;
 mod model_selection;
 mod workspace;

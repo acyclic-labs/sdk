@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import init, { WasmMcpHttpTransport } from "../generated/wasm/acyclic_harness_wasm.js";
@@ -101,4 +102,108 @@ test("truncation, expired session and overflow retain explicit failure with no r
       assert.equal(calls, 1);
     } finally { transport.free(); }
   }
+});
+
+test("captured browser responses preserve the admitted prefix before overflow", async () => {
+  const corpus = new URL("../../../../rust/codec-fuzz/", import.meta.url);
+  const capture = JSON.parse(readFileSync(new URL("captures/mcp-everything-2.1.0-http.json", corpus), "utf8"));
+  const requests = readFileSync(new URL("captures/mcp-everything-2.1.0-http.requests.jsonl", corpus), "utf8")
+    .trim().split("\n").map(line => JSON.parse(line));
+  const recorded = method => {
+    const output = capture.outputs.find(output => output.method === method);
+    const bytes = new Uint8Array(readFileSync(new URL(`corpus/${output.path}`, corpus)));
+    assert.equal(bytes.length, output.bytes);
+    assert.equal(createHash("sha256").update(bytes).digest("hex"), output.sha256);
+    const exchange = capture.exchanges.find(exchange => exchange.method === method);
+    return { bytes, head: { status: exchange.status, headers: exchange.headers },
+      request: requests.find(request => request.method === method) };
+  };
+  const initialization = recorded("initialize");
+  const discovery = recorded("tools/list");
+  const originalOperation = initialization.request.id;
+  const observation = async promise => {
+    try {
+      const result = await promise;
+      result?.free?.();
+      assert.fail("malformed or overflowing response was admitted");
+    } catch (error) {
+      assert.equal(typeof error.code, "number", "refusal lost its typed code");
+      return { code: error.code, message: error.message };
+    }
+  };
+  // Mutations derive from the recorded HTTP/SSE bytes; no new capture is claimed.
+  const malformed = initialization.bytes.slice();
+  malformed[0] = 0xff;
+  let expected;
+  for (const width of [1, 17, malformed.length]) {
+    let reads = 0;
+    let cancellations = 0;
+    let requests = 0;
+    const io = createBrowserMcpHttpProvider(async () => {
+      requests++;
+      let offset = 0;
+      return new Response(new ReadableStream({ pull(controller) {
+        if (offset === malformed.length) { controller.close(); return; }
+        const next = Math.min(offset + width, malformed.length);
+        const chunk = malformed.slice(offset, next);
+        // The foreign view's own properties cannot control snapshot extent.
+        for (const name of ["length", "byteLength", "byteOffset", "buffer", "subarray"]) {
+          Object.defineProperty(chunk, name, { get() { throw new Error(`read foreign ${name}`); } });
+        }
+        controller.enqueue(chunk);
+        offset = next;
+      } }), initialization.head);
+    });
+    const provider = (operation, request) => {
+      const exchange = io(operation, request);
+      return { response: exchange.response,
+        read() { reads++; return exchange.read(); },
+        cancel() { cancellations++; exchange.cancel(); } };
+    };
+    const transport = new WasmMcpHttpTransport(provider, "http://localhost/mcp", "session", 1, 1000);
+    try {
+      const actual = await observation(transport.listToolsJson(originalOperation, undefined));
+      assert.match(actual.message, /SSE is not UTF-8/);
+      if (expected) assert.deepEqual(actual, expected, "browser chunking changed the refusal");
+      expected = actual;
+      assert.equal(reads, 1, "decoder polled beyond the malformed prefix");
+      assert.equal(cancellations, 1, "original browser exchange was not cancelled once");
+      assert.equal(requests, 1);
+      assert.deepEqual(await observation(transport.acceptInitialization(originalOperation,
+        initialization.head, malformed)), expected, "retained prefix changed the refusal");
+      assert.equal(requests, 1, "retained acceptance dispatched I/O");
+      const overflow = await observation(transport.acceptInitialization(originalOperation,
+        initialization.head, initialization.bytes));
+      assert.notEqual(overflow.code, expected.code);
+      assert.ok(overflow.message.includes(originalOperation), "overflow lost the original operation");
+    } finally { transport.free(); }
+  }
+  let overflowReads = 0;
+  let overflowCancellations = 0;
+  const overflowing = new WasmMcpHttpTransport(() => ({
+    response: Promise.resolve(initialization.head),
+    read() {
+      assert.equal(++overflowReads, 1, "overflow read the browser source again");
+      return Promise.resolve(initialization.bytes);
+    },
+    cancel() { overflowCancellations++; },
+  }), "http://localhost/mcp", "session", 1, 1000);
+  try {
+    const overflow = await observation(overflowing.listToolsJson(originalOperation, undefined));
+    assert.ok(overflow.message.includes(originalOperation), "browser overflow lost its operation");
+    assert.equal(overflowReads, 1, "overflow read the browser source again");
+    assert.equal(overflowCancellations, 1);
+  } finally { overflowing.free(); }
+  const setup = new WasmMcpHttpTransport(() => { throw new Error("retained response dispatched I/O"); },
+    "http://localhost/mcp", undefined, initialization.bytes.length, 1000);
+  try {
+    const accepted = await setup.acceptInitialization(originalOperation, initialization.head, initialization.bytes);
+    try { assert.equal(JSON.parse(new TextDecoder().decode(accepted.resultJson())).serverInfo.name, "mcp-servers/everything"); }
+    finally { accepted.free(); }
+  } finally { setup.free(); }
+  const transport = new WasmMcpHttpTransport(createBrowserMcpHttpProvider(async () =>
+    new Response(discovery.bytes, discovery.head)), "http://localhost/mcp", "session", discovery.bytes.length, 1000);
+  try {
+    assert.ok(JSON.parse(new TextDecoder().decode(await transport.listToolsJson(discovery.request.id, undefined))).tools.length > 0);
+  } finally { transport.free(); }
 });
