@@ -239,3 +239,22 @@ The kept production mutations `mutations/native_read_receipt_observer.patch`,
 receipt observation, erase the producer's terminal cause and duplicate the leaf
 lock. Each must fail this same relation; restore each patch before testing the
 next mutation or the passing implementation.
+
+Local lazy-store persistence uses that same handoff. An ordinary publication
+retains its already admitted input before native submission, so withdrawing the
+future cannot refund a producer's physical input or reactivate its caller.
+Completed node reads transfer the exact root allocation back to ordinary scratch
+without admitting or releasing those bytes; native callers retain their original
+resource guard. No record decoder or persisted format changes.
+
+The existing real-store relation `content_addressed_nodes_share_one_family_lock`
+also withdraws a publication at the native scheduler's owned boundary, checks the
+original admission fence and input credit, releases the producer, awaits its
+physical drain and loads the durable result. It checks the exact live-byte delta
+and retirement of the returned node. The kept mutations
+`mutations/local_store_detached_accounting.patch` and
+`mutations/local_store_output_refund.patch` respectively substitute an unrelated
+caller ledger (which original-ledger restoration must reject) and refund returned
+bytes before their physical value retires. These exercise the production adapter,
+not a parallel accounting model. Qualification must record the actual negative
+and restored-positive results before claiming either relation.

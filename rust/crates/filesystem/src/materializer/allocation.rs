@@ -132,7 +132,9 @@ impl NativeAllocation {
         self.root_metadata_for(meter)
             && self.bytes == std::mem::size_of::<crate::kernel::ProofDataCustody>() as u64
     }
-    pub(crate) fn transfer_checkout_metadata(
+    /// Returns already admitted backing to its original root ledger without
+    /// releasing it. The receiving owner must retain that backing's custody.
+    pub(crate) fn transfer_original_bytes(
         &mut self,
         meter: &Arc<crate::demand::NativeDemandReadMeter>,
         expected: u64,

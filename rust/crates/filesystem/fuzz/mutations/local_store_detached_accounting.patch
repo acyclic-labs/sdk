@@ -1,0 +1,16 @@
+diff --git a/rust/crates/filesystem/src/core_state/nodes/mod.rs b/rust/crates/filesystem/src/core_state/nodes/mod.rs
+--- a/rust/crates/filesystem/src/core_state/nodes/mod.rs
++++ b/rust/crates/filesystem/src/core_state/nodes/mod.rs
+@@ -157,7 +157,11 @@ impl LocalCoreStateStore {
+             },
+             accounting,
+         )?;
+-        let owner = crate::kernel::allocation::retained::NativeAccounting::take(accounting)
++        let owner = crate::kernel::allocation::retained::NativeAccounting::take(
++            &mut crate::kernel::KernelAccounting::standalone(
++                accounting.remaining()?, accounting.cancellation(),
++            ),
++        )
+             .map_err(lazy_accounting_error)?;
+         let meter = owner.work.clone();
+         let result = async {

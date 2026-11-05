@@ -60,67 +60,38 @@ pub(super) fn native_core_error(error: LocalCoreStateStoreError) -> crate::LazyW
     }
 }
 
-fn core_lazy_work(
-    accounting: &mut crate::kernel::KernelAccounting<'_>,
-) -> Result<crate::NativeMaterializationWork, crate::LazyWorkspaceError> {
-    if let Some(original) = accounting.native_work() {
-        return Ok(original.clone());
-    }
-    let cancellation = match &*accounting {
-        crate::kernel::KernelAccounting::Standalone { cancellation, .. }
-        | crate::kernel::KernelAccounting::BorrowedStandalone { cancellation, .. } => *cancellation,
-        _ => unreachable!("native context has its original work"),
-    };
-    crate::NativeMaterializationWork::new(accounting.remaining()?, cancellation).map_err(
-        |(cause, work)| {
-            if let Some((_, prefix, _, _)) = accounting.standalone_parts() {
-                *prefix = prefix
-                    .checked_add(*work)
-                    .expect("constructor used its remaining allowance");
-            }
-            crate::LazyWorkspaceError::NativeWork(cause)
-        },
-    )
-}
-
 fn finish_core_lazy<T>(
     result: Result<T, LocalCoreStateStoreError>,
-    work: &crate::NativeMaterializationWork,
+    owner: crate::kernel::allocation::retained::NativeAccounting,
     accounting: &mut crate::kernel::KernelAccounting<'_>,
 ) -> Result<T, crate::LazyWorkspaceError> {
-    if let Some((_, prefix, _, _)) = accounting.standalone_parts() {
-        *prefix = prefix
-            .checked_add(work.receipt())
-            .map_err(crate::LazyWorkspaceError::from)?;
-    }
+    owner.restore(accounting).map_err(lazy_accounting_error)?;
     result.map_err(native_core_error)
+}
+
+fn lazy_accounting_error(error: crate::FsError) -> crate::LazyWorkspaceError {
+    match error {
+        crate::FsError::NativeKernel(error) => native_core_error(error.into()),
+        error => error.into(),
+    }
 }
 
 fn core_lazy_node<T: crate::lazy_workspace::MemoryLazyNode>(
     result: Result<Option<(T, crate::NativeAllocation)>, LocalCoreStateStoreError>,
-    work: &crate::NativeMaterializationWork,
+    owner: crate::kernel::allocation::retained::NativeAccounting,
     accounting: &mut crate::kernel::KernelAccounting<'_>,
 ) -> Result<Option<(T, crate::kernel::allocation::KernelOwnedAllocation)>, crate::LazyWorkspaceError>
 {
-    let result = finish_core_lazy(result, work, accounting)?;
-    result
-        .map(|node| {
-            if accounting.native_work().is_some() {
-                return Ok((
-                    node.0,
-                    crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(node.1),
-                ));
-            }
-            let bytes = node.0.owned_bytes();
-            let (mut allocation, admitted) = accounting.record_actual_owned(bytes)?;
-            if let Err(error) = admitted {
-                drop(node);
-                accounting.release_owned(&mut allocation, bytes)?;
-                return Err(error.into());
-            }
-            Ok((node.0, allocation))
+    let result = result.and_then(|node| {
+        node.map(|(value, allocation)| {
+            let allocation = owner
+                .return_allocation(allocation, value.owned_bytes())
+                .map_err(|error| LocalCoreStateStoreError::LazyWork(error.into()))?;
+            Ok((value, allocation))
         })
         .transpose()
+    });
+    finish_core_lazy(result, owner, accounting)
 }
 
 impl LocalCoreStateStore {
@@ -168,29 +139,34 @@ impl LocalCoreStateStore {
         value: (T, crate::kernel::allocation::KernelOwnedAllocation),
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<(), crate::LazyWorkspaceError> {
+        accounting.check().map_err(lazy_accounting_error)?;
         let bytes = value.0.owned_bytes();
-        let work = core_lazy_work(accounting)?;
-        let mut value = value;
-        let allocation = match &mut value.1 {
-            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
-                if !allocation.work().shares_allocation_context(&work) {
-                    return Err(crate::LazyWorkspaceError::NativeLedgerMismatch);
-                }
-                allocation.split_off(allocation.bytes())?
-            }
-            crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
-                work.claim(bytes, 0, crate::WorkCounters::UNCHARGED)?
-            }
-        };
-        let owned = (value.0, allocation);
-        let meter = work.clone();
+        if let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) =
+            &value.1
+            && !accounting
+                .native_work()
+                .is_some_and(|original| allocation.work().shares_allocation_context(original))
+        {
+            return Err(crate::LazyWorkspaceError::NativeLedgerMismatch);
+        }
+        let owned = crate::kernel::allocation::retained::Retained::from_owned(
+            crate::kernel::Owned {
+                value: value.0,
+                allocation: value.1,
+                bytes,
+            },
+            accounting,
+        )?;
+        let owner = crate::kernel::allocation::retained::NativeAccounting::take(accounting)
+            .map_err(lazy_accounting_error)?;
+        let meter = owner.work.clone();
         let result = async {
             let empty = lazy_digest(&T::default(), &meter)?;
-            if lazy_digest(&owned.0, &meter)? != T::address(id) {
+            if lazy_digest(&owned.value, &meter)? != T::address(id) {
                 return Err(LocalCoreStateStoreError::Integrity);
             }
             if T::address(id) == empty {
-                return if owned.0 == T::default() {
+                return if owned.value == T::default() {
                     Ok(())
                 } else {
                     Err(LocalCoreStateStoreError::Integrity)
@@ -198,6 +174,7 @@ impl LocalCoreStateStore {
             }
             self.materialization(meter.clone())
                 .transaction(move |namespace| {
+                    let owned = owned;
                     let work = namespace
                         ._allocation
                         .as_ref()
@@ -210,11 +187,11 @@ impl LocalCoreStateStore {
                                 items_examined: 1,
                                 ..Default::default()
                             })?;
-                            if existing.0 != owned.0 {
+                            if existing.0 != owned.value {
                                 return Err(LocalCoreStateStoreError::Integrity);
                             }
                         } else {
-                            write_journaled(paths, &owned.0)?;
+                            write_journaled(paths, &owned.value)?;
                         }
                         Ok(())
                     })
@@ -223,13 +200,7 @@ impl LocalCoreStateStore {
             Ok(())
         }
         .await;
-        if matches!(
-            value.1,
-            crate::kernel::allocation::KernelOwnedAllocation::Standalone
-        ) {
-            accounting.release_owned(&mut value.1, bytes)?;
-        }
-        finish_core_lazy(result, &work, accounting)
+        finish_core_lazy(result, owner, accounting)
     }
 }
 

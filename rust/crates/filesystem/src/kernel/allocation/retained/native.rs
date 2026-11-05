@@ -10,6 +10,24 @@ pub(crate) struct NativeAccounting {
 }
 
 impl NativeAccounting {
+    /// Returns a completed output to the same caller without another admission.
+    /// Ordinary callers resume ownership of the already charged scratch; native
+    /// callers keep the same original allocation guard.
+    pub(crate) fn return_allocation(
+        &self,
+        mut allocation: crate::NativeAllocation,
+        bytes: u64,
+    ) -> Result<KernelOwnedAllocation, crate::FsError> {
+        if self.baseline.is_some() {
+            allocation.transfer_original_bytes(&self.work.state, bytes)?;
+            return Ok(KernelOwnedAllocation::Standalone);
+        }
+        if allocation.bytes() != bytes || !allocation.work().shares_allocation_context(&self.work) {
+            return Err(crate::FsError::AccountingHandoffActive);
+        }
+        Ok(KernelOwnedAllocation::NativeOriginal(allocation))
+    }
+
     pub(crate) fn take(accounting: &mut KernelAccounting<'_>) -> Result<Self, crate::FsError> {
         accounting.check()?;
         if let Some(work) = accounting.native_work() {

@@ -354,7 +354,7 @@ impl NativeDemandReadMeter {
         if !token.bind_native_original(self, &shared) {
             return Err(Error::InvalidLayout);
         }
-        header.transfer_checkout_metadata(self, token.logical_owned_bytes())?;
+        header.transfer_original_bytes(self, token.logical_owned_bytes())?;
         token.register_native_accounting(&shared)?;
         Ok(token.clone())
     }
