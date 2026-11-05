@@ -62,6 +62,12 @@ production mutation that captures the global watch sender in its own account
 dependency future. The original retained-account oracle must reject the resulting
 pending wait when the follower is dropped, without waiting for a timeout.
 
+The [trust catch-up control](trust-catchup/README.md) mutates the production
+Stream driver's reconnect serving decision. An original signed revocation is
+held before the observed tail; trust must remain fenced until it applies, and
+losing its producer must return the original typed error. The existing follow
+loss test covers this boundary without introducing a second trust driver.
+
 The [Objects empty-range dispatch control](objects-empty-dispatch/README.md)
 retains a production mutation that disables the index-only presence path. The
 existing real-log oracle must reject the resulting extra native submission;

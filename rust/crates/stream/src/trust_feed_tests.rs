@@ -1,9 +1,9 @@
 //! Feed controls over the original memory provider. Fault adapters only
-//! interrupt a follow or hold its opening; they never construct records.
+//! interrupt a follow or hold its opening or delivery; they never construct records.
 use super::*;
 use crate::{IdempotencyKey, MemoryStream, OwnedBytes};
 use acyclic_auth::trust::{ChangeSource as _, EnvironmentFrontier, Issuer};
-use acyclic_auth::verify::Trust as _;
+use acyclic_auth::verify::{RevocationCheck, Trust as _, VerifyError};
 use ed25519_dalek::SigningKey;
 use futures::{channel::oneshot, stream};
 use std::{
@@ -34,12 +34,13 @@ struct Path {
     read: Arc<AtomicUsize>,
 }
 
-/// Observe real follows and hold selected openings behind their own producer.
+/// Observe real follows and hold selected openings or original record delivery.
 #[derive(Default)]
 struct ControlledSource {
     provider: Arc<MemoryStream>,
     paths: Mutex<HashMap<String, Path>>,
     slow: Mutex<HashMap<String, oneshot::Receiver<()>>>,
+    held: Mutex<HashMap<String, oneshot::Receiver<()>>>,
     appended: AtomicUsize,
 }
 
@@ -90,6 +91,7 @@ impl Source for Src {
     ) -> BoxFuture<'a, Result<Records, StreamError>> {
         async move {
             let records = Source::follow(&self.0.provider, path, from).await?;
+            let mut held = self.0.held.lock().unwrap().remove(path);
             let (sender, ended) = oneshot::channel();
             let read = {
                 let mut paths = self.0.paths.lock().unwrap();
@@ -98,6 +100,15 @@ impl Source for Src {
                 Arc::clone(&path.read)
             };
             Ok(records
+                .then(move |record| {
+                    let held = held.take();
+                    async move {
+                        if let Some(held) = held {
+                            held.await.map_err(|_| StreamError::Unavailable)?;
+                        }
+                        record
+                    }
+                })
                 .take_until(ended)
                 .inspect(move |_| {
                     read.fetch_add(1, Ordering::SeqCst);
@@ -228,21 +239,54 @@ async fn reconnect_completes_an_interrupted_authenticated_replay() {
 
 #[tokio::test]
 async fn losing_one_account_follow_fences_everything() {
-    let issuer = Issuer::new("test", key(1));
-    let (_root, genesis) = issuer.genesis("account", key(2), NOW).unwrap();
-    let mut world = world(&issuer, genesis).await;
-    let (source, follower) = (Arc::clone(&world.source), Arc::clone(&world.follower));
-    let mut run = Box::pin(world.feed.run());
-    assert!(step(&mut run).is_none());
-    assert!(served(&follower, "account"));
-    // The environment follow stays live; only the account's ends.
-    source.end(&account_path("test", "account"));
-    assert_eq!(step(&mut run), Some(Err(StreamError::Unavailable)));
-    assert!(!served(&follower, "account"));
-    assert_eq!(
-        *follower.state().borrow(),
-        FollowerState::Fenced(FenceCause::LostFollow)
-    );
+    let retired = RevocationCheck::Key {
+        id: "retired",
+        epoch: 0,
+    };
+    for complete in [false, true] {
+        let issuer = Issuer::new("test", key(1));
+        let (mut root, genesis) = issuer.genesis("account", key(2), NOW).unwrap();
+        let mut world = world(&issuer, genesis).await;
+        let (source, follower) = (Arc::clone(&world.source), Arc::clone(&world.follower));
+        let mut run = Box::pin(world.feed.run());
+        assert!(step(&mut run).is_none());
+        assert!(served(&follower, "account"));
+        assert_eq!(follower.revoked("account", retired), Ok(false));
+        // The environment follow stays live; only the account's ends.
+        source.end(&account_path("test", "account"));
+        assert_eq!(step(&mut run), Some(Err(StreamError::Unavailable)));
+        assert!(!served(&follower, "account"));
+        assert_eq!(
+            *follower.state().borrow(),
+            FollowerState::Fenced(FenceCause::LostFollow)
+        );
+        drop(run);
+        let path = account_path("test", "account");
+        source
+            .push(
+                &path,
+                root.revoke_keys(&[("retired", NOW + 50)], NOW).unwrap(),
+            )
+            .await;
+        let (producer, held) = oneshot::channel();
+        source.held.lock().unwrap().insert(path.clone(), held);
+        let mut run = Box::pin(world.feed.run());
+        assert!(step(&mut run).is_none());
+        assert_eq!(
+            follower.revoked("account", retired),
+            Err(VerifyError::Trust),
+            "reconnect served trust before its original observed tail"
+        );
+        if complete {
+            producer.send(()).unwrap();
+            assert!(step(&mut run).is_none());
+            assert_eq!(follower.revoked("account", retired), Ok(true));
+        } else {
+            drop(producer);
+            assert_eq!(step(&mut run), Some(Err(StreamError::Unavailable)));
+            assert!(!served(&follower, "account"));
+        }
+    }
 }
 
 #[tokio::test]

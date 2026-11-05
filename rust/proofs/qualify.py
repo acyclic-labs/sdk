@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost", "guest-refusal"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost", "guest-refusal", "trust-catchup"])
 claim = parser.parse_args().claim
 target = ["--lib"]
 if claim == "retained-credit":
@@ -53,6 +53,12 @@ elif claim in ("work-arithmetic", "work-mixed"):
     test = "performance::tests::full_width_work_arithmetic_preserves_exact_sums_and_refusals"
     diagnostic = "full-width work sum disagreed with wider arithmetic"
     features = []
+elif claim == "trust-catchup":
+    source = "rust/crates/stream/src/trust_feed.rs"
+    crate = "acyclic-stream"
+    test = "trust_feed::tests::losing_one_account_follow_fences_everything"
+    diagnostic = "reconnect served trust before its original observed tail"
+    features = ["--no-default-features"]
 elif claim == "ready-source-allocation":
     source = "rust/crates/stream/src/runtime/sources.rs"
     crate = "acyclic-stream"
