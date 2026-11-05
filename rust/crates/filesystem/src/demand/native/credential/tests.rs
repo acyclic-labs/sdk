@@ -332,9 +332,9 @@ async fn publication_control(control: PublicationControl) -> TestResult {
                             std::fs::write(&path, "foreign-in-place-value").map_err(error)?
                         }
                         PublicationControl::AlteredThenRebound => {
-                            std::fs::write(&path, "foreign-in-place-value").map_err(error)?;
                             let moved = path.with_extension("moved");
                             std::fs::rename(&path, &moved).map_err(error)?;
+                            std::fs::write(&moved, "foreign-in-place-value").map_err(error)?;
                             std::fs::rename(&moved, &path).map_err(error)?;
                         }
                         PublicationControl::Replaced => {

@@ -500,9 +500,9 @@ impl RootHints {
                 ..WorkCounters::UNCHARGED
             })?;
             let relative = match change {
-                HostChange::Rebound(relative) | HostChange::Altered(relative) => {
-                    Some(relative.as_path())
-                }
+                HostChange::Departed(relative)
+                | HostChange::Rebound(relative)
+                | HostChange::Altered(relative) => Some(relative.as_path()),
                 HostChange::Everything => None,
                 #[cfg(any(target_os = "macos", windows))]
                 HostChange::Unconfirmed => None,
@@ -1155,7 +1155,8 @@ impl WindowsRootSink {
                 ..WorkCounters::default()
             })?;
             match change {
-                HostChange::Rebound(path)
+                HostChange::Departed(path)
+                | HostChange::Rebound(path)
                 | HostChange::Altered(path)
                 | HostChange::Observed { path, .. } => {
                     // The Windows reader reports wide paths only. A path here

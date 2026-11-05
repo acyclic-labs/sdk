@@ -48,7 +48,7 @@ struct Observation {
     file_identity: Option<[u8; 32]>,
     // One most recent exact selected-name rebound, never a history of events.
     rebound: Option<(u64, [u8; 32])>,
-    // Only the first relevant event of this attempt can establish publication.
+    // An original-name departure may precede the one publication arrival.
     // A later rename must never erase an intervening in-place mutation.
     awaiting_rebound: bool,
     // Closing a writable publisher can itself notify the native watch. Retain
@@ -150,7 +150,9 @@ impl SourceChangeSink for State {
         let mut changes = changes.iter().peekable();
         while let Some(change) = changes.next() {
             let relevant = match change {
-                SourceChange::Name(path) | SourceChange::Entry(path) => self.path.is_within(path),
+                SourceChange::Departed(path)
+                | SourceChange::Name(path)
+                | SourceChange::Entry(path) => self.path.is_within(path),
                 SourceChange::Node(node) => observation.file_identity.as_ref() == Some(node),
                 SourceChange::Everything | SourceChange::Unconfirmed => true,
             };
@@ -158,6 +160,19 @@ impl SourceChangeSink for State {
                 continue;
             }
             affected = true;
+            if let SourceChange::Departed(path) = change
+                && path == &self.path
+            {
+                // Retiring the original name is not an arrival observation.
+                // Preserve only an attempt that has not observed its arrival;
+                // after that arrival, no later rebound may restore admission.
+                observation.rebound = None;
+                self.advance();
+                if matches!(changes.peek(), Some(SourceChange::Node(_))) {
+                    changes.next();
+                }
+                continue;
+            }
             let awaiting_rebound = observation.awaiting_rebound;
             observation.awaiting_rebound = false;
             observation.rebound = None;

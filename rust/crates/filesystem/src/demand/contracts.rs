@@ -134,6 +134,9 @@ pub type DemandResult<T> = Result<OperationReceipt<T>, OperationFailure<DemandEr
 /// One change a source reports having happened to it outside every view of
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SourceChange {
+    /// The original name departed. This invalidates its subtree, but is not
+    /// evidence that a later binding or its contents have been observed.
+    Departed(NamespacePath),
     /// This name may bind another entry, or none, and so may everything
     Name(NamespacePath),
     /// The entry this name binds may have changed in place: its content or
