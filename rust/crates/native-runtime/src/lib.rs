@@ -57,7 +57,7 @@ pub use windows::terminal;
 pub use process_tree::PreparedClosedProcess;
 pub use process_tree::{
     CaptureHandler, CaptureInput, CaptureOutcome, CaptureProgress, CaptureRequest, CaptureSchedule,
-    CaptureStop, CaptureWakes, ControlledCapture, LaunchFailure, OwnedCaptureInput,
+    CaptureStop, CaptureWakes, ControlledCapture, LaunchFailure, OwnedCaptureInput, ProcessCapture,
     ProcessCaptureFailure, ProcessCaptureStream, ProcessChunk, ProcessCommand, ProcessControl,
     ProcessCustody, ProcessCustodyLease, ProcessDrain, ProcessInput, ProcessOutput,
     ProcessReadiness, ProcessStdio, ProcessTree, ProcessTreeIo, ProcessTreeStorage,
@@ -84,8 +84,6 @@ pub mod owner_record;
 pub mod private_file;
 /// Native or owner-only file custody for persisted authority signing seeds.
 pub mod signing_key;
-#[cfg(windows)]
-pub use file::device_control_in_place;
 #[cfg(unix)]
 pub use file::read_declared_source_bytes;
 #[cfg(not(any(windows, target_os = "linux")))]
@@ -98,6 +96,8 @@ pub use file::{
 };
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 pub(crate) use file::{FileIdentity, file_identity};
+#[cfg(windows)]
+pub use file::{NativeControlCompletion, device_control_in_place};
 pub(crate) use file::{
     is_uncertain_io_error, validate_prepared_read_range, validate_write_batch, with_file_admission,
     with_file_scope, write_bounded_in_place,
@@ -111,7 +111,7 @@ pub use descriptor::{
     cached_descriptor_capacity, cached_descriptors,
 };
 mod ownership;
-pub use ownership::{OwnershipAnchor, OwnershipReleaseBarrier};
+pub use ownership::{OwnershipAnchor, OwnershipReleaseBarrier, OwnershipReleaseSignal};
 mod file_lock;
 pub use file_lock::{FileLock, FileLockMode};
 mod recovery;
@@ -156,7 +156,9 @@ mod task;
 pub use blocking_future::blocking_future;
 #[cfg(feature = "test-support")]
 pub mod testing;
-pub use blocking::{InlineBlocking, run_blocking_io};
+pub use blocking::{
+    BlockingWaitCredit, InlineBlocking, blocking_wait_credit, run_blocking_io, wait_native_future,
+};
 pub(crate) use blocking::{
     PreparedWake, inline_blocking_allowed, measured_completion_meter, task_completion,
     wait_measured_completion,

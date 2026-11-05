@@ -264,7 +264,7 @@ where
             generation,
             &self.repository,
             tracked,
-            u32::MAX,
+            None,
             &CancellationToken::new(),
         )
         .await

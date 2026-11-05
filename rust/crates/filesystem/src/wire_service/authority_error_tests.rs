@@ -188,9 +188,9 @@ async fn join_failure(error: StreamError, expected: Code) -> TestResult {
         .plan_join(Request::new(wire::PlanJoinRequest {
             source: Some(source),
             target: forked.head,
-            maximum_changes: 32,
-            maximum_conflicts: 8,
-            maximum_generations: 32,
+            maximum_changes: Some(32),
+            maximum_conflicts: Some(8),
+            maximum_generations: Some(32),
             history: wire::JoinHistory::Merge as i32,
         }))
         .await?

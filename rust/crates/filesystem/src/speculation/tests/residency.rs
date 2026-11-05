@@ -55,14 +55,6 @@ async fn option_validation_and_all_rejection_classes_are_total()
     let defaults = ResidencySpeculatorOptions::default();
     for invalid in [
         ResidencySpeculatorOptions {
-            maximum_active_operations: 0,
-            ..defaults
-        },
-        ResidencySpeculatorOptions {
-            maximum_active_bytes: 0,
-            ..defaults
-        },
-        ResidencySpeculatorOptions {
             outcome_window: 0,
             ..defaults
         },
@@ -108,7 +100,6 @@ async fn option_validation_and_all_rejection_classes_are_total()
     let generation_id = generation(42);
     let mut engine = ResidencySpeculator::new(
         ResidencySpeculatorOptions {
-            maximum_active_bytes: 32,
             speculative_cost_basis_points: 10_000,
             ..defaults
         },
@@ -130,10 +121,6 @@ async fn option_validation_and_all_rejection_classes_are_total()
         engine.admit(invalid_request)?,
         ResidencyAdmission::Rejected(ResidencyRejection::InvalidRequest)
     );
-    assert_eq!(
-        engine.admit(candidate(3, volume_id, generation_id, object_id))?,
-        ResidencyAdmission::Rejected(ResidencyRejection::ByteCapacity)
-    );
 
     let mut cost_limited = ResidencySpeculator::new(defaults, volume_id, generation_id)?;
     assert_eq!(
@@ -154,8 +141,6 @@ async fn bounded_feedback_windows_discard_only_oldest_samples()
     let generation_id = generation(53);
     let mut engine = ResidencySpeculator::new(
         ResidencySpeculatorOptions {
-            maximum_active_operations: 2,
-            maximum_active_bytes: 128,
             outcome_window: 1,
             traffic_window: 1,
             speculative_cost_basis_points: 10_000,
@@ -187,7 +172,7 @@ async fn bounded_feedback_windows_discard_only_oldest_samples()
 }
 
 #[tokio::test]
-async fn admission_is_generation_fenced_bounded_adaptive_and_exact()
+async fn admission_is_generation_fenced_adaptive_and_exact()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let first = object(&store, 1).await?;
@@ -195,8 +180,6 @@ async fn admission_is_generation_fenced_bounded_adaptive_and_exact()
     let volume_id = VolumeId::from_bytes([3; 16]);
     let current = generation(4);
     let options = ResidencySpeculatorOptions {
-        maximum_active_operations: 1,
-        maximum_active_bytes: 64,
         outcome_window: 2,
         traffic_window: 8,
         speculative_cost_basis_points: 10_000,
@@ -226,10 +209,6 @@ async fn admission_is_generation_fenced_bounded_adaptive_and_exact()
         engine.admit(duplicate_operation)?,
         ResidencyAdmission::Rejected(ResidencyRejection::DuplicateOperation)
     );
-    assert_eq!(
-        engine.admit(candidate(4, volume_id, current, second))?,
-        ResidencyAdmission::Rejected(ResidencyRejection::OperationCapacity)
-    );
     engine.finish(admitted.operation_id, false)?;
 
     let ResidencyAdmission::Admitted(_) = engine.admit(candidate(5, volume_id, current, second))?
@@ -244,7 +223,7 @@ async fn admission_is_generation_fenced_bounded_adaptive_and_exact()
     assert_eq!(
         engine.metrics(),
         ResidencyMetrics {
-            candidates: 7,
+            candidates: 6,
             admitted: 2,
             active: 0,
             active_bytes: 0,
@@ -252,7 +231,7 @@ async fn admission_is_generation_fenced_bounded_adaptive_and_exact()
             wasted: 2,
             rejected_fence: 1,
             rejected_duplicate: 2,
-            rejected_capacity: 1,
+            rejected_invalid: 0,
             rejected_cost: 0,
             rejected_usefulness: 1,
         }
@@ -274,8 +253,6 @@ async fn foreground_preemption_and_generation_replacement_terminalize_every_perm
     let current = generation(4);
     let mut engine = ResidencySpeculator::new(
         ResidencySpeculatorOptions {
-            maximum_active_operations: 2,
-            maximum_active_bytes: 128,
             speculative_cost_basis_points: 10_000,
             ..ResidencySpeculatorOptions::default()
         },

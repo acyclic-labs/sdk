@@ -134,14 +134,19 @@ impl Tty {
     }
 
     /// Read only classified events. Late probe replies remain in this decoder.
-    pub fn read_events(&mut self, deadline: Instant) -> io::Result<Vec<InputEvent>> {
+    pub fn read_events(&mut self, deadline: Option<Instant>) -> io::Result<Vec<InputEvent>> {
         let mut events = self.decoder.take_events();
         while events.is_empty() {
             let mut bytes = [0; 1024];
-            let count = self.receive(&mut bytes, self.decoder.input_deadline(deadline))?;
+            let count = receive(
+                &self.state,
+                &mut self.input,
+                &mut bytes,
+                self.decoder.input_deadline(deadline),
+            )?;
             self.decoder
                 .feed(bytes.get(..count).ok_or(io::ErrorKind::InvalidData)?)?;
-            if count == 0 || Instant::now() >= deadline {
+            if count == 0 || deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 self.decoder.finish_input()?;
                 events = self.decoder.take_events();
                 break;
@@ -168,7 +173,7 @@ impl ProbeIo for Tty {
     }
 
     fn receive(&mut self, bytes: &mut [u8], deadline: Instant) -> io::Result<usize> {
-        receive(&self.state, &mut self.input, bytes, deadline)
+        receive(&self.state, &mut self.input, bytes, Some(deadline))
     }
 
     fn detected(&mut self, caps: &Capabilities) -> io::Result<()> {
@@ -192,9 +197,9 @@ fn receive(
     state: &Mutex<State<RawTty>>,
     input: &mut impl InputReadiness,
     bytes: &mut [u8],
-    deadline: Instant,
+    deadline: Option<Instant>,
 ) -> io::Result<usize> {
-    while !bytes.is_empty() && Instant::now() < deadline {
+    while !bytes.is_empty() && deadline.is_none_or(|deadline| Instant::now() < deadline) {
         let active = {
             let mut state = state.lock().map_err(|_| io::ErrorKind::Other)?;
             // Ack and state admission share the transition producer's lock.
@@ -256,16 +261,16 @@ mod tests {
     }
 
     impl<F: FnMut(usize) -> io::Result<()>> InputReadiness for ControlledInput<'_, F> {
-        fn wait(&mut self, active: bool, _deadline: Instant) -> io::Result<bool> {
+        fn wait(&mut self, active: bool, _deadline: Option<Instant>) -> io::Result<bool> {
             self.active.push(active);
             if !active {
                 // Queued terminal bytes cannot wake a suspended session.
-                assert!(!self.input.wait(false, Instant::now())?);
+                assert!(!self.input.wait(false, Some(Instant::now()))?);
             }
             (self.before)(self.active.len())?;
             // The real event is already published. This one OS observation
             // also detects removal of the sole notifier without a timed hang.
-            self.input.wait(active, Instant::now())
+            self.input.wait(active, Some(Instant::now()))
         }
     }
 
@@ -319,21 +324,19 @@ mod tests {
                 },
             };
             let mut bytes = [0; 8];
-            assert_eq!(receive(&state, &mut wait, &mut bytes, Instant::now())?, 0);
-            assert!(wait.active.is_empty());
-            let result = receive(
-                &state,
-                &mut wait,
-                &mut bytes,
-                Instant::now() + Duration::from_secs(5),
+            assert_eq!(
+                receive(&state, &mut wait, &mut bytes, Some(Instant::now()))?,
+                0
             );
+            assert!(wait.active.is_empty());
+            let result = receive(&state, &mut wait, &mut bytes, None);
             let active = std::mem::take(&mut wait.active);
             drop(wait);
             match mode {
                 0 | 2 => {
                     let expected = if mode == 0 { b"x".as_slice() } else { b"x\n" };
                     assert_eq!(bytes.get(..result?), Some(expected));
-                    assert!(!input.wait(false, Instant::now())?, "wake queue grew");
+                    assert!(!input.wait(false, Some(Instant::now()))?, "wake queue grew");
                 }
                 1 | 3 => assert!(
                     matches!(&result, Err(error) if error.kind() == io::ErrorKind::NotConnected)
@@ -381,12 +384,7 @@ mod tests {
                 Ok(())
             },
         };
-        let result = receive(
-            &tty.state,
-            &mut wait,
-            &mut [0; 1],
-            Instant::now() + Duration::from_secs(5),
-        );
+        let result = receive(&tty.state, &mut wait, &mut [0; 1], None);
         assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::NotConnected));
         assert_eq!(wait.active, [true]);
         Ok(())
@@ -427,7 +425,7 @@ mod tests {
                     })?;
                     assert_eq!(count, 1);
                 } else {
-                    let events = tty.read_events(deadline)?;
+                    let events = tty.read_events(Some(deadline))?;
                     assert_eq!(events.len(), 1);
                 }
                 draw()?;
@@ -461,7 +459,7 @@ mod tests {
         // signal callback can. No scheduling or timing assumptions are needed.
         let retained = Arc::clone(&old.state);
         let (mut old, output) = old.split();
-        let events = old.read_events(Instant::now())?;
+        let events = old.read_events(Some(Instant::now()))?;
         let typed: String = events
             .iter()
             .filter_map(|event| match event {

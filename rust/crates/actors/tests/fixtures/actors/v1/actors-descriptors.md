@@ -125,3 +125,24 @@ unchanged. The Rust descriptor came from
 copied to both Rust descriptor paths. The Buf fixture came from the Buf build
 and `canonicalize actors` commands above. `node
 scripts/check-compatibility-digests.mjs write` recorded the descriptor digest.
+
+The 2026-11-01 capture at source `0f4a2a56f936` combines optional Actor limits
+with the publication fields above. The canonical Rust and independent Buf
+pipelines used the same maintained schema:
+
+```
+cargo run --locked -p sdk-proto-codegen -- descriptors . target/actor-optional-contract actors
+node_modules/.bin/buf build --path rust/crates/actors/proto/actors --exclude-source-info -o target/actor-optional-contract/actors-buf.bin
+cargo run --locked -p sdk-proto-codegen -- canonicalize actors target/actor-optional-contract/actors-buf.bin target/actor-optional-contract/actors-buf-v1.bin
+```
+
+The Rust output was copied to both Rust descriptor paths; the independently
+generated Buf output was copied to its own fixture. Manifest digests were
+recorded by `node scripts/check-compatibility-digests.mjs write`.
+
+The 2026-11-05 capture at source `c2f6bfd053a3` composes the optional Actor
+limits with the current imported authorization contracts. The Actors family
+of `scripts/capture-descriptors.mjs` invokes the same pinned Rust compiler,
+independent Buf build and canonicalizer shown above. Its actual Rust output
+was retained at both Rust descriptor paths, and the independent Buf output
+at its own fixture. The shared digest writer records their current hashes.

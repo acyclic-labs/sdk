@@ -203,8 +203,8 @@ async fn asked(
         Turns {
             executors: Arc::new(Approving(Arc::clone(&calls))),
             limits: TurnLimits {
-                maximum_bytes: 64 * 1024,
-                history_turns: 8,
+                maximum_bytes: Some(64 * 1024),
+                history_turns: Some(8),
             },
             actors: vectors::limits()?,
             clock: Arc::new(SystemClock),

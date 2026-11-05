@@ -158,6 +158,9 @@ pub(crate) trait HostChangeSink: Send + Sync {
 
     /// Reports the original cause before the terminal loss notification.
     fn delivery_failed(&self, _cause: &DemandError) {}
+    /// The batch callback and its original ledger scope have returned. Wake
+    /// observers here, so their wakers can safely re-enter either ledger.
+    fn delivery_finished(&self) {}
 
     #[cfg(windows)]
     fn host_changed_wide(

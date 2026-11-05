@@ -13,7 +13,6 @@ const DOMAIN: &[u8] = b"acyclic-fs-retention-created-v1\0";
 const ID_DOMAIN: &[u8] = b"acyclic-fs-retention-authority-v1\0";
 const DELETED_DOMAIN: &[u8] = b"acyclic-fs-workspace-deleted-v1\0";
 const VERSION: u16 = 1;
-const MAXIMUM_LABEL_BYTES: u32 = 255;
 
 /// Why one immutable generation remains durably reachable.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
@@ -64,7 +63,7 @@ pub struct RetentionCreated {
 /// Canonical retention codec failure.
 #[derive(Debug, Error)]
 pub enum RetentionCreatedError {
-    /// Retention label is absent, oversized, or contains a forbidden scalar.
+    /// Retention label is absent or contains a forbidden scalar.
     #[error("retention label is invalid")]
     InvalidLabel,
     /// Retained object is not a generation root.
@@ -129,14 +128,19 @@ pub fn encode_retention_created<E: From<CanonicalDecodeError> + From<RetentionCr
     };
     observe(EncodeWorkStep::Admit(item))?;
     observe(EncodeWorkStep::Completed(item))?;
-    let length = DOMAIN.len()
-        + 2
-        + 16
-        + 1
-        + 4
-        + value.label.len()
-        + value.generation_root.encoded_len()
-        + CONFIG_ENCODED_BYTES;
+    let length = value
+        .label
+        .len()
+        .checked_add(
+            DOMAIN.len()
+                + 2
+                + 16
+                + 1
+                + 4
+                + value.generation_root.encoded_len()
+                + CONFIG_ENCODED_BYTES,
+        )
+        .ok_or(RetentionCreatedError::Work(crate::WorkError::Overflow))?;
     let mut encoder = Encoder::with_exact_capacity(
         DOMAIN,
         VERSION,
@@ -207,7 +211,7 @@ where
     let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, maximum_payload_bytes, observe)?;
     let volume_id = VolumeId::from_bytes(decoder.fixed(observe)?);
     let kind = RetentionKind::from_tag(decoder.u8(observe)?)?;
-    let label = std::str::from_utf8(decoder.bounded_slice(MAXIMUM_LABEL_BYTES, observe)?)
+    let label = std::str::from_utf8(decoder.bounded_slice(u32::try_from(bytes.len()).unwrap_or(u32::MAX), observe)?)
         .map_err(|_| RetentionCreatedError::InvalidLabel)?;
     let generation_root = decoder.object(ObjectKind::GenerationRoot, observe)?;
     let config = decode_config(&mut decoder, observe)?
@@ -257,7 +261,6 @@ fn validate_fields(
         return Err(RetentionCreatedError::WrongObjectKind);
     }
     if label.is_empty()
-        || u32::try_from(label.len()).unwrap_or(u32::MAX) > MAXIMUM_LABEL_BYTES
         || label
             .chars()
             .any(|character| character.is_control() || matches!(character, '/' | '\\'))

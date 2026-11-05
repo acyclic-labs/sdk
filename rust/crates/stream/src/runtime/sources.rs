@@ -2,7 +2,10 @@
 use super::signal;
 use super::sync::{AtomicU64, Ordering};
 use crate::{StreamError, wire};
-use futures::{Stream, task::ArcWake};
+use futures::{
+    Stream,
+    task::{ArcWake, AtomicWaker},
+};
 use std::{
     collections::BTreeMap,
     pin::Pin,
@@ -16,10 +19,36 @@ pub(crate) const ALL: usize = 1;
 pub(crate) const LATEST: usize = 2;
 pub(crate) const EITHER: usize = 3;
 
-pub(crate) struct Wake {
+/// Optional notification accompanying a source's shared ready hint.
+/// The default has no storage or wake work.
+pub trait SourceWake: Default + Send + Sync + 'static {
+    /// Whether external interest changes can accompany independent reads.
+    const NOTIFY_INTEREST: bool;
+    /// Notify an independently waiting reader.
+    fn wake(&self);
+}
+
+impl SourceWake for () {
+    const NOTIFY_INTEREST: bool = false;
+    fn wake(&self) {}
+}
+
+/// Wake registration for an independently polled source.
+#[derive(Default)]
+pub struct SourceReader(AtomicWaker);
+
+impl SourceWake for SourceReader {
+    const NOTIFY_INTEREST: bool = true;
+    fn wake(&self) {
+        self.0.wake();
+    }
+}
+
+pub(crate) struct Wake<N: SourceWake = ()> {
     pub(crate) identity: wire::SessionChannel,
     pub(crate) queued: AtomicU64,
     pub(crate) signal: Arc<signal::Signal<wire::SessionChannel>>,
+    reader: N,
     #[cfg(loom)]
     pub(crate) omit_signal: bool,
     #[cfg(loom)]
@@ -27,7 +56,7 @@ pub(crate) struct Wake {
     #[cfg(loom)]
     pub(crate) release_only: bool,
 }
-impl Wake {
+impl<N: SourceWake> Wake<N> {
     fn recheck<T>(&self, provider: impl FnOnce() -> T) -> T {
         #[cfg(loom)]
         let late = self.clear_after_recheck;
@@ -54,7 +83,7 @@ impl Wake {
         result
     }
 }
-impl Wake {
+impl<N: SourceWake> Wake<N> {
     // Return whether this publication joined an already queued hint. The model
     // uses that observation without adding a synchronizing lock or handshake.
     pub(crate) fn notify(&self) -> bool {
@@ -66,10 +95,11 @@ impl Wake {
             }
             let _ = self.signal.send(self.identity);
         }
+        self.reader.wake();
         coalesced
     }
 }
-impl ArcWake for Wake {
+impl<N: SourceWake> ArcWake for Wake<N> {
     fn wake_by_ref(wake: &Arc<Self>) {
         wake.notify();
     }
@@ -86,9 +116,9 @@ pub(crate) struct Queue {
     pub(crate) first: Option<u64>,
     pub(crate) last: Option<u64>,
 }
-pub(crate) struct Entry<S> {
+pub(crate) struct Entry<S, N: SourceWake = ()> {
     pub(crate) stream: S,
-    pub(crate) wake: Arc<Wake>,
+    pub(crate) wake: Arc<Wake<N>>,
     pub(crate) opening: bool,
     pub(crate) mode: Option<usize>,
     pub(crate) ready: bool,
@@ -101,11 +131,11 @@ pub(crate) struct Entry<S> {
 /// behind its ready peers without allocating another task. Removing a source
 /// drops its stream immediately, independently of delivery credit. An exhausted
 /// source is removed; callers that require a typed closure must emit that item.
-pub struct ReadySources<S> {
+pub struct ReadySources<S, N: SourceWake = ()> {
     // Streams, links and modes belong exclusively to the session event loop.
     // A provider waker touches only its atomic and the existing Signal lock;
     // it never polls a provider or acquires another lock while signaling.
-    pub(crate) entries: BTreeMap<u64, Entry<S>>,
+    pub(crate) entries: BTreeMap<u64, Entry<S, N>>,
     pub(crate) queues: [Queue; 4],
     pub(crate) signal: Arc<signal::Signal<wire::SessionChannel>>,
     preferred: usize,
@@ -116,6 +146,12 @@ impl<S: Stream + Unpin> ReadySources<S> {
     /// Creates an empty owner with no task or timer.
     #[must_use]
     pub fn new() -> Self {
+        Self::empty()
+    }
+}
+
+impl<S: Stream + Unpin, N: SourceWake> ReadySources<S, N> {
+    fn empty() -> Self {
         Self {
             entries: BTreeMap::new(),
             queues: Default::default(),
@@ -155,6 +191,7 @@ impl<S: Stream + Unpin> ReadySources<S> {
                     identity,
                     queued: AtomicU64::new(0),
                     signal: self.signal.clone(),
+                    reader: N::default(),
                     #[cfg(loom)]
                     omit_signal: false,
                     #[cfg(loom)]
@@ -169,6 +206,9 @@ impl<S: Stream + Unpin> ReadySources<S> {
             },
         );
         self.enqueue(identity.channel_id);
+        if N::NOTIFY_INTEREST {
+            let _ = self.signal.wake();
+        }
     }
     pub(crate) fn mode(&mut self, id: u64, mode: Option<usize>) {
         if self.entries.get(&id).is_none_or(|entry| entry.mode == mode) {
@@ -183,7 +223,12 @@ impl<S: Stream + Unpin> ReadySources<S> {
     /// Cancels and drops a source, even when delivery has no credit.
     pub fn remove(&mut self, id: u64) {
         self.unlink(id);
-        self.entries.remove(&id);
+        if let Some(entry) = self.entries.remove(&id) {
+            entry.wake.reader.wake();
+            if N::NOTIFY_INTEREST {
+                let _ = self.signal.wake();
+            }
+        }
     }
     pub(crate) fn unlink(&mut self, id: u64) {
         let Some(links) = self.entries.get_mut(&id).and_then(|e| e.links.take()) else {
@@ -303,26 +348,12 @@ impl<S: Stream + Unpin> ReadySources<S> {
     ) -> Poll<Result<Option<S::Item>, StreamError>> {
         let mut polled = 0;
         loop {
-            while let Some(identity) = self.signal.try_next()? {
-                self.wake(identity);
-            }
+            self.notified()?;
             if let Some(id) = self.pop(room) {
-                // A queued id always names a live entry.
-                let Some(entry) = self.entries.get_mut(&id) else {
-                    continue;
-                };
-                entry.ready = false;
-                let waker = futures::task::waker_ref(&entry.wake);
-                match entry.wake.recheck(|| {
-                    Pin::new(&mut entry.stream).poll_next(&mut Context::from_waker(&waker))
-                }) {
-                    Poll::Ready(Some(event)) => {
-                        entry.opening = false;
-                        entry.ready = true;
-                        self.enqueue(id);
-                        return Poll::Ready(Ok(Some(event)));
-                    }
-                    Poll::Ready(None) => self.remove(id),
+                match self.poll_entry(id) {
+                    Poll::Ready(Some(event)) => return Poll::Ready(Ok(Some(event))),
+                    Poll::Ready(None) if self.entries.is_empty() => return Poll::Ready(Ok(None)),
+                    Poll::Ready(None) => {}
                     Poll::Pending => {}
                 }
                 polled += 1;
@@ -358,15 +389,43 @@ impl<S: Stream + Unpin> ReadySources<S> {
             }
         }
     }
-}
 
-impl<S: Stream + Unpin> Default for ReadySources<S> {
-    fn default() -> Self {
-        Self::new()
+    fn notified(&mut self) -> Result<(), StreamError> {
+        while let Some(identity) = self.signal.try_next()? {
+            self.wake(identity);
+        }
+        Ok(())
+    }
+
+    fn poll_entry(&mut self, id: u64) -> Poll<Option<S::Item>> {
+        let Some(entry) = self.entries.get_mut(&id) else {
+            return Poll::Ready(None);
+        };
+        entry.ready = false;
+        let waker = futures::task::waker_ref(&entry.wake);
+        let result = entry
+            .wake
+            .recheck(|| Pin::new(&mut entry.stream).poll_next(&mut Context::from_waker(&waker)));
+        match &result {
+            Poll::Ready(Some(_)) => {
+                entry.opening = false;
+                entry.ready = true;
+                self.enqueue(id);
+            }
+            Poll::Ready(None) => self.remove(id),
+            Poll::Pending => {}
+        }
+        result
     }
 }
 
-impl<S: Stream + Unpin> ReadySources<S> {
+impl<S: Stream + Unpin, N: SourceWake> Default for ReadySources<S, N> {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl<S: Stream + Unpin, N: SourceWake> ReadySources<S, N> {
     /// Registers a stream for unrestricted delivery. The caller's identity and
     /// generation fence stale provider wakes; they confer no access authority.
     pub fn register(&mut self, identity: wire::SessionChannel, stream: S) {
@@ -389,7 +448,13 @@ impl<S: Stream + Unpin> ReadySources<S> {
     /// Removes a source while transferring its stream to the caller.
     pub fn take(&mut self, id: u64) -> Option<S> {
         self.unlink(id);
-        self.entries.remove(&id).map(|entry| entry.stream)
+        self.entries.remove(&id).map(|entry| {
+            entry.wake.reader.wake();
+            if N::NOTIFY_INTEREST {
+                let _ = self.signal.wake();
+            }
+            entry.stream
+        })
     }
 
     /// Polls one ready source, with round-robin service among ready peers.
@@ -399,5 +464,38 @@ impl<S: Stream + Unpin> ReadySources<S> {
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<S::Item>, StreamError>> {
         self.poll((true, true, true), cx)
+    }
+}
+
+impl<S: Stream + Unpin> ReadySources<S, SourceReader> {
+    /// Creates an owner supporting any-ready and independent keyed reads.
+    #[must_use]
+    pub fn with_readers() -> Self {
+        Self::empty()
+    }
+
+    /// Polls one registered source using the same provider wake and queue node.
+    /// Each key retains its own pending reader; another key cannot replace it.
+    /// Removing the source wakes its keyed reader, whose next poll returns None.
+    pub fn poll_one(
+        &mut self,
+        id: u64,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Option<S::Item>, StreamError>> {
+        // Direct readers retire the same hints as combined delivery. Leaving
+        // them queued would retain one obsolete hint per historical wake.
+        self.notified()?;
+        let Some(entry) = self.entries.get(&id) else {
+            return Poll::Ready(Ok(None));
+        };
+        entry.wake.reader.0.register(cx.waker());
+        self.unlink(id);
+        let result = self.poll_entry(id);
+        if result.is_ready()
+            && let Some(entry) = self.entries.get(&id)
+        {
+            entry.wake.reader.0.take();
+        }
+        result.map(Ok)
     }
 }

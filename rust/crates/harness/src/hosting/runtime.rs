@@ -57,6 +57,17 @@ impl Runtime {
         self.failure.borrow().clone()
     }
 
+    /// Keeps client admission under the application's original lifetime,
+    /// including closure before admission or during a Session handshake.
+    pub(crate) async fn admit<T>(&self, operation: impl Future<Output = Result<T>>) -> Result<T> {
+        let mut lifetime = self.lifetime.clone();
+        tokio::select! {
+            biased;
+            _ = lifetime.changed() => Err(retained_failure(&self.failure)),
+            result = operation => result,
+        }
+    }
+
     /// Waits for the actual runtime failure or the loss of its task producer.
     /// Each observer shares the same retained failure; no polling or history.
     pub fn completion(&self) -> impl Future<Output = Result<()>> + Send + 'static {
@@ -65,13 +76,16 @@ impl Runtime {
         async move {
             // Cancellation of every active delivery precedes endpoint closure.
             let _ = lifetime.changed().await;
-            let reason = failure.borrow().as_ref().map_or_else(
-                || "Actors runtime completion producer closed".into(),
-                Clone::clone,
-            );
-            Err(Error::Storage(reason))
+            Err(retained_failure(&failure))
         }
     }
+}
+
+fn retained_failure(failure: &watch::Receiver<Option<String>>) -> Error {
+    Error::Storage(failure.borrow().as_ref().map_or_else(
+        || "Actors runtime completion producer closed".into(),
+        Clone::clone,
+    ))
 }
 
 impl Drop for Runtime {

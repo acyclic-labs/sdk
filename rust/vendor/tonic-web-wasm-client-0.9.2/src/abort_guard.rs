@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{cell::RefCell, rc::Rc, time::Duration};
 
 use js_sys::Function;
 use wasm_bindgen::{
@@ -16,12 +16,44 @@ extern "C" {
 
     #[wasm_bindgen(js_name = "clearTimeout")]
     fn clear_timeout(handle: JsValue) -> JsValue;
+
+    #[wasm_bindgen(js_namespace = performance, js_name = now)]
+    fn now() -> f64;
+}
+
+/// One timer registration, rearmed only when the host's interval expires.
+struct Timeout {
+    handle: JsValue,
+    callback: Option<Closure<dyn FnMut()>>,
+    remaining: Duration,
+    started: f64,
+}
+
+impl Timeout {
+    fn arm(&mut self) {
+        // Round up so a sub-millisecond remainder cannot expire early. Long
+        // deadlines use several host intervals instead of shortening the call.
+        let delay =
+            self.remaining.as_millis() + u128::from(self.remaining.subsec_nanos() % 1_000_000 != 0);
+        let delay = i32::try_from(delay).unwrap_or(i32::MAX);
+        self.started = now();
+        self.handle = set_timeout(
+            self.callback.as_ref().unwrap().as_ref().unchecked_ref(),
+            delay,
+        );
+    }
+}
+
+impl Drop for Timeout {
+    fn drop(&mut self) {
+        clear_timeout(self.handle.clone());
+    }
 }
 
 /// A guard that cancels a fetch request when dropped.
 pub struct AbortGuard {
     ctrl: AbortController,
-    timeout: Option<(JsValue, Closure<dyn FnMut()>)>,
+    timeout: Option<Rc<RefCell<Timeout>>>,
 }
 
 impl AbortGuard {
@@ -37,48 +69,45 @@ impl AbortGuard {
     }
 
     pub fn timeout(&mut self, timeout: Duration) {
+        self.timeout = None;
+        let timer = Rc::new(RefCell::new(Timeout {
+            handle: JsValue::UNDEFINED,
+            callback: None,
+            remaining: timeout,
+            started: 0.0,
+        }));
+        let weak = Rc::downgrade(&timer);
         let ctrl = self.ctrl.clone();
-        let abort = Closure::once(move || {
-            ctrl.abort_with_reason(&"tonic_web_wasm_client::Error::TimedOut".into())
+        let callback = Closure::new(move || {
+            let Some(timer) = weak.upgrade() else { return };
+            let expired = {
+                let mut timer = timer.borrow_mut();
+                let elapsed = (now() - timer.started).max(0.0);
+                let elapsed = Duration::from_millis(elapsed as u64)
+                    + Duration::from_nanos((elapsed.fract() * 1_000_000.0) as u64);
+                timer.remaining = timer.remaining.saturating_sub(elapsed);
+                if timer.remaining.is_zero() {
+                    true
+                } else {
+                    timer.arm();
+                    false
+                }
+            };
+            // Abort listeners can drop the request synchronously. Release the
+            // timer's borrow before notifying them.
+            if expired {
+                ctrl.abort_with_reason(&"tonic_web_wasm_client::Error::TimedOut".into());
+            }
         });
-        let timeout = set_timeout(
-            abort.as_ref().unchecked_ref::<js_sys::Function>(),
-            timeout_millis(timeout),
-        );
-        if let Some((id, _)) = self.timeout.replace((timeout, abort)) {
-            clear_timeout(id);
-        }
+        timer.borrow_mut().callback = Some(callback);
+        timer.borrow_mut().arm();
+        self.timeout = Some(timer);
     }
-}
-
-/// The `setTimeout` delay for `timeout`. The delay is a signed 32-bit number of milliseconds, and
-/// browsers fire at once for a larger one, so a longer timeout is clamped to the largest delay,
-/// about 24.8 days.
-fn timeout_millis(timeout: Duration) -> i32 {
-    timeout.as_millis().try_into().unwrap_or(i32::MAX)
 }
 
 impl Drop for AbortGuard {
     fn drop(&mut self) {
+        self.timeout = None;
         self.ctrl.abort();
-
-        if let Some((id, _)) = self.timeout.take() {
-            clear_timeout(id);
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn timeout_is_clamped_to_the_largest_set_timeout_delay() {
-        let largest = Duration::from_millis(i32::MAX as u64);
-
-        assert_eq!(timeout_millis(Duration::from_millis(1500)), 1500);
-        assert_eq!(timeout_millis(largest), i32::MAX);
-        assert_eq!(timeout_millis(largest + Duration::from_millis(1)), i32::MAX);
-        assert_eq!(timeout_millis(Duration::MAX), i32::MAX);
     }
 }

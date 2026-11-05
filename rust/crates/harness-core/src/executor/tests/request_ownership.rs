@@ -141,7 +141,7 @@ async fn funded_request_and_projection_share_one_owned_history() -> Result<()> {
             content: ModelContent::Text("input".into()),
         }])?;
     let limits = Limits {
-        attachments: 1,
+        attachments: std::num::NonZeroUsize::new(1),
         ..executor.limits
     };
     for (limits, count, expected) in [
@@ -149,7 +149,7 @@ async fn funded_request_and_projection_share_one_owned_history() -> Result<()> {
         (limits, 2, Err(crate::wire::ErrorCode::Invalid)),
         (
             Limits {
-                path_bytes: 1,
+                path_bytes: std::num::NonZeroUsize::new(1),
                 ..limits
             },
             1,

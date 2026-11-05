@@ -121,12 +121,6 @@ pub const HTTP_STREAM_ROUTES: &[(&str, &str, &str)] = &[(
     "AvailabilityCursor",
 )];
 
-/// Largest caller-supplied PEM CA, client certificate, or private key.
-#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
-const MAX_PEM_BYTES: usize = 64 * 1024;
-/// Largest bearer credential, in bytes, that an SDK client accepts.
-pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
-
 /// Semantic service failure or the original local operation stop.
 ///
 /// Its `source` is the local stop or, for a remote failure, the server's

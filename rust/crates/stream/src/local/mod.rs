@@ -11,9 +11,9 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, PoisonError};
 
-use crate::query_sync::{RwLock, SyncMutex as Mutex, watch};
 #[cfg(test)]
-use crate::{ForkRequest, OwnedBytes as Bytes};
+use crate::OwnedBytes as Bytes;
+use crate::query_sync::{RwLock, SyncMutex as Mutex, watch};
 #[cfg(not(loom))]
 use acyclic_native_runtime::spawn_persistence as spawn_blocking;
 #[cfg(all(not(loom), any(test, feature = "test-support")))]

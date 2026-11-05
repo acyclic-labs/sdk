@@ -17,7 +17,7 @@ fn launch_failure_returns_its_cause_and_original_custody()
         inherit_environment: false,
         execution_grant: None,
         schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
-        maximum_output_bytes: 1024,
+        maximum_output_bytes: Some(1024),
         standard_input: None,
         process_custody: None,
     };
@@ -165,7 +165,7 @@ fn interactive_completion_retains_input_producer_and_cleanup()
                 inherit_environment: true,
                 execution_grant: None,
                 schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
-                maximum_output_bytes: 32_768,
+                maximum_output_bytes: Some(32_768),
                 standard_input: Some(OwnedCaptureInput::Interactive {
                     initial: Vec::new(),
                     maximum: 5,
@@ -276,7 +276,7 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
             inherit_environment: true,
             execution_grant: None,
             schedule,
-            maximum_output_bytes: 32_768,
+            maximum_output_bytes: Some(32_768),
             standard_input: None,
             process_custody: None,
         };
@@ -404,7 +404,7 @@ mod simulation {
                         request.schedule,
                         acyclic_native_runtime::CaptureSchedule::Unbounded
                     );
-                    assert_eq!(request.maximum, 3);
+                    assert_eq!(request.maximum, Some(3));
                     assert!(request.input.is_none());
                     check().expect("script ownership check");
                     for chunk in [b"s".as_slice(), b"im".as_slice()] {
@@ -433,7 +433,7 @@ mod simulation {
                 inherit_environment: false,
                 execution_grant: None,
                 schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
-                maximum_output_bytes: 3,
+                maximum_output_bytes: Some(3),
                 process_custody: None,
                 standard_input: None,
             };
@@ -566,6 +566,12 @@ mod simulation {
             && ["native:submitted", "control:pending", "native:completed"]
                 .iter()
                 .all(|phase| observed.boundaries.contains(phase))
+            && observed
+                .boundaries
+                .iter()
+                .filter(|phase| **phase == "capture:control")
+                .count()
+                == 1
             && !observed.trace.iter().any(|event| event == "blocking:dispatch")
     }
 

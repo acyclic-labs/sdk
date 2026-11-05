@@ -72,8 +72,10 @@ impl LocalMachine {
         &self,
         command: ExecCommand,
         mut handler: H,
-        deadline: Option<std::time::Instant>,
+        deadline: impl Into<Option<std::time::Instant>>,
     ) -> LocalExecution<H> {
+        let deadline = deadline.into();
+        let schedule = deadline.map_or(CaptureSchedule::Unbounded, CaptureSchedule::until);
         let machine = self.id;
         let (maximum, control) = match admit(&command) {
             Ok(admitted) => admitted,
@@ -108,7 +110,7 @@ impl LocalMachine {
             execution_grant: None,
             input: (!command.stdin.is_empty()).then_some(OwnedCaptureInput::Literal(command.stdin)),
             schedule: deadline.map_or(CaptureSchedule::Unbounded, CaptureSchedule::until),
-            maximum_output_bytes: maximum,
+            maximum_output_bytes: maximum.into(),
         }.stream(control.bind(handler)).await.map_err(|failure| match failure {
             LaunchFailure::Refused { failure, handler } => (
                 ProviderError::Rejected(format!("local command refused before spawn: {}; recovery: restore original workspace authority before a new command", failure.error)),
@@ -134,8 +136,8 @@ impl LocalMachine {
     }
 }
 
-fn admit(command: &ExecCommand) -> Result<(usize, ProcessControl), ProviderError> {
-    let maximum = command.maximum_output_bytes.map_or(Ok(usize::MAX), usize::try_from)
+fn admit(command: &ExecCommand) -> Result<(Option<usize>, ProcessControl), ProviderError> {
+    let maximum = command.maximum_output_bytes.map(usize::try_from).transpose()
         .map_err(|_| ProviderError::Invalid("local output allowance is not representable; recovery: select an addressable byte allowance".into()))?;
     let control = match command.expiry_unix_ms {
         Some(expiry) => ProcessControl::open(expiry),

@@ -20,7 +20,7 @@ impl DeleteWorkerRequest {
     pub fn new(worker_name: ActorNamespace, idempotency_key: String) -> Result<Self, DomainError> {
         crate::addressing::validate_dns_label(worker_name.as_str().as_bytes())
             .map_err(|_| DomainError::InvalidBinding)?;
-        if idempotency_key.is_empty() || idempotency_key.len() > 256 {
+        if !crate::contract::valid_idempotency_key(&idempotency_key) {
             return Err(DomainError::Contract(crate::ContractError::InvalidArgument));
         }
         Ok(Self {

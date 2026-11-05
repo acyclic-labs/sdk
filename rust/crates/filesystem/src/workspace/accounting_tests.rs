@@ -1099,7 +1099,7 @@ async fn workspace_byte_reads_retire_namespace_scratch_and_keep_original_output(
                             &workspace,
                             selector,
                             "/inline",
-                            5,
+                            Some(5),
                             &source,
                             &cancellation,
                         )

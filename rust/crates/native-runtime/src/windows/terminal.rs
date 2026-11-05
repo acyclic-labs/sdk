@@ -138,7 +138,7 @@ pub fn console_read(
     input: usize,
     closed: &ConsoleClose,
     bytes: &mut [u8],
-    deadline: Instant,
+    deadline: Option<Instant>,
 ) -> io::Result<usize> {
     let length = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
     if bytes.is_empty() {
@@ -208,20 +208,24 @@ impl ConsoleClose {
         Ok(())
     }
 
-    fn wait(&self, input: usize, deadline: Instant) -> io::Result<bool> {
+    fn wait(&self, input: usize, deadline: Option<Instant>) -> io::Result<bool> {
         let handles = [self.event.as_raw_handle() as HANDLE, input as HANDLE];
         loop {
-            let now = Instant::now();
-            if now >= deadline {
-                return Ok(false);
-            }
-            let remaining = deadline - now;
-            // Round up to the OS millisecond unit; never turn a remaining
-            // fraction into an immediate readiness recheck. The OS maximum
-            // is a wait chunk, not an earlier caller deadline.
-            let milliseconds =
-                remaining.as_millis() + u128::from(remaining.subsec_nanos() % 1_000_000 != 0);
-            let timeout = milliseconds.min(u128::from(u32::MAX - 1)) as u32;
+            let timeout = match deadline {
+                Some(deadline) => {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        return Ok(false);
+                    }
+                    let remaining = deadline - now;
+                    // Round up to the OS unit; the finite maximum is only a
+                    // wait chunk. INFINITE belongs exclusively to None.
+                    let milliseconds = remaining.as_millis()
+                        + u128::from(remaining.subsec_nanos() % 1_000_000 != 0);
+                    milliseconds.min(u128::from(u32::MAX - 1)) as u32
+                }
+                None => u32::MAX,
+            };
             // SAFETY: both original handles are retained by their owners;
             // this fixed array lives through the wait. Close has priority
             // when both sources are ready.
@@ -232,5 +236,54 @@ impl ConsoleClose {
                 _ => return Err(io::Error::last_os_error()),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, mpsc};
+
+    #[test]
+    fn owner_close_wakes_input_and_precedes_simultaneous_readiness() -> io::Result<()> {
+        let input = Arc::new(ConsoleClose::new()?);
+        let closed = Arc::new(ConsoleClose::new()?);
+        let reader_input = Arc::clone(&input);
+        let reader_closed = Arc::clone(&closed);
+        let (started, ready) = mpsc::sync_channel(0);
+        let worker = std::thread::spawn(move || {
+            started.send(()).map_err(io::Error::other)?;
+            console_read(
+                reader_input.event.as_raw_handle() as usize,
+                &reader_closed,
+                &mut [0; 1],
+                None,
+            )
+        });
+        ready.recv().map_err(io::Error::other)?;
+        closed.signal()?;
+        assert_eq!(
+            worker
+                .join()
+                .map_err(|_| io::Error::other("input worker panicked"))?
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotConnected,
+        );
+        // A signalled input event is deliberately not a console handle. If
+        // close loses priority the attempted console read fails differently.
+        input.signal()?;
+        assert_eq!(
+            console_read(
+                input.event.as_raw_handle() as usize,
+                &closed,
+                &mut [0; 1],
+                None
+            )
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::NotConnected,
+        );
+        Ok(())
     }
 }

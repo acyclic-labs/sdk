@@ -2,7 +2,9 @@
 mod applied;
 mod state_binding;
 pub use state_binding::{ActorStateBinding, ActorStateTransaction};
+mod disposition;
 mod invoke;
+pub use disposition::{FailedDelivery, FailureDisposition, FailureEntry, FailureResolution};
 pub use invoke::{CommittedInvocation, InvocationReceipt, InvocationTicket};
 /// Shared readiness registration and hibernation handoff.
 pub mod ready;
@@ -298,6 +300,7 @@ pub struct PreparedPublish {
     state: Option<State>,
     call: Option<(crate::call::CallPath, Trigger)>,
     journal: Option<StreamPath>,
+    failure_owner: Option<StreamPath>,
     request: CommitRequest,
     composition: Option<Box<dyn Composition>>,
     sealed: bool,
@@ -376,6 +379,7 @@ impl PreparedPublish {
             state: None,
             call: None,
             journal: None,
+            failure_owner: None,
             composition: None,
             sealed: false,
             acknowledgement_unknown: false,
@@ -418,8 +422,22 @@ impl PreparedPublish {
     }
     /// Add one participant, keeping conditions canonical (one per path, sorted)
     /// and merging appends to the same path in order. The actor's own state
-    /// stream cannot be named; disagreeing cuts on one path are refused.
+    /// stream and host-owned failure subtree cannot be named; disagreeing cuts
+    /// on one path are refused.
     pub fn join(&mut self, effect: Effect) -> Result<(), Error> {
+        if self
+            .own
+            .as_ref()
+            .or(self.failure_owner.as_ref())
+            .is_some_and(|owner| disposition::targets_failures(&effect.mutation, owner))
+        {
+            return Err(Error::Invalid("effect changes the host's failures"));
+        }
+        self.join_host(effect)
+    }
+
+    // Only the host's failure publisher may contribute reserved failure records.
+    fn join_host(&mut self, effect: Effect) -> Result<(), Error> {
         if self.sealed {
             return Err(Error::Invalid(
                 "sealed actor publication cannot accept effects",
@@ -497,7 +515,9 @@ impl PreparedPublish {
     }
 }
 
-/// Bind the original caller intent, before resolving mutable parent/input cuts.
+/// Bind the original caller intent and current fork format before resolving
+/// mutable parent/input cuts. Version 2 reserves the host failure subtree;
+/// older acceptance envelopes are outside this data generation.
 fn fork_key(
     child: &StreamPath,
     request: &crate::wire::ForkActorRequest,
@@ -505,7 +525,7 @@ fn fork_key(
     use prost::Message as _;
     use sha2::Digest as _;
     let mut hash = sha2::Sha256::new();
-    hash.update(b"acyclic.actors.fork.v1\0");
+    hash.update(b"acyclic.actors.fork.v2\0");
     hash.update(child.as_str().as_bytes());
     hash.update([0]);
     hash.update(request.encode_to_vec());
@@ -635,7 +655,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     /// The companion effects that fork `parent`'s exact state cut into a new
     /// lazily placed `child` inside a caller-built commit: a Streams fork of the parent's state
     /// subtree, so its checkpoint, metadata, journal, alarm and pause state are
-    /// shared rather than copied, plus the child's activation-log entry.
+    /// shared rather than copied, plus the child's activation-log entry. Host-owned
+    /// failed-input dispositions stay with the parent and are excluded.
     /// `subscriptions` binds the child's own inputs under the parent's exact
     /// subscription ids, as create binds a new actor's. The commit conflicts
     /// if the parent moved past `parent`'s cut or `child` already exists. The
@@ -683,7 +704,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     CommitCondition::Absent { path: path.clone() },
                 ],
                 mutation: CommitMutation::Fork {
-                    exclude: Vec::new(),
+                    exclude: disposition::fork_exclusions()?,
                     source: parent.path.clone(),
                     destination: path,
                     at_tail: parent.tail,
@@ -700,7 +721,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     /// hosted platform alike); `account` is the caller's authenticated
     /// account, used when the request names none. The commit key binds the
     /// child and original request, so retrying an unchanged request recovers
-    /// its original fork before reading current heads. A child that exists
+    /// its original version-2 fork before reading current heads. Prior fork
+    /// formats require a fresh data generation; no legacy receipt is adopted.
+    /// A child that exists
     /// under another intent, or a parent that moves before acceptance, is
     /// [`Error::Conflict`]. Fresh work: one retry-identity lookup, one parent
     /// read, one head per `current_head` subscription, and one commit. Settled
@@ -775,7 +798,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             && envelope.mutations.len() == 2
             && envelope.mutations.iter().any(|mutation| {
                 matches!(mutation, acyclic_stream::CommittedMutation::Fork(fork)
-                    if fork.source == *parent && fork.destination == *child && fork.exclude.is_empty())
+                    if fork.source == *parent && fork.destination == *child
+                        && disposition::is_fork_exclusion(&fork.exclude))
             })
         {
             return Ok(true);
@@ -1076,6 +1100,26 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                                         .filter(|mutation| mutation_targets(mutation, journal))
                                         .count()
                             })
+                            || prepared
+                                .own
+                                .as_ref()
+                                .or(prepared.failure_owner.as_ref())
+                                .is_some_and(|owner| {
+                                    request
+                                        .mutations
+                                        .iter()
+                                        .filter(|mutation| {
+                                            disposition::targets_failures(mutation, owner)
+                                        })
+                                        .count()
+                                        != original
+                                            .mutations
+                                            .iter()
+                                            .filter(|mutation| {
+                                                disposition::targets_failures(mutation, owner)
+                                            })
+                                            .count()
+                                })
                         {
                             return Err(Error::Invalid(
                                 "composition changed the actor publication",
@@ -1193,6 +1237,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             state: Some(state),
             call: None,
             journal: None,
+            failure_owner: None,
             composition: None,
             sealed: false,
             acknowledgement_unknown: false,

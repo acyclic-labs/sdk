@@ -10,7 +10,6 @@
         "maximumPageItems": 1024,
         "maximumRequestBytes": "16777216",
         "maximumResponseBytes": "16777216",
-        "maximumTransactionMutations": 2048,
         "profiles": [
           "FILESYSTEM_PROFILE_PORTABLE",
           "FILESYSTEM_PROFILE_POSIX",
@@ -20,7 +19,7 @@
       },
       "protocol": {
         "protocol": {
-          "descriptorDigest": "0d2f20e6a20ea342c256973888ebc40798aa73e39f259410179c72392aee5fcc",
+          "descriptorDigest": "823ed3117ba1327bcf6b1e40b6626db62117ee1999bf1ca5ed981a0e10ec8c93",
           "version": "1"
         },
         "supported": {
@@ -49,7 +48,7 @@
       "status": "MUTATION_STATUS_COMMITTED",
       "workspace": {
         "head": {
-          "generationId": "POeoQcWBPR/sg/+tGmuKwkenNepRajfngMNTnnca3q4=",
+          "generationId": "BmcqWvaZgTNitWp20EV+S6yDRG4tTzZJZJrmW9CVPW0B",
           "workspace": {
             "name": "same-name",
             "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
@@ -70,7 +69,7 @@
     "output": "MutationResponse",
     "request": {
       "base": {
-        "generationId": "POeoQcWBPR/sg/+tGmuKwkenNepRajfngMNTnnca3q4=",
+        "generationId": "BmcqWvaZgTNitWp20EV+S6yDRG4tTzZJZJrmW9CVPW0B",
         "workspace": {
           "name": "same-name",
           "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
@@ -91,7 +90,7 @@
     },
     "response": {
       "generation": {
-        "generationId": "FDaSteflUXe4DFbu9Nw4H+7WATD1+wgxxme2abr2CVU=",
+        "generationId": "Br0HPTJF7FjjL9k8E3g+ZWGToX5ySs/2vB0UxsMBy41I",
         "workspace": {
           "name": "same-name",
           "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
@@ -112,7 +111,7 @@
     },
     "response": {
       "generation": {
-        "generationId": "FDaSteflUXe4DFbu9Nw4H+7WATD1+wgxxme2abr2CVU=",
+        "generationId": "Br0HPTJF7FjjL9k8E3g+ZWGToX5ySs/2vB0UxsMBy41I",
         "workspace": {
           "name": "same-name",
           "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
@@ -120,7 +119,7 @@
       },
       "parents": [
         {
-          "generationId": "POeoQcWBPR/sg/+tGmuKwkenNepRajfngMNTnnca3q4=",
+          "generationId": "BmcqWvaZgTNitWp20EV+S6yDRG4tTzZJZJrmW9CVPW0B",
           "workspace": {
             "name": "same-name",
             "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
@@ -135,7 +134,7 @@
     "output": "ReadResponse",
     "request": {
       "generation": {
-        "generationId": "FDaSteflUXe4DFbu9Nw4H+7WATD1+wgxxme2abr2CVU=",
+        "generationId": "Br0HPTJF7FjjL9k8E3g+ZWGToX5ySs/2vB0UxsMBy41I",
         "workspace": {
           "name": "same-name",
           "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
@@ -154,7 +153,7 @@
     "output": "ListDirectoryResponse",
     "request": {
       "generation": {
-        "generationId": "FDaSteflUXe4DFbu9Nw4H+7WATD1+wgxxme2abr2CVU=",
+        "generationId": "Br0HPTJF7FjjL9k8E3g+ZWGToX5ySs/2vB0UxsMBy41I",
         "workspace": {
           "name": "same-name",
           "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
@@ -221,7 +220,7 @@
     "output": "MutationResponse",
     "request": {
       "base": {
-        "generationId": "FDaSteflUXe4DFbu9Nw4H+7WATD1+wgxxme2abr2CVU=",
+        "generationId": "Br0HPTJF7FjjL9k8E3g+ZWGToX5ySs/2vB0UxsMBy41I",
         "workspace": {
           "name": "same-name",
           "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
@@ -241,7 +240,7 @@
     },
     "response": {
       "generation": {
-        "generationId": "gy2zuZQ+ignXnPnTFD+4VZsPZCJGUbOl6TKWKwvuAfE=",
+        "generationId": "BgPL2nSyNsJhJ0Ulnp+hjv4AhjfpiPaUGtQrtPmc9GeU",
         "workspace": {
           "name": "same-name",
           "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
@@ -256,7 +255,7 @@
     "output": "ListDirectoryResponse",
     "request": {
       "generation": {
-        "generationId": "gy2zuZQ+ignXnPnTFD+4VZsPZCJGUbOl6TKWKwvuAfE=",
+        "generationId": "BgPL2nSyNsJhJ0Ulnp+hjv4AhjfpiPaUGtQrtPmc9GeU",
         "workspace": {
           "name": "same-name",
           "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
@@ -277,7 +276,7 @@
     "output": "ReadResponse",
     "request": {
       "generation": {
-        "generationId": "FDaSteflUXe4DFbu9Nw4H+7WATD1+wgxxme2abr2CVU=",
+        "generationId": "Br0HPTJF7FjjL9k8E3g+ZWGToX5ySs/2vB0UxsMBy41I",
         "workspace": {
           "name": "same-name",
           "workspaceId": "cDAMB36EwM2f02IgicHjaw=="

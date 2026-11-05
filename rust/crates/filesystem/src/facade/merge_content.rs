@@ -100,9 +100,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             FilePayload::Regular { logical_bytes, .. } => logical_bytes,
             _ => return Ok(None),
         };
-        if logical_bytes > workspace.config.limits.maximum_read_bytes {
-            return Ok(None);
-        }
         self.workspace_merge_range_with_accounting(
             workspace,
             record,
@@ -127,16 +124,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<crate::kernel::FileRangeRead, WorkspaceError> {
         let mut scope = accounting.allocation_scope()?;
         scope.check()?;
-        if range.length > workspace.config.limits.maximum_read_bytes {
-            return Err(FsError::FileRead(crate::kernel::FileRangeReadError::InvalidRange).into());
-        }
         let before = readonly_standalone_live(&scope);
         let result = crate::kernel::read_file_range_with_accounting(
             &self.inner.objects,
             FileRangeRequest {
                 record,
                 range,
-                maximum_spans: workspace.config.limits.maximum_directory_page_entries,
+                maximum_spans: None,
                 limits: DecodeLimits::for_volume(workspace.config),
                 budget: scope.remaining()?,
             },
@@ -196,10 +190,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         bytes: impl Into<acyclic_stream::OwnedBytes>,
     ) -> Result<FileRecord, WorkspaceError> {
         let bytes = bytes.into();
-        if record.kind != FileKind::Regular
-            || u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-                > workspace.config.limits.maximum_read_bytes
-        {
+        if record.kind != FileKind::Regular {
             return Err(WorkspaceError::InvalidMergeResolution);
         }
         if bytes.len() <= crate::kernel::MAXIMUM_INLINE_FILE_BYTES {
@@ -227,7 +218,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 page_bytes: u32::try_from(workspace.config.limits.maximum_object_bytes)
                     .unwrap_or(u32::MAX)
                     .max(1),
-                maximum_blob_bytes,
+                maximum_blob_bytes: Some(maximum_blob_bytes),
             },
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
