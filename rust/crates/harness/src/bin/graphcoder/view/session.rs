@@ -115,13 +115,15 @@ impl Session {
     }
 }
 
-pub(super) async fn follow(
+pub(super) fn follow(
     conversation: Arc<Conversation>,
     after: acyclic_harness::resources::GenerationRef,
-) -> acyclic_harness::Result<ClientFiles> {
-    conversation
-        .client_files(conversation.client_session(), paths(), Some(after))
-        .await
+) -> futures::future::LocalBoxFuture<'static, acyclic_harness::Result<ClientFiles>> {
+    crate::phase(|| async move {
+        conversation
+            .client_files(conversation.client_session(), paths(), Some(after))
+            .await
+    })
 }
 
 #[cfg(test)]

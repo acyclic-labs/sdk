@@ -371,7 +371,7 @@ async fn unrelated_publications_racing_one_volume_both_commit() -> Result<()> {
             let racer = racer.clone();
             Box::pin(async move {
                 if fire {
-                    racer.write_text("/turn/output", "turn").await.unwrap();
+                    racer.write_text("/turn-output", "turn").await.unwrap();
                 }
             })
         }));
@@ -397,7 +397,7 @@ async fn unrelated_publications_racing_one_volume_both_commit() -> Result<()> {
             b"second"
         );
         assert_eq!(
-            host.read(&workspace, None, "/turn/output", 64, None)
+            host.read(&workspace, None, "/turn-output", 64, None)
                 .await?
                 .as_ref(),
             b"turn"
