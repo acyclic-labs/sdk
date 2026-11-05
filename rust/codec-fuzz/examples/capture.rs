@@ -175,7 +175,7 @@ fn save(
 }
 
 fn capture() -> Result<(), Box<dyn Error>> {
-    std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))?;
+    std::env::set_current_dir(acyclic_test_support::crate_path!(""))?;
     if std::env::args().any(|arg| arg == "--only-agent-controls") {
         let prefix = "agent_controls/";
         let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
@@ -955,8 +955,7 @@ fn capture_identity_vectors() -> Result<(), Box<dyn Error>> {
             .ok_or("missing identity field")?;
         Ok(hex::decode(value)?)
     }
-    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../crates/auth/tests/fixtures/resource-identity-v1.json");
+    let source = "../crates/auth/tests/fixtures/resource-identity-v1.json";
     let mut vectors: serde_json::Value = serde_json::from_slice(&std::fs::read(source)?)?;
     let rows = vectors
         .get_mut("pairs")

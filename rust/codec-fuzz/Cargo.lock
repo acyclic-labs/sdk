@@ -109,6 +109,7 @@ dependencies = [
  "acyclic-proto-build",
  "acyclic-protobuf-json",
  "acyclic-stream",
+ "acyclic-test-support",
  "blake3",
  "bytes",
  "ed25519-dalek",
@@ -214,6 +215,7 @@ dependencies = [
 name = "acyclic-fs-wire"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth-action",
  "acyclic-proto-build",
  "prost",
  "tonic",
@@ -460,6 +462,7 @@ dependencies = [
  "prost",
  "prost-reflect",
  "protoc-bin-vendored",
+ "serde_json",
  "tonic-prost-build",
 ]
 
@@ -510,6 +513,13 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "web-time",
+]
+
+[[package]]
+name = "acyclic-test-support"
+version = "0.2.0"
+dependencies = [
+ "acyclic-differential",
 ]
 
 [[package]]
