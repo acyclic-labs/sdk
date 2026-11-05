@@ -84,6 +84,29 @@ controls = {
     ),
 }
 additional_controls = {
+    "graphcoder_args": [
+        (
+            "rust/crates/harness/src/bin/graphcoder/args.rs",
+            b'long, requires = "host_state_directory", conflicts_with_all',
+            b'long, conflicts_with_all',
+            "host-missing-state",
+            b"native workspace ownership requires explicit state and one owner",
+        ),
+        (
+            "rust/crates/harness/src/bin/graphcoder/args.rs",
+            b'#[arg(long, requires = "tls_certificate")]\n    pub tls_key:',
+            b'#[arg(long)]\n    pub tls_key:',
+            "tls-partial",
+            b"serving requires a complete TLS identity or none",
+        ),
+        (
+            "rust/crates/harness/src/bin/graphcoder/args.rs",
+            b'#[arg(short = \'p\', long = "prompt", conflicts_with = "input_format")]',
+            b'#[arg(short = \'p\', long = "prompt")]',
+            "mixed-input",
+            b"text prompt and JSONL stdin require distinct input owners",
+        ),
+    ],
     "native_stdin_binary": [
         (
             "plugin/src/main.rs",

@@ -53,15 +53,45 @@ fn arguments(bytes: &[u8]) -> Vec<OsString> {
         .collect()
 }
 
-fn check(mut parsed: args::Args) {
+fn check(mut parsed: args::Args) -> Result<(), &'static str> {
+    assert_eq!(
+        parsed.host_workspace,
+        parsed.host_state_directory.is_some(),
+        "native workspace ownership requires explicit state and one owner"
+    );
+    if parsed.host_workspace {
+        assert!(
+            parsed.prompt.is_none()
+                && parsed.model.is_none()
+                && parsed.catalog.is_none()
+                && parsed.credentials.is_none()
+                && parsed.operation.is_none()
+                && parsed.settings_root.is_none()
+                && !parsed.default_config
+                && parsed.usage_jsonl.is_none()
+                && !parsed.resume
+                && parsed.agent.is_none()
+                && parsed.endpoint.is_none(),
+            "native workspace ownership must exclude agent inputs"
+        );
+    }
+    if let Some(args::Command::Serve(serve)) = &parsed.command {
+        assert!(
+            serve.tls_certificate.is_some() == serve.tls_key.is_some()
+                && serve.tls_certificate.is_some() == serve.url.is_some(),
+            "serving requires a complete TLS identity or none"
+        );
+    }
+    assert!(
+        parsed.prompt.is_none() || parsed.input_format != args::InputFormat::Jsonl,
+        "text prompt and JSONL stdin require distinct input owners"
+    );
     let original_prompt = parsed.prompt.clone();
     let execution = match &parsed.command {
         Some(args::Command::Exec { prompt }) => Some(prompt.clone()),
         _ => None,
     };
-    if parsed.prepare_input().is_err() {
-        return;
-    }
+    parsed.prepare_input()?;
     use args::{Command, InputFormat, OutputFormat};
     assert!(
         parsed.input_format != InputFormat::Jsonl || parsed.operation.is_some(),
@@ -113,27 +143,40 @@ fn check(mut parsed: args::Args) {
             "output writers require distinct destinations"
         );
     }
+    Ok(())
 }
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     let argv = std::iter::once(OsString::from("graphcoder")).chain(arguments(bytes));
     if let Ok(parsed) = args::Args::try_parse_from(argv) {
-        check(parsed);
+        let _ = check(parsed);
     }
-    // Arbitrary rejection is not a valid implementation either. Construct one
-    // explicitly identified argument shape, preserving arbitrary prompt text
-    // without ever opening config, a runtime, a provider or an output file.
+    // Arbitrary rejection is not a valid implementation either. Exercise one
+    // accepted input family per invocation, without opening its resources.
     let prompt = String::from_utf8_lossy(bytes).replace('\0', "\\0");
-    let mut valid = args::Args::try_parse_from([
-        "graphcoder",
-        "--operation=oracle",
-        "--output-format=jsonl",
-        "exec",
-        "--",
-        &prompt,
-    ])
-    .expect("explicit execution arguments must parse");
-    valid
-        .prepare_input()
-        .expect("explicit execution must be admitted");
+    let prompt_option = format!("--prompt={prompt}");
+    let shape: &[&str] = match bytes.first().copied().unwrap_or(0) % 6 {
+        0 => &[
+            "--operation=oracle",
+            "--output-format=jsonl",
+            "exec",
+            "--",
+            &prompt,
+        ],
+        1 => &["--host-workspace", "--host-state-directory=state"],
+        2 => &["serve", "127.0.0.1:0"],
+        3 => &[
+            "serve",
+            "0.0.0.0:443",
+            "--tls-certificate=certificate.pem",
+            "--tls-key=key.pem",
+            "--url=https://localhost",
+        ],
+        4 => &[&prompt_option],
+        _ => &["--input-format=jsonl", "--operation=oracle"],
+    };
+    let valid =
+        args::Args::try_parse_from(std::iter::once("graphcoder").chain(shape.iter().copied()))
+            .expect("supported argument family must parse");
+    check(valid).expect("supported argument family must be admitted");
 });

@@ -13,13 +13,20 @@ readable UTF-8 corpus uses its original encoding.
 The target includes the shipping `graphcoder/args.rs` and invokes its clap parser
 and `prepare_input`. It opens no runtime, config, provider or output file.
 Accepted results must retain one input producer and operation identity, one
-prompt owner, compatible output mode and distinct destinations. A generated
-explicit execution must also succeed, so rejecting everything fails the oracle.
+prompt owner, compatible output mode and distinct destinations. Accepted native
+workspace ownership requires explicit storage and excludes agent inputs; serving
+requires either no TLS identity or its complete certificate, key and URL.
+The first byte modulo six selects a generated accepted family: explicit execution,
+native workspace ownership, loopback serving, TLS serving, prompt or JSONL input.
+Each family must parse and normalize, so rejecting a supported family fails the
+oracle. The six `accepted-family-*` seeds exercise each selection.
 
 `exec-missing-operation` reaches the post-clap normalization guard. The kept
-negative control removes that actual production guard, requires the unchanged
-oracle's exact identity assertion to fail, restores the source, then replays the
-corpus with production admission. Run from the repository root:
+negative control removes that actual production guard. Additional controls remove
+the actual native storage requirement, TLS key requirement and prompt/input
+conflict annotations. Each requires its unchanged semantic assertion to fail,
+restores the source, then replays the corpus with production admission. Run from
+the repository root:
 
 ```
 python3 rust/crates/harness-fuzz/graphcoder-args-control.py
