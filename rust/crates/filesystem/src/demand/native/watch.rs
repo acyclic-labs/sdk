@@ -252,7 +252,7 @@ impl NativeChanges {
         let result = (|| {
             for change in changes {
                 work.check()?;
-                let (relative, altered, _file) = match change {
+                let (relative, altered, removed, _file) = match change {
                     HostChange::Everything => {
                         reported.push(SourceChange::Everything);
                         continue;
@@ -263,11 +263,14 @@ impl NativeChanges {
                         continue;
                     }
                     #[cfg(windows)]
-                    HostChange::Observed { action, path, file } => {
-                        (path, !matches!(action, 1 | 2 | 4 | 5), Some(*file))
-                    }
-                    HostChange::Rebound(relative) => (relative, false, None::<u64>),
-                    HostChange::Altered(relative) => (relative, true, None::<u64>),
+                    HostChange::Observed { action, path, file } => (
+                        path,
+                        !matches!(action, 1 | 2 | 4 | 5),
+                        matches!(action, 2 | 4),
+                        Some(*file),
+                    ),
+                    HostChange::Rebound(relative) => (relative, false, false, None::<u64>),
+                    HostChange::Altered(relative) => (relative, true, false, None::<u64>),
                 };
                 let (name, exact, allocation, mut guard) = inner.name(relative, work)?;
                 claimed += allocation;
@@ -315,6 +318,8 @@ impl NativeChanges {
                     SourceChange::Entry(name)
                 } else if name.is_root() {
                     SourceChange::Everything
+                } else if removed {
+                    SourceChange::Removed(name)
                 } else {
                     SourceChange::Name(name)
                 });

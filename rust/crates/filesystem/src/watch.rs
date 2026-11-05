@@ -4930,8 +4930,9 @@ mod demand_admission_tests {
             WatchChange::Modified(path) | WatchChange::MetadataChanged(path) if path == &expected))
         );
         let mut held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
-        held.begin_rescan()?;
+        let rescan = held.begin_rescan()?;
         assert_eq!(held.windows_registered(), 0);
+        held.finish_rescan(rescan)?;
         Ok(())
     }
 

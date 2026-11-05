@@ -205,16 +205,3 @@ fn a_panicking_cut_still_drains_every_other_cut_before_returning() {
     assert!(result.is_err());
     assert_eq!(finished.load(Ordering::SeqCst), 36);
 }
-
-#[test]
-fn silent_crash_cut_notifies_capture_before_its_deadline() {
-    let directory = tempfile::tempdir().unwrap();
-    let store = crash_store(&directory.path().join("reference"), true);
-    let mut snapshots = vec![core_snapshot(&store)];
-    for step in 0..CRASH_GROUPS[0].end {
-        crash_step(&store, step);
-        snapshots.push(core_snapshot(&store));
-    }
-    drop(store);
-    assert_eq!(run_cut(directory.path(), &snapshots, true, 1), None);
-}

@@ -48,7 +48,7 @@ struct Observation {
     file_identity: Option<[u8; 32]>,
     // One most recent exact selected-name rebound, never a history of events.
     rebound: Option<(u64, [u8; 32])>,
-    // Only the first relevant event of this attempt can establish publication.
+    // Only the first relevant arrival of this attempt can establish publication.
     // A later rename must never erase an intervening in-place mutation.
     awaiting_rebound: bool,
     // Closing a writable publisher can itself notify the native watch. Retain
@@ -152,7 +152,9 @@ impl SourceChangeSink for State {
         let mut changes = changes.iter().peekable();
         while let Some(change) = changes.next() {
             let relevant = match change {
-                SourceChange::Name(path) | SourceChange::Entry(path) => self.path.is_within(path),
+                SourceChange::Name(path)
+                | SourceChange::Removed(path)
+                | SourceChange::Entry(path) => self.path.is_within(path),
                 SourceChange::Node(node) => observation.file_identity.as_ref() == Some(node),
                 SourceChange::Everything | SourceChange::Unconfirmed => true,
             };
@@ -164,6 +166,18 @@ impl SourceChangeSink for State {
             observation.awaiting_rebound = false;
             observation.rebound = None;
             let generation = self.advance();
+            // Replacing a selected name can first report the old entry's
+            // departure. It invalidates the old lease, but is not an arrival
+            // of the publisher. Preserve admission only for that exact old
+            // identity; unknown removals and all later mutations still refuse.
+            if let SourceChange::Removed(path) = change
+                && path == &self.path
+                && let Some(SourceChange::Node(node)) = changes.peek().copied()
+            {
+                observation.awaiting_rebound =
+                    awaiting_rebound && observation.file_identity.as_ref() == Some(node);
+                changes.next();
+            }
             // NativeChanges emits the observed node immediately after its name
             // in the SAME ordered batch. Consume only that pair. An in-place
             // entry event, ancestor change, missing pair or later node mutation
@@ -254,9 +268,11 @@ impl NativeCredentialSource {
     /// under this root do not invalidate this source.
     ///
     /// `Published` must retain the original completed publisher. The same watch
-    /// must observe its selected-name rebound, with no later relevant mutation,
+    /// must observe its selected-name arrival, with no later relevant mutation,
     /// before a confirmed cut. Missing/foreign evidence refuses even when the
     /// write committed; never redispatch a publication after this refusal.
+    /// An identified departure of the old selected entry invalidates old leases
+    /// while leaving admission armed for the publisher's original arrival.
     /// The clock must be the original owner's clock, never a relative TTL.
     pub async fn bind<F, Fut, C>(
         source: NativeDemandSource,

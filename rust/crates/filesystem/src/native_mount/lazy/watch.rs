@@ -61,6 +61,8 @@ where
         changes: &[SourceChange],
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
+        #[cfg(test)]
+        eprintln!("lazy source changes: {changes:?}");
         use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
         work.admit(crate::WorkCounters::UNCHARGED)
             .map_err(MountSourceError::NativeWork)?;
@@ -94,7 +96,9 @@ where
             work.charge(crate::materializer::NativeResourceCredit::Items.delta(1))
                 .map_err(MountSourceError::NativeWork)?;
             match change {
-                SourceChange::Name(path) | SourceChange::Entry(path) => {
+                SourceChange::Name(path)
+                | SourceChange::Removed(path)
+                | SourceChange::Entry(path) => {
                     let mut append = |depth, output: &mut Vec<crate::kernel::NamespacePath>| {
                         let (path, allocation) = path
                             .prefix_with_accounting(
@@ -111,7 +115,7 @@ where
                         output.push(path);
                         Ok::<_, MountSourceError>(())
                     };
-                    if matches!(change, SourceChange::Name(_)) {
+                    if matches!(change, SourceChange::Name(_) | SourceChange::Removed(_)) {
                         append(path.depth(), &mut effect.subtrees)?;
                     } else {
                         if !path.is_root() {
@@ -170,7 +174,10 @@ fn change_counts(
             };
             Ok::<_, MountSourceError>((
                 n.checked_add(usize::from(matches!(change, SourceChange::Node(_)))),
-                s.checked_add(usize::from(matches!(change, SourceChange::Name(_)))),
+                s.checked_add(usize::from(matches!(
+                    change,
+                    SourceChange::Name(_) | SourceChange::Removed(_)
+                ))),
                 l.checked_add(extra),
             ))
             .and_then(|(n, s, l)| {

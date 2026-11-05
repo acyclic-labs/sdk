@@ -264,6 +264,7 @@ async fn bind(
 enum PublicationControl {
     Current,
     Altered,
+    Rebound,
     AlteredThenRebound,
     Replaced,
     Observed,
@@ -322,14 +323,8 @@ async fn publication_control(control: PublicationControl) -> TestResult {
                         .publish_retained(&path, RenameMode::Replace)
                         .map_err(error)?;
                     match control {
-                        PublicationControl::Altered => {
-                            std::fs::write(&path, "foreign-in-place-value").map_err(error)?
-                        }
-                        PublicationControl::AlteredThenRebound => {
+                        PublicationControl::Altered | PublicationControl::AlteredThenRebound => {
                             std::fs::write(&path, "foreign-in-place-value").map_err(error)?;
-                            let moved = path.with_extension("moved");
-                            std::fs::rename(&path, &moved).map_err(error)?;
-                            std::fs::rename(&moved, &path).map_err(error)?;
                         }
                         PublicationControl::Replaced => {
                             let mut foreign =
@@ -342,6 +337,14 @@ async fn publication_control(control: PublicationControl) -> TestResult {
                             foreign.publish(&path, RenameMode::Replace).map_err(error)?;
                         }
                         _ => {}
+                    }
+                    if matches!(
+                        control,
+                        PublicationControl::Rebound | PublicationControl::AlteredThenRebound
+                    ) {
+                        let moved = path.with_extension("moved");
+                        std::fs::rename(&path, &moved).map_err(error)?;
+                        std::fs::rename(&moved, &path).map_err(error)?;
                     }
                     let revision = if control == PublicationControl::ForeignRevision {
                         CredentialRevision::Bytes([42; 32])
@@ -551,6 +554,7 @@ async fn native_source_fences_rotation_and_owner_loss_without_warm_reads() -> Te
     for control in [
         PublicationControl::Current,
         PublicationControl::Altered,
+        PublicationControl::Rebound,
         PublicationControl::AlteredThenRebound,
         PublicationControl::Replaced,
         PublicationControl::Observed,

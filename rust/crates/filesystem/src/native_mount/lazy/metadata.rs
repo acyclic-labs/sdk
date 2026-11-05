@@ -116,8 +116,6 @@ pub(super) fn field<T>(value: Option<T>) -> MetadataField<T> {
 }
 
 pub(super) fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
-    #[cfg(test)]
-    eprintln!("lazy callback failure: {error:?}");
     match error {
         LazyWorkspaceError::OriginalSnapshotUnavailable => {
             MountSourceError::OriginalSnapshotUnavailable
