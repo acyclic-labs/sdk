@@ -7,17 +7,23 @@ use wasm_bindgen::prelude::*;
 // The shipping WASM provider produces every frame and owns cancellation.
 #[wasm_bindgen(inline_js = r#"
 export function selectorPort(stream) {
+  const reply = async action => {
+    try { return {value: await action()}; }
+    catch (error) { return {code: error.code}; }
+  };
   return {
-async dispatch(operation, input) {
-  return {value: await stream.dispatch(operation, input)};
-},
-async open(operation, input, preceding) {
-  const cursor = await stream.openProviderCursor(operation, input, preceding);
-  return {value: {
-    async next() { return {value: await cursor.next()}; },
-    close() { cursor.close(); }
-  }};
-}
+    dispatch(operation, input) {
+      return reply(() => stream.dispatch(operation, input));
+    },
+    open(operation, input, preceding) {
+      return reply(async () => {
+        const cursor = await stream.openProviderCursor(operation, input, preceding);
+        return {
+          next() { return reply(() => cursor.next()); },
+          close() { cursor.close(); }
+        };
+      });
+    }
   };
 }
 "#)]
