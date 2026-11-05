@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { environment, scratchDirectory } from "./scratch.mjs";
+import { environment, nativeEnvironment, scratchDirectory } from "./scratch.mjs";
 import { Processes } from "./process.mjs";
 
 test("rejected missing scratch parents never create source directories through direct paths or aliases", () => {
@@ -51,8 +51,12 @@ test("fixture descendants cannot inherit host profiles or temporary directories 
   try {
     const outside = join(root, "unowned"), settings = join(root, "leased", "settings");
     const keys = ["TEMP", "TMP", "TMPDIR", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "PI_CODING_AGENT_DIR", "XDG_RUNTIME_DIR"];
-    const inherited = { ...process.env, ...Object.fromEntries(keys.map(key => [key, outside])) };
-    const env = environment(settings, inherited);
+    const profiles = Object.fromEntries(keys.map(key => [key, outside]));
+    const inherited = { ...process.env, ...profiles,
+      E2E_PROCESS_HOST: process.env.E2E_PROCESS_HOST ?? process.execPath,
+      FIXTURE_PRIVATE_VALUE: "unrelated caller state" };
+    const launch = nativeEnvironment(inherited);
+    const env = environment(settings, { ...launch, ...profiles });
     for (const key of ["TEMP", "TMP", "TMPDIR"]) assert.equal(env[key], join(settings, "tmp"));
     for (const [key, path] of [["CODEX_HOME", ".codex"], ["CLAUDE_CONFIG_DIR", ".claude"], ["PI_CODING_AGENT_DIR", ".pi/agent"],
       ["XDG_RUNTIME_DIR", "runtime"]])
@@ -63,10 +67,15 @@ test("fixture descendants cannot inherit host profiles or temporary directories 
     const code = `const fs=require('node:fs'),path=require('node:path');
       const roots=[require('node:os').tmpdir(),...${JSON.stringify(keys)}.map(key=>process.env[key])];
       const files=roots.map((root,index)=>{const file=path.join(root,index+'.txt');fs.writeFileSync(file,'leased');return file});
-      console.log(JSON.stringify(files))`;
-    const child = await processes.run(process.execPath, ["-e", code], { env });
+      console.log(JSON.stringify({files,launch:Object.fromEntries(${JSON.stringify(Object.keys(launch))}
+        .map(key=>[key,process.env[key]])),privateValue:process.env.FIXTURE_PRIVATE_VALUE}))`;
+    const child = await processes.runOwned(process.execPath, ["-e", code], { env });
     assert.equal(child.code, 0, child.stderr);
-    const files = JSON.parse(child.stdout);
+    const { files, launch: actualLaunch, privateValue } = JSON.parse(child.stdout);
+    assert.deepEqual(actualLaunch, launch, "the native owner and OS launcher must reach the actual descendant");
+    assert.equal(actualLaunch.E2E_PROCESS_HOST, inherited.E2E_PROCESS_HOST,
+      "nested native launches must retain their original process owner");
+    assert.equal(privateValue, undefined, "unrelated caller state must not cross the fixture boundary");
     assert.deepEqual(files, [join(settings, "tmp"), ...keys.map(key => env[key])].map((root, index) => join(root, `${index}.txt`)));
     for (const file of files) assert.equal(readFileSync(file, "utf8"), "leased");
     assert.equal(existsSync(outside), false, "the inherited directory must never be touched");
