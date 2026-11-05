@@ -75,6 +75,13 @@ terminal cause and refuse reopening. The same test holds account storage during
 withdrawal; this establishes absence of that traversal, while notification work
 still depends on actual waiters.
 
+The [persistence panic control](persistence-panic/README.md) mutates the shared
+join-error projection while retaining actual native worker completion and wake.
+The existing accepted-worker panic test must reject a cancellation label, then
+pass with its original typed panic error and empty wait report after restoration.
+This qualifies one failure path; same-service dependency refusal, caller-drop
+custody and native callback fail-stop remain distinct controls.
+
 The [Objects close-result control](objects-close-result/README.md) discards only
 the original worker's inner storage result after physical completion. The
 existing real-log test must reject the false success, then pass after exact
