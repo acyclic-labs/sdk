@@ -174,12 +174,18 @@ fn native_allocation_matches_backing<T>(
     allocate: impl FnOnce() -> T,
 ) -> T {
     let before = original.live_allocation_bytes();
+    let operations = original.receipt().allocation_operations;
     let mut value = None;
     let physical = acyclic_test_support::measure(|| value = Some(allocate()));
     assert_eq!(
         original.live_allocation_bytes() - before,
         u64::try_from(physical.bytes_current).unwrap(),
         "original cancellation credit omits live allocator backing"
+    );
+    assert_eq!(
+        original.receipt().allocation_operations - operations,
+        physical.count_total,
+        "cancellation allocation operations differ from the allocator"
     );
     value.unwrap()
 }
@@ -314,6 +320,7 @@ fn measured_waiter_credit_follows_the_last_node_alias_after_detach()
     drop(ledger.retain(0, &mut work, budget)?);
     let baseline = ledger.live_bytes();
     for cancel in [false, true] {
+        let operations = work.allocation_operations;
         let mut future = None;
         let physical = acyclic_test_support::measure(|| {
             future = Some(token.prepare_cancelled_measured(&mut ledger, &mut work, budget));
@@ -325,6 +332,10 @@ fn measured_waiter_credit_follows_the_last_node_alias_after_detach()
             funded - baseline,
             u64::try_from(physical.bytes_current)?,
             "original cancellation credit omits live allocator backing"
+        );
+        assert_eq!(
+            work.allocation_operations - operations,
+            physical.count_total
         );
         if cancel {
             token.cancel();
