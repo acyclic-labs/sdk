@@ -8,6 +8,7 @@ binaries answer the owner's public resources query; no test feature is needed.
 import json
 import os
 import pathlib
+import selectors
 import signal
 import socket
 import subprocess
@@ -18,6 +19,11 @@ import traceback
 from native_events import native_event_fixture
 from native_fixture import fixture_environment, start_workspace_owner, stop_workspace_owner
 from native_mcp import McpClient
+
+
+class ChildExited(AssertionError):
+    def __init__(self, reference, reply):
+        super().__init__(f'step=connect {reference}: the child exited before connecting: {json.dumps(reply)}')
 
 
 def interrupted(signum, frame):
@@ -84,6 +90,8 @@ if not child:
 assert cwd.is_relative_to(pathlib.Path(os.environ['FIXTURE_WORKSPACE'])/'.volumes/agents')
 assert (cwd/'AGENTS.md').read_text()=='shared scale discovery fixture'
 prompt=sys.stdin.read()
+if prompt=='exit-before-connect':
+ sys.stderr.write('exited-before-connect');sys.exit(23)
 (cwd/(prompt+'.txt')).write_text(prompt)
 (cwd/'.volumes/home/private.txt').write_text(prompt)
 sys.stdout.write(pathlib.Path(os.environ['FIXTURE_EVENTS']).read_text());sys.stdout.flush()
@@ -130,7 +138,31 @@ sys.exit(17)
                     print(json.dumps({'host': host, 'step': 'tool completed', 'tool': name, 'reference': reference}), flush=True)
                     return result
 
+                def connect(reference):
+                    # The child either reaches the barrier or exits first; its
+                    # parked wait settles on exit, so neither outcome is missed.
+                    settled = mcp.submit('wait', reference)
+                    with selectors.DefaultSelector() as ready:
+                        ready.register(barrier, selectors.EVENT_READ)
+                        ready.register(bridge.stdout, selectors.EVENT_READ)
+                        while mcp.responses[settled] is None:
+                            if any(key.fileobj is barrier for key, _ in ready.select()):
+                                return barrier.accept()[0], settled
+                            mcp.receive()
+                    raise ChildExited(reference, mcp.response(settled))
+
+                # Negative control: a child that exits before it connects fails
+                # this wait at once, with its exit and stderr tail.
+                tool('spawn', 'early', 'exit-before-connect')
+                try:
+                    connect('early')
+                except ChildExited as exited:
+                    assert 'exited-before-connect' in str(exited), exited
+                else:
+                    raise AssertionError('a child that exited before connecting was accepted')
+
                 paths = []
+                waits = []
                 samples = []
 
                 def assert_live():
@@ -142,7 +174,8 @@ sys.exit(17)
                     for child in range(len(paths), population):
                         reference = 'child' + str(child)
                         location = tool('spawn', reference, reference)
-                        gate, _ = barrier.accept()
+                        gate, settled = connect(reference)
+                        waits.append(settled)
                         gates.append(gate)
                         identity = gate.makefile('rb')
                         assert identity.readline() == (reference + '\n').encode(), reference
@@ -168,7 +201,7 @@ sys.exit(17)
                     gate.sendall(b'.')
                 for child, path in enumerate(paths):
                     reference = 'child' + str(child)
-                    observed = tool('wait', reference)
+                    observed = mcp.result(waits[child])
                     assert observed['status']['settled'], observed
                     assert observed['reply']['kind'] == 'answered', observed
                     failure = observed['reply']['outcome']['Failed']['message']
