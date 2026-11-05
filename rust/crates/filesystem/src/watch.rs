@@ -5077,9 +5077,9 @@ mod demand_admission_tests {
         Ok(())
     }
 
-    /// A directory registered through its 8.3 short name is keyed by its
-    /// long name, and a change reported through the short name resolves to
-    /// it. Exact matching, the negative control, drops the first.
+    /// The host's short spelling, which may be the long name on volumes
+    /// without 8.3 aliases, reaches the same directory. Registering it in
+    /// uppercase keeps the exact-match negative control distinct in both cases.
     #[cfg(windows)]
     #[test]
     fn windows_short_names_reach_their_registered_directory()
@@ -5094,8 +5094,8 @@ mod demand_admission_tests {
                 .and_then(|name| name.to_str())
                 .ok_or("short name")?
                 .to_owned();
-            assert_ne!(short, long, "8.3 names are disabled on the temp volume");
-            let watch = observed_watch(root.path(), &format!("/{short}"), exact)?;
+            let registration = format!("/{short}").to_ascii_uppercase();
+            let watch = observed_watch(root.path(), &registration, exact)?;
             std::fs::write(root.path().join(long).join("f"), b"f")?;
             let seen = changes_through_marker(&watch, root.path(), "marker-long")?;
             let delivered = mentions(&seen, &namespace(&format!("/{long}/f"))?)
