@@ -50,7 +50,7 @@ impl<T, H, I> Producer<T, H, I> {
         self,
         admit: impl FnOnce(usize) -> Result<A, E>,
         start: impl FnOnce() -> Result<F, E>,
-    ) -> Result<impl Future<Output = ()> + Unpin, E>
+    ) -> Result<Operation<F, H, A, I>, E>
     where
         F: Future<Output = T>,
     {
@@ -63,7 +63,9 @@ impl<T, H, I> Producer<T, H, I> {
     }
 }
 
-struct Operation<F: Future, H, A, I> {
+/// One physical future and its original producer and backing admission.
+/// Admission and start callbacks are consumed before this owner is returned.
+pub struct Operation<F: Future, H, A, I> {
     future: Pin<Box<F>>,
     producer: Option<Producer<F::Output, H, I>>,
     // Physical state retires before the credit that funds its backing.
