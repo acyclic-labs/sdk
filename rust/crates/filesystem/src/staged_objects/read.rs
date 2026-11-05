@@ -9,18 +9,23 @@ enum PlannedRead {
     Durable,
 }
 
-pub(super) fn resident_read(
-    bytes: OwnedBytes,
-    maximum_bytes: u64,
-    work: &mut AuthorityWork<'_>,
-) -> Result<ObjectRead, ObjectStoreError> {
-    let length = byte_length(&bytes);
+fn check_length(length: u64, maximum_bytes: u64) -> Result<(), ObjectStoreError> {
     if length > maximum_bytes {
         return Err(ObjectStoreError::TooLarge {
             observed: length,
             maximum: maximum_bytes,
         });
     }
+    Ok(())
+}
+
+pub(super) fn resident_read(
+    bytes: OwnedBytes,
+    maximum_bytes: u64,
+    work: &mut AuthorityWork<'_>,
+) -> Result<ObjectRead, ObjectStoreError> {
+    let length = byte_length(&bytes);
+    check_length(length, maximum_bytes)?;
     work.accounting()
         .charge(WorkCounters {
             object_bytes_read: length,
@@ -65,7 +70,10 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 }
                 // The offset is deliberately discarded. read_private acquires
                 // the existing spill lease before looking it up again.
-                Lookup::Spilled { .. } => PlannedRead::Private,
+                Lookup::Spilled { length, .. } => {
+                    check_length(length, request.maximum_bytes)?;
+                    PlannedRead::Private
+                }
                 Lookup::Absent => PlannedRead::Durable,
             };
             if let Some(plan) = &mut plan {
@@ -92,6 +100,17 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             .iter()
             .filter(|entry| matches!(entry, PlannedRead::Durable))
             .count();
+        let copied = u64::try_from(misses)
+            .ok()
+            .and_then(|count| count.checked_mul(std::mem::size_of::<ObjectReadRequest>() as u64))
+            .ok_or(crate::WorkError::Overflow)?;
+        scope
+            .accounting()
+            .charge(WorkCounters {
+                bytes_copied: copied,
+                ..WorkCounters::UNCHARGED
+            })
+            .map_err(crate::async_storage::object_error)?;
         let mut durable_requests = scope.vec_owned(misses)?;
         for (entry, request) in plan.value.iter().zip(requests) {
             if matches!(entry, PlannedRead::Durable) {
@@ -181,12 +200,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 return self.inner.read(object_id, maximum_bytes, work).await;
             }
         };
-        if length > maximum_bytes {
-            return Err(ObjectStoreError::TooLarge {
-                observed: length,
-                maximum: maximum_bytes,
-            });
-        }
+        check_length(length, maximum_bytes)?;
         let object = if let Some(native) = work.original {
             read_spilled_native(
                 spill_file.as_ref().ok_or(ObjectStoreError::Corrupt)?,
