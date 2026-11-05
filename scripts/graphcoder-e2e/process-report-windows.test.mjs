@@ -1,11 +1,57 @@
 import assert from "node:assert/strict";
-import { connect } from "node:net";
+import net, { connect } from "node:net";
+import { syncBuiltinESMExports } from "node:module";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import test from "node:test";
 import { Processes, Spool } from "./process.mjs";
 import { requireReportCapability } from "./assertions.mjs";
+
+test("failed Windows observation retires its original cancellation listener", {
+  skip: process.platform !== "win32",
+}, async () => {
+  const original = net.createServer, listeners = [];
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "process-control-"));
+  const observed = new Error("original progress observer withdrew");
+  let observationFailed = false;
+  const scope = new Processes({ transcripts: root, onProgress(event) {
+    if (event.phase === "node-close") { observationFailed = true; throw observed; }
+  } });
+  let failure;
+  try {
+    // Observe the actual OS listener without substituting its transport.
+    net.createServer = (...args) => {
+      const server = original(...args);
+      listeners.push(server);
+      return server;
+    };
+    syncBuiltinESMExports();
+    const running = await scope.startOwned(process.execPath, [], {
+      scopeInheritInput: true,
+      env: { ...process.env, E2E_PROCESS_HOST: join(root, "absent-owner.exe") },
+    });
+    await assert.rejects(running.closed, error => {
+      failure = error;
+      return error.code === "ENOENT";
+    });
+    await assert.rejects(scope.close(), error => error === failure);
+    assert.equal(observationFailed, true);
+    assert.equal(scope.children.size, 0);
+    assert.equal(listeners.length, 1);
+    assert.equal(listeners[0].listening, false,
+      "an original failed launch cannot retain its cancellation producer");
+  } finally {
+    net.createServer = original;
+    syncBuiltinESMExports();
+    await scope.close().catch(() => {});
+    // The negative source still owns this listener; retire that original
+    // resource so the failing control itself cannot strand the test process.
+    await Promise.all(listeners.filter(server => server.listening)
+      .map(server => new Promise(resolve => server.close(resolve))));
+    rmSync(root, {recursive: true});
+  }
+});
 
 test("selected Windows owner requires its original bound physical completion", {
   skip: process.platform !== "win32",
