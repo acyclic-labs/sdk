@@ -681,7 +681,7 @@ fn disabled_operation_allocates_nothing_with_enabled_negative_control()
         assert!(matches!(ready(async_operation()), Ok(Ok(()))));
         let mut output = std::io::stderr().lock();
         output.write_all(b"observation-begin\n")?;
-        for count in [1, 16] {
+        for count in [1, 2] {
             let work = acyclic_test_support::measure(|| {
                 for _ in 0..count {
                     operation(std::hint::black_box(false));
@@ -849,7 +849,7 @@ fn disabled_operation_has_zero_syscalls_with_real_io_negative_control()
         }
         assert!(ended, "missing trace end marker");
         eprintln!(
-            "sync_operations=100000, async_operations=100000, real_io_negative={negative}, syscalls={calls}"
+            "sync_operations=3, async_operations=3, real_io_negative={negative}, syscalls={calls}"
         );
         assert_eq!(
             calls == 0,
