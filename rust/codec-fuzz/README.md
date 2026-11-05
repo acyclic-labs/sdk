@@ -840,3 +840,14 @@ service reply and checks decoded cardinality before zip-based comparisons.
 guard to reject only missing replies; the unchanged property must reject its
 extra reply. The earlier count-guard control still covers missing members.
 This is a derived adversarial input, not an additional captured service packet.
+
+Token operation text seeds in `stream_persistence/token-*` were captured from
+`TokenOperation::as_str()` via the real `token-operations` example and the compiled
+TypeScript exporter at source `a473ef01e45218efa1e78e6595404ab17b9c3b4f` on
+2026-11-04. Their original byte lengths and SHA-256 values are retained in
+`corpus/token-operation-sources.tsv`. The same writer is now part of
+`acyclic_stream::codec_fuzz::seeds`; no token spellings are authored in the corpus.
+The shared oracle checks exact vocabulary admission for arbitrary UTF-8 before
+attempting persisted binary decoding. The selected signed-credential control in
+`rust/crates/auth/fuzz/negative-control.py operation-admission` also executes this
+same fuzz oracle, with a retained production mutation admitting unknown tokens.

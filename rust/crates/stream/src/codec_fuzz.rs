@@ -83,6 +83,17 @@ fn truncated_header_is_invalid<T>(
 
 /// Exercise canonical journal commands and immutable retained facts.
 pub fn check(bytes: &[u8]) -> bool {
+    if let Ok(text) = core::str::from_utf8(bytes) {
+        let expected = crate::TokenOperation::ALL
+            .iter()
+            .copied()
+            .find(|operation| operation.as_str() == text);
+        match text.parse::<crate::TokenOperation>() {
+            Ok(operation) if Some(operation) == expected => {}
+            Err(StreamError::InvalidArgument) if expected.is_none() => {}
+            _ => return false,
+        }
+    }
     #[cfg(feature = "local")]
     if !crate::memory::check_snapshot_codec(bytes) {
         return false;
@@ -216,6 +227,12 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
         }
     }
     let mut seeds = Vec::new();
+    for operation in crate::TokenOperation::ALL {
+        seeds.push((
+            format!("token-{}", operation.as_str()),
+            operation.as_str().as_bytes().to_vec(),
+        ));
+    }
     let memory = crate::MemoryStream::new_with_clock(
         crate::MemoryLimits::default(),
         std::sync::Arc::new(Clock),
