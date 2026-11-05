@@ -1,5 +1,83 @@
 use super::*;
 
+#[test]
+fn original_driver_publication_preserves_terminal_wake_and_allocation_custody() -> io::Result<()> {
+    #[derive(Default)]
+    struct ObservedWake(AtomicU64);
+    impl Wake for ObservedWake {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    for registered in [false, true] {
+        for observed in [false, true] {
+            for terminal in 0..3 {
+                let budget = Arc::new(ReadBudgetMeter::new(0, 0));
+                let meter: Arc<dyn NativeReadMeter> = budget.clone();
+                let mut pair = None;
+                let allocated = acyclic_test_support::measure(|| {
+                    pair = Some(NativeCompletion::<usize>::from_driver(&meter));
+                });
+                let (mut task, producer) = pair.ok_or(io::ErrorKind::Other)??;
+                assert_eq!(allocated.count_current, 2);
+                assert_eq!(
+                    budget.memory.load(Ordering::Acquire),
+                    allocated.bytes_current as u64
+                );
+                assert_eq!(budget.used_operations.load(Ordering::Acquire), 0);
+                let allocations = budget.used_allocations.load(Ordering::Acquire);
+                budget.deny_allocations.store(true, Ordering::Release);
+                let wake = Arc::new(ObservedWake::default());
+                let waker = Waker::from(wake.clone());
+                let mut context = Context::from_waker(&waker);
+                if registered {
+                    // Both cancelled waits retain the original producer and
+                    // reuse their notifier; neither may allocate after birth.
+                    for _ in 0..2 {
+                        assert!(task.wait_interruptible(std::future::ready(()))?.is_none());
+                    }
+                    assert!(Pin::new(&mut task).poll(&mut context).is_pending());
+                }
+                let mut task = observed.then_some(task);
+                if !observed {
+                    assert!(budget.memory.load(Ordering::Acquire) > 0);
+                }
+                match terminal {
+                    0 => producer.complete(Ok(37)),
+                    1 => producer.complete(Err(io::ErrorKind::PermissionDenied.into())),
+                    _ => drop(producer),
+                }
+                if let Some(task) = &mut task {
+                    if registered {
+                        assert_eq!(wake.0.load(Ordering::Acquire), 1);
+                    }
+                    // A missing publication fails here without waiting for a
+                    // timeout, including the lost-producer negative control.
+                    let Poll::Ready(result) = Pin::new(task).poll(&mut context) else {
+                        panic!("original driver terminal did not publish");
+                    };
+                    match terminal {
+                        0 => assert_eq!(result?, 37),
+                        1 => {
+                            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied)
+                        }
+                        _ => assert_eq!(result.unwrap_err().kind(), io::ErrorKind::BrokenPipe),
+                    }
+                }
+                drop(task);
+                assert_eq!(budget.used_allocations.load(Ordering::Acquire), allocations);
+                assert_eq!(budget.used_operations.load(Ordering::Acquire), 0);
+                assert_eq!(budget.memory.load(Ordering::Acquire), 0);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn aborted_child(
     test: &str,
     marker: &str,

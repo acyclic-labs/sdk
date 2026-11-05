@@ -28,6 +28,26 @@ fuzz_target!(|bytes: &[u8]| {
         .nth(index)
         .unwrap_or_else(|| unreachable!("descriptor family missing"));
     assert_eq!(file, expected_file);
+    let service = match *file {
+        "actors-v1.bin" => Some("acyclic.actors.v1.ActorsService"),
+        "filesystem-v2.bin" => Some("acyclic.filesystem.v2.FilesystemService"),
+        "machines-v1.bin" => Some("acyclic.machines.v1.MachinesService"),
+        "objects-v1.bin" => Some("acyclic.objects.v1.BlobsService"),
+        "stream-v1.bin" => Some("acyclic.stream.v1.StreamService"),
+        _ => None,
+    };
+    if let Some(service) = service {
+        acyclic_proto_build::authorization(writer, service, "Method")
+            .expect("captured production method admission must compile");
+        // The same public metadata decoder receives arbitrary inputs. A
+        // successful Rust/TypeScript projection must be deterministic.
+        if let Ok(first) = acyclic_proto_build::authorization(bytes, service, "Method") {
+            assert_eq!(
+                acyclic_proto_build::authorization(bytes, service, "Method").ok(),
+                Some(first)
+            );
+        }
+    }
     assert_eq!(
         acyclic_proto_build::canonicalize(writer, roots)
             .ok()
@@ -48,6 +68,12 @@ fuzz_target!(|bytes: &[u8]| {
             acyclic_proto_build::canonicalize(&undeclared, roots).is_err(),
             "descriptor must refuse an undeclared action"
         );
+        if let Some(service) = service {
+            assert!(
+                acyclic_proto_build::authorization(&undeclared, service, "Method").is_err(),
+                "method admission must refuse an undeclared action"
+            );
+        }
     }
     if let Ok(canonical) = acyclic_proto_build::canonicalize(bytes, roots) {
         assert_eq!(

@@ -397,7 +397,7 @@ async fn connected(
         let mut output = headless::Output::new(acyclic_native_runtime::InheritedOutput::stdout()?);
         headless::write_event(
             &mut output,
-            OperationId::from_bytes(connection.root().id().to_bytes()),
+            OperationId::from_bytes(connection.root().id_bytes()),
             &reply,
         )
         .await?;

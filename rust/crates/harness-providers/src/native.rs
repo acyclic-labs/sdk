@@ -221,12 +221,13 @@ pub(crate) fn generate<'a>(
                     });
                     let events = parse_response(provider, request, &names, dispatch_id, work, response,
                         (input_bytes, cache), origin, origin_custody);
-                    futures::pin_mut!(events);
+                    let mut events = core::pin::pin!(events);
                     while let Some(event) = events.next().await { yield event?; }
                 }
             }).map(|stream| stream.with_delivery(acyclic_harness_core::model::ModelDelivery::Live))
         };
-        futures::pin_mut!(exchange, cancelled);
+        let exchange = core::pin::pin!(exchange);
+        let cancelled = core::pin::pin!(cancelled);
         match futures::future::select(cancelled, exchange).await {
             futures::future::Either::Left(_) => {
                 Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into())
@@ -265,7 +266,7 @@ fn parse_response<'a>(
             }
             drop(response.request_id);
             let frames = sse::frames(response.body, maximum, sse::Decoder::native(work)?);
-            futures::pin_mut!(frames);
+            let mut frames = core::pin::pin!(frames);
             while let Some(frame) = frames.next().await {
                 work.remaining()?;
                 let frame = frame?;

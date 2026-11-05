@@ -126,7 +126,7 @@ impl Conversation {
     /// The root agent's id in operation form: the task its failures name.
     #[must_use]
     pub fn task(&self) -> crate::OperationId {
-        crate::OperationId::from_bytes(self.agent().id().to_bytes())
+        crate::OperationId::from_bytes(self.agent().id_bytes())
     }
 
     /// The inbox sequence `command` committed at, which its settled entry

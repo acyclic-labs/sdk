@@ -2211,7 +2211,7 @@ impl NativeWatch {
             original.admit(WorkCounters::UNCHARGED)
         } else {
             work.check()
-                .map_err(crate::materializer::native_materialization_work_error)
+                .map_err(crate::NativeTreeMaterializationError::from)
         };
         match checked {
             Ok(()) => Ok(watch),

@@ -53,7 +53,8 @@ async fn check_recovery(terminal: bool) -> TestResult {
     let recovered = (async {
         let connected = connections.changed(first);
         let closed = records.next();
-        futures::pin_mut!(connected, closed);
+        let connected = core::pin::pin!(connected);
+        let closed = core::pin::pin!(closed);
         match future::select(connected, closed).await {
             future::Either::Left((Ok(next), _)) => next > first,
             _ => false,

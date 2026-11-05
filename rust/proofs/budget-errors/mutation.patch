@@ -1,0 +1,12 @@
+diff --git a/rust/crates/filesystem/src/performance.rs b/rust/crates/filesystem/src/performance.rs
+--- a/rust/crates/filesystem/src/performance.rs
++++ b/rust/crates/filesystem/src/performance.rs
+@@ -603,7 +603,7 @@
+                 budget.peak_allocation_bytes,
+             ),
+             (
+-                "materializations",
++                "page_reads",
+                 self.materializations,
+                 budget.materializations,
+             ),

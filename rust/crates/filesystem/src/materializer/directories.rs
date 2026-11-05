@@ -154,30 +154,24 @@ impl NativeTreeMaterializationBackend {
                 {
                     remove_native_entry_durable(&(&backend.held_target, path), &backend.work)?;
                 }
-                let directory = backend
-                    .work
-                    .with_original_leaf(|state| {
-                        host_path(path, state, |path, work| {
-                            backend.held_target.create_dir_all_held(path, work)
-                        })
+                let directory = backend.work.with_original_leaf(|state| {
+                    host_path(path, state, |path, work| {
+                        backend.held_target.create_dir_all_held(path, work)
                     })
-                    .map_err(native_materialization_work_error)?;
+                })?;
                 let (mut reader, _cursor) =
                     crate::native_host::read_dir_held(&directory.directory(), &mut &backend.work)?;
                 while let Some((entry, _allocation)) = reader.next(&mut &backend.work)? {
-                    backend
-                        .work
-                        .with_original_leaf(|state| {
-                            directory.remove(
-                                #[cfg(unix)]
-                                Path::new(&entry.name),
-                                #[cfg(windows)]
-                                &entry.name,
-                                None,
-                                state,
-                            )
-                        })
-                        .map_err(native_materialization_work_error)?;
+                    backend.work.with_original_leaf(|state| {
+                        directory.remove(
+                            #[cfg(unix)]
+                            Path::new(&entry.name),
+                            #[cfg(windows)]
+                            &entry.name,
+                            None,
+                            state,
+                        )
+                    })?;
                     directory.sync_directory(&mut &backend.work)?;
                 }
                 if let Some(parent) = path.parent() {

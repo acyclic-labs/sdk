@@ -35,7 +35,8 @@ pub(super) async fn run<T>(
         cancellation.cancel();
     }
     let cancelled = futures::future::poll_fn(|cx| cancellation.poll(cx));
-    futures::pin_mut!(future, cancelled);
+    let future = core::pin::pin!(future);
+    let cancelled = core::pin::pin!(cancelled);
     match futures::future::select(cancelled, future).await {
         futures::future::Either::Left(_) => Err(listener.signal.reason()),
         futures::future::Either::Right((result, _)) => result,

@@ -39,7 +39,8 @@ impl FollowState {
             publication.await
         };
         let unavailable = LocalInner::unavailable(&mut self.failed);
-        futures::pin_mut!(publication, unavailable);
+        let publication = core::pin::pin!(publication);
+        let unavailable = core::pin::pin!(unavailable);
         let ready = acyclic_native_runtime::obs::waiting(
             "stream-follow",
             key,

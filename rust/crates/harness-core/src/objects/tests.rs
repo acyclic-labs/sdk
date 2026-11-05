@@ -106,7 +106,7 @@ async fn an_upload_retry_naming_other_content_is_refused()
                     Some(range) => binding.read_range(&file, range, None, None)?,
                     None => binding.read(&file, file.descriptor().byte_length(), None, None)?,
                 };
-                futures::pin_mut!(read);
+                let mut read = core::pin::pin!(read);
                 assert!(futures::poll!(read.as_mut()).is_pending());
                 assert_eq!(
                     read_cut.requests.load(Ordering::SeqCst) - before,
@@ -146,7 +146,7 @@ async fn an_upload_retry_naming_other_content_is_refused()
                 *read_cut.failure.lock().expect("content failure") = Some(failed);
                 let read =
                     binding.read(reference, reference.descriptor().byte_length(), None, None)?;
-                futures::pin_mut!(read);
+                let mut read = core::pin::pin!(read);
                 match futures::future::select(read.as_mut(), failure).await {
                     futures::future::Either::Right((Ok(()), _)) => {}
                     _ => panic!("content failure escaped before binding delivery"),

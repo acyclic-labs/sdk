@@ -542,7 +542,8 @@ async fn gated<T>(
     operation: impl std::future::Future<Output = T>,
 ) -> Result<T> {
     let cancelled = io.cancellation().cancelled();
-    futures::pin_mut!(cancelled, operation);
+    let cancelled = core::pin::pin!(cancelled);
+    let operation = core::pin::pin!(operation);
     match select(select(terminal, cancelled), operation).await {
         Either::Left((Either::Left((error, _)), _)) => Err(error.into()),
         Either::Left((Either::Right(((), _)), _)) => {

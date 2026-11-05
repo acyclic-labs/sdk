@@ -146,7 +146,7 @@ pub(super) fn fuse_vec<T>(
 ) -> Result<FuseOwned<Vec<T>>, NativeMountError> {
     let (values, bytes) = work
         .with_original_leaf(|work| crate::native_host::buffer(capacity, work))
-        .map_err(crate::materializer::native_materialization_work_error)?;
+        .map_err(crate::NativeTreeMaterializationError::from)?;
     FuseOwned::adopt(values, bytes, work).map_err(Into::into)
 }
 
@@ -225,7 +225,7 @@ pub(super) fn fuse_path<'a>(
         work.admit(Copy.delta(copied_bytes))?;
         let (mut copied, bytes) = work
             .with_original_leaf(|work| crate::native_host::buffer::<u8, _>(component.len(), work))
-            .map_err(crate::materializer::native_materialization_work_error)?;
+            .map_err(crate::NativeTreeMaterializationError::from)?;
         let retained = work.with_original_leaf(|work| {
             path.custody
                 .as_ref()

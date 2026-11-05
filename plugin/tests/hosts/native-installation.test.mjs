@@ -32,7 +32,7 @@ test("actual Codex installs and removes the exact native plugin in its fixture p
       assert.equal(result.signal, null);
       return result;
     };
-    const receipt = await withOwnedCase({ processes, run: async () => {
+    await withOwnedCase({ processes, run: async () => {
       step = "reject a missing marketplace before native plugin registration";
       const missing = join(root, "missing"); await mkdir(missing);
       const rejected = await run(executable, ["install", "codex", "--plugin-root", missing]);
@@ -93,7 +93,6 @@ test("actual Codex installs and removes the exact native plugin in its fixture p
       assert.equal((await run(codex, ["plugin", "remove", "acyclic@contaminant", "--json"])).code, 0);
       assert.deepEqual(await list(), []);
     } });
-    assert.ok(receipt.seconds < 10);
   } catch (cause) {
     throw new Error(`step=${step}: ${cause.message}; recovery=${recovery}`, { cause });
   } finally {

@@ -256,7 +256,7 @@ test("contract binaries use exact Cargo identities and current source/configurat
     assert.deepEqual(binaries.map(binary => statSync(binary).mtimeMs), before);
     // An intervening build of a different feature set cannot substitute its
     // executable output; Cargo must qualify the requested configuration again.
-    command(["build", "--workspace", "--all-features", "--locked", "--offline"]);
+    command(["build", "-p", "alpha", "-p", "beta", "--all-features", "--locked", "--offline"]);
     assert.deepEqual(run(build()), ["alpha:false:true", "beta:false:true"]);
 
     // A source edit must invalidate the executable, including library inputs.

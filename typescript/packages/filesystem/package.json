@@ -23,6 +23,10 @@
     "CHANGELOG.md"
   ],
   "exports": {
+    "./authorization": {
+      "types": "./dist/generated/authorization.d.ts",
+      "default": "./dist/generated/authorization.js"
+    },
     ".": {
       "types": "./dist/browser.d.ts",
       "default": "./dist/browser.js"

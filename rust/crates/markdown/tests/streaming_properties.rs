@@ -1,7 +1,35 @@
 //! Reproducible streaming-prefix and corpus invariants.
 #[path = "support/streaming_input.rs"]
 mod input;
+#[path = "support/syntax_data.rs"]
+mod syntax_data;
 use proptest::prelude::*;
+
+#[test]
+fn syntax_data_preserves_bundled_grammars_and_rejects_invalid_envelopes() {
+    use syntect::{easy::HighlightLines, highlighting::ThemeSet, parsing::SyntaxSet};
+
+    let corpus = acyclic_test_support::crate_path!("fuzz/corpus/syntax_data");
+    for entry in std::fs::read_dir(corpus).unwrap() {
+        syntax_data::check(&std::fs::read(entry.unwrap().path()).unwrap());
+    }
+    let themes = ThemeSet::load_defaults();
+    let theme = themes.themes.values().next().unwrap();
+    for syntaxes in [
+        SyntaxSet::load_defaults_newlines(),
+        SyntaxSet::load_defaults_nonewlines(),
+    ] {
+        for syntax in syntaxes.syntaxes() {
+            let mut highlighter = HighlightLines::new(syntax, theme);
+            let source = "let answer = 42; // syntax data\n";
+            let spans = highlighter.highlight_line(source, &syntaxes).unwrap();
+            assert_eq!(
+                spans.into_iter().map(|(_, text)| text).collect::<String>(),
+                source
+            );
+        }
+    }
+}
 
 #[test]
 fn streaming_seed_corpus() {

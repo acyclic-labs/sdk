@@ -30,17 +30,15 @@ impl NativeCleanupWrite {
         if self.additional_resource.is_some() {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
-        self.meter
-            .state(|state| {
-                state.check()?;
-                resource.reserve(
-                    NativeResourceCredit::WriteOperations.delta(1),
-                    0,
-                    self.meter.resource.as_deref(),
-                    &mut || Ok(()),
-                )
-            })
-            .map_err(native_materialization_work_error)?;
+        self.meter.state(|state| {
+            state.check()?;
+            resource.reserve(
+                NativeResourceCredit::WriteOperations.delta(1),
+                0,
+                self.meter.resource.as_deref(),
+                &mut || Ok(()),
+            )
+        })?;
         self.additional_resource = Some(resource.clone());
         Ok(())
     }
@@ -60,7 +58,7 @@ impl NativeCleanupWrite {
                     )
                 })
             })
-            .map_err(native_materialization_work_error);
+            .map_err(NativeTreeMaterializationError::from);
         let (result, original) = self.reservation.attempt(operation);
         (
             result,

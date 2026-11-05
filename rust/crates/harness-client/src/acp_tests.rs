@@ -214,7 +214,7 @@ async fn pending_context(
             }
         },
     );
-    futures::pin_mut!(prepared);
+    let mut prepared = core::pin::pin!(prepared);
     assert!(futures::poll!(&mut prepared).is_pending());
     let running = StatusRecord {
         phase: Phase::Running,

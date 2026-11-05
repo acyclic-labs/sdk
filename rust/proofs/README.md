@@ -21,6 +21,37 @@ an oracle that rejects a population-dependent implementation.
 
 ## Current closure work
 
+The [ready-source allocation control](ready-source-allocation/README.md) retains
+actual committed records and physical heap measurements while replacing a former
+scheduler comparison with a production mutation. It qualifies ready-record
+allocation only; source-index comparison and wake-drain complexity remain open.
+
+The [exact budget-refusal control](budget-errors/README.md) extends the existing
+generated verifier oracle with an isolated refusal for every declared counter.
+It retains full-width mixed inputs and first-error priority; a production
+mutation mislabels the final field and must fail the unchanged oracle. This
+subsumes two fixed counter examples without relying on random early errors to
+exercise later fields.
+
+The [original-budget control](borrowed-budget/README.md) replaces a hand-written
+former completion body with a mutation of the actual kernel accounting method.
+The existing address, verification-count, allocation and receipt observations
+remain on that production entry point; no machine-level copy count is inferred.
+
+The [native-charge control](native-charge/README.md) inserts a physical allocation
+in the actual charge method. The existing completed-prefix property must reject
+it through the real allocator. It replaces a test-only hook, thread-local
+injection flag and redundant fixed example; the separate mutex oracle remains.
+
+The [work arithmetic control](work-arithmetic/README.md) compares actual receipt
+addition with independent wider arithmetic across every declared field, including
+peak/max semantics and unchanged receipts on refused addition or charge. Its
+production mutation removes the overflow fence; the original property must
+reject a wrapped sum. A second production mutation corrupts a successful mixed
+sum; every generated invocation includes a positive mixture that cannot overflow.
+Reservation ownership and native concurrency remain
+separate obligations.
+
 The [Auth producer-loss control](auth-producer-loss/README.md) retains a
 production mutation that captures the global watch sender in its own account
 dependency future. The original retained-account oracle must reject the resulting

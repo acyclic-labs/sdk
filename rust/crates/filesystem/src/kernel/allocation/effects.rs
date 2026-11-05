@@ -87,7 +87,7 @@ fn reserve(
     work.state(|state| {
         // Existing ledger failures precede caller cancellation; cancellation
         // precedes proposed work. The leaf remains held through reservation.
-        let native = crate::materializer::native_materialization_work_error;
+        let native = crate::NativeTreeMaterializationError::from;
         state.admit(WorkCounters::UNCHARGED).map_err(native)?;
         cancellation.check()?;
         let delta = state.item_charge(delta);
@@ -132,7 +132,7 @@ fn complete(
         *pending = credited
             .remaining(*pending)
             .map_err(crate::NativeTreeMaterializationError::from)?;
-        let native = crate::materializer::native_materialization_work_error;
+        let native = crate::NativeTreeMaterializationError::from;
         state.complete(credited, actual).map_err(native)?;
         state.admit(WorkCounters::UNCHARGED).map_err(native)?;
         cancellation.check().map_err(Into::into)

@@ -499,7 +499,9 @@ mod tests {
                 work.clone(),
             )?;
             let changed = binding.changed();
-            futures::pin_mut!(monitor, detached, changed);
+            let mut monitor = core::pin::pin!(monitor);
+            let mut detached = core::pin::pin!(detached);
+            let mut changed = core::pin::pin!(changed);
             assert!(changed.as_mut().now_or_never().is_none());
             assert!(monitor.as_mut().now_or_never().is_none());
             assert!(detached.as_mut().now_or_never().is_none());

@@ -68,6 +68,7 @@ acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = fa
 wasm-bindgen-test = "=0.3.67"
 
 [dev-dependencies]
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]

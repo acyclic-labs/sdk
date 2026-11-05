@@ -343,14 +343,11 @@ impl NativeDemandReadMeter {
             |work| &mut work.native_invocation,
             native.invocation.as_ref().map(Arc::downgrade),
             |work| work.check(),
-        )
-        .map_err(crate::materializer::native_materialization_work_error)?;
+        )?;
         if work.owns_native_checkout_token(token) || !token.accepts_native_original(self) {
             return Err(Error::InvalidLayout);
         }
-        let shared = work
-            .proof_accounting()
-            .map_err(crate::materializer::native_materialization_work_error)?;
+        let shared = work.proof_accounting()?;
         if !token.bind_native_original(self, &shared) {
             return Err(Error::InvalidLayout);
         }
