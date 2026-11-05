@@ -1525,7 +1525,8 @@ pub struct NativeWatch {
     complete: bool,
     original_work: Option<crate::NativeMaterializationWork>,
     _root_allocation: Option<crate::NativeAllocation>,
-    pending_source_watch: Option<Arc<crate::source_watch::SourceWatchStartupFailure>>,
+    // A terminal cause survives a refused housekeeping invocation.
+    terminal_source_failure: Option<crate::demand::DemandError>,
     owner_allocation: Option<crate::NativeAllocation>,
 }
 
@@ -1712,41 +1713,44 @@ impl NativeWatch {
     ) -> Result<bool, NativeWatchError> {
         original.admit(WorkCounters::UNCHARGED)?;
         let mut work = crate::NativeMaterializationWork::clone(original);
-        if let Some(pending) = self.pending_source_watch.as_ref() {
-            pending
-                .stop_with_native_work(original)
-                .map_err(demand_watch_error)?;
-            if !pending.is_stopped() {
-                return Err(NativeWatchError::SourceUnavailable);
-            }
-            drop(self.pending_source_watch.take());
-        }
         #[cfg(windows)]
         {
             self.clear_windows_registrations_with_work(&mut work)
                 .map_err(demand_watch_error)?;
         }
-        match &self.watcher {
-            NativeWatchDriver::Source(watcher) => {
-                watcher
-                    .retire_with_work(&mut work)
-                    .map_err(demand_watch_error)?;
-                if !watcher.is_stopped() {
-                    return Err(NativeWatchError::SourceUnavailable);
+        if self.terminal_source_failure.is_none() {
+            self.terminal_source_failure = match &self.watcher {
+                NativeWatchDriver::Source(watcher) => {
+                    let result = watcher.retire_with_work(&mut work);
+                    if !watcher.is_stopped() {
+                        result.map_err(demand_watch_error)?;
+                        return Err(NativeWatchError::SourceUnavailable);
+                    }
+                    if result.is_err() {
+                        watcher.stop_accepted_cleanup().and(result)
+                    } else {
+                        result
+                    }
+                    .err()
                 }
-            }
-            NativeWatchDriver::StartupFailure(owner) => {
-                owner
-                    .stop_with_native_work(original)
-                    .map_err(demand_watch_error)?;
-                if !owner.is_stopped() {
-                    return Err(NativeWatchError::SourceUnavailable);
+                NativeWatchDriver::StartupFailure(owner) => {
+                    let result = owner.stop_with_native_work(original);
+                    if !owner.is_stopped() {
+                        result.map_err(demand_watch_error)?;
+                        return Err(NativeWatchError::SourceUnavailable);
+                    }
+                    if result.is_err() {
+                        owner.stop_accepted_cleanup().and(result)
+                    } else {
+                        result
+                    }
+                    .err()
                 }
-            }
-            #[cfg(not(windows))]
-            NativeWatchDriver::Adapter(_) => {
-                return Err(NativeWatchError::BoundedObservationUnavailable);
-            }
+                #[cfg(not(windows))]
+                NativeWatchDriver::Adapter(_) => {
+                    return Err(NativeWatchError::BoundedObservationUnavailable);
+                }
+            };
         }
         self.held_root
             .close_with_native_work(original, self.original_work.as_ref())?;
@@ -1786,7 +1790,10 @@ impl NativeWatch {
         drop(pending);
         drop(fence);
         original.record_admitted(WorkCounters::UNCHARGED)?;
-        Ok(true)
+        match self.terminal_source_failure.take() {
+            Some(error) => Err(demand_watch_error(error)),
+            None => Ok(true),
+        }
     }
 
     /// Opens the existing watcher with explicit preparation work/cancellation.
@@ -2198,7 +2205,7 @@ impl NativeWatch {
             original_work: original.map(crate::NativeMaterializationWork::allocation_work),
             _root_allocation: root_allocation,
             owner_allocation: None,
-            pending_source_watch: None,
+            terminal_source_failure: None,
         };
         if let NativeWatchDriver::StartupFailure(cause) = &watch.watcher {
             return Err(NativeWatchError::SourceStartupFailed {
@@ -2313,11 +2320,6 @@ impl NativeWatch {
         work: &mut W,
     ) -> Result<(), crate::demand::DemandError> {
         work.check()?;
-        if let Some(owner) = &self.pending_source_watch {
-            return Err(crate::demand::DemandError::SourceWatchStartup(Arc::clone(
-                owner,
-            )));
-        }
         if self.has_subtree_registration() || directory.is_root() {
             return Ok(());
         }
@@ -3391,11 +3393,7 @@ impl NativeWatch {
         if crate::fsevents::on_queue() {
             return self.invalidate();
         }
-        let pending = match (&self.pending_source_watch, &self.watcher) {
-            (Some(owner), _) | (_, NativeWatchDriver::StartupFailure(owner)) => Some(owner),
-            _ => None,
-        };
-        if let Some(owner) = pending {
+        if let NativeWatchDriver::StartupFailure(owner) = &self.watcher {
             let error = demand_watch_error(crate::demand::DemandError::SourceWatchStartup(
                 Arc::clone(owner),
             ));
@@ -3589,7 +3587,7 @@ impl NativeWatch {
         let adapter = matches!(self.watcher, NativeWatchDriver::Adapter(_));
         #[cfg(windows)]
         let adapter = false;
-        if !adapter || self.pending_source_watch.is_some() {
+        if !adapter {
             let mut work =
                 crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
             return self.fence_with_work(&mut work);
@@ -3771,9 +3769,6 @@ impl NativeWatch {
         original: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeWatchError> {
         original.admit(WorkCounters::UNCHARGED)?;
-        if let Some(owner) = &self.pending_source_watch {
-            return Err(NativeWatchError::SourceStartup(Arc::clone(owner)));
-        }
         match &self.watcher {
             NativeWatchDriver::Source(source) => {
                 source.ensure_wait_available().map_err(demand_watch_error)?;

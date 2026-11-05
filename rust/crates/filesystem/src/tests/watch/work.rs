@@ -516,7 +516,7 @@ fn native_shutdown_retires_birth_resources_with_a_fresh_invocation()
 -> Result<(), Box<dyn std::error::Error>> {
     acyclic_native_runtime::initialize_native_io_services()?;
     crate::watch::initialize_native_watch_services()?;
-    for cancel_birth in [false, true] {
+    for (cancel_birth, fail_delivery) in [(false, false), (true, false), (true, true)] {
         let directory = tempfile::tempdir()?;
         std::fs::create_dir(directory.path().join("child"))?;
         let birth_cancel = CancellationToken::new();
@@ -552,10 +552,46 @@ fn native_shutdown_retires_birth_resources_with_a_fresh_invocation()
         if cancel_birth {
             birth_cancel.cancel();
         }
+        if fail_delivery {
+            // The original producer must observe its cancelled birth work on
+            // a real notification, rather than only during explicit shutdown.
+            std::fs::write(directory.path().join("child/reported"), b"changed")?;
+            let state = watch.shared.lock().map_err(|_| "watch state poisoned")?;
+            drop(
+                watch
+                    .fenced
+                    .wait_while(state, |state| !state.source_lost)
+                    .map_err(|_| "watch delivery wait poisoned")?,
+            );
+            let refused = crate::NativeMaterializationWork::new(
+                WorkBudget {
+                    backend_write_operations: 0,
+                    ..WorkBudget::UNBOUNDED
+                },
+                &CancellationToken::new(),
+            )
+            .map_err(|(error, _)| error)?;
+            let result = watch.shutdown_with_native_work(&refused);
+            assert!(
+                matches!(result, Err(NativeWatchError::Work(_))),
+                "terminal source data bypassed dependent cleanup admission: {result:?}"
+            );
+            assert!(watch.held_root.root.is_some());
+            assert_eq!(refused.receipt().backend_write_operations, 0);
+        }
         let current =
             crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .map_err(|(error, _)| error)?;
-        assert!(watch.shutdown_with_native_work(&current)?);
+        let result = watch.shutdown_with_native_work(&current);
+        if fail_delivery {
+            assert!(
+                matches!(result, Err(NativeWatchError::Cancelled(_))),
+                "original producer refusal disappeared after cleanup admission: {result:?}"
+            );
+        } else {
+            assert!(result?);
+        }
+        assert!(watch.held_root.root.is_none());
         let NativeWatchDriver::Source(source) = &watch.watcher else {
             panic!("cleanup preserves the producer identity");
         };
@@ -565,7 +601,10 @@ fn native_shutdown_retires_birth_resources_with_a_fresh_invocation()
         assert!(birth.receipt().backend_write_operations > before.backend_write_operations);
         // Only the held root close belongs to the fresh invocation. Platform
         // watch retirement consumes credits accepted before those watches began.
-        assert_eq!(current.receipt().backend_write_operations, 1);
+        let receipt = current.receipt();
+        assert_eq!(receipt.backend_write_operations, 1);
+        assert_eq!(receipt.allocation_operations, 0);
+        assert_eq!(receipt.peak_allocation_bytes, 0);
     }
     Ok(())
 }
