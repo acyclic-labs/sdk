@@ -36,7 +36,8 @@
         "nested-children",
         "topology-pipeline",
         "topology-debate-ring",
-        "topology-group-chat"
+        "topology-group-chat",
+        "topology-blackboard"
       ]
     },
     "A4": {
