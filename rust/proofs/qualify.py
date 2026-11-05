@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost", "guest-refusal", "trust-catchup"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "auth-generation", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost", "guest-refusal", "trust-catchup"])
 claim = parser.parse_args().claim
 target = ["--lib"]
 if claim == "retained-credit":
@@ -46,6 +46,12 @@ elif claim == "auth-producer-loss":
     crate = "acyclic-auth"
     test = "trust::follower::tests::account_events_preserve_exact_dependencies_without_unrelated_wakes"
     diagnostic = "account wait retained its lost global producer"
+    features = ["--no-default-features"]
+elif claim == "auth-generation":
+    source = "rust/crates/auth/src/trust/follower.rs"
+    crate = "acyclic-auth"
+    test = "trust::follower::tests::swap_precedes_wake_and_lost_follow_fences"
+    diagnostic = "generation exhaustion retained a live publication owner"
     features = ["--no-default-features"]
 elif claim in ("work-arithmetic", "work-mixed"):
     source = "rust/crates/filesystem/src/performance.rs"

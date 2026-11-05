@@ -68,6 +68,13 @@ held before the observed tail; trust must remain fenced until it applies, and
 losing its producer must return the original typed error. The existing follow
 loss test covers this boundary without introducing a second trust driver.
 
+The [Auth generation control](auth-generation/README.md) mutates the shared
+withdrawal increment to reuse generation zero after exhaustion. The existing
+signed follower test must reject a live original change wait, require the exact
+terminal cause and refuse reopening. The same test holds account storage during
+withdrawal; this establishes absence of that traversal, while notification work
+still depends on actual waiters.
+
 The [Objects empty-range dispatch control](objects-empty-dispatch/README.md)
 retains a production mutation that disables the index-only presence path. The
 existing real-log oracle must reject the resulting extra native submission;
