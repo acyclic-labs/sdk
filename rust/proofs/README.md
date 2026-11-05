@@ -82,6 +82,12 @@ pass with its original typed panic error and empty wait report after restoration
 This qualifies one failure path; same-service dependency refusal, caller-drop
 custody and native callback fail-stop remain distinct controls.
 
+The [persistence wait-retirement control](persistence-wait-retirement/README.md)
+retains the original diagnostic wait after the same physical worker failure.
+The unchanged panic test must reject the remaining report entry after receiving
+its typed error. This qualifies ownership retirement after completion, without
+claiming that a diagnostic report proves operation progress or scheduler cost.
+
 The [Objects close-result control](objects-close-result/README.md) discards only
 the original worker's inner storage result after physical completion. The
 existing real-log test must reject the false success, then pass after exact
