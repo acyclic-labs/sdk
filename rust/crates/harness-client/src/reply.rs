@@ -516,7 +516,7 @@ fn validate_reply(
             AgentReply::Spawned { agent, .. },
             AgentCommand::Spawn { parent, .. } | AgentCommand::Fork { parent, .. },
         ) => {
-            return if agent.parent().as_ref() == Some(parent) {
+            return if agent.parent_is(Some(parent)) {
                 Ok(())
             } else {
                 Err(CommandError::Invalid)
@@ -527,9 +527,10 @@ fn validate_reply(
         }
         (AgentReply::Children { items, next }, AgentCommand::Children { agent, page }) => {
             let mut seen = std::collections::BTreeSet::new();
-            if items.iter().any(|item| {
-                item.agent.parent().as_ref() != Some(agent) || !seen.insert(&item.agent)
-            }) {
+            if items
+                .iter()
+                .any(|item| !item.agent.parent_is(Some(agent)) || !seen.insert(&item.agent))
+            {
                 return Err(CommandError::Invalid);
             }
             (items.len(), next, page)

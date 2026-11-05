@@ -55,7 +55,7 @@ impl HostWorkspace {
         signed: &Scope,
         admitted_mount_root: HeldRoot,
     ) -> Result<Self> {
-        if agent.parent().is_some() {
+        if !agent.parent_is(None) {
             return Err(Error::Unauthorized("host root agent has a parent".into()));
         }
         let project = workspace.mounts.named(None)?.1.view.volume.clone();
@@ -241,7 +241,7 @@ impl HostWorkspace {
         reference: &str,
     ) -> Result<Self> {
         self.verify().await?;
-        if child.parent().as_ref() != Some(&self.agent) {
+        if !child.parent_is(Some(&self.agent)) {
             return Err(Error::Unauthorized(
                 "host child belongs to another parent".into(),
             ));

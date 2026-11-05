@@ -208,11 +208,13 @@ impl AgentPath {
         })
     }
 
-    /// Whether this canonical address is an immediate child of `parent`,
-    /// without allocating the parent's address. This checks routing only.
+    /// Whether this canonical address has exactly `parent`, with `None` naming
+    /// a root, without allocating an address. This checks routing only.
     #[must_use]
-    pub fn is_child_of(&self, parent: &Self) -> bool {
-        self.depth.checked_sub(1) == Some(parent.depth) && parent.contains(self)
+    pub fn parent_is(&self, parent: Option<&Self>) -> bool {
+        parent.map_or(self.depth == 0, |parent| {
+            self.depth.checked_sub(1) == Some(parent.depth) && parent.contains(self)
+        })
     }
 
     /// Whether `agent` is this canonical agent or one of its descendants.
@@ -388,9 +390,12 @@ mod tests {
         assert!(!root.contains(&foreign));
         assert!(!root.contains(&root.parent().expect("nested root")));
         let parent = root.parent().expect("nested root");
-        assert!(root.is_child_of(&parent));
-        assert!(!foreign.is_child_of(&parent));
-        assert!(!parent.is_child_of(&parent));
+        let tree_root = &parent;
+        assert!(root.parent_is(Some(&parent)));
+        assert!(!foreign.parent_is(Some(&parent)));
+        assert!(!parent.parent_is(Some(&parent)));
+        assert!(parent.parent_is(None));
+        assert!(!root.parent_is(None));
         for malformed in [
             format!("{root}0"),
             format!("{root}/children/{}", "A".repeat(ID_HEX)),
@@ -401,7 +406,7 @@ mod tests {
         }
         // Every agent of a tree addresses the root's targets.
         let nested = root.child(&AgentId::from_bytes([3; 16]))?;
-        assert!(!nested.is_child_of(&parent));
+        assert!(!nested.parent_is(Some(&parent)));
         assert_eq!(nested.tree_root(), root.parent().expect("nested root"));
         assert_eq!(
             nested.target("pc")?,
@@ -440,6 +445,14 @@ mod tests {
             assert_eq!(parsed.as_str().as_ptr(), original);
             assert_eq!(parsing.count_total, 0);
             let parent = parsed.parent().expect("nested path");
+            for path in [&parsed, &parent, &foreign] {
+                for candidate in [None, Some(&parent), Some(&parsed), Some(&foreign)] {
+                    assert_eq!(
+                        path.parent_is(candidate),
+                        path.parent().as_ref() == candidate
+                    );
+                }
+            }
             // The former parser allocated an owned id for each ancestor.
             let owned_ids = acyclic_test_support::measure(|| {
                 for id in parsed.as_str().split('/').skip(2).step_by(2) {
@@ -466,8 +479,10 @@ mod tests {
                     for _ in 0..calls {
                         assert!(black_box(&root).contains(black_box(&parsed)));
                         assert!(!root.contains(black_box(&foreign)));
-                        assert!(black_box(&parsed).is_child_of(black_box(&parent)));
-                        assert!(!foreign.is_child_of(black_box(&parent)));
+                        assert!(black_box(&parsed).parent_is(Some(black_box(&parent))));
+                        assert!(!foreign.parent_is(Some(black_box(&parent))));
+                        assert!(black_box(tree_root).parent_is(None));
+                        assert!(!parsed.parent_is(None));
                     }
                 });
                 assert_eq!(

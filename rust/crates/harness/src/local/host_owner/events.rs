@@ -33,7 +33,7 @@ impl HostWorkspaceOwner {
         let _lock = self.locks.hold(vec![agent.clone()]).await;
         // A managed boundary is an acknowledgement, not view admission or
         // capture. Only its physical process owner can retire and capture it.
-        if agent.parent().is_some() && matches!(event, "Stop" | "SessionEnd") {
+        if !agent.parent_is(None) && matches!(event, "Stop" | "SessionEnd") {
             return Ok(json!({}));
         }
         if event == "NativeSession" {

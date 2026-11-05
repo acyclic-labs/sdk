@@ -309,7 +309,7 @@ impl HostWorkspaceOwner {
     async fn retire_idle(&self, agents: impl IntoIterator<Item = AgentPath>) -> Result<()> {
         let mut idle = Vec::new();
         for agent in agents {
-            if agent.parent().is_none() || !self.views()?.contains_key(&agent) {
+            if agent.parent_is(None) || !self.views()?.contains_key(&agent) {
                 continue;
             }
             let _lock = self.locks.hold(vec![agent.clone()]).await;
@@ -509,7 +509,7 @@ impl HostWorkspaceOwner {
     async fn capture_native(&self, operation: OperationId, task: &AgentPath) -> Result<Value> {
         self.attach(task).await?;
         let view = self.view(task)?;
-        let _quiescence = if task.parent().is_some() {
+        let _quiescence = if !task.parent_is(None) {
             Some(
                 super::host_process::HostProcessLease::acquire(
                     self.local.workspace_path().ok_or_else(|| {

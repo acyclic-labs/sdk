@@ -407,7 +407,7 @@ impl AgentTool {
 /// path of one of its children, open or settled.
 fn named_child(agent: &AgentPath, reference: &str) -> Option<AgentPath> {
     if let Ok(path) = AgentPath::try_from(reference.to_owned()) {
-        return path.is_child_of(agent).then_some(path);
+        return path.parent_is(Some(agent)).then_some(path);
     }
     spawned_child(agent, reference).ok()
 }

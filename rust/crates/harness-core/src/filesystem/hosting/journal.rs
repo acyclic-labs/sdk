@@ -320,7 +320,7 @@ where
                 if input != adopted
                     || adoption.forked_at != input
                     || adoption.agent != agent.id()
-                    || adoption.parent != agent.parent()
+                    || !agent.parent_is(adoption.parent.as_ref())
                 {
                     return Err(Error::Record("journal adoption differs"));
                 }

@@ -49,11 +49,12 @@ pub(super) fn from_encoded(bytes: Vec<u8>) -> Result<Checkpoint, Error> {
 
 /// Artifact state as checkpoint bytes. Subscription cuts belong to Actors.
 pub(crate) fn encode(state: &AgentState) -> Result<Vec<u8>, Error> {
-    let mut rest = state.clone();
-    let turn = rest.turn.take();
-    if rest.parent.take() != state.path.parent() {
+    if !state.path.parent_is(state.parent.as_ref()) {
         return Err(Error::Record("agent parent is not its path's parent"));
     }
+    let mut rest = state.clone();
+    let turn = rest.turn.take();
+    rest.parent = None;
     Ok(Encoded {
         state: super::records::encode_payload(&rest)
             .map_err(|_| Error::Record("agent checkpoint does not encode"))?,

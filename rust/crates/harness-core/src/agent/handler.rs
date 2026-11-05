@@ -214,13 +214,13 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
             if *sequence != from
                 || adopted.forked_at != from
                 || adopted.agent != agent.id()
-                || adopted.parent != agent.parent()
+                || !agent.parent_is(adopted.parent.as_ref())
             {
                 return Err(Error::Record("agent adoption cursor differs"));
             }
             AgentState::adopted(agent.clone(), adopted)?
         };
-        if &observed.path != agent || observed.parent != agent.parent() {
+        if &observed.path != agent || !agent.parent_is(observed.parent.as_ref()) {
             return Err(Error::Record("agent state binding differs"));
         }
         observed

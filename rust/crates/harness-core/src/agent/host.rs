@@ -266,7 +266,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             .ok_or(Error::Record("agent inbox subscription differs"))?;
         let settled = if let Some(checkpoint) = state.checkpoint() {
             let observed = super::checkpoint_state(checkpoint)?;
-            if &observed.path != agent || observed.parent != agent.parent() {
+            if &observed.path != agent || !agent.parent_is(observed.parent.as_ref()) {
                 return Err(Error::Record("agent state binding differs"));
             }
             if observed.closed && input >= subscription.cursor {
@@ -309,7 +309,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
                 .ok_or(Error::Stream(StreamError::NotFound))?;
             if let Some(checkpoint) = state.checkpoint() {
                 let observed = super::checkpoint_state(checkpoint)?;
-                if &observed.path != agent || observed.parent != agent.parent() {
+                if &observed.path != agent || !agent.parent_is(observed.parent.as_ref()) {
                     return Err(Error::Record("agent state binding differs"));
                 }
                 if observed.conversation_tail > 0 {
