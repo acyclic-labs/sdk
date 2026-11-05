@@ -1,6 +1,6 @@
 --- a/rust/crates/filesystem/src/core_state/native_records/mod.rs
 +++ b/rust/crates/filesystem/src/core_state/native_records/mod.rs
-@@ -98,13 +98,14 @@
+@@ -98,12 +98,13 @@
      bytes: impl FnOnce(&T) -> Result<u64, Error>,
  ) -> Result<Owned<T>, Error> {
      // Keep the value-first tuple intact through every rejecting branch.
@@ -15,4 +15,3 @@
 +    parts.1.release(parts.1.bytes())?;
      Ok((parts.0, parts.1))
  }
- 
