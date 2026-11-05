@@ -85,7 +85,7 @@ async fn freeze_survives_lost_acknowledgement_and_keeps_its_origin_immutable() {
         .unwrap()
         .config
         .limits
-        .maximum_read_bytes += 1;
+        .maximum_directory_page_entries += 1;
     replacements[3]
         .fork_origin
         .as_mut()

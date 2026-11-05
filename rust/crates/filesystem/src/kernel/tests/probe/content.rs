@@ -208,7 +208,7 @@ async fn every_sparse_dependency_region_preserves_ordinary_and_native_evidence()
         regular_id,
         regular_name,
     } = sparse_probe_fixture(&store).await?;
-    let missing_name = LogicalName::new(NameEncoding::Utf8, b"missing".to_vec(), 255)?;
+    let missing_name = LogicalName::new(NameEncoding::Utf8, b"missing".to_vec())?;
     let regions = vec![
         DependencyRegion::FileRecord(regular_id),
         DependencyRegion::Metadata(regular_id),

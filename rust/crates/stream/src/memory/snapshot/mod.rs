@@ -355,6 +355,15 @@ fn reconstruct(
                     CommittedMutation::Append(append) => &append.path,
                     CommittedMutation::Fork(fork) => &fork.destination,
                 }),
+                |prefix| {
+                    envelope
+                        .mutations
+                        .binary_search_by(|mutation| match mutation {
+                            CommittedMutation::Append(append) => append.path.as_str().cmp(prefix),
+                            CommittedMutation::Fork(fork) => fork.destination.as_str().cmp(prefix),
+                        })
+                        .is_ok()
+                },
             )
             .ok()?;
         let namespace = stage_namespace(
@@ -378,17 +387,6 @@ fn reconstruct(
     Some(state)
 }
 
-fn retained_fact_bound() -> Option<usize> {
-    crate::MAX_COMMAND_BYTES
-        .checked_mul(64)?
-        .checked_add(
-            crate::MAX_ITEMS
-                .checked_mul(crate::MAX_PATH_BYTES.checked_mul(2)?.checked_add(128)?)?,
-        )?
-        .checked_add(crate::MAX_IDEMPOTENCY_KEY_BYTES)?
-        .checked_add(128)
-}
-
 fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Result<(), StreamError> {
     for _ in 0..input.len().ok_or_else(invalid)? {
         let flags = input.u8().ok_or_else(invalid)?;
@@ -398,21 +396,18 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Result<(), Strea
         let observation = if flags & RETAINS_REPLAY == 0 {
             None
         } else {
+            let bytes = input.bytes().ok_or_else(invalid)?;
             let wire = crate::persistence::decode::<crate::wire::IdempotencyObservation>(
-                input.bytes().ok_or_else(invalid)?,
-                retained_fact_bound().ok_or_else(invalid)?,
+                bytes,
+                bytes.len(),
             )?;
             Some(crate::persistence::observation_from_wire(wire)?)
         };
         let envelope = if flags & RETAINS_COMMIT == 0 {
             None
         } else {
-            Some(crate::persistence::envelope_from_wire(
-                crate::persistence::decode::<crate::wire::CommittedEnvelope>(
-                    input.bytes().ok_or_else(invalid)?,
-                    retained_fact_bound().ok_or_else(invalid)?,
-                )?,
-            )?)
+            let bytes = input.bytes().ok_or_else(invalid)?;
+            Some(crate::persistence::decode_envelope(bytes, bytes.len())?)
         };
         restore_retained(state, observation, envelope).ok_or_else(invalid)?;
     }

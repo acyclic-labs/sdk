@@ -1,3 +1,4 @@
+import { grpcDeadlines } from "@acyclic-labs/actors/deadline";
 import { credentialInterceptor } from "@acyclic-labs/auth/credential-connect";
 import { credentialProvider, type CredentialOptions } from "@acyclic-labs/actors/credential";
 import { rootCertificates } from "node:tls";

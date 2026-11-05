@@ -903,19 +903,29 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             );
             let result = {
                 let interrupted = self.interrupt(&mut inner, cancellation.clone());
-                futures::pin_mut!(interrupted);
+                let timeout = async {
+                    match limits.handler_timeout_millis() {
+                        Some(timeout) => sleep(timeout).await,
+                        None => futures::future::pending::<Result<(), ClockError>>().await,
+                    }
+                };
+                futures::pin_mut!(interrupted, timeout);
                 match futures::future::select(
                     handled,
-                    futures::future::select(sleep(limits.handler_timeout_millis()), interrupted),
+                    futures::future::select(timeout, interrupted),
                 )
                 .await
                 {
                     futures::future::Either::Left((transition, _)) => {
                         transition.map_err(Error::from)
                     }
-                    futures::future::Either::Right((futures::future::Either::Left(_), _)) => {
-                        Err(Error::Invalid("handler exceeded its manifest timeout"))
-                    }
+                    futures::future::Either::Right((
+                        futures::future::Either::Left((elapsed, _)),
+                        _,
+                    )) => match elapsed {
+                        Ok(()) => Err(Error::Invalid("handler exceeded its manifest timeout")),
+                        Err(error) => Err(Error::from(error)),
+                    },
                     futures::future::Either::Right((
                         futures::future::Either::Right((error, _)),
                         _,
@@ -926,9 +936,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             inner.follows.clear();
             let mut publication = match result {
                 Ok(transition) => {
-                    if u64::try_from(transition.checkpoint.bytes.len()).unwrap_or(u64::MAX)
-                        > limits.checkpoint_bytes()
-                    {
+                    if limits.checkpoint_bytes().is_some_and(|limit| {
+                        transition.checkpoint.bytes.len() as u128 > u128::from(limit)
+                    }) {
                         return Err(Error::Invalid("checkpoint exceeds the manifest limit"));
                     }
                     self.store.prepare_publish(
@@ -941,17 +951,20 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     )?
                 }
                 Err(Error::Handler(failure)) if !cancellation.is_cancelled() => {
-                    let Some(publication) = self.store.prepare_invocation_failure(
+                    let Some(input) = record.as_ref() else {
+                        return Err(Error::Handler(failure));
+                    };
+                    let publication = self.store.prepare_failed_input(
                         &snapshot,
                         epoch,
                         &trigger,
-                        record.as_ref(),
+                        input,
                         &failure,
                         key(&snapshot, "publish")?,
-                    )?
-                    else {
+                    )?;
+                    if publication.call.is_none() {
                         return Err(Error::Handler(failure));
-                    };
+                    }
                     publication
                 }
                 Err(error) => return Err(error),

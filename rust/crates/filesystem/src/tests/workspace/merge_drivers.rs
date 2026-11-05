@@ -844,11 +844,7 @@ async fn merge_directory_opaque_bindings() -> Result<(), Box<dyn Error>> {
         )
         .await?;
         let path = NamespacePath::new(
-            vec![LogicalName::new(
-                encoding,
-                bytes.clone(),
-                config.limits.maximum_component_bytes,
-            )?],
+            vec![LogicalName::new(encoding, bytes.clone())?],
             config.limits,
         )?;
         let cancellation = CancellationToken::new();
@@ -1310,7 +1306,7 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
             crate::kernel::lookup_tree_entry(
                 fs.objects(),
                 entries,
-                &LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), 255)?,
+                &LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec())?,
                 limits,
                 WorkBudget::UNBOUNDED,
                 &cancellation,

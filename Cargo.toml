@@ -79,7 +79,6 @@ members = [
   "rust/fuzz/native-callback-path",
   "rust/fuzz/task-volume",
   "rust/proofs/model-epochs",
-  "rust/proofs/spawn-slots",
   "rust/verification/sdk-fixtures",
   "typescript/packages/stream/fuzz",
   "typescript/packages/stream/models",

@@ -110,9 +110,11 @@ where
         let selected = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::json::canonical_json_digest(
                 volume_ref,
-                io.remaining()?
-                    .bytes_encoded
-                    .min(acyclic_stream::MAX_RECORD_BYTES as u64),
+                Some(
+                    io.remaining()?
+                        .bytes_encoded
+                        .min(acyclic_stream::MAX_RECORD_BYTES as u64),
+                ),
                 work,
             )
         })?;
@@ -146,7 +148,6 @@ where
                     &self.scope,
                     &self.volume,
                     VolumeOperation::Read,
-                    super::MAXIMUM_PAYLOAD_BYTES,
                     work,
                 )
             })?;
@@ -210,9 +211,11 @@ where
             let selected = crate::executor::with_history_io(Some(io), |work| {
                 crate::executor::json::canonical_json_digest(
                     source.volume(),
-                    io.remaining()?
-                        .bytes_encoded
-                        .min(acyclic_stream::MAX_RECORD_BYTES as u64),
+                    Some(
+                        io.remaining()?
+                            .bytes_encoded
+                            .min(acyclic_stream::MAX_RECORD_BYTES as u64),
+                    ),
                     work,
                 )
             })?;

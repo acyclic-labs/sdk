@@ -51,8 +51,8 @@ fn fixture_in(runtime: &tokio::runtime::Runtime, parent: Option<&Path>) -> Fixtu
     let options = CaptureOptions {
         source_root: source.path().to_owned(),
         expected_root_identity: capture_root_identity(source.path()).unwrap(),
-        maximum_paths: 8,
-        maximum_extent_spans: 8,
+        maximum_paths: Some(8),
+        maximum_extent_spans: Some(8),
     };
     let health = hold_health(source.path());
     for _ in 0..2 {

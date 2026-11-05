@@ -18,14 +18,17 @@ pub(super) struct Writer {
 }
 
 impl Writer {
-    pub(super) fn pending(&self) -> bool {
-        !self.pending.0.is_empty() || !self.pending.1.is_empty()
-    }
-
     pub(super) async fn open(context: &ToolContext, request: Vec<u8>) -> Result<Self> {
-        let maximum = usize::try_from(context.effective_scope().limits().file_bytes)
-            .unwrap_or(usize::MAX)
-            .min(OUTPUT_BATCH_BYTES);
+        let maximum =
+            context
+                .effective_scope()
+                .limits()
+                .file_bytes
+                .map_or(OUTPUT_BATCH_BYTES, |maximum| {
+                    usize::try_from(maximum)
+                        .unwrap_or(usize::MAX)
+                        .min(OUTPUT_BATCH_BYTES)
+                });
         if maximum == 0 {
             return Err(Error::Storage("tool output has no file budget".into()));
         }
@@ -82,7 +85,7 @@ impl Writer {
             pending.try_reserve(amount).map_err(std::io::Error::other)?;
             pending.extend_from_slice(prefix);
             bytes = rest;
-            if pending.len() == maximum {
+            if pending.len() == maximum || bytes.is_empty() {
                 let runtime = self.runtime.clone();
                 await_publication(&runtime, || async {
                     self.flush(stderr).await.map_err(std::io::Error::other)

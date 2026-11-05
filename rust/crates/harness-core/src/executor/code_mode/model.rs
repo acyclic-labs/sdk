@@ -43,8 +43,8 @@ fn check_arguments(input: &[u8]) -> Option<serde_json::Value> {
         std::marker::PhantomData::<serde_json::Value>,
         input,
         JsonBounds {
-            maximum_bytes: input.len() as u64,
-            maximum_items: u64::MAX,
+            maximum_bytes: Some(input.len() as u64),
+            maximum_items: None,
             maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
         },
         Some(ErrorCode::Invalid),

@@ -20,7 +20,7 @@ where
     fn bind_content(
         &self,
         reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
-        max_file_bytes: u64,
+        max_file_bytes: Option<u64>,
     ) -> Option<Arc<dyn ModelProvider>> {
         self.inner()
             .bind_content(reader, max_file_bytes)

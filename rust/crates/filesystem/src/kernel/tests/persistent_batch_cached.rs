@@ -35,13 +35,8 @@ fn select_cached(
         kind: ObjectKind::AttributePage,
         digest: Digest::from_bytes([1; 32]),
     };
-    let mut machine = Machine::<AttributeFormat>::new(
-        root,
-        &keys,
-        keys.len() as u32,
-        DecodeLimits::default(),
-        &mut accounting,
-    )?;
+    let mut machine =
+        Machine::<AttributeFormat>::new(root, &keys, DecodeLimits::default(), &mut accounting)?;
     let request = machine.requests.value.pop().ok_or("missing frontier")?;
     let decoded = persistent_io::OwnedPage {
         page: persistent_io::PageLease::Shared {

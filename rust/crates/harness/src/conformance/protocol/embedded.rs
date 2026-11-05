@@ -151,8 +151,8 @@ pub async fn open<B: Backend + ?Sized>(
         Turns {
             executors: Arc::new(executors),
             limits: TurnLimits {
-                maximum_bytes: 1 << 20,
-                history_turns: 8,
+                maximum_bytes: Some(1 << 20),
+                history_turns: Some(8),
             },
             actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             clock: Arc::new(SystemClock),
@@ -236,14 +236,7 @@ impl Endpoint for Embedded {
         Box::pin(async move {
             let call = acyclic_harness_client::AgentCall::decode(&invocation)?;
             let AgentCommand::Spawn { parent, .. } = call.command() else {
-                return Ok(self
-                    .client
-                    .actor_call(
-                        &invocation,
-                        0,
-                        acyclic_harness_client::MAX_AGENT_REPLY_BYTES,
-                    )
-                    .await?);
+                return Ok(self.client.actor_call(&invocation, 0, None).await?);
             };
             let path = parent.inbox()?;
             let provider = self.provider();
@@ -257,11 +250,7 @@ impl Endpoint for Embedded {
                 self.server.drain(parent).await?;
                 futures::future::pending::<Result<Bytes>>().await
             };
-            let result = self.client.actor_call(
-                &invocation,
-                0,
-                acyclic_harness_client::MAX_AGENT_REPLY_BYTES,
-            );
+            let result = self.client.actor_call(&invocation, 0, None);
             futures::pin_mut!(driving, result);
             match futures::future::select(result, driving).await {
                 futures::future::Either::Left((result, _)) => Ok(result?),

@@ -72,7 +72,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
         for (name, volume) in &volumes {
             identity.update(&(name.len() as u64).to_be_bytes());
             identity.update(name.as_bytes());
-            identity.update(&volume.identity_digest(u64::MAX, &mut None)?);
+            identity.update(&volume.identity_digest(None, &mut None)?);
         }
         Ok(Self {
             host,
@@ -101,14 +101,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
         }
         self.verifier.verify(&self.scope, &mut None)?;
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            ContentGrant::verify(
-                &self.verifier,
-                &self.scope,
-                volume,
-                operation,
-                u64::MAX,
-                &mut None,
-            )?;
+            ContentGrant::verify(&self.verifier, &self.scope, volume, operation, &mut None)?;
             if !context
                 .effective_scope()
                 .grants()

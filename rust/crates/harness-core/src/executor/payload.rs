@@ -79,7 +79,7 @@ pub fn preparation_digest<T: Serialize>(value: &T, io: Option<&PreparationIo>) -
     if let Some(io) = io {
         return io.canonical_digest(value);
     }
-    crate::executor::json::canonical_json_digest(value, u64::MAX, &mut None)
+    crate::executor::json::canonical_json_digest(value, None, &mut None)
 }
 
 // Values precede their temporary guards.

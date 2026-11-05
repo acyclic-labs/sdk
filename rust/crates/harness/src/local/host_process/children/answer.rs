@@ -3,8 +3,6 @@ use super::{Outcome, Value};
 
 /// Byte bound of a retained answer.
 pub(super) const ANSWER_LIMIT: usize = 4096;
-/// Byte bound of one native event line and of a retained answer's source.
-pub(super) const EVENT_LIMIT: usize = 65_536;
 
 /// A preview is not a completed reply. Native hosts can also report a failed
 /// turn before exiting successfully; their original terminal owns the outcome.

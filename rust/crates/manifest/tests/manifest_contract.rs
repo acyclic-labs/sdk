@@ -92,81 +92,6 @@ fn bypassed_inbox_authority_is_detected_by_independent_oracle() {
     assert_eq!(admission::check(&candidate), Ok(()));
 }
 
-#[test]
-fn native_oversize_is_rejected_before_json_materialization()
--> Result<(), Box<dyn std::error::Error>> {
-    let mut manifest = scaled(12)?;
-    for grant in &mut manifest
-        .environments
-        .first_mut()
-        .ok_or_else(missing)?
-        .grants
-    {
-        grant.grant.0.actions = vec![format!("streams/{}", "r".repeat(1980)); 64];
-    }
-    let bytes = serde_json::to_vec(&manifest)?;
-    assert!(bytes.len() > MAX_JSON_BYTES);
-    assert_eq!(
-        validate(&manifest).expect_err("native budget").rule,
-        "json-size"
-    );
-    assert_eq!(parse(&bytes).expect_err("wire budget").rule, "json-size");
-    Ok(())
-}
-#[test]
-fn native_json_admission_agrees_at_exact_byte_boundary() -> Result<(), Box<dyn std::error::Error>> {
-    let mut base = fixture()?.environments.remove(0);
-    add_worker(&mut base)?;
-    let mut manifest = DeploymentManifest {
-        schema_version: 1,
-        environments: (0..8)
-            .map(|index| {
-                let mut environment = base.clone();
-                environment.name = format!("env{index}");
-                environment.routes = (0..64)
-                    .map(|route| RouteSpec {
-                        host: format!("e{index}.example.com"),
-                        path_prefix: format!("/p{route}/a"),
-                        entry: "web".into(),
-                    })
-                    .collect();
-                environment
-            })
-            .collect(),
-    };
-    let mut remaining = MAX_JSON_BYTES - serde_json::to_vec(&manifest)?.len();
-    for route in manifest
-        .environments
-        .iter_mut()
-        .flat_map(|env| &mut env.routes)
-    {
-        let count = remaining.min(MAX_STRING_BYTES - route.path_prefix.len());
-        route.path_prefix.push_str(&"a".repeat(count));
-        remaining -= count;
-    }
-    assert_eq!(remaining, 0);
-    let bytes = serde_json::to_vec(&manifest)?;
-    assert_eq!(bytes.len(), MAX_JSON_BYTES);
-    validate(&manifest)?;
-    assert_eq!(parse(&bytes)?, manifest);
-    manifest
-        .environments
-        .iter_mut()
-        .flat_map(|env| &mut env.routes)
-        .find(|route| route.path_prefix.len() < MAX_STRING_BYTES)
-        .ok_or("padding capacity")?
-        .path_prefix
-        .push('a');
-    let bytes = serde_json::to_vec(&manifest)?;
-    assert_eq!(bytes.len(), MAX_JSON_BYTES + 1);
-    assert_eq!(
-        validate(&manifest).expect_err("native budget").rule,
-        "json-size"
-    );
-    assert_eq!(parse(&bytes).expect_err("wire budget").rule, "json-size");
-    Ok(())
-}
-
 fn scaled(count: usize) -> Result<DeploymentManifest, Box<dyn std::error::Error>> {
     let mut manifest = fixture()?;
     let env = manifest.environments.first_mut().ok_or_else(missing)?;
@@ -236,7 +161,7 @@ proptest! {
         }
     }
 
-    /// The real validator's visited-byte/node/edge count grows at most linearly.
+    /// The real validator's indexed declaration/selection count grows at most linearly.
     #[test]
     fn validation_work_is_linear(count in 1usize..=16) {
         let small = scaled(count).map_err(|e| TestCaseError::fail(e.to_string()))?;
@@ -247,9 +172,9 @@ proptest! {
         prop_assert!(environment_typescript(&large, "production", "agent")?.contains("B0: Streams"));
     }
 
-    /// Native and JSON admission share the aggregate byte ceiling, including wire overhead.
+    /// Native and JSON admission agree across declaration counts and action widths.
     #[test]
-    fn native_and_json_budgets_agree(count in 1usize..=16, width in 1usize..=2040) {
+    fn native_and_json_admission_agree(count in 1usize..=16, width in 1usize..=2040) {
         let mut manifest = scaled(count).map_err(|e| TestCaseError::fail(e.to_string()))?;
         for grant in &mut manifest.environments.first_mut().ok_or_else(missing)?.grants {
             grant.grant.0.actions = vec![format!("streams/{}", "r".repeat(width)); 64];
@@ -257,17 +182,17 @@ proptest! {
         let bytes = serde_json::to_vec(&manifest)?;
         let native = validate(&manifest);
         prop_assert_eq!(native.is_ok(), parse(&bytes).is_ok());
-        if bytes.len() > MAX_JSON_BYTES { prop_assert_eq!(native.expect_err("oversized" ).rule, "json-size"); }
     }
 
     /// Shared grants are indexed once even when both action and cron counts grow.
     #[test]
-    fn shared_grant_work_is_linear(count in 1usize..=16) {
+    fn shared_grant_work_is_linear(count in 1usize..=16, terms in 128usize..=256) {
         let make = |size: usize| -> Result<DeploymentManifest, ManifestError> {
             let mut manifest = fixture()?;
             let env = manifest.environments.first_mut().ok_or_else(missing)?;
             env.grants.first_mut().ok_or_else(missing)?.grant.0.actions = vec!["streams/append".into(); size];
-            let cron = env.crons.first_mut().ok_or_else(missing)?.clone();
+            let mut cron = env.crons.first_mut().ok_or_else(missing)?.clone();
+            cron.schedule = format!("{}0 * * * *", "0,".repeat(terms));
             env.crons = (0..size).map(|i| CronSpec { name:format!("cron{i}"), ..cron.clone() }).collect();
             Ok(manifest)
         };
@@ -296,6 +221,32 @@ proptest! {
 
 #[test]
 fn review_regressions_fail_before_publication() -> Result<(), Box<dyn std::error::Error>> {
+    // Native declarations bypass JSON's wire admission and must retain the
+    // same original resource/action boundary before any selection or lowering.
+    let invalid_grants: &[(&str, &[&str])] = &[
+        ("streams:/agents/a/*", &["streams/append"]),
+        ("streams:/agents/a/inbox", &[]),
+        ("streams:/agents/a/inbox", &["objects/get"]),
+        ("streams:/agents/a/inbox", &["streams/"]),
+    ];
+    for &(resource, actions) in invalid_grants {
+        let mut candidate = fixture()?;
+        let grant = &mut candidate
+            .environments
+            .first_mut()
+            .ok_or_else(missing)?
+            .grants
+            .first_mut()
+            .ok_or_else(missing)?
+            .grant
+            .0;
+        grant.resource.name = resource.into();
+        grant.actions = actions.iter().map(|action| (*action).into()).collect();
+        assert_eq!(
+            validate(&candidate),
+            Err(ManifestError::invalid("$.environments[0]", "auth-grant")),
+        );
+    }
     let base: Value =
         serde_json::from_slice(include_bytes!("../fuzz/corpus/manifest_json/valid.json"))?;
     let cases = [
@@ -341,6 +292,8 @@ fn review_regressions_fail_before_publication() -> Result<(), Box<dyn std::error
         ("/environments/0/name", json!("-production")),
         ("/environments/0/crons/0/schedule", json!("0 0 31 2 *")),
         ("/environments/0/crons/0/schedule", json!("*/0 * * * *")),
+        ("/environments/0/crons/0/schedule", json!("+0 0 * * *")),
+        ("/environments/0/crons/0/schedule", json!("0 0 * * * *")),
         ("/environments/0/entries/0/bindings", json!(["missing"])),
         ("/environments/0/entries/0/secrets", json!(["missing"])),
         ("/environments/0/bindings/0/name", json!("1binding")),
@@ -522,7 +475,7 @@ async fn cron_inbox_append_reaches_lowered_actor_wake_subscription()
             .limits()
             .ok_or("namespace limits")?
             .handler_timeout_millis(),
-        1000
+        Some(1000)
     );
     assert_eq!(
         request.bindings().first().ok_or_else(missing)?.resource(),
@@ -591,34 +544,6 @@ fn version_bounds_and_error_location_are_stable() -> Result<(), Box<dyn std::err
         (error.path.as_str(), error.rule.as_str()),
         ("$.schemaVersion", "unsupported-version")
     );
-    assert!(parse(&vec![b' '; MAX_JSON_BYTES + 1]).is_err());
-    let mut manifest = fixture()?;
-    manifest
-        .environments
-        .first_mut()
-        .ok_or_else(missing)?
-        .entries
-        .first_mut()
-        .ok_or_else(missing)?
-        .module = "x".repeat(MAX_STRING_BYTES + 1);
-    assert!(validate(&manifest).is_err());
-    manifest = fixture()?;
-    manifest
-        .environments
-        .first_mut()
-        .ok_or_else(missing)?
-        .bindings = vec![
-        manifest
-            .environments
-            .first_mut()
-            .ok_or_else(missing)?
-            .bindings
-            .first_mut()
-            .ok_or_else(missing)?
-            .clone();
-        MAX_ITEMS + 1
-    ];
-    assert!(validate(&manifest).is_err());
     let mut value: Value =
         serde_json::from_slice(include_bytes!("../fuzz/corpus/manifest_json/valid.json"))?;
     value
@@ -736,15 +661,19 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     /// Every opaque bundle object is covered; an encoded directory is insufficient.
     #[test]
-    fn asset_grants_cover_actual_opaque_keys(key in prop::collection::vec(any::<u8>(), 0..64), directory_only in any::<bool>()) {
+    fn asset_grants_cover_actual_opaque_keys(
+        bucket in prop::collection::vec(any::<u8>(), 1..64),
+        key in prop::collection::vec(any::<u8>(), 0..64),
+        directory_only in any::<bool>()
+    ) {
         let mut manifest = fixture()?;
         let env = manifest.environments.first_mut().ok_or_else(missing)?;
         env.crons.clear();
         if let EntryRuntime::ActorNamespace { timer_inbox, .. } = &mut env.entries.first_mut().ok_or_else(missing)?.runtime { *timer_inbox = None; }
         let digest = "ab".repeat(32);
         let name = if directory_only {
-            acyclic_auth::objects_resource(b"static", format!("assets/{digest}/").as_bytes())
-        } else { "objects:/static/".into() };
+            acyclic_auth::objects_resource(&bucket, format!("assets/{digest}/").as_bytes())
+        } else { acyclic_auth::objects_resource(&bucket, b"") };
         *env.bindings.first_mut().ok_or_else(missing)? = Binding::new("INBOX".into(), "inboxGrant".into(), name.clone())?.into();
         env.grants.first_mut().ok_or_else(missing)?.grant.0 = ResourceGrant { resource:ResourcePattern { name, prefix:true }, actions:vec!["objects/get".into()] };
         env.assets.push(AssetSpec { entry:"agent".into(), binding:"INBOX".into(), bundle_sha256:digest.clone(), spa_fallback:true, cache:AssetCache::Immutable });
@@ -752,7 +681,7 @@ proptest! {
         if !directory_only {
             let mut object = format!("assets/{digest}/").into_bytes();
             object.extend_from_slice(&key);
-            let resource = acyclic_auth::objects_resource(b"static", &object);
+            let resource = acyclic_auth::objects_resource(&bucket, &object);
             prop_assert!(acyclic_auth::authority::resource_matches(&manifest.environments.first().ok_or_else(missing)?.grants.first().ok_or_else(missing)?.grant.resource, &resource));
             prop_assert_eq!(admission::check(&manifest), Ok(()));
         }
@@ -760,15 +689,18 @@ proptest! {
 
     /// Whole-segment grants cover descendants but never neighboring names.
     #[test]
-    fn inbox_scope_uses_s1_whole_segments(parent in "[a-z]{1,12}", suffix in "[a-z]{1,8}") {
+    fn inbox_scope_uses_s1_whole_segments(
+        parent in prop_oneof!["[a-z]{1,12}", Just(".acyclic".into()), Just("literal%2F".into())],
+        suffix in "[a-z]{1,8}"
+    ) {
         let mut manifest = fixture()?;
-        let prefix = format!("streams:/agents/{parent}");
+        let prefix = acyclic_stream::wire_codec::session::stream_resource(&format!("agents/{parent}"));
         let env = manifest.environments.first_mut().ok_or_else(missing)?;
         *env.bindings.first_mut().ok_or_else(missing)? = Binding::new("INBOX".into(), "inboxGrant".into(), prefix.clone())?.into();
         env.grants.first_mut().ok_or_else(missing)?.grant.0.resource = ResourcePattern { name: prefix, prefix: true };
         for (path, admitted) in [(format!("agents/{parent}/inbox"), true), (format!("agents/{parent}{suffix}/inbox"), false)] {
             let env = manifest.environments.first_mut().ok_or_else(missing)?;
-            let resource = format!("streams:/{path}");
+            let resource = acyclic_stream::wire_codec::session::stream_resource(&path);
             env.crons.first_mut().ok_or_else(missing)?.inbox.0.name = resource.clone();
             if let EntryRuntime::ActorNamespace { subscriptions, timer_inbox, .. } = &mut env.entries.first_mut().ok_or_else(missing)?.runtime {
                 *subscriptions.first_mut().ok_or_else(missing)? = SubscriptionSpec::new("inbox".into(), path, acyclic_actors::domain::SubscriptionStart::cursor(0), true)?.into();
@@ -776,6 +708,19 @@ proptest! {
             }
             prop_assert_eq!(validate(&manifest).is_ok(), admitted);
         }
+        // Exact grants do not turn an encoded slash into a hierarchy separator.
+        let env = manifest.environments.first_mut().ok_or_else(missing)?;
+        let path = format!("agents/{parent}/inbox");
+        let alias = format!("streams:/{}", acyclic_auth::encode_component(path.as_bytes()));
+        *env.bindings.first_mut().ok_or_else(missing)? = Binding::new("INBOX".into(), "inboxGrant".into(), alias.clone())?.into();
+        env.grants.first_mut().ok_or_else(missing)?.grant.0.resource = ResourcePattern { name: alias.clone(), prefix: false };
+        env.crons.first_mut().ok_or_else(missing)?.inbox.0.name = alias.clone();
+        if let EntryRuntime::ActorNamespace { subscriptions, timer_inbox, .. } = &mut env.entries.first_mut().ok_or_else(missing)?.runtime {
+            *subscriptions.first_mut().ok_or_else(missing)? = SubscriptionSpec::new("inbox".into(), path, acyclic_actors::domain::SubscriptionStart::cursor(0), true)?.into();
+            if let Some(inbox) = timer_inbox { inbox.stream.0.name = alias; }
+        }
+        let error = validate(&manifest).expect_err("encoded separator");
+        prop_assert_eq!(error.rule, "stream-path");
     }
 
     /// URL-style integer and mixed hexadecimal IP spellings never become DNS grants.
@@ -841,6 +786,32 @@ fn worker_lowering_preserves_request_limits_and_rejects_namespace_entries()
         )
         .is_err()
     );
+    // Borrowed admission still checks the complete environment, including
+    // declarations that the selected entry does not use.
+    for invalid_name in [true, false] {
+        let mut invalid = environment.clone();
+        if invalid_name {
+            invalid.name = "invalid/environment".into();
+        } else {
+            invalid
+                .entries
+                .first_mut()
+                .ok_or_else(missing)?
+                .artifact_sha256 = "invalid".into();
+        }
+        let expected = validate(&DeploymentManifest {
+            schema_version: 1,
+            environments: vec![invalid.clone()],
+        })
+        .expect_err("the original complete contract rejects this environment");
+        let worker = invalid.entries.last().ok_or_else(missing)?;
+        assert_eq!(
+            lower_worker(&invalid, worker, "deploy").err(),
+            Some(expected.clone())
+        );
+        let actor = invalid.entries.first().ok_or_else(missing)?;
+        assert_eq!(lower_actor(&invalid, actor, "deploy").err(), Some(expected));
+    }
     Ok(())
 }
 

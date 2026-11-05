@@ -1,35 +1,34 @@
 import assert from "node:assert/strict";
-import { tarEntries } from "./archive-utils.mjs";
+import { visitTar } from "./archive-utils.mjs";
 
-// Byte-oriented target for the production decoder. Seed with captured TAR
-// output; mutations may refuse admission but must not escape its error contract,
-// stop advancing, copy a body, or admit a partial end marker.
-export function fuzz(data) {
+// Exercise the production streaming decoder with native TAR captures and their
+// mutations. Body chunks must borrow the input and advance within its length.
+export async function fuzz(data) {
   const bytes = Buffer.from(data);
-  const entries = tarEntries(bytes);
-  let offset = 0;
-  for (let visited = 0; visited <= Math.floor(bytes.length / 512); visited++) {
-    let next;
-    try { next = entries.next(); }
-    catch (error) {
-      assert.equal(error.constructor, Error);
-      assert.match(error.message, /^archive (member |has an invalid end marker|lacks an end marker)/);
-      return false;
-    }
-    if (next.done) {
-      assert.ok(offset + 1024 <= bytes.length);
-      assert.ok(bytes.subarray(offset).every(byte => byte === 0));
-      return true;
-    }
-    const { body, size, path, type } = next.value;
-    assert.equal(typeof path, "string");
-    assert.equal(type.length, 1);
-    assert.ok(Number.isSafeInteger(size) && size >= 0);
-    assert.equal(body.length, size);
-    assert.equal(body.buffer, bytes.buffer);
-    assert.equal(body.byteOffset, bytes.byteOffset + offset + 512);
-    assert.ok(offset + 512 + size <= bytes.length);
-    offset += 512 + Math.ceil(size / 512) * 512;
+  let offset = 0, visited = 0;
+  try {
+    await visitTar([bytes], async ({ body, size, path, type }) => {
+      assert.ok(++visited <= Math.floor(bytes.length / 512));
+      assert.equal(typeof path, "string");
+      assert.equal(type.length, 1);
+      assert.ok(Number.isSafeInteger(size) && size >= 0);
+      let consumed = 0;
+      for await (const chunk of body) {
+        assert.ok(chunk.length > 0);
+        assert.equal(chunk.buffer, bytes.buffer);
+        assert.equal(chunk.byteOffset, bytes.byteOffset + offset + 512 + consumed);
+        consumed += chunk.length;
+        assert.ok(consumed <= size);
+      }
+      assert.equal(consumed, size);
+      offset += 512 + Math.ceil(size / 512) * 512;
+    });
+  } catch (error) {
+    assert.equal(error.constructor, Error);
+    assert.match(error.message, /^archive (member |has an invalid end marker|is truncated or lacks an end marker|offset is not representable)/);
+    return false;
   }
-  assert.fail("TAR decoder failed to advance within its input's header count");
+  assert.ok(offset + 1024 <= bytes.length);
+  assert.ok(bytes.subarray(offset).every(byte => byte === 0));
+  return true;
 }

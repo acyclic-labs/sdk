@@ -127,8 +127,8 @@ def main():
             for path in sorted(corpus.iterdir()):
                 print("OWNER_CORPUS " + json.dumps({"name": path.name, **report["corpus"][path.name], "bytes_hex": path.read_bytes().hex()}), flush=True)
         if not coverage_only:
-            needle = b"if magic != MAGIC || !bool::from(expected.ct_eq(digest(protected, meter)?.as_bytes())) {" if owner else b"if checksum(body) != sum {"
-            replacement = b"if false && (magic != MAGIC || !bool::from(expected.ct_eq(digest(protected, meter)?.as_bytes()))) {" if owner else b"if false && checksum(body) != sum {"
+            needle = b"if magic != MAGIC || !bool::from(expected.ct_eq(digest(protected, meter)?.as_bytes())) {" if owner else b"if verify_checksum && checksum(body) != sum {"
+            replacement = b"if false && (magic != MAGIC || !bool::from(expected.ct_eq(digest(protected, meter)?.as_bytes()))) {" if owner else b"if false && verify_checksum && checksum(body) != sum {"
             mutations = [("integrity", needle, replacement, failure)]
             if report_port:
                 mutations = [

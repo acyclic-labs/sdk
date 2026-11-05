@@ -95,7 +95,7 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
                     volume: &volume,
                     key: &identity,
                     expected_path: Some(&path),
-                    maximum_bytes: 4096,
+                    maximum_bytes: Some(4096),
                     internal_class: Some(super::super::content::payload_class(&path)),
                     purpose: super::super::super::PublicationPurpose::Content,
                     scope: &scope,
@@ -148,7 +148,7 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
                         volume: &volume,
                         key: &identity,
                         expected_path: Some(&path),
-                        maximum_bytes: 4096,
+                        maximum_bytes: Some(4096),
                         internal_class: Some(super::super::content::payload_class(&path)),
                         purpose: if read_content {
                             super::super::super::PublicationPurpose::Content

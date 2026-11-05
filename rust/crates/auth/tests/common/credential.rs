@@ -72,8 +72,7 @@ pub fn check(bytes: &[u8]) {
         return;
     };
     // Independent header-contract oracle, checked through the real provider.
-    let expected = value.len() <= 12 * 1024
-        && value.chars().any(|character| !character.is_whitespace())
+    let expected = value.chars().any(|character| !character.is_whitespace())
         && value.bytes().all(|byte| ![0, 10, 13].contains(&byte));
     assert_eq!(valid_credential(value), expected);
     let resolved = resolve(value);

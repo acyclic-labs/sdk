@@ -144,8 +144,8 @@ pub async fn page(
             step,
             call_id: Some(&call_id),
             include_started: false,
-            maximum_step_records: 3,
-            maximum: 1,
+            maximum_step_records: Some(3),
+            maximum: Some(1),
             select: &select,
         };
         let indexed = journal
@@ -400,8 +400,8 @@ mod tests {
 
         let storage = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
         let limits = Limits {
-            file_bytes: 4096,
-            render_bytes: 4096,
+            file_bytes: Some(4096),
+            render_bytes: Some(4096),
             ..Limits::default()
         };
         let task = Arc::new(
