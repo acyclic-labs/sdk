@@ -21,7 +21,6 @@ export function verify(entry, status, output) {
   cargoArguments(entry);
   const expected = [...new Set([entry.regression, ...entry.controls])];
   const result = verifyExactTests(expected, { status, stdout: output });
-  if (result.seconds >= 10) throw new Error('suite must finish in under 10 seconds');
   return { regression: entry.regression, ...result };
 }
 

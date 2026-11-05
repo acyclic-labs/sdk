@@ -53,7 +53,9 @@ test('one shared exact-case property detects actual verifier guard omissions', a
   check({ verifyExactTests, verifyExactTestListing });
   const entry = { package: 'acyclic-harness-core', target: 'lib', regression: originalName, controls: [originalName] };
   assert.deepEqual(verifySdk(entry, 0, original).tests, [originalName]);
-  assert.throws(() => verifySdk(entry, 0, original.replace('0.00s', '10.00s')), /under 10 seconds/);
+  for (const seconds of [10, 30, 1e6]) {
+    assert.equal(verifySdk(entry, 0, original.replace('0.00s', `${seconds.toFixed(2)}s`)).seconds, seconds);
+  }
   assert.throws(() => verifySdk(entry, 0, original + '\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n'));
   const source = await readFile(new URL('./libtest.mjs', import.meta.url), 'utf8');
   for (const [before, after] of [

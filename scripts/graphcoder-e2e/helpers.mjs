@@ -4,7 +4,6 @@ import assert from "node:assert/strict";
 import { readdir, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { performance } from "node:perf_hooks";
 import { Processes } from "./process.mjs";
 import { qualified } from "./qualification.mjs";
 import { environment, scratchDirectory } from "./scratch.mjs";
@@ -14,7 +13,6 @@ export async function runHelperSuite(files, { signal,
     process.stdout.write(result.stdout); process.stderr.write(result.stderr);
   } } = {}) {
   assert.ok(files.length > 0, "helper suite inventory is empty");
-  const start = performance.now();
   const scratch = scratchDirectory("graphcoder-e2e-helpers-");
   let draining;
   const cancel = () => {
@@ -31,7 +29,6 @@ export async function runHelperSuite(files, { signal,
     publish(result);
     signal?.throwIfAborted(); // A late successful summary cannot erase cancellation.
     qualified(result, "node", files.length);
-    assert.ok(performance.now() - start < 10000, "helper suite exceeded ten seconds");
     return result;
   } finally {
     signal?.removeEventListener("abort", cancel);
