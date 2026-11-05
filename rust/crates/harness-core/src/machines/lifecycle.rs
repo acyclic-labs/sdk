@@ -122,6 +122,27 @@ struct ProvisionPlan {
     source: Option<MachineBinding>,
 }
 
+impl ProvisionPlan {
+    fn decode(target: &str, record: &acyclic_stream::Record) -> Result<Self> {
+        if record.sequence != 0 {
+            return Err(Error::Storage(format!(
+                "Machine plan is not at its original source position; recovery: read the original authorized Machine target '{target}' at from=0, limit=1"
+            )));
+        }
+        let plan: Self = serde_json::from_slice(&record.value)
+            .map_err(|error| Error::Storage(format!("Machine plan does not decode: {error}")))?;
+        if plan.version != MACHINE_BINDING_VERSION || plan.target != target {
+            return Err(Error::Storage(
+                "Machine plan has an unsupported version or a different target".into(),
+            ));
+        }
+        Ok(plan)
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod codec_fuzz;
+
 /// What a provisioned target's new Machines are created from.
 #[derive(Clone)]
 pub struct ProvisionedTarget {
@@ -270,13 +291,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         let Some(record) = self.binding_record(agent, &target.name, 0).await? else {
             return Ok(None);
         };
-        let plan: ProvisionPlan = serde_json::from_slice(&record.value)
-            .map_err(|error| Error::Storage(format!("Machine plan does not decode: {error}")))?;
-        if plan.version != MACHINE_BINDING_VERSION || plan.target != target.name {
-            return Err(Error::Storage(
-                "Machine plan has an unsupported version or a different target".into(),
-            ));
-        }
+        let plan = ProvisionPlan::decode(&target.name, &record)?;
         ensure_provider(target, &plan.provider)?;
         Ok(Some(plan))
     }

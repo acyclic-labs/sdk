@@ -24,6 +24,8 @@ mod host;
 mod identity;
 pub use host::MachinesHost;
 mod lifecycle;
+#[cfg(any(test, feature = "test-support"))]
+pub use lifecycle::codec_fuzz;
 pub use lifecycle::{
     AgentMachines, MACHINE_BINDING_VERSION, MachineBinding, MachineExecutors, ProvisionedTarget,
 };

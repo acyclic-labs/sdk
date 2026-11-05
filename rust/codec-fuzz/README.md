@@ -951,3 +951,26 @@ operation identity/phase defects are retained under
 `negative-controls/machines-{checkpoint-identity,checkpoint-time,operation-identity,operation-phase}.patch`.
 This covers the original successful operation; other phases, retained corpus
 binding, instrumented coverage and physical provider qualification are separate.
+
+The existing `harness_codecs` target also exercises the production provisioning
+plan and settled binding decoders. Original records from
+`original_binding_positions_precede_allocation_and_recovery` reach that same
+oracle before their values are retained as corpus inputs. The oracle checks
+canonical encoding, target association and refusal of foreign source positions.
+The runtime control displaces only positions on original MemoryStream records;
+a displaced plan must refuse before allocation, and a displaced binding must
+refuse before recovery or inspection. Restoring the original envelope must
+return the original Machine without another allocation.
+
+Run this control from the repository root (`cd ../..` from `rust/codec-fuzz`):
+
+```sh
+git apply rust/codec-fuzz/negative-controls/machines-plan-position.patch
+cargo test --locked -p acyclic-harness-core --no-default-features --features machines,test-support,filesystem,wasm --lib machines::lifecycle::first_use_tests::original_binding_positions_precede_allocation_and_recovery -- --exact --nocapture
+git apply -R rust/codec-fuzz/negative-controls/machines-plan-position.patch
+```
+
+The planted production guard admits a plan at `u64::MAX`; the shared oracle
+must reject that mutation at its source-position assertion. Require the same
+control to pass after exact restoration. This control does not establish
+instrumented branch coverage or distributed and physical provider guarantees.
