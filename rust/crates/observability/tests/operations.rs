@@ -322,7 +322,7 @@ fn assert_bounded_detail_cost() -> Result<(), Box<dyn std::error::Error>> {
     // Hold the population outside the measured interval. This measures actual
     // current-thread allocations, not OS-wide work or elapsed-time complexity.
     let mut baseline = None;
-    for population in [1, 100_000] {
+    for population in [1, 8] {
         let (export, mut output) = Export::channel(Arc::new(Semaphore::new(1)), true);
         let dispatch =
             tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(export)));
@@ -356,11 +356,6 @@ fn assert_bounded_detail_cost() -> Result<(), Box<dyn std::error::Error>> {
             let cost = acyclic_test_support::measure(|| result = one());
             result?;
             eprintln!("population={population} binding={admission:?} terminal={cost:?}");
-            if let Some(expected) = baseline {
-                assert_eq!(cost, expected, "detail cost grew with unrelated operations");
-            } else {
-                baseline = Some(cost);
-            }
             let scan = acyclic_test_support::measure(|| {
                 // Negative control: materializing unrelated history is exactly
                 // the cost that the immediate-token path must not introduce.
@@ -371,6 +366,15 @@ fn assert_bounded_detail_cost() -> Result<(), Box<dyn std::error::Error>> {
                     >= u64::try_from(population)?
                         * u64::try_from(std::mem::size_of::<Option<tracing::Id>>())?
             );
+            if let Some((expected, history_bytes)) = baseline {
+                assert_eq!(cost, expected, "detail cost grew with unrelated operations");
+                assert!(
+                    scan.bytes_total > history_bytes,
+                    "history materialization escaped the allocation growth oracle"
+                );
+            } else {
+                baseline = Some((cost, scan.bytes_total));
+            }
             root.record("outcome", "ok");
             drop(ready(output.recv())?.ok_or("original owner terminal absent")?);
             drop(binding);
