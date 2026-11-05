@@ -35,6 +35,7 @@ struct Handler<T, O, C> {
     observer: O,
     check: C,
     wake: Option<acyclic_native_runtime::ProcessWake>,
+    observation: acyclic_native_runtime::obs::CaptureObservation,
 }
 
 impl<T, O, C> acyclic_native_runtime::CaptureHandler for Handler<T, O, C>
@@ -59,6 +60,10 @@ where
     ) -> std::io::Result<acyclic_native_runtime::ProcessInput> {
         (self.observer)(&mut self.custody, chunk)?;
         Ok(Default::default())
+    }
+
+    fn observation(&mut self) -> Option<&mut acyclic_native_runtime::obs::CaptureObservation> {
+        Some(&mut self.observation)
     }
 }
 
@@ -135,6 +140,7 @@ pub async fn start_capture_with_custody<T: Send + 'static>(
             observer,
             check,
             wake,
+            observation: acyclic_native_runtime::obs::CaptureObservation::new(),
         },
         retention,
     )
