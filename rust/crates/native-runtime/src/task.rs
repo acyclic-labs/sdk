@@ -455,6 +455,7 @@ mod tests {
         let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(report.clone()));
         let _dispatch = tracing::dispatcher::set_default(&dispatch);
         let runtime = super::coordination_runtime().unwrap();
+        let submission_context = runtime.handle().clone();
         runtime.block_on(async {
             let custody = std::sync::Arc::new(std::sync::Mutex::new(()));
             let retained = custody.clone();
@@ -481,6 +482,9 @@ mod tests {
                 "write",
                 super::PersistenceKey::new(17, 0),
                 move || {
+                    // Admission must be refused even with a valid runtime
+                    // context; a missing reactor must not mask that boundary.
+                    let _runtime = submission_context.enter();
                     super::persistence_syscall(|| {
                         started.send(()).unwrap();
                         held.recv().unwrap();

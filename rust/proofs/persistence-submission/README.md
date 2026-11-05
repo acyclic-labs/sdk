@@ -9,6 +9,8 @@ The existing
 `persistence_reports_the_original_job_and_refuses_same_service_dependencies`
 test attempts nested submission directly and through the inline native adapter.
 Both use one helper whose submitted closure owns a oneshot sender. The helper
+executes within the original coordination runtime's entered handle, so a
+missing-reactor panic cannot substitute for the submission refusal. It
 checks the receiver exactly once immediately after submission, before polling
 the observer. Only `Closed` is accepted: the rejected closure was dropped without
 running. An admitted closure either retains the sender (`Empty`) or sends its
