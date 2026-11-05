@@ -888,6 +888,7 @@ fn namespace_hint_names_with_work<'a, W: crate::demand::SourceDemandReadWork>(
     let original = if work.is_native_original() {
         Some(
             work.native_source_work()
+                .cloned()
                 .ok_or(DemandError::NativeWorkUnavailable)?,
         )
     } else {
@@ -3690,7 +3691,7 @@ impl NativeWatch {
         &self,
         work: &mut W,
     ) -> Result<bool, NativeWatchError> {
-        let original = work.native_source_work();
+        let original = work.native_source_work().cloned();
         let cancellation = match &original {
             Some(original) => original.cancellation().clone(),
             None => work.with_original_leaf(|work| work.cancellation().clone()),
