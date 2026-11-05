@@ -34,6 +34,13 @@ where
     fn native_tool_profile(&self, model: &Model) -> Result<Option<NativeToolProfile>> {
         self.inner().native_tool_profile(model)
     }
+    #[cfg(feature = "filesystem")]
+    fn native_tools(
+        &self,
+        model: &Model,
+    ) -> Result<Option<Arc<crate::tools::native::NativeTools>>> {
+        self.inner().native_tools(model)
+    }
     fn context_capacity(&self, model: &Model) -> Result<crate::context::ModelContextCapacity> {
         self.record(RequestClass::Metadata);
         self.inner().context_capacity(model)

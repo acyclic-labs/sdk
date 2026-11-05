@@ -106,16 +106,9 @@ pub(crate) struct Cache(once_cell::sync::OnceCell<Option<Arc<NativeTools>>>);
 impl Cache {
     pub(crate) fn get(
         &self,
-        profile: impl FnOnce() -> Result<Option<NativeToolProfile>>,
+        binding: impl FnOnce() -> Result<Option<Arc<NativeTools>>>,
     ) -> Result<Option<Arc<NativeTools>>> {
-        self.0
-            .get_or_try_init(|| {
-                profile()?
-                    .map(NativeTools::new)
-                    .transpose()
-                    .map(|tools| tools.map(Arc::new))
-            })
-            .cloned()
+        self.0.get_or_try_init(binding).cloned()
     }
 }
 

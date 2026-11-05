@@ -305,6 +305,20 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     fn native_tool_profile(&self, _: &Model) -> Result<Option<NativeToolProfile>> {
         Ok(None)
     }
+    /// Native declarations admitted with this immutable selection. Providers
+    /// with replaced declarations return their original binding owner here;
+    /// family defaults use the shared native constructor. The stock executor
+    /// reserves and retains the returned owner once, before preparing a turn.
+    #[cfg(feature = "filesystem")]
+    fn native_tools(
+        &self,
+        model: &Model,
+    ) -> Result<Option<std::sync::Arc<crate::tools::native::NativeTools>>> {
+        self.native_tool_profile(model)?
+            .map(crate::tools::native::NativeTools::new)
+            .transpose()
+            .map(|tools| tools.map(std::sync::Arc::new))
+    }
     /// Capacities of the exact immutable model selection.
     fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
         Err(Error::Unsupported(

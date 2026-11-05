@@ -233,7 +233,7 @@ impl TurnExecutors for StockExecutors {
                 .unwrap_or_else(|| Arc::clone(&self.provider));
             let native = self
                 .native
-                .get(|| self.provider.native_tool_profile(&self.model))?;
+                .get(|| self.provider.native_tools(&self.model))?;
             let mut tools = self.tools.clone();
             // The agent tools act for this turn: their effects commit with it.
             if let Some(effects) = &authority.effects

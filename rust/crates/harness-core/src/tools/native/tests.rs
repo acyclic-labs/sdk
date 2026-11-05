@@ -24,7 +24,7 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
                         start.wait();
                         cache.get(|| {
                             calls.fetch_add(1, Ordering::SeqCst);
-                            Ok(Some(profile))
+                            NativeTools::new(profile).map(|tools| Some(Arc::new(tools)))
                         })
                     })
                 })
@@ -80,7 +80,12 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
             definition.projection_schema = Value::Bool(false);
         }
         let mut changed = registry.clone();
-        NativeTools::from_definitions(admitted)?.bind(&mut changed)?;
+        let admitted = Arc::new(NativeTools::from_definitions(admitted)?);
+        let selected = Cache::default()
+            .get(|| Ok(Some(Arc::clone(&admitted))))?
+            .unwrap();
+        assert!(Arc::ptr_eq(&selected, &admitted));
+        selected.bind(&mut changed)?;
         let selected = changed.get("shell", None, None)?.unwrap();
         assert!(
             selected

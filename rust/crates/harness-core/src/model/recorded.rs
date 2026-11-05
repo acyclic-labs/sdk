@@ -1459,6 +1459,13 @@ impl ModelProvider for RecordedModel {
     fn native_tool_profile(&self, model: &Model) -> Result<Option<NativeToolProfile>> {
         self.live.native_tool_profile(model)
     }
+    #[cfg(feature = "filesystem")]
+    fn native_tools(
+        &self,
+        model: &Model,
+    ) -> Result<Option<Arc<crate::tools::native::NativeTools>>> {
+        self.live.native_tools(model)
+    }
     fn context_capacity(&self, model: &Model) -> Result<crate::context::ModelContextCapacity> {
         self.live.context_capacity(model)
     }
