@@ -1534,11 +1534,6 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         else {
             return Err(Error::Invalid("settlement returned another reply".into()));
         };
-        assert_eq!(
-            (settled, statuses, phase),
-            (state.conversation_tail, state.status_tail, state.phase),
-            "settlement mixed committed actor cuts"
-        );
         if owner == &root {
             harness.require_shared_binding(&state)?;
             let mut unadmitted = state.clone();
@@ -1549,6 +1544,13 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
                 harness.require_shared_binding(&unadmitted),
                 Err(Error::Unsupported(reason)) if reason.contains("start a new session")
             ));
+        }
+        assert_eq!(
+            (settled, statuses, phase),
+            (state.conversation_tail, state.status_tail, state.phase),
+            "settlement mixed committed actor cuts"
+        );
+        if owner == &root {
             let conversation = Conversation::open(connection.clone());
             let before = head_reads.load(Ordering::Relaxed);
             let observer = conversation.observe(None).await?;

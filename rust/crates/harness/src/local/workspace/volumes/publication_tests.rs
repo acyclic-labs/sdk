@@ -135,7 +135,7 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
     }
     drop(cancelled);
     let before_cleanup = schedule.trace().len();
-    let require_blocked = |pending| {
+    let require_blocked = |pending: bool| {
         assert!(pending, "publication entered before physical cleanup");
     };
     // The former direct slot acquisition fails this same assertion while the
