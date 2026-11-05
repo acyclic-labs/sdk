@@ -121,7 +121,7 @@ impl Delivery {
             return false;
         };
         work.native_source_work()
-            .is_some_and(|current| birth.shares_allocation_context(&current))
+            .is_some_and(|current| birth.shares_allocation_context(current))
     }
 
     pub(super) fn report_failure(&self, error: &DemandError) {
@@ -181,7 +181,7 @@ impl Delivery {
         if changes.is_empty() {
             return Ok(());
         }
-        if let Some(mut native) = work.native_source_work() {
+        if let Some(mut native) = work.native_source_work().cloned() {
             return self.callback(|| {
                 self.sink
                     .host_changed_with_native_work(changes, &mut native)
@@ -198,7 +198,7 @@ impl Delivery {
     ) -> Result<(), DemandError> {
         #[cfg(target_os = "linux")]
         if let Some(sink) = &self.events {
-            if let Some(mut native) = work.native_source_work() {
+            if let Some(mut native) = work.native_source_work().cloned() {
                 return self.callback(|| sink.invalidate_with_native_work(&mut native));
             }
             return work
@@ -220,7 +220,7 @@ impl Delivery {
             .events
             .as_ref()
             .ok_or(DemandError::NativeWorkUnavailable)?;
-        if let Some(mut native) = work.native_source_work() {
+        if let Some(mut native) = work.native_source_work().cloned() {
             return self
                 .callback(|| sink.event_with_native_work(relative, mask, cookie, &mut native));
         }
@@ -239,7 +239,7 @@ impl Delivery {
         if changes.is_empty() {
             return Ok(());
         }
-        if let Some(mut native) = work.native_source_work() {
+        if let Some(mut native) = work.native_source_work().cloned() {
             return self.callback(|| {
                 self.sink
                     .host_changed_wide_with_native_work(changes, &mut native)

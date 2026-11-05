@@ -105,7 +105,7 @@ impl EventStream {
         work.native_source_work().is_some_and(|current| {
             self.birth
                 .as_ref()
-                .is_some_and(|birth| birth.shares_allocation_context(&current))
+                .is_some_and(|birth| birth.shares_allocation_context(current))
         })
     }
 
