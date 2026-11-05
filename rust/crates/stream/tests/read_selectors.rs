@@ -37,8 +37,8 @@ async fn selectors_survive_the_paired_injected_provider() {
     acyclic_stream::conformance::verify_read_selectors(&acyclic_stream::MemoryStream::default())
         .await
         .expect("memory selector contract");
-    let provider = acyclic_stream::wasm::WasmStream::connect_provider(port(
-        acyclic_stream::wasm::WasmStream::new().into(),
+    let provider = acyclic_stream::WasmStream::connect_provider(port(
+        acyclic_stream::WasmStream::new().into(),
     ))
     .unwrap();
     acyclic_stream::conformance::verify_read_selectors(provider.provider().as_ref())
