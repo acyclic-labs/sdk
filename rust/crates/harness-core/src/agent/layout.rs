@@ -378,7 +378,7 @@ mod tests {
     use std::hint::black_box;
 
     #[test]
-    fn canonical_subtree_admission_borrows_ancestry_without_parent_copies() -> Result<(), Error> {
+    fn canonical_subtree_admission_is_unbounded_and_borrows_ancestry() -> Result<(), Error> {
         let root =
             AgentPath::root(&AgentId::from_bytes([1; 16])).child(&AgentId::from_bytes([2; 16]))?;
         let foreign =
@@ -408,23 +408,12 @@ mod tests {
             root.parent().expect("root").target("pc")?
         );
         assert_ne!(foreign.target("pc")?, root.target("pc")?);
-        let mut deepest = root.clone();
-        for _ in root.depth()..MAX_DEPTH {
-            deepest = deepest.child(&AgentId::from_bytes([4; 16]))?;
-        }
-        assert!(deepest.child(&AgentId::from_bytes([5; 16])).is_err());
-        assert!(
-            AgentPath::try_from(format!(
-                "{deepest}/children/{}",
-                AgentId::from_bytes([5; 16])
-            ))
-            .is_err()
-        );
         let leaf = [
             0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
             0x32, 0x10,
         ];
-        for depth in [1, 8, MAX_DEPTH] {
+        // Exercise both construction and parsing beyond the former depth cap.
+        for depth in [1, 8, 65, 129] {
             let mut descendant = root.clone();
             for _ in root.depth()..depth {
                 descendant = descendant.child(&AgentId::from_bytes(leaf))?;
