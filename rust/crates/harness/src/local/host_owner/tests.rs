@@ -603,11 +603,23 @@ async fn native_owner_teardown_removes_storage_after_retiring_retained_views() -
 #[tokio::test]
 async fn idle_native_views_retire_and_reattach_lazily() -> Result<()> {
     let mut fixture = Fixture::for_host("codex").await?;
+    let shared = |state: crate::agent::AgentState| {
+        state
+            .volumes
+            .into_iter()
+            .find(|binding| binding.name == super::super::SHARED_VOLUME)
+            .expect("native session must retain its admitted shared volume")
+            .volume
+    };
+    let admitted = shared(fixture.owner.native.state(&fixture.parent).await?);
+    assert_eq!(admitted, fixture.owner.local.shared);
     for reference in ["settled", "archived"] {
         let spawn = SessionAction::Spawn {
             prompt: "work".into(),
         };
         fixture.session(reference, spawn).await?;
+        let child = agents::child(&fixture.parent, reference)?;
+        assert_eq!(shared(fixture.owner.native.state(&child).await?), admitted);
     }
     assert_eq!(
         fixture.owner.views().unwrap().len(),
@@ -653,6 +665,8 @@ async fn idle_native_views_retire_and_reattach_lazily() -> Result<()> {
         "a missing native reference must not reattach a retired child view"
     );
     let observed = fixture.session("settled", SessionAction::Observe).await?;
+    let child = agents::child(&fixture.parent, "settled")?;
+    assert_eq!(shared(fixture.owner.native.state(&child).await?), admitted);
     assert_eq!(
         fixture.owner.views().unwrap().len(),
         2,
