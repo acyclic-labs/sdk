@@ -261,29 +261,50 @@ where
         self.cancel_cleanup_with_join(
             wait,
             crate::native_mount::retirement::SourceRetirementWait::Caller,
-        )
+        )?
+        .into_result()
+        .map(|_| ())
     }
 
     pub(super) fn cancel_cleanup_with_join(
         &self,
         wait: Option<&CancellationToken>,
         join: crate::native_mount::retirement::SourceRetirementWait,
-    ) -> Result<(), MountSourceError> {
+    ) -> Result<MountSourceRetirement, MountSourceError> {
         // A completed source owns no remaining wait for a later caller to revoke.
         if self.physically_retired()? {
-            return Ok(());
+            return Ok(MountSourceRetirement {
+                changed: false,
+                failure: None,
+            });
         }
-        self.authored
-            .cancel_cleanup_with_join(wait, join)?
-            .into_result()?;
+        let retired = self.authored.cancel_cleanup_with_join(wait, join)?;
         if let Some(wait) = wait {
-            wait.check().map_err(|_| MountSourceError::Cancelled)?;
+            if wait.check().is_err() {
+                return Err(retirement_failure(
+                    retired.failure,
+                    crate::DemandError::Cancelled,
+                ));
+            }
         }
         self.cursors.clear();
-        if let Some(watch) = &self.source_watch {
-            watch.stop_with_cleanup(wait)?;
-        }
-        Ok(())
+        let failure = match &self.source_watch {
+            Some(watch) => match watch.stop_with_cleanup(wait) {
+                Ok(_) => retired.failure.map(MountSourceError::NativeWork),
+                Err(error) => {
+                    let failure = retirement_failure(retired.failure, error);
+                    if !watch.is_stopped() {
+                        return Err(failure);
+                    }
+                    Some(failure)
+                }
+            },
+            None => retired.failure.map(MountSourceError::NativeWork),
+        };
+        Ok(MountSourceRetirement {
+            changed: true,
+            failure,
+        })
     }
 
     pub(crate) fn native_source_io_lease(
@@ -332,6 +353,16 @@ where
             self.source_view.finish_transition();
         }
         result
+    }
+}
+
+fn retirement_failure(
+    completion: Option<crate::NativeTreeMaterializationError>,
+    watch: crate::DemandError,
+) -> MountSourceError {
+    match completion {
+        Some(completion) => MountSourceError::RetirementFinalization { completion, watch },
+        None => MountSourceError::from(watch),
     }
 }
 

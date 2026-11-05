@@ -36,16 +36,17 @@ impl NativeMountSourceWatchOwner {
         wait: &crate::CancellationToken,
     ) -> Result<bool, MountSourceError> {
         self.stop_with_cleanup(Some(wait))
+            .map_err(MountSourceError::from)
     }
 
     pub(in crate::native_mount) fn stop_accepted_cleanup(&self) -> Result<bool, MountSourceError> {
-        self.stop_with_cleanup(None)
+        self.stop_with_cleanup(None).map_err(MountSourceError::from)
     }
 
     pub(super) fn stop_with_cleanup(
         &self,
         wait: Option<&crate::CancellationToken>,
-    ) -> Result<bool, MountSourceError> {
+    ) -> Result<bool, crate::DemandError> {
         if self.is_stopped() {
             return Ok(false);
         }
@@ -62,7 +63,7 @@ impl NativeMountSourceWatchOwner {
         } else {
             return Ok(false);
         };
-        result.map_err(MountSourceError::from).map(|()| true)
+        result.map(|()| true)
     }
 
     /// Stops the original watch on the supplied carrier.

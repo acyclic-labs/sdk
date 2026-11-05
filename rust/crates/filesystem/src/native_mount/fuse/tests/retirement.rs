@@ -73,7 +73,6 @@ fn terminal_worker_retires_destination(
         retirement: Some(crate::native_mount::NativeMountRetirement {
             retained_source: None,
             destination_guard: session.destination_guard.take(),
-            startup_source_watch: None,
             terminal_source_failure: Some(cleanup_error.into()),
         }),
         cleanup: work.reserve_work(crate::WorkCounters {
@@ -171,9 +170,10 @@ pub(in crate::native_mount) fn retire_source_in_physical_loop(
         notifier: None,
         identity: None,
         retirement: Some(crate::native_mount::NativeMountRetirement {
-            retained_source: Some(source),
+            retained_source: Some(crate::native_mount::retirement::RetainedSource::Filesystem(
+                source,
+            )),
             destination_guard: None,
-            startup_source_watch: None,
             terminal_source_failure: None,
         }),
         cleanup: work.reserve_work(crate::WorkCounters::UNCHARGED)?,
@@ -333,9 +333,10 @@ fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::
         notifier: None,
         identity: None,
         retirement: Some(crate::native_mount::NativeMountRetirement {
-            retained_source: Some(retained_source),
+            retained_source: Some(crate::native_mount::retirement::RetainedSource::Filesystem(
+                retained_source,
+            )),
             destination_guard: session.destination_guard.take(),
-            startup_source_watch: None,
             terminal_source_failure: None,
         }),
         cleanup,

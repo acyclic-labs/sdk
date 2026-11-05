@@ -49,8 +49,8 @@ async fn completed_lazy_retirement_does_not_recheck_a_later_cancelled_waiter()
     view.cancel_with_cleanup_wait(&crate::CancellationToken::new())?;
     assert!(view.physically_retired()?);
     view.cancel_with_cleanup_wait(&cancelled)?;
-    assert!(!view.shutdown_with_cleanup_wait(&cancelled)?);
-    assert!(!view.shutdown_accepted_cleanup()?);
+    assert!(!view.shutdown_with_cleanup_wait(&cancelled)?.into_result()?);
+    assert!(!view.shutdown_accepted_cleanup()?.into_result()?);
     assert!(view.physically_retired()?);
     Ok(())
 }
@@ -111,7 +111,9 @@ async fn retired_mount_proof_preserves_both_terminal_causes_on_every_os()
         producer: Some(producer.into()),
         cleanup: Some(cleanup.into()),
     };
-    session.retained_source = Some(source.clone());
+    session.retained_source = Some(crate::native_mount::retirement::RetainedSource::Filesystem(
+        source.clone(),
+    ));
     assert!(session.take_retired_failures().is_none());
     let mount = LazyMount {
         source,
