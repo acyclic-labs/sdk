@@ -317,12 +317,12 @@ impl NativeChanges {
                     }
                 };
                 let altered = altered && exact && (node.is_some() || name.is_root());
-                reported.push(if name.is_root() {
+                reported.push(if altered {
+                    SourceChange::Entry(name)
+                } else if name.is_root() {
                     SourceChange::Everything
                 } else if departed {
                     SourceChange::Departed(name)
-                } else if altered {
-                    SourceChange::Entry(name)
                 } else {
                     SourceChange::Name(name)
                 });
