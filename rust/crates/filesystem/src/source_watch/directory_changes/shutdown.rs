@@ -7,16 +7,10 @@ impl NativeSourceWatch {
     ) -> Result<(), DemandError> {
         self.stop(work, false, None)
     }
-    pub(crate) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
-        self.cleanup(None)
-    }
-    pub(crate) fn stop_with_cleanup_wait(
+    pub(in crate::source_watch) fn cleanup(
         &self,
-        wait: &crate::CancellationToken,
+        wait: Option<&crate::CancellationToken>,
     ) -> Result<(), DemandError> {
-        self.cleanup(Some(wait))
-    }
-    fn cleanup(&self, wait: Option<&crate::CancellationToken>) -> Result<(), DemandError> {
         check_wait(wait)?;
         let mut work = self
             .shared
@@ -307,11 +301,6 @@ impl Shared {
             }
         }
     }
-}
-fn check_wait(wait: Option<&crate::CancellationToken>) -> Result<(), DemandError> {
-    wait.map_or(Ok(()), |wait| {
-        wait.check().map_err(|_| DemandError::Cancelled)
-    })
 }
 impl Shared {
     /// A native owner that is already stopping cannot stop again: it is

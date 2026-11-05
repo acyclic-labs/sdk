@@ -1,6 +1,19 @@
 use super::*;
 
 impl NativeSourceWatch {
+    /// Retires accepted cleanup on its birth credits without caller cancellation.
+    pub(crate) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
+        self.cleanup(None)
+    }
+
+    /// Retires accepted cleanup while allowing the caller to end its wait.
+    pub(crate) fn stop_with_cleanup_wait(
+        &self,
+        wait: &crate::CancellationToken,
+    ) -> Result<(), DemandError> {
+        self.cleanup(Some(wait))
+    }
+
     /// Observes destruction of the original data, after its payload and keepers.
     #[cfg(test)]
     pub(super) fn observe_data_drop(
@@ -153,4 +166,10 @@ impl NativeSourceWatch {
     pub(crate) fn is_exact(&self) -> bool {
         self.delivery().is_exact()
     }
+}
+
+pub(super) fn check_wait(wait: Option<&crate::CancellationToken>) -> Result<(), DemandError> {
+    wait.map_or(Ok(()), |wait| {
+        wait.check().map_err(|_| DemandError::Cancelled)
+    })
 }

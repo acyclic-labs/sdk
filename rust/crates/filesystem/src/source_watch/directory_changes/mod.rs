@@ -8,7 +8,7 @@
 
 #[cfg(test)]
 use super::HostChange;
-use super::{Delivery, HostChangeWide};
+use super::{Delivery, HostChangeWide, check_wait};
 use crate::cancellation::custody::Custody;
 use crate::demand::{DemandError, DemandWork, SourceDemandReadWork, SourcePayloadOwnership};
 use crate::performance::WorkCounters;
