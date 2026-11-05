@@ -14,7 +14,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 pub(crate) fn terminal_failure_watch(
     root: &Path,
     work: &mut crate::NativeMaterializationWork,
-) -> TestResult<Box<dyn crate::demand::SourceWatch>> {
+) -> Result<Box<dyn crate::demand::SourceWatch>, Box<dyn std::error::Error>> {
     struct Refuses(std::sync::mpsc::Sender<bool>);
     impl HostChangeSink for Refuses {
         fn logical_owned_bytes(&self) -> u64 {
