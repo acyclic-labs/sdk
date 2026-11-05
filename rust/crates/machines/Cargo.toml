@@ -19,7 +19,12 @@ consumer-features = [{ features = [], target = "wasm32-unknown-unknown" }]
 
 [features]
 conformance = ["acyclic-stream/conformance", "tokio/time"]
-test-support = []
+test-support = [
+    "acyclic-actors/test-support",
+    "acyclic-auth/test-support",
+    "acyclic-native-runtime/test-support",
+    "acyclic-stream/test-support",
+]
 default = ["grpc"]
 
 local = ["dep:rustix", "tokio/time", "tokio/macros"]
