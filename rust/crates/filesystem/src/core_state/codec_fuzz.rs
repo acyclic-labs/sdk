@@ -6,20 +6,46 @@ fn check_type<T: DeserializeOwned + Serialize>(
     work: &crate::NativeMaterializationWork,
 ) -> bool {
     let baseline = work.live_allocation_bytes();
+    let cancellation = crate::CancellationToken::new();
+    let mut original =
+        crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
+    let Ok(earlier) = crate::kernel::RetainedAllocation::claim(73, 1, &mut original) else {
+        return false;
+    };
+    if original
+        .charge(crate::WorkCounters {
+            bytes_hashed: 5,
+            ..Default::default()
+        })
+        .is_err()
+    {
+        return false;
+    }
     let agrees = (|| {
         let ordinary = serde_json::from_slice::<T>(bytes);
         let funded =
             measured_decode_reader::<T>(std::io::Cursor::new(bytes), bytes.len() as u64, work);
-        let (ordinary, decoded) = match (ordinary, funded) {
-            (Ok(ordinary), Ok(decoded)) => (ordinary, decoded),
-            (Err(_), Err(_)) => return true,
+        let retained = crate::kernel::serde_decode::from_slice::<T>(bytes, &mut original);
+        let (ordinary, decoded, retained) = match (ordinary, funded, retained) {
+            (Ok(ordinary), Ok(decoded), Ok(retained)) => (ordinary, decoded, retained),
+            (Err(_), Err(_), Err(_)) => return true,
             _ => return false,
         };
+        assert!(
+            retained
+                .allocation
+                .standalone_ledger()
+                .zip(earlier.standalone_ledger())
+                .is_some_and(|(output, original)| std::sync::Arc::ptr_eq(output, original)),
+            "metadata decoder replaced original accounting ledger; recovery: cargo run --example capture",
+        );
         // Keep the returned tuple intact: its value retires before allocation custody.
         let Ok(encoded) = serde_json::to_vec(&decoded.0) else {
             return false;
         };
-        if !serde_json::to_vec(&ordinary).is_ok_and(|bytes| bytes == encoded) {
+        if !serde_json::to_vec(&ordinary).is_ok_and(|bytes| bytes == encoded)
+            || !serde_json::to_vec(&*retained).is_ok_and(|bytes| bytes == encoded)
+        {
             return false;
         }
         let Ok(repeated) =
@@ -29,7 +55,24 @@ fn check_type<T: DeserializeOwned + Serialize>(
         };
         serde_json::to_vec(&repeated.0).is_ok_and(|bytes| bytes == encoded)
     })();
-    agrees && work.live_allocation_bytes() == baseline
+    let before_cancel = original.spent();
+    cancellation.cancel();
+    assert!(
+        matches!(
+            crate::kernel::serde_decode::from_slice::<T>(bytes, &mut original),
+            Err(crate::kernel::serde_decode::MetadataDecodeError::Work(
+                crate::FsError::Cancelled(_)
+            )),
+        ),
+        "metadata decode preserves original cancellation; recovery: cargo run --example capture",
+    );
+    agrees
+        && original.spent() == before_cancel
+        && original.spent().bytes_hashed == 5
+        && work.live_allocation_bytes() == baseline
+        && original
+            .standalone_parts()
+            .is_some_and(|(ledger, _, _, _)| ledger.live_bytes() == 73)
 }
 
 struct LostReader<'a> {
@@ -154,6 +197,9 @@ pub fn check(bytes: &[u8]) -> bool {
 /// Capture real checkpoint writers and the same checksum writer used by commit.
 pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LocalCoreStateStoreError> {
     let mut seeds = Vec::new();
+    let parent = WorkspaceId::from_bytes([0x61; 16]);
+    let child = WorkspaceId::from_bytes([0x62; 16]);
+    let generation = crate::GenerationId::new(crate::Digest::from_bytes([0x63; 32]));
     for (name, value) in [
         ("core-absent", None),
         (
@@ -168,13 +214,51 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LocalCoreStateStoreError> {
             "core-child-index",
             Some(RecordValue::ChildIndex(ContextChildIndex(1))),
         ),
+        (
+            "core-lineage-child",
+            Some(RecordValue::Lineage(WorkspaceLineageRecord {
+                version: 1,
+                revision: 2,
+                ready: true,
+                workspace_id: child,
+                workspace_name: "child-\u{e9}".into(),
+                parent_workspace_id: Some(parent),
+                parent_workspace_name: Some("parent".into()),
+                fork_generation: generation,
+                initial_generation: generation,
+            })),
+        ),
     ] {
         let mut encoded = Vec::new();
         RecordValue::write_checkpoint(value.as_ref(), &mut encoded, None)?;
         seeds.push((name.into(), encoded));
     }
+    let mut git = GitCompatState::new("main", parent);
+    git.revision = 1;
+    git.branches.insert(
+        "child".into(),
+        crate::GitBranch {
+            name: "child".into(),
+            workspace_id: child,
+            head: None,
+            tracked_paths: BTreeSet::from(["src/lib.rs".into(), "README.md".into()]),
+        },
+    );
+    git.reflog = vec![None, None, None];
+    let mut encoded = Vec::new();
+    write_buffered_json(&mut encoded, &git)?;
+    seeds.push(("core-git-branches".into(), encoded));
     let change = Change::default();
     let frame = CoreLog::encode_frame(Uuid::from_bytes([1; 16]), 0, &change, None)?;
     seeds.push(("core-journal".into(), frame.bytes));
     Ok(seeds)
+}
+
+#[cfg(test)]
+#[test]
+fn production_metadata_corpus_preserves_original_decode_custody() {
+    crate::initialize_test_native_io();
+    for (name, bytes) in seeds().expect("production metadata writers must encode") {
+        assert!(check(&bytes), "metadata corpus {name}");
+    }
 }
