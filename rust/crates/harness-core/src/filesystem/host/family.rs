@@ -277,8 +277,15 @@ mod tests {
         graph.register_root(&root).await?;
         graph.register_root(&unrelated).await?;
         let child = graph
-            .fork(&root, "topic", acyclic_fs::IdempotencyKey::new())
-            .await?;
+            .fork(
+                &root,
+                "topic",
+                acyclic_fs::IdempotencyKey::new(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
         let pinned = child
             .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .await?

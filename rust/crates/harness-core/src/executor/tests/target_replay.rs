@@ -54,8 +54,15 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
     let graph = acyclic_fs::WorkspaceGraph::new(store.clone());
     graph.register_root(&root).await?;
     let child = graph
-        .fork(&root, "saved-source", acyclic_fs::IdempotencyKey::new())
-        .await?;
+        .fork(
+            &root,
+            "saved-source",
+            acyclic_fs::IdempotencyKey::new(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
     let repository = acyclic_fs::GitCompatRepository::new(root.id(), store);
     repository
         .register_branch_workspace("saved-source", child.id(), None, false)

@@ -175,38 +175,35 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
     }
 
     /// Forks a real SDK workspace and durably records its direct parent.
-    pub async fn fork<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
+    pub async fn fork<
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+        W: crate::facade::FsWork,
+    >(
         &self,
         parent: &Workspace<A, O>,
         destination: impl AsRef<str>,
         idempotency_key: IdempotencyKey,
-    ) -> Result<Workspace<A, O>, WorkspaceLineageError<S::Error>> {
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<Workspace<A, O>, WorkspaceLineageError<S::Error>> {
+        let mut accounting = work.accounting(cancellation);
         let span = crate::obs::span!(
             INFO,
             "acyclic.fs.lineage.fork",
             outcome = crate::obs::Empty,
             error.kind = crate::obs::Empty
         );
-        crate::obs::outcome_on(
+        let result = crate::obs::outcome_on(
             &span,
-            crate::obs::in_span(&span, async move {
-                let destination = crate::WorkspaceName::new(
-                    destination.as_ref(),
-                    &WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
-                .map_err(|failure| failure.error)?
-                .value;
-                let generation = parent
-                    .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                    .await
-                    .map_err(|failure| failure.error)?
-                    .value;
-                let child_id = parent
+            crate::obs::in_span(&span, async {
+                let (destination, child_id) = parent
                     .volume
                     .fs
-                    .workspace_id(destination.as_str())
-                    .map_err(WorkspaceError::from)?;
+                    .workspace_name(destination.as_ref(), &mut accounting)?;
+                let generation = parent
+                    .observed_generation_accounted(crate::GenerationSelector::Head, &mut accounting)
+                    .await?;
                 let planned = WorkspaceLineageRecord {
                     version: LINEAGE_VERSION,
                     revision: 1,
@@ -220,27 +217,17 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                 };
                 let planned = self.register(planned).await?;
                 let child = parent
-                    .fork::<_, _, WorkspaceError>(
+                    .fork_accounted::<_, WorkspaceError>(
                         destination.as_str(),
                         ForkOptions::from_generation(generation.clone(), idempotency_key),
                         crate::PublicationPermit::Unrestricted,
-                        WorkBudget::UNBOUNDED,
-                        &CancellationToken::new(),
-                        &mut |_| {
-                            std::future::ready(Ok(crate::OperationReceipt {
-                                value: (),
-                                work: crate::WorkCounters::UNCHARGED,
-                            }))
-                        },
+                        &mut accounting,
+                        (),
                     )
-                    .await
-                    .map_err(|failure| failure.error)?
-                    .value;
+                    .await?;
                 let initial_generation = child
-                    .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                    .await
-                    .map_err(|failure| failure.error)?
-                    .value;
+                    .observed_generation_accounted(crate::GenerationSelector::Head, &mut accounting)
+                    .await?;
                 if child.id() != child_id {
                     return Err(WorkspaceLineageError::ConflictingRegistration);
                 }
@@ -257,7 +244,8 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                 Ok(child)
             })
             .await,
-        )
+        );
+        work.finish(result, &accounting)
     }
 
     /// Registers a child created by another SDK-owned fork façade.
