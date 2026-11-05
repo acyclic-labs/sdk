@@ -18,17 +18,25 @@ dependencies = [
 name = "acyclic-auth"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth-action",
  "acyclic-contract-derive",
+ "acyclic-differential",
+ "acyclic-observability",
  "acyclic-proto-build",
  "arc-swap",
+ "base64 0.23.1",
+ "bytes",
  "ed25519-dalek",
  "futures",
+ "http",
  "js-sys",
  "prost",
  "serde",
+ "serde_json",
  "sha2 0.11.1",
  "subtle",
  "thiserror",
+ "tokio",
  "ts-rs",
  "url",
  "wasm-bindgen",
@@ -38,9 +46,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-auth-action"
+version = "0.2.0"
+
+[[package]]
+name = "acyclic-collections"
+version = "0.2.0"
+
+[[package]]
 name = "acyclic-contract-derive"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth-action",
  "heck",
  "proc-macro2",
  "quote",
@@ -48,13 +65,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-differential"
+version = "0.2.0"
+
+[[package]]
 name = "acyclic-fs"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-collections",
  "acyclic-fs-base",
  "acyclic-fs-wire",
  "acyclic-native-runtime",
+ "acyclic-objects",
+ "acyclic-observability",
  "acyclic-stream",
  "async-trait",
  "blake3",
@@ -63,6 +87,7 @@ dependencies = [
  "cap-primitives",
  "cap-std",
  "cc",
+ "ed25519-dalek",
  "futures",
  "hex",
  "icu_casemap",
@@ -89,6 +114,7 @@ dependencies = [
  "vmm-sys-util",
  "windows",
  "writeable",
+ "zeroize",
 ]
 
 [[package]]
@@ -127,14 +153,18 @@ dependencies = [
 name = "acyclic-native-runtime"
 version = "0.2.0"
 dependencies = [
+ "acyclic-collections",
  "acyclic-host-platform",
+ "acyclic-observability",
  "blake3",
  "bytes",
  "compio-buf",
  "compio-driver",
  "dirs",
  "futures-core",
+ "futures-util",
  "getrandom 0.3.4",
+ "indexmap",
  "keyring",
  "libc",
  "linux-keyutils",
@@ -142,6 +172,7 @@ dependencies = [
  "rustix",
  "security-framework 3.7.0",
  "serde",
+ "serde_json",
  "sha2 0.11.1",
  "subtle",
  "tokio",
@@ -158,7 +189,9 @@ name = "acyclic-objects"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-contract-derive",
  "acyclic-native-runtime",
+ "acyclic-observability",
  "acyclic-proto-build",
  "acyclic-stream",
  "async-trait",
@@ -177,9 +210,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-observability"
+version = "0.2.0"
+dependencies = [
+ "futures",
+ "serde",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "acyclic-proto-build"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth-action",
  "prost",
  "prost-reflect",
  "protoc-bin-vendored",
@@ -191,8 +236,10 @@ name = "acyclic-stream"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-collections",
  "acyclic-contract-derive",
  "acyclic-native-runtime",
+ "acyclic-observability",
  "acyclic-proto-build",
  "acyclic-tonic-web-wasm-client",
  "async-trait",
@@ -221,6 +268,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "web-time",
 ]
 
 [[package]]
@@ -2498,9 +2546,9 @@ checksum = "263a3f48f01e7309e857138bd47f785585b4a005e8e56c6d2824ce91195999c3"
 
 [[package]]
 name = "pulldown-cmark"
-version = "0.13.5"
+version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "278e9268c93b9e498a2da46c34d90ba93a3255eb99009646398f34bc73ab36eb"
+checksum = "3db2be46835f013dd3f4fa7f5f7402c537787b54ebb6fe2b94bbdd7e2669bb7b"
 dependencies = [
  "bitflags 2.13.2",
  "memchr",
@@ -3722,6 +3770,16 @@ name = "web-sys"
 version = "0.3.94"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd70027e39b12f0849461e08ffc50b9cd7688d942c1c8e3c7b22273236b4dd0a"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "web-time"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
