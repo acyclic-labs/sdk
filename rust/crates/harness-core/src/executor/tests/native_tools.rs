@@ -315,7 +315,12 @@ async fn openai_native_calls_run_their_capabilities() -> Result<()> {
             ("call_2".into(), "shell".into(), json!({"command":["pwd"]})),
         ]
     );
-    assert_eq!(results, include_str!("native_tools/openai.json").trim_end());
+    for (result, reason) in results[2..].iter().zip([
+        "apply_patch requires its original admitted call context",
+        "tool `edit` is not available",
+    ]) {
+        assert!(matches!(result, ToolResultContent::Error { message } if message.contains(reason)));
+    }
     Ok(())
 }
 

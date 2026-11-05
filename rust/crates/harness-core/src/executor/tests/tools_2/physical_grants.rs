@@ -155,8 +155,9 @@ impl ToolPolicy for PhysicalPolicy {
         _: Option<&PreparationIo>,
     ) -> Result<Option<ExecutionGrant>> {
         assert!(!self.deny);
+        let capability = tool.executor.capability().unwrap_or(tool);
         assert!(std::ptr::addr_eq(
-            Arc::as_ptr(&tool.executor),
+            Arc::as_ptr(&capability.executor),
             Arc::as_ptr(&self.executor),
         ));
         let context = context.expect("original task before dispatch");
