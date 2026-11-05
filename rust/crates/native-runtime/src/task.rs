@@ -426,11 +426,23 @@ mod tests {
         }
         use tracing_subscriber::layer::SubscriberExt as _;
         fn refuses_reentry() {
+            let (entered, mut entering) = tokio::sync::oneshot::channel();
             let nested = super::spawn_persistence(
                 "local",
                 "nested",
                 super::PersistenceKey::new(0, 0),
-                || panic!("reentrant persistence body ran"),
+                move || {
+                    entered.send(()).unwrap();
+                },
+            );
+            // Refusal must drop the body before returning, independently of
+            // the observer's own same-service refusal below.
+            assert!(
+                matches!(
+                    entering.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+                ),
+                "reentrant persistence submission retained or ran its body"
             );
             let mut nested = std::pin::pin!(nested);
             let mut context = std::task::Context::from_waker(std::task::Waker::noop());

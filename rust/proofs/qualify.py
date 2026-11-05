@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "objects-close-result", "persistence-panic", "persistence-wait-retirement", "persistence-reentry", "auth-producer-loss", "auth-generation", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost", "guest-refusal", "trust-catchup"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "objects-close-result", "persistence-panic", "persistence-wait-retirement", "persistence-reentry", "persistence-submission", "auth-producer-loss", "auth-generation", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost", "guest-refusal", "trust-catchup"])
 claim = parser.parse_args().claim
 target = ["--lib"]
 if claim == "retained-credit":
@@ -59,11 +59,13 @@ elif claim == "persistence-wait-retirement":
     test = "task::tests::persistence_worker_panic_terminates_its_original_wait"
     diagnostic = "a failed producer retained its wait"
     features = ["--no-default-features"]
-elif claim == "persistence-reentry":
+elif claim in ("persistence-reentry", "persistence-submission"):
     source = "rust/crates/native-runtime/src/task.rs"
     crate = "acyclic-native-runtime"
     test = "task::tests::persistence_reports_the_original_job_and_refuses_same_service_dependencies"
-    diagnostic = "Future::poll(accepted.as_mut(), &mut context)"
+    diagnostic = ("Future::poll(accepted.as_mut(), &mut context)"
+                  if claim == "persistence-reentry" else
+                  "reentrant persistence submission retained or ran its body")
     features = ["--no-default-features"]
 elif claim == "auth-producer-loss":
     source = "rust/crates/auth/src/trust/follower.rs"

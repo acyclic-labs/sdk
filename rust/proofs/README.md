@@ -94,6 +94,12 @@ unchanged real-worker test must reject `Pending`, then require typed refusal
 and retained physical custody after restoration. Original channel producer
 loss ends the held work on either path; no readiness retry is introduced.
 
+The [eager persistence submission control](persistence-submission/README.md)
+disables only the submission guard while preserving the observer's refusal.
+The same real-worker test must observe that a rejected closure was dropped
+before its observer is polled. A retained or executed body fails the named
+assertion; the independent typed observer result cannot mask admission.
+
 The [Objects close-result control](objects-close-result/README.md) discards only
 the original worker's inner storage result after physical completion. The
 existing real-log test must reject the false success, then pass after exact
