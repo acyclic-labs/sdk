@@ -1,0 +1,21 @@
+diff --git a/rust/crates/filesystem/src/staged_objects/read.rs b/rust/crates/filesystem/src/staged_objects/read.rs
+--- a/rust/crates/filesystem/src/staged_objects/read.rs
++++ b/rust/crates/filesystem/src/staged_objects/read.rs
+@@ -100,17 +100,6 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
+             .iter()
+             .filter(|entry| matches!(entry, PlannedRead::Durable))
+             .count();
+-        let copied = u64::try_from(misses)
+-            .ok()
+-            .and_then(|count| count.checked_mul(std::mem::size_of::<ObjectReadRequest>() as u64))
+-            .ok_or(crate::WorkError::Overflow)?;
+-        scope
+-            .accounting()
+-            .charge(WorkCounters {
+-                bytes_copied: copied,
+-                ..WorkCounters::UNCHARGED
+-            })
+-            .map_err(crate::async_storage::object_error)?;
+         let mut durable_requests = scope.vec_owned(misses)?;
+         for (entry, request) in plan.value.iter().zip(requests) {
+             if matches!(entry, PlannedRead::Durable) {
