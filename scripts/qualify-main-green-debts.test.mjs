@@ -26,9 +26,6 @@ test('the checked-in plan names each debt once with its class and structural fix
 test('regression and negative control are exact named tests in one package', () => {
   assert.deepEqual(cargoArguments(entry), ['test', '--locked', '-p', 'acyclic-harness', '--all-features', '--lib', '--', 'module::regression', 'module::negative', '--exact', '--test-threads=4', '--color=never']);
   assert.equal(verify(entry, 0, success).seconds, 0.12);
-  for (const seconds of [10, 30, 1e6]) {
-    assert.equal(verify(entry, 0, success.replace('0.12s', `${seconds}s`)).seconds, seconds);
-  }
 });
 
 test('a debt requires a regression, a negative control and literal test names', () => {

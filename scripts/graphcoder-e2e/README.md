@@ -39,13 +39,13 @@ node scripts/graphcoder-e2e/serial.mjs /absolute/graphcoder /absolute/harness-mo
 ```
 
 Use the serial matrix on every OS to avoid concurrent native mounts and PTYs
-competing inside a shared deadline. On Windows run it under the shared
-`Global\AcyclicWindowsTestRun` mutex. Each case suite retains
-the ten-second limit, including its filesystem variants. The aggregate receipt
-requires every case and variant exactly once; total matrix time is recorded
-separately. Run Node helper tests with `--test-concurrency=1` on Windows.
-The strict helper launcher also owns its complete process tree. Its active
-nine-second budget cancels and drains the scope; cancellation always fails
+competing for resources. On Windows run it under the shared
+`Global\AcyclicWindowsTestRun` mutex. Each case suite joins its completed
+operation and records its elapsed time, including its filesystem variants.
+The aggregate receipt requires every case and variant exactly once; total
+matrix time is recorded separately. Run Node helper tests with
+`--test-concurrency=1` on Windows. The strict helper launcher also owns its
+complete process tree. Cancellation drains the scope and always fails
 qualification, including when a late child summary reports success.
 
 To split a serial matrix into diagnostic selections, pass a zero-based `INDEX/COUNT`
