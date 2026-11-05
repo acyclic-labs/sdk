@@ -426,21 +426,28 @@ impl Hub {
     fn route_batch(&self, routes: &mut Routes, ready: &mut Ready) -> io::Result<usize> {
         self.check()?;
         let length = routes.buffer.len();
-        // SAFETY: the routing lock owns this buffer for the read.
-        let read = unsafe {
-            libc::read(
-                self.descriptor.as_raw_fd(),
-                routes.buffer.as_mut_ptr().cast(),
-                length,
-            )
-        };
-        if read < 0 {
+        let read = loop {
+            // SAFETY: the routing lock owns this buffer for the read. EINTR
+            // consumed no record; retry the same nonblocking operation.
+            let read = unsafe {
+                libc::read(
+                    self.descriptor.as_raw_fd(),
+                    routes.buffer.as_mut_ptr().cast(),
+                    length,
+                )
+            };
+            if read >= 0 {
+                break read;
+            }
             let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
             if error.kind() == io::ErrorKind::WouldBlock {
                 return Ok(0);
             }
             return Err(error);
-        }
+        };
         let filled =
             usize::try_from(read).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
         {
