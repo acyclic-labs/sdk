@@ -2,8 +2,8 @@
 
 Run on Linux or macOS: python3 shared-mount-scale.py ACYCLIC GRAPHCODER HOST.
 HOST is codex, claude-code or pi. Native sessions are explicit stand-ins;
-the separate real-host suite owns the real sandbox/model matrix. GraphCoder
-must enable test-support for the shared resource sampler/oracle request.
+the separate real-host suite owns the real sandbox/model matrix. The shipped
+binaries answer the owner's public resources query; no test feature is needed.
 """
 import json
 import os
@@ -25,6 +25,18 @@ def interrupted(signum, frame):
 
 
 signal.signal(signal.SIGTERM, interrupted)
+
+
+# Marginal cost of each view added from N to 2N, in whole units per view.
+# Process constants cancel; nothing is subtracted or warmed up first.
+VIEW_LIMITS = {'descriptors': 1, 'threads': 0, 'mounts': 0}
+
+
+def exceeded(small, large):
+    added = large['live_sessions'] - small['live_sessions']
+    assert small['live_sessions'] > 0 and added == small['live_sessions'], (small, large)
+    return [name for name, limit in VIEW_LIMITS.items()
+            if large[name] - small[name] > limit * added]
 
 
 def main():
@@ -151,18 +163,18 @@ sys.exit(17)
                         assert (path / '.volumes/home/private.txt').read_text() == reference
                         paths.append(path)
                     assert_live()
-                    sample = client({'kind': 'resource_probe', 'task': task, 'agents': population,
-                                     'previous': samples[0]['counts'] if samples else None})
+                    sample = client({'kind': 'resources', 'task': task})
                     assert_live()
+                    assert sample['views'] > population, sample
                     sample['live_sessions'] = population
                     samples.append(sample)
                     print(json.dumps({'host': host, 'sample': sample,
                                       'sampled_process': 'shared_mount_owner'}), flush=True)
                 # The same N sessions remain alive through the 2N sample.
-                # Sample the mount owner with the shared oracle; descendant
+                # Sample the mount owner with the view oracle above; descendant
                 # host-runtime resources are outside that oracle's contract.
                 assert len({path.parent for path in paths}) == 1, paths
-                assert samples[1]['exceeded'] == [], samples
+                assert exceeded(*samples) == [], samples
                 for gate in gates:
                     gate.sendall(b'.')
                 for child, path in enumerate(paths):

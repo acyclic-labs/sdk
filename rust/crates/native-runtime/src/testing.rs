@@ -21,13 +21,8 @@ pub(crate) mod host;
 pub(crate) use host::Pool as HostPool;
 pub use host::blocking_on;
 mod process;
-pub use crate::resources::{
-    Descriptor, ProcessResources, descriptors, descriptors_naming, process_resources,
-    sample_process_resources,
-};
 pub use process::{ProcessCapture, capture_process};
 mod metadata;
-pub mod scale;
 pub mod snapshot;
 pub use metadata::{NativeMetadataInput, NativeTimes, capture_native_times};
 #[cfg(test)]

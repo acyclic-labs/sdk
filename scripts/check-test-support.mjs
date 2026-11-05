@@ -1,4 +1,5 @@
-import {spawn} from 'node:child_process';
+import {execFileSync, spawn} from 'node:child_process';
+import {readFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
@@ -47,6 +48,41 @@ export function checkTestSupport(metadata) {
   return checked;
 }
 
+// Shipped binaries decode their requests with serde. A field or variant of a
+// deserialized type that exists only under test-support is unreachable from
+// any shipped-binary e2e, so it is refused wherever it is declared.
+export function checkDeserializedTestSupport(sources) {
+  const failures = [];
+  for (const [file, text] of sources) {
+    let attribute = '', derived = false, body = null, depth = 0;
+    text.split('\n').forEach((line, index) => {
+      const code = line.replace(/\/\/.*$/, '').trim();
+      if (attribute || code.startsWith('#[')) {
+        attribute += code;
+        const count = character => [...attribute].filter(c => c === character).length;
+        if (count('[') > count(']')) return;
+        const complete = attribute;
+        attribute = '';
+        if (body !== null && depth === 1 && /^#\[cfg(?:_attr)?\(.*test-support/.test(complete))
+          failures.push(`${file}:${index + 1}: ${body} has a test-support-only member`);
+        if (body === null && /^#\[derive\(.*\bDeserialize\b/.test(complete)) derived = true;
+        return;
+      }
+      if (body === null) {
+        const declared = derived && /\b(?:enum|struct)\s+(\w+)/.exec(code);
+        derived = false;
+        if (!declared) return;
+        body = declared[1];
+        depth = 0;
+      }
+      for (const c of code) depth += c === '{' ? 1 : c === '}' ? -1 : 0;
+      if (depth <= 0 && /[};]/.test(code)) body = null;
+    });
+  }
+  if (failures.length) throw new Error(failures.join('\n'));
+  return sources.length;
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   // Resolve every optional and target-specific edge, including registry crates.
   const child = spawn('cargo', ['metadata', '--locked', '--all-features', '--format-version', '1'],
@@ -57,4 +93,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const status = await new Promise((accept, reject) => child.on('error', reject).on('close', accept));
   if (status !== 0) throw new Error(`cargo metadata failed (${status})`);
   console.log(`test-support forwarding: ${checkTestSupport(JSON.parse(output))} dependency declarations checked`);
+  const files = execFileSync('git', ['ls-files', '--', '*.rs'], {encoding: 'utf8'}).split('\n').filter(Boolean);
+  const sources = files.map(file => [file, readFileSync(file, 'utf8')]);
+  console.log(`test-support deserialized members: ${checkDeserializedTestSupport(sources)} Rust sources checked`);
 }

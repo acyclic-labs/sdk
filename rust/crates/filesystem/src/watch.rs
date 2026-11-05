@@ -5171,7 +5171,7 @@ mod demand_admission_tests {
             Ok(work.work.items_examined)
         };
         let handles = || {
-            acyclic_native_runtime::testing::sample_process_resources()
+            acyclic_native_runtime::resources::sample_process_resources()
                 .map(|resources| resources.descriptors)
         };
         let flat = |before: u64, after: u64| after.saturating_sub(before) < HANDLE_SLACK;
