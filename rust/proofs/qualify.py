@@ -105,7 +105,8 @@ def run(label):
     environment = os.environ.copy()
     environment.setdefault("PROPTEST_RNG_SEED", "1697")
     if claim == "guest-refusal":
-        environment["RUSTC_WORKSPACE_WRAPPER"] = str(ROOT / "scripts/loom-rustc.sh")
+        wrapper = "loom-rustc.cmd" if os.name == "nt" else "loom-rustc.sh"
+        environment["RUSTC_WORKSPACE_WRAPPER"] = str(ROOT / "scripts" / wrapper)
     result = subprocess.run(COMMAND, cwd=ROOT, capture_output=True, text=True, env=environment)
     output = result.stdout + result.stderr
     directory = ROOT / "target" / claim
