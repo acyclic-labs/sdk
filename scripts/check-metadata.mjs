@@ -1,51 +1,15 @@
 import { Ajv2020 } from "ajv/dist/2020.js";
-import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import "./check-compatibility-digests.mjs";
 import { packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
 import { sha256File } from "./file-digest.mjs";
 
 const root = new URL("..", import.meta.url);
-const rootPath = resolve(fileURLToPath(root));
 const load = async path => JSON.parse(await readFile(new URL(path, root), "utf8"));
-const retiredStem = "p" + "y";
-const retiredSuffixes = ["", "i", "c", "o"].map(suffix => `.${retiredStem}${suffix}`);
-const retiredTerms = ["p" + "ython", "py" + "test", "bo" + "to3", "boto" + "core"];
-const retiredPattern = `${retiredTerms.join("|")}|\\.${retiredStem}(?:i|c|o)?\\b`;
-const hasRetiredSuffix = path => retiredSuffixes.some(suffix => path.toLowerCase().endsWith(suffix));
-if (!retiredSuffixes.every(suffix => hasRetiredSuffix(`fixture${suffix}`)) || hasRetiredSuffix("fixture.mjs")) {
-  throw new Error("retired-runtime suffix gate failed its fixtures");
-}
-const fixturePattern = new RegExp(retiredPattern, "i");
-if (!fixturePattern.test(`${"p" + "ython"} fixture`) || fixturePattern.test("node fixture.mjs")) {
-  throw new Error("retired-runtime content gate failed its fixtures");
-}
-const git = (...args) => spawnSync("git", args, { cwd: rootPath, encoding: "utf8" });
-const tracked = git("ls-files", "-z", "--cached", "--others", "--exclude-standard");
-if (tracked.error || tracked.status !== 0) throw tracked.error ?? new Error(tracked.stderr.trim());
-const exemptPrefixes = ["arena/"];
-const isExempt = path => exemptPrefixes.some(prefix => path.startsWith(prefix));
-const presentFiles = tracked.stdout
-  .split("\0")
-  .filter(Boolean)
-  .filter(path => !isExempt(path))
-  .map(path => ({ path, fullPath: resolve(rootPath, path) }))
-  .filter(({ fullPath }) => {
-    if (fullPath !== rootPath && !fullPath.startsWith(`${rootPath}${sep}`)) {
-      throw new Error(`repository path escapes its root: ${fullPath}`);
-    }
-    return existsSync(fullPath);
-  });
-const retiredFile = presentFiles.find(({ path }) => hasRetiredSuffix(path))?.path;
-if (retiredFile) throw new Error(`retired-runtime source exists: ${retiredFile}`);
-const retiredContent = presentFiles.find(({ fullPath }) => {
-  const content = readFileSync(fullPath);
-  return !content.includes(0) && fixturePattern.test(content.toString("utf8"));
-})?.path;
-if (retiredContent) throw new Error(`retired-runtime reference exists: ${retiredContent}`);
+// Retirement applies to declared SDK surfaces; repository tooling may use Python.
+const retiredRuntime = /python|pytest|boto3|botocore|\.py(?:i|c|o)?\b/i;
+if (!["fixture.py", "fixture.pyi", "fixture.pyc", "fixture.pyo", "python fixture"].every(value => retiredRuntime.test(value))
+  || retiredRuntime.test("node fixture.mjs")) throw new Error("step=retired-runtime inventory controls; recovery command: node scripts/check-metadata.mjs");
 const ajv = new Ajv2020({ allErrors: true });
 ajv.compile(await load("rust/crates/conformance/schemas/runner-report.schema.json"));
 new Ajv2020({ allErrors: true }).compile(
@@ -64,6 +28,8 @@ for (const [documentPath, schemaPath] of documents) {
   const validate = ajv.compile(await load(schemaPath));
   const document = await load(documentPath);
   if (!validate(document)) throw new Error(`${documentPath}: ${ajv.errorsText(validate.errors)}`);
+  if (["languages/package-names.json", "release/npm-packages.json", "release/cargo-crates.json"].includes(documentPath)
+    && retiredRuntime.test(JSON.stringify(document))) throw new Error(`step=retired-runtime SDK inventory ${documentPath}; recovery command: restore supported package declarations in ${documentPath}, then node scripts/check-metadata.mjs`);
   if (documentPath === ".github/qualification-lanes.json") {
     const lanes = /** @type {Record<string, unknown>[]} */ (document);
     const { cache_size, ...withoutLimit } = lanes[0];
