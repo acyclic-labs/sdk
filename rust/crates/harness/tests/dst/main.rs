@@ -309,7 +309,7 @@ fn replay_with_directory_times(
             panic!("uncut replay crashed");
         };
         let (requests, dispatches, records) = result?;
-        Ok(Trace {
+        let trace = Trace {
             polls: driver.schedule.polls(),
             boundaries: driver.boundaries,
             writes: driver.schedule.durable_writes(),
@@ -317,7 +317,9 @@ fn replay_with_directory_times(
             dispatches,
             records,
             durable: durable_bytes(directory.path())?,
-        })
+        };
+        digest::record_replay(&trace, seed, erase_source, directory_time);
+        Ok(trace)
     })
 }
 
