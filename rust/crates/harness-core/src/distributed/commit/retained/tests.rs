@@ -24,7 +24,20 @@ async fn check(mode: u8) -> Result<()> {
         let mut history = Some(io.history_io());
         let mut work = history.as_mut().map(|io| io as &mut dyn HistoryIo);
         let (key, held) = crate::distributed::digest_key(&[mode; 32], &mut work)?;
+        let before_request = original.live_allocation_bytes();
+        let before_operations = original.receipt().allocation_operations;
         let mut request = commit_request(key, held, &mut work)?;
+        assert_eq!(
+            original.live_allocation_bytes() - before_request,
+            (request.0.effects.capacity() * std::mem::size_of::<acyclic_stream::CommitEffect>())
+                as u64,
+            "request storage must remain funded before native admission"
+        );
+        assert_eq!(
+            original.receipt().allocation_operations - before_operations,
+            1,
+            "request construction must account for its one allocation"
+        );
         add_condition(
             &mut request.0,
             &mut request.1,
