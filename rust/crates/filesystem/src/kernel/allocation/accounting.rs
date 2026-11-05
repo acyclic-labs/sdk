@@ -51,10 +51,6 @@ impl<'a> KernelAccounting<'a> {
     /// Waits for a cancel-safe primitive event on the original accounting.
     /// Ready events need no cancellation registration. A blocked event keeps
     /// one funded waiter per distinct caller/native cancellation source.
-    #[cfg(all(
-        any(test, feature = "local", feature = "conformance"),
-        not(target_arch = "wasm32")
-    ))]
     pub(crate) async fn wait_for<T>(
         &mut self,
         event: impl std::future::Future<Output = T>,
@@ -66,9 +62,11 @@ impl<'a> KernelAccounting<'a> {
         let mut event = std::pin::pin!(event);
         let cancellation = self.cancellation();
         let mut caller_wait = None;
+        #[cfg(not(target_arch = "wasm32"))]
         let original = self
             .native_work()
             .filter(|work| !work.cancellation().same_state(cancellation));
+        #[cfg(not(target_arch = "wasm32"))]
         let mut native_wait = None;
         std::future::poll_fn(|cx| {
             if let Poll::Ready(value) = Future::poll(event.as_mut(), cx) {
@@ -82,6 +80,7 @@ impl<'a> KernelAccounting<'a> {
             if let Some(wait) = &mut caller_wait {
                 let _ = Pin::new(wait).poll(cx);
             }
+            #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = original {
                 if native_wait.is_none() {
                     native_wait = Some(original.cancellation_wait()?);

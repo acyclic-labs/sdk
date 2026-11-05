@@ -21,6 +21,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 objects,
                 |id| self.index().objects.contains_key(id),
                 proven_at,
+                &mut work.accounting(),
             )
             .await?;
         let targets = {
