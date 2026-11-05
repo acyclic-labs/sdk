@@ -303,10 +303,10 @@ The browser adapter uses real `BrowserStream` and `IndexedDbObjectStore` provide
 ```sh
 bash scripts/run-browser-tests.sh cargo test --locked -p acyclic-fs \
   --no-default-features --features browser,memory,conformance \
-  --target wasm32-unknown-unknown --test main browser_commit::conformance::browser_public_conformance_benchmark
+  --target wasm32-unknown-unknown --test browser_commit conformance::browser_public_conformance_benchmark
 ```
 
-The existing `browser_commit::storage::indexed_db_object_batches_commit_all_or_nothing`
+The existing `storage::indexed_db_object_batches_commit_all_or_nothing`
 property also compares raw and authenticated submissions, including duplicate
 members, an idempotent retry and a zero-hash budget. The retained
 `fuzz/mutations/indexed_db_sealed_rehash.patch` must fail that property by

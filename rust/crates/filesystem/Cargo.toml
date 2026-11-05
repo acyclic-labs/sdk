@@ -18,6 +18,11 @@ name = "main"
 path = "tests/main.rs"
 
 [[test]]
+name = "browser_commit"
+path = "tests/browser_commit.rs"
+required-features = ["browser", "memory"]
+
+[[test]]
 name = "browser_blob_custody"
 path = "tests/browser_blob_custody.rs"
 required-features = ["browser"]
