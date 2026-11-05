@@ -118,8 +118,10 @@ async fn mixed_read_plan_admits_request_copies_before_backend_submission()
             };
             misses
         ];
+        // Keep the entire durable prefix before the first private member: its
+        // copied metadata must be admitted before any backend submission.
         requests.insert(
-            0,
+            misses,
             ObjectReadRequest {
                 object_id: resident,
                 maximum_bytes: 1024,
