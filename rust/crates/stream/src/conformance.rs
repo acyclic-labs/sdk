@@ -1022,16 +1022,21 @@ mod tests {
         let Err(Failure::Cases(failures)) = super::verify(&backend).await else {
             return Err(Failure::Invariant("suite lost its independent failures"));
         };
-        assert!(matches!(
-            failures.as_slice(),
-            [
-                ("absence", Failure::Invariant(_)),
-                ("key_seek", Failure::Invariant(_)),
-                ("append_retry", Failure::History(_)),
-                ("record_origin", Failure::History(_)),
-                ("atomic", Failure::Invariant(_)),
-            ]
-        ));
+        // The seeded atomic child also contradicts the contract child set.
+        assert!(
+            matches!(
+                failures.as_slice(),
+                [
+                    ("absence", Failure::Invariant(_)),
+                    ("key_seek", Failure::Invariant(_)),
+                    ("contract", Failure::Invariant(_)),
+                    ("append_retry", Failure::History(_)),
+                    ("record_origin", Failure::History(_)),
+                    ("atomic", Failure::Invariant(_)),
+                ]
+            ),
+            "unexpected collected failures: {failures:?}"
+        );
         use crate::StreamProviderExt as _;
         assert_eq!(
             provider
