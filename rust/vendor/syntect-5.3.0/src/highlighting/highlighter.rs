@@ -384,5 +384,3 @@ impl<'a> Highlighter<'a> {
         modifier
     }
 }
-
-#[cfg(all(feature = "default-syntaxes", feature = "default-themes"))]

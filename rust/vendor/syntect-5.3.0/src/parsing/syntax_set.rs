@@ -940,5 +940,3 @@ impl FirstLineCache {
         FirstLineCache { regexes }
     }
 }
-
-#[cfg(feature = "yaml-load")]

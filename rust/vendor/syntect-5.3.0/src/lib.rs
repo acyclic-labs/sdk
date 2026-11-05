@@ -21,7 +21,6 @@
 
 #![doc(html_root_url = "https://docs.rs/syntect/5.3.0")]
 
-
 #[cfg(any(feature = "dump-load", feature = "dump-create"))]
 pub mod dumps;
 #[cfg(feature = "parsing")]

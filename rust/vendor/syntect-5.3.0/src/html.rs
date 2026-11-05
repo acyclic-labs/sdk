@@ -570,5 +570,3 @@ pub fn start_highlighted_html_snippet(t: &Theme) -> (String, Color) {
         c,
     )
 }
-
-#[cfg(all(feature = "default-syntaxes", feature = "default-themes",))]

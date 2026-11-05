@@ -16,6 +16,10 @@ fn check_type<T: DeserializeOwned + Serialize>(data: &[u8], compressed: bool) {
         serde_json::to_value(restored).unwrap()
     );
     if !compressed {
+        assert!(
+            dumps::from_uncompressed_data::<T>(&data[..data.len() - 1]).is_err(),
+            "accepted truncated syntax data"
+        );
         let mut changed = data.to_vec();
         changed
             .get_mut(..4)

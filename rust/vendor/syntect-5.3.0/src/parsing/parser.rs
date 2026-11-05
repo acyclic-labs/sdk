@@ -737,5 +737,3 @@ impl ParseState {
         Ok(true)
     }
 }
-
-#[cfg(feature = "yaml-load")]
