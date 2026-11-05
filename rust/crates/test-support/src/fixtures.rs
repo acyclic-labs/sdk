@@ -42,7 +42,7 @@ macro_rules! cargo_binary {
 ///
 /// If the source root is missing or relative, or the fixture path is absolute.
 pub fn source_path(relative: impl AsRef<Path>) -> PathBuf {
-    let root = PathBuf::from(std::env::var_os("ACYCLIC_TEST_SOURCE_ROOT").expect(
+    let mut root = PathBuf::from(std::env::var_os("ACYCLIC_TEST_SOURCE_ROOT").expect(
         "step=fixture-source-root: test source root is missing; recovery command: cargo test --locked -p acyclic-test-support --lib (from the SDK source root)",
     ));
     assert!(
@@ -55,7 +55,8 @@ pub fn source_path(relative: impl AsRef<Path>) -> PathBuf {
         relative.is_relative(),
         "fixture path must be repository-relative"
     );
-    root.join(relative)
+    root.push(relative);
+    root
 }
 
 /// Locates `relative` inside the crate whose compile-time manifest directory is
