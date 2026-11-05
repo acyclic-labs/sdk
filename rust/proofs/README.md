@@ -100,6 +100,12 @@ The same real-worker test must observe that a rejected closure was dropped
 before its observer is polled. A retained or executed body fails the named
 assertion; the independent typed observer result cannot mask admission.
 
+The [persistence caller-custody control](persistence-caller-custody/README.md)
+aborts the original completion owner when its caller drops the observer.
+The existing native test must reject loss of its body's original start event,
+then pass after restoration with physical entry and original release-producer
+loss. This covers custody before entry without adding a parallel runtime model.
+
 The [Objects close-result control](objects-close-result/README.md) discards only
 the original worker's inner storage result after physical completion. The
 existing real-log test must reject the false success, then pass after exact

@@ -577,7 +577,9 @@ mod tests {
             // Submission is driven by its owner, even without polling this
             // result; caller cancellation cannot abandon accepted work.
             drop(submitted);
-            starting.await.unwrap();
+            starting
+                .await
+                .expect("caller drop abandoned the original persistence body");
             assert!(matches!(
                 finishing.try_recv(),
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty)
