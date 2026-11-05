@@ -354,6 +354,13 @@ where
     spawn_in_context(Context::simulation(), future)
 }
 
+// An explicitly submitted async operation starts before the pending-task
+// handoff when it is polled eagerly. Synchronous physical work stays outside
+// CURRENT; only this original future's poll enters its retained scope.
+pub(crate) fn enter_task_poll<T>(poll: impl FnOnce() -> T) -> T {
+    CURRENT.sync_scope(Context::simulation(), poll)
+}
+
 pub(crate) fn spawn_in_context<F>(context: Option<Context>, future: F) -> TaskHandle<F::Output>
 where
     F: Future + Send + 'static,
