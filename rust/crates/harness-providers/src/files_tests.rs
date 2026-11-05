@@ -307,6 +307,7 @@ async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> 
             actual,
             projection::body_with_files(&provider, split.request(), &mut expected_files)?
         );
+        let provider = Arc::new(provider);
         if adapter == Adapter::Gemini {
             assert!(crate::validate_input(adapter, &actual).is_empty());
             let parts = actual["contents"][0]["parts"].as_array().unwrap();
@@ -352,7 +353,7 @@ async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> 
                 },
             ]);
             let request = PreparedModelRequest::prepare(source, Limits::default(), None)?;
-            let shared = crate::prepared::PreparedInput::new(&provider, request).await?;
+            let shared = crate::prepared::PreparedInput::new(provider.clone(), request).await?;
             let generation = crate::json(&shared.generation)?;
             assert!(crate::validate_input(adapter, &generation).is_empty());
             let turns = generation["contents"].as_array().unwrap();
@@ -363,7 +364,7 @@ async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> 
                 turns[2]["parts"],
                 json!([parts[0], parts[1], parts[0], {"text":"current input"}, parts[0]])
             );
-            let count = shared.count(&provider).await?;
+            let count = shared.count().await?;
             count.validate(&shared.request, &mut None)?;
             let counted = script.counted.lock().unwrap();
             let counted = crate::json(counted.as_ref().expect("original count was not sent"))?;
@@ -444,17 +445,15 @@ proptest! {
                 let request = with_parts(&provider, vec![ModelContentPart::File {
                     file: file(data.as_bytes(), "text/plain").unwrap(), policy: FileProjectionPolicy::BoundedFull,
                 }]).unwrap();
-                let prepared = crate::prepared::PreparedInput::new(&provider, request.clone()).await.unwrap();
-                let count = prepared.count(&provider).await.unwrap();
+                let mut provider = Arc::new(provider);
+                let prepared = Arc::new(crate::prepared::PreparedInput::new(provider.clone(), request.clone()).await.unwrap());
+                let count = prepared.count().await.unwrap();
                 // Reusing the retained HTTP bytes for generation performs no file I/O.
                 {
-                    let auth = crate::dispatch::authenticate(&provider, None).await.unwrap();
                     let dispatch = ModelDispatch {request_digest:request.request_digest(),..parser_dispatch()};
-                    let names = crate::tool_names::Names::new(request.request());
-                    let body = prepared.generation.clone();
                     let mut generation = None;
                     let allocated = acyclic_test_support::measure(|| {
-                        generation = Some(crate::dispatch::generate_encoded(&provider, &request, dispatch, body, prepared.cache, auth, names));
+                        generation = Some(crate::prepared::PreparedInput::generate(prepared.clone(), dispatch));
                     });
                     assert_eq!(allocated.count_total, 0);
                     // Negative control: the former erased retry frame adds one allocation.
@@ -473,9 +472,10 @@ proptest! {
                 // Negative control: the independent old paths require two additional reads.
                 assert_eq!(reader.reads.load(Ordering::SeqCst), 3);
                 let original_counter = provider.config.token_counter.clone();
+                drop(prepared);
                 for counter in std::iter::once(None).chain(fixtures().into_iter().map(|(counter, _)| Some(counter))) {
                     if counter == Some(adapter) { continue; }
-                    Arc::make_mut(&mut provider.config).token_counter = counter.map(|adapter| {
+                    Arc::make_mut(&mut Arc::get_mut(&mut provider).unwrap().config).token_counter = counter.map(|adapter| {
                         let mut spec = original_counter.clone().unwrap();
                         spec.adapter = adapter;
                         spec
@@ -487,7 +487,7 @@ proptest! {
                     };
                     let before = reader.reads.load(Ordering::SeqCst);
                     assert_eq!(provider.count_tokens(&request, 0).await.unwrap_err().code(), expected);
-                    let error = crate::prepared::PreparedInput::new(&provider, request.clone()).await.err().expect("unverified prepared counter admitted");
+                    let error = crate::prepared::PreparedInput::new(provider.clone(), request.clone()).await.err().expect("unverified prepared counter admitted");
                     assert_eq!(error.code(), expected);
                     let cancellation = acyclic_fs::CancellationToken::new();
                     let work = acyclic_fs::NativeMaterializationWork::new(
