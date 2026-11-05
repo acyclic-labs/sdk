@@ -8,7 +8,7 @@ import {delimiter,isAbsolute,join,relative,resolve,sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {McpClient} from '../../shared/mcp-client.mjs';
 import {Processes,Spool} from '../../../scripts/graphcoder-e2e/process.mjs';
-import {environment,scratchDirectory} from '../../../scripts/graphcoder-e2e/scratch.mjs';
+import {environment,nativeEnvironment,scratchDirectory} from '../../../scripts/graphcoder-e2e/scratch.mjs';
 import {commandCancellation,withOwnedCase} from '../../../scripts/graphcoder-e2e/suite.mjs';
 import {startWorkspaceOwner} from './workspace-owner.mjs';
 import {codexSandboxConfig,nativeHost} from './native-host.mjs';
@@ -129,9 +129,7 @@ async function scenario(){
  const root=scratchDirectory('managed-native-session-',{E2E_SCRATCH_ROOT:process.env.HOME});
  const workspace=join(root,'workspace'),state=join(root,'state'),bin=join(root,'bin'),fixture=join(root,'native-events.jsonl');
  await Promise.all([mkdir(workspace),mkdir(state),mkdir(bin),writeFile(fixture,capture.stdout)]);
- const platform=Object.fromEntries(Object.entries(process.env)
-  .filter(([key])=>/^(SystemRoot|WINDIR|ComSpec|PATHEXT|E2E_PROCESS_HOST)$/i.test(key)));
- const env=environment(root,{...platform,PATH:bin+delimiter+process.env.PATH,
+ const env=environment(root,{...nativeEnvironment(),PATH:bin+delimiter+process.env.PATH,
   FIXTURE_NODE:process.execPath,FIXTURE_DRIVER:driver,FIXTURE_CODEX:native.program,
   FIXTURE_CODEX_ARGS:JSON.stringify(native.args),FIXTURE_EVENTS:fixture,
   FIXTURE_ACYCLIC:resolve(acyclic),FIXTURE_WORKSPACE:workspace,FIXTURE_OUTSIDE:join(state,'denied')});
