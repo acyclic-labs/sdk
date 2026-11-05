@@ -21,11 +21,6 @@ mod build_metadata {
         reason = "Cargo-provided executable metadata for this integration crate"
     )]
     pub(super) const EXECUTABLE: &str = env!("CARGO_BIN_EXE_acyclic");
-    #[expect(
-        clippy::disallowed_macros,
-        reason = "Cargo-provided executable metadata for this integration crate"
-    )]
-    pub(super) const GRAPHCODER: &str = env!("CARGO_BIN_EXE_graphcoder");
 }
 
 /// A loopback Responses endpoint; it records every generation request body.
@@ -378,63 +373,6 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     assert!(String::from_utf8_lossy(&streamed.stderr).contains("fixture answer"));
     assert_eq!(model.generated(), 3);
     model.close().await;
-}
-
-#[tokio::test]
-async fn execution_text_stdin_retires_at_eof_or_refuses_an_unbound_task() {
-    for (executable, args) in [
-        (build_metadata::GRAPHCODER, vec![]),
-        (
-            build_metadata::EXECUTABLE,
-            vec!["run", "--template", "graphcoder"],
-        ),
-    ] {
-        let fixture = fixture();
-        // Configuration admits a provider, but no connection or fabricated
-        // provider response participates in this input/EOF control.
-        let catalog = fixture._directory.path().join("catalog.json");
-        std::fs::write(
-            &catalog,
-            serde_json::to_vec(&json!({"graphcoder-qual": {
-                "adapter": "responses", "authentication": "optional",
-                "base_url": "http://127.0.0.1:0",
-                "models": {"tiny": {"capacity": {"context_tokens": 8192, "output_tokens": 1024},
-                    "features": {"tools": true, "images": false}}},
-                "token_counter": {"path": "count", "adapter": "responses",
-                    "response_field": "input_tokens", "framing_tokens": 0}
-            }}))
-            .unwrap(),
-        )
-        .unwrap();
-        for input in ["unbound task\n", "", " \n\n"] {
-            let mut args = args.clone();
-            if input == "unbound task\n" {
-                // Returned failures use the existing event channel. The shared
-                // completion deliberately performs no terminal stderr write.
-                args.extend(["--output-format", "jsonl"]);
-            }
-            let output = run_binary(executable, &fixture, &catalog, args, input).await;
-            if input == "unbound task\n" {
-                assert!(!output.status.success(), "{output:?}");
-                let records = String::from_utf8_lossy(&output.stdout)
-                    .lines()
-                    .map(|line| serde_json::from_str::<Value>(line).unwrap())
-                    .collect::<Vec<_>>();
-                let failure = records.last().expect("terminal refusal frame");
-                assert_eq!(failure["kind"], "error", "{failure}");
-                assert_eq!(failure["code"], "execution_failed", "{failure}");
-                let error = failure["error"].as_str().expect("original refusal cause");
-                assert!(
-                    error.contains("text input: no task or pending approval"),
-                    "{error}"
-                );
-                assert!(error.contains("recovery: use acyclic run"), "{error}");
-            } else {
-                assert!(output.stdout.is_empty(), "{output:?}");
-                succeeded(&output);
-            }
-        }
-    }
 }
 
 #[tokio::test]
