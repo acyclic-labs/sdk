@@ -594,12 +594,6 @@ impl ProjFsSession {
     }
 
     pub(super) fn take_source_failure(&mut self) -> Option<NativeMountError> {
-        if let Some(projector) = self.controller.as_ref() {
-            return lock_recover(&projector.lifecycle)
-                .owner
-                .as_mut()
-                .and_then(Self::take_source_failure);
-        }
         self.retirement.as_mut()?.terminal_source_failure.take()
     }
 

@@ -107,15 +107,15 @@ async fn retired_mount_proof_preserves_all_terminal_causes_on_every_os()
         std::fs::read(root.path()).expect_err("a directory cannot be read as cleanup bytes");
     let producer_code = producer.raw_os_error();
     let cleanup_code = cleanup.raw_os_error();
-    let source = std::io::Write::write_all(
+    let source_failure = std::io::Write::write_all(
         &mut std::fs::File::open(root.path().join("authored"))?,
         b"not-written",
     )
     .expect_err("source descriptor is read-only");
-    let source_code = source.raw_os_error();
+    let source_code = source_failure.raw_os_error();
     session.terminal_failures = super::super::retirement::TerminalFailures {
         producer: Some(producer.into()),
-        source: Some(source.into()),
+        source: Some(source_failure.into()),
         cleanup: Some(cleanup.into()),
     };
     session.retained_source = Some(crate::native_mount::retirement::RetainedSource::Filesystem(

@@ -156,9 +156,8 @@ impl ProjFsSession {
         let mut lifecycle = lock_recover(&projector.lifecycle);
         loop {
             if lifecycle.complete {
-                drop(lifecycle);
                 return Ok(crate::native_mount::retirement::TerminalFailures {
-                    source: self.take_source_failure(),
+                    source: lifecycle.owner.as_mut().and_then(Self::take_source_failure),
                     ..Default::default()
                 });
             }
