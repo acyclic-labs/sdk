@@ -56,6 +56,7 @@ fn turns(
             .collect();
         let provider = Arc::new(ScriptedModelProvider::new(replies));
         let config = local_harness_config(directory.join("filesystem"), (model, provider))?
+            .without_user_settings()
             .volume(volume)
             .state_directory(directory.join("state"));
         let harness = Arc::new(entry(LocalHarness::open(config)).await?);
