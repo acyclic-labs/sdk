@@ -388,8 +388,6 @@ mod tests {
         );
         // Invalid rewrites block in either authority order, without starting
         // a guard process or losing the model's ability to issue another call.
-        let mut guard = guard;
-        guard.failure = HookFailure::Report;
         for arguments in [
             serde_json::json!({"input":"*** Begin Patch\n*** Add File: private/unfinished\n+new\n"}),
             serde_json::json!({"input":7}),
