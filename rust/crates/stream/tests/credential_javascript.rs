@@ -7,8 +7,11 @@ use wasm_bindgen::{JsCast, prelude::*};
 use wasm_bindgen_test::wasm_bindgen_test;
 
 #[wasm_bindgen(inline_js = r#"
-export async function credentialSource(module) {
+export async function credentialSource() {
+  const { createRequire } = await import('node:module');
+  const { resolve } = await import('node:path');
   const { pathToFileURL } = await import('node:url');
+  const module = createRequire(resolve('package.json')).resolve('@acyclic-labs/auth/credential');
   const { CredentialCache, CredentialSnapshot, credentialProvider } = await import(pathToFileURL(module).href);
   let revision = '\ud800'.repeat(257), now = 1, calls = 0, closed = 0, block = false;
   let entered, cancelled;
@@ -41,7 +44,7 @@ export async function credentialSource(module) {
 "#)]
 extern "C" {
     #[wasm_bindgen(catch, js_name = credentialSource)]
-    async fn source(module: &str) -> Result<JsValue, JsValue>;
+    async fn source() -> Result<JsValue, JsValue>;
 }
 
 fn function(owner: &JsValue, name: &str) -> Function {
@@ -56,12 +59,7 @@ fn call(owner: &JsValue, name: &str) -> JsValue {
 
 #[wasm_bindgen_test]
 async fn javascript_owner_keeps_exact_rejection_revision_watch_and_cancellation() {
-    let source = source(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../../typescript/packages/auth/dist/credential.js"
-    ))
-    .await
-    .unwrap();
+    let source = source().await.unwrap();
     let provider = javascript::provider(function(&source, "provider"));
     let watch = provider.watch().await.unwrap().unwrap();
     let old = provider.resolve().await.unwrap();
