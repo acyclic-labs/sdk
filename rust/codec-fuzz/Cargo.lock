@@ -57,6 +57,7 @@ dependencies = [
 name = "acyclic-auth"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth-action",
  "acyclic-contract-derive",
  "acyclic-differential",
  "acyclic-observability",
@@ -85,6 +86,10 @@ dependencies = [
  "web-sys",
  "zeroize",
 ]
+
+[[package]]
+name = "acyclic-auth-action"
+version = "0.2.0"
 
 [[package]]
 name = "acyclic-codec-fuzz"
@@ -129,6 +134,7 @@ version = "0.2.0"
 name = "acyclic-contract-derive"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth-action",
  "heck",
  "proc-macro2",
  "quote",
@@ -258,6 +264,7 @@ dependencies = [
  "acyclic-differential",
  "acyclic-fs",
  "acyclic-host-platform",
+ "acyclic-machines",
  "acyclic-model-render",
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -450,6 +457,7 @@ dependencies = [
 name = "acyclic-proto-build"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth-action",
  "prost",
  "prost-reflect",
  "protoc-bin-vendored",
@@ -4315,16 +4323,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ropey"
-version = "1.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93411e420bcd1a75ddd1dc3caf18c23155eda2c090631a85af21ba19e97093b5"
-dependencies = [
- "smallvec",
- "str_indices",
-]
-
-[[package]]
 name = "rmp"
 version = "0.8.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4341,6 +4339,16 @@ checksum = "72f81bee8c8ef9b577d1681a70ebbc962c232461e397b22c208c43c04b67a155"
 dependencies = [
  "rmp",
  "serde",
+]
+
+[[package]]
+name = "ropey"
+version = "1.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93411e420bcd1a75ddd1dc3caf18c23155eda2c090631a85af21ba19e97093b5"
+dependencies = [
+ "smallvec",
+ "str_indices",
 ]
 
 [[package]]
