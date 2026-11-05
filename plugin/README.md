@@ -156,12 +156,13 @@ The probe-only resource check exercises each production host adapter with
 stand-in native sessions held alive at the N/2N samples:
 
 ```sh
-python3 plugin/tests/hosts/shared-mount-scale.py ACYCLIC GRAPHCODER codex
+cargo build --locked -p acyclic-plugin --bin acyclic --features acyclic-harness/test-support
+python3 plugin/tests/hosts/shared-mount-scale.py target/debug/acyclic codex
 ```
 
-Select `claude-code` or `pi` for the other adapters. GraphCoder must be built
-with the harness `test-support` feature for its OS resource query. These
-instrumented binaries are test fixtures, not the shipping package. The oracle
+Select `claude-code` or `pi` for the other adapters. This Acyclic build enables
+the harness `test-support` feature for its OS resource query. The instrumented
+executable is a test fixture. The oracle
 shares the harness's descriptor/thread bounds and requires zero mount growth;
 it samples the shared mount owner, excluding descendant host-runtime resources.
 Each child acknowledges the hold barrier before and after each sample; the
@@ -196,7 +197,7 @@ Supported selections and required inputs are:
 | --- | --- |
 | `managed:lifecycle`, `managed:recursive`, `managed:resume` | Acyclic, GraphCoder and Codex 0.164.0 or later |
 | `managed:bounded-framing` | Acyclic only |
-| `scale:codex`, `scale:claude-code`, `scale:pi` | Acyclic and GraphCoder with resource instrumentation |
+| `scale:codex`, `scale:claude-code`, `scale:pi` | Acyclic with resource instrumentation |
 
 For standalone framing, the same qualifier stages only its required binary
 from Cargo's JSON output and uses the shared fixture and case-budget owners:
