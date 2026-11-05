@@ -423,7 +423,7 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
         let Some(slot) = slot else { return Ok(None) };
         let root = self.meter.owned(|accounting| {
             let (root, allocation) =
-                crate::collection::clone_generation_root_with_accounting(&proof.root, accounting)?;
+                crate::kernel::clone_generation_root_with_accounting(&proof.root, accounting)?;
             let bytes = (root.parents.capacity() * size_of::<GenerationId>()) as u64;
             Ok((root, allocation, bytes))
         })?;

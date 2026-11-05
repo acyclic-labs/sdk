@@ -342,8 +342,15 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                 match workspace
                     .volume
                     .fs
-                    .parent_advance(&workspace.volume, limits.maximum_generations)
+                    .parent_advance(
+                        &workspace.volume,
+                        limits.maximum_generations,
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new(),
+                    )
                     .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
                 {
                     Ok(Some(parent)) => Ok(FinalClose::Rebase(parent)),
                     // A workspace that is not a fork has no parent to follow.
@@ -412,9 +419,12 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                     limits.maximum_generations,
                     limits.maximum_changes,
                     limits.maximum_conflicts,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
                 )
                 .await
-                .map_err(OperationWindowError::Workspace)?
+                .map_err(|failure| OperationWindowError::Workspace(failure.error))?
+                .value
         } else {
             let generation = workspace
                 .head(

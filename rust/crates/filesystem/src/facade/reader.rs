@@ -73,7 +73,7 @@ impl<A: 'static, O: 'static> Checkout<A, O> {
         work.admit(WorkCounters::UNCHARGED)?;
         let mut accounting = KernelAccounting::native(work, cancellation);
         let (root, allocation) =
-            crate::collection::clone_generation_root_with_accounting(&self.root, &mut accounting)?;
+            crate::kernel::clone_generation_root_with_accounting(&self.root, &mut accounting)?;
         let mut carrier = (root, native_pinned_allocation(allocation)?);
         cancellation.check()?;
         carrier

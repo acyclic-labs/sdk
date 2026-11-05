@@ -39,30 +39,26 @@ pub struct WorkspaceLineageRecord {
 }
 
 fn lineage_shape_is_valid(record: &WorkspaceLineageRecord) -> bool {
+    let cancellation = CancellationToken::new();
+    let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    );
+    let mut canonical =
+        |name: &str| crate::WorkspaceName::is_canonical(name, &mut accounting).unwrap_or(false);
     let parent_shape = match (
         record.parent_workspace_id,
         record.parent_workspace_name.as_deref(),
     ) {
         (None, None) => record.fork_generation == record.initial_generation,
         (Some(parent_id), Some(parent_name)) => {
-            parent_id != record.workspace_id
-                && crate::WorkspaceName::new(
-                    parent_name,
-                    &WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
-                .is_ok()
+            parent_id != record.workspace_id && canonical(parent_name)
         }
         _ => false,
     };
     record.version == LINEAGE_VERSION
         && record.revision > 0
-        && crate::WorkspaceName::new(
-            &record.workspace_name,
-            &WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .is_ok()
+        && canonical(&record.workspace_name)
         && parent_shape
 }
 
@@ -160,7 +156,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             .await
             .map_err(|failure| failure.error)?
             .value;
-        self.register(WorkspaceLineageRecord {
+        self.register_absent(WorkspaceLineageRecord {
             version: LINEAGE_VERSION,
             revision: 1,
             ready: true,
@@ -247,10 +243,13 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                 if planned.ready && planned.initial_generation != initial_generation.id() {
                     return Err(WorkspaceLineageError::ConflictingRegistration);
                 }
-                let mut ready = planned;
-                ready.ready = true;
-                ready.initial_generation = initial_generation.id();
-                self.promote_ready(ready).await?;
+                if !planned.ready {
+                    let expected_revision = planned.revision;
+                    let mut ready = planned;
+                    ready.ready = true;
+                    ready.initial_generation = initial_generation.id();
+                    self.promote_ready(ready, expected_revision).await?;
+                }
                 Ok(child)
             })
             .await,
@@ -349,7 +348,10 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         child: WorkspaceId,
         parent: WorkspaceId,
     ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
-        let record = self.required(child).await?;
+        let record = self
+            .lookup(child)
+            .await?
+            .ok_or(WorkspaceLineageError::IncompatibleState)?;
         if record.parent_workspace_id != Some(parent) {
             return Err(WorkspaceLineageError::UnauthorizedJoin);
         }
@@ -361,7 +363,9 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         &self,
         workspace: WorkspaceId,
     ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
-        self.required(workspace).await
+        self.lookup(workspace)
+            .await?
+            .ok_or(WorkspaceLineageError::IncompatibleState)
     }
 
     /// Returns the direct-parent chain, nearest parent first.
@@ -375,6 +379,8 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
 
     /// Authenticate a workspace below an already authenticated repository root.
     /// The root itself need not have a lineage record: it is the caller's anchor.
+    /// Each visited workspace is loaded once; an absent starting workspace is
+    /// refused from that same observation, without a second presence check.
     pub async fn authorize_descendant(
         &self,
         workspace: WorkspaceId,
@@ -401,15 +407,14 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             if !seen.insert(id) || records.len() >= maximum as usize {
                 return Err(WorkspaceLineageError::TraversalLimit);
             }
-            let record = match self.required(id).await {
+            let record = match self.lookup(id).await? {
                 // A workspace this lineage never registered is outside it,
                 // which is a definite refusal rather than corrupt state.
-                Err(WorkspaceLineageError::IncompatibleState)
-                    if ancestor.is_some() && id == workspace && !self.registered(id).await? =>
-                {
+                None if ancestor.is_some() && id == workspace => {
                     return Err(WorkspaceLineageError::UnauthorizedJoin);
                 }
-                record => record?,
+                None => return Err(WorkspaceLineageError::IncompatibleState),
+                Some(record) => record,
             };
             next = record.parent_workspace_id;
             if id != workspace {
@@ -423,34 +428,25 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         }
     }
 
-    async fn registered(
+    async fn lookup(
         &self,
         workspace_id: WorkspaceId,
-    ) -> Result<bool, WorkspaceLineageError<S::Error>> {
-        self.store
-            .load(workspace_id)
-            .await
-            .map(|record| record.is_some())
-            .map_err(WorkspaceLineageError::Store)
-    }
-
-    async fn required(
-        &self,
-        workspace_id: WorkspaceId,
-    ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
-        let record = self
+    ) -> Result<Option<WorkspaceLineageRecord>, WorkspaceLineageError<S::Error>> {
+        let Some(record) = self
             .store
             .load(workspace_id)
             .await
             .map_err(WorkspaceLineageError::Store)?
-            .ok_or(WorkspaceLineageError::IncompatibleState)?;
+        else {
+            return Ok(None);
+        };
         if record.workspace_id != workspace_id || !lineage_shape_is_valid(&record) {
             return Err(WorkspaceLineageError::IncompatibleState);
         }
         if !record.ready {
             return Err(WorkspaceLineageError::IncompatibleState);
         }
-        Ok(record)
+        Ok(Some(record))
     }
 
     async fn register(
@@ -468,12 +464,21 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         {
             if lineage_shape_is_valid(&existing) && same_lineage(&existing, &record) {
                 if record.ready && !existing.ready {
-                    return self.promote_ready(record).await;
+                    return self.promote_ready(record, existing.revision).await;
                 }
                 return Ok(existing);
             }
             return Err(WorkspaceLineageError::ConflictingRegistration);
         }
+        self.register_absent(record).await
+    }
+
+    // Absence has already been observed. A rejected creation must observe the
+    // winner, but another read before the conditional write buys no guarantee.
+    async fn register_absent(
+        &self,
+        record: WorkspaceLineageRecord,
+    ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
         if self
             .store
             .compare_and_swap(record.workspace_id, 0, record.clone())
@@ -498,7 +503,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             && record.ready
             && !existing.ready
         {
-            self.promote_ready(record).await
+            self.promote_ready(record, existing.revision).await
         } else {
             Err(WorkspaceLineageError::ConflictingRegistration)
         }
@@ -506,35 +511,21 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
 
     async fn promote_ready(
         &self,
-        ready: WorkspaceLineageRecord,
+        mut ready: WorkspaceLineageRecord,
+        expected_revision: u64,
     ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
-        if !ready.ready || !lineage_shape_is_valid(&ready) {
-            return Err(WorkspaceLineageError::IncompatibleState);
-        }
-        let existing = self
-            .store
-            .load(ready.workspace_id)
-            .await
-            .map_err(WorkspaceLineageError::Store)?
-            .ok_or(WorkspaceLineageError::IncompatibleState)?;
-        if !lineage_shape_is_valid(&existing) || !same_lineage(&existing, &ready) {
-            return Err(WorkspaceLineageError::ConflictingRegistration);
-        }
-        if existing.ready {
-            return Ok(existing);
-        }
-        let mut replacement = ready.clone();
-        replacement.revision = existing
-            .revision
+        // The caller validated this lineage at the observed revision. Only the
+        // conditional write can authorize replacing it; do not refresh the fence.
+        ready.revision = expected_revision
             .checked_add(1)
             .ok_or(WorkspaceLineageError::IncompatibleState)?;
         if self
             .store
-            .compare_and_swap(ready.workspace_id, existing.revision, replacement.clone())
+            .compare_and_swap(ready.workspace_id, expected_revision, ready.clone())
             .await
             .map_err(WorkspaceLineageError::Store)?
         {
-            return Ok(replacement);
+            return Ok(ready);
         }
         Err(WorkspaceLineageError::Contended)
     }

@@ -56,14 +56,31 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
     let directory_id = unbounded!(workspace, stat("/tree"))?.file_id;
     let missing_id = FileId::from_bytes([0xff; 16]);
     let paths = exact
-        .paths_for_file_ids([missing_id, file_id, directory_id, file_id], 32)
-        .await?;
+        .paths_for_file_ids(
+            [missing_id, file_id, directory_id, file_id],
+            32,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?
+        .value;
     assert_eq!(
-        paths.get(&file_id),
-        Some(&vec!["/tree/a".to_owned(), "/tree/b".to_owned()])
+        paths
+            .entries()
+            .iter()
+            .find(|entry| entry.0 == file_id)
+            .map(|entry| entry.1.as_slice()),
+        Some(["/tree/a".to_owned(), "/tree/b".to_owned()].as_slice())
     );
-    assert_eq!(paths.get(&directory_id), Some(&vec!["/tree".to_owned()]));
-    assert!(!paths.contains_key(&missing_id));
+    assert_eq!(
+        paths
+            .entries()
+            .iter()
+            .find(|entry| entry.0 == directory_id)
+            .map(|entry| entry.1.as_slice()),
+        Some(["/tree".to_owned()].as_slice())
+    );
+    assert!(!paths.entries().iter().any(|entry| entry.0 == missing_id));
 
     assert_eq!(
         unbounded!(workspace, read_range("/tree/a", 1, 5))?.bytes,
@@ -421,7 +438,13 @@ async fn repeated_lookups_of_absent_identities_answer_empty() -> Result<(), Box<
     workspace.remove("/gone").await?;
     let head = unbounded!(workspace, head())?;
     for _ in 0..2 {
-        assert!(head.paths_for_file_ids([gone], 32).await?.is_empty());
+        assert!(
+            head.paths_for_file_ids([gone], 32, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await?
+                .value
+                .entries()
+                .is_empty()
+        );
     }
     Ok(())
 }

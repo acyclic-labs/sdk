@@ -1,0 +1,11 @@
+diff --git a/rust/crates/filesystem/src/workspace/identity.rs b/rust/crates/filesystem/src/workspace/identity.rs
+--- a/rust/crates/filesystem/src/workspace/identity.rs
++++ b/rust/crates/filesystem/src/workspace/identity.rs
+@@ -43,6 +43,6 @@ impl WorkspaceName {
+             accounting,
+             char::is_ascii,
+             &mut |_, _, _| {},
+-            |canonical, _, _| Ok(canonical == name),
++            |_, _, _| Ok(true),
+         )
+     }

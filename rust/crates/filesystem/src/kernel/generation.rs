@@ -61,6 +61,39 @@ impl GenerationRoot {
     }
 }
 
+/// Copies bounded parent lineage only after admitting the physical copy.
+pub(crate) fn clone_generation_root_with_accounting(
+    root: &GenerationRoot,
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+) -> Result<(GenerationRoot, super::allocation::KernelOwnedAllocation), crate::FsError> {
+    let copied = WorkCounters {
+        bytes_copied: crate::foundation::usize_to_u64(
+            root.parents
+                .len()
+                .checked_mul(std::mem::size_of::<GenerationId>())
+                .ok_or(crate::WorkError::Overflow)?,
+        ),
+        ..WorkCounters::UNCHARGED
+    };
+    accounting.admit(copied)?;
+    let mut parents = super::Owned::allocate(root.parents.len(), accounting)?;
+    parents.value.extend_from_slice(&root.parents);
+    if let Err(error) = accounting.record_completed(copied) {
+        parents.retire(accounting)?;
+        return Err(error);
+    }
+    Ok((
+        GenerationRoot {
+            volume_id: root.volume_id,
+            root_file_id: root.root_file_id,
+            file_table: root.file_table,
+            parents: parents.value,
+            required_features: root.required_features,
+        },
+        parents.allocation,
+    ))
+}
+
 /// Encodes one canonical object with before-effect admission.
 pub fn encode_generation_root<E: From<CanonicalDecodeError>>(
     root: &GenerationRoot,
