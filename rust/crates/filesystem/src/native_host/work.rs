@@ -13,6 +13,14 @@ pub(super) const ITEM: WorkCounters = WorkCounters {
     ..WorkCounters::UNCHARGED
 };
 
+/// Examining `count` items is one ledger charge, not one lock per item.
+pub(super) fn items(count: u64) -> WorkCounters {
+    WorkCounters {
+        items_examined: count,
+        ..WorkCounters::UNCHARGED
+    }
+}
+
 pub(super) fn copy_work(bytes: u64) -> WorkCounters {
     WorkCounters {
         bytes_copied: bytes,
@@ -296,8 +304,13 @@ pub(crate) fn clone_path<W: NativeHostWork>(
 /// Creates unbounded native work.
 #[cfg(any(test, feature = "local", feature = "native-watch"))]
 pub(crate) fn ordinary_work() -> DemandWork {
+    #[cfg(not(loom))]
     static CANCELLATION: std::sync::LazyLock<crate::CancellationToken> =
         std::sync::LazyLock::new(crate::CancellationToken::new);
+    #[cfg(loom)]
+    loom::lazy_static! {
+        static ref CANCELLATION: crate::CancellationToken = crate::CancellationToken::new();
+    }
     DemandWork::new(WorkBudget::UNBOUNDED, &CANCELLATION)
 }
 
