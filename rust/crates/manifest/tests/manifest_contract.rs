@@ -550,7 +550,7 @@ async fn cron_inbox_append_reaches_lowered_actor_wake_subscription()
     let initialized = wake.next().await.ok_or("missing initialization")??;
     assert_eq!(initialized.sequence, 0);
     let pending = wake.next();
-    futures::pin_mut!(pending);
+    let mut pending = core::pin::pin!(pending);
     assert!(futures::poll!(pending.as_mut()).is_pending());
     // The actor subscription is waiting before the cron appends. No Invoke or polling.
     let record = bytes::Bytes::from_static(b"cron-fire:tick:123");

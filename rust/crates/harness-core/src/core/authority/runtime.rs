@@ -15,7 +15,8 @@ pub(crate) async fn until_turn_stopped<T>(
             None => std::future::pending().await,
         }
     };
-    futures::pin_mut!(operation, cancelled);
+    let mut operation = core::pin::pin!(operation);
+    let mut cancelled = core::pin::pin!(cancelled);
     std::future::poll_fn(|cx| {
         if cancelled.as_mut().poll(cx).is_ready() {
             return Poll::Ready(Err(Error::InteractionRejected(

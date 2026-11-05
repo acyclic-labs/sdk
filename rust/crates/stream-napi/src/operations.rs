@@ -215,7 +215,7 @@ mod tests {
             async { event.await.map_err(|_| StreamError::Unavailable) },
             None
         );
-        futures::pin_mut!(pending);
+        let mut pending = core::pin::pin!(pending);
         // Retaining the producer is the negative control for terminal progress.
         assert!(futures::poll!(&mut pending).is_pending());
         drop(producer);
@@ -229,7 +229,7 @@ mod tests {
             async { event.await.map_err(|_| StreamError::Unavailable) },
             Some(&cancellation)
         );
-        futures::pin_mut!(pending);
+        let mut pending = core::pin::pin!(pending);
         assert!(futures::poll!(&mut pending).is_pending());
         cancellation.cancel();
         assert_eq!(

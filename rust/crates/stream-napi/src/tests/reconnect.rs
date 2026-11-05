@@ -440,7 +440,7 @@ impl Fixture {
         // Poll Open while the old gate is closed; observe a distinct RPC before
         // allowing any response from either gated physical handshake.
         let opening = self.follow_path("replacement", None);
-        futures::pin_mut!(opening);
+        let mut opening = core::pin::pin!(opening);
         tokio::select! {
             result = self.outage.until(|| self.outage.handshakes.lock()
                 .iter().any(|(call, state)| *call != old && *state == HandshakeState::Pending)) => result?,
@@ -527,7 +527,7 @@ async fn native_follow_recovers_exactly_once_after_unavailable_attempt_groups() 
     let fixture = Fixture::open(false).await?;
     let outage = Arc::clone(&fixture.outage);
     let next_handshake = outage.until(|| outage.handshake(1) == Some(HandshakeState::Pending));
-    futures::pin_mut!(next_handshake);
+    let mut next_handshake = core::pin::pin!(next_handshake);
     assert!(futures::poll!(&mut next_handshake).is_pending());
     fixture.stop().await;
     let error = next_handshake
@@ -837,7 +837,7 @@ async fn retire_cursor(
         assert!(owner.upgrade().is_none(), "drop retained the native cursor");
     } else {
         let pending = cursor.next_result();
-        futures::pin_mut!(pending);
+        let mut pending = core::pin::pin!(pending);
         assert!(futures::poll!(&mut pending).is_pending());
         if action == 0 {
             cancellation.cancel();

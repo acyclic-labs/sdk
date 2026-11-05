@@ -1072,7 +1072,7 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
     // identifies this result. Refuse both before waiting for the step.
     for unrelated in [intent("s"), another] {
         let reply = host.spawned(&root, inbox, &unrelated);
-        futures::pin_mut!(reply);
+        let mut reply = core::pin::pin!(reply);
         assert!(matches!(
             futures::poll!(reply.as_mut()),
             std::task::Poll::Ready(Err(Error::Conflict(_)))
@@ -1080,7 +1080,7 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
     }
     // Until the parent's step commits, the reply waits rather than guessing.
     let reply = host.spawned(&root, inbox, &spawn);
-    futures::pin_mut!(reply);
+    let mut reply = core::pin::pin!(reply);
     assert!(futures::poll!(reply.as_mut()).is_pending());
     let failures = host.runtime().drain().await;
     assert!(failures.is_empty(), "{failures:?}");

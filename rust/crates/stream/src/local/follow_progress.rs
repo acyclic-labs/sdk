@@ -55,7 +55,8 @@ impl LocalStream {
                     }
                     let changed = state.changed.changed();
                     let failed = LocalInner::unavailable(&mut state.failed);
-                    futures::pin_mut!(changed, failed);
+                    let changed = core::pin::pin!(changed);
+                    let failed = core::pin::pin!(failed);
                     match futures::future::select(failed, changed).await {
                         futures::future::Either::Left((error, _)) => return Err(error),
                         futures::future::Either::Right((result, _)) => {

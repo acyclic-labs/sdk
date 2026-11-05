@@ -931,7 +931,7 @@ async fn matching_hooks_run_concurrently_and_merge_in_config_order() -> Result<(
             }
         },
     );
-    futures::pin_mut!(future);
+    let mut future = core::pin::pin!(future);
     assert!(future.as_mut().now_or_never().is_none());
     assert_eq!(
         started.get(),

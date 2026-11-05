@@ -860,7 +860,7 @@ async fn late_reply<P: StreamProvider + 'static>(provider: Arc<P>, fail: bool) -
         Default::default(),
     );
     let wake = owner.wake();
-    futures::pin_mut!(wake);
+    let mut wake = core::pin::pin!(wake);
     tokio::select! {
         result = &mut wake => return Err(format!("handler ended before cut: {result:?}").into()),
         entered = entry => entered?,

@@ -204,7 +204,7 @@ async fn source_change_cancels_pending_reply_admission_and_remote_rejection() ->
                     .ok_or(StreamError::Unavailable)?
                     .map(Some)
             };
-            futures::pin_mut!(operation);
+            let mut operation = core::pin::pin!(operation);
             match futures::future::select(operation.as_mut(), entered_owner).await {
                 Either::Right((entered, _)) => entered?,
                 Either::Left(_) => panic!("{stage}/{completion}: owner wait was bypassed"),

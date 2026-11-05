@@ -403,7 +403,7 @@ impl Client {
         executor.spawn(Box::pin(async move {
             let result = {
                 let running = pool.run();
-                futures::pin_mut!(running);
+                let running = core::pin::pin!(running);
                 match termination {
                     Some(termination) => match future::select(termination, running).await {
                         future::Either::Left((error, _)) => Err(error),

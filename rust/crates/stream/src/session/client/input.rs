@@ -216,7 +216,8 @@ impl State {
         operation: impl std::future::Future<Output = Result<T, StreamError>>,
     ) -> Result<T, StreamError> {
         let changed = self.changed.changed(false);
-        futures::pin_mut!(operation, changed);
+        let operation = core::pin::pin!(operation);
+        let changed = core::pin::pin!(changed);
         match future::select(changed, operation).await {
             future::Either::Left(_) => Err(self.cause()),
             future::Either::Right((result, _)) => result,

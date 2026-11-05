@@ -153,7 +153,7 @@ async fn opening_history_is_cancelled_and_source_loss_is_terminal() -> Result<()
             &input,
             stop.clone(),
         );
-        futures::pin_mut!(opening);
+        let mut opening = core::pin::pin!(opening);
         assert!(opening.as_mut().now_or_never().is_none());
         assert!(
             stream.pending.lock().expect("read gate").is_none(),

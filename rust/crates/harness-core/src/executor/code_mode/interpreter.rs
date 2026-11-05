@@ -156,13 +156,13 @@ pub(super) async fn run(
         program.map_err(describe_error).and_then(std::convert::identity)
     });
     let execution = async {
-        futures::pin_mut!(execution);
+        let mut execution = core::pin::pin!(execution);
         loop {
             // The runtime owns every possible producer: JavaScript jobs and
             // bound-tool futures. Its idle event retires both before reporting
             // that a pending program has nobody left to resolve its promise.
             let idle = runtime.idle();
-            futures::pin_mut!(idle);
+            let idle = core::pin::pin!(idle);
             if let futures::future::Either::Left((result, _)) =
                 futures::future::select(execution.as_mut(), idle).await
             {
@@ -182,7 +182,8 @@ pub(super) async fn run(
         }
     };
     let cancelled = cancellation.cancelled();
-    futures::pin_mut!(execution, cancelled);
+    let execution = core::pin::pin!(execution);
+    let cancelled = core::pin::pin!(cancelled);
     match futures::future::select(cancelled, execution).await {
         futures::future::Either::Left(_) => Err("JavaScript interrupted".into()),
         futures::future::Either::Right((result, _)) => result,
