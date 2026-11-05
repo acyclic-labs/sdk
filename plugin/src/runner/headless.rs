@@ -914,9 +914,19 @@ pub(super) async fn jsonl(
         task: conversation.task(),
     };
     let output = &mut framed;
-    let mut events = match &projection {
-        Some(projection) => conversation.replay(&projection.state)?,
-        None => conversation.observe(None).await?,
+    let (mut events, opening_phase) = match &projection {
+        Some(projection) => (
+            conversation.replay(&projection.state)?,
+            if input_format == super::args::InputFormat::Text {
+                Some(conversation.phase().await?)
+            } else {
+                None
+            },
+        ),
+        None => {
+            let (events, phase) = conversation.observe_current().await?;
+            (events, Some(phase))
+        }
     };
     // The original bounded query admits the saved position before any prompt
     // is dispatched. Retain its page for export rather than validating twice.
@@ -951,12 +961,11 @@ pub(super) async fn jsonl(
     // Prompts share the awaited native stderr writer, so a full stderr pipe
     // delays only this prompt, never the coordination runtime.
     let mut diagnostics = None;
-    // A saved cursor may already be past the status that announced the
-    // pending approval. Text input answers it from the current phase, read
-    // once at reconnect; replay of that same status does not prompt twice.
-    if projection.is_some()
-        && input_format == super::args::InputFormat::Text
-        && let Phase::WaitingApproval { id, binding } = conversation.phase().await?
+    // Admit text against the opening phase before stdin can win the select.
+    // A saved cursor may already be past its approval status; replay of that
+    // same status must not prompt twice either.
+    if input_format == super::args::InputFormat::Text
+        && let Some(Phase::WaitingApproval { id, binding }) = opening_phase
     {
         announced = Some(id.clone());
         approval = Some(prompt_approval(conversation, &mut diagnostics, id, binding).await?);
