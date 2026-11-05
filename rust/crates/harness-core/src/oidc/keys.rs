@@ -1,5 +1,4 @@
 use super::{JwksSource, Result, refused};
-use jsonwebtoken::{Algorithm, DecodingKey};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
@@ -20,13 +19,6 @@ impl SigningAlgorithm {
             Self::Rs256 => "RS256",
             Self::Es256 => "ES256",
             Self::EdDsa => "EdDSA",
-        }
-    }
-    pub(super) fn algorithm(self) -> Algorithm {
-        match self {
-            Self::Rs256 => Algorithm::RS256,
-            Self::Es256 => Algorithm::ES256,
-            Self::EdDsa => Algorithm::EdDSA,
         }
     }
 }
@@ -143,9 +135,38 @@ impl Config {
     }
 }
 
-pub(super) struct Key {
-    pub algorithm: Algorithm,
-    pub decoding: DecodingKey,
+pub(super) enum Key {
+    Rsa(ring::signature::RsaPublicKeyComponents<Vec<u8>>),
+    Ec(p256::ecdsa::VerifyingKey),
+    Ed(ed25519_dalek::VerifyingKey),
+}
+
+impl Key {
+    pub(super) fn verify(&self, message: &[u8], signature: &[u8]) -> Result<()> {
+        match self {
+            Self::Rsa(key) => key
+                .verify(
+                    &ring::signature::RSA_PKCS1_2048_8192_SHA256,
+                    message,
+                    signature,
+                )
+                .map_err(|_| refused("invalid OIDC RSA signature")),
+            Self::Ec(key) => {
+                use p256::ecdsa::{Signature, signature::Verifier as _};
+                let signature = Signature::from_slice(signature)
+                    .map_err(|_| refused("invalid OIDC ECDSA signature"))?;
+                key.verify(message, &signature)
+                    .map_err(|_| refused("invalid OIDC ECDSA signature"))
+            }
+            Self::Ed(key) => {
+                use ed25519_dalek::{Signature, Verifier as _};
+                let signature = Signature::from_slice(signature)
+                    .map_err(|_| refused("invalid OIDC Ed25519 signature"))?;
+                key.verify(message, &signature)
+                    .map_err(|_| refused("invalid OIDC Ed25519 signature"))
+            }
+        }
+    }
 }
 #[derive(Deserialize)]
 struct Set {
@@ -250,32 +271,28 @@ pub(super) async fn fetch(
                 {
                     return Err(refused("OIDC RSA exponent is outside policy"));
                 }
-                DecodingKey::from_rsa_components(component(&raw.n)?, component(&raw.e)?)
+                Key::Rsa(ring::signature::RsaPublicKeyComponents {
+                    n: modulus,
+                    e: exponent,
+                })
             }
             (SigningAlgorithm::Es256, "EC", Some("P-256")) => {
-                fixed_component(&raw.x)?;
-                fixed_component(&raw.y)?;
-                DecodingKey::from_ec_components(component(&raw.x)?, component(&raw.y)?)
+                let mut point = [0u8; 65];
+                point[0] = 4;
+                point[1..33].copy_from_slice(&fixed_component(&raw.x)?);
+                point[33..].copy_from_slice(&fixed_component(&raw.y)?);
+                Key::Ec(
+                    p256::ecdsa::VerifyingKey::from_sec1_bytes(&point)
+                        .map_err(|_| refused("invalid OIDC P-256 public key"))?,
+                )
             }
-            (SigningAlgorithm::EdDsa, "OKP", Some("Ed25519")) => {
-                fixed_component(&raw.x)?;
-                DecodingKey::from_ed_components(component(&raw.x)?)
-            }
+            (SigningAlgorithm::EdDsa, "OKP", Some("Ed25519")) => Key::Ed(
+                ed25519_dalek::VerifyingKey::from_bytes(&fixed_component(&raw.x)?)
+                    .map_err(|_| refused("invalid OIDC Ed25519 public key"))?,
+            ),
             _ => return Err(refused("OIDC key type or algorithm is not allowed")),
-        }
-        .map_err(|_| refused("invalid OIDC public key"))?;
-        (jsonwebtoken::crypto::rust_crypto::DEFAULT_PROVIDER.verifier_factory)(
-            &config.algorithm.algorithm(),
-            &key,
-        )
-        .map_err(|_| refused("invalid OIDC public key"))?;
-        keys.insert(
-            kid,
-            Key {
-                algorithm: config.algorithm.algorithm(),
-                decoding: key,
-            },
-        );
+        };
+        keys.insert(kid, key);
     }
     if keys.is_empty() {
         return Err(refused("OIDC key set has no eligible verification keys"));
@@ -288,13 +305,12 @@ fn component(part: &Option<String>) -> Result<&str> {
         .ok_or_else(|| refused("OIDC key component is missing"))
 }
 
-fn fixed_component(part: &Option<String>) -> Result<()> {
+fn fixed_component(part: &Option<String>) -> Result<[u8; 32]> {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     let bytes = URL_SAFE_NO_PAD
         .decode(component(part)?)
         .map_err(|_| refused("invalid OIDC curve coordinate"))?;
-    if bytes.len() != 32 {
-        return Err(refused("OIDC curve coordinate must contain 32 bytes"));
-    }
-    Ok(())
+    bytes
+        .try_into()
+        .map_err(|_| refused("OIDC curve coordinate must contain 32 bytes"))
 }

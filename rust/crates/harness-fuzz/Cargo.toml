@@ -85,6 +85,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(fuzzing)", 'c
 [features]
 default = ["runtime"]
 core = ["dep:acyclic-harness-core", "dep:futures"]
+oidc = ["core", "acyclic-harness-core/oidc", "dep:bytes", "dep:acyclic-stream"]
 native-answer = ["core", "dep:acyclic-native-runtime"]
 code-mode = ["core", "acyclic-harness-core/filesystem", "dep:tokio"]
 native-skill-records = ["core", "acyclic-harness-core/filesystem-local", "acyclic-harness-core/native-execution"]
@@ -97,6 +98,7 @@ native-execution = []
 
 
 [dependencies]
+p256 = { version = "=0.13.2", default-features = false, features = ["ecdsa"], optional = true }
 acyclic-harness-core = { path = "../harness-core", default-features = false, features = ["hooks", "test-support"], optional = true }
 acyclic-native-runtime = { path = "../native-runtime", optional = true }
 harness-mock-model = { path = "../harness-mock-model" }
@@ -289,6 +291,14 @@ bench = false
 name = "config_policy"
 path = "fuzz_targets/config_policy.rs"
 required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "oidc"
+path = "fuzz_targets/oidc.rs"
+required-features = ["oidc"]
 test = false
 doc = false
 bench = false
