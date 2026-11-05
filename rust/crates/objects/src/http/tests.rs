@@ -48,8 +48,8 @@ async fn dispatch(
         .iter()
         .find(|(path, ..)| *path == route)
     {
-        let bytes =
-            json::decode_binary(input, &body, 1024 * 1024).map_err(|_| StatusCode::BAD_REQUEST)?;
+        let bytes = json::decode_binary(input, &body, Some(1024 * 1024))
+            .map_err(|_| StatusCode::BAD_REQUEST)?;
         let events = crate::route::invoke_stream(&blobs, route, bytes.into())
             .await
             .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
@@ -68,10 +68,10 @@ async fn dispatch(
         .iter()
         .find(|(path, ..)| *path == route)
         .ok_or(StatusCode::NOT_FOUND)?;
-    let input =
-        json::decode_binary(input, &body, 1024 * 1024).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let input = json::decode_binary(input, &body, Some(1024 * 1024))
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
     let output = match crate::route::invoke(&blobs, route, input.into()).await {
-        Ok(bytes) => json::encode_binary(output, &bytes, 1024 * 1024)
+        Ok(bytes) => json::encode_binary(output, &bytes, Some(1024 * 1024))
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
         Err(error) => {
             // The gateway names its request, as a deployed one does.
@@ -257,8 +257,6 @@ fn sealed(bodies: &[Vec<u8>]) -> Vec<(crate::Sealed, Vec<Digest>)> {
 async fn http_put_batch_splits_by_the_reply_budget_and_every_member_commits() -> TestResult {
     const BUDGET: usize = 1024;
     const MEMBERS: usize = 100;
-    let gateway = counting_gateway().await?;
-    let objects = HttpObjects::new(&gateway.endpoint, "first", BUDGET, None)?;
     let (single, step) = put_batch_acknowledgement().ok_or("acknowledgement bound")?;
     let request = put_batch_request().ok_or("request bound")?;
     let member = request_member(request, 4, 0);
@@ -269,17 +267,15 @@ async fn http_put_batch_splits_by_the_reply_budget_and_every_member_commits() ->
     let bodies: Vec<_> = (0..MEMBERS as u32)
         .map(|index| index.to_le_bytes().to_vec())
         .collect();
-    committed(&objects.put_batch_sealed(sealed(&bodies)).await, &bodies)?;
-    assert_eq!(
-        gateway.calls.load(Ordering::SeqCst),
-        MEMBERS.div_ceil(per_call)
-    );
-    // The repeat is answered in the same number of calls.
-    committed(&objects.put_batch_sealed(sealed(&bodies)).await, &bodies)?;
-    assert_eq!(
-        gateway.calls.load(Ordering::SeqCst),
-        2 * MEMBERS.div_ceil(per_call)
-    );
+    for maximum in [Some(BUDGET), None] {
+        let gateway = counting_gateway().await?;
+        let objects = HttpObjects::new(&gateway.endpoint, "first", maximum, None)?;
+        let calls = maximum.map_or(1, |_| MEMBERS.div_ceil(per_call));
+        for repeat in 1..=2 {
+            committed(&objects.put_batch_sealed(sealed(&bodies)).await, &bodies)?;
+            assert_eq!(gateway.calls.load(Ordering::SeqCst), repeat * calls);
+        }
+    }
     Ok(())
 }
 
