@@ -175,6 +175,7 @@ impl DiffView {
             rows = rows.saturating_sub(spent);
             cursor = fragment.next.clone();
             items.push(fragment);
+            patch_bytes = page.bytes() as usize;
             if cursor.is_none() {
                 break;
             }
