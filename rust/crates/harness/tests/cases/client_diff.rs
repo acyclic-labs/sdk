@@ -258,7 +258,6 @@ impl Fixture {
             &scope,
             &volume,
             VolumeOperation::Write,
-            u64::MAX,
             &mut None,
         )?;
         let reader = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 32_768, None)?;
@@ -316,7 +315,7 @@ impl ContentResidencyVerifier for Reader<'_> {
         prefix: &'a str,
         path: &'a str,
         generation: Option<&'a acyclic_harness::resources::GenerationRef>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         access: acyclic_harness::conversation::ContentAccess<'a, 'io>,
     ) -> Result<
         acyclic_harness::conversation::BoundedContentFuture<
@@ -335,7 +334,7 @@ impl ContentResidencyVerifier for Reader<'_> {
 
         let index = self.reads.fetch_add(1, Ordering::SeqCst);
         if let Some(limits) = self.expected_limits {
-            assert_eq!(limits.get(index), Some(&maximum_bytes));
+            assert_eq!(limits.get(index).copied(), maximum_bytes);
         }
         let read = self.inner.read_private_path(
             volume,

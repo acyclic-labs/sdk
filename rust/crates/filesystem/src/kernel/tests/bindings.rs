@@ -6,7 +6,7 @@ use proptest::prelude::*;
 fn binding(parent: u8, name: &[u8]) -> Result<Binding, super::super::TreePageError> {
     Ok(Binding {
         parent: FileId::from_bytes([parent; 16]),
-        name: LogicalName::new(super::super::NameEncoding::Utf8, name.to_vec(), 255)?,
+        name: LogicalName::new(super::super::NameEncoding::Utf8, name.to_vec())?,
     })
 }
 
@@ -151,7 +151,7 @@ proptest! {
     ) {
         let mut entries = values.into_iter().map(|(parent, name)| Binding {
             parent: FileId::from_bytes(parent),
-            name: LogicalName::new(super::super::NameEncoding::Utf8, name, 255).unwrap(),
+            name: LogicalName::new(super::super::NameEncoding::Utf8, name).unwrap(),
         }).collect::<Vec<_>>();
         entries.sort();
         entries.dedup();
@@ -164,7 +164,6 @@ proptest! {
         for limits in [
             DecodeLimits::default(),
             DecodeLimits { maximum_page_items: 1, ..DecodeLimits::default() },
-            DecodeLimits { maximum_name_bytes: 1, ..DecodeLimits::default() },
         ] {
             let expected = decode_binding_page(&bytes, limits, &mut |_| Ok::<_, CanonicalDecodeError>(())).is_ok();
             let observed = super::super::visit_object_references(

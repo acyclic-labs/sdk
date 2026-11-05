@@ -72,6 +72,7 @@ inline!(
     u64,
     u128,
     usize,
+    std::num::NonZeroUsize,
     i8,
     i16,
     i32,

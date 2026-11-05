@@ -91,12 +91,8 @@ impl<T> MountTable<T> {
         volume: &VolumeRef,
         io: Option<&crate::conversation::ContentIo>,
     ) -> Result<&Mount<T>> {
-        let digest = crate::executor::with_history_io(io, |work| {
-            volume.identity_digest(
-                crate::store::default_projection_read_limits().maximum_bytes,
-                work,
-            )
-        })?;
+        let digest =
+            crate::executor::with_history_io(io, |work| volume.identity_digest(None, work))?;
         let mount = self
             .volumes
             .get(&digest)
@@ -382,10 +378,7 @@ pub fn compose<T>(
         let index = match mount {
             Some(mount) => {
                 let index = mounted.len();
-                let digest = mount.view.volume.identity_digest(
-                    crate::store::default_projection_read_limits().maximum_bytes,
-                    &mut None,
-                )?;
+                let digest = mount.view.volume.identity_digest(None, &mut None)?;
                 // Canonical order chooses the same first visible alias for a
                 // repeated volume identity, without an invocation-time scan.
                 volumes_by_identity.entry(digest).or_insert(index);

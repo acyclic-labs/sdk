@@ -304,3 +304,46 @@ mod accounting {
         }
     }
 }
+
+#[test]
+fn unrestricted_stream_preserves_large_events_and_all_retained_calls() -> Result<()> {
+    use futures::TryStreamExt as _;
+    let payload = "λ".repeat(524_289);
+    let arguments = json!({"value":payload}).to_string();
+    let mut wire = String::new();
+    for index in 0..2049 {
+        let arguments = if index == 0 { arguments.as_str() } else { "{}" };
+        let event = json!({"choices":[{"delta":{"tool_calls":[{
+            "index":index,"id":format!("call{index}"),
+            "function":{"name":"echo","arguments":arguments}
+        }]}}]});
+        use std::fmt::Write as _;
+        writeln!(wire, "data: {event}\n").unwrap();
+    }
+    wire.push_str("data: [DONE]\n\n");
+    let bytes = Bytes::from(wire);
+    let chunks = (0..bytes.len())
+        .step_by(8192)
+        .map(|offset| Ok(bytes.slice(offset..(offset + 8192).min(bytes.len()))))
+        .collect::<Vec<_>>();
+    let body = Box::pin(futures::stream::iter(chunks));
+    let dispatch = ModelDispatch {
+        operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]),
+        step: 0,
+        request_digest: [0; 32],
+    };
+    let events = futures::executor::block_on(
+        events(Adapter::Chat, body, None, dispatch).try_collect::<Vec<_>>(),
+    )?;
+    let calls: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            ModelEvent::ToolCall(call) => Some(call),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls.len(), 2049);
+    assert_eq!(calls[0].arguments["value"], payload);
+    assert!(matches!(events.last(), Some(ModelEvent::Completed { .. })));
+    Ok(())
+}

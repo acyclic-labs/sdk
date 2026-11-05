@@ -215,12 +215,7 @@ impl NativeDemandSource {
             };
             &observed
         };
-        let ((encoding, bytes), allocation) = source_name(
-            &entry.name,
-            self.inner.profile,
-            self.inner.limits.maximum_component_bytes,
-            work,
-        )?;
+        let ((encoding, bytes), allocation) = source_name(&entry.name, self.inner.profile, work)?;
         backing.bytes += bytes.capacity() as u64;
         if let Some(allocation) = allocation {
             backing
@@ -228,8 +223,7 @@ impl NativeDemandSource {
                 .absorb(&mut KernelOwnedAllocation::NativeOriginal(allocation))
                 .map_err(DemandError::from)?;
         }
-        let name = LogicalName::new(encoding, bytes, self.inner.limits.maximum_component_bytes)
-            .map_err(|_| DemandError::InvalidRequest)?;
+        let name = LogicalName::new(encoding, bytes).map_err(|_| DemandError::InvalidRequest)?;
         Ok(Some(SourceDirectoryEntry {
             name,
             node: Self::node(stat),

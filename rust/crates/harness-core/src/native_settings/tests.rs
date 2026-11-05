@@ -154,6 +154,50 @@ async fn user_project_and_local_scopes_have_whole_entry_precedence() -> Result<(
     Ok(())
 }
 
+#[tokio::test]
+async fn settings_preserve_complete_files_and_selected_byte_policies() -> Result<()> {
+    let fixture = Fixture::new()?;
+    write(&fixture.codex.join("config.toml"), b"[mcp_servers]\n")?;
+    assert!(
+        NativeSettings::load(fixture.config().maximum_file_bytes(14))
+            .await
+            .is_ok()
+    );
+    for maximum in [0, 13, u64::MAX] {
+        assert!(
+            NativeSettings::load(fixture.config().maximum_file_bytes(maximum))
+                .await
+                .is_err()
+        );
+    }
+    let document = format!(
+        "# {}\nmodel='complete'\n[mcp_servers.selected]\ncommand='server'\n",
+        "x".repeat(1_048_576)
+    );
+    write(&fixture.codex.join("config.toml"), document)?;
+    let snapshot = NativeSettings::load(fixture.config()).await?;
+    assert_eq!(executable(&snapshot.mcp, "selected"), Some("server"));
+    assert_eq!(
+        fixture.config().configured_model()?,
+        Some("openai/complete".into())
+    );
+    assert!(
+        NativeSettings::load(fixture.config().maximum_file_bytes(1_048_576))
+            .await
+            .is_err()
+    );
+    assert!(
+        fixture
+            .config()
+            .maximum_file_bytes(1_048_576)
+            .configured_model()
+            .is_err()
+    );
+    write(&fixture.codex.join("config.toml"), [0xff])?;
+    assert!(NativeSettings::load(fixture.config()).await.is_err());
+    Ok(())
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn canonical_deduplication_combines_hook_and_mcp_roles() -> Result<()> {

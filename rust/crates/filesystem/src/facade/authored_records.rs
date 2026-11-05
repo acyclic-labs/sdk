@@ -132,9 +132,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FileId, FsError> {
-        if content.len() as u64 > self.volume.config.limits.maximum_read_bytes {
-            return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-        }
         let metadata = self
             .stage_authored_metadata_with_accounting(
                 metadata,
@@ -299,14 +296,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         cancellation: &CancellationToken,
     ) -> FsResult<FileId> {
         match &authored {
-            AuthoredMutation::CreateFile { bytes, .. }
-            | AuthoredMutation::CreateSymbolicLink { target: bytes, .. }
-                if bytes.len() as u64 > self.volume.config.limits.maximum_read_bytes =>
-            {
-                return Err(OperationFailure::before_work(FsError::FileRead(
-                    FileRangeReadError::InvalidRange,
-                )));
-            }
             AuthoredMutation::CreateEmptySpecial { kind, .. } => {
                 if !matches!(
                     kind,
@@ -322,13 +311,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 }
                 self.validate_profile_kind(*kind, WorkCounters::UNCHARGED)?;
             }
-            AuthoredMutation::CreateReparsePoint { payload, .. } => {
+            AuthoredMutation::CreateReparsePoint { .. } => {
                 self.validate_profile_kind(FileKind::ReparsePoint, WorkCounters::UNCHARGED)?;
-                if payload.len() as u64 > self.volume.config.limits.maximum_read_bytes {
-                    return Err(OperationFailure::before_work(FsError::FileRead(
-                        FileRangeReadError::InvalidRange,
-                    )));
-                }
             }
             AuthoredMutation::CreateFile { .. }
             | AuthoredMutation::CreateFileFromContent { .. }

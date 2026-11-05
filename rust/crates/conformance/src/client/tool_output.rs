@@ -26,11 +26,6 @@ pub async fn verify<P: StreamProvider + ?Sized>(
     fixture: &ToolOutputFixture,
 ) -> Result<Report, Failure> {
     super::validate_fixture(provider, &fixture.observation).await?;
-    if fixture.subscription.len() > acyclic_stream::MAX_COMMAND_BYTES
-        || fixture.record.len() > acyclic_stream::MAX_RECORD_BYTES + 128
-    {
-        return Err(failure("tool_fixture", "fixture byte capacity exceeded"));
-    }
     wire_codec::session::validate_resource(&fixture.resource)
         .map_err(|cause| failure("tool_fixture", cause))?;
     let subscription = wire::SessionSubscription::decode(fixture.subscription.as_slice())

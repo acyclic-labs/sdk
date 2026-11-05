@@ -32,22 +32,8 @@ fn publication_grants(volume: &VolumeRef, agent: AgentId) -> Result<(ContentGran
         &mut None,
     )?;
     let verifier = issuer.verifier(&mut None)?;
-    let write = ContentGrant::verify(
-        &verifier,
-        &scope,
-        volume,
-        VolumeOperation::Write,
-        64,
-        &mut None,
-    )?;
-    let read = ContentGrant::verify(
-        &verifier,
-        &scope,
-        volume,
-        VolumeOperation::Read,
-        64,
-        &mut None,
-    )?;
+    let write = ContentGrant::verify(&verifier, &scope, volume, VolumeOperation::Write, &mut None)?;
+    let read = ContentGrant::verify(&verifier, &scope, volume, VolumeOperation::Read, &mut None)?;
     Ok((write, read))
 }
 
@@ -269,7 +255,7 @@ async fn replacement_fences_the_original_file_instead_of_unrelated_publications(
             b"settled",
             "application/json",
             "result",
-            64,
+            Some(64),
             &IdempotencyKey::new("tool-result")?,
             InternalContentClass::Execution,
             io.as_ref(),
@@ -419,7 +405,7 @@ impl InternalPublicationCase<'_> {
                 bytes,
                 "application/json",
                 "payload",
-                64,
+                Some(64),
                 key,
                 class,
                 self.io,
@@ -473,7 +459,7 @@ impl InternalPublicationCase<'_> {
                     volume: self.volume,
                     key: &key,
                     expected_path: Some(&path),
-                    maximum_bytes: 64,
+                    maximum_bytes: Some(64),
                     internal_class: Some(class),
                     purpose: PublicationPurpose::Content,
                     scope: self.write.policy_scope(),
@@ -745,7 +731,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                 assert_eq!(host.resolve(&workspace, None).await?, before);
             }
             let denied = host
-                .observe_changes(&volume, &write, &key, 64_000, delete_access)?
+                .observe_changes(&volume, &write, &key, Some(64_000), delete_access)?
                 .await
                 .expect_err("a delete ceiling cannot recover a creation receipt");
             assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
@@ -781,7 +767,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                 .await?;
             assert_eq!(replay, removed);
             let observed = host
-                .observe_changes(&volume, &write, &delete_key, 64_000, delete_access)?
+                .observe_changes(&volume, &write, &delete_key, Some(64_000), delete_access)?
                 .await?
                 .expect("the delete ceiling can recover its deletion receipt");
             assert_eq!(observed.generation, removed.generation);

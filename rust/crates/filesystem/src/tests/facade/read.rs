@@ -279,82 +279,6 @@ async fn checkout_snapshot_reader_is_private_and_stable() -> TestResult {
 }
 
 #[tokio::test]
-async fn opaque_payload_reads_enforce_the_volume_output_bound() -> TestResult {
-    let cancel = CancellationToken::new();
-    let mut limited = config();
-    limited.profile = FilesystemProfile::Windows;
-    limited.limits.maximum_read_bytes = 1;
-    let (_, mut checkout) = fixture(limited, &cancel).await?;
-    let mut source = std::io::Cursor::new(OwnedBytes::from_static(b"xx"));
-    let staged = checkout
-        .stage_content(&mut source, 2, B, &cancel)
-        .await?
-        .value;
-    let metadata = checkout
-        .lookup_no_follow(&root_path()?, B, &cancel)
-        .await?
-        .value
-        .record
-        .unwrap()
-        .metadata;
-    checkout
-        .mutate(
-            vec![
-                Mutation::Create {
-                    path: path("symbolic")?,
-                    record: FileRecord {
-                        bindings: None,
-                        file_id: FileId::from_bytes([127; 16]),
-                        kind: FileKind::SymbolicLink,
-                        link_count: 1,
-                        metadata,
-                        payload: FilePayload::SymbolicLink {
-                            target_bytes: staged.logical_bytes(),
-                            target: staged.root(),
-                        },
-                    },
-                },
-                Mutation::Create {
-                    path: path("reparse")?,
-                    record: FileRecord {
-                        bindings: None,
-                        file_id: FileId::from_bytes([128; 16]),
-                        kind: FileKind::ReparsePoint,
-                        link_count: 1,
-                        metadata,
-                        payload: FilePayload::ReparsePoint {
-                            payload_bytes: staged.logical_bytes(),
-                            payload: staged.root(),
-                        },
-                    },
-                },
-            ],
-            B,
-            &cancel,
-        )
-        .await?;
-    for result in [
-        checkout
-            .read_symbolic_link(&path("symbolic")?, B, &cancel)
-            .await
-            .map(|_| ()),
-        checkout
-            .read_reparse_point(&path("reparse")?, B, &cancel)
-            .await
-            .map(|_| ()),
-    ] {
-        assert!(matches!(
-            result,
-            Err(OperationFailure {
-                error: FsError::FileRead(FileRangeReadError::InvalidRange),
-                ..
-            })
-        ));
-    }
-    Ok(())
-}
-
-#[tokio::test]
 async fn public_query_and_identity_failures_preserve_the_checkout_candidate() -> TestResult {
     let cancel = CancellationToken::new();
     let (volume, _) = fixture(config(), &cancel).await?;
@@ -390,25 +314,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate() ->
     let attribute = AttributeName::new(
         crate::kernel::AttributeClass::PosixXattr,
         b"user.missing".to_vec(),
-        128,
     )?;
-    assert!(matches!(
-        checkout
-            .read_file_range(
-                id,
-                ByteRange {
-                    offset: 0,
-                    length: config().limits.maximum_read_bytes + 1
-                },
-                B,
-                &cancel
-            )
-            .await,
-        Err(OperationFailure {
-            error: FsError::FileRead(FileRangeReadError::InvalidRange),
-            ..
-        })
-    ));
     assert!(matches!(
         checkout
             .plan_file_extents(

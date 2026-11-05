@@ -178,7 +178,7 @@ fn completed_summary_moves_original_text_and_retires_consumed_backing() -> Resul
         ContextPipeline::default(),
         ToolRegistry::default(),
     );
-    stock.limits.render_bytes = 8;
+    stock.limits.render_bytes = Some(8);
     for native in [false, true] {
         let observed = crate::test_support::accounted::accounted(native, 65_536, false, |io| {
             let execution = StockExecution {

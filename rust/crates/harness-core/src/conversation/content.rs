@@ -204,7 +204,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, ()>> {
         BoundedContentFuture::new(io, || async move {
-            verified_content_bytes(self, reference, maximum_bytes, None, io).await?;
+            verified_content_bytes(self, reference, Some(maximum_bytes), None, io).await?;
             Ok(())
         })
     }
@@ -317,7 +317,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         _granted_prefix: &'a str,
         _path: &'a str,
         _expected_generation: Option<&'a GenerationRef>,
-        _maximum_bytes: u64,
+        _maximum_bytes: Option<u64>,
         access: crate::conversation::ContentAccess<'a, 'io>,
     ) -> Result<
         BoundedContentFuture<
@@ -495,7 +495,7 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         &'a self,
         _volume: &'a VolumeRef,
         _operation_id: OperationId,
-        _maximum_receipt_bytes: u64,
+        _maximum_receipt_bytes: Option<u64>,
         access: ContentAccess<'a, 'io>,
     ) -> Result<BoundedContentFuture<'a, (Option<ContentChanges>, Option<ContentHold<'io>>)>> {
         Err(content_error(
@@ -593,7 +593,7 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         &'a self,
         _operation_id: OperationId,
         _replacement: Option<(&'a VolumeRef, &'a str)>,
-        _maximum_bytes: u64,
+        _maximum_bytes: Option<u64>,
         access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
         let crate::conversation::ContentAccess {
@@ -862,7 +862,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         granted_prefix: &'a str,
         path: &'a str,
         expected_generation: Option<&'a GenerationRef>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         access: crate::conversation::ContentAccess<'a, 'io>,
     ) -> Result<
         BoundedContentFuture<

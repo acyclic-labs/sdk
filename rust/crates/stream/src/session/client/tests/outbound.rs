@@ -154,25 +154,27 @@ async fn a_peer_that_stops_reading_controls_cannot_stall_healthy_nodes_or_cancel
             .follow(crate::FollowRequest::new(StreamPath::new("healthy")?, 1))
             .map_ok(crate::records_only)
             .await?;
-        let rejected = Arc::new(tokio::sync::Notify::new());
-        let rejection = Arc::clone(&rejected);
+        let started = Arc::new(tokio::sync::Notify::new());
+        let beginning = Arc::clone(&started);
         let opening = client.clone();
         let storm = tokio::spawn(async move {
             let path = StreamPath::new("x".repeat(4096)).expect("bounded stream path");
-            let mut opens: FuturesUnordered<_> = (0..1400)
-                .map(|_| {
-                    opening
-                        .follow(crate::FollowRequest::new(path.clone(), 0))
-                        .map_ok(crate::records_only)
-                })
+            use std::future::Future as _;
+            let mut opens: Vec<_> = (0..1400)
+                .map(|_| Box::pin(opening.follow(crate::FollowRequest::new(path.clone(), 0))))
                 .collect();
-            while let Some(result) = opens.next().await {
-                if matches!(result, Err(StreamError::Capacity)) {
-                    rejection.notify_one();
+            // Poll every open through its first admission once. Hold all owners
+            // while the peer withholds credit, then cancel them together.
+            future::poll_fn(|cx| {
+                for open in &mut opens {
+                    assert!(open.as_mut().poll(cx).is_pending());
                 }
-            }
+                beginning.notify_one();
+                std::task::Poll::<()>::Pending
+            })
+            .await;
         });
-        rejected.notified().await;
+        started.notified().await;
         assert_eq!(paused.counts.sessions.load(Ordering::Relaxed), 1);
         for sequence in 1..=4 {
             append(&memory, "healthy", 1).await?;

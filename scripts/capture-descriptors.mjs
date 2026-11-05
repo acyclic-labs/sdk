@@ -14,10 +14,12 @@ const generator = args => execFileSync(process.env.SDK_PROTO_CODEGEN ?? "cargo",
 let step = "select descriptor families";
 try {
   for (const family of families) {
+    step = `select ${family} descriptor`;
     const artifacts = compatibilityArtifacts[family];
     if (!artifacts?.descriptorDigest) throw new Error(`unknown descriptor family: ${family}`);
     step = `compile ${family} Rust descriptor`;
-    generator(["descriptors", root, temporary, family === "filesystem" ? "filesystem-wire" : family]);
+    const owner = artifacts.schemaDigest.split("/")[2];
+    generator(["descriptors", root, temporary, owner]);
     const bytes = readFileSync(join(temporary, artifacts.descriptorDigest.split("/").at(-1)));
     if (family === "actors") {
       step = "compile independent Actors Buf descriptor";

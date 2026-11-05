@@ -86,22 +86,15 @@ async fn bench_inner(source: &Path, store_dir: &Path, rounds: usize) -> Result<(
         .map_err(engine_err("checkout"))?
         .value;
 
-    let mut watch = NativeWatch::open(
-        source,
-        NativeWatchOptions {
-            limits: VolumeLimits::default(),
-            maximum_queued_changes: 65_536,
-            recursive: true,
-        },
-    )
-    .map_err(engine_err("watch open"))?;
+    let mut watch = NativeWatch::open(source, NativeWatchOptions::new(VolumeLimits::default()))
+        .map_err(engine_err("watch open"))?;
     let rescan = watch.begin_rescan().map_err(engine_err("begin_rescan"))?;
 
     let options = CaptureOptions {
         source_root: source.to_path_buf(),
         expected_root_identity: capture_root_identity(source).map_err(engine_err("identity"))?,
-        maximum_paths: 4_000_000,
-        maximum_extent_spans: 65_536,
+        maximum_paths: None,
+        maximum_extent_spans: None,
     };
 
     let started = Instant::now();
@@ -155,7 +148,8 @@ async fn bench_inner(source: &Path, store_dir: &Path, rounds: usize) -> Result<(
         // Observe actual native delivery, including a batch retained before entry.
         let batch = loop {
             watch
-                .wait_for_changes_with_native_work(&arrival)
+                .changed_with_native_work(&arrival)
+                .await
                 .map_err(engine_err("native batch arrival"))?;
             let batch = watch
                 .poll(4_096, WorkCounters::UNBOUNDED, &cancel)
@@ -355,8 +349,8 @@ pub(super) async fn capture_and_commit(
         source_root: source.to_path_buf(),
         expected_root_identity: capture_root_identity(source)
             .map_err(engine_err("root identity"))?,
-        maximum_paths: 4_000_000,
-        maximum_extent_spans: 65_536,
+        maximum_paths: None,
+        maximum_extent_spans: None,
     };
     let started = Instant::now();
     let receipt = capture_baseline(
@@ -442,7 +436,7 @@ pub(super) async fn materialize(
             destination: destination.to_path_buf(),
             expected_root_identity: None,
             maximum_directory_entries: 1_024,
-            maximum_extent_spans: 65_536,
+            maximum_extent_spans: None,
             transfer_bytes: 8 * 1024 * 1024,
         },
         WorkCounters::UNBOUNDED,

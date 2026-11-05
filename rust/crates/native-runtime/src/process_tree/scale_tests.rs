@@ -112,11 +112,17 @@ fn outstanding_waits_hold_no_thread_per_child() -> io::Result<()> {
     // baseline already holds every thread a capture needs.
     let warm = blocked()?;
     drop(warm.release);
-    let outcome =
-        runtime.block_on(
-            warm.tree
-                .capture(CaptureSchedule::Unbounded, 0, None, Quiet),
-        )?;
+    let outcome = runtime.block_on(async move {
+        warm.tree
+            .capture(
+                &crate::TaskSpawner::current(),
+                CaptureSchedule::Unbounded,
+                0,
+                None,
+                Quiet,
+            )
+            .await
+    })?;
     assert!(outcome.result.is_ok_and(|output| output.status.success()));
     let baseline = threads()?;
     let count = children()?;
@@ -137,7 +143,13 @@ fn outstanding_waits_hold_no_thread_per_child() -> io::Result<()> {
         let done = Arc::clone(&done);
         tasks.push(runtime.spawn(async move {
             let outcome = tree
-                .capture(CaptureSchedule::Unbounded, 0, None, Quiet)
+                .capture(
+                    &crate::TaskSpawner::current(),
+                    CaptureSchedule::Unbounded,
+                    0,
+                    None,
+                    Quiet,
+                )
                 .await;
             done.fetch_add(1, Ordering::AcqRel);
             outcome
@@ -182,18 +194,57 @@ fn outstanding_waits_hold_no_thread_per_child() -> io::Result<()> {
     Ok(())
 }
 
-/// An unstarted capture owns the receipt producer as well as the actual tree.
-/// Cancellation must close that receipt after cleaning up the same child.
+/// Losing an unpolled observer must retain the original child and its arm
+/// producer. The raw unsubmitted future is the original failure control.
 #[test]
-fn cancelled_capture_closes_its_unissued_arm_receipt() -> io::Result<()> {
+fn capture_observer_loss_retains_original_physical_custody() -> io::Result<()> {
+    struct Retired(Option<tokio::sync::oneshot::Sender<bool>>);
+    impl CaptureHandler for Retired {
+        fn check(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn observe(&mut self, _: ProcessOutput<'_>) -> io::Result<ProcessInput> {
+            Ok(ProcessInput::default())
+        }
+
+        fn retired(&mut self, completed: bool) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(completed);
+            }
+        }
+    }
+
+    crate::initialize_native_io_services()?;
     let runtime = runtime()?;
-    let Blocked { mut tree, release } = blocked()?;
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    tree.capture_armed = Some(sender);
-    let capture = tree.capture(CaptureSchedule::Unbounded, 0, None, Quiet);
-    drop(capture);
-    assert!(runtime.block_on(receiver).is_err());
-    drop(release);
+    for submitted in [false, true] {
+        let Blocked { mut tree, release } = blocked()?;
+        let (sender, armed) = tokio::sync::oneshot::channel();
+        tree.capture_armed = Some(sender);
+        let (sender, retired) = tokio::sync::oneshot::channel();
+        let handler = Retired(Some(sender));
+        if submitted {
+            runtime.block_on(async move {
+                let capture = tree.capture(
+                    &crate::TaskSpawner::current(),
+                    CaptureSchedule::Unbounded,
+                    0,
+                    None,
+                    handler,
+                );
+                drop(capture);
+                armed.await.map_err(io::Error::other)?;
+                drop(release);
+                assert!(retired.await.map_err(io::Error::other)?);
+                Ok::<_, io::Error>(())
+            })?;
+        } else {
+            drop(tree.capture_owned(CaptureSchedule::Unbounded, Some(0), None, handler));
+            assert!(runtime.block_on(armed).is_err());
+            assert!(runtime.block_on(retired).is_err());
+            drop(release);
+        }
+    }
     Ok(())
 }
 

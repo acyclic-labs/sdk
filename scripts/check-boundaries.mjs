@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { commandOutput } from "./process-capture.mjs";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
@@ -53,7 +53,7 @@ function inspect(path, content) {
 }
 
 async function main() {
-  const paths = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" }).split("\u0000").filter(Boolean);
+  const paths = commandOutput("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" }).split("\u0000").filter(Boolean);
   for (const path of paths) {
     try {
       const content = await readFile(join(root, path), "utf8");

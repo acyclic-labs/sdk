@@ -1,20 +1,151 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
-import { createHash } from "node:crypto";
-import { gzipSync, gunzipSync } from "node:zlib";
-import { fuzz, fuzzGzip, fuzzDeclared, fuzzPayload, fuzzArtifactTree } from "./archive-utils.fuzz.mjs";
-import { copyWasmArtifacts, preserveWasmArtifacts, tarEntries, wasmArtifactFiles, wasmArtifactInventory } from "./archive-utils.mjs";
+import test from "node:test";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { gzipSync } from "node:zlib";
+import { fuzz, fuzzArtifactTree } from "./archive-utils.fuzz.mjs";
+import { copyWasmArtifacts, preserveWasmArtifacts, wasmArtifactFiles, wasmArtifactInventory, collectBody, hashBody, readPayloadEntries, readTarGzip, sha256, visitTar } from "./archive-utils.mjs";
+import { validateArchive } from "./validate-npm-package.mjs";
 
-const seed = readFileSync(new URL("./test-support/archive-corpus/native-ustar.tar", import.meta.url));
+test("digest-only archive admission streams every chunk and rejects names before reading bodies", async () => {
+  const chunk = Buffer.alloc(65536, 7), expected = createHash("sha256");
+  let visited = 0;
+  const result = await readPayloadEntries(async visit => {
+    await visit({ path: "large", type: "0", size: chunk.length * 1025, body: (async function* () {
+      for (let index = 0; index < 1025; index++) {
+        visited++;
+        expected.update(chunk);
+        yield chunk;
+      }
+    })() });
+  }, { canonical: name => name === "large", retain: () => false });
+  assert.equal(visited, 1025);
+  assert.equal(result.payload.size, 0);
+  assert.equal(result.digests.get("large"), expected.digest("hex"));
+  let bodyRead = false;
+  await assert.rejects(readPayloadEntries(visit => visit({
+    path: "../outside", type: "0", size: 1,
+    body: (async function* () { bodyRead = true; yield Buffer.from("x"); })(),
+  }), { canonical: () => false }), /unsafe or duplicate/);
+  assert.equal(bodyRead, false);
+});
+
+// Exercise the installed TAR producer rather than a second header writer.
+function tar(entries) {
+  const directory = mkdtempSync(join(tmpdir(), "acyclic-native-tar-"));
+  try {
+    for (const [path, bytes] of entries) {
+      mkdirSync(join(directory, path, ".."), { recursive: true });
+      writeFileSync(join(directory, path), bytes);
+    }
+    const result = spawnSync("tar", ["--format=ustar", "-cf", "-", "-C", directory, ...entries.map(([path]) => path)], { maxBuffer: 16 * 1024 * 1024 });
+    assert.equal(result.status, 0, result.stderr?.toString());
+    return result.stdout;
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}
+
+async function* chunks(bytes, size) {
+  for (let offset = 0; offset < bytes.length; offset += size) yield bytes.subarray(offset, offset + size);
+}
+
+test("tar parsing tolerates every header split and drains unread or partly read bodies", async () => {
+  const bytes = tar([["first", "one"], ["ignored", Buffer.alloc(32769, 7)], ["last", "three"]]);
+  for (const size of [1, 511, 512, 513, 65536]) {
+    const seen = [];
+    await visitTar(chunks(bytes, size), async entry => {
+      seen.push(entry.path);
+      if (entry.path === "first") assert.equal((await collectBody(entry)).toString(), "one");
+      if (entry.path === "ignored") {
+        for await (const part of entry.body) { assert.equal(part[0], 7); break; }
+      }
+      if (entry.path === "last") assert.equal(await hashBody(entry), sha256(Buffer.from("three")));
+    });
+    assert.deepEqual(seen, ["first", "ignored", "last"]);
+  }
+});
+
+test("tar validation rejects corrupt checksums, truncation and invalid end markers", async () => {
+  const valid = tar([["file", "payload"]]);
+  const checksum = Buffer.from(valid); checksum[0] ^= 1;
+  const nonzeroTail = Buffer.concat([valid, Buffer.from([1])]);
+  const badEnd = Buffer.from(valid); badEnd[badEnd.length - 1] = 1;
+  for (const bytes of [checksum, valid.subarray(0, 515), valid.subarray(0, 1535), nonzeroTail, badEnd]) {
+    await assert.rejects(visitTar(chunks(bytes, 7), () => {}), /checksum|truncated|end marker/);
+  }
+});
+
+test("gzip reader authenticates compressed bytes and propagates CRC failures", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "acyclic-streamed-archive-"));
+  try {
+    const archive = join(directory, "archive.tgz");
+    const compressed = gzipSync(tar([["file", "content"]]));
+    await writeFile(archive, compressed);
+    assert.equal((await readTarGzip(archive, async entry => {
+      assert.equal((await collectBody(entry)).toString(), "content");
+    })).digest, sha256(compressed));
+    compressed[compressed.length - 8] ^= 1;
+    await writeFile(archive, compressed);
+    await assert.rejects(readTarGzip(archive, () => {}), /data check|CRC|checksum/i);
+    await assert.rejects(readTarGzip(directory, () => {}), /regular file/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("npm qualification accepts large metadata and retains unsafe-member and identity negatives", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "acyclic-streamed-npm-"));
+  try {
+    const archive = join(directory, "package.tgz");
+    const name = "@acyclic-labs/test";
+    const version = "1.0.0";
+    const source = "typescript/packages/test";
+    const metadata = { name, version, private: false, license: "Apache-2.0", repository: { type: "git", url: "git+https://github.com/acyclic-labs/sdk.git", directory: source }, description: "x".repeat(1048577) };
+    const entries = [["package/package.json", JSON.stringify(metadata)], ["package/README.md", `# ${name}\n${"x".repeat(262145)}`], ["package/CHANGELOG.md", `# ${name} changelog\n## ${version} release\n${"x".repeat(1048577)}`], ["package/dist/index.js", "export {};"], ["package/dist/index.d.ts", "export {};"]];
+    const compressed = gzipSync(tar(entries));
+    await writeFile(archive, compressed);
+    assert.equal(await validateArchive(archive, name, version, source), sha256(compressed));
+    await assert.rejects(validateArchive(archive, `${name}-other`, version, source), /manifest does not match/);
+    const unsafe = tar(entries);
+    unsafe.fill(0, 0, 100);
+    unsafe.write("package/../escape");
+    seal(unsafe);
+    await writeFile(archive, gzipSync(unsafe));
+    await assert.rejects(validateArchive(archive, name, version, source), /unsafe path/);
+    const duplicated = tar(entries);
+    const firstBytes = Buffer.byteLength(entries[0][1]);
+    await writeFile(archive, gzipSync(Buffer.concat([duplicated.subarray(0, 512 + Math.ceil(firstBytes / 512) * 512), duplicated])));
+    await assert.rejects(validateArchive(archive, name, version, source), /unsafe path/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("plugin qualification streams large manifests and binds the original archive evidence", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "acyclic-streamed-plugin-"));
+  try {
+    const archive = join(directory, "acyclic-labs-plugin-1.0.0.tgz");
+    const receipt = join(directory, "QUALIFICATION.json");
+    const program = fileURLToPath(new URL("./plugin-qualification.mjs", import.meta.url));
+    const source = "a".repeat(40);
+    await writeFile(archive, gzipSync(tar([["package/package.json", JSON.stringify({ name: "@acyclic-labs/plugin", version: "1.0.0", description: "x".repeat(1048577) })]])));
+    const create = spawnSync(process.execPath, [program, "create", archive, receipt, source], { encoding: "utf8" });
+    assert.equal(create.status, 0, create.stderr);
+    const verify = () => spawnSync(process.execPath, [program, "verify", receipt, source, archive, "1.0.0"], { encoding: "utf8" });
+    assert.equal(verify().status, 0);
+    await writeFile(archive, gzipSync(tar([["package/package.json", JSON.stringify({ name: "@acyclic-labs/plugin", version: "1.0.0" })]])));
+    const changed = verify();
+    assert.notEqual(changed.status, 0);
+    assert.match(changed.stderr, /bytes differ/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 
 test("artifact inventory matches real file writes and refuses aliases before replacing output", async () => {
   const temporary = mkdtempSync(join(tmpdir(), "wasm-artifact-tree-"));
   const source = join(temporary, "source"), output = join(temporary, "output");
   const expected = new Map();
-  const bodies = [...tarEntries(seed)].filter(entry => entry.type === "0").map(entry => entry.body);
+  const bodies = [];
+  await visitTar([seed], async entry => { if (entry.type === "0") bodies.push(await collectBody(entry)); });
   const write = (path, bytes) => {
     const parts = path.split("/");
     mkdirSync(join(source, ...parts.slice(0, -1)), { recursive: true });
@@ -27,7 +158,7 @@ test("artifact inventory matches real file writes and refuses aliases before rep
     // The bytes are native TAR payloads, not compiler or receipt fixtures:
     // tree admission treats them as opaque files and never decodes them.
     for (const [index, path] of ["module.js", "module_bg.wasm", "module.d.ts",
-      "snippets/inline.js", "snippets/nested/é.js"].entries()) {
+      "snippets/inline.js", "snippets/nested/ÃƒÂ©.js"].entries()) {
       write(path, bodies[index % bodies.length]);
       const receipt = fuzzArtifactTree(source, expected);
       mkdirSync(join(output, "snippets", "stale"), { recursive: true });
@@ -118,129 +249,30 @@ test("artifact inventory matches real file writes and refuses aliases before rep
   } finally { rmSync(temporary, { recursive: true, force: true }); }
 });
 
-test("native payload framing preserves caller path and case policies without copying members", async () => {
-  const flat = gunzipSync(readFileSync(new URL("./test-support/archive-corpus/native-flat.tar.gz", import.meta.url)));
-  // The third member in the retained native capture is a directory header.
-  const withDirectory = Buffer.concat([flat.subarray(0, flat.length - 1024), seed.subarray(1536, 2048), flat.subarray(flat.length - 1024)]);
-  const snippets = Buffer.from(seed);
-  let headerOffset = 0;
-  for (const entry of tarEntries(seed)) {
-    const header = snippets.subarray(headerOffset, headerOffset + 512);
-    if (entry.type === "5" || entry.path.includes("/")) {
-      const start = entry.type === "5" ? 0 : 345;
-      header.fill(0, start, start + (entry.type === "5" ? 100 : 155));
-      header.write(entry.type === "5" ? "snippets/" : "snippets", start);
-      seal(header);
-    }
-    headerOffset += 512 + Math.ceil(entry.size / 512) * 512;
-  }
-  for (const insensitive of [false, true]) {
-    assert.equal(fuzzPayload(flat, insensitive).size, 2);
-    assert.deepEqual([...fuzzPayload(withDirectory, insensitive)], [...fuzzPayload(flat, insensitive)]);
-    assert.notEqual(fuzzPayload(snippets, insensitive), false);
-    for (let offset = 0; offset < flat.length; offset += 512) fuzzPayload(flat.subarray(0, offset), insensitive);
-  }
-  const unsafe = Buffer.from(flat);
-  unsafe.fill(0, 0, 100);
-  unsafe.write("../body.txt");
-  seal(unsafe);
-  const link = Buffer.from(flat);
-  link[156] = "2".charCodeAt(0);
-  seal(link);
-  const first = Buffer.from(flat.subarray(0, 1024));
-  first.write("BODY.txt");
-  seal(first);
-  const folded = Buffer.concat([first, flat]);
-  assert.equal(fuzzPayload(folded, false).size, 3);
-  const memberCheck = 'if (!isCanonical(name) || seen.has(key) || !["0", "5"].includes(entry.type)) throw new Error("unsafe or duplicate archive member");';
-  for (const [removed, replacement, bytes, insensitive] of [
-    [memberCheck, "", unsafe, false],
-    [memberCheck, "", link, false],
-    [memberCheck, "", Buffer.concat([flat.subarray(0, 1024), flat]), false],
-    ["name.toLowerCase()", "name", folded, true],
-    ['if (!payload.size) throw new Error("empty archive payload");', "", flat.subarray(flat.length - 1024), false],
-  ]) {
-    assert.equal(fuzzPayload(bytes, insensitive), false);
-    const mutant = await planted(removed, replacement);
-    assert.throws(() => mutant.fuzzPayload(bytes, insensitive), assert.AssertionError);
-  }
-  const copying = await planted("payload.set(name, entry.body)", "payload.set(name, Buffer.from(entry.body))");
-  assert.throws(() => copying.fuzzPayload(flat, false), assert.AssertionError);
-});
 
-test("native package inventory survives byte mutations and rejects removed admission checks", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "archive-inventory-"));
-  const path = join(directory, "input.tar.gz");
-  const compressed = readFileSync(new URL("./test-support/archive-corpus/native-flat.tar.gz", import.meta.url));
-  const files = JSON.parse(readFileSync(new URL("./test-support/archive-corpus/native-flat.files.json", import.meta.url), "utf8"));
-  const hash = bytes => createHash("sha256").update(bytes).digest("hex");
-  const digest = hash(compressed);
-  const wrong = "0".repeat(64);
-  try {
-    const accepted = fuzzDeclared(compressed, path, files, digest, seed.length);
-    const listed = readFileSync(new URL("./test-support/archive-corpus/native-flat.list", import.meta.url), "utf8");
-    assert.deepEqual([...accepted.payload.keys()], listed.trimEnd().split(/\r?\n/));
-    for (let offset = 0; offset < compressed.length; offset++) {
-      const bytes = Buffer.from(compressed);
-      bytes[offset] ^= 0x80;
-      fuzzDeclared(bytes, path, files, hash(bytes), seed.length);
-    }
-    const mutations = [
-      ['if (sha256(compressed) !== expectedDigest) throw new Error("archive digest differs");', compressed, files, wrong],
-      ['if (sha256(entry.body) !== files[entry.path]) throw new Error("archive payload digest differs");', compressed, { ...files, "body.txt": wrong }, digest],
-      ['if (payload.size !== Object.keys(files).length) throw new Error("archive payload inventory differs");', compressed, { ...files, "absent.txt": wrong }, digest],
-    ];
-    const memberCheck = 'if (entry.type !== "0" || payload.has(entry.path) || !Object.hasOwn(files, entry.path)) {\n      throw new Error("unsafe, duplicate or unexpected archive member");\n    }';
-    const directoryBytes = gzipSync(seed);
-    const directoryFiles = Object.fromEntries(Array.from(tarEntries(seed), entry => [entry.path, hash(entry.body)]));
-    mutations.push([memberCheck, directoryBytes, directoryFiles, hash(directoryBytes)]);
-    const flat = gunzipSync(compressed);
-    // Duplicate the original first member without changing its authenticated
-    // header or body; only the negative input differs from the native capture.
-    const duplicate = gzipSync(Buffer.concat([flat.subarray(0, 1024), flat]));
-    mutations.push([memberCheck, duplicate, files, hash(duplicate)]);
-    for (const [removed, bytes, inventory, expected] of mutations) {
-      assert.equal(fuzzDeclared(bytes, path, inventory, expected, seed.length + 1024), false);
-      const mutant = await planted(removed);
-      assert.throws(() => mutant.fuzzDeclared(bytes, path, inventory, expected, seed.length + 1024), assert.AssertionError);
-    }
-  } finally { rmSync(directory, { recursive: true, force: true }); }
-});
+async function planted(removed, replacement = "") {
+  const source = readFileSync(new URL("./archive-utils.mjs", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+  const target = readFileSync(new URL("./archive-utils.fuzz.mjs", import.meta.url), "utf8");
+  assert.ok(source.includes(removed), "planted defect no longer matches production");
+  const production = `data:text/javascript;base64,${Buffer.from(source.replace(removed, replacement)).toString("base64")}`;
+  return import(`data:text/javascript;base64,${Buffer.from(target.replace('"./archive-utils.mjs"', JSON.stringify(production))).toString("base64")}`);
+}
 
-test("native gzip corpus exercises actual file admission and both byte bounds", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "archive-admission-"));
-  const path = join(directory, "input.tar.gz");
-  try {
-    const compressed = readFileSync(new URL("./test-support/archive-corpus/native-ustar.tar.gz", import.meta.url));
-    assert.deepEqual(fuzzGzip(compressed, path, seed.length).expanded, seed);
-    for (let offset = 0; offset < compressed.length; offset++) {
-      fuzzGzip(compressed.subarray(0, offset), path, seed.length);
-      const bytes = Buffer.from(compressed);
-      bytes[offset] ^= 0x80;
-      fuzzGzip(bytes, path, seed.length);
-    }
-    for (const removed of [
-      'if (size <= 0 || size > maxArchiveBytes) throw new Error("archive exceeds its size bound");',
-      'if (expanded.length > maxExpandedBytes) throw new Error("archive expands beyond its size bound");',
-    ]) {
-      const mutant = await planted(removed);
-      assert.throws(() => mutant.fuzzGzip(compressed, path, seed.length), assert.AssertionError);
-    }
-  } finally { rmSync(directory, { recursive: true, force: true }); }
-});
-
-test("native TAR corpus and byte mutations exercise the production decoder", () => {
-  assert.equal(fuzz(seed), true);
+const seed = readFileSync(new URL("./test-support/archive-corpus/native-ustar.tar", import.meta.url));
+test("native TAR corpus and byte mutations exercise the production decoder", async () => {
+  assert.equal(await fuzz(seed), true);
   const listed = readFileSync(new URL("./test-support/archive-corpus/native-ustar.list", import.meta.url), "utf8");
-  assert.deepEqual(Array.from(tarEntries(seed), entry => entry.path), listed.trimEnd().split(/\r?\n/));
+  const names = [];
+  await visitTar([seed], entry => { names.push(entry.path); });
+  assert.deepEqual(names, listed.trimEnd().split(/\r?\n/));
   // Every header byte and body/trailer boundary is reachable from the real
   // producer output, including the final member and a one-block end marker.
   for (let offset = 0; offset < seed.length; offset += 512) {
-    assert.equal(fuzz(seed.subarray(0, offset)), false);
+    assert.equal(await fuzz(seed.subarray(0, offset)), false);
     for (let field = 0; field < 512; field++) {
       const bytes = Buffer.from(seed);
       bytes[offset + field] ^= 0x80;
-      fuzz(bytes);
+      await fuzz(bytes);
     }
   }
   // Keep header authentication valid to reach size/name/type branches rather
@@ -251,7 +283,7 @@ test("native TAR corpus and byte mutations exercise the production decoder", () 
     bytes.fill(0, start, start + length);
     bytes.write(value, start, length, "ascii");
     seal(bytes);
-    fuzz(bytes);
+    await fuzz(bytes);
   }
 });
 
@@ -268,20 +300,12 @@ test("the unchanged fuzz oracle rejects removed checksum and end-marker checks",
       bytes => { bytes[0] ^= 1; return bytes; },
     ],
     [
-      'if (offset + 1024 > tar.length || !tar.subarray(offset).every(byte => byte === 0)) {\n        throw new Error("archive has an invalid end marker");\n      }',
+      'if (!(await reader.header()).every(byte => byte === 0)) throw new Error("archive has an invalid end marker");',
       bytes => bytes.subarray(0, bytes.length - 512),
     ],
   ];
   for (const [removed, corrupt] of mutations) {
     const mutant = await planted(removed);
-    assert.throws(() => mutant.fuzz(corrupt(Buffer.from(seed))), assert.AssertionError);
+    await assert.rejects(async () => mutant.fuzz(corrupt(Buffer.from(seed))), assert.AssertionError);
   }
 });
-
-async function planted(removed, replacement = "") {
-  const source = readFileSync(new URL("./archive-utils.mjs", import.meta.url), "utf8").replaceAll("\r\n", "\n");
-  const target = readFileSync(new URL("./archive-utils.fuzz.mjs", import.meta.url), "utf8");
-  assert.ok(source.includes(removed), "planted defect no longer matches production");
-  const production = `data:text/javascript;base64,${Buffer.from(source.replace(removed, replacement)).toString("base64")}`;
-  return import(`data:text/javascript;base64,${Buffer.from(target.replace('"./archive-utils.mjs"', JSON.stringify(production))).toString("base64")}`);
-}

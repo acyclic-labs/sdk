@@ -368,7 +368,7 @@ pub(super) fn decode_first_creation_record(
     let mut projection = crate::kernel::OriginalReadAccounting::new(accounting)?;
     let creation = crate::kernel::decode_volume_created::<FsError>(
         &first.payload,
-        MAXIMUM_VOLUME_EVENT_BYTES,
+        first.payload.len() as u64,
         &mut |step| projection.observe(step),
     );
     projection.retire()?;

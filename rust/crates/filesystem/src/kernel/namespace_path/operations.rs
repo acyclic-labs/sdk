@@ -9,12 +9,11 @@ fn components(path: &str) -> impl Iterator<Item = &str> {
 }
 
 impl NamespacePath {
-    /// Appends to a path already admitted under the same volume limits, moving
+    /// Appends to an admitted path, moving
     /// its original component backing rather than copying the parent names.
     pub(crate) fn child_from_owned(
         path: super::super::Owned<Self>,
         name: &LogicalName,
-        limits: VolumeLimits,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<super::super::Owned<Self>, crate::FsError> {
@@ -25,25 +24,15 @@ impl NamespacePath {
             accounting.check()?;
             cancellation.check()?;
             accounting.charge_items(1)?;
-            if names.value.len() >= usize::from(limits.maximum_path_depth) {
-                return Err(NamespacePathError::TooDeep.into());
-            }
-            let length = u32::try_from(name.as_bytes().len())
-                .map_err(|_| NamespacePathError::ComponentTooLong)?;
-            if length > limits.maximum_component_bytes {
-                return Err(NamespacePathError::ComponentTooLong.into());
-            }
-            let encoded_bytes = encoded_bytes
-                .checked_add(length)
-                .and_then(|bytes| bytes.checked_add(u32::from(!names.value.is_empty())))
-                .filter(|bytes| *bytes <= limits.maximum_path_bytes)
-                .ok_or(NamespacePathError::PathTooLong)?;
+            let encoded_bytes = Self::append_encoded_length(
+                encoded_bytes,
+                !names.value.is_empty(),
+                name.as_bytes().len(),
+            )?;
             let (name, allocation) = name.clone_with_accounting(accounting, cancellation)?;
             let bytes = name.retained_bytes() as u64;
             let name = super::super::Owned::new(name, allocation, bytes);
-            if let Err(error) =
-                names.ensure_for_push(usize::from(limits.maximum_path_depth), accounting)
-            {
+            if let Err(error) = names.ensure_for_push(usize::MAX, accounting) {
                 name.retire(accounting)?;
                 return Err(error);
             }
@@ -112,31 +101,28 @@ impl NamespacePath {
 
     pub(crate) fn validate_component_lengths(
         lengths: impl IntoIterator<Item = usize>,
-        limits: VolumeLimits,
+        _limits: VolumeLimits,
     ) -> Result<u32, NamespacePathError> {
-        let mut depth = 0;
-        let mut encoded = 1_u32;
+        let mut encoded = 1;
+        let mut has_components = false;
         for length in lengths {
-            depth += 1;
-            if depth > usize::from(limits.maximum_path_depth) {
-                return Err(NamespacePathError::TooDeep);
-            }
-            let length = u32::try_from(length).map_err(|_| NamespacePathError::ComponentTooLong)?;
-            if length > limits.maximum_component_bytes {
-                return Err(NamespacePathError::ComponentTooLong);
-            }
-            encoded = encoded
-                .checked_add(length)
-                .and_then(|n| n.checked_add(1))
-                .ok_or(NamespacePathError::PathTooLong)?;
-        }
-        if depth != 0 {
-            encoded -= 1;
-        }
-        if encoded > limits.maximum_path_bytes {
-            return Err(NamespacePathError::PathTooLong);
+            encoded = Self::append_encoded_length(encoded, has_components, length)?;
+            has_components = true;
         }
         Ok(encoded)
+    }
+
+    fn append_encoded_length(
+        encoded: u32,
+        has_components: bool,
+        length: usize,
+    ) -> Result<u32, NamespacePathError> {
+        let length =
+            u32::try_from(length).map_err(|_| NamespacePathError::ComponentLengthOverflow)?;
+        encoded
+            .checked_add(length)
+            .and_then(|bytes| bytes.checked_add(u32::from(has_components)))
+            .ok_or(NamespacePathError::PathTooLong)
     }
 
     /// Validates borrowed text without allocation and returns its component count.
@@ -242,7 +228,7 @@ impl NamespacePath {
         let names = self
             .components
             .get(..depth)
-            .ok_or(NamespacePathError::TooDeep)?;
+            .ok_or(NamespacePathError::PrefixOutOfRange)?;
         let encoded = Self::validate_component_lengths(
             names.iter().map(|name| name.as_bytes().len()),
             limits,
@@ -314,6 +300,7 @@ fn validate(
     let depth = PortablePath::validate(path, limits).map_err(NamespacePathError::Path)?;
     let encoding = NameEncoding::native_for_profile(profile);
     let mut encoded = 1_u32;
+    let mut has_components = false;
     for part in components(path) {
         cancellation.check()?;
         accounting.charge(WorkCounters {
@@ -321,18 +308,10 @@ fn validate(
             items_examined: 1,
             ..WorkCounters::UNCHARGED
         })?;
-        let length = LogicalName::validate_unicode(encoding, part, limits.maximum_component_bytes)
-            .map_err(NamespacePathError::Name)?;
-        encoded = encoded
-            .checked_add(u32::try_from(length).map_err(|_| NamespacePathError::PathTooLong)?)
-            .and_then(|n| n.checked_add(1))
-            .ok_or(NamespacePathError::PathTooLong)?;
-    }
-    if depth != 0 {
-        encoded -= 1;
-    }
-    if encoded > limits.maximum_path_bytes {
-        return Err(NamespacePathError::PathTooLong.into());
+        let length =
+            LogicalName::validate_unicode(encoding, part).map_err(NamespacePathError::Name)?;
+        encoded = NamespacePath::append_encoded_length(encoded, has_components, length)?;
+        has_components = true;
     }
     Ok((depth, encoding, encoded))
 }

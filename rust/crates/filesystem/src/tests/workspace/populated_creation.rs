@@ -210,12 +210,8 @@ async fn many_file_creation(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> crate::MeasuredResult<crate::OperationReceipt<crate::GenerationId>, WorkspaceError> {
-    // The larger fixture crosses the directory page boundary and also rewrites
-    // its root record. Declare that atomic capacity explicitly.
-    let mut volume = VolumeConfig::portable(Lifecycle::Ephemeral);
-    volume.limits.maximum_mutations_per_batch = 2_049;
     let config = crate::VolumeInitialization {
-        config: volume,
+        config: VolumeConfig::portable(Lifecycle::Ephemeral),
         access_policy: Some(crate::access::INITIAL_POLICY),
     };
     let operation = IdempotencyKey::from_bytes([0xe4; 16]).operation_id();

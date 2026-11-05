@@ -36,7 +36,7 @@ fn rejects_invalid_and_conflicting_declarations_before_connection() {
     ] {
         assert!(parse(value.clone(), Dialect::Claude).is_err(), "{value}");
     }
-    for name in ["", "bad.name", "bad/name", "bad name", "é"] {
+    for name in ["", "bad.name", "bad/name", "bad name", "Ã©"] {
         assert!(
             McpConfig::default()
                 .insert(

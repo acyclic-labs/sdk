@@ -119,7 +119,7 @@ async fn original_capture_retirement_preserves_failure_loss_and_credit() -> io::
                 execution_grant: None,
                 input: None,
                 schedule: CaptureSchedule::Unbounded,
-                maximum_output_bytes: usize::MAX,
+                maximum_output_bytes: None,
             };
             match request.capture(handler).await {
                 Err(crate::LaunchFailure::Refused { failure, handler }) => {
@@ -146,6 +146,7 @@ async fn original_capture_retirement_preserves_failure_loss_and_credit() -> io::
             }
         } else {
             let capture = child_tree()?.capture(
+                &crate::TaskSpawner::current(),
                 if mode == "before-capture" {
                     CaptureSchedule::Overflow
                 } else {
@@ -158,8 +159,13 @@ async fn original_capture_retirement_preserves_failure_loss_and_credit() -> io::
             // The original callback runs on the native worker. Its panic must not
             // emit successful cleanup telemetry, even after physical cleanup.
             if mode == "callback-loss" {
-                match tokio::spawn(capture).await {
-                    Err(error) => assert!(error.is_panic()),
+                match capture.await {
+                    Err(error) => assert!(
+                        error
+                            .get_ref()
+                            .and_then(|cause| cause.downcast_ref::<tokio::task::JoinError>())
+                            .is_some_and(tokio::task::JoinError::is_panic)
+                    ),
                     Ok(_) => panic!("lost original callback returned normally"),
                 }
             } else {

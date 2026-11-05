@@ -11,7 +11,9 @@ fn request_file_contracts() -> Result<()> {
         (" \n\t".into(), 1, false),
         ("test".into(), 0, false),
         ("test".into(), 21, false),
-        ("a".repeat(4097), 1, false),
+        ("東".repeat(1400), 1, true),
+        ("東".repeat(4096), 1, true),
+        ("🦀".repeat(4096), 1, true),
     ] {
         assert_eq!(
             SearchRequest {
@@ -40,9 +42,7 @@ fn unicode_validation_matches_the_advertised_schema() -> Result<()> {
     for (query, valid) in [
         ("東".repeat(1366), true),
         ("東".repeat(4096), true),
-        ("東".repeat(4097), false),
         ("🦀".repeat(4096), true),
-        ("🦀".repeat(4097), false),
     ] {
         let input = serde_json::json!({"query":query});
         assert_eq!(validator.is_valid(&input), valid);

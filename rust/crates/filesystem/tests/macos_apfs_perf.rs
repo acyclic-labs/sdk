@@ -81,8 +81,8 @@ async fn report_macos_directory_rename_capture() -> Result<(), Box<dyn std::erro
     let options = CaptureOptions {
         expected_root_identity: capture_root_identity(root.path())?,
         source_root: root.path().to_owned(),
-        maximum_paths: 128,
-        maximum_extent_spans: 128,
+        maximum_paths: Some(128),
+        maximum_extent_spans: Some(128),
     };
     capture_baseline(
         &mut checkout,
@@ -108,7 +108,7 @@ async fn report_macos_directory_rename_capture() -> Result<(), Box<dyn std::erro
     let arrival = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, _)| cause)?;
     loop {
-        watch.wait_for_changes_with_native_work(&arrival)?;
+        watch.changed_with_native_work(&arrival).await?;
         let batch = watch.poll(128, WorkBudget::UNBOUNDED, &cancellation)?.value;
         let saw_destination = match &batch {
             WatchBatch::Changes { changes, .. } => changes.iter().any(

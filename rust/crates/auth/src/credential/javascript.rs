@@ -30,14 +30,12 @@ fn protected_text(value: &JsValue) -> Result<Zeroizing<String>, CredentialError>
         .dyn_ref::<JsString>()
         .ok_or(CredentialError::Invalid)?;
     let units = text.length() as usize;
-    if units > MAX_CREDENTIAL_BYTES {
-        return Err(CredentialError::Invalid);
-    }
     // Three bytes per UTF-16 unit covers BMP characters and lone surrogates;
-    // a surrogate pair takes fewer. A longer encoding is already inadmissible.
+    // a surrogate pair takes fewer.
     // Encode once into the final protected backing, never through the generated
     // string glue's reallocations, which cannot scrub their old allocations.
-    let mut bytes = Zeroizing::new(vec![0; (units * 3).min(MAX_CREDENTIAL_BYTES)]);
+    let capacity = units.checked_mul(3).ok_or(CredentialError::Invalid)?;
+    let mut bytes = Zeroizing::new(vec![0; capacity]);
     let written = encode_protected(text, &mut bytes)?;
     bytes.truncate(written);
     match String::from_utf8(std::mem::take(&mut *bytes)) {

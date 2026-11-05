@@ -42,6 +42,7 @@ futures-util = { version = "0.3.31", default-features = false, features = ["std"
 [target.'cfg(unix)'.dependencies]
 tokio = { version = "1.54.1", default-features = false, features = ["net"] }
 libc = "0.2.175"
+rustix = { workspace = true, features = ["fs"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 linux-keyutils = { version = "0.2.5", features = ["std"] }
@@ -50,7 +51,6 @@ compio-driver = { version = "=0.12.5", default-features = false, features = ["io
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 security-framework = "=3.7.0"
-rustix.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 indexmap = "=2.14.2"

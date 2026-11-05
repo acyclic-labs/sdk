@@ -20,30 +20,14 @@ pub(super) fn seeds() -> Result<Seeds, Box<dyn std::error::Error>> {
         FileKind::MountBoundary,
     ];
     let names = [
-        LogicalName::new(
-            NameEncoding::Utf8,
-            "café".as_bytes().to_vec(),
-            limits.maximum_name_bytes,
-        )?,
-        LogicalName::new(
-            NameEncoding::PosixBytes,
-            b"name\xff".to_vec(),
-            limits.maximum_name_bytes,
-        )?,
-        LogicalName::new(
-            NameEncoding::WindowsUtf16Le,
-            vec![b'n', 0],
-            limits.maximum_name_bytes,
-        )?,
+        LogicalName::new(NameEncoding::Utf8, "café".as_bytes().to_vec())?,
+        LogicalName::new(NameEncoding::PosixBytes, b"name\xff".to_vec())?,
+        LogicalName::new(NameEncoding::WindowsUtf16Le, vec![b'n', 0])?,
     ];
     let mut entries = Vec::new();
     for (index, kind) in kinds.iter().copied().enumerate() {
         entries.push(TreeEntry {
-            name: LogicalName::new(
-                NameEncoding::Utf8,
-                format!("kind-{index}").into_bytes(),
-                limits.maximum_name_bytes,
-            )?,
+            name: LogicalName::new(NameEncoding::Utf8, format!("kind-{index}").into_bytes())?,
             file_id: FileId::from_bytes([u8::try_from(index + 1)?; 16]),
             kind,
         });
@@ -225,7 +209,7 @@ pub(super) fn seeds() -> Result<Seeds, Box<dyn std::error::Error>> {
             AttributeClass::MacResourceFork,
         ] {
             attributes.push(AttributeEntry {
-                name: AttributeName::new(class, b"attribute".to_vec(), limits.maximum_name_bytes)?,
+                name: AttributeName::new(class, b"attribute".to_vec())?,
                 value_bytes: 7,
                 value: object(ObjectKind::Blob, 14),
             });

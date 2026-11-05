@@ -1,4 +1,4 @@
-//! Bounded immutable namespace selection.
+//! Funded immutable namespace selection with ordered prefix traversal.
 
 use super::*;
 use crate::kernel::allocation::fixed_index::FixedIndex;
@@ -16,12 +16,8 @@ use crate::workspace::{
 pub(super) fn selection_push<T>(
     values: &mut Owned<Vec<T>>,
     value: T,
-    maximum: usize,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), WorkspaceError> {
-    if values.value.len() >= maximum {
-        return Err(WorkspaceError::JoinLimit);
-    }
     let copies = if values.value.len() == values.value.capacity() {
         values.value.len() + 1
     } else {
@@ -33,7 +29,7 @@ pub(super) fn selection_push<T>(
             .ok_or(WorkError::Overflow)? as u64,
         ..WorkCounters::UNCHARGED
     })?;
-    values.ensure_for_push(maximum, accounting)?;
+    values.ensure_for_push(usize::MAX, accounting)?;
     values.value.push(value);
     Ok(())
 }
@@ -97,10 +93,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .transpose()?;
         let result = async {
             let config = source.workspace.volume.config;
-            let maximum = config.limits.maximum_mutations_per_batch as usize;
-            if paths.value.len() > maximum {
-                return Err(WorkspaceError::JoinLimit);
-            }
             // Validate the entire input before allocating parsed paths, including root selections.
             let mut root_selected = false;
             for path in &paths.value {
@@ -117,6 +109,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 paths.retire(accounting)?;
                 return Ok(root.file_table);
             }
+            let limits = DecodeLimits::for_volume(config);
             let mut selected = Owned::<Vec<Owned<NamespacePath>>>::allocate(0, accounting)?;
             for path in &paths.value {
                 let (path, allocation) =
@@ -125,14 +118,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 selection_push(
                     &mut selected,
                     Owned::new(path, allocation, bytes),
-                    maximum,
                     accounting,
                 )?;
             }
             paths.retire(accounting)?;
-            if maximum == 0 {
-                return Err(WorkspaceError::JoinLimit);
-            }
             // Canonical admission is one in-place sort. Arbitrary ingress
             // ordering pays its comparison cost here; directory preparation
             // then visits only disjoint child groups at each selected depth.
@@ -150,24 +139,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     cancellation,
                 )
                 .await?;
+            let empty = checkout
+                .value
+                .stage_empty_tree_with_accounting(accounting, cancellation)
+                .await?;
             let mut overrides = Owned::<Vec<FileRecord>>::allocate(0, accounting)?;
-            let mut directory_count = 0;
             let mut pending =
                 Owned::<Vec<(std::ops::Range<usize>, usize)>>::allocate(0, accounting)?;
-            selection_push(
-                &mut pending,
-                (0..selected.value.len(), 0),
-                maximum,
-                accounting,
-            )?;
+            selection_push(&mut pending, (0..selected.value.len(), 0), accounting)?;
             // A frame owns one proper ancestor and its contiguous selected
             // paths. Exact subtree selections never enqueue their descendants.
             while let Some((range, depth)) = pending.value.pop() {
                 accounting.check()?;
-                directory_count += 1;
-                if directory_count > maximum {
-                    return Err(WorkspaceError::JoinLimit);
-                }
+                accounting.charge_items(1)?;
                 let (directory, allocation) = if depth == 0 {
                     (
                         NamespacePath::new(Vec::new(), config.limits)?,
@@ -225,7 +209,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         .get(depth)
                         .ok_or(WorkspaceError::JoinLimit)?;
                     if path.value.depth() > depth + 1 {
-                        selection_push(&mut pending, (group, depth + 1), maximum, accounting)?;
+                        selection_push(&mut pending, (group, depth + 1), accounting)?;
                     }
                     let (child, allocation) = path.value.prefix_with_accounting(
                         depth + 1,
@@ -265,15 +249,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                             file_id: record.file_id,
                             kind: record.kind,
                         }),
-                        maximum,
                         accounting,
                     )?;
                 }
                 directory.retire(accounting)?;
-                let empty = checkout
-                    .value
-                    .stage_empty_tree_with_accounting(accounting, cancellation)
-                    .await?;
                 let entries = if mutations.value.is_empty() {
                     empty
                 } else {
@@ -281,7 +260,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         &self.inner.objects,
                         empty,
                         &mutations.value,
-                        u32::try_from(maximum).map_err(|_| WorkspaceError::JoinLimit)?,
                         DecodeLimits::for_volume(config),
                         accounting,
                         cancellation,
@@ -294,7 +272,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     payload: FilePayload::Directory { entries },
                     ..original
                 };
-                selection_push(&mut overrides, record, maximum, accounting)?;
+                selection_push(&mut overrides, record, accounting)?;
             }
             pending.retire(accounting)?;
             checkout.retire(accounting)?;
@@ -306,7 +284,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 root,
                 overrides,
                 DecodeLimits::for_volume(config),
-                maximum,
                 accounting,
                 cancellation,
             )
@@ -322,7 +299,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         root: &GenerationRoot,
         overrides: Owned<Vec<FileRecord>>,
         limits: DecodeLimits,
-        maximum: usize,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<ObjectId, WorkspaceError> {
@@ -341,9 +317,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             )?;
         }
         overrides.retire(accounting)?;
-        if maximum == 0 {
-            return Err(WorkspaceError::JoinLimit);
-        }
         let original = self
             .selected_fork_record(
                 root,
@@ -362,7 +335,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         selected.record.link_count = 1;
         let mut record_count = 1;
         let mut pending = Owned::<Vec<FileId>>::allocate(0, accounting)?;
-        selection_push(&mut pending, root.root_file_id, maximum, accounting)?;
+        selection_push(&mut pending, root.root_file_id, accounting)?;
         while let Some(id) = pending.value.pop() {
             let record = records
                 .get(id.into_bytes(), accounting)?
@@ -404,11 +377,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                                 .link_count
                                 .checked_add(1)
                                 .ok_or(WorkspaceError::JoinLimit)?;
-                            selected.add_binding(id, &entry.name, limits, accounting)?;
+                            selected.add_binding(id, &entry.name, accounting)?;
                             continue;
-                        }
-                        if record_count >= maximum {
-                            return Err(WorkspaceError::JoinLimit);
                         }
                         let original = self
                             .selected_fork_record(
@@ -426,20 +396,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                             |work| original.select_bindings_with_accounting(work),
                         )?;
                         selected.record.link_count = 1;
-                        selected.add_binding(id, &entry.name, limits, accounting)?;
+                        selected.add_binding(id, &entry.name, accounting)?;
                         record_count += 1;
                         if original.kind == FileKind::Directory {
-                            selection_push(&mut pending, entry.file_id, maximum, accounting)?;
+                            selection_push(&mut pending, entry.file_id, accounting)?;
                         }
                     }
                     let has_more = page.value.has_more;
                     let next = if has_more {
-                        let name = page
-                            .value
-                            .entries
-                            .pop()
-                            .ok_or(WorkspaceError::JoinLimit)?
-                            .name;
+                        let name = page.value.entries.pop().ok_or(FsError::InvalidDiff)?.name;
                         let bytes = name.retained_bytes() as u64;
                         let allocation =
                             crate::kernel::split_allocation(&mut page.allocation, bytes)?;
@@ -473,7 +438,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             selection_push(
                 &mut mutations,
                 FileTableMutation::Insert(record),
-                maximum,
                 accounting,
             )?;
         }
@@ -498,7 +462,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             &self.inner.objects,
             empty,
             &mutations.value,
-            u32::try_from(maximum).map_err(|_| WorkspaceError::JoinLimit)?,
             limits,
             accounting,
             cancellation,

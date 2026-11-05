@@ -26,7 +26,7 @@ where
             lazy_owner: None,
             lazy_root: None,
             #[cfg(windows)]
-            capture_gate: &self.capture_gate,
+            capture_gate: &self.capture_signal.gate,
         })
     }
 
