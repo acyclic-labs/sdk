@@ -12,10 +12,24 @@ fn metadata_bytes(stat: &HostStat) -> Vec<u8> {
     .unwrap()
 }
 
+// Only the parent directories are shared between checks. Recreate every file
+// before opening fresh descriptors and capturing its real host facts.
+fn reset_source(root: &Path) -> std::io::Result<()> {
+    for name in ["file", "replacement"] {
+        match std::fs::remove_file(root.join(name)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn capture_metadata_queries_match_frozen_facts_without_generation_work() {
     let _subscriber =
         tracing::subscriber::set_default(tracing::subscriber::NoSubscriber::default());
+    let sources = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
     let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
         cases: 64,
         source_file: Some(file!()),
@@ -28,7 +42,8 @@ fn capture_metadata_queries_match_frozen_facts_without_generation_work() {
             let mut outcomes = Vec::new();
             for old in [false, true] {
                 // Separate files, descriptors, roots, cancellation and original ledgers.
-                let source = tempfile::tempdir().unwrap();
+                let source = &sources[usize::from(old)];
+                reset_source(source.path()).unwrap();
                 let path = source.path().join("file");
                 std::fs::write(&path, &bytes).unwrap();
                 let file = std::fs::File::open(&path).unwrap();
@@ -233,13 +248,15 @@ fn production_staging_preserves_bytes_errors_charges_and_final_path_checks()
         runtime.block_on(super::capture_policy_tests::native_checkout(&setup))?,
         runtime.block_on(super::capture_policy_tests::native_checkout(&setup))?,
     ];
+    let sources = [tempfile::tempdir()?, tempfile::tempdir()?];
     let check = |(sparse, limit, edit, growth, cancelled): (bool, u64, u8, u64, bool)| {
         for (forced, without_birth_time) in [(false, false), (false, true), (true, false)] {
             let _statx =
                 crate::native_host::stat_probe::StatxOptions::enter(forced, without_birth_time);
             let mut outcomes = Vec::new();
             for old in [false, true] {
-                let source = tempfile::tempdir().unwrap();
+                let source = &sources[usize::from(old)];
+                reset_source(source.path()).unwrap();
                 let path = source.path().join("file");
                 let file = std::fs::File::create(&path).unwrap();
                 let fallback = crate::native_host::stat_probe::uses_fallback(&file);

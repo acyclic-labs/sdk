@@ -992,8 +992,8 @@ fn a_registration_never_receives_records_that_predate_it() -> Result<(), Box<dyn
 /// Every watch shares the hub's service pool; a pass that waited for a held
 /// cursor parked a pool thread, and once records had scheduled the held watch
 /// once per pool thread, no other watch in the process was delivered until the
-/// cursor was released. A long pause (`lost_changes_are_reported_as_everything`
-/// writing 20000 files) starved concurrent demand watches past their deadline.
+/// cursor was released. A long pause (`lost_changes_are_reported_as_everything`)
+/// starved concurrent demand watches past their deadline.
 /// The held watch is served as soon as its cursor is released. Negative
 /// controls: a service pass taking `self.reading()` instead of
 /// `service_reading()` fails the wait for the other watch; a guard that does

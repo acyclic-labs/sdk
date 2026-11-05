@@ -306,14 +306,21 @@ fn a_fence_delivers_every_change_completed_before_it() -> TestResult {
 #[test]
 fn lost_changes_are_reported_as_everything() -> TestResult {
     let root = tempfile::tempdir()?;
+    let mut from = root.path().join("flood-from");
+    let mut to = root.path().join("flood-to");
+    std::fs::write(&from, b"")?;
     let (watch, recorded) = watch(root.path())?;
     {
         let _paused = watch.paused();
         // More than the host queues: inotify's default queue holds 16384
-        // events; a directory read buffer holds 64 KiB of reports.
+        // events; a directory read buffer holds 64 KiB of reports. Each
+        // rename queues distinct old/new-name records, so adjacent events
+        // cannot coalesce. Reuse one inode instead of creating and cleaning
+        // up a growing directory while its watch is held.
         let flood = if cfg!(windows) { 3_000 } else { 20_000 };
-        for index in 0..flood {
-            std::fs::write(root.path().join(format!("flood-{index:05}")), b"")?;
+        for _ in 0..flood {
+            std::fs::rename(&from, &to)?;
+            std::mem::swap(&mut from, &mut to);
         }
     }
     watch.fence()?;
