@@ -355,11 +355,7 @@ impl<S: Source> TrustFeed<S> {
                             follows.push(read(None, records));
                             continue;
                         }
-                        Err(_) => {
-                            apply_environment(follower, &**clock, anchor, &record)
-                                .await?
-                                .0
-                        }
+                        Err(_) => retry_environment(follower, &**clock, anchor, &record).await?,
                     };
                     if !tails.contains_key(&None)
                         && matches!(
