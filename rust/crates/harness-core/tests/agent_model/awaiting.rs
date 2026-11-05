@@ -111,7 +111,7 @@ impl TurnDriver for Waiter {
                     Wait::Continue,
                 )),
                 Some(b"spawned") => {
-                    let child = child(&agent.path)?;
+                    let child = child(&agent.path);
                     self.waiters
                         .lock()
                         .map_err(|_| Error::Record("waiters"))?

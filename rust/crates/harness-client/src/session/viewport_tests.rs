@@ -7,6 +7,7 @@ use acyclic_stream::{
     AppendRecord, AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamProvider,
     StreamProviderExt as _, runtime::Executor, session::transport,
 };
+use futures::StreamExt as _;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
