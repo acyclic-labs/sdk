@@ -58,7 +58,7 @@ try {
   const positive = command('cargo', ['nextest', 'run', '--locked', '-p', 'acyclic-harness-core', '--features', features,
     '--lib', ...(membershipOnly ? [] : ['--test', 'main']),
     '-E', tests.map(test => `test(=${test})`).join(' | ')]);
-  if (!positive.includes(`${tests.length} tests run: ${tests.length} passed`)) {
+  if (!positive.includes(`${tests.length} ${tests.length === 1 ? 'test' : 'tests'} run: ${tests.length} passed`)) {
     throw new Error('selected test inventory differs; recovery=cargo nextest list --locked -p acyclic-harness-core --lib --test main');
   }
   if (!membershipOnly) {
