@@ -300,6 +300,8 @@ fn trace_mapping(source: &str, inventory: &Inventory) -> Result<(), String> {
 /// another statement can lower or change them. Set coverage alone cannot show
 /// this: a second call to an already mapped helper can otherwise go unrecorded.
 /// The recorded agent must also own the control snapshot passed to that call.
+/// Snapshot, call and record are consecutive statements, so no binding or
+/// assignment can invalidate that ownership between them.
 fn trace_call_sites(source: &str, inventory: &Inventory) -> Result<(), String> {
     fn name(expr: &Expr) -> Option<String> {
         match expr {
@@ -330,29 +332,6 @@ fn trace_call_sites(source: &str, inventory: &Inventory) -> Result<(), String> {
             Expr::Reference(reference) => owner(&reference.expr),
             expr => name(expr),
         }
-    }
-    fn binds(pattern: &syn::Pat, name: &str) -> bool {
-        struct Binding<'a> {
-            name: &'a str,
-            found: bool,
-        }
-        impl<'ast> Visit<'ast> for Binding<'_> {
-            fn visit_pat_ident(&mut self, pattern: &'ast syn::PatIdent) {
-                self.found |= pattern.ident == self.name;
-                syn::visit::visit_pat_ident(self, pattern);
-            }
-            fn visit_pat(&mut self, pattern: &'ast syn::Pat) {
-                if matches!(pattern, syn::Pat::Macro(_)) {
-                    // An unexpanded binding cannot establish source correspondence.
-                    self.found = true;
-                } else {
-                    syn::visit::visit_pat(self, pattern);
-                }
-            }
-        }
-        let mut binding = Binding { name, found: false };
-        binding.visit_pat(pattern);
-        binding.found
     }
     #[derive(Default)]
     struct Sites {
@@ -397,15 +376,12 @@ fn trace_call_sites(source: &str, inventory: &Inventory) -> Result<(), String> {
                         return None;
                     }
                     let control = name(call.args.first()?)?;
-                    let (snapshot_index, snapshot) =
-                        block.stmts[..index].iter().enumerate().rev().find_map(
-                            |(index, statement)| {
-                                let syn::Stmt::Local(local) = statement else {
-                                    return None;
-                                };
-                                binds(&local.pat, &control).then_some((index, local))
-                            },
-                        )?;
+                    let syn::Stmt::Local(snapshot) = block.stmts.get(index.checked_sub(1)?)? else {
+                        return None;
+                    };
+                    if bound(&snapshot.pat)? != [control] {
+                        return None;
+                    }
                     let Expr::Call(snapshot) = &*snapshot.init.as_ref()?.expr else {
                         return None;
                     };
@@ -413,11 +389,6 @@ fn trace_call_sites(source: &str, inventory: &Inventory) -> Result<(), String> {
                     if call_path(snapshot) != ["control"]
                         || snapshot.args.len() != 1
                         || owner(snapshot.args.first()?).as_deref() != Some(recorded_owner.as_str())
-                        || block.stmts[snapshot_index + 1..=index]
-                            .iter()
-                            .any(|statement| {
-                                matches!(statement, syn::Stmt::Local(local) if binds(&local.pat, &recorded_owner))
-                            })
                     {
                         return None;
                     }
@@ -580,6 +551,11 @@ fn agent_control_mapping_is_bidirectional() -> Result<(), String> {
         (
             "let before = control(&state);",
             "let before = control(&state); let before: Control = foreign;",
+            "alarm",
+        ),
+        (
+            "let before = control(&state);",
+            "let before = control(&state); state = foreign;",
             "alarm",
         ),
     ] {
