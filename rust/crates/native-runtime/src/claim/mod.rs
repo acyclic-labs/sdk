@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 mod model;
 mod process;
 mod protocol;
+mod read;
 mod record;
 
 use process::ProcessOwner;
@@ -94,9 +95,9 @@ impl Host for Native {
         file.unlock()
     }
 
-    fn read(&self, file: &FileLock) -> io::Result<record::ReadRecord> {
+    fn read(&self, file: &FileLock) -> io::Result<read::ReadRecord> {
         let mut file: &std::fs::File = file;
-        record::ReadRecord::read(&mut file, self.meter.as_ref())
+        read::ReadRecord::read(&mut file, self.meter.as_ref())
     }
 
     fn write(&self, file: &FileLock, bytes: &[u8]) -> io::Result<()> {

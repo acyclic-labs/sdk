@@ -1,7 +1,8 @@
 //! The claim protocol, written once over [`Host`] so that native runs and the
 //! model run the same code.
 
-use super::record::{Contents, Process, ReadRecord, Record};
+use super::read::ReadRecord;
+use super::record::{Contents, Process, Record};
 use crate::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::collections::HashMap;
 use std::hash::Hash;

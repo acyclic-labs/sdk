@@ -489,11 +489,7 @@ pub async fn run(
     let (tty, output) = tty.split();
     let mut terminal = FrameTerminal::new(output, size()?)?;
     let mut keys = terminal_events(tty)?;
-    let from = if resume {
-        Some(0)
-    } else {
-        None
-    };
+    let from = if resume { Some(0) } else { None };
     // Its settled turns, its phase and, while it works, the newest tool
     // call's output or its streaming answer.
     let mut events = conversation.observe(from).await?;

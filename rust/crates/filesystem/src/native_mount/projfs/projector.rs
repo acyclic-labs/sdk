@@ -720,7 +720,9 @@ impl Projector {
                                 || !state.pending.is_empty()
                                 || !state.vacated.is_empty());
                         if state.stopping {
-                            return Err(std::io::Error::from(std::io::ErrorKind::NotConnected).into());
+                            return Err(
+                                std::io::Error::from(std::io::ErrorKind::NotConnected).into()
+                            );
                         }
                         if !pending {
                             return state

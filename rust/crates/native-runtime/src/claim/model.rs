@@ -276,12 +276,12 @@ impl Host for Sim {
         Ok(())
     }
 
-    fn read(&self, file: &SimFile) -> io::Result<super::record::ReadRecord> {
+    fn read(&self, file: &SimFile) -> io::Result<super::read::ReadRecord> {
         let mut world = self.running()?;
         if world.unreadable.get(self.pid).copied().unwrap_or(false) {
             return Err(io::Error::other("read failed"));
         }
-        Ok(super::record::ReadRecord::from_bytes(
+        Ok(super::read::ReadRecord::from_bytes(
             world.inode(file.inode)?.bytes.clone(),
         ))
     }
