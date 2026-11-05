@@ -7811,6 +7811,7 @@ dependencies = [
 name = "sdk-generation"
 version = "0.1.0"
 dependencies = [
+ "acyclic-test-support",
  "cargo_metadata",
  "flate2",
  "proptest",

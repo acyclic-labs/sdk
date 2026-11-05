@@ -1,14 +1,6 @@
 use sdk_docs::rustdoc_profiles::{load_metadata, profiles_for_package};
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 use std::process::Command;
-
-fn repository_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("..")
-}
 
 fn host_target() -> String {
     let output = Command::new("rustc").args(["-vV"]).output().unwrap();
@@ -22,7 +14,7 @@ fn host_target() -> String {
 
 #[test]
 fn public_feature_profiles_are_bounded_and_target_exact() {
-    let root = repository_root();
+    let root = acyclic_test_support::source_path("");
     let metadata = load_metadata(
         root.join("Cargo.toml"),
         sdk_docs::rustdoc_profiles::CargoExecutionContext::default(),

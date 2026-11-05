@@ -19,6 +19,7 @@ flate2 = "1"
 tempfile = "=3.27.0"
 
 [dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
 sha2 = "0.10"
 sdk-docs = { path = "../sdk-docs", features = ["test-support"] }
 proptest = "1.11.0"

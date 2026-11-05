@@ -390,7 +390,7 @@ fn wrapper_probe(broken: bool) {
     let directory = tempfile::tempdir().unwrap();
     // Use an immutable executable: concurrent fork can inherit a freshly
     // written fixture's writable descriptor until exec, causing ETXTBSY.
-    let wrapper = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/toolchain-wrapper.sh");
+    let wrapper = acyclic_test_support::crate_path!("tests/fixtures/toolchain-wrapper.sh");
     fs::write(directory.path().join("selected"), "version A\n").unwrap();
     begin_run();
     if broken {
