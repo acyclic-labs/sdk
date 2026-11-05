@@ -8,6 +8,8 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 Set-StrictMode -Version Latest
 
+$env:E2E_SCRATCH_ROOT = Join-Path $env:SDK_TEMP_DIR 'e2e'
+
 New-Item -ItemType Directory -Force -Path `
     $env:SDK_TEMP_DIR, $env:SDK_ARTIFACT_DIR, $env:TOOLS_DIR, `
     "$env:SDK_TEMP_DIR/observability" | Out-Null
