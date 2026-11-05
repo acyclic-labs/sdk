@@ -72,7 +72,7 @@ the reports and retiring every process/mount. Helper scratch is removed at its
 completion barrier. The secondary Windows case directory remains a distinct
 fixture; two directories on D: do not constitute a ReFS-versus-NTFS proof.
 
-`coverage.json` maps every A1â€“A26 target to real case identities and names the
+`coverage.json` maps every A1–A26 target to real case identities and names the
 owner of remaining scope gaps. Missing rows, unknown identities, duplicate
 identities, unmapped cases and recorded gaps fail qualification. A mapped row
 does not assert that every part of its target has been proven.
