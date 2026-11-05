@@ -686,6 +686,16 @@ impl AsyncAuthorityStore for ObservedAuthority {
         self.inner.policy_owner()
     }
 
+    async fn fork_workspace<G: crate::AuthorityGuard>(
+        &self,
+        fork: crate::WorkspaceForkCommit,
+        permit: crate::PublicationPermit,
+        work: &mut AuthorityWork<'_>,
+        guard: Option<&mut G>,
+    ) -> Result<crate::WorkspaceForkOutcome, crate::AuthorityError<G::Error>> {
+        self.inner.fork_workspace(fork, permit, work, guard).await
+    }
+
     async fn create_authority<G: crate::AuthorityGuard>(
         &self,
         authority: crate::AuthorityId,
