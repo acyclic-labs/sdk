@@ -9,11 +9,14 @@ pub(super) fn parse_task(value: &str) -> Result<AgentPath> {
     Ok(serde_json::from_value(json!(value))?)
 }
 
-pub(super) fn read_json(input: impl io::Read) -> Result<Value> {
+pub(super) fn read_json(input: impl io::Read, maximum: Option<u64>) -> Result<Value> {
     let mut bytes = Vec::new();
-    input.take(65_537).read_to_end(&mut bytes)?;
-    if bytes.len() > 65_536 {
-        return Err("native hook exceeds shared command file bound".into());
+    let mut input = input.take(maximum.map_or(u64::MAX, |bound| bound.saturating_add(1)));
+    input.read_to_end(&mut bytes)?;
+    if maximum.is_some_and(|bound| bytes.len() as u64 > bound) {
+        return Err(
+            "step=admit native hook: input exceeds its frame bound; recovery=acyclic --help".into(),
+        );
     }
     Ok(serde_json::from_slice(&bytes)?)
 }
