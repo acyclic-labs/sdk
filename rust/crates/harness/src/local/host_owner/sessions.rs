@@ -56,7 +56,7 @@ pub enum SessionAction {
         inbox: u64,
     },
     /// After fencing the old process custody, settle an orphaned turn.
-    Recover,
+    Recover {},
 }
 
 fn prompt_bound(prompt: &str) -> Result<()> {
@@ -179,7 +179,7 @@ impl HostWorkspaceOwner {
                     .request(&child, operation, &Event::Control { control })
                     .await?;
             }
-            SessionAction::Recover => {
+            SessionAction::Recover {} => {
                 let (state, session) = self.native.session(&child).await?;
                 if let Some(claimed) = session.claimed() {
                     let claim = TurnClaim {
