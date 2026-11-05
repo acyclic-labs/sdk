@@ -61,8 +61,6 @@ where
         changes: &[SourceChange],
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        #[cfg(test)]
-        eprintln!("lazy source changes: {changes:?}");
         use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
         work.admit(crate::WorkCounters::UNCHARGED)
             .map_err(MountSourceError::NativeWork)?;

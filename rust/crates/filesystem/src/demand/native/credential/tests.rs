@@ -273,6 +273,7 @@ enum PublicationControl {
 }
 
 async fn publication_control(control: PublicationControl) -> TestResult {
+    eprintln!("native publication {control:?}: starting original publisher control");
     use acyclic_native_runtime::{RenameMode, private_file::StagedFile};
     use std::io::Write;
     let directory = tempfile::tempdir()?;
@@ -568,7 +569,7 @@ async fn native_source_fences_rotation_and_owner_loss_without_warm_reads() -> Te
     ] {
         publication_control(control)
             .await
-            .map_err(|error| format!("native publication {control:?}: {error}"))?;
+            .map_err(|error| format!("native publication {control:?}: {error:?}"))?;
     }
     eprintln!(
         "protected source reads: cold=1 warm=0 rotation=1 independent=1; original cleanup joined"

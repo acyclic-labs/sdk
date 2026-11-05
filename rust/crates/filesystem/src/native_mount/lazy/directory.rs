@@ -124,15 +124,11 @@ where
             .authored
             .unchanged_since_with_meter(path, None, stamp, work)?
         {
-            #[cfg(test)]
-            eprintln!("directory cut changed: {path:?} at {stamp:?}");
             return Err(MountSourceError::Stale);
         }
         if let Some((text, epoch)) = removal
             && self.removal_snapshot(text)?.2 != epoch
         {
-            #[cfg(test)]
-            eprintln!("directory cut changed: {path:?} at {stamp:?}");
             return Err(MountSourceError::Stale);
         }
         Ok(())

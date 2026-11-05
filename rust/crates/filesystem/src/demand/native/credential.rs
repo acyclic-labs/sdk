@@ -146,6 +146,13 @@ impl SourceChangeSink for State {
             .observation
             .lock()
             .map_err(|_| DemandError::SourceUnavailable)?;
+        #[cfg(test)]
+        eprintln!(
+            "credential original changes: {changes:?}; awaiting={} rebound={:?} generation={}",
+            observation.awaiting_rebound,
+            observation.rebound,
+            self.generation.load(Ordering::Acquire)
+        );
         let mut affected = false;
         let mut changes = changes.iter().peekable();
         while let Some(change) = changes.next() {

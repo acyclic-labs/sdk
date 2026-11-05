@@ -33,14 +33,6 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
                     .ledger
                     .unchanged_since(&path, file_id, stamp, work)
             })?;
-        #[cfg(test)]
-        if !unchanged {
-            eprintln!(
-                "authored cut rejected: path={path:?} stamp={stamp:?} stable={} latest={:?}",
-                self.checkout.view_gate.is_stable(),
-                self.checkout.ledger.stamp()
-            );
-        }
         inputs
             .carrier
             .check(&cancellation, Some(&self.cancellation))?;
