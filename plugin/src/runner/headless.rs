@@ -620,6 +620,19 @@ async fn prompt_approval(
     Ok((id, binding))
 }
 
+async fn announce_approval(
+    output: &mut EventOutput<'_>,
+    operation: Option<&str>,
+    id: &IntentId,
+    binding: Option<&ApprovalBinding>,
+) -> std::io::Result<()> {
+    let line = match (operation, binding) {
+        (None, Some(binding)) => json!({"approval": id.as_str(), "binding": binding}),
+        _ => json!({"approval": id.as_str()}),
+    };
+    emit(output, &line, operation).await
+}
+
 /// Prints the prompt's settled text and returns its committed outcome.
 async fn print(
     conversation: &Conversation,
@@ -962,11 +975,14 @@ pub(super) async fn jsonl(
     // delays only this prompt, never the coordination runtime.
     let mut diagnostics = None;
     // Admit text against the opening phase before stdin can win the select.
-    // A saved cursor may already be past its approval status; replay of that
-    // same status must not prompt twice either.
+    // Preserve the live approval frame as well as its original answer binding.
+    // Projected replay owns its source frames through the saved cursors.
     if input_format == super::args::InputFormat::Text
         && let Some(Phase::WaitingApproval { id, binding }) = opening_phase
     {
+        if event_operation.is_none() {
+            announce_approval(output, event_operation, &id, binding.as_ref()).await?;
+        }
         announced = Some(id.clone());
         approval = Some(prompt_approval(conversation, &mut diagnostics, id, binding).await?);
     }
@@ -1241,13 +1257,7 @@ pub(super) async fn jsonl(
                 if let Phase::WaitingApproval { id, binding } = &status.phase
                     && announced.as_ref() != Some(id)
                 {
-                    let line = match (event_operation, binding) {
-                        (None, Some(binding)) => {
-                            json!({"approval": id.as_str(), "binding": binding})
-                        }
-                        _ => json!({"approval": id.as_str()}),
-                    };
-                    emit(output, &line, event_operation).await?;
+                    announce_approval(output, event_operation, id, binding.as_ref()).await?;
                     // Replay exports historical statuses too. Only the agent's
                     // current pending request admits a text answer; a live
                     // observer starts at the latest status, so it is current.
