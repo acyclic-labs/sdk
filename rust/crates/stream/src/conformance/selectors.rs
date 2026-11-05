@@ -239,10 +239,15 @@ export function selectorPort(stream) {
 
     #[wasm_bindgen_test::wasm_bindgen_test]
     async fn selectors_survive_the_paired_injected_provider() {
+        super::verify(&crate::MemoryStream::default())
+            .await
+            .expect("memory selector contract");
         let provider = crate::wasm::provider_rpc::InjectedStream::new(port(
             crate::wasm::WasmStream::new().into(),
         ))
         .unwrap();
-        super::verify(&provider).await.unwrap();
+        super::verify(&provider)
+            .await
+            .expect("paired injected selector contract");
     }
 }
