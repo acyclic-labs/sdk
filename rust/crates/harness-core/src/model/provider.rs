@@ -274,6 +274,19 @@ fn unsupported() -> Error {
 
 /// Replaceable streaming model provider.
 pub trait ModelProvider: acyclic_stream::ProviderPlatform {
+    /// Derives an immutable epoch selection from this original provider. The
+    /// caller retains the returned model and provider together; the original
+    /// selection remains available to other sessions. Admission performs no I/O.
+    #[cfg(feature = "filesystem")]
+    fn admit_profile(
+        &self,
+        _: &Model,
+        _: &crate::profile::AgentProfile<'_>,
+    ) -> Result<(Model, std::sync::Arc<dyn ModelProvider>)> {
+        Err(Error::Unsupported(
+            "selected provider cannot admit a profile; recovery: select a provider with epoch profile admission".into(),
+        ))
+    }
     /// Binds the composition's authenticated reader for file-backed model input.
     /// Providers that consume canonical file references directly need no rebinding.
     fn bind_content(
