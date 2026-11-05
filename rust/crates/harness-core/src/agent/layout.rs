@@ -214,6 +214,13 @@ impl AgentPath {
             .is_some_and(|rest| rest.is_empty() || rest.starts_with("/children/"))
     }
 
+    /// Whether this agent is a direct child of `parent`, borrowing both paths.
+    /// Checks the complete ancestry without constructing an owned parent.
+    #[must_use]
+    pub fn is_child_of(&self, parent: &Self) -> bool {
+        self.depth == parent.depth + 1 && parent.contains(self)
+    }
+
     /// The agent's own id, the last path segment.
     #[must_use]
     pub fn id(&self) -> AgentId {
@@ -375,6 +382,11 @@ mod tests {
         assert_eq!(root.id(), foreign.id());
         assert!(!root.contains(&foreign));
         assert!(!root.contains(&root.parent().expect("nested root")));
+        assert!(!root.is_child_of(&root));
+        assert!(!root.is_child_of(&foreign));
+        let origin = root.tree_root();
+        assert!(!origin.is_child_of(&origin));
+        assert!(root.is_child_of(&origin));
         for malformed in [
             format!("{root}0"),
             format!("{root}/children/{}", "A".repeat(ID_HEX)),
@@ -410,6 +422,20 @@ mod tests {
             assert_eq!(parsed, descendant);
             assert_eq!(parsed.as_str().as_ptr(), original);
             assert_eq!(parsing.count_total, 0);
+            let parent = parsed.parent().expect("nested path");
+            let mut foreign_parent = foreign.tree_root();
+            for _ in 0..parent.depth() {
+                foreign_parent = foreign_parent.child(&AgentId::from_bytes(leaf))?;
+            }
+            // A descendant is not necessarily a direct child, and matching
+            // leaf identities under another ancestry do not establish kinship.
+            for candidate in [&parent, &parsed, &root, &foreign_parent, &nested] {
+                assert_eq!(
+                    parsed.is_child_of(candidate),
+                    parsed.parent().as_ref() == Some(candidate),
+                    "direct-child admission changed"
+                );
+            }
             // The former parser allocated an owned id for each ancestor.
             let owned_ids = acyclic_test_support::measure(|| {
                 for id in parsed.as_str().split('/').skip(2).step_by(2) {
@@ -418,6 +444,22 @@ mod tests {
             });
             assert_eq!(owned_ids.count_total, depth as u64 + 1);
             for calls in [1, 100, 1000] {
+                let child_admission = acyclic_test_support::measure(|| {
+                    for _ in 0..calls {
+                        assert!(black_box(&parsed).is_child_of(black_box(&parent)));
+                        assert!(!parsed.is_child_of(black_box(&foreign_parent)));
+                    }
+                });
+                assert_eq!(
+                    child_admission.count_total, 0,
+                    "child admission copied ancestry"
+                );
+                let copied_parent = acyclic_test_support::measure(|| {
+                    for _ in 0..calls {
+                        assert_eq!(black_box(&parsed).parent().as_ref(), Some(&parent));
+                    }
+                });
+                assert_eq!(copied_parent.count_total, calls);
                 let expected = if depth == 1 { [2; 16] } else { leaf };
                 let fixed_identity = acyclic_test_support::measure(|| {
                     for _ in 0..calls {
