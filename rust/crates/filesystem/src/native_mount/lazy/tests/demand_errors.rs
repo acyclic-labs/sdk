@@ -61,7 +61,9 @@ fn observation_causes_keep_their_original_box_without_allocating() {
 
 #[test]
 fn lazy_and_direct_demand_conversion_use_the_same_callback_semantics() {
-    use crate::native_mount::shared::outcome::{CallbackFailure, callback_failure, stops_mount};
+    use crate::native_mount::shared::outcome::{
+        CallbackFailure, callback_failure, source_refusal, stops_mount,
+    };
     for transport in 0..3 {
         for (cause, expected, terminal) in [
             (DemandError::Cancelled, CallbackFailure::Cancelled, true),
@@ -111,6 +113,15 @@ fn lazy_and_direct_demand_conversion_use_the_same_callback_semantics() {
                 CallbackFailure::Denied,
                 false,
             ),
+            (
+                DemandError::Mount(Box::new(MountSourceError::MutationFinalization {
+                    primary: Box::new(Some(MountSourceError::Stale)),
+                    cleanup: Box::new(Some(DemandError::Cancelled)),
+                    custody: None,
+                })),
+                CallbackFailure::Stale,
+                true,
+            ),
         ] {
             let callback = if transport < 2 {
                 NativeMountError::Source(convert(cause, transport == 1))
@@ -120,6 +131,9 @@ fn lazy_and_direct_demand_conversion_use_the_same_callback_semantics() {
             let allocations = acyclic_test_support::measure(|| {
                 assert_eq!(callback_failure(&callback), expected, "{callback:?}");
                 assert_eq!(stops_mount(&callback), terminal, "{callback:?}");
+                if let NativeMountError::Source(error) = &callback {
+                    assert_eq!(source_refusal(error), (!terminal).then_some(expected));
+                }
             });
             assert_eq!(allocations.count_total, 0);
             #[cfg(any(target_os = "linux", target_os = "macos"))]

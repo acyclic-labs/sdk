@@ -1,3 +1,5 @@
+use crate::native_mount::shared::outcome::{CallbackFailure, source_refusal};
+
 use super::{
     Arc, Carried, Condvar, EntryFacts, HELD_SETTLE_LIMIT, HashMap, KeyedLocks, MATERIALIZE_WORKERS,
     MaterializeHelpers, MaterializeQueue, Materialized, MountFilesystem, MountPath,
@@ -129,7 +131,7 @@ impl Projector {
                 self.remove_tree(projection, &directory);
                 return Ok(Vec::new());
             }
-            Err(MountSourceError::Stale) => {
+            Err(error) if source_refusal(&error) == Some(CallbackFailure::Stale) => {
                 let mut state = lock_recover(&self.state);
                 state
                     .directories

@@ -48,6 +48,11 @@ impl CallbackFailure {
     }
 }
 
+/// A reply refusal whose invocation remains usable, including retained causes.
+pub(crate) fn source_refusal(error: &MountSourceError) -> Option<CallbackFailure> {
+    (!source_stops_mount(error)).then(|| source_failure(error))
+}
+
 pub(crate) fn source_failure(error: &MountSourceError) -> CallbackFailure {
     use CallbackFailure as F;
     match error.semantic_error() {
