@@ -116,7 +116,7 @@ impl NativeSourceWatch {
         self.shared.stopping.store(true, Ordering::Release);
         result = result.and(self.shared.retire(&mut reads, work));
         if self.shared.retired(&reads) {
-            self.shared.complete_stop();
+            self.shared.publish_retirement(true);
         }
         result
     }
@@ -301,13 +301,8 @@ impl Shared {
                 }
             };
             drop(credit);
-            if retired {
-                self.complete_stop();
-            } else if terminal {
-                self.parked.store(true, Ordering::Release);
-                self.collected();
-            }
             if retired || terminal {
+                self.publish_retirement(retired);
                 return;
             }
         }

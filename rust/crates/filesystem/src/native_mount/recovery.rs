@@ -1,5 +1,5 @@
 use super::*;
-use crate::sync::native::{Arc as RecoveryArc, Condvar, Mutex, RetirementSender};
+use crate::sync::native::{Arc as RecoveryArc, Mutex, RetirementSender, thread::JoinHandle};
 
 /// Real cleanup custody and driver evidence for one retained native session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,7 +69,7 @@ impl NativeRecoveryControl {
     }
 }
 
-pub(super) struct NativeRecoveryState {
+struct NativeRecoveryState {
     identity: Option<crate::NativeRootIdentity>,
     #[cfg(windows)]
     destination_identity: Option<crate::NativeRootIdentity>,
@@ -124,21 +124,21 @@ impl Drop for PendingPreservation {
     }
 }
 
-pub(super) struct NativeRecoveryShared {
+struct NativeRecoveryShared {
     destination: PathBuf,
     // Lock order: recovery state -> work ledger -> native syscall boundary.
     // The retirement worker and helper never acquire this lock in reverse.
-    pub(super) state: Mutex<Option<NativeRecoveryState>>,
-    wake: Condvar,
+    state: Mutex<Option<NativeRecoveryState>>,
     // Path and state data retire before their allocation.
     _custody: crate::NativeAllocation,
 }
 
 /// Original recovery control and destination fence, acquired once before action.
 pub struct NativeMountRecoveryOwner {
-    pub(super) shared: RecoveryArc<NativeRecoveryShared>,
+    shared: RecoveryArc<NativeRecoveryShared>,
     // Last drop notifies the prestarted worker to retire the owner.
     retirement: Option<RetirementSender>,
+    worker: Option<JoinHandle<()>>,
 }
 
 enum RecoveryDestination {
@@ -163,6 +163,7 @@ impl Drop for NativeMountRecoveryOwner {
         if let Some(retirement) = self.retirement.take() {
             let _ = retirement.send(());
         }
+        drop(self.worker.take());
     }
 }
 
@@ -333,7 +334,6 @@ impl NativeMountRecoveryOwner {
                 measured_cleanup_failed: false,
                 final_close,
             })),
-            wake: Condvar::new(),
             _custody: destination.1,
         });
         let (retirement, receiver) = crate::sync::native::retirement_channel();
@@ -345,12 +345,13 @@ impl NativeMountRecoveryOwner {
                 ..Default::default()
             },
         )?;
-        drop(crate::sync::native::thread::Builder::new().spawn(move || {
+        let worker = crate::sync::native::thread::Builder::new().spawn(move || {
             retire_recovery(worker);
-        })?);
-        let mut owner = Self {
+        })?;
+        let owner = Self {
             shared,
             retirement: Some(retirement),
+            worker: Some(worker),
         };
         let result = {
             let mut state = owner
@@ -377,21 +378,7 @@ impl NativeMountRecoveryOwner {
         };
         if let Err(error) = result {
             // Constructor rejection waits for the physical acquisition prefix to retire.
-            if let Some(retirement) = owner.retirement.take() {
-                let _ = retirement.send(());
-            }
-            let mut state = owner
-                .shared
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            while state.is_some() {
-                state = owner
-                    .shared
-                    .wake
-                    .wait(state)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-            }
+            wait_for_retirement(owner)?;
             return Err(error);
         }
         Ok(owner)
@@ -905,22 +892,23 @@ fn retire_recovery(
         state.retire(shared._custody.work());
     }
     drop(state.take());
-    shared.wake.notify_all();
     drop(state);
     drop((receiver, shared));
     drop(_closure);
 }
 
-#[cfg(all(test, windows))]
-pub(super) fn wait_for_retirement(shared: &NativeRecoveryShared) {
-    let mut state = shared
-        .state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    while state.is_some() {
-        state = shared
-            .wake
-            .wait(state)
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-    }
+pub(super) fn wait_for_retirement(
+    mut owner: NativeMountRecoveryOwner,
+) -> Result<(), NativeMountError> {
+    let worker = owner
+        .worker
+        .take()
+        .ok_or(NativeMountError::ControlPending)?;
+    drop(owner);
+    worker
+        .join()
+        .map_err(|panic| NativeMountError::DriverPanicked {
+            operation: "administrative retirement",
+            panic: std::sync::Mutex::new(panic),
+        })
 }

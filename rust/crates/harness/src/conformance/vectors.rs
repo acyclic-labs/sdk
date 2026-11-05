@@ -47,9 +47,8 @@ pub(crate) fn hosting(
 }
 
 pub(crate) async fn drain(host: &AgentHost<Observed>) -> Result {
-    let failures = host.runtime().drain().await;
-    if !failures.is_empty() {
-        return Err(format!("AgentHost drain: {failures:?}").into());
+    if let Some((_, error)) = host.runtime().drain().await.into_iter().next() {
+        return Err(error.into());
     }
     Ok(())
 }

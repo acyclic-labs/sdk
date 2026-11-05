@@ -94,7 +94,7 @@ pub use identity::{IdempotencyKey, WorkspaceId, WorkspaceName};
 pub(crate) use join::JoinPreparation;
 pub use join::{JoinBuilder, JoinHistory, JoinPlan};
 pub use join_apply::DrivenJoinError;
-#[cfg(all(not(loom), any(test, feature = "fuzzing")))]
+#[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub use join_directory::check_merge_directory_resolution;
 pub use join_directory::{

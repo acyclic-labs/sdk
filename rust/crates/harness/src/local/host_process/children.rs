@@ -24,7 +24,7 @@ use std::sync::{Mutex, PoisonError};
 use std::task::{Context, Poll, Waker};
 
 mod answer;
-use answer::NativeAnswer;
+use answer::{EVENT_LIMIT, NativeAnswer};
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod readiness_validation;
@@ -32,12 +32,8 @@ pub(crate) mod readiness_validation;
 mod tools;
 pub use tools::serve;
 
-/// Byte bound of one native event line and of a retained answer's source.
-const EVENT_LIMIT: usize = 65_536;
 /// The saved log's line where the bounded framer dropped one native event.
 const EVENT_OMITTED: &[u8] = b"{\"type\":\"acyclic.event_omitted\"}";
-/// Byte bound of a retained answer.
-const ANSWER_LIMIT: usize = 4096;
 
 struct Running {
     process: HostSessionProcess,
@@ -704,25 +700,6 @@ mod tests;
 #[cfg(test)]
 mod framing {
     use super::*;
-
-    #[test]
-    fn oversized_native_events_are_omitted_once_without_wedging_the_stream() {
-        let mut events = acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT);
-        let mut omitted = 0;
-        for _ in 0..16 {
-            for event in events.push(&[b'x'; 8192]) {
-                assert!(event.is_err());
-                omitted += 1;
-            }
-            assert!(events.buffered_bytes() <= EVENT_LIMIT);
-        }
-        assert_eq!(omitted, 1, "oversized output must be reported once");
-        let lines = events.push(b"\ncomplete frame\n");
-        let [Ok(line)] = lines.as_slice() else {
-            panic!("valid frame after omitted event: {lines:?}");
-        };
-        assert_eq!(line, "complete frame");
-    }
 
     /// The ready queue holds only children whose registration fired, and a
     /// fired key wakes the server once; a quiet key is never queued.

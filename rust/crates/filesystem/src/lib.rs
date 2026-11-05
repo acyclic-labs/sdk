@@ -42,7 +42,7 @@ pub(crate) fn descriptor_digest() -> String {
         .to_string()
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(feature = "test-support", windows)))]
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn initialize_test_native_io() {
     static INITIALIZED: std::sync::Once = std::sync::Once::new();
@@ -51,8 +51,11 @@ pub(crate) fn initialize_test_native_io() {
     });
 }
 
-#[cfg(all(test, windows))]
+#[cfg(all(any(test, feature = "test-support"), windows))]
 mod windows_test_filesystems;
+/// Create a real Windows directory junction for native consumer controls.
+#[cfg(all(feature = "test-support", windows))]
+pub use windows_test_filesystems::junction as test_directory_junction;
 
 pub mod access;
 mod arc_layout;

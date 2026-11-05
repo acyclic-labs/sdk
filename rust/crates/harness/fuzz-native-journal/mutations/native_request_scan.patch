@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness/src/local/host_files.rs b/rust/crates/harness/src/local/host_files.rs
+index 053291936c..f12932d31a 100644
+--- a/rust/crates/harness/src/local/host_files.rs
++++ b/rust/crates/harness/src/local/host_files.rs
+@@ -860,7 +860,7 @@ impl Served {
+         if let Some(failure) = touched.failure {
+             return Err(Error::Storage(failure));
+         }
+-        let names = if touched.rescan {
++        let names = if true {
+             #[cfg(test)]
+             {
+                 self.rescans += 1;

@@ -183,5 +183,5 @@ include!("snapshot.rs");
 
 include!("frame_checksum.rs");
 
-#[cfg(all(feature = "test-support", not(loom)))]
+#[cfg(feature = "test-support")]
 mod publication_barrier;

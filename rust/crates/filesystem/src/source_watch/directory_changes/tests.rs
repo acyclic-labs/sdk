@@ -98,29 +98,6 @@ fn assert_retired(shared: &Shared) {
     assert!(shared.retired(&shared.lock_reads()));
     assert_eq!(shared.buffer_bytes.load(Ordering::Acquire), 0);
 }
-fn wait_retired(shared: &Shared) {
-    // The last watch owner has dropped. Only its port thread can finish this
-    // retirement, and that thread never blocks on its own packet collection.
-    let _waiting = hub::Waiting::enter(shared).expect("native terminal producer is live");
-    let mut arrivals = shared
-        .arrivals
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    while !shared.stop_completed.load(Ordering::Acquire) {
-        assert!(!hub::lost(), "native terminal producer was lost");
-        assert!(
-            !shared.parked.load(Ordering::Acquire),
-            "native retirement exhausted its original cleanup credit"
-        );
-        arrivals = shared
-            .arrived
-            .wait(arrivals)
-            .unwrap_or_else(PoisonError::into_inner);
-    }
-    drop(arrivals);
-    assert!(shared.stop_completed.load(Ordering::Acquire));
-    assert_retired(shared);
-}
 fn record(extended: bool, action: u32, file: u64, name: &str, last: bool) -> Vec<u8> {
     let name = name
         .encode_utf16()
@@ -263,6 +240,22 @@ fn stop_denial_and_cancellation_retain_the_same_native_owner() -> TestResult {
 mod original {
     use super::*;
     use crate::demand::NativeDemandReadMeter;
+    fn wait_retired(shared: &Shared) {
+        assert!(
+            shared
+                .wait_for(|| {
+                    if shared.stop_completed.load(Ordering::Acquire) {
+                        Ok(true)
+                    } else if shared.parked.load(Ordering::Acquire) {
+                        Err(DemandError::NativeWorkUnavailable)
+                    } else {
+                        Ok(false)
+                    }
+                })
+                .expect("original watch retires without losing its collector or cleanup work")
+        );
+        assert_retired(shared);
+    }
     fn budget() -> WorkBudget {
         WorkBudget {
             backend_read_operations: 64,

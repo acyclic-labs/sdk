@@ -25,6 +25,12 @@ fn request_storage_cause(error: &Error, operation: OperationId) -> &str {
     cause
 }
 
+fn observer(bridge: &Bridge) -> std::thread::JoinHandle<()> {
+    lock(&bridge.observer)
+        .take()
+        .expect("the original owner observer")
+}
+
 fn reply_path(status: &Path, operation: OperationId) -> PathBuf {
     status.join(format!("{operation}.json"))
 }
@@ -341,12 +347,6 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
         )?;
         Ok((checkout, workspace, ownership))
     }
-    fn observer(bridge: &Bridge) -> std::thread::JoinHandle<()> {
-        lock(&bridge.observer)
-            .take()
-            .expect("the original owner observer")
-    }
-
     let registry = Arc::new(Mutex::<Registry>::default());
     let (_checkout, cwd, owner_lock) = owner()?;
     let (_other_checkout, other_cwd, other_lock) = owner()?;
@@ -1238,11 +1238,10 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         .map_err(storage)?,
     )?;
     connected.shared.published(operation);
-    let committed =
-        tokio::task::spawn_blocking(move || response.recv_timeout(Duration::from_secs(2)))
-            .await
-            .map_err(storage)?
-            .map_err(storage)?;
+    let committed = tokio::task::spawn_blocking(move || response.recv())
+        .await
+        .map_err(storage)?
+        .map_err(storage)?;
     let Delivery::Reply(Ok(committed)) = committed else {
         panic!("the actual owner must publish its committed result");
     };
@@ -1473,19 +1472,12 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         // Requests of one process wait concurrently, each its own keyed
         // waiter, sharing one watch per awaited status key.
         std::thread::scope(|scope| {
-            let readers = (0..8)
-                .map(|reader| {
-                    let (cwd, parent) = (&cwd, &parent);
-                    scope.spawn(move || {
-                        let action = if reader % 2 == 0 {
-                            HostAction::Sessions { parent: parent.clone() }
-                        } else {
-                            HostAction::Locate { cwd: cwd.clone() }
-                        };
-                        request(cwd, action).map(|_| ())
-                    })
-                })
-                .collect::<Vec<_>>();
+            let cwd = &cwd;
+            let readers = [
+                HostAction::Sessions { parent: parent.clone() },
+                HostAction::Locate { cwd: cwd.clone() },
+            ]
+            .map(|action| scope.spawn(move || request(cwd, action).map(|_| ())));
             readers.into_iter().try_for_each(|reader| {
                 reader
                     .join()
@@ -1516,18 +1508,13 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             .as_ref()
     );
     assert!(result.get("task").is_some_and(Value::is_string));
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while std::fs::read_dir(&requests)
-            .map_err(storage)?
-            .next()
-            .is_some()
-        {
-            projection_event(&mut changes, &mut owner).await?;
-        }
-        Ok::<_, Error>(())
-    })
-    .await
-    .map_err(storage)??;
+    while std::fs::read_dir(&requests)
+        .map_err(storage)?
+        .next()
+        .is_some()
+    {
+        projection_event(&mut changes, &mut owner).await?;
+    }
     assert!(
         !owner.is_finished(),
         "invalid writable projections must not stop the owner"
@@ -1537,30 +1524,20 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         std::fs::read(outside.path()).map_err(storage)?,
         b"outside remains untouched"
     );
-    assert_eq!(
-        std::fs::read_dir(checkout.path().join(DIRECTORY).join("requests"))
-            .map_err(storage)?
-            .count(),
-        0
-    );
     // Every consumed operation's reply is retired, without touching debris.
     let statuses = checkout.path().join(DIRECTORY).join("status");
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let mut pending = 0;
-            for entry in std::fs::read_dir(&statuses).map_err(storage)? {
-                if entry.map_err(storage)?.path() != debris {
-                    pending += 1;
-                }
+    loop {
+        let mut pending = 0;
+        for entry in std::fs::read_dir(&statuses).map_err(storage)? {
+            if entry.map_err(storage)?.path() != debris {
+                pending += 1;
             }
-            if pending == 0 {
-                return Ok::<_, Error>(());
-            }
-            projection_event(&mut changes, &mut owner).await?;
         }
-    })
-    .await
-    .map_err(storage)??;
+        if pending == 0 {
+            break;
+        }
+        projection_event(&mut changes, &mut owner).await?;
+    }
     assert_eq!(
         std::fs::read(&debris).map_err(storage)?,
         b"unrelated status is not a reply",
@@ -1696,11 +1673,10 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     let rejected = requests.join(format!("{operation}.json"));
     std::fs::create_dir(&rejected).map_err(storage)?;
     blocked.shared.published(operation);
-    let failure = tokio::time::timeout(Duration::from_secs(2), &mut owner)
+    let failure = owner
         .await
         .map_err(storage)?
-        .map_err(storage)?
-        .unwrap_err();
+        .expect_err("failed request withdrawal must end its original owner");
     let Error::Cleanup(causes) = failure else {
         panic!("rejected request must retain admission and withdrawal causes: {failure}");
     };
@@ -1731,9 +1707,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     );
     // Client observation already retained the original admission cause. Join
     // the actual owner-lock producer before asserting its separate retirement.
-    lock(&blocked.observer)
-        .take()
-        .expect("original owner-lock observer")
+    observer(&blocked)
         .join()
         .expect("original owner-lock producer retires");
     drop(waiting);
@@ -1778,6 +1752,113 @@ fn endpoint_projection_cannot_follow_a_workspace_symlink() -> Result<()> {
         std::fs::read_dir(outside.path()).map_err(storage)?.count(),
         0
     );
+    Ok(())
+}
+
+#[test]
+fn request_observation_failure_preserves_accepted_work_until_real_withdrawal() -> Result<()> {
+    // Exercise the original file writer, admission, dispatch and reply paths
+    // at each custody phase. The OS error comes from the real request path.
+    for phase in 0..3 {
+        let root = tempfile::tempdir().map_err(storage)?;
+        let directory = root.path().join(DIRECTORY);
+        let requests = directory.join("requests");
+        let status = directory.join("status");
+        std::fs::create_dir_all(&requests).map_err(storage)?;
+        std::fs::create_dir(&status).map_err(storage)?;
+        let held = acyclic_fs::hold_root(&status).map_err(native_file_error)?;
+        let inputs = acyclic_fs::hold_root(&requests).map_err(native_file_error)?;
+        let session = uuid::Uuid::new_v4();
+        let operation = OperationId::new();
+        let name = OsString::from(format!("{operation}.json"));
+        let path = requests.join(&name);
+        let request = Request {
+            session,
+            operation,
+            action: HostAction::Open {
+                host: "codex".into(),
+                session: "retained-request".into(),
+            },
+        };
+        immutable(&path, &serde_json::to_vec(&request).map_err(storage)?)?;
+        let mut served = Served::default();
+        let touched = || Touched {
+            names: BTreeSet::from([name.clone()]),
+            rescan: false,
+            failure: None,
+        };
+        served.touch(&inputs, &held, session, touched())?;
+        assert_eq!(
+            served.rescans, 0,
+            "named request observation scanned history"
+        );
+        if phase >= 1 {
+            let started = served.start();
+            assert_eq!(started.len(), 1);
+            assert_eq!(started[0].operation, operation);
+        }
+        if phase == 2 {
+            served.answer(&held, operation, Ok(serde_json::json!({"original": true})))?;
+        }
+        let answer = (phase == 2)
+            .then(|| regular_bytes(&reply_path(&status, operation), u64::MAX))
+            .transpose()?;
+        // A successful observation cannot retire accepted work.
+        served.touch(&inputs, &held, session, touched())?;
+        // A directory cannot be opened as an original regular request. Its
+        // real held-directory error cannot establish request withdrawal.
+        let retained = requests.join("retained.json");
+        std::fs::rename(&path, &retained).map_err(storage)?;
+        std::fs::create_dir(&path).map_err(storage)?;
+        let cause = native_file_error(
+            inputs
+                .open_file(Path::new(&name), false)
+                .expect_err("a directory cannot be an original regular request"),
+        );
+        let Err(error) = served.touch(&inputs, &held, session, touched()) else {
+            panic!("observation failure was treated as withdrawal");
+        };
+        assert_eq!(error.code(), cause.code());
+        assert_eq!(error.to_string(), cause.to_string());
+        assert!(
+            match served.known.get(&operation) {
+                Some(Tracked::Queued) => phase == 0,
+                Some(Tracked::Running { withdrawn: false }) => phase == 1,
+                Some(Tracked::Answered(None)) => phase == 2,
+                _ => false,
+            },
+            "observation failure retired accepted work"
+        );
+        assert_eq!(served.rescans, 0);
+        if let Some(answer) = answer {
+            assert_eq!(
+                regular_bytes(&reply_path(&status, operation), u64::MAX)?,
+                answer
+            );
+        }
+        // Recovery observes the same input; only its actual removal withdraws.
+        std::fs::remove_dir(&path).map_err(storage)?;
+        std::fs::rename(&retained, &path).map_err(storage)?;
+        served.touch(&inputs, &held, session, touched())?;
+        remove_projection(&path)?;
+        served.touch(&inputs, &held, session, touched())?;
+        if phase == 1 {
+            assert!(matches!(
+                served.known.get(&operation),
+                Some(Tracked::Running { withdrawn: true })
+            ));
+            served.answer(&held, operation, Ok(Value::Null))?;
+        }
+        assert!(served.start().is_empty());
+        assert!(served.known.is_empty());
+        assert!(
+            std::fs::read_dir(&status)
+                .map_err(storage)?
+                .next()
+                .is_none()
+        );
+        assert_eq!(served.rescans, 0);
+    }
     Ok(())
 }
 

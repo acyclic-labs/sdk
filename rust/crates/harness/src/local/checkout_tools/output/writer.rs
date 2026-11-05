@@ -93,7 +93,7 @@ impl Writer {
     }
 
     // Retain the bytes and sequence until their file is staged.
-    pub(super) async fn flush(&mut self, stderr: bool) -> Result<()> {
+    async fn flush(&mut self, stderr: bool) -> Result<()> {
         let (pending, sequence, stream) = if stderr {
             (&self.pending.1, self.sequence.1, "stderr")
         } else {
@@ -121,9 +121,13 @@ impl Writer {
         Ok(())
     }
 
-    pub(super) async fn finish(&mut self, result: &ToolResult) -> Result<()> {
+    pub(super) async fn flush_pending(&mut self) -> Result<()> {
         self.flush(false).await?;
-        self.flush(true).await?;
+        self.flush(true).await
+    }
+
+    pub(super) async fn finish(&mut self, result: &ToolResult) -> Result<()> {
+        self.flush_pending().await?;
         let outcome = crate::local::tool_metadata::encode(
             result
                 .value
