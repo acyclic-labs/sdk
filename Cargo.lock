@@ -714,6 +714,7 @@ dependencies = [
  "blake3",
  "bytes",
  "diffy",
+ "ed25519-dalek",
  "futures",
  "harness-mock-model",
  "libfuzzer-sys",

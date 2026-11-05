@@ -101,6 +101,29 @@ fuzz_target!(|data: &[u8]| {
             identity.subject()
         );
 
+        // Authenticated arbitrary claims must reach the claims decoder, rather
+        // than stopping every mutation at the signature boundary.
+        use ed25519_dalek::Signer as _;
+        let signing = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
+        let ed_keys = serde_json::to_vec(&json!({"keys":[{
+            "kty":"OKP", "crv":"Ed25519", "alg":"EdDSA", "kid":"ed",
+            "x":URL_SAFE_NO_PAD.encode(signing.verifying_key().to_bytes())
+        }]}))
+        .unwrap();
+        let mut ed = oidc::Verifier::new(config(oidc::SigningAlgorithm::EdDsa));
+        ed.refresh(&Source(&ed_keys), now).await.unwrap();
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"EdDSA","kid":"ed"}"#);
+        let signed = |payload: &str| {
+            let message = format!("{header}.{payload}");
+            let signature = signing.sign(message.as_bytes());
+            format!("{message}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()))
+        };
+        assert_eq!(
+            ed.verify(&signed(payload), now).unwrap().subject(),
+            identity.subject()
+        );
+        let _ = ed.verify(&signed(&URL_SAFE_NO_PAD.encode(data)), now);
+
         // All pinned key families reach their real JWKS decoder. A rejected
         // replacement must preserve the original authenticated snapshot.
         for algorithm in [

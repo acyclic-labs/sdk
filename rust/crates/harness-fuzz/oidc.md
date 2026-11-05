@@ -16,7 +16,10 @@ without contacting an issuer or changing signed bytes.
 
 An internal ES256 vector uses the maintained P-256 signer and the captured
 claim bytes; invalid curve-point replacement must retain its last-good key.
-This generated cryptographic vector is not an external-server response.
+An internal Ed25519 signer also authenticates arbitrary claims, so fuzzing
+reaches their production decoder beyond the signature boundary. `dex-claims`
+contains the exact decoded payload of the captured ID token. These generated
+cryptographic vectors are not external-server responses.
 
 Every invocation requires original signature/identity/expiry acceptance and
 refusal of an actual corrupted signature. Arbitrary input reaches the compact
