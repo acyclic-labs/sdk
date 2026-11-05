@@ -3,9 +3,6 @@ use super::*;
 /// Git compatibility failure.
 #[derive(Debug, Error)]
 pub enum GitCompatError<E: std::error::Error + 'static> {
-    /// The original request owner could not authenticate reply withdrawal.
-    #[error("Git compatibility request observation failed: {0}")]
-    RequestObservation(std::io::Error),
     /// Durable adapter failed.
     #[error("Git compatibility store failed: {0}")]
     Store(E),

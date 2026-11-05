@@ -164,7 +164,6 @@ proptest! {
         for limits in [
             DecodeLimits::default(),
             DecodeLimits { maximum_page_items: 1, ..DecodeLimits::default() },
-            DecodeLimits { maximum_name_bytes: 1, ..DecodeLimits::default() },
         ] {
             let expected = decode_binding_page(&bytes, limits, &mut |_| Ok::<_, CanonicalDecodeError>(())).is_ok();
             let observed = super::super::visit_object_references(

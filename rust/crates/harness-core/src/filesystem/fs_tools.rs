@@ -142,7 +142,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
         read_before_effect(&mut cancellation, access.require(&root)).await?;
         let request = acyclic_fs::GitRequest {
             operation: acyclic_fs::OperationId::from_bytes(context.operation_id().into_bytes()),
-            unanswered: Arc::new(|_| Ok(true)),
+            unanswered: Arc::new(|_| true),
         };
         let repository = acyclic_fs::GitCompatRepository::new(root.id(), self.store.clone())
             .for_request(request.clone());

@@ -264,7 +264,7 @@ fn declared_method_credentials_match_session_admission() {
             };
             let credential = testing::credential_with_grants(grants);
             let mut slots = Slots::default();
-            auth.register(&mut slots, 0, &credential, 1).unwrap();
+            auth.register(&mut slots, 0, &credential).unwrap();
             assert_eq!(
                 admit(&auth, &slots, method, "allowed").is_ok(),
                 removed.is_none(),
@@ -297,7 +297,7 @@ fn product_call_targets_retain_exact_action_resource_and_live_credential() {
             actions: vec![action.into()],
         }]);
         let mut slots = Slots::default();
-        authority.register(&mut slots, 0, &credential, 1).unwrap();
+        authority.register(&mut slots, 0, &credential).unwrap();
         let target = CallTarget::new(resource.into(), action).unwrap();
         let (mut binding, original) = authority.bind_call(&slots, 0, target, 1).unwrap();
         original
@@ -339,12 +339,12 @@ fn product_call_targets_retain_exact_action_resource_and_live_credential() {
             },
             actions: vec![other_action.into()],
         }]);
-        authority.register(&mut slots, 0, &replacement, 1).unwrap();
+        authority.register(&mut slots, 0, &replacement).unwrap();
         assert!(matches!(
             authority.validate(&slots, &mut binding, 1),
             Err(Rejection::Forbidden)
         ));
-        authority.register(&mut slots, 0, &credential, 1).unwrap();
+        authority.register(&mut slots, 0, &credential).unwrap();
         authority.validate(&slots, &mut binding, 1).unwrap();
         // Revalidation retained this same provider authorization, action and
         // target. No new context can bypass the original owner's policy.

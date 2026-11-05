@@ -844,11 +844,7 @@ async fn merge_directory_opaque_bindings() -> Result<(), Box<dyn Error>> {
         )
         .await?;
         let path = NamespacePath::new(
-            vec![LogicalName::new(
-                encoding,
-                bytes.clone(),
-                config.limits.maximum_component_bytes,
-            )?],
+            vec![LogicalName::new(encoding, bytes.clone())?],
             config.limits,
         )?;
         let cancellation = CancellationToken::new();

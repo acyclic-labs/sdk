@@ -171,9 +171,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             }
             state.pending = None;
             // An abort is its own command, not recovery of the merge.
-            state
-                .record_request(self.request_operation(), self.unanswered(), &output)
-                .map_err(GitCompatError::RequestObservation)?;
+            state.record_request(self.request_operation(), self.unanswered(), &output);
             Ok(())
         })
         .await?;
@@ -252,9 +250,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             // Prepared work settles under the request that started it.
             pending.request = self.request_operation();
         } else {
-            state
-                .record_request(self.request_operation(), self.unanswered(), &output)
-                .map_err(GitCompatError::RequestObservation)?;
+            state.record_request(self.request_operation(), self.unanswered(), &output);
         }
         if self.publish(state).await? {
             return Ok(output);

@@ -140,38 +140,15 @@ impl GitCompatState {
         operation: Option<OperationId>,
         unanswered: Option<&GitRequestUnanswered>,
         output: &GitCommandOutput,
-    ) -> std::io::Result<()> {
-        let keep = match (operation, unanswered) {
-            (Some(operation), Some(unanswered)) => unanswered(operation)?,
-            (Some(_), None) => true,
-            (None, _) => false,
-        };
+    ) {
         if let Some(unanswered) = unanswered {
-            let mut failure = None;
-            self.requests.retain(|request, _| {
-                if failure.is_some() {
-                    return true;
-                }
-                match unanswered(*request) {
-                    Ok(keep) => keep,
-                    Err(error) => {
-                        failure = Some(error);
-                        true
-                    }
-                }
-            });
-            // Callers publish only on success; this private state is discarded
-            // on observation failure, including any earlier tentative removals.
-            if let Some(error) = failure {
-                return Err(error);
-            }
+            self.requests.retain(|request, _| unanswered(*request));
         }
         if let Some(operation) = operation
-            && keep
+            && unanswered.is_none_or(|unanswered| unanswered(operation))
         {
             self.requests.insert(operation, output.clone());
         }
-        Ok(())
     }
 
     pub(super) fn current(&self) -> Result<&GitBranch, ()> {

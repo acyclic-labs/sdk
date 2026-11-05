@@ -205,12 +205,11 @@ impl<A, O> CheckoutMountSource<A, O> {
                 // Register outside the gate: an already-cancelled token invokes
                 // its callback immediately, and that callback takes this mutex.
                 drop(gate);
-                let gate = Arc::clone(&self.capture_gate);
-                let quiesced = Arc::clone(&self.capture_quiesced);
+                let signal = Arc::clone(&self.capture_signal);
                 cancellation = Some(
                     wait.on_cancel(self.native_original.as_ref(), move || {
-                        let _gate = gate.lock().unwrap_or_else(PoisonError::into_inner);
-                        quiesced.notify_all();
+                        let _gate = signal.gate.lock().unwrap_or_else(PoisonError::into_inner);
+                        signal.quiesced.notify_all();
                     })
                     .map_err(MountSourceError::NativeWork)?,
                 );

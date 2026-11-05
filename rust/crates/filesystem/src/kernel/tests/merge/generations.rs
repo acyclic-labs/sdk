@@ -584,7 +584,6 @@ async fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage
             vec![LogicalName::new(
                 NameEncoding::Utf8,
                 name.as_bytes().to_vec(),
-                config.limits.maximum_component_bytes,
             )?],
             config.limits,
         )?)

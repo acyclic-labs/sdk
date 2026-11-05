@@ -303,7 +303,8 @@ fn native_source_io_last_physical_lease_retires_after_caller_cancellation()
     let worker_source = Arc::clone(&source);
     let (waiting, observed) = std::sync::mpsc::channel();
     source
-        .capture_gate
+        .capture_signal
+        .gate
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .cleanup_wait_observed = Some(waiting);
@@ -497,7 +498,8 @@ impl Drop for CleanupWaitObservation {
     fn drop(&mut self) {
         if let Some(source) = self.0.upgrade() {
             source
-                .capture_gate
+                .capture_signal
+                .gate
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .cleanup_wait_observed

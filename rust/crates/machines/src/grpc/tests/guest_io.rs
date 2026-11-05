@@ -531,7 +531,7 @@ async fn stopped_capture_retains_reason_and_physical_cleanup_receipt() {
         .await
         .unwrap();
     drop(sender);
-    let captured = capture_exec(output, 0).await.unwrap();
+    let captured = capture_exec(output, Some(0)).await.unwrap();
     assert_eq!(captured.exit_code, None);
     assert_eq!(
         captured.stop,
@@ -573,7 +573,7 @@ async fn combined_capture_allowance_refuses_without_draining_or_redispatch() {
         .await
         .unwrap();
     assert!(matches!(
-        capture_exec(output, 1).await,
+        capture_exec(output, Some(1)).await,
         Err(ProviderError::Rejected(_))
     ));
     sender.closed().await;
