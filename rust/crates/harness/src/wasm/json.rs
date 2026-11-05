@@ -398,6 +398,15 @@ fn serialize_admitted<T: serde::Serialize>(
     Ok(js)
 }
 
+pub(super) fn exact_nonnegative_u64(value: f64, field: &str) -> Result<u64, JsValue> {
+    if !crate::conversation::is_exact_js_number(value) || value < 0.0 || value.fract() != 0.0 {
+        return Err(JsValue::from_str(&format!(
+            "{field} must be an exact nonnegative integer"
+        )));
+    }
+    Ok(value as u64)
+}
+
 pub(super) fn exact_js_number(value: u64) -> Result<JsValue, JsValue> {
     if value > crate::conversation::MAX_EXACT_JS_INTEGER {
         return Err(JsValue::from_str(
