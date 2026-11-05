@@ -1073,24 +1073,24 @@ async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> R
         acyclic_actors::guest::CancellationToken::new(),
     )
     .await?;
-    // It runs with the client's child open and reachable, and the tool's
-    // spawn past the limit is refused rather than failing every retry.
+    // It runs with the client's child open and reachable. The next spawn
+    // has no population ceiling and retains the same commit ordering.
     assert_eq!(
         *driver.0.lock().expect("seen lock"),
         Some(MAX_OPEN_CHILDREN)
     );
-    assert!(spawns(&stepped.outs).is_empty());
+    assert_eq!(spawns(&stepped.outs), [intent("spawn:tool")]);
     assert_eq!(
         stepped.state.spawn_outcome(&client).await?,
         SpawnOutcome::Spawned { child }
     );
     assert_eq!(
         stepped.state.spawn_outcome(&intent("spawn:tool")).await?,
-        SpawnOutcome::Refused {
-            reason: SpawnRefusal::Limit
+        SpawnOutcome::Spawned {
+            child: TurnEffect::child(&root, &intent("spawn:tool"))?
         }
     );
-    assert_eq!(stepped.state.open_children.len(), MAX_OPEN_CHILDREN);
+    assert_eq!(stepped.state.open_children.len(), MAX_OPEN_CHILDREN + 1);
     Ok(())
 }
 
