@@ -65,7 +65,10 @@ pub(crate) fn source_failure(error: &MountSourceError) -> CallbackFailure {
         MountSourceError::Cancelled => F::Cancelled,
         MountSourceError::Allocation(_) => F::OutOfMemory,
         MountSourceError::Io(error, _) => F::io(error),
-        MountSourceError::NativeWork(error) => materialization_failure(error),
+        MountSourceError::NativeWork(error)
+        | MountSourceError::RetirementFinalization {
+            completion: error, ..
+        } => materialization_failure(error),
         MountSourceError::WorkspaceCause(error) => workspace_failure(error),
         MountSourceError::Filesystem(error) => filesystem_failure(error),
         _ => F::Io,
