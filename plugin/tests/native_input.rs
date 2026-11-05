@@ -23,11 +23,9 @@ fn native_stdin_failures_stop_before_workspace_effects() -> Result<(), Box<dyn s
         .expect_err("selected stdin must refuse an OS read")
         .to_string();
     let executable = binary::acyclic();
-    for args in [
-        &["__workspace"][..],
-        &["__install-package"][..],
-        &["__hook", "codex", "Stop"][..],
-    ] {
+    let capture = |args: &[&str],
+                   input: &std::fs::File|
+     -> Result<std::process::Output, Box<dyn std::error::Error>> {
         let mut command = ProcessCommand::new(&executable);
         command
             .args(args)
@@ -63,6 +61,14 @@ fn native_stdin_failures_stop_before_workspace_effects() -> Result<(), Box<dyn s
             process.is_reaped(),
             "native stdin refusal must retire its process"
         );
+        Ok(output)
+    };
+    for args in [
+        &["__workspace"][..],
+        &["__install-package"][..],
+        &["__hook", "codex", "Stop"][..],
+    ] {
+        let output = capture(args, &input)?;
         if args[0] == "__hook" {
             assert!(output.status.success());
             assert!(output.stderr.is_empty());
@@ -91,5 +97,54 @@ fn native_stdin_failures_stop_before_workspace_effects() -> Result<(), Box<dyn s
             "native stdin failure must precede package and host settings effects"
         );
     }
+    use acyclic_harness::{
+        Error, OperationId, Outcome,
+        agent::{AgentId, AgentPath},
+        executor::TurnOutput,
+        local::{
+            host_files,
+            host_owner::{HostAction, SessionAction, TurnClaim},
+        },
+    };
+    let task = AgentPath::root(&AgentId::from_bytes([13; 16]));
+    let action = HostAction::Session {
+        parent: task.clone(),
+        reference: "near-bound-completion".into(),
+        next: false,
+        action: SessionAction::Complete {
+            claim: TurnClaim {
+                agent: task,
+                operation: OperationId::from_bytes([19; 16]),
+                turn: 1,
+            },
+            outcome: Outcome::Succeeded(TurnOutput::new(
+                "x".repeat(65_336),
+                serde_json::Value::Null,
+                1,
+            )),
+        },
+    };
+    let bytes = serde_json::to_vec(&action)?;
+    assert!(
+        bytes.len() > 65_536,
+        "workspace envelope crosses the hook frame bound"
+    );
+    let Error::Command(refusal) = host_files::request(&workspace, action).unwrap_err() else {
+        panic!("workspace client must retain its original refusal");
+    };
+    let expected = refusal.original().unwrap().to_string();
+    let path = directory.path().join("completion.json");
+    std::fs::write(&path, bytes)?;
+    let output = capture(&["__workspace"], &std::fs::File::open(path)?)?;
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        std::str::from_utf8(&output.stderr)?
+            .trim_end()
+            .ends_with(&expected),
+        "workspace envelope must reach the original workspace client: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(std::fs::read_dir(&workspace)?.next().is_none());
     Ok(())
 }
