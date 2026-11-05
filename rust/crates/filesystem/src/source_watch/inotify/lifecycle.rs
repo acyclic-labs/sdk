@@ -311,25 +311,12 @@ impl NativeSourceWatch {
         self.stop(work, None, false)
     }
 
-    pub(in crate::source_watch) fn cleanup(
+    pub(in crate::source_watch) fn cleanup_driver(
         &self,
+        work: &mut crate::NativeMaterializationWork,
         wait: Option<&crate::CancellationToken>,
     ) -> Result<(), DemandError> {
-        if wait.is_none() {
-            self.shared.delivery.ensure_stop_available()?;
-        }
-        let original = self
-            .shared
-            .delivery
-            .original
-            .as_ref()
-            .ok_or(DemandError::NativeWorkUnavailable)?;
-        check_wait(wait)?;
-        self.stop(
-            &mut crate::NativeMaterializationWork::clone(original),
-            wait,
-            true,
-        )?;
+        self.stop(work, wait, true)?;
         check_wait(wait)
     }
 

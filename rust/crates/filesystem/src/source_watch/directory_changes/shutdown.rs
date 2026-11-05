@@ -7,19 +7,12 @@ impl NativeSourceWatch {
     ) -> Result<(), DemandError> {
         self.stop(work, false, None)
     }
-    pub(in crate::source_watch) fn cleanup(
+    pub(in crate::source_watch) fn cleanup_driver(
         &self,
+        work: &mut crate::NativeMaterializationWork,
         wait: Option<&crate::CancellationToken>,
     ) -> Result<(), DemandError> {
-        check_wait(wait)?;
-        let mut work = self
-            .shared
-            .delivery
-            .original
-            .as_ref()
-            .ok_or(DemandError::NativeWorkUnavailable)?
-            .clone();
-        self.stop(&mut work, true, wait)
+        self.stop(work, true, wait)
     }
     pub(super) fn stop<W: SourceDemandReadWork>(
         &self,
