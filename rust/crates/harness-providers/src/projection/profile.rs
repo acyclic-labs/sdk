@@ -283,6 +283,14 @@ mod tests {
                 });
                 let derived = derived.unwrap();
                 assert_eq!(selected.model(), &original);
+                let selected = if name == "opaque-alias" && effort == Some("high") {
+                    let live = std::sync::Arc::new(selected);
+                    wrapped_admission(live.clone(), &original, &profile)?;
+                    std::sync::Arc::try_unwrap(live)
+                        .map_err(|_| invalid("profile admission retained its original selection"))?
+                } else {
+                    selected
+                };
                 let provider = selected.with_profile(&profile);
                 if !levels && effort.is_some() {
                     assert!(matches!(
@@ -328,7 +336,6 @@ mod tests {
                         .as_ref()
                 );
                 if name == "opaque-alias" && effort == Some("high") {
-                    wrapped_admission(std::sync::Arc::new(selected), &original, &profile)?;
                     // Changing future admission cannot rewrite a retained member.
                     catalog.models.get_mut(name).unwrap().thinking_levels = false;
                     registry.register("gemini".into(), catalog.clone())?;
