@@ -8,15 +8,16 @@ fn syntax_data_preserves_bundled_grammars_and_rejects_invalid_envelopes() {
     use syntect::{easy::HighlightLines, highlighting::ThemeSet, parsing::SyntaxSet};
 
     let corpus = acyclic_test_support::crate_path!("fuzz/corpus/syntax_data");
-    for entry in std::fs::read_dir(corpus).unwrap() {
-        syntect::test_support::check_syntax_data(&std::fs::read(entry.unwrap().path()).unwrap());
-    }
-    let themes = ThemeSet::load_defaults();
+    let theme_data = std::fs::read(corpus.join("default.themedump")).unwrap();
+    let themes: ThemeSet = syntect::dumps::from_reader(&theme_data[..])
+        .expect("default.themedump must decode as ThemeSet");
+    syntect::test_support::check_syntax_data(&theme_data);
     let theme = themes.themes.values().next().unwrap();
-    for syntaxes in [
-        SyntaxSet::load_defaults_newlines(),
-        SyntaxSet::load_defaults_nonewlines(),
-    ] {
+    for name in ["default_newlines.packdump", "default_nonewlines.packdump"] {
+        let data = std::fs::read(corpus.join(name)).unwrap();
+        let syntaxes: SyntaxSet = syntect::dumps::from_uncompressed_data(&data)
+            .unwrap_or_else(|error| panic!("{name} must decode as SyntaxSet: {error}"));
+        syntect::test_support::check_syntax_data(&data);
         for syntax in syntaxes.syntaxes() {
             let mut highlighter = HighlightLines::new(syntax, theme);
             let source = "let answer = 42; // syntax data\n";

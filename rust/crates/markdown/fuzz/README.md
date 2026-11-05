@@ -8,7 +8,9 @@ Its three corpus files are exact copies of the maintained Syntect production
 syntax sets (both newline modes) and themes. See
 [`../../../vendor/syntect-5.3.0/README.md`](../../../vendor/syntect-5.3.0/README.md)
 for capture provenance. The same property runs in the Markdown integration
-test, alongside parsing through every bundled grammar. The shared library
+test, which requires every named seed to decode as its intended type and parses
+every grammar from those same seed bytes using the decoded theme. Rejected
+arbitrary fuzz inputs remain valid. The shared library
 property checks round trips, unsupported versions, truncated values, invalid
 MessagePack and trailing decoded bytes for syntax sets, themes and the original
 lazy grammar payloads. Every malformed decoded value is checked both directly
