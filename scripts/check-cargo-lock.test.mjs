@@ -40,8 +40,17 @@ resolver = "3"
     assert.equal(readFileSync(lock, 'utf8'), reordered, '--locked accepts the planted ordering defect');
     const negative = check();
     assert.equal(negative.status, 1, negative.stderr);
-    assert.match(negative.stderr, /step=cargo-lock-canonical:.*canonical output.*recovery command: cargo metadata/);
+    assert.match(negative.stderr, /step=cargo-lock-canonical:.*canonical output.*recovery command: cargo update --workspace/);
     assert.equal(readFileSync(lock, 'utf8'), canonical, 'Cargo restores its own exact original bytes');
+
+    const manifest = join(root, 'zeta/Cargo.toml');
+    writeFileSync(manifest, readFileSync(manifest, 'utf8').replace('0.0.0', '0.0.1'));
+    const stale = check();
+    assert.equal(stale.status, 1, stale.stderr);
+    assert.match(stale.stderr, /step=cargo-lock-canonical:.*canonical output/);
+    assert.notEqual(readFileSync(lock, 'utf8'), canonical, 'manifest drift must change the lockfile');
+    const repaired = check();
+    assert.equal(repaired.status, 0, repaired.stderr);
   } finally {
     rmSync(root, {recursive: true, force: true});
   }
