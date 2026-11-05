@@ -5,7 +5,6 @@ Executables must already be built. Native model-session acceptance belongs to
 the real-host e2e suite; this regression never reads native authentication.
 """
 import json, os, pathlib, selectors, signal, socket, subprocess, sys, tempfile, time, traceback
-from native_events import native_event_fixture
 from native_fixture import fixture_environment, start_workspace_owner, stop_workspace_owner
 from native_mcp import McpClient
 if len(sys.argv) != 5:
@@ -13,7 +12,9 @@ if len(sys.argv) != 5:
 acyclic, graphcoder, real_codex = map(lambda path: str(pathlib.Path(path).resolve()), sys.argv[1:4])
 scenario=sys.argv[4]
 assert scenario in ('lifecycle','recursive','resume')
-fixture_path, native_session_id = native_event_fixture('codex')
+completion_path=pathlib.Path(__file__).resolve().parent/'fixtures/native-completion.json'
+completion=next(record for record in json.loads(completion_path.read_text())['records'] if record['host']=='codex')
+native_session_id=json.loads(completion['stdout'].splitlines()[0])['thread_id']
 started=time.monotonic()
 def interrupted(signum, frame):
  traceback.print_stack(frame)
@@ -24,6 +25,7 @@ with tempfile.TemporaryDirectory(prefix='.plugins-session-proof-',dir=pathlib.Pa
  except OSError as error:
   raise RuntimeError(f'step=arm native readiness: {error}; recovery command: python3 plugin/tests/hosts/managed-session.py ACYCLIC GRAPHCODER CODEX {scenario}') from error
  root=pathlib.Path(temporary);workspace=root/'workspace';workspace.mkdir();state=root/'state';state.mkdir();bin_dir=root/'bin';bin_dir.mkdir()
+ fixture_path=root/'native-events.jsonl';fixture_path.write_text(completion['stdout'])
  env=fixture_environment(root, {'PATH':str(bin_dir)+':'+os.environ['PATH'],'FIXTURE_CODEX':real_codex,'FIXTURE_EVENTS':str(fixture_path),'FIXTURE_ACYCLIC':acyclic,'FIXTURE_WORKSPACE':str(workspace),'FIXTURE_OUTSIDE':str(state/'denied'),'FIXTURE_HOST_SUPPORT':str(pathlib.Path(__file__).resolve().parent)})
  env['FIXTURE_BARRIER']=str(barrier.getsockname()[1])
  (workspace/'AGENTS.md').write_text('native instruction discovery fixture')
@@ -94,7 +96,7 @@ if prompt=='cancelled':
  hold_for_cancel()
 if prompt=='failed': sys.exit(17)
 if prompt=='resumed':
- event=json.loads(pathlib.Path(os.environ['FIXTURE_EVENTS']).read_text())
+ event=json.loads(pathlib.Path(os.environ['FIXTURE_EVENTS']).read_text().splitlines()[0])
  assert args[args.index('resume')+1]==event['thread_id']
 
 ''');fake.chmod(0o755)
