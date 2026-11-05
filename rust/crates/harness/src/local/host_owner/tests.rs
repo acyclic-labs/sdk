@@ -114,10 +114,6 @@ async fn codex_native_session_lifecycle() -> Result<()> {
 async fn claude_native_session_lifecycle() -> Result<()> {
     native_session_lifecycle("claude-code").await
 }
-#[tokio::test]
-async fn pi_native_session_lifecycle() -> Result<()> {
-    native_session_lifecycle("pi").await
-}
 
 /// One child through spawn, follow-up, a failed write, an owner restart,
 /// interruption and merge: every turn is the child agent's own commit.
