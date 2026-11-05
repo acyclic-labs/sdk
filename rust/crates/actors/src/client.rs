@@ -582,83 +582,51 @@ operations!(client_operations);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        future::Future,
-        pin::Pin,
-        sync::{
-            Arc,
-            atomic::{AtomicBool, AtomicUsize, Ordering},
-        },
-        task::{Context, Poll},
-    };
-
-    struct MustNotPoll {
-        polls: Arc<AtomicUsize>,
-    }
-
-    impl Future for MustNotPoll {
-        type Output = Result<(), Error>;
-
-        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
-            self.polls.fetch_add(1, Ordering::SeqCst);
-            Poll::Ready(Ok(()))
-        }
-    }
 
     #[tokio::test]
-    async fn pre_cancelled_operation_is_never_polled() {
+    async fn cancellation_admission_preserves_ready_results_and_drops_pending_work() {
         let cancellation = CancellationToken::new();
         cancellation.cancel();
-        let polls = Arc::new(AtomicUsize::new(0));
-
+        let polls = std::cell::Cell::new(0);
         let result = run_with_cancellation(
-            MustNotPoll {
-                polls: Arc::clone(&polls),
-            },
+            std::future::poll_fn(|_| {
+                polls.set(polls.get() + 1);
+                std::task::Poll::Ready(Ok(()))
+            }),
             Some(cancellation),
         )
         .await;
-
         assert!(matches!(result, Err(Error::Cancelled)));
-        assert_eq!(polls.load(Ordering::SeqCst), 0);
-    }
+        assert_eq!(polls.get(), 0);
 
-    struct CancelOnPoll {
-        cancellation: CancellationToken,
-        dropped: Arc<AtomicBool>,
-    }
-
-    impl Future for CancelOnPoll {
-        type Output = Result<(), Error>;
-
-        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
-            self.cancellation.cancel();
-            Poll::Pending
-        }
-    }
-
-    impl Drop for CancelOnPoll {
-        fn drop(&mut self) {
-            self.dropped.store(true, Ordering::SeqCst);
-        }
-    }
-
-    #[tokio::test]
-    async fn cancellation_drops_a_pending_operation() {
         let cancellation = CancellationToken::new();
-        let dropped = Arc::new(AtomicBool::new(false));
+        let (producer, mut event) = tokio::sync::oneshot::channel::<()>();
+        let cancel_on_poll = std::cell::Cell::new(false);
+        let phase = &cancel_on_poll;
+        let operation_cancellation = cancellation.clone();
+        let operation = std::future::poll_fn(move |context| {
+            if phase.get() {
+                operation_cancellation.cancel();
+            }
+            std::pin::Pin::new(&mut event)
+                .poll(context)
+                .map(|result| result.map_err(|_| Error::Cancelled))
+        });
+        let pending = run_with_cancellation(operation, Some(cancellation.clone()));
+        futures::pin_mut!(pending);
+        // A retained producer without cancellation must leave the work pending.
+        assert!(futures::poll!(&mut pending).is_pending());
+        cancel_on_poll.set(true);
+        assert!(matches!(pending.await, Err(Error::Cancelled)));
+        assert!(producer.send(()).is_err(), "pending receiver was dropped");
 
-        let result = run_with_cancellation(
-            CancelOnPoll {
-                cancellation: cancellation.clone(),
-                dropped: Arc::clone(&dropped),
-            },
-            Some(cancellation),
-        )
-        .await;
-
-        assert!(matches!(result, Err(Error::Cancelled)));
-        assert!(dropped.load(Ordering::SeqCst));
+        for cancellation in [None, Some(CancellationToken::new())] {
+            assert!(
+                run_with_cancellation(std::future::ready(Ok(())), cancellation)
+                    .await
+                    .is_ok()
+            );
+        }
     }
 
     #[test]
