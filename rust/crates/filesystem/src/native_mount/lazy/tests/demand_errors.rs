@@ -65,6 +65,14 @@ fn lazy_and_direct_demand_conversion_use_the_same_callback_semantics() {
     for transport in 0..3 {
         for (cause, expected, terminal) in [
             (DemandError::Cancelled, CallbackFailure::Cancelled, true),
+            #[cfg(feature = "native-watch")]
+            (
+                DemandError::Observation(Box::new(crate::watch::NativeWatchError::Cancelled(
+                    crate::CancellationError,
+                ))),
+                CallbackFailure::Cancelled,
+                true,
+            ),
             (DemandError::StaleSource, CallbackFailure::Stale, false),
             (DemandError::StaleVersion, CallbackFailure::Stale, false),
             (DemandError::StaleCursor, CallbackFailure::Stale, false),
@@ -73,6 +81,25 @@ fn lazy_and_direct_demand_conversion_use_the_same_callback_semantics() {
                 DemandError::NotDirectory,
                 CallbackFailure::NotDirectory,
                 false,
+            ),
+            (DemandError::CursorBusy, CallbackFailure::Io, false),
+            (
+                DemandError::NativeWorkUnavailable,
+                CallbackFailure::Io,
+                true,
+            ),
+            (
+                DemandError::Allocation(Vec::<u8>::new().try_reserve(usize::MAX).unwrap_err()),
+                CallbackFailure::OutOfMemory,
+                true,
+            ),
+            #[cfg(feature = "native-watch")]
+            (
+                DemandError::Observation(Box::new(
+                    crate::watch::NativeWatchError::BoundedObservationUnavailable,
+                )),
+                CallbackFailure::Io,
+                true,
             ),
             (
                 DemandError::Work(crate::WorkError::Overflow),
@@ -118,6 +145,7 @@ fn lazy_and_direct_demand_conversion_use_the_same_callback_semantics() {
                     CallbackFailure::NotFound => 2,
                     CallbackFailure::NotDirectory => 267,
                     CallbackFailure::Denied => 5,
+                    CallbackFailure::OutOfMemory => 8,
                     CallbackFailure::Io => 1117,
                     _ => unreachable!("fixture uses explicit Windows statuses"),
                 };
@@ -135,14 +163,20 @@ fn real_demand_io_keeps_its_host_code_through_both_conversions()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let absent = root.path().join("not-created");
-    for transport in 0..3 {
+    let transports = if cfg!(feature = "native-watch") { 6 } else { 3 };
+    for transport in 0..transports {
         // Capture the actual host failure; no fabricated OS-tool fixture.
         let error = std::fs::File::open(&absent).expect_err("fixture path is absent");
         let code = error.raw_os_error().ok_or("host open has no native code")?;
-        let callback = if transport < 2 {
-            NativeMountError::Source(convert(DemandError::Io(error), transport == 1))
+        let cause = match transport / 3 {
+            #[cfg(feature = "native-watch")]
+            1 => DemandError::Observation(Box::new(crate::watch::NativeWatchError::Io(error))),
+            _ => DemandError::Io(error),
+        };
+        let callback = if transport % 3 < 2 {
+            NativeMountError::Source(convert(cause, transport % 3 == 1))
         } else {
-            NativeMountError::Demand(DemandError::Io(error))
+            NativeMountError::Demand(cause)
         };
         assert_eq!(
             crate::native_mount::shared::outcome::callback_failure(&callback),
@@ -151,6 +185,11 @@ fn real_demand_io_keeps_its_host_code_through_both_conversions()
         let retained = match &callback {
             NativeMountError::Source(MountSourceError::Io(error, None))
             | NativeMountError::Demand(DemandError::Io(error)) => error,
+            #[cfg(feature = "native-watch")]
+            NativeMountError::Demand(DemandError::Observation(error)) => match error.as_ref() {
+                crate::watch::NativeWatchError::Io(error) => error,
+                _ => panic!("original OS cause was replaced: {callback:?}"),
+            },
             _ => panic!("original OS cause was replaced: {callback:?}"),
         };
         assert_eq!(retained.raw_os_error(), Some(code));
