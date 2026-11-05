@@ -69,18 +69,15 @@ fn charge(remaining: &mut Option<u64>, bytes: u64, kind: &str) -> Result<()> {
 pub(crate) fn extra_bytes(content: &ModelContent, maximum: Option<u64>) -> Result<usize> {
     let mut extra = 0usize;
     for (file, policy) in content.file_parts() {
-        policy.validate_projection(file, maximum)?;
-        if !matches!(policy, FileProjectionPolicy::Reference) {
-            // Planning never performs I/O. Six bytes covers JSON escaping of
-            // every source byte, including control characters.
-            let bytes = usize::try_from(policy.projected_bytes(file)?)
-                .ok()
-                .and_then(|bytes| bytes.checked_mul(6))
-                .ok_or_else(|| invalid("model file token estimate overflow"))?;
-            extra = extra
-                .checked_add(bytes)
-                .ok_or_else(|| invalid("model file token estimate overflow"))?;
-        }
+        // Planning never performs I/O. Six bytes covers JSON escaping of
+        // every source byte, including control characters.
+        let bytes = usize::try_from(policy.projected_bytes(file, maximum)?)
+            .ok()
+            .and_then(|bytes| bytes.checked_mul(6))
+            .ok_or_else(|| invalid("model file token estimate overflow"))?;
+        extra = extra
+            .checked_add(bytes)
+            .ok_or_else(|| invalid("model file token estimate overflow"))?;
     }
     Ok(extra)
 }
@@ -94,14 +91,8 @@ pub(crate) async fn resolve(
     let mut remaining = files.maximum_bytes;
     for message in &request.messages {
         for (file, policy) in message.content.file_parts() {
-            policy.validate_projection(file, files.maximum_bytes)?;
-            if !matches!(policy, FileProjectionPolicy::Reference) {
-                charge(
-                    &mut remaining,
-                    policy.projected_bytes(file)?,
-                    "aggregate byte",
-                )?;
-            }
+            let bytes = policy.projected_bytes(file, files.maximum_bytes)?;
+            charge(&mut remaining, bytes, "aggregate byte")?;
         }
     }
     let mut text = Vec::new();
