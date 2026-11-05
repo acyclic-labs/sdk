@@ -216,39 +216,45 @@ impl LocalHarness {
         }
         #[cfg(any(test, feature = "native-execution"))]
         if let Some(workspace) = &self.workspace {
-            let view = workspace.spawned_project_view(project).await?;
-            let owner = super::workspace::owner::AgentOwner(agent.path.clone());
-            let mount_authority = crate::filesystem::NativeMountAuthority::admitted(
-                verifier.clone(),
-                authority.scope.copy(&mut None)?,
-            );
-            let (workspace, _) = workspace
-                .bound_task_view(view, project, scratch.clone(), &owner, &mount_authority)
-                .await?;
-            let (tools, writer) = workspace
-                .executor(
-                    (project, &self.files, self.limits.file_bytes),
-                    Arc::clone(&self.clock),
-                    &authority.scope,
-                    &verifier,
-                    None,
-                )
-                .await?;
-            let context = super::context::Binding {
-                workspace: Some(Arc::clone(&workspace)),
-                ..context
-            };
-            return Ok(TurnBindings {
-                context,
-                harness: self.harness.with_workspace(
-                    Some(home(tools)?),
-                    crate::runtime::ContentBindings {
-                        volume: project.clone(),
-                        reader: Arc::clone(&authority.content.reader),
-                        writer: Some(writer),
-                    },
-                )?,
+            // Only a native child needs the fork/mount future. Keep that
+            // layout behind the shared provider boundary, outside the root's
+            // allocation-free binding reuse path.
+            let binding: BoxProviderFuture<'_, Result<TurnBindings<'a>>> = Box::pin(async move {
+                let view = workspace.spawned_project_view(project).await?;
+                let owner = super::workspace::owner::AgentOwner(agent.path.clone());
+                let mount_authority = crate::filesystem::NativeMountAuthority::admitted(
+                    verifier.clone(),
+                    authority.scope.copy(&mut None)?,
+                );
+                let (workspace, _) = workspace
+                    .bound_task_view(view, project, scratch.clone(), &owner, &mount_authority)
+                    .await?;
+                let (tools, writer) = workspace
+                    .executor(
+                        (project, &self.files, self.limits.file_bytes),
+                        Arc::clone(&self.clock),
+                        &authority.scope,
+                        &verifier,
+                        None,
+                    )
+                    .await?;
+                let context = super::context::Binding {
+                    workspace: Some(workspace),
+                    ..context
+                };
+                Ok(TurnBindings {
+                    context,
+                    harness: self.harness.with_workspace(
+                        Some(home(tools)?),
+                        crate::runtime::ContentBindings {
+                            volume: project.clone(),
+                            reader: Arc::clone(&authority.content.reader),
+                            writer: Some(writer),
+                        },
+                    )?,
+                })
             });
+            return binding.await;
         }
         let writer = crate::filesystem::FilesystemContentPublisher::new(
             Arc::clone(&self.files),
