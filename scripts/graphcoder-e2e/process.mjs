@@ -73,7 +73,7 @@ export class Processes {
   #start(program, args, options = {}, selectedReport, endpoint) {
     if (this.stopping) throw new Error("suite process scope is closed (deadline or cleanup)");
     const { scopeKillSignal = "SIGKILL", scopeTreeControl = false, scopeReport = false, scopeOperation,
-      scopeCapture, ...spawnOptions } = options;
+      scopeCapture, scopeCleanup, ...spawnOptions } = options;
     if (scopeOperation !== undefined && (typeof scopeOperation !== "string"
       || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(scopeOperation))) {
       throw new Error("step=process-progress-operation; recovery=pass the original opaque operation UUID as scopeOperation");
@@ -151,7 +151,12 @@ export class Processes {
       child.once("close", () => {
         observe?.("node-close");
         const finish = () => { this.children.delete(child); observe?.("reaped"); resolve(); };
-        if (endpoint) report.closeTransport(endpoint.close).then(finish, error => {
+        // Resource retirement belongs to physical close, including runs whose
+        // failed transcript or observer prevents terminal capture.
+        let retirement = endpoint ? report.closeTransport(endpoint.close) : undefined;
+        if (scopeCleanup) retirement = retirement
+          ? retirement.finally(scopeCleanup) : Promise.resolve().then(scopeCleanup);
+        if (retirement) retirement.then(finish, error => {
           this.children.delete(child); reject(error);
         });
         else finish();
@@ -240,8 +245,8 @@ export class Processes {
     const invocation = randomUUID(), receipt = join(resolve(this.transcripts), `${invocation}.completion`);
     const owned = start(host, ["--completion", receipt, "--invocation", invocation,
       ...(control ? ["--control", control.endpoint, "--inherit-input"] : []), "--", program, ...args],
-      { ...spawnOptions, scopeTreeControl: control?.stop ?? true, scopeCapture: async result => {
-        try {
+      { ...spawnOptions, scopeTreeControl: control?.stop ?? true, scopeCleanup: control?.close,
+        scopeCapture: async result => {
           let completion;
           try { completion = decodeCompletion(readFileSync(receipt, "utf8"), invocation, result); }
           catch (cause) {
@@ -263,8 +268,7 @@ export class Processes {
           }
           if (control?.failure()) throw control.failure();
           return await spawnOptions.scopeCapture?.(result);
-        } finally { await control?.close(); }
-      } });
+        } });
     const selected = running => ({ ...running, killExecutable: () => control ? control.stop() : running.input.end() });
     return owned instanceof Promise ? owned.then(selected) : selected(owned);
   }
