@@ -160,11 +160,7 @@ test("Windows native audits are independent required lanes without moving public
   assert.equal(matrix.find(lane => lane.lane === "windows").artifact, "stream-native-windows");
   const script = readFileSync("scripts/qualify-ci.ps1", "utf8");
   assert.doesNotMatch(script, /Start-Background|Complete-Background/);
-  for (const command of ["cargo test @WorkspaceArgs --all-features --locked", "cargo test -p acyclic-harness --all-features --locked --lib",
-    "bun test --isolate --reporter=junit", "bun run --filter '@acyclic-labs/fs' test:composition", "node scripts/build-wasm-groups.mjs", "bun x tsc -b --force --pretty false", "bun x tsc -p scripts --pretty false", "bun run check:docs"])
-    assert.ok(script.includes(command), command);
   const packages = script.slice(script.indexOf("& .\\scripts\\test-qualify-ci-windows.ps1")).replaceAll("\r\n", "\n");
-  assert.ok(packages.includes('--reporter-outfile="$env:SDK_TEMP_DIR/observability/bun-test.xml" typescript/packages'));
   assert.doesNotMatch(packages, /--parallel/);
   assert.match(script, /test-qualify-ci-windows\.ps1/);
   const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");

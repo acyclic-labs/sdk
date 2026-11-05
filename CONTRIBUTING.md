@@ -43,6 +43,10 @@ node scripts/node-tests.mjs scripts/archive-utils.mjs  # affected tests
 cargo test --all-features --locked
 ```
 
+On Windows, supply `E2E_PROCESS_HOST` as the absolute path to the
+`acyclic-process-host` executable produced by the native build. The test command
+requires this process owner before it can launch compilers or test engines.
+
 The product workspace shares its root `Cargo.lock` with compatible fuzzers,
 proofs and tools. Root commands select the SDK's original default members;
 explicitly select additional packages with `-p PACKAGE`. `--workspace` also

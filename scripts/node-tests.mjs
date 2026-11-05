@@ -8,8 +8,8 @@ import {Processes} from './graphcoder-e2e/process.mjs';
 import {environment, scratchDirectory} from './graphcoder-e2e/scratch.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
-const ordinaryTest = file => /(?:^|\/)(?:test-[^/]+|[^/]+\.(?:test|spec))\.[cm]?[jt]sx?$/.test(file);
-const suffixedTest = file => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file);
+const ordinaryTest = file => /(?:^|\/)(?:test-[^/]+|[^/]+[._](?:test|spec))\.[cm]?[jt]sx?$/.test(file);
+const suffixedTest = file => /[._](?:test|spec)\.[cm]?[jt]sx?$/.test(file);
 const sourceFile = file => /\.[cm]?[jt]sx?$/.test(file);
 const excluded = file => file.replaceAll('\\', '/').split('/').some(part =>
  part.startsWith('.') || ['node_modules', 'target', 'dist', 'coverage', 'output'].includes(part));
@@ -19,10 +19,11 @@ const fail = (file, name) => console.log(`NODE_TEST_FAIL ${stable(file)}::${stab
 // Use the repository's TypeScript parser, including for JavaScript. Strings and
 // comments containing program fixtures cannot register a test or an import.
 export function discoverTests(root = ROOT) {
- const files = globSync('**/*.{js,mjs,cjs,ts,mts,cts,tsx,jsx}', {cwd: root, exclude: excluded}).sort();
+ const files = globSync('**/*.{js,mjs,cjs,ts,mts,cts,tsx,jsx}', {cwd: root, exclude: excluded})
+  .map(file => file.replaceAll('\\', '/')).sort();
  return files.filter(file => ordinaryTest(file)).map(file => {
   const imports = ts.preProcessFile(readFileSync(join(root, file), 'utf8'), true, true).importedFiles.map(input => input.fileName);
-  return {file, runtime: imports.includes('bun:test') || (/\.[cm]?tsx?$/.test(file) && !imports.includes('node:test')) ? 'bun' : 'node', imports};
+  return {file, runtime: imports.includes('bun:test') || /\.(?:[cm]?tsx?|jsx)$/.test(file) ? 'bun' : 'node', imports};
  // Prefix-named CLI scenarios have their own executable arguments and owners.
  // Suffix-named test modules remain selected even if import failure prevents
  // registration; native engine failure must never disappear from inventory.
@@ -107,11 +108,16 @@ export function bunResults(xml, reportFailure = fail, expectedFiles = []) {
 // Cargo's original artifact messages own executable locations, including a
 // relocated target directory. Never derive a binary path from this checkout.
 async function nativeInputs(tests, processes, env, publish) {
+ if (!tests.length) return;
  env.E2E_PROCESS_HOST ??= env.ACYCLIC_PROCESS_HOST;
  env.ACYCLIC_PROCESS_HOST ??= env.E2E_PROCESS_HOST;
+ // A custodian cannot compile itself under its own custody. Windows callers
+ // must admit the canonical host produced by their native build before any
+ // compiler or engine starts; an unsafe parent-only bootstrap is forbidden.
+ if (process.platform === 'win32' && !env.E2E_PROCESS_HOST) throw new Error(
+  "step=admit native process owner; recovery command: $env:E2E_PROCESS_HOST='ABSOLUTE_INSTALLED_ACYCLIC_PROCESS_HOST'; node scripts/node-tests.mjs --all");
  const report = tests.some(test => test.file.endsWith('/termination.test.mjs')) && !env.E2E_REPORT_TEST_BINARY;
- const host = (process.platform === 'win32' || tests.some(test => test.file.endsWith('/sdk/test/process.test.mjs')))
-  && !env.E2E_PROCESS_HOST && !env.ACYCLIC_PROCESS_HOST;
+ const host = tests.some(test => test.file.endsWith('/sdk/test/process.test.mjs')) && !env.E2E_PROCESS_HOST;
  for (const kind of [...(host ? ['host'] : []), ...(report ? ['report'] : [])]) {
   const args = kind === 'host'
    ? ['build', '--bin', 'acyclic-process-host'] : ['test', '--no-run', '--lib'];

@@ -134,6 +134,22 @@ switch ($Lane) {
 . .\scripts\ensure-bun.ps1
 bun install --frozen-lockfile
 
+# The native build owns bootstrap; the test entry admits only its original
+# Cargo executable, never a checkout-derived path or an unowned child build.
+try {
+    $processHostArtifacts = cargo build --locked -p acyclic-native-runtime `
+        --bin acyclic-process-host --message-format=json | ConvertFrom-Json
+} catch {
+    throw "STEP_FAILED process-owner-build: $_; recovery: cargo build --locked -p acyclic-native-runtime --bin acyclic-process-host --message-format=json"
+}
+$processHosts = @($processHostArtifacts | Where-Object {
+    $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'acyclic-process-host'
+})
+if ($processHosts.Count -ne 1 -or -not $processHosts[0].executable) {
+    throw 'STEP_FAILED process-owner-artifact; recovery: cargo build --locked -p acyclic-native-runtime --bin acyclic-process-host --message-format=json'
+}
+$env:E2E_PROCESS_HOST = $processHosts[0].executable
+
 $wasmBindgenRoot = Join-Path $env:TOOLS_DIR 'cargo'
 $wasmBindgenBin = Join-Path $wasmBindgenRoot 'bin\wasm-bindgen.exe'
 # The CLI must match the wasm-bindgen crate pinned in the workspace manifest.
