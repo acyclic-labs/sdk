@@ -24,7 +24,7 @@ use std::sync::{Mutex, PoisonError};
 use std::task::{Context, Poll, Waker};
 
 mod answer;
-use answer::{EVENT_LIMIT, NativeAnswer};
+use answer::NativeAnswer;
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod readiness_validation;

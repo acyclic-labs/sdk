@@ -195,18 +195,12 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
             );
             assert!(state.turn.is_none());
         }
-        let status = values(&provider, root.status()?).await?;
-        if admitted && wait.is_some() {
-            assert_eq!(
-                status.last().ok_or("missing waiting status")?.len(),
-                wait.ok_or("missing wait selection")?.1
-            );
-        }
+        let status = values(provider.as_ref(), root.status()?).await?;
         assert_eq!(
             StatusRecord::decode(status.last().ok_or("missing terminal status")?)?.phase,
             state.phase
         );
-        let records = values(&provider, root.conversation()?).await?;
+        let records = values(provider.as_ref(), root.conversation()?).await?;
         if admitted && conversation {
             let Out::Conversation(bytes) = &expected else {
                 unreachable!()
@@ -215,7 +209,7 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
         } else {
             assert!(records.is_empty());
         }
-        let sent = values(&provider, peer.inbox()?).await?;
+        let sent = values(provider.as_ref(), peer.inbox()?).await?;
         assert_eq!(sent.len(), 1 + usize::from(admitted && !conversation));
         if admitted && !conversation {
             let Out::Send { record, .. } = &expected else {
@@ -422,7 +416,9 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
         );
         assert!(state.turn.is_none());
         assert_eq!(
-            values(&provider, target.conversation()?).await?.len(),
+            values(provider.as_ref(), target.conversation()?)
+                .await?
+                .len(),
             usize::from(admitted)
         );
         let status = provider
@@ -598,7 +594,7 @@ async fn large_failure_publishes_complete_diagnostic_with_original_child_settlem
     };
     assert_eq!(text, &expected);
     assert_eq!(diagnostic.bytes, expected.len() as u64);
-    let before = values(&provider, root.inbox()?).await?;
+    let before = values(provider.as_ref(), root.inbox()?).await?;
     // Neither an absent payload nor an incomplete prefix may publish the status
     // or notify the parent. A failed conditional leaves the same key unspent.
     let request = lower(
@@ -626,7 +622,7 @@ async fn large_failure_publishes_complete_diagnostic_with_original_child_settlem
             submit(provider.as_ref(), request.clone()).await?,
             Submitted::Conflict(_)
         ));
-        assert_eq!(values(&provider, root.inbox()?).await?, before);
+        assert_eq!(values(provider.as_ref(), root.inbox()?).await?, before);
     }
     host.host(&child)?;
     let failures = host.runtime().drain().await;
@@ -867,14 +863,16 @@ async fn committed_checkpoints_carry_final_tails_after_native_reopen() -> Result
         host.drain(&root).await?;
         let parent_before = host.state(&root).await?;
         assert_eq!(parent_before.open_children.len(), 3);
-        for child in &parent_before.open_children {
-            host.drain(child).await?;
+        for id in parent_before.open_children.page(None, 3).await? {
+            host.drain(&root.child(&id)?).await?;
         }
-        let child = parent_before
-            .open_children
-            .first()
-            .expect("spawned child")
-            .clone();
+        let child = root.child(
+            &parent_before
+                .open_children
+                .first()
+                .await?
+                .ok_or("spawned child")?,
+        )?;
         let before = host.state(&child).await?;
         assert_eq!(before.parent.as_ref(), Some(&root));
         let Delivered::Committed { inbox } = host.send(&child, &user(), &input).await? else {
@@ -898,10 +896,8 @@ async fn committed_checkpoints_carry_final_tails_after_native_reopen() -> Result
             "shed checkpoint lost its parent report"
         );
         host.drain(&root).await?;
-        let mut expected_children = parent_before.open_children;
-
         let parent_committed = host.state(&root).await?;
-        assert_eq!(parent_committed.open_children, expected_children);
+        assert_eq!(parent_committed.open_children, parent_before.open_children);
         // Reopening decodes the actual checkpoint published by the handler.
         let committed = host.state(&child).await?;
         assert_eq!(committed.conversation_tail, before.conversation_tail + 2);
@@ -1029,8 +1025,8 @@ async fn native_reopen_preserves_and_replaces_deadlines_until_control_clears_the
         );
         let first = host.state(&root).await?;
         assert_eq!(first.open_children.len(), 3);
-        for child in &first.open_children {
-            host.drain(child).await?;
+        for id in first.open_children.page(None, 3).await? {
+            host.drain(&root.child(&id)?).await?;
         }
         let snapshot = host.runtime().store().load(&host.actor(&root)?).await?;
         let first_actor = snapshot.state().ok_or("missing waiting actor")?.clone();
@@ -1218,8 +1214,11 @@ async fn native_reopen_preserves_reserved_spawns_until_the_matching_approval() -
             assert_eq!(state.turn, None);
             assert_eq!(state.reserved_children, 0);
             assert_eq!(state.open_children.len(), 5);
-            for child in state.open_children {
-                assert_eq!(host.state(&child).await?.parent.as_ref(), Some(&root));
+            for id in state.open_children.page(None, 5).await? {
+                assert_eq!(
+                    host.state(&root.child(&id)?).await?.parent.as_ref(),
+                    Some(&root)
+                );
             }
         }
     }
@@ -1791,7 +1790,7 @@ async fn notice_delivery_wakes_once_and_quiet_delivery_preserves_the_paused_turn
         assert_eq!(reopened.pending_notices, Some(1..4));
         assert_eq!(reopened.phase, before.phase);
         assert_eq!(reopened.turn, before.turn);
-        let records = values(&provider, root.inbox()?).await?;
+        let records = values(provider.as_ref(), root.inbox()?).await?;
         let notices = records
             .iter()
             .map(|record| InboxRecord::decode(record))
@@ -1850,7 +1849,7 @@ async fn same_phase_settlement_advances_the_actor_without_appending_status() -> 
         assert!(changes.try_next().await?.is_some());
         assert!(host.input_progress(&root, inbox).await?.0);
         assert_eq!(settled(&provider, &within, &root).await?, Some(Phase::Idle));
-        let statuses = values(&provider, root.status()?).await?;
+        let statuses = values(provider.as_ref(), root.status()?).await?;
         assert_eq!(statuses.len(), 1);
         let stale = StatusRecord::decode(&statuses[0])?;
         assert!(

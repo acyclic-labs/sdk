@@ -509,8 +509,8 @@ pub async fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error:
             (names[2], crate::contract::canonical_json_bytes(&envelope)?),
         ]);
     }
-    // Cross a bitmap byte boundary, retaining a paused turn's slots and raw
-    // checkpoint. A child path also exercises reconstruction of its parent.
+    // Retain distinct membership roots for a paused turn and its checkpoint.
+    // A child path also exercises reconstruction of its parent.
     state.path = state.path.child(&AgentId::from_bytes([8; 16]))?;
     state.parent = state.path.parent();
     state.conversation_tail = 23;
