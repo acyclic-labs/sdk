@@ -1,0 +1,1 @@
+{"v":1,"value":{"durableAwait":true,"journalReads":[{"name":"continuation","version":"1"}],"reads":[{"name":"continuation","version":"1"}],"writes":{"name":"continuation","version":"1"}}}
