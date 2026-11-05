@@ -26,6 +26,17 @@ impl Delivery {
     /// Delivery loss and caller cancellation do not establish retirement.
     pub(super) fn finish_retirement(&self) {
         self.retired.store(true, Ordering::Release);
+        #[cfg(all(test, target_os = "linux"))]
+        {
+            let observe = self
+                .after_retirement
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(observe) = observe {
+                observe();
+            }
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -68,6 +79,8 @@ impl Delivery {
             events: None,
             ownership,
             original,
+            #[cfg(all(test, target_os = "linux"))]
+            after_retirement: std::sync::Mutex::new(None),
         })
     }
 

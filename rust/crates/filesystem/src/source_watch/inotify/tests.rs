@@ -371,7 +371,7 @@ fn original_cleanup_wait_precancel_and_contention_preserve_cleanup_custody()
     )));
     let mut work = crate::NativeMaterializationWork::from_meter(original.clone());
     let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut work)?);
-    let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
+    let watch = Arc::new(NativeSourceWatch::start_driver(&host, delivery, &mut work)?);
 
     let paused = watch.paused();
     cancellation.cancel();
@@ -418,7 +418,26 @@ fn original_cleanup_wait_precancel_and_contention_preserve_cleanup_custody()
     assert!(!watch.is_stopped());
 
     let wait = CancellationToken::new();
+    let released = Arc::new(AtomicBool::new(false));
+    let observer = Arc::downgrade(&watch);
+    let observed = Arc::clone(&released);
+    *watch.delivery().after_retirement.lock().unwrap() = Some(Box::new(move || {
+        let observer = observer.upgrade().expect("live retirement controller");
+        observed.store(
+            observer.is_stopped()
+                && observer.shared.physically_cleared()
+                && observer.controller.try_lock().is_some()
+                && observer.shared.reading.raw.try_lock().is_some()
+                && observer.shared.retired.try_lock().is_ok()
+                && observer.shared.cleanup.try_lock().is_some(),
+            Ordering::Release,
+        );
+    }));
     watch.stop_accepted_cleanup()?;
+    assert!(
+        released.load(Ordering::Acquire),
+        "physical retirement publication releases original driver guards"
+    );
     assert!(watch.is_stopped());
     assert!(watch.shared.physically_cleared());
     let terminal = original.lock().receipt();
@@ -516,6 +535,7 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
     enum CallbackEvent {
         Entered,
         Lost,
+        Retired(bool),
     }
     struct PanicsAfterRelease {
         events: std::sync::mpsc::Sender<CallbackEvent>,
@@ -586,6 +606,15 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
     let mut work = crate::NativeMaterializationWork::from_meter(original.clone());
     let delivery = Arc::new(Delivery::new(sink.clone(), &mut work)?);
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
+    let observer = Arc::downgrade(&watch.shared);
+    let terminal = sink.events.clone();
+    *watch.delivery().after_retirement.lock().unwrap() = Some(Box::new(move || {
+        let observer = observer.upgrade().expect("live retirement observer");
+        let released = observer.reading.raw.try_lock().is_some()
+            && observer.retired.try_lock().is_ok()
+            && observer.cleanup.try_lock().is_some();
+        terminal.send(CallbackEvent::Retired(released)).unwrap();
+    }));
     // Release the original callback before watch cleanup on every error path.
     let release = ReleaseCallback(&sink);
     let retained_control = {
@@ -607,15 +636,13 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
     assert!(!pending_terminal);
 
     assert_eq!(receive.recv()?, CallbackEvent::Lost);
-    // Loss is emitted while the original service holds the read cursor. Its
-    // unlock joins that service's retirement attempt, including failure; the
-    // controller must not take over cleanup before checking its result.
-    let reading = watch.shared.reading.raw.lock();
+    // Loss precedes physical retirement. Observe the original publication,
+    // after its read and retirement guards release, before taking over cleanup.
+    assert_eq!(receive.recv()?, CallbackEvent::Retired(true));
     assert!(
         watch.is_stopped(),
         "the original service retires its resources"
     );
-    drop(reading);
     watch.stop_accepted_cleanup()?;
     assert!(
         watch.is_stopped(),

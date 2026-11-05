@@ -174,7 +174,7 @@ impl NativeSourceWatch {
                     controller: Custody::new(()),
                 };
                 if let Some(error) = cancelled {
-                    let stopped = watch.stop_admitted(&mut watch.controller.lock(), work);
+                    let stopped = watch.stop_admitted(watch.controller.lock(), work);
                     if let Err(stop_error) = stopped {
                         if !watch.is_stopped() {
                             if let Some(failure) = &startup_failure {
@@ -314,7 +314,7 @@ impl NativeSourceWatch {
         if !prepaid {
             work.check()?;
         }
-        let mut controller = self.controller.lock_with_wait(wait)?;
+        let controller = self.controller.lock_with_wait(wait)?;
         if wait.is_some_and(crate::CancellationToken::is_cancelled) {
             return Err(DemandError::Cancelled);
         }
@@ -363,17 +363,17 @@ impl NativeSourceWatch {
         drop(ancestors);
         drop(watches);
         drop(reading);
-        self.stop_admitted(&mut controller, work)
+        self.stop_admitted(controller, work)
     }
 
     pub(super) fn stop_admitted<W: SourceDemandReadWork>(
         &self,
-        _controller: &mut (),
+        controller: tokio::sync::MutexGuard<'_, ()>,
         work: &mut W,
     ) -> Result<(), DemandError> {
         self.shared.stopping.store(true, Ordering::Release);
         let mut result = Ok(());
-        {
+        let mut cleared = {
             // A failed service pass may retire this watch concurrently, and
             // its withdrawal also unsubscribes and settles the cleanup
             // credits. Unsubscribe under the same retirement lock, so exactly
@@ -392,17 +392,20 @@ impl NativeSourceWatch {
                 self.shared.record_cleanup(WRITE, work).and(unsubscribed)?;
             }
             drop(retired);
-            self.shared.retire();
-        }
-        if self.shared.delivery.original.is_none() || !self.is_stopped() {
+            self.shared.retire()
+        };
+        if self.shared.delivery.original.is_none() || !cleared {
             result = result.and(self.shared.clear_measured(work));
             self.shared.delivery.notify_lost();
-            if self.shared.physically_cleared() {
-                self.shared.delivery.finish_retirement();
-            }
+            cleared = self.shared.physically_cleared();
         }
-        if self.is_stopped() {
+        if cleared {
             self.shared.cancel_cleanup(work);
+        }
+        // Retirement observers may re-enter the controller after publication.
+        drop(controller);
+        if cleared {
+            self.shared.delivery.finish_retirement();
         }
         result
     }
@@ -448,18 +451,16 @@ impl Shared {
     /// and observes `stopping` or retirement first, so once this returns no
     /// service pass delivers for this watch again; a concurrent retirer waits
     /// for the first to finish.
-    pub(super) fn retire(&self) {
+    pub(super) fn retire(&self) -> bool {
         let mut retired = self.retired.lock().unwrap_or_else(PoisonError::into_inner);
         if *retired {
-            return;
+            return self.physically_cleared();
         }
         *retired = true;
         self.retiring.store(true, Ordering::Release);
         self.delivery.notify_lost();
         let mut reading = self.reading();
-        if self.delivery.original.is_some() {
-            self.finish_native_reader_locked(&mut reading);
-        }
+        self.delivery.original.is_some() && self.finish_native_reader_locked(&mut reading)
     }
 
     /// [`Self::retire`] from a service pass that holds the cursor, so no
@@ -477,8 +478,13 @@ impl Shared {
         *retired = true;
         self.retiring.store(true, Ordering::Release);
         self.delivery.notify_lost();
-        if self.delivery.original.is_some() {
-            self.finish_native_reader_locked(&mut reading);
+        let cleared =
+            self.delivery.original.is_some() && self.finish_native_reader_locked(&mut reading);
+        // A terminal observer must never run under either native guard.
+        drop(reading);
+        drop(retired);
+        if cleared {
+            self.delivery.finish_retirement();
         }
     }
 
@@ -501,7 +507,7 @@ impl Shared {
         }
     }
 
-    fn finish_native_reader_locked(&self, reading: &mut RawReads) {
+    fn finish_native_reader_locked(&self, reading: &mut RawReads) -> bool {
         self.stopping.store(true, Ordering::Release);
         let mut work = self.delivery.callback_work();
         let result = self.clear_measured_locked(reading, &mut work);
@@ -510,10 +516,10 @@ impl Shared {
         }
         self.delivery.notify_lost();
         if !self.physically_cleared() {
-            return;
+            return false;
         }
         self.cancel_cleanup(&mut work);
-        self.delivery.finish_retirement();
+        true
     }
 
     /// Payload descriptors still held: the hub registrations and the root.
