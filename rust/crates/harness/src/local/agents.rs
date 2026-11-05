@@ -168,6 +168,20 @@ struct TurnBindings<'a> {
 }
 
 impl LocalHarness {
+    /// Retained session volumes are the same for model and native-host roots;
+    /// each root binds its own private journal separately.
+    pub(super) fn session_bindings(&self) -> [VolumeBinding; 3] {
+        [
+            ("project", &self.project),
+            (HOME_VOLUME, &self.scratch),
+            (super::SHARED_VOLUME, &self.shared),
+        ]
+        .map(|(name, volume)| VolumeBinding {
+            name: name.to_owned(),
+            volume: volume.clone(),
+        })
+    }
+
     /// An agent's default files and commands select the same project. The
     /// root reuses its admitted binding; a child opens its retained fork.
     async fn turn_bindings<'a>(
@@ -518,19 +532,15 @@ impl LocalHarness {
                     .map_err(storage)?
             }
             Err(crate::agent::Error::NoSuchAgent) => {
-                let bind = |name: &str, volume: &VolumeRef| VolumeBinding {
-                    name: name.to_owned(),
-                    volume: volume.clone(),
-                };
                 let request = RootRequest {
                     agent: id,
                     fresh: Vec::new(),
-                    retained: vec![
-                        bind(PRIVATE_VOLUME, &self.journal),
-                        bind("project", &self.project),
-                        bind(HOME_VOLUME, &self.scratch),
-                        bind(super::SHARED_VOLUME, &self.shared),
-                    ],
+                    retained: std::iter::once(VolumeBinding {
+                        name: PRIVATE_VOLUME.to_owned(),
+                        volume: self.journal.clone(),
+                    })
+                    .chain(self.session_bindings())
+                    .collect(),
                     brief: None,
                     policy: Some(configured),
                 };

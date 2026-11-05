@@ -563,7 +563,7 @@ pub(super) struct NativeAgents {
     driver: Arc<HostDriver>,
     files: Arc<LocalFilesystem>,
     issuer: AuthorityRoot,
-    bindings: [VolumeBinding; 2],
+    bindings: [VolumeBinding; 3],
 }
 
 impl NativeAgents {
@@ -600,19 +600,12 @@ impl NativeAgents {
             )
             .map_err(storage)?,
         );
-        let bind = |name: &str, volume: &VolumeRef| VolumeBinding {
-            name: name.to_owned(),
-            volume: volume.clone(),
-        };
         Ok(Self {
             host,
             driver,
             files: local.files.clone(),
             issuer,
-            bindings: [
-                bind("project", &local.project),
-                bind(crate::filesystem::HOME_VOLUME, &local.scratch),
-            ],
+            bindings: local.session_bindings(),
         })
     }
 
