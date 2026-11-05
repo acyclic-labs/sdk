@@ -379,8 +379,6 @@ impl<'a> KernelAccounting<'a> {
     #[inline]
     pub fn charge(&mut self, delta: WorkCounters) -> Result<(), crate::FsError> {
         self.ensure_active()?;
-        #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
-        charge_tests::redundant_allocation();
         match self {
             Self::Standalone {
                 work,

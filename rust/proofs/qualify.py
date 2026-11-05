@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation"])
 claim = parser.parse_args().claim
 if claim == "retained-credit":
     source = "rust/crates/filesystem/src/kernel/allocation.rs"
@@ -40,12 +40,42 @@ elif claim == "objects-empty-dispatch":
     test = "local::outcome_tests::empty_ranges_preserve_native_presence_without_dispatch"
     diagnostic = "empty range dispatched a physical job for key"
     features = ["--no-default-features", "--features", "local,test-support"]
-else:
+elif claim == "auth-producer-loss":
     source = "rust/crates/auth/src/trust/follower.rs"
     crate = "acyclic-auth"
     test = "trust::follower::tests::account_events_preserve_exact_dependencies_without_unrelated_wakes"
     diagnostic = "account wait retained its lost global producer"
     features = ["--no-default-features"]
+elif claim in ("work-arithmetic", "work-mixed"):
+    source = "rust/crates/filesystem/src/performance.rs"
+    crate = "acyclic-fs"
+    test = "performance::tests::full_width_work_arithmetic_preserves_exact_sums_and_refusals"
+    diagnostic = "full-width work sum disagreed with wider arithmetic"
+    features = []
+elif claim == "ready-source-allocation":
+    source = "rust/crates/stream/src/runtime/sources.rs"
+    crate = "acyclic-stream"
+    test = "runtime::sources::tests::ready_records_reuse_the_registered_source_node"
+    diagnostic = "ready record scheduling allocated physical heap storage"
+    features = ["--no-default-features"]
+elif claim == "budget-errors":
+    source = "rust/crates/filesystem/src/performance.rs"
+    crate = "acyclic-fs"
+    test = "performance::tests::native::borrowed::borrowed_verification_preserves_exact_errors_and_priority"
+    diagnostic = "budget refusal lost the exact counter or priority"
+    features = []
+elif claim == "borrowed-budget":
+    source = "rust/crates/filesystem/src/kernel/allocation/accounting.rs"
+    crate = "acyclic-fs"
+    test = "performance::tests::native::borrowed::completed_kernel_work_borrows_the_original_budget_without_allocating"
+    diagnostic = "verification copied the original budget"
+    features = []
+else:
+    source = "rust/crates/filesystem/src/kernel/allocation/accounting.rs"
+    crate = "acyclic-fs"
+    test = "kernel::allocation::accounting::charge_tests::native_charge_matches_the_old_path_at_every_completed_prefix"
+    diagnostic = "kernel charge allocated physical heap storage"
+    features = []
 SOURCE = ROOT / source
 COMMAND = ["cargo", "test", "--locked", "-p", crate, *features, "--lib", test,
            "--", "--exact", "--nocapture"]
@@ -75,7 +105,8 @@ def run(label):
 
 def main():
     original = SOURCE.read_bytes()
-    patch = str(ROOT / "rust/proofs" / claim / "mutation.patch")
+    mutation = ("work-arithmetic", "mixed-mutation.patch") if claim == "work-mixed" else (claim, "mutation.patch")
+    patch = str(ROOT / "rust/proofs" / mutation[0] / mutation[1])
     require(subprocess.run(["git", "apply", "--check", patch], cwd=ROOT).returncode == 0,
             "check mutation anchors")
     try:

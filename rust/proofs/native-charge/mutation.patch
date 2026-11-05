@@ -1,0 +1,10 @@
+diff --git a/rust/crates/filesystem/src/kernel/allocation/accounting.rs b/rust/crates/filesystem/src/kernel/allocation/accounting.rs
+--- a/rust/crates/filesystem/src/kernel/allocation/accounting.rs
++++ b/rust/crates/filesystem/src/kernel/allocation/accounting.rs
+@@ -380,5 +380,6 @@
+     pub fn charge(&mut self, delta: WorkCounters) -> Result<(), crate::FsError> {
+         self.ensure_active()?;
++        drop(std::hint::black_box(Box::new([0_u8; 17])));
+         match self {
+             Self::Standalone {
+                 work,

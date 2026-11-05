@@ -1,0 +1,18 @@
+diff --git a/rust/crates/filesystem/src/kernel/allocation/accounting.rs b/rust/crates/filesystem/src/kernel/allocation/accounting.rs
+--- a/rust/crates/filesystem/src/kernel/allocation/accounting.rs
++++ b/rust/crates/filesystem/src/kernel/allocation/accounting.rs
+@@ -350,13 +350,13 @@ impl<'a> KernelAccounting<'a> {
+                 budget,
+                 cancellation,
+                 ..
+             } => {
+                 work.try_add_assign(&delta)?;
+-                work.verify_within(budget)?;
++                work.verify(*budget)?;
+                 cancellation.check().map_err(Into::into)
+             }
+             Self::BorrowedStandalone {
+                 work,
+                 budget,
+                 cancellation,
+                 ..
