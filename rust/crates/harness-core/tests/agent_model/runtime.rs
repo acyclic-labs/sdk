@@ -1631,9 +1631,11 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
 
 #[tokio::test]
 async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
-    let provider = Arc::new(MemoryStream::default());
+    let provider = Arc::new(acyclic_stream::testing::Counted::new(
+        MemoryStream::default(),
+    ));
     let host = AgentHost::new(
-        provider,
+        provider.clone(),
         Spawner(AtomicUsize::new(1)),
         ActorReference::new(b"account", b"agents", b"owner")?,
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
@@ -1670,12 +1672,31 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     };
     assert_eq!(inbox, sequences[0]);
     assert_eq!(
-        host.spawned(&root, inbox, &first).await?,
-        SpawnOutcome::Spawned { child }
+        acyclic_stream::assert_requests!(
+            provider,
+            host.spawned(&root, inbox, &first).await,
+            control = 1,
+            data = 1
+        )?,
+        SpawnOutcome::Spawned {
+            child: child.clone()
+        }
     );
+    host.archive(&child, &user(), &intent("retire-first"))
+        .await?;
     let failures = host.runtime().drain().await;
     assert!(failures.is_empty(), "{failures:?}");
-    assert_eq!(host.state(&root).await?.open_children.len(), 3);
+    assert_eq!(host.state(&root).await?.open_children.len(), 2);
+    // Retirement changes current membership, never the original spawn result.
+    assert_eq!(
+        acyclic_stream::assert_requests!(
+            provider,
+            host.spawned(&root, inbox, &first).await,
+            control = 1,
+            data = 1
+        )?,
+        SpawnOutcome::Spawned { child }
+    );
     Ok(())
 }
 
