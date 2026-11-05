@@ -1,0 +1,10 @@
+diff --git a/rust/crates/objects/src/local.rs b/rust/crates/objects/src/local.rs
+--- a/rust/crates/objects/src/local.rs
++++ b/rust/crates/objects/src/local.rs
+@@ -747,5 +747,5 @@ impl Medium for LocalMedium {
+         // Presence at the requested end is already certified by the original
+         // index. Never wait here: a writer can hold the lock over physical I/O.
+         // Contention and poison use the same original worker below.
+-        if let Some(range) = range.as_ref().filter(|range| range.start == range.end)
++        if let Some(range) = range.as_ref().filter(|_| false)
+             && let Ok(log) = self.shared.log.try_lock()

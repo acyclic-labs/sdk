@@ -490,7 +490,11 @@ fn account_events_preserve_exact_dependencies_without_unrelated_wakes() {
     let mut lost = first.changed(&trust);
     assert!((&mut lost).now_or_never().is_none());
     drop(trust);
-    assert_eq!(lost.now_or_never(), Some(Err(SourceClosed)));
+    assert_eq!(
+        lost.now_or_never(),
+        Some(Err(SourceClosed)),
+        "account wait retained its lost global producer"
+    );
     drop(retained);
 }
 

@@ -1,7 +1,6 @@
 //! The local agent host: a prompt is one staged file and one inbox commit, and
 //! the root agent's actor runs its turn on the stock executor.
 
-use super::super::LocalAgents;
 use super::{ObservedConversation, ScriptedModelProvider, text, volume, volume_config};
 use crate::{
     Error, LocalHarness, Result,
@@ -221,26 +220,41 @@ async fn records(stream: &impl StreamProvider, path: StreamPath) -> Result<Vec<V
 }
 
 /// The root's conversation once it has settled every input sent before
-/// this call, using the original actor checkpoint and its progress event.
-pub(super) async fn settled(agents: &LocalAgents, root: &AgentPath) -> Result<Vec<Vec<u8>>> {
-    let inbox = crate::agent::inbox_tail(&**agents.provider(), root)
-        .await
-        .map_err(agent)?;
-    loop {
-        let (settled, cut) = agents
-            .input_progress(root, inbox.saturating_sub(1))
+/// this call, using the original actor checkpoint and runtime terminal event.
+pub(super) async fn settled(harness: &Arc<LocalHarness>, root: &AgentPath) -> Result<Vec<Vec<u8>>> {
+    let (agents, _) = harness.agents().await?;
+    let completion = harness
+        .agents
+        .get()
+        .expect("hosted agents")
+        .runtime
+        .completion();
+    let observation = async {
+        let inbox = crate::agent::inbox_tail(&**agents.provider(), root)
             .await
             .map_err(agent)?;
-        if settled {
-            return records(&**agents.provider(), root.conversation().map_err(agent)?).await;
+        loop {
+            let (settled, cut) = agents
+                .input_progress(root, inbox.saturating_sub(1))
+                .await
+                .map_err(agent)?;
+            if settled {
+                return records(&**agents.provider(), root.conversation().map_err(agent)?).await;
+            }
+            let mut changes =
+                acyclic_stream::records_only(agents.provider().follow(cut).await.map_err(agent)?);
+            changes.try_next().await.map_err(agent)?.ok_or_else(|| {
+                Error::Storage("agent state follow ended before settlement".into())
+            })?;
         }
-        let mut changes =
-            acyclic_stream::records_only(agents.provider().follow(cut).await.map_err(agent)?);
-        changes
-            .try_next()
-            .await
-            .map_err(agent)?
-            .ok_or_else(|| Error::Storage("agent state follow ended before settlement".into()))?;
+    };
+    tokio::select! {
+        biased;
+        result = completion => {
+            result?;
+            Err(Error::Invalid("runtime completion returned success".into()))
+        },
+        result = observation => result,
     }
 }
 
@@ -269,7 +283,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     assert_eq!(usage.totals().calls, 0);
     let inbox = client.send("hello", "hello").await?;
     let conversation = root.conversation().map_err(agent)?;
-    let entries = settled(&agents, &root).await?;
+    let entries = settled(&harness, &root).await?;
     assert_eq!(entries.len(), 1);
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     assert_eq!(entry.inbox, inbox);
@@ -402,6 +416,13 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
     let mut events = client.observe(Some(0)).await?;
     let inbox = client.send("lost-producer", "hello").await?;
     entering.await.map_err(agent)?;
+    let root = connection.root().clone();
+    let settling = settled(&harness, &root);
+    tokio::pin!(settling);
+    assert!(
+        futures::poll!(&mut settling).is_pending(),
+        "live runtime must retain settlement"
+    );
     let mut usage = client.usage_query();
     while !usage.synchronized() {
         usage.advance().await?;
@@ -452,6 +473,11 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
     let hosted = harness.agents.get().unwrap();
     assert!(
         matches!(hosted.runtime.completion().await, Err(Error::Storage(reason)) if reason.contains("model producer closed"))
+    );
+    let settled = futures::poll!(&mut settling);
+    assert!(
+        matches!(&settled, std::task::Poll::Ready(Err(Error::Storage(reason))) if reason.contains("model producer closed")),
+        "settlement bypassed the original runtime terminal event: {settled:?}"
     );
     assert!(
         harness.agent_stream.as_ref().unwrap().failure().is_none(),
@@ -890,7 +916,7 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
     let harness = open(resumed.clone()).await?;
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
-    let entries = settled(&agents, &root).await?;
+    let entries = settled(&harness, &root).await?;
     assert_eq!(entries.len(), 1);
     // The replay ran no hook and made no HTTP call.
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -1359,11 +1385,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     else {
         return Err(Error::Invalid("spawn did not return its child".into()));
     };
-    let runtime = &harness.agents.get().expect("hosted agent runtime").runtime;
-    let settlement = tokio::select! {
-        result = settled(&agents, &child) => result.map(|_| ()),
-        result = runtime.completion() => result,
-    };
+    let settlement = settled(&harness, &child).await.map(|_| ());
     if let Err(error) = settlement {
         return Err(Error::Conflict(format!(
             "child write did not settle: {error}; model_requests={}; child_state={:?}",
@@ -1424,10 +1446,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         .conversation
         .send("parent-write", "write parent seed")
         .await?;
-    tokio::select! {
-        result = parent.settled(parent_input) => result.map(|_| ())?,
-        result = runtime.completion() => result?,
-    }
+    parent.settled(parent_input).await?;
     assert_eq!(provider.request_count(), 4);
     let parent_file = publication(&connection, &root, parent_input).await?;
     assert_eq!(parent_file.volume(), &project);
@@ -1628,7 +1647,7 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
     let AgentReply::Spawned { agent: child, .. } = connection.execute(&spawn).await? else {
         return Err(Error::Invalid("spawn was not delivered".into()));
     };
-    let entries = settled(&agents, &child).await?;
+    let entries = settled(&harness, &child).await?;
     let request = provider
         .request(0)
         .ok_or_else(|| Error::NotFound("child request".into()))?;
@@ -1649,7 +1668,7 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
     // Negative control: the child reads no other file of its parent's.
     let client = conversation(&harness).await?;
     client.send("other", "a parent's own prompt").await?;
-    let entries = settled(&agents, &root).await?;
+    let entries = settled(&harness, &root).await?;
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let TurnInput::Message { body, .. } = entry.input else {
         return Err(Error::Invalid(
@@ -2340,7 +2359,7 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
     let client = Conversation::open(connection.clone());
     for id in ["first", "second", "third"] {
         client.send(id, id).await?;
-        settled(&agents, &root).await?;
+        settled(&harness, &root).await?;
         if id == "first" {
             let cuts = crate::local::workspace::LazyForkCuts(Arc::clone(
                 harness.workspace.as_ref().ok_or_else(|| {
@@ -2401,19 +2420,7 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
             "historical fork returned another reply".into(),
         ));
     };
-    // The existing runtime lifetime is the failure producer for this wait;
-    // a conflicted child commit must fail here instead of waiting for a timer.
-    let completion = harness
-        .agents
-        .get()
-        .ok_or_else(|| Error::Invalid("fork has no serving runtime".into()))?
-        .runtime
-        .completion();
-    let entries = tokio::select! {
-        biased;
-        result = completion => { result?; return Err(Error::Invalid("runtime completion returned success".into())); },
-        result = settled(&agents, &child) => result?,
-    };
+    let entries = settled(&harness, &child).await?;
     let child_state = agents.state(&child).await.map_err(agent)?;
     assert_eq!(
         entries.len(),

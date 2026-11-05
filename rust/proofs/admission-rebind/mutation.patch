@@ -1,0 +1,12 @@
+diff --git a/rust/crates/stream/src/session/client/admissions.rs b/rust/crates/stream/src/session/client/admissions.rs
+--- a/rust/crates/stream/src/session/client/admissions.rs
++++ b/rust/crates/stream/src/session/client/admissions.rs
+@@ -45,5 +45,8 @@ impl Admissions {
+     pub(super) fn bind_home(&self, node: &str) -> Result<(), StreamError> {
+         let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
++        for _ in state.entries.values() {
++            std::hint::black_box(node.to_owned());
++        }
+         state.home.clear();
+         state.home.push_str(node);
+         Ok(())
