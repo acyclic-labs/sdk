@@ -241,7 +241,7 @@ async fn reconnect_completes_an_interrupted_authenticated_replay() {
 async fn losing_one_account_follow_fences_everything() {
     let retired = RevocationCheck::Key {
         id: "retired",
-        epoch: 0,
+        epoch: 1,
     };
     for complete in [false, true] {
         let issuer = Issuer::new("test", key(1));
