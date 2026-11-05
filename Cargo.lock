@@ -625,6 +625,7 @@ dependencies = [
  "acyclic-fs",
  "acyclic-host-platform",
  "acyclic-machines",
+ "acyclic-mcp",
  "acyclic-model-render",
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -1022,6 +1023,20 @@ name = "acyclic-markdown-work"
 version = "0.2.0"
 
 [[package]]
+name = "acyclic-mcp"
+version = "0.2.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "loom",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio-util",
+]
+
+[[package]]
 name = "acyclic-model-render"
 version = "0.2.0"
 dependencies = [
@@ -1186,7 +1201,7 @@ name = "acyclic-plugin-identity"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
- "acyclic-harness-core",
+ "acyclic-mcp",
  "acyclic-native-runtime",
  "axum",
  "base64 0.23.1",
@@ -7293,16 +7308,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ropey"
-version = "1.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93411e420bcd1a75ddd1dc3caf18c23155eda2c090631a85af21ba19e97093b5"
-dependencies = [
- "smallvec",
- "str_indices",
-]
-
-[[package]]
 name = "rmp"
 version = "0.8.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7319,6 +7324,16 @@ checksum = "72f81bee8c8ef9b577d1681a70ebbc962c232461e397b22c208c43c04b67a155"
 dependencies = [
  "rmp",
  "serde",
+]
+
+[[package]]
+name = "ropey"
+version = "1.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93411e420bcd1a75ddd1dc3caf18c23155eda2c090631a85af21ba19e97093b5"
+dependencies = [
+ "smallvec",
+ "str_indices",
 ]
 
 [[package]]

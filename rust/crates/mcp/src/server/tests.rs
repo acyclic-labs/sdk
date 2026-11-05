@@ -8,11 +8,13 @@ struct Fixture {
 }
 
 impl ToolProvider for Fixture {
+    type Error = io::Error;
+
     fn tools(&self) -> Value {
         json!({"tools":[{"name":"echo"},{"name":"hold"},{"name":"strict"}]})
     }
 
-    fn call(&mut self, name: &str, arguments: &Value) -> Result<ToolCall> {
+    fn call(&mut self, name: &str, arguments: &Value) -> io::Result<ToolCall> {
         Ok(match name {
             "echo" => ToolCall::Answer(arguments.clone()),
             "strict" => ToolCall::Invalid("strict takes no arguments".into()),
@@ -28,7 +30,7 @@ impl ToolProvider for Fixture {
         &mut self,
         parked: &BTreeSet<String>,
         settled: &mut Vec<(String, Settled)>,
-    ) -> Result<Option<Wake>> {
+    ) -> io::Result<Option<Wake>> {
         if self.released && parked.contains("held") {
             settled.push(("held".into(), Err(json!({"code":"released"}))));
         }
@@ -54,7 +56,7 @@ impl Write for Written {
     }
 }
 
-fn serve(provider: &mut Fixture, input: &str) -> (Result<()>, Vec<Value>) {
+fn serve(provider: &mut Fixture, input: &str) -> (Result<(), ServeError<io::Error>>, Vec<Value>) {
     let output = Written::default();
     let served = ToolServer {
         name: "fixture",

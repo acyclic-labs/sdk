@@ -25,6 +25,7 @@
   "acyclic-markdown",
   "acyclic-harness-tui",
   "acyclic-model-render",
+  "acyclic-mcp",
   "acyclic-harness-core",
   "acyclic-harness-client",
   "acyclic-harness-search",

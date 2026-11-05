@@ -839,3 +839,12 @@ service reply and checks decoded cardinality before zip-based comparisons.
 guard to reject only missing replies; the unchanged property must reject its
 extra reply. The earlier count-guard control still covers missing members.
 This is a derived adversarial input, not an additional captured service packet.
+
+The `harness_codecs` target also compares the shared native MCP `BoundedCodec`
+and `JsonLineReader` on the same bytes under one-byte, fragmented and full reads,
+including terminal failures at two frame bounds. It reuses the recorded
+`mcp-everything-2.1.0-stdio` and `mcp-filesystem-2.1.0-stdio` inputs and their
+original `captures/` provenance. `negative-controls/mcp_stdio_bound.patch` removes
+the reader's decoder bound; replaying the same captured input must then fail the
+fragmentation oracle. The retained codec controls additionally reject a dropped
+bound publication and an ignored notification hiding a buffered response.
