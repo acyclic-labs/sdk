@@ -9,6 +9,11 @@ enum PlannedRead {
     Durable,
 }
 
+struct ReadPlan {
+    entries: Owned<Vec<PlannedRead>>,
+    durable: usize,
+}
+
 fn check_length(length: u64, maximum_bytes: u64) -> Result<(), ObjectStoreError> {
     if length > maximum_bytes {
         return Err(ObjectStoreError::TooLarge {
@@ -43,12 +48,12 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         &self,
         requests: &[ObjectReadRequest],
         work: &mut AuthorityWork<'_>,
-    ) -> Result<Option<Owned<Vec<PlannedRead>>>, ObjectStoreError> {
+    ) -> Result<Option<ReadPlan>, ObjectStoreError> {
         let index = self.index();
         if index.objects.is_empty() {
             return Ok(None);
         }
-        let mut plan: Option<Owned<Vec<PlannedRead>>> = None;
+        let mut plan: Option<ReadPlan> = None;
         for (position, request) in requests.iter().enumerate() {
             let found = if R::reads_plaintext(request.object_id) {
                 index.lookup(request.object_id)
@@ -62,7 +67,10 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 crate::async_storage::admit_read_batch(requests.len(), work)?;
                 let mut entries = work.vec_owned(requests.len())?;
                 entries.value.resize_with(position, || PlannedRead::Durable);
-                plan = Some(entries);
+                plan = Some(ReadPlan {
+                    entries,
+                    durable: position,
+                });
             }
             let entry = match found {
                 Lookup::Resident(bytes) => {
@@ -77,7 +85,8 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 Lookup::Absent => PlannedRead::Durable,
             };
             if let Some(plan) = &mut plan {
-                plan.value.push(entry);
+                plan.durable += usize::from(matches!(&entry, PlannedRead::Durable));
+                plan.entries.value.push(entry);
             }
         }
         Ok(plan)
@@ -89,17 +98,16 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         work: &mut AuthorityWork<'_>,
     ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
         let mut scope = work.scope()?;
-        let Some(plan) = self.read_plan::<R>(requests, &mut scope)? else {
+        let Some(ReadPlan {
+            entries: plan,
+            durable: misses,
+        }) = self.read_plan::<R>(requests, &mut scope)?
+        else {
             // The provider owns an entirely durable batch's original output.
             drop(scope);
             return R::read_many(&self.inner, requests, work).await;
         };
         let count = u64::try_from(requests.len()).map_err(|_| crate::WorkError::Overflow)?;
-        let misses = plan
-            .value
-            .iter()
-            .filter(|entry| matches!(entry, PlannedRead::Durable))
-            .count();
         let copied = u64::try_from(misses)
             .ok()
             .and_then(|count| count.checked_mul(std::mem::size_of::<ObjectReadRequest>() as u64))

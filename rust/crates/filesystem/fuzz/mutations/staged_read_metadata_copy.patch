@@ -1,10 +1,10 @@
 diff --git a/rust/crates/filesystem/src/staged_objects/read.rs b/rust/crates/filesystem/src/staged_objects/read.rs
 --- a/rust/crates/filesystem/src/staged_objects/read.rs
 +++ b/rust/crates/filesystem/src/staged_objects/read.rs
-@@ -100,17 +100,6 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
-             .iter()
-             .filter(|entry| matches!(entry, PlannedRead::Durable))
-             .count();
+@@ -110,17 +110,6 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
+             return R::read_many(&self.inner, requests, work).await;
+         };
+         let count = u64::try_from(requests.len()).map_err(|_| crate::WorkError::Overflow)?;
 -        let copied = u64::try_from(misses)
 -            .ok()
 -            .and_then(|count| count.checked_mul(std::mem::size_of::<ObjectReadRequest>() as u64))
