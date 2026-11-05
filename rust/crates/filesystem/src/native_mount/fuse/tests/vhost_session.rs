@@ -37,10 +37,7 @@ fn standard_config_then_quiet_cancel_or_unexpected_eof_keeps_actual_outcome()
             b"canonical-test",
             &work,
         )?;
-        let (finished, completion) = sync_channel(1);
-        let worker = std::thread::spawn(move || {
-            let _ = finished.send(session.run());
-        });
+        let worker = std::thread::spawn(move || session.run());
         let mut frontend = Frontend::from_stream(peer, 2);
         let negotiation = (|| -> Result<(), Box<dyn std::error::Error>> {
             assert_eq!(frontend.get_features()?, FEATURES);
@@ -74,29 +71,32 @@ fn standard_config_then_quiet_cancel_or_unexpected_eof_keeps_actual_outcome()
         if stopped.is_err() {
             cancellation.cancel();
         }
-        let result = completion.recv_timeout(Duration::from_secs(2));
-        // A failed readiness/retirement assertion still positively stops and
-        // joins its actual server; it cannot leak a quiet controller thread.
-        cancellation.cancel();
-        worker
+        let retired = worker
             .join()
             .map_err(|_| std::io::Error::other("standard socket owner panicked"))?;
         negotiation?;
         stopped?;
-        let retired = result?;
         assert!(retired.take_callback_failure().is_none());
         assert_eq!(
             retired.completed_callback_work(),
             crate::WorkCounters::UNCHARGED
         );
+        let refusal = retired
+            .transport
+            .as_ref()
+            .err()
+            .and_then(|error| crate::workspace::workspace_bounded_error(error));
         if cancel {
-            assert!(matches!(
-                retired.transport,
-                Err(NativeMountError::Materialization(
-                    crate::NativeTreeMaterializationError::Cancelled
-                ))
-            ));
+            assert!(
+                matches!(refusal, Some(crate::WorkspaceError::Cancelled(_))),
+                "original cancellation retirement: {:?}",
+                retired.transport
+            );
         } else {
+            assert!(
+                refusal.is_none(),
+                "unexpected EOF must not be classified as cancellation"
+            );
             assert!(matches!(
                 retired.transport,
                 Err(NativeMountError::VirtioFsControl(

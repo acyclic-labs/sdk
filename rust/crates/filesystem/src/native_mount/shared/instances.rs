@@ -151,17 +151,6 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    static STARTS: AtomicUsize = AtomicUsize::new(0);
-    static INSTANCES: Instances<Counted> = Instances::new();
-
-    struct Counted;
-
-    impl Drop for Counted {
-        fn drop(&mut self) {
-            STARTS.fetch_sub(1, Ordering::SeqCst);
-        }
-    }
-
     #[test]
     fn adapter_teardown_precedes_releasing_the_registration() -> Result<(), NativeMountError> {
         struct Checked {
@@ -204,11 +193,19 @@ mod tests {
     /// nothing. Negative control: a second root gets its own instance.
     #[test]
     fn one_live_instance_per_root() -> Result<(), NativeMountError> {
+        struct Counted(Arc<AtomicUsize>);
+        impl Drop for Counted {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        static INSTANCES: Instances<Counted> = Instances::new();
+        let starts = Arc::new(AtomicUsize::new(0));
         let directory = tempfile::tempdir()?;
         let (first_root, second_root) = (directory.path().join("a"), directory.path().join("b"));
         let start = |_: &Path| {
-            STARTS.fetch_add(1, Ordering::SeqCst);
-            Ok(Counted)
+            starts.fetch_add(1, Ordering::SeqCst);
+            Ok(Counted(Arc::clone(&starts)))
         };
         assert!(
             INSTANCES
@@ -220,17 +217,17 @@ mod tests {
         assert!(Arc::ptr_eq(&first, &again));
         let other = INSTANCES.acquire(&second_root, start)?;
         assert!(!Arc::ptr_eq(&first, &other));
-        assert_eq!(STARTS.load(Ordering::SeqCst), 2);
+        assert_eq!(starts.load(Ordering::SeqCst), 2);
         drop((first, again));
         assert_eq!(
-            STARTS.load(Ordering::SeqCst),
+            starts.load(Ordering::SeqCst),
             1,
             "the last holder tears down"
         );
         let fresh = INSTANCES.acquire(&first_root, start)?;
-        assert_eq!(STARTS.load(Ordering::SeqCst), 2);
+        assert_eq!(starts.load(Ordering::SeqCst), 2);
         drop((fresh, other));
-        assert_eq!(STARTS.load(Ordering::SeqCst), 0);
+        assert_eq!(starts.load(Ordering::SeqCst), 0);
         Ok(())
     }
 }

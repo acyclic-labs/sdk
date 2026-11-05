@@ -29,31 +29,23 @@ impl Fixture {
         )
         .map_err(|(error, _)| error)?;
         let mut guard = None;
-        MountDestinationGuard::acquire_with_work(&destination, false, &work, &mut guard, false)?;
-        // Startup has released the user-wide registry. Give this retirement
-        // fixture its own real registry descriptor, so an independent probe
-        // can distinguish its leaked lock from another fixture's valid lock.
-        // All retirement, refill, unlink and unlock operations stay unchanged.
-        let registry = root.path().join("registry.lock");
-        let directory = guard
-            .as_ref()
-            .unwrap()
-            .registry_file
-            .as_ref()
-            .unwrap()
-            .directory
-            .try_clone()?;
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(&registry)?;
-        guard.as_mut().unwrap().registry_file = Some(crate::sync::native::Arc::new(
-            registry::Registry::new(directory, file.into()),
-        ));
+        let directory = root.path().join("registry");
+        std::fs::create_dir(&directory)?;
+        let slot = registry::RegistrySlot::new();
+        MountDestinationGuard::acquire_with_registry(
+            &destination,
+            false,
+            &work,
+            &mut guard,
+            false,
+            |work| slot.open(&directory, &mut &*work),
+        )?;
+        let registry = directory.join(NATIVE_REGISTRY_NAME);
         let before = work.receipt();
         let live = work.live_allocation_bytes();
-        let fence = MountDestinationGuard::paths_for_canonical(&destination.canonicalize()?)?.0;
+        let fence = directory.join(std::str::from_utf8(
+            guard.as_ref().unwrap().fence_name.as_ref().unwrap(),
+        )?);
         let owner = guard.as_mut().unwrap();
         owner.prepare_destination_cleanup(&destination, &work)?;
         if shared {
@@ -204,20 +196,20 @@ fn legacy_release(guard: &mut MountDestinationGuard) -> Result<(), NativeMountEr
 fn registry_probe_distinguishes_fixture_locks_from_unrelated_owners()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new(false)?;
-    let global_path = registry::path()?;
-    let global = FileLock::acquire(
+    let unrelated = Fixture::new(false)?;
+    let held = FileLock::acquire(
         std::fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .open(&global_path)?,
+            .open(&unrelated.registry)?,
         FileLockMode::Exclusive,
     )?;
-    // Negative control: the former user-wide probe mistakes this unrelated
+    // Negative control: a shared probe mistakes this unrelated
     // owner for a leaked retirement lock, even though the fixture is unlocked.
     let old_probe = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open(&global_path)?;
+        .open(&unrelated.registry)?;
     assert!(lock_is_contended(
         &FileLock::try_acquire(old_probe, FileLockMode::Exclusive).unwrap_err()
     ));
@@ -234,7 +226,7 @@ fn registry_probe_distinguishes_fixture_locks_from_unrelated_owners()
     assert!(!fixture.registry_is_unlocked()?);
     fence_io::unlock(&private.file)?;
     assert!(fixture.registry_is_unlocked()?);
-    global.unlock()?;
+    held.unlock()?;
     Ok(())
 }
 

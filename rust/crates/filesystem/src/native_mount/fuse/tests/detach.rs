@@ -5,16 +5,27 @@ fn preserved(source: &MemorySource, path: &MountPath) -> Result<bool, MountSourc
 }
 
 fn operation(
+    original: &MemoryCheckout,
     rename: bool,
     allowance: Option<u64>,
 ) -> Result<Option<u64>, Box<dyn std::error::Error>> {
-    let (source, _) = shared_sources(posix_config())?;
-    let source = Arc::new(source);
     let setup = fuse_fixture_work();
+    let cancellation = crate::CancellationToken::new();
+    let checkout = original.private_candidate(
+        &mut crate::kernel::allocation::KernelAccounting::native(&setup, &cancellation),
+        &cancellation,
+    )?;
+    let source = Arc::new(
+        crate::native_mount::adapter::tests::access::bind_test_access(
+            MemorySource::new(
+                Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
+                posix_config(),
+            )?,
+            vec![],
+            None,
+        )?,
+    );
     let path = name("retained");
-    source.create_file(&path, FileMetadata::default(), None, &setup)?;
-    source.write_range(&path, 0, Bytes::from_static(b"original"))?;
-    source.create_file(&name("replacement"), FileMetadata::default(), None, &setup)?;
     let projection = super::super::FuseProjection {
         core: projection_core(
             source.clone(),
@@ -62,14 +73,19 @@ fn operation(
     } else {
         projection.remove_name(ROOT_INODE, std::ffi::OsStr::new("retained"), &work)
     };
-    if result.is_err() {
+    if let Err(error) = result {
         assert!(
             preserved(source.as_ref(), &path)?,
-            "allowance {allowance:?}: {result:?}"
+            "allowance {allowance:?}: {error:?}"
         );
-        if allowance.is_none() {
-            result?;
-        }
+        let refusal = crate::workspace::workspace_bounded_error(&error);
+        assert!(
+            matches!(refusal, Some(crate::WorkspaceError::Work(crate::WorkError::BudgetExceeded {
+                counter: "allocation_operations", maximum, observed,
+            })) if Some(maximum) == allowance && observed > maximum),
+            "allowance {allowance:?}: {error:?}; source {:?}",
+            std::error::Error::source(&error)
+        );
         Ok(None)
     } else {
         let file = projection
@@ -86,15 +102,48 @@ fn operation(
 }
 
 // Measure the actual finite operation first, then exercise every allocation
-// refusal prefix. The bound is the production trace, never a guessed quota.
+// refusal prefix against replicas of that same tree. A fresh volume has fresh
+// file identities and may require a different number of trie allocations.
 #[test]
 fn allocation_refusal_precedes_unlink_and_replacement() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::model::{AccessMode, CheckoutMode, ConsistencyMode, MutationMode};
+    let checkout = memory_checkout(
+        posix_config(),
+        CheckoutMode {
+            access: AccessMode::ReadWrite,
+            consistency: ConsistencyMode::Pinned,
+            mutations: MutationMode::PrivateOverlay,
+        },
+        1,
+    )?
+    .pop()
+    .ok_or("one checkout")?;
+    let original = Arc::new(crate::native_mount::SharedCheckout::new(checkout));
+    let source = crate::native_mount::adapter::tests::access::bind_test_access(
+        MemorySource::new(Arc::clone(&original), posix_config())?,
+        vec![],
+        None,
+    )?;
+    let setup = fuse_fixture_work();
+    let path = name("retained");
+    source.create_file(&path, FileMetadata::default(), None, &setup)?;
+    source.write_range(&path, 0, Bytes::from_static(b"original"))?;
+    source.create_file(&name("replacement"), FileMetadata::default(), None, &setup)?;
+    let cancellation = crate::CancellationToken::new();
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    let original = runtime.block_on(async {
+        original.lock().await.private_candidate(
+            &mut crate::kernel::allocation::KernelAccounting::native(&setup, &cancellation),
+            &cancellation,
+        )
+    })?;
     for rename in [false, true] {
-        let required = operation(rename, None)?.ok_or("unbounded fixture was refused")?;
+        let required =
+            operation(&original, rename, None)?.ok_or("unbounded fixture was refused")?;
         for allowance in 0..required {
-            operation(rename, Some(allowance))?;
+            operation(&original, rename, Some(allowance))?;
         }
-        assert!(operation(rename, Some(required))?.is_some());
+        assert!(operation(&original, rename, Some(required))?.is_some());
     }
     Ok(())
 }
