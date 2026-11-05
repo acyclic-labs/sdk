@@ -20,10 +20,6 @@ impl StartupCleanup {
         work: &mut W,
     ) -> Result<(), DemandError> {
         work.check()?;
-        let reads = self
-            .reads
-            .checked_add(delta.backend_read_operations)
-            .ok_or(WorkError::Overflow)?;
         let writes = self
             .writes
             .checked_add(delta.backend_write_operations)
@@ -33,25 +29,9 @@ impl StartupCleanup {
             .checked_add(delta.items_examined)
             .ok_or(WorkError::Overflow)?;
         work.with_original_leaf(|work| super::reserve_cleanup_credits(work, delta))?;
-        self.reads = reads;
         self.writes = writes;
         self.records = records;
         Ok(())
-    }
-
-    pub(super) fn reserve_worker<W: SourceDemandReadWork>(
-        &mut self,
-        work: &mut W,
-    ) -> Result<(), DemandError> {
-        let attempts = if work.is_native_original() { 2 } else { 1 };
-        self.extend(
-            WorkCounters {
-                backend_read_operations: attempts,
-                backend_write_operations: attempts,
-                ..WorkCounters::UNCHARGED
-            },
-            work,
-        )
     }
 
     pub(super) fn record<W: SourceDemandReadWork>(
@@ -62,10 +42,6 @@ impl StartupCleanup {
         if delta == WorkCounters::UNCHARGED {
             return Ok(());
         }
-        let reads = self
-            .reads
-            .checked_sub(delta.backend_read_operations)
-            .ok_or(DemandError::NativeWorkUnavailable)?;
         let writes = self
             .writes
             .checked_sub(delta.backend_write_operations)
@@ -74,7 +50,6 @@ impl StartupCleanup {
             .records
             .checked_sub(delta.items_examined)
             .ok_or(DemandError::NativeWorkUnavailable)?;
-        self.reads = reads;
         self.writes = writes;
         self.records = records;
         work.with_original_leaf(|work| super::record_cleanup_credits(work, delta))
@@ -85,7 +60,6 @@ impl StartupCleanup {
             super::cancel_cleanup_credits(
                 work,
                 WorkCounters {
-                    backend_read_operations: self.reads,
                     backend_write_operations: self.writes,
                     items_examined: self.records,
                     ..WorkCounters::UNCHARGED
@@ -96,9 +70,7 @@ impl StartupCleanup {
     }
 
     pub(super) fn covers(&self, delta: WorkCounters) -> bool {
-        self.reads >= delta.backend_read_operations
-            && self.writes >= delta.backend_write_operations
-            && self.records >= delta.items_examined
+        self.writes >= delta.backend_write_operations && self.records >= delta.items_examined
     }
 
     pub(super) fn extend_for<W: SourceDemandReadWork>(
@@ -107,7 +79,6 @@ impl StartupCleanup {
         work: &mut W,
     ) -> Result<(), DemandError> {
         let missing = WorkCounters {
-            backend_read_operations: delta.backend_read_operations.saturating_sub(self.reads),
             backend_write_operations: delta.backend_write_operations.saturating_sub(self.writes),
             items_examined: delta.items_examined.saturating_sub(self.records),
             ..WorkCounters::UNCHARGED

@@ -400,19 +400,18 @@ fn original_cleanup_wait_precancel_and_contention_preserve_cleanup_custody()
     assert_eq!(original.lock().receipt(), prefix);
     assert!(!watch.shared.stopping.load(Ordering::Acquire));
     assert!(!watch.is_stopped());
-    assert!(watch.worker.lock().is_some());
 
     for descriptor in [&watch.shared.inotify, &watch.shared.root] {
         assert!(descriptor.load(Ordering::Acquire) >= 0);
     }
-    // Withhold the already-owned join cursor, then restore that exact cursor.
-    // Neither refusal nor the explicit cleanup join creates native credit.
-    let reads = {
+    // Withhold the already-owned withdrawal credit, then restore it.
+    // Neither refusal nor retirement creates native credit.
+    let writes = {
         let mut cleanup = watch.shared.cleanup.lock();
-        std::mem::take(&mut cleanup.reads)
+        std::mem::take(&mut cleanup.writes)
     };
     let denied = watch.stop_with_cleanup_wait(&CancellationToken::new());
-    watch.shared.cleanup.lock().reads = reads;
+    watch.shared.cleanup.lock().writes = writes;
     assert!(matches!(denied, Err(DemandError::NativeWorkUnavailable)));
     assert_eq!(original.lock().receipt(), prefix);
     assert!(!watch.shared.stopping.load(Ordering::Acquire));
@@ -422,8 +421,11 @@ fn original_cleanup_wait_precancel_and_contention_preserve_cleanup_custody()
     watch.stop_accepted_cleanup()?;
     assert!(watch.is_stopped());
     assert!(watch.shared.physically_cleared());
-    assert!(watch.worker.lock().is_none());
     let terminal = original.lock().receipt();
+    assert_eq!(
+        terminal.backend_read_operations, prefix.backend_read_operations,
+        "retiring shared delivery performs no backend read"
+    );
 
     watch.stop_with_cleanup_wait(&wait)?;
     assert_eq!(original.lock().receipt(), terminal);
@@ -502,7 +504,6 @@ fn original_cleanup_wait_late_cancel_waits_for_the_actual_native_terminal()
     assert!(matches!(result, Err(DemandError::Cancelled)));
     assert!(watch.is_stopped());
     assert!(watch.shared.physically_cleared());
-    assert!(watch.worker.lock().is_none());
 
     Ok(())
 }
@@ -623,7 +624,6 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
     watch.delivery_lost();
     assert!(receive.try_recv().is_err(), "one terminal notification");
     assert!(watch.shared.physically_cleared());
-    assert!(watch.worker.lock().is_none());
     assert!(!watch.delivery().is_exact());
     let mut state = original.lock();
     assert_eq!(

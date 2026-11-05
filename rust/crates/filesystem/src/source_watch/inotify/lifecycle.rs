@@ -16,7 +16,7 @@ impl NativeSourceWatch {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "Startup retains every cleanup slot until worker ownership transfers or rollback completes."
+        reason = "Startup retains every cleanup slot until native ownership transfers or rollback completes."
     )]
     pub(in crate::source_watch) fn start_bound_driver<W: SourceDemandReadWork>(
         directory: &crate::native_host::HostRoot,
@@ -158,23 +158,23 @@ impl NativeSourceWatch {
                 .retain(retained - control_bytes, work)?;
             transferred = true;
             *initialized.cleanup.lock() = std::mem::take(&mut cleanup);
-            initialized.cleanup.lock().reserve_worker(work)?;
-            work.started_io(READ)?;
+            // Reserve withdrawal before releasing startup custody.
+            initialized.cleanup.lock().extend(WRITE, work)?;
             drop(startup_reading);
             let cancelled = work.check().err();
             if cancelled.is_some() {
                 initialized.stopping.store(true, Ordering::Release);
             }
-            Ok((Worker, cancelled))
+            Ok(cancelled)
         })();
         match result {
-            Ok((worker, cancelled)) => {
+            Ok(cancelled) => {
                 let watch = Self {
                     shared: shared.ok_or(DemandError::InvalidRequest)?,
-                    worker: Custody::new(Some(worker)),
+                    controller: Custody::new(()),
                 };
                 if let Some(error) = cancelled {
-                    let stopped = watch.stop_admitted(&mut watch.worker.lock(), work);
+                    let stopped = watch.stop_admitted(&mut watch.controller.lock(), work);
                     if let Err(stop_error) = stopped {
                         if !watch.is_stopped() {
                             if let Some(failure) = &startup_failure {
@@ -314,26 +314,13 @@ impl NativeSourceWatch {
         if !prepaid {
             work.check()?;
         }
-        let mut worker = self.worker.lock_with_wait(wait)?;
+        let mut controller = self.controller.lock_with_wait(wait)?;
         if wait.is_some_and(crate::CancellationToken::is_cancelled) {
             return Err(DemandError::Cancelled);
         }
         if self.is_stopped() {
-            if prepaid {
-                let cleanup = self.shared.cleanup.lock_with_wait(wait)?;
-                if cleanup.reads < u64::from(worker.is_some()) {
-                    return Err(DemandError::NativeWorkUnavailable);
-                }
-                drop(cleanup);
-                if wait.is_some_and(crate::CancellationToken::is_cancelled) {
-                    return Err(DemandError::Cancelled);
-                }
-            }
-            let result = self.join_worker(&mut worker, work);
-            if worker.is_none() {
-                self.shared.cancel_cleanup(work);
-            }
-            return result;
+            self.shared.cancel_cleanup(work);
+            return Ok(());
         }
         // A cancelled queue entry may already own the released permit. Retain
         // the service handoff while acquiring, so its return also serves a
@@ -351,16 +338,9 @@ impl NativeSourceWatch {
             .checked_add(watches.len())
             .and_then(|count| count.checked_add(ancestors.len()))
             .ok_or(WorkError::Overflow)?;
-        let running = u64::from(worker.is_some());
         let registered = self.shared.inotify.load(Ordering::Acquire) >= 0;
         let suffix = WorkCounters {
-            backend_read_operations: running,
-            backend_write_operations: self.shared.held_descriptors()
-                + if prepaid {
-                    u64::from(worker.is_some() && registered)
-                } else {
-                    running
-                },
+            backend_write_operations: self.shared.held_descriptors() + u64::from(registered),
             items_examined: u64::try_from(records).map_err(|_| WorkError::Overflow)?,
             ..WorkCounters::UNCHARGED
         };
@@ -383,17 +363,17 @@ impl NativeSourceWatch {
         drop(ancestors);
         drop(watches);
         drop(reading);
-        self.stop_admitted(&mut worker, work)
+        self.stop_admitted(&mut controller, work)
     }
 
     pub(super) fn stop_admitted<W: SourceDemandReadWork>(
         &self,
-        worker: &mut Option<Worker>,
+        _controller: &mut (),
         work: &mut W,
     ) -> Result<(), DemandError> {
         self.shared.stopping.store(true, Ordering::Release);
         let mut result = Ok(());
-        if worker.is_some() {
+        {
             // A failed service pass may retire this watch concurrently, and
             // its withdrawal also unsubscribes and settles the cleanup
             // credits. Unsubscribe under the same retirement lock, so exactly
@@ -412,11 +392,7 @@ impl NativeSourceWatch {
                 self.shared.record_cleanup(WRITE, work).and(unsubscribed)?;
             }
             drop(retired);
-            let joined = self.join_worker(worker, work);
-            result = result.and(joined);
-            if worker.is_some() {
-                return result;
-            }
+            self.shared.retire();
         }
         if self.shared.delivery.original.is_none() || !self.is_stopped() {
             result = result.and(self.shared.clear_measured(work));
@@ -427,23 +403,6 @@ impl NativeSourceWatch {
         }
         if self.is_stopped() {
             self.shared.cancel_cleanup(work);
-        }
-        result
-    }
-
-    /// Ends background delivery: returns once no service pass can deliver
-    /// for this watch again and native custody, if any, was retired.
-    pub(super) fn join_worker<W: SourceDemandReadWork>(
-        &self,
-        worker: &mut Option<Worker>,
-        work: &mut W,
-    ) -> Result<(), DemandError> {
-        let mut result = Ok(());
-        if worker.is_some() {
-            self.shared.ensure_cleanup_covered(READ, work)?;
-            self.shared.retire();
-            result = self.shared.record_cleanup(READ, work);
-            *worker = None;
         }
         result
     }
@@ -472,7 +431,6 @@ impl Drop for NativeSourceWatch {
             };
             if completed {
                 let mut work = self.shared.delivery.callback_work();
-                *self.worker.get_mut() = None;
                 self.shared.cancel_cleanup(&mut work);
             }
             return;
@@ -554,26 +512,8 @@ impl Shared {
         if !self.physically_cleared() {
             return;
         }
-        let orphaned = {
-            let mut cleanup = self.cleanup.lock();
-            let keep = u64::from(self.controller_alive.load(Ordering::Acquire));
-            let reads = cleanup.reads.min(keep);
-            let unused = WorkCounters {
-                backend_read_operations: cleanup.reads - reads,
-                backend_write_operations: cleanup.writes,
-                items_examined: cleanup.records,
-                ..WorkCounters::UNCHARGED
-            };
-            work.with_original_leaf(|work| super::cancel_cleanup_credits(work, unused));
-            cleanup.reads = reads;
-            cleanup.writes = 0;
-            cleanup.records = 0;
-            self.delivery.finish_retirement();
-            keep == 0
-        };
-        if orphaned {
-            self.cancel_cleanup(&mut work);
-        }
+        self.cancel_cleanup(&mut work);
+        self.delivery.finish_retirement();
     }
 
     /// Payload descriptors still held: the hub registrations and the root.

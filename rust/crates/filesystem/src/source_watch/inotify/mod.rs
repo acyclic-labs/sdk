@@ -63,13 +63,9 @@ const EVENT_HEADER_BYTES: usize = 16;
 
 pub(crate) struct NativeSourceWatch {
     shared: Arc<Shared>,
-    /// Background delivery through the hub's service pool, until retired.
-    worker: Custody<Option<Worker>>,
+    /// Serializes controllers while the shared service pool retires delivery.
+    controller: Custody<()>,
 }
-
-/// Custody of background delivery for one watch.
-#[derive(Clone, Copy, Debug)]
-struct Worker;
 
 struct Shared {
     /// The hub's descriptor while this watch holds hub registrations, else -1.
@@ -108,7 +104,6 @@ struct Shared {
 
 #[derive(Default)]
 struct StartupCleanup {
-    reads: u64,
     writes: u64,
     records: u64,
 }
