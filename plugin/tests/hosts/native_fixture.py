@@ -38,8 +38,8 @@ def start_workspace_owner(binary, workspace, state, root, env, log):
     except OSError as error:
         raise RuntimeError(f"step=start shared workspace owner: {error}; recovery command: {recovery}") from error
     try:
-        # The shared bridge arms its original filesystem watch before launch.
-        # Its stdout closes if that watch or the original owner fails.
+        # The shared bridge joins the selected owner's serving-ready event.
+        # Its stdout closes if that process ends before becoming ready.
         event = json.loads(owner.stdout.readline())
         if event != {"event": "workspace-owner-ready"}:
             raise ValueError(f"unexpected readiness event: {event}")
