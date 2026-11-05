@@ -470,7 +470,6 @@ dependencies = [
  "acyclic-conformance",
  "acyclic-objects",
  "acyclic-stream",
- "futures",
  "libfuzzer-sys",
  "prost",
  "serde_json",

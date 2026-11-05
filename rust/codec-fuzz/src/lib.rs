@@ -112,6 +112,7 @@ pub fn exercise(target: &str, bytes: &[u8]) -> Result<(), String> {
         "identities" => identities(bytes),
         "actor_codecs" => actor_codecs(bytes),
         "call_record" => {
+            acyclic_actors::call::codec_fuzz::check(bytes);
             futures::executor::block_on(acyclic_actors::call::model::check(bytes))?;
         }
         "filesystem_codecs" => filesystem_codecs(bytes),

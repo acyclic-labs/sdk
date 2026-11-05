@@ -47,8 +47,9 @@ restoration replays the retained corpus. This reuses the original manifest and
 delivery producers, corpus and provenance; it does not qualify complete branch
 coverage or physical guest transport.
 
-The `call_record` target drives `call::model::check` through the original commit
-builders, provider and journal. The `actor_codecs` target feeds committed Stream wire envelopes to
+The `call_record` target checks generated entry payloads through the original
+decoder and source-bound fold, then drives `call::model::check` through the original
+commit builders, provider and journal. The `actor_codecs` target feeds committed Stream wire envelopes to
 `Entry::decode`, `fence` and `Journal::apply`. Its positive records are captured
 from actual commits with a fixed provider clock and stable retry identities.
 Admission distinguishes cancellation before acceptance from the indeterminate
