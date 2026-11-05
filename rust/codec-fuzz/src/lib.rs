@@ -654,6 +654,7 @@ pub fn actor_seeds()
     seeds.extend(actor_socket_seeds()?);
     seeds.extend(actor_socket_input_seeds()?);
     seeds.extend(actor_socket_ledger_seeds()?);
+    seeds.extend(live_update::seeds()?);
     Ok(seeds)
 }
 

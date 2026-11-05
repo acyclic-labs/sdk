@@ -1060,10 +1060,7 @@ fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
 }
 
 fn capture_actors(manifest: &mut String) -> Result<(), Box<dyn Error>> {
-    for (name, bytes, producer) in acyclic_codec_fuzz::actor_seeds()?
-        .into_iter()
-        .chain(acyclic_codec_fuzz::live_update::seeds()?)
-    {
+    for (name, bytes, producer) in acyclic_codec_fuzz::actor_seeds()? {
         save("actor_codecs", name, &bytes, producer, manifest)?;
     }
     Ok(())
