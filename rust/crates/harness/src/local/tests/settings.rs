@@ -133,15 +133,17 @@ async fn home_agent_settings_apply_at_open_and_bad_ones_fall_back_to_the_seed() 
         ),
     ] {
         let version = write(&harness, "agent.ts", source).await?;
+        let volumes = super::super::agent_settings::Volumes {
+            files: &harness.files,
+            verifier: &harness.verifier,
+            signed: &harness.signed,
+            home: &harness.scratch,
+            journal: &harness.journal,
+            maximum_bytes: harness.limits.file_bytes,
+        };
+        let tree = super::super::agent_settings::Tree::new(&volumes).await?;
         let settings = super::super::agent_settings::admit(
-            &super::super::agent_settings::Volumes {
-                files: &harness.files,
-                verifier: &harness.verifier,
-                signed: &harness.signed,
-                home: &harness.scratch,
-                journal: &harness.journal,
-                maximum_bytes: harness.limits.file_bytes,
-            },
+            &tree,
             harness.root,
             harness.agent.clone().expect("the configured model"),
             None,

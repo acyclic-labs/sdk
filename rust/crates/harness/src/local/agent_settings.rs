@@ -28,8 +28,9 @@ pub(super) struct Volumes<'a> {
     pub(super) maximum_bytes: u64,
 }
 
-/// Imports resolve in the home over the seed; `sys/` only in the seed.
-struct Tree<'a> {
+/// One session admission's pinned home over the seed; `sys/` only in the seed.
+/// Every settings entry point borrows this tree and its original read grant.
+pub(super) struct Tree<'a> {
     volumes: &'a Volumes<'a>,
     read: ContentGrant,
     generation: crate::resources::GenerationRef,
@@ -92,7 +93,7 @@ impl config::Tree for Tree<'_> {
 /// module's admission. An invalid or rejected home module leaves the seed's
 /// settings in force; the seed's own module must be admissible.
 pub(super) async fn admit(
-    volumes: &Volumes<'_>,
+    tree: &Tree<'_>,
     agent: AgentId,
     started: (Model, Arc<dyn ModelProvider>),
     resolve: Resolve<'_>,
@@ -102,7 +103,6 @@ pub(super) async fn admit(
     ),
     clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<Settings> {
-    let tree = Tree::new(volumes).await?;
     let seed = Layer {
         name: "seed",
         generation: "",
@@ -110,7 +110,7 @@ pub(super) async fn admit(
     };
     let home = tree.entry(config::AGENT).await?;
     let Some((version, bytes)) = home else {
-        return settle(&[seed], &tree, started, resolve, compaction)
+        return settle(&[seed], tree, started, resolve, compaction)
             .await
             .map_err(Refused::seed);
     };
@@ -123,11 +123,11 @@ pub(super) async fn admit(
         },
     ];
     let (settings, status, error) =
-        match settle(&layers, &tree, started.clone(), resolve, compaction).await {
+        match settle(&layers, tree, started.clone(), resolve, compaction).await {
             Ok(settings) => (settings, AdmissionStatus::Applied, None),
             Err(Refused::Operation(error)) => return Err(error),
             Err(Refused::Settings(status, error)) => (
-                settle(&layers[..1], &tree, started, resolve, compaction)
+                settle(&layers[..1], tree, started, resolve, compaction)
                     .await
                     .map_err(Refused::seed)?,
                 status,
@@ -135,7 +135,7 @@ pub(super) async fn admit(
             ),
         };
     record(
-        volumes,
+        tree.volumes,
         agent,
         (config::AGENT, &version),
         (status, error),
@@ -146,7 +146,7 @@ pub(super) async fn admit(
 }
 
 impl<'a> Tree<'a> {
-    async fn new(volumes: &'a Volumes<'a>) -> Result<Self> {
+    pub(super) async fn new(volumes: &'a Volumes<'a>) -> Result<Self> {
         let read = ContentGrant::verify_directory_read(
             volumes.verifier,
             volumes.signed,
@@ -219,12 +219,11 @@ async fn record(
 /// `plugins.ts` leaves the seed's set in force.
 #[cfg(any(test, feature = "hooks"))]
 pub(super) async fn plugins(
-    volumes: &Volumes<'_>,
+    tree: &Tree<'_>,
     agent: AgentId,
     clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<crate::hooks::Hooks> {
     use crate::plugins::{MANIFEST, load};
-    let tree = Tree::new(volumes).await?;
     let enabler = agent.to_string();
     let seed = Layer {
         name: "seed",
@@ -238,7 +237,7 @@ pub(super) async fn plugins(
         error => error,
     };
     let Some((version, bytes)) = tree.entry(MANIFEST).await? else {
-        return Ok(load(&tree, &[seed], &enabler).await.map_err(seeded)?.rules);
+        return Ok(load(tree, &[seed], &enabler).await.map_err(seeded)?.rules);
     };
     let layers = [
         seed,
@@ -248,10 +247,10 @@ pub(super) async fn plugins(
             bytes: Some(&bytes),
         },
     ];
-    let (rules, outcome) = match load(&tree, &layers, &enabler).await {
+    let (rules, outcome) = match load(tree, &layers, &enabler).await {
         Ok(enabled) => (enabled.rules, (AdmissionStatus::Applied, None)),
         Err(Error::Invalid(reason)) => (
-            load(&tree, &layers[..1], &enabler)
+            load(tree, &layers[..1], &enabler)
                 .await
                 .map_err(seeded)?
                 .rules,
@@ -259,7 +258,7 @@ pub(super) async fn plugins(
         ),
         Err(error) => return Err(error),
     };
-    record(volumes, agent, (MANIFEST, &version), outcome, clock).await?;
+    record(tree.volumes, agent, (MANIFEST, &version), outcome, clock).await?;
     Ok(rules)
 }
 
@@ -511,6 +510,10 @@ mod tests {
         .await?;
         for (path, source) in [
             (
+                "agent.ts",
+                "import {enabled} from './switch.ts'; export default base => ({...base, sampling: {temperature: enabled ? 0.25 : 0.75}});",
+            ),
+            (
                 "plugins.ts",
                 "import {enabled} from './switch.ts'; export default {guard: {enabled}};",
             ),
@@ -545,20 +548,42 @@ mod tests {
         ] {
             crate::local::tests::settings::write(&harness, path, source).await?;
         }
-        let enabler = harness.root.to_string();
-        let (version, bytes) = original.entry(crate::plugins::MANIFEST).await?.unwrap();
-        let layers = [Layer {
-            name: "home",
-            generation: &version,
-            bytes: Some(&bytes),
-        }];
-        let enabled = crate::plugins::load(&original, &layers, &enabler).await?;
-        assert_eq!(enabled.names, ["guard"]);
-        assert!(!enabled.rules.is_empty());
+        let disabled = crate::context::CompactionPolicy::Disabled;
+        let clock = harness.clock.as_ref();
+        let enabled = plugins(&original, harness.root, clock).await?;
+        assert!(
+            !enabled.is_empty(),
+            "plugin admission refreshed its pinned home generation"
+        );
+        let settings = admit(
+            &original,
+            harness.root,
+            harness.agent()?.clone(),
+            None,
+            (&disabled, &None),
+            clock,
+        )
+        .await?;
+        assert_eq!(
+            settings.sampling.and_then(|sampling| sampling.temperature),
+            Some(0.25),
+            "settings admission refreshed its pinned home generation"
+        );
         let current = Tree::new(&volumes).await?;
-        let disabled = crate::plugins::load(&current, &layers, &enabler).await?;
-        assert!(disabled.names.is_empty());
-        assert!(disabled.rules.is_empty());
+        assert!(plugins(&current, harness.root, clock).await?.is_empty());
+        let settings = admit(
+            &current,
+            harness.root,
+            harness.agent()?.clone(),
+            None,
+            (&disabled, &None),
+            clock,
+        )
+        .await?;
+        assert_eq!(
+            settings.sampling.and_then(|sampling| sampling.temperature),
+            Some(0.75)
+        );
         Ok(())
     }
 }
