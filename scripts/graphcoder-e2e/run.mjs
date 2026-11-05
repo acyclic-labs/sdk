@@ -72,6 +72,8 @@ function expand(value, fixture) {
 // GraphCoder's headless outcome: `-p` prints the answer text and exits 0;
 // JSONL prints one `{"id", "inbox", "text"}` (or `"error"`) line per prompt.
 function outcome(input, result, id) {
+  const failure = result.termination?.startup_rejection ?? result.termination?.execution_failure;
+  if (failure) return { completion: "failed", error: failure.cause };
   if (input.mode !== "jsonl") {
     return result.code === 0 ? { completion: "completed", ok: { text: result.stdout.replace(/\r?\n$/, "") } }
       : { completion: "failed", error: result.stderr.trim() };
@@ -162,7 +164,6 @@ async function execute(test, prepared) {
       if ((input.exit ?? 0) === 0) executionSucceeded(result);
       else assert.equal(result.code, input.exit, result.stderr + `\nstdout tail: ${result.stdout.slice(-1500)}`);
       if (input.stdout_contains) for (const text of input.stdout_contains) assert.ok(result.stdout.includes(text), `missing stdout ${text}`);
-      if (input.stderr_contains) for (const text of input.stderr_contains) assert.ok(result.stderr.includes(text), `missing stderr ${text}`);
       if (((input.exit ?? 0) === 0 && !input.args) || input.outcome !== undefined) {
         const settled = outcome(input, result, messageId);
         if (input.outcome !== undefined) {

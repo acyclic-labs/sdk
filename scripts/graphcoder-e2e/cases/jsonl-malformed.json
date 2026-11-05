@@ -12,9 +12,10 @@
       "mode": "jsonl",
       "stdin": "not JSON\n",
       "exit": 1,
-      "stderr_contains": [
-        "expected ident"
-      ]
+      "outcome": {
+        "completion": "failed",
+        "error": "invalid JSONL request:"
+      }
     }
   ],
   "assert": {
