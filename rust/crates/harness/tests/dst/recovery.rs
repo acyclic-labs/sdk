@@ -1,5 +1,6 @@
 //! Crash the shipping local composition, then reopen with no retained agent state.
 use super::*;
+use acyclic_harness::test_support::ScriptedReconciliation;
 use acyclic_native_runtime::testing::DurableFault;
 use driver::{Driver, Outcome};
 use std::{
@@ -18,25 +19,30 @@ fn local_turn<'a>(
     schedule: &'a acyclic_native_runtime::testing::Schedule,
     first_turn_write: &'a Cell<Option<usize>>,
     dispatch_write: Arc<AtomicUsize>,
-) -> EntryFuture<'a, Result<()>> {
+    prompt_id: &'a str,
+) -> EntryFuture<'a, Result<Arc<ScriptedModelProvider>>> {
     entry(async move {
         let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
         let dispatch_schedule = schedule.clone();
         let provider = Arc::new(
-            ScriptedModelProvider::new([ScriptedTurn::Text("done".into())]).with_dispatch_observer(
-                move |_| {
+            ScriptedModelProvider::new([ScriptedTurn::Text("done".into())])
+                .with_reconciliations([ScriptedReconciliation {
+                    orphan: true,
+                    observed: Vec::new(),
+                    continuation: None,
+                }])
+                .with_dispatch_observer(move |_| {
                     dispatch_write.store(dispatch_schedule.durable_write_count(), Ordering::SeqCst);
                     Box::pin(async { Ok(()) })
-                },
-            ),
+                }),
         );
-        let config = local_harness_config(directory.join("checkout"), (model, provider))?
+        let config = local_harness_config(directory.join("checkout"), (model, provider.clone()))?
             .without_user_settings()
             .state_directory(directory.join("state"));
         let harness = Arc::new(entry(LocalHarness::open(config)).await?);
         first_turn_write.set(Some(schedule.durable_write_count()));
-        prompt(&harness, "first", "finish this turn", "done").await?;
-        Ok(())
+        prompt(&harness, prompt_id, "finish this turn", "done").await?;
+        Ok(provider)
     })
 }
 
@@ -59,10 +65,11 @@ fn crash_reopen(point: Cut) -> Result<()> {
                 &schedule,
                 &marker,
                 dispatched.clone(),
+                "first",
             ))
             .await
         {
-            Outcome::Completed(result) => result?,
+            Outcome::Completed(result) => drop(result?),
             Outcome::Crashed(cause) => panic!("uncut local turn crashed: {cause}"),
         }
         let start = marker.get().expect("local turn was never admitted");
@@ -92,6 +99,7 @@ fn crash_reopen(point: Cut) -> Result<()> {
                 &schedule,
                 &marker,
                 Arc::new(AtomicUsize::new(usize::MAX)),
+                "first",
             ))
             .await
         else {
@@ -107,23 +115,44 @@ fn crash_reopen(point: Cut) -> Result<()> {
         let mut recovery = Driver::new(72, None);
         let schedule = recovery.schedule.clone();
         let marker = Cell::new(None);
-        let result = match recovery
+        let provider = match recovery
             .run(local_turn(
                 directory.path(),
                 &schedule,
                 &marker,
                 Arc::new(AtomicUsize::new(usize::MAX)),
+                "second",
             ))
             .await
         {
-            Outcome::Completed(result) => result,
+            Outcome::Completed(result) => result?,
             Outcome::Crashed(cause) => panic!("uncut recovery crashed: {cause}"),
         };
         assert!(
             marker.get().is_some(),
             "workspace did not reopen before the new prompt"
         );
-        result
+        // A fresh provider cannot recover the killed request. Its terminal
+        // refusal must release that turn before a distinct prompt dispatches.
+        assert_eq!(
+            provider.request_count(),
+            1,
+            "regenerated the killed request"
+        );
+        let reconciled = provider.reconciliations();
+        assert_eq!(
+            reconciled.len(),
+            usize::from(matches!(point, Cut::DispatchIntent)),
+            "reconciled a different durable cut"
+        );
+        if let Some(interrupted) = reconciled.first() {
+            assert_ne!(
+                interrupted.operation_id,
+                provider.dispatches()[0].operation_id,
+                "the new prompt reused the interrupted operation"
+            );
+        }
+        Ok(())
     })
 }
 
