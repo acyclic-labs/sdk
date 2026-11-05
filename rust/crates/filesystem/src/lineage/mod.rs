@@ -202,7 +202,10 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                     .fs
                     .workspace_name(destination.as_ref(), &mut accounting)?;
                 let generation = parent
-                    .observed_generation_accounted(crate::GenerationSelector::Head, &mut accounting)
+                    .observed_generation_accounted(
+                        crate::model::GenerationSelector::Head,
+                        &mut accounting,
+                    )
                     .await?;
                 let planned = WorkspaceLineageRecord {
                     version: LINEAGE_VERSION,
@@ -226,7 +229,10 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                     )
                     .await?;
                 let initial_generation = child
-                    .observed_generation_accounted(crate::GenerationSelector::Head, &mut accounting)
+                    .observed_generation_accounted(
+                        crate::model::GenerationSelector::Head,
+                        &mut accounting,
+                    )
                     .await?;
                 if child.id() != child_id {
                     return Err(WorkspaceLineageError::ConflictingRegistration);
