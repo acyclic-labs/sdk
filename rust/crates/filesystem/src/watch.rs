@@ -4909,20 +4909,12 @@ mod demand_admission_tests {
                     "queued event erased a current binding"
                 );
             }
-            std::fs::remove_file(root.path().join("old/f"))?;
-            std::fs::remove_dir(root.path().join("old"))?;
-            std::fs::write(root.path().join("old"), b"replacement file")?;
-            held.forget_removed_directories_with_work(
-                &[WatchChange::Removed(namespace("/old")?)],
-                &mut work,
-                None,
-            )?;
-            assert_eq!(
-                held.windows_registered(),
-                1,
-                "removed binding was not retired"
-            );
         }
+        // A fence delivers hints; consuming the real removal retires its
+        // binding. An exact replacement does not require losing the source cut.
+        std::fs::remove_file(root.path().join("old/f"))?;
+        std::fs::remove_dir(root.path().join("old"))?;
+        std::fs::write(root.path().join("old"), b"replacement")?;
         std::fs::write(root.path().join("a/f"), b"after")?;
         let expected = namespace("/a/f")?;
         let seen = settled_changes(&watch, &expected)?;
@@ -4930,7 +4922,19 @@ mod demand_admission_tests {
             seen.iter().any(|change| matches!(change,
             WatchChange::Modified(path) | WatchChange::MetadataChanged(path) if path == &expected))
         );
+        let replaced = namespace("/old")?;
+        assert!(
+            seen.iter().any(|change| {
+                matches!(change, WatchChange::Removed(path) if path == &replaced)
+            })
+        );
+        assert_eq!(std::fs::read(root.path().join("old"))?, b"replacement");
         let mut held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
+        assert_eq!(
+            held.windows_registered(),
+            1,
+            "replaced binding retired; unrelated current binding retained"
+        );
         let rescan = held.begin_rescan()?;
         assert_eq!(held.windows_registered(), 0);
         held.finish_rescan(rescan)?;
