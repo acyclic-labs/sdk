@@ -167,8 +167,8 @@ where
         let work = carrier
             .original_native_work()
             .ok_or(MountSourceError::NativeUnsupported)?;
-        let mut accounting = crate::kernel::KernelAccounting::native(&work, work.cancellation());
-        let mut output_carrier = adapter::NativeDemandCarrier::Native(&work);
+        let mut accounting = crate::kernel::KernelAccounting::native(work, work.cancellation());
+        let mut output_carrier = adapter::NativeDemandCarrier::Native(work);
         let mut output = adapter::InputBuffers::new(&mut output_carrier)?;
         let mut entries = output.vec(page.entries.len())?;
         let mut output_allocation = output.retain().ok_or(MountSourceError::NativeUnsupported)?;
@@ -189,8 +189,8 @@ where
                     .absorb(&mut allocation)
                     .map_err(MountSourceError::NativeWork)?;
             }
-            let (child, _allocation) = copy_path(path.components(), Some(&name), &work)?;
-            let (child_text, _text_allocation) = self.path(&child, &work)?;
+            let (child, _allocation) = copy_path(path.components(), Some(&name), work)?;
+            let (child_text, _text_allocation) = self.path(&child, work)?;
             let (lookup, pin) = if let Some(node) = entry.source {
                 let (lookup, _, _allocation) = self
                     .lazy
@@ -211,15 +211,15 @@ where
                 let Some(lookup) = lookup else {
                     continue;
                 };
-                self.project_unauthored(&child_text, lookup, &work).await?
+                self.project_unauthored(&child_text, lookup, work).await?
             } else {
-                match self.resolve(&child, &child_text, owner, &work).await? {
+                match self.resolve(&child, &child_text, owner, work).await? {
                     Resolution::Absent => continue,
                     Resolution::Authored(lookup) => {
-                        (self.project_authored(lookup, &work).await?, None)
+                        (self.project_authored(lookup, work).await?, None)
                     }
                     Resolution::Unauthored(lookup, _allocation) => {
-                        self.project_unauthored(&child_text, lookup, &work).await?
+                        self.project_unauthored(&child_text, lookup, work).await?
                     }
                 }
             };

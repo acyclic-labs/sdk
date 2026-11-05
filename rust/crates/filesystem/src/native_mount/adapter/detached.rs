@@ -88,7 +88,7 @@ impl<A: 'static, O: 'static> CheckoutDetachedFile<A, O> {
             ))?;
         let read = state
             .file
-            .read_range(range, &original, &cancellation)
+            .read_range(range, original, &cancellation)
             .await?;
         let capacity = read.logical_owned_bytes();
         let chunk = crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, capacity);
@@ -141,7 +141,7 @@ impl<A: 'static, O: 'static> CheckoutDetachedFile<A, O> {
         )
         .await?;
         let metadata = if let Some(original) = carrier.original_native_work() {
-            state.file.read_metadata(&original, cancellation).await?
+            state.file.read_metadata(original, cancellation).await?
         } else {
             state.metadata
         };
