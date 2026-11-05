@@ -67,7 +67,7 @@ proptest! {
                 }
                 assert_eq!(
                     trace.iter().filter(|event| event.0 == std::any::type_name::<crate::context::Context>()).count(),
-                    2, "summarize must encode its source without a separate count pass",
+                    1, "summarize must encode its source without a separate count pass",
                 );
             });
             prop_assert!(observed.is_ok());
