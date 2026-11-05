@@ -1699,10 +1699,10 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     );
     host.archive(&child, &user(), &intent("retire-first"))
         .await?;
-    let failures = host.runtime().drain().await;
-    assert!(failures.is_empty(), "{failures:?}");
-    // This finite host has no activation dispatcher. Consume the child's
-    // committed notification through the parent's event-owned drain.
+    // This finite host has no activation dispatcher. Run the newly created
+    // child's retirement, then consume its committed parent notification.
+    host.drain(&child).await?;
+    assert!(host.state(&child).await?.closed);
     host.drain(&root).await?;
     assert_eq!(host.state(&root).await?.open_children.len(), 2);
     // Retirement changes current membership, never the original spawn result.
