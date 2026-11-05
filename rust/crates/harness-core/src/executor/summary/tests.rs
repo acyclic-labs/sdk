@@ -25,7 +25,6 @@ proptest! {
             Model::new("test".into(), "summary-source".into(), "1".into()).unwrap(),
             Arc::new(crate::test_support::ScriptedModelProvider::new([
                 crate::test_support::ScriptedTurn::Text("summary".into()),
-                crate::test_support::ScriptedTurn::Text("summary".into()),
             ])),
             ContextPipeline::default(),
             ToolRegistry::default(),
@@ -49,6 +48,12 @@ proptest! {
                     io: Some(io),
                     ..StockExecution::ordinary(&stock)
                 };
+                // Encoding accepts either ledger; model admission requires
+                // the original native owner retained by the deployed path.
+                if !native {
+                    check(&execution);
+                    return;
+                }
                 let material = (source.clone(), ModelContent::Text("Summarize".into()));
                 let (result, trace) = acyclic_test_support::differential::observe::<_, _, super::super::json::SerializedType>(
                     || (),
