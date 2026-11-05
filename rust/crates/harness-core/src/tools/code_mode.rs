@@ -30,7 +30,7 @@ impl crate::tool::ToolProjection for CodeMode {
 
 /// What the model reads: the program's value, or its lines beside its value
 /// or error when it printed any.
-fn projected(value: &serde_json::Value) -> Result<&serde_json::Value> {
+pub(crate) fn projected(value: &serde_json::Value) -> Result<&serde_json::Value> {
     let result = output(value)?;
     match value.get("output") {
         Some(output) if output.get("logs").is_some() => Ok(output),

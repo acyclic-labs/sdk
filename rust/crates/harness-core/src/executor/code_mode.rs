@@ -43,17 +43,16 @@ struct CallLog<'a> {
 
 /// console.log lines the program printed, returned beside its result: a
 /// model that prints a value expects to read it. Lines beyond the render
-/// budget are counted in `logs_omitted`, never silently dropped.
+/// budget remain in the journal; `logs_omitted` reports them when its framing fits.
 #[derive(Default)]
 struct ProgramLogs {
-    /// Each retained line with its exact JSON-encoded size in the result.
-    lines: Vec<(Value, usize)>,
+    lines: Vec<Value>,
     bytes: usize,
     omitted: u64,
 }
 
 impl ProgramLogs {
-    /// The `,"logs":[]` and `,"logs_omitted":N` fields themselves.
+    /// Both field names, array framing and the largest u64 omission count.
     const FIELDS: usize = 48;
 
     fn observe(
@@ -66,25 +65,44 @@ impl ProgramLogs {
             self.omitted += 1;
             return Ok(());
         }
-        let invalid = || {
-            stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "JavaScript log arguments are not a JSON array",
-            )
-        };
-        let values: Vec<&serde_json::value::RawValue> =
-            serde_json::from_str(values.get()).map_err(|_| invalid())?;
+        // The rendered line cannot exceed the original JSON array's bytes.
+        // Refuse its copy and argument index before decoding either of them.
+        let available = maximum.saturating_sub(self.bytes.saturating_add(Self::FIELDS));
+        if values.get().len() > available {
+            self.omitted = 1;
+            return Ok(());
+        }
+        let values: Vec<&serde_json::value::RawValue> = Self::decode(values.get(), io)?;
         let mut line = String::new();
         for (index, value) in values.into_iter().enumerate() {
             if index > 0 {
-                line.push(' ');
+                stock_string_push(
+                    &mut line,
+                    " ",
+                    available as u64,
+                    "JavaScript log exceeds render capacity",
+                    io,
+                )?;
             }
             // Strings print as their text, like console.log; other values
             // print as their JSON encoding.
-            match serde_json::from_str::<std::borrow::Cow<'_, str>>(value.get()) {
-                Ok(text) => line.push_str(&text),
-                Err(_) => line.push_str(value.get()),
+            if value.get().starts_with('"') {
+                let text: crate::executor::json::BorrowedText<'_> = Self::decode(value.get(), io)?;
+                stock_string_push(
+                    &mut line,
+                    &text.0,
+                    available as u64,
+                    "JavaScript log exceeds render capacity",
+                    io,
+                )?;
+            } else {
+                stock_string_push(
+                    &mut line,
+                    value.get(),
+                    available as u64,
+                    "JavaScript log exceeds render capacity",
+                    io,
+                )?;
             }
         }
         let cost = with_history_io(io, |work| {
@@ -96,15 +114,48 @@ impl ProgramLogs {
             return Ok(());
         }
         self.bytes += cost;
-        stock_vec_push(&mut self.lines, (Value::String(line), cost), io)
+        stock_vec_push(&mut self.lines, Value::String(line), io)
     }
 
-    /// Adds the retained lines to the program's output, keeping the whole
-    /// projected output within the render budget.
+    /// The existing typed codec admits the argument index and escape decoding
+    /// before allocation, using the caller's original ledger.
+    fn decode<'de, T: serde::Deserialize<'de> + crate::HeapLayout>(
+        source: &'de str,
+        io: Option<&PreparationIo>,
+    ) -> Result<T> {
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            let (value, hold) = io.decode_seed(
+                std::marker::PhantomData::<T>,
+                source.as_bytes(),
+                crate::executor::json::JsonValueSchema::None,
+                0,
+                crate::wire::ErrorCode::Invalid,
+            )?;
+            hold.into_retained()?;
+            return Ok(value);
+        }
+        let _ = io;
+        crate::executor::json::json_from_slice_bounded(
+            std::marker::PhantomData::<T>,
+            source.as_bytes(),
+            crate::executor::json::JsonBounds {
+                maximum_bytes: source.len() as u64,
+                maximum_items: u64::MAX,
+                maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
+            },
+            None,
+            None,
+            &mut |_| Ok(()),
+        )
+    }
+
+    /// The program's result has priority. Attach the batch only when its
+    /// complete framing fits; the journal retains every original log.
     fn attach(self, output: &mut Value, maximum: usize, io: Option<&PreparationIo>) -> Result<()> {
         let Self {
             mut lines,
-            mut bytes,
+            bytes,
             mut omitted,
         } = self;
         if lines.is_empty() && omitted == 0 {
@@ -113,18 +164,17 @@ impl ProgramLogs {
         let result = with_history_io(io, |work| {
             crate::executor::json::json_byte_length(&*output, u64::MAX, work)
         })? as usize;
-        while result + bytes + Self::FIELDS > maximum {
-            let Some((_, cost)) = lines.pop() else { break };
-            bytes -= cost;
-            omitted += 1;
+        let Some(available) = maximum.checked_sub(result.saturating_add(Self::FIELDS)) else {
+            return Ok(());
+        };
+        if bytes > available {
+            omitted += lines.len() as u64;
+            lines.clear();
         }
         let Some(fields) = output.as_object_mut() else {
             return Ok(());
         };
-        fields.insert(
-            "logs".into(),
-            Value::Array(lines.into_iter().map(|(line, _)| line).collect()),
-        );
+        fields.insert("logs".into(), Value::Array(lines));
         if omitted > 0 {
             fields.insert("logs_omitted".into(), Value::from(omitted));
         }

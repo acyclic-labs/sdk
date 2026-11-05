@@ -81,7 +81,7 @@ pub struct ArchiveAgentInput {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WaitAgentInput {
-    /// Children by spawn name, fork branch (agents/<name>) or agent path.
+    /// Children by exact spawn name or agent path; fork branches are for `fs`.
     pub agents: Vec<String>,
     /// How many of them must settle before the wait returns: all of them by
     /// default, 1 for the first, or any quorum in between.
@@ -357,7 +357,7 @@ impl AgentTool {
             // only through `fs merge` of it. A spawn name names it; an agent
             // path does not.
             if AgentPath::try_from(name.clone()).is_err() {
-                entry["branch"] = json!(child_branch(branch_child(name).unwrap_or(name)));
+                entry["branch"] = json!(child_branch(name));
             }
             settled.push(entry);
         }
@@ -383,13 +383,13 @@ pub fn branch_child(branch: &str) -> Option<&str> {
 const CHILD_BRANCH: &str = "agents/";
 
 /// The child of `agent` that `reference` names: any name the surface shows
-/// for it (its spawn name, its fork branch, or its agent path), open or
+/// for it (its exact spawn name or its agent path), open or
 /// settled.
 fn named_child(agent: &AgentPath, reference: &str) -> Option<AgentPath> {
     if let Ok(path) = AgentPath::try_from(reference.to_owned()) {
         return (path.parent().as_ref() == Some(agent)).then_some(path);
     }
-    spawned_child(agent, branch_child(reference).unwrap_or(reference)).ok()
+    spawned_child(agent, reference).ok()
 }
 
 /// The distinct children a `wait` of `agent` names, each with the reference
@@ -695,9 +695,9 @@ mod tests {
         ))
         .map_err(super::agent)?;
         let child = spawned_child(&agent, "worker")?;
-        // Spawn returns the name and path; wait reports the branch that
-        // fs diff and fs merge take. Each one names the same child.
-        for reference in ["worker", "agents/worker", child.as_str()] {
+        // Spawn returns the exact name and path. Both name the same child;
+        // the fork branch is a separate input to fs diff and fs merge.
+        for reference in ["worker", child.as_str()] {
             assert_eq!(
                 named_child(&agent, reference).as_ref(),
                 Some(&child),
@@ -721,10 +721,13 @@ mod tests {
                 "{reference}"
             );
         }
-        assert_eq!(
-            child_branch(branch_child("agents/worker").unwrap()),
-            "agents/worker"
-        );
+        // A literal spawn name beginning with the branch prefix must never
+        // alias another child. Its full path remains the same identity too.
+        let prefixed = spawned_child(&agent, "agents/worker")?;
+        assert_ne!(prefixed, child);
+        for reference in ["agents/worker", prefixed.as_str()] {
+            assert_eq!(named_child(&agent, reference).as_ref(), Some(&prefixed));
+        }
         Ok(())
     }
 

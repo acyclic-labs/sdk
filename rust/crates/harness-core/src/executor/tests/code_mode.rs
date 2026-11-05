@@ -844,12 +844,20 @@ async fn sandbox_exposes_only_granted_tools_and_their_original_schema() -> Resul
 async fn intermediate_data_stays_in_js_and_results_use_the_admitted_render_budget() -> Result<()> {
     let render_bytes = 65_536;
     let string_bytes = render_bytes - crate::tool::schema::json_envelope_bytes()? - 2;
-    let code = format!("'x'.repeat({string_bytes})");
+    let code = format!("console.log('boundary'); 'x'.repeat({string_bytes})");
     let (mut boundary_executor, model, _) = executor(&code, allowed()?, true)?;
     boundary_executor.limits.render_bytes = render_bytes as u64;
+    let boundary_journal = Journal::default();
     boundary_executor
-        .execute(input(), &Journal::default())
+        .execute(input(), &boundary_journal)
         .await?;
+    assert_eq!(
+        log_entries(&boundary_journal, "code.log")
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     // Each result retains its complete admitted per-part allowance even though
     // context framing and the other messages exceed that same byte count.
     assert_eq!(result(&model).as_str().unwrap().len(), string_bytes);
@@ -1106,4 +1114,14 @@ async fn multiple_results_reach_continuation_with_per_part_render_bounds() -> Re
     executor.execute(turn, &journal).await?;
     assert_eq!(model.requests().len(), 2);
     Ok(())
+}
+
+#[cfg(all(feature = "test-support", feature = "filesystem"))]
+#[tokio::test]
+async fn real_console_frames_preserve_render_and_original_allocation_admission() {
+    crate::executor::check_code_mode(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../harness-fuzz/corpus/code_mode/utf8-view-wide.json"
+    )))
+    .await;
 }
