@@ -3,9 +3,19 @@ use crate::LogicalObjectStore;
 use crate::kernel::DecodeLimits;
 use crate::storage::{ObjectKind, object_digest};
 use acyclic_objects::Blobs as _;
+use std::future::Future;
 use std::sync::Arc;
 
 type LocalStaged = StagedObjects<LogicalObjectStore<acyclic_objects::local::LocalObjects>>;
+
+#[derive(Default)]
+struct CancellationWake(AtomicBool);
+
+impl std::task::Wake for CancellationWake {
+    fn wake(self: Arc<Self>) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
 
 async fn open_staged(
     directory: &Path,

@@ -163,9 +163,10 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         work: &mut AuthorityWork<'_>,
     ) -> Result<ObjectRead, ObjectStoreError> {
         // The shared lock keeps a drain from reusing this spill offset.
-        let spill_file = self.spill_io.read().await;
-        work.accounting()
-            .check()
+        let spill_file = work
+            .accounting()
+            .wait_for(self.spill_io.read())
+            .await
             .map_err(crate::async_storage::object_error)?;
         let (offset, length) = match self.lookup(object_id) {
             Lookup::Spilled { offset, length } => (offset, length),
