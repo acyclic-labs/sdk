@@ -20,13 +20,13 @@ function run(command, args, env = process.env) {
     { cause: result.error });
   return { output: result.stdout + result.stderr, seconds: (performance.now() - started) / 1000 };
 }
-test("selected generators preserve source mtimes and Cargo freshness", () => {
+test("selected generators preserve source mtimes and WASM Cargo freshness", () => {
   const generateBuild = () => {
     const generated = run(process.execPath, [join(root, "scripts/generate.mjs"), family]);
     if (mode !== "wasm") return generated;
     const built = run(process.execPath, [join(root, "scripts/build-wasm.mjs"), family],
       { ...process.env, ACYCLIC_WASM_GROUPS_PREPARED: "1" });
-    return { output: generated.output + built.output, seconds: generated.seconds + built.seconds };
+    return { output: built.output, seconds: generated.seconds + built.seconds };
   };
   const first = generateBuild();
   const paths = new Set(run("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"]).output.split("\0").filter(Boolean));
