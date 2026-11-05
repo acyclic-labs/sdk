@@ -60,7 +60,7 @@ fn request() -> Result<PreparedModelRequest> {
 fn events() -> Vec<ModelEvent> {
     vec![
         ModelEvent::Content {
-            delta: "hello Ï€\n".into(),
+            delta: "hello π\n".into(),
         },
         ModelEvent::Reasoning {
             delta: "thought".into(),
