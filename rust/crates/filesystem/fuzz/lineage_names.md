@@ -19,10 +19,12 @@ control reject it at `stored workspace names must already have exact canonical
 bytes`. The lineage control also rejects the original constructor-success-only
 validation at `noncanonical lineage registration was accepted`.
 
+From `rust`:
+
 ```sh
 cargo test -p acyclic-fs --lib malformed_lineage_shape_never_enters_the_graph
 cargo test -p acyclic-fs --lib independent_parser_matches_outputs_errors_and_every_observed_phase
-cargo fuzz run workspace_name crates/filesystem/fuzz/corpus/workspace_name
+(cd crates/filesystem && cargo fuzz run --features fuzz-targets workspace_name)
 ```
 
 This change does not establish caller-work propagation through lineage stores;
