@@ -110,14 +110,6 @@ enum Resolved<'a> {
 }
 
 impl<'a> Resolved<'a> {
-    fn as_str(self) -> Option<&'a str> {
-        match self {
-            Self::Value(value) => value.as_str(),
-            Self::Text(value) => Some(value),
-            _ => None,
-        }
-    }
-
     fn set(self) -> bool {
         match self {
             Self::Value(value) => set(value),
@@ -246,8 +238,18 @@ fn resolve<'a>(template: &'a Value, call: &Call<'a>) -> Result<Option<Resolved<'
                         format_args!("{selector} is required"),
                     )
                 })?;
-            let case = value
-                .as_str()
+            let mut operation = [0; 36];
+            let text = match value {
+                Resolved::Value(value) => value.as_str(),
+                Resolved::Text(value) => Some(value),
+                Resolved::Operation(value) => Some(
+                    uuid::Uuid::from_bytes(value.into_bytes())
+                        .hyphenated()
+                        .encode_lower(&mut operation) as &str,
+                ),
+                _ => None,
+            };
+            let case = text
                 .filter(|case| !case.starts_with('$'))
                 .and_then(|case| members.get(case))
                 .ok_or_else(|| {

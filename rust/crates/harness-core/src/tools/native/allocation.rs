@@ -52,6 +52,32 @@ fn check_value(arguments: Value) {
         name: String::new(),
         arguments,
     };
+    if invocation.arguments.is_object() {
+        for (selector, text) in [
+            ("@operation_id", invocation.operation_id.to_string()),
+            ("@call_id", invocation.call_id.clone()),
+        ] {
+            let mut template = serde_json::json!({"identity":{"$case":selector}});
+            template["identity"][&text] = serde_json::json!(format!("${selector}"));
+            let arguments = arguments::Arguments::new(template, Vec::new()).unwrap();
+            let expected = serde_json::json!({"identity":text});
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = native_work(false, &cancellation);
+            let baseline = work.live_allocation_bytes();
+            for budget in [None, Some(&work)] {
+                let result = arguments.adapt(&invocation, budget);
+                assert!(
+                    result.is_ok(),
+                    "identity selector rejected its emitted text"
+                );
+                let (actual, custody) = result.unwrap();
+                assert_eq!(actual, expected);
+                drop(actual);
+                drop(custody);
+            }
+            assert_eq!(work.live_allocation_bytes(), baseline);
+        }
+    }
     for tool in tools() {
         invocation.name.clone_from(&tool.definition.name);
         let expected = tool.executor.canonical(&invocation, None);
