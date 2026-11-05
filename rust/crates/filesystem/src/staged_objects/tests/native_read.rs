@@ -105,7 +105,14 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
         };
         let spill_file = store.spill_io.write().await;
         let mut future = Box::pin(store.read(id, bytes.len() as u64, &mut work));
-        assert!(futures::poll!(future.as_mut()).is_pending());
+        let wake = Arc::new(CancellationWake::default());
+        let waker = std::task::Waker::from(Arc::clone(&wake));
+        assert!(
+            future
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(&waker))
+                .is_pending()
+        );
         let mut independent = AuthorityWork::new(native_read_budget(), &token);
         let mut read = std::pin::pin!(store.read(resident_id, 1024, &mut independent));
         let std::task::Poll::Ready(result) = futures::poll!(read.as_mut()) else {
@@ -117,6 +124,10 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
         } else {
             caller.cancel();
         }
+        assert!(
+            wake.0.load(Ordering::Relaxed),
+            "cancellation must wake the read"
+        );
         let std::task::Poll::Ready(result) = futures::poll!(future.as_mut()) else {
             panic!("a cancelled read still waits for the spill lease");
         };
@@ -143,9 +154,11 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
         assert_eq!(
             completed.allocation_operations,
             if exit == 0 {
-                0
+                // The waiter and its original standalone ledger control.
+                2
             } else {
-                before.allocation_operations + 1
+                // The suspended frame and both distinct cancellation sources.
+                before.allocation_operations + 3
             }
         );
         assert_eq!(original.live_allocation_bytes(), baseline);
@@ -184,12 +197,13 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
     // scratch separately. The mixed wait must retain both, including the
     // provider vector after its first result has moved into the output.
     let private_live = {
+        let caller = CancellationToken::new();
         let work = NativeMaterializationWork::new(native_read_budget(), &token)
             .map_err(|(error, _)| error)?;
         let baseline = work.live_allocation_bytes();
         let private_requests = [requests[1]; 3];
         let spill_file = store.spill_io.write().await;
-        let mut context = AuthorityWork::native(&work, &token);
+        let mut context = AuthorityWork::native(&work, &caller);
         let mut read = Box::pin(store.read_many(&private_requests, &mut context));
         assert!(futures::poll!(read.as_mut()).is_pending());
         let live = work.live_allocation_bytes() - baseline;
@@ -265,7 +279,14 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
             _ = schedule.drained() => {}
             _ = future.as_mut() => panic!("read ended before the spill lease was released"),
         }
-        assert!(futures::poll!(future.as_mut()).is_pending());
+        let wake = Arc::new(CancellationWake::default());
+        let waker = std::task::Waker::from(Arc::clone(&wake));
+        assert!(
+            future
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(&waker))
+                .is_pending()
+        );
         let prefix = work.receipt();
         assert_eq!(prefix.object_probes, if mixed { 2 } else { 0 });
         if !mixed {
@@ -296,6 +317,10 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
             } else {
                 original_token.cancel();
             }
+            assert!(
+                wake.0.load(Ordering::Relaxed),
+                "cancellation must wake the batch"
+            );
             let std::task::Poll::Ready(result) = futures::poll!(future.as_mut()) else {
                 panic!("a cancelled mixed batch still waits for the spill lease");
             };
@@ -315,7 +340,12 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
         schedule.drained().await;
         driver.abort();
         let _ = driver.await;
-        assert_eq!(work.receipt(), prefix);
+        let mut retired = work.receipt();
+        // Only the two original waiters' bounded cancellation/unlink work
+        // follows this prefix; no I/O, copy or allocation may follow it.
+        assert!(retired.items_examined - prefix.items_examined <= 3);
+        retired.items_examined = prefix.items_examined;
+        assert_eq!(retired, prefix);
         assert_eq!(
             work.live_allocation_bytes(),
             NativeMaterializationWork::accounting_state_bytes()

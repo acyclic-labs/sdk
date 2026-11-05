@@ -48,6 +48,51 @@ impl<'a> KernelAccounting<'a> {
         })
     }
 
+    /// Waits for a cancel-safe primitive event on the original accounting.
+    /// Ready events need no cancellation registration. A blocked event keeps
+    /// one funded waiter per distinct caller/native cancellation source.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn wait_for<T>(
+        &mut self,
+        event: impl std::future::Future<Output = T>,
+    ) -> Result<T, crate::FsError> {
+        use std::future::Future;
+        use std::pin::Pin;
+        use std::task::Poll;
+
+        let mut event = std::pin::pin!(event);
+        let cancellation = self.cancellation();
+        let mut caller_wait = None;
+        let original = self
+            .native_work()
+            .filter(|work| !work.cancellation().same_state(cancellation));
+        let mut native_wait = None;
+        std::future::poll_fn(|cx| {
+            if let Poll::Ready(value) = event.as_mut().poll(cx) {
+                self.check()?;
+                return Poll::Ready(Ok(value));
+            }
+            self.check()?;
+            if caller_wait.is_none() {
+                caller_wait = Some(self.cancellation_wait(cancellation)?);
+            }
+            if let Some(wait) = &mut caller_wait {
+                let _ = Pin::new(wait).poll(cx);
+            }
+            if let Some(original) = original {
+                if native_wait.is_none() {
+                    native_wait = Some(original.cancellation_wait()?);
+                }
+                if let Some(wait) = &mut native_wait {
+                    let _ = Pin::new(wait).poll(cx);
+                }
+            }
+            self.check()?;
+            Poll::Pending
+        })
+        .await
+    }
+
     pub(crate) fn accept_backend(&mut self, more: WorkCounters) -> Result<(), crate::FsError> {
         self.ensure_active()?;
         let (allocations, work, budget, _) = self.standalone_parts().ok_or(WorkError::Overflow)?;

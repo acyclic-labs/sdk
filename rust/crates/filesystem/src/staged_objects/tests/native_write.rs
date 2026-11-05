@@ -25,10 +25,7 @@ fn native_write_budget() -> WorkBudget {
 async fn native_flush_caller_cancellation_refuses_before_admission()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
-    let store = StagedObjects::open(
-        crate::MemoryObjectStore::default(),
-        directory.path().to_owned(),
-    );
+    let (store, _provider) = open_staged(directory.path()).await?;
     let original_token = CancellationToken::new();
     let caller = CancellationToken::new();
     let original = NativeMaterializationWork::new(native_write_budget(), &original_token)
@@ -63,7 +60,14 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
     assert!(store.index().objects.contains_key(&id));
     let collecting = store.collection.begin().await;
     let (sweep, _) = collecting.sweepable(Vec::new()).await;
-    for exit in 0..3 {
+    for (publication, exit) in [
+        (false, 0),
+        (false, 1),
+        (false, 2),
+        (true, 0),
+        (true, 1),
+        (true, 2),
+    ] {
         let caller = CancellationToken::new();
         let original_token = CancellationToken::new();
         let original = NativeMaterializationWork::new(native_write_budget(), &original_token)
@@ -77,14 +81,30 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
         };
         let closure = [id];
         let spill = store.spill_io.write().await;
-        let mut publishing = Box::pin(store.flush_before_publish(
-            PublicationScope {
-                objects: &closure,
-                proven_at: store.collection.sweeps(),
-            },
-            &mut work,
-        ));
-        assert!(futures::poll!(publishing.as_mut()).is_pending());
+        let mut publishing = Box::pin(async {
+            if publication {
+                store
+                    .flush_before_publish(
+                        PublicationScope {
+                            objects: &closure,
+                            proven_at: store.collection.sweeps(),
+                        },
+                        &mut work,
+                    )
+                    .await
+                    .map(drop)
+            } else {
+                store.relieve_window(&mut work).await
+            }
+        });
+        let wake = Arc::new(CancellationWake::default());
+        let waker = std::task::Waker::from(Arc::clone(&wake));
+        assert!(
+            publishing
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(&waker))
+                .is_pending()
+        );
         let mut independent = AuthorityWork::new(native_write_budget(), &original_token);
         let mut read = std::pin::pin!(store.read(id, 1024, &mut independent));
         let std::task::Poll::Ready(result) = futures::poll!(read.as_mut()) else {
@@ -96,10 +116,13 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
         } else {
             caller.cancel();
         }
-        drop(spill);
-        // The sweep producer remains held: cancelled work must not join it.
+        assert!(
+            wake.0.load(Ordering::Relaxed),
+            "cancellation must wake the writer"
+        );
+        // Both original producers remain held: cancellation releases neither.
         let std::task::Poll::Ready(result) = futures::poll!(publishing.as_mut()) else {
-            panic!("cancelled publication waited for collection admission");
+            panic!("a cancelled writer still waits for the spill lease");
         };
         if exit == 2 {
             assert!(matches!(
@@ -112,17 +135,21 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
             assert!(matches!(result, Err(ObjectStoreError::Cancelled)));
         }
         drop(publishing);
+        drop(spill);
         let completed = work.spent();
         assert_eq!(completed.backend_write_operations, 0);
         assert_eq!(completed.durability_operations, 0);
         assert_eq!(completed.object_bytes_written, 0);
-        assert_eq!(completed.items_examined, 0);
+        assert!(
+            completed.items_examined <= 5,
+            "only bounded waiter cleanup is required"
+        );
         assert_eq!(
             completed.allocation_operations,
             if exit == 0 {
-                0
+                2
             } else {
-                before.allocation_operations + 1
+                before.allocation_operations + 2 + u64::from(publication)
             }
         );
         assert_eq!(original.live_allocation_bytes(), baseline);
