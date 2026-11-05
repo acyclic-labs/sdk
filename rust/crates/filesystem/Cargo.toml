@@ -17,6 +17,11 @@ categories = ["filesystem", "data-structures"]
 name = "main"
 path = "tests/main.rs"
 
+[[test]]
+name = "browser_blob_custody"
+path = "tests/browser_blob_custody.rs"
+required-features = ["browser"]
+
 [[bench]]
 name = "lease_paths"
 harness = false
