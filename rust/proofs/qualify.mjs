@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Qualify a production oracle and its retained mutation.
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -75,6 +76,13 @@ const claims = {
     "physical cleanup escaped its original task scope", nativeHarness,
     { patch: "unscoped-claims.patch", positive: cleanupTests },
   ],
+  "conversation-observation": [
+    "rust/crates/harness/src/local/agent_conversation.rs", "acyclic-harness",
+    "local::tests::agents::parent_and_child_context_and_writes_retain_their_own_volumes",
+    "default observation repeated its settlement query", ["--all-features"],
+    { oracle: "rust/crates/harness/src/local/tests/agents.rs", negativeLabel: "duplicate-settlement",
+      nextest: ["--profile", "ci", "--no-fail-fast", "--failure-output", "immediate-final", "--run-ignored", "all", "--retries", "0", "--no-tests=fail"] },
+  ],
 };
 const [claim, ...extra] = process.argv.slice(2);
 const help = `node rust/proofs/qualify.mjs <${Object.keys(claims).join("|")}>`;
@@ -89,35 +97,56 @@ if (claim === "--help" && extra.length === 0) {
   const patch = claim === "work-mixed"
     ? "rust/proofs/work-arithmetic/mixed-mutation.patch"
     : `rust/proofs/${claim}/${options.patch ?? "mutation.patch"}`;
-  const command = ["test", "--locked", "-p", crate, ...features, "--lib", test, "--", "--exact", "--nocapture"];
+  const command = options.nextest
+    ? ["nextest", "run", "--locked", "-p", crate, ...features, "--lib", "-E", `test(=${test})`, ...options.nextest]
+    : ["test", "--locked", "-p", crate, ...features, "--lib", test, "--", "--exact", "--nocapture"];
   const positive = options.positive
     ? ["nextest", "run", "--locked", "-p", crate, ...features, "--lib", "-E",
       options.positive.map(name => `test(=${name})`).join(" | "), "--no-tests=fail"]
     : command;
   const recovery = `git diff -- ${source}; inspect target/${claim}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}`;
+  const directory = new URL(`target/${claim}/`, new URL("../../", import.meta.url));
+  const oraclePath = options.oracle && new URL(options.oracle, new URL("../../", import.meta.url));
+  let oracle;
+  const phases = [];
   let step = "read original production source";
   function require(condition) {
     if (!condition) throw new Error("required qualification outcome absent");
   }
-  function run(program, args) {
-    const result = spawnSync(program, args, {
-      cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024,
-      env: { ...process.env, PROPTEST_RNG_SEED: process.env.PROPTEST_RNG_SEED ?? "1697" },
-    });
+  function run(program, args, log) {
+    const descriptor = log && openSync(log, "w");
+    let result;
+    try {
+      result = spawnSync(program, args, {
+        cwd: root, encoding: "utf8",
+        ...(log ? { stdio: ["ignore", descriptor, descriptor] } : {}),
+        env: { ...process.env, PROPTEST_RNG_SEED: process.env.PROPTEST_RNG_SEED ?? "1697" },
+      });
+    } finally {
+      if (descriptor !== undefined) closeSync(descriptor);
+    }
     if (result.error) throw result.error;
-    return { ...result, output: `${result.stdout ?? ""}${result.stderr ?? ""}` };
+    return { ...result, output: log ? readFileSync(log, "utf8") : `${result.stdout ?? ""}${result.stderr ?? ""}` };
   }
   function check(label, selected = command) {
-    const result = run("cargo", selected);
-    const directory = new URL(`target/${claim}/`, new URL("../../", import.meta.url));
+    if (oracle) require(readFileSync(oraclePath).equals(oracle));
     mkdirSync(directory, { recursive: true });
-    writeFileSync(new URL(`${label}.log`, directory), result.output);
+    const result = run("cargo", selected, new URL(`${label}.log`, directory));
+    if (oracle) {
+      const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
+      const phase = { phase: label, exit: result.status, source_sha256: sha256(readFileSync(sourcePath)), oracle_sha256: sha256(oracle) };
+      phases.push(phase);
+      console.log(JSON.stringify(phase));
+      require(readFileSync(oraclePath).equals(oracle));
+      require(result.output.includes("Starting 1 test across 1 binary"));
+    }
     console.log(`step=${label}; command=${JSON.stringify(["cargo", ...selected])}; exit=${result.status}; signal=${result.signal}`);
     console.log(result.output.trimEnd().split(/\r?\n/).slice(-35).join("\n"));
     return result;
   }
   try {
     const original = readFileSync(sourcePath);
+    if (oraclePath) oracle = readFileSync(oraclePath);
     step = "check mutation anchors";
     const anchor = run("git", ["apply", "--check", patch]);
     if (anchor.status !== 0) throw new Error(anchor.output);
@@ -126,9 +155,9 @@ if (claim === "--help" && extra.length === 0) {
       const applied = run("git", ["apply", patch]);
       if (applied.status !== 0) throw new Error(applied.output);
       step = "unchanged oracle rejects production mutation";
-      const mutated = check("mutated");
-      require(mutated.status === 101 && !mutated.signal && mutated.output.includes(diagnostic)
-        && mutated.output.includes("0 passed; 1 failed"));
+      const mutated = check(options.negativeLabel ?? "mutated");
+      require(mutated.status === (options.nextest ? 100 : 101) && !mutated.signal && mutated.output.includes(diagnostic)
+        && (options.nextest || mutated.output.includes("0 passed; 1 failed")));
     } finally {
       writeFileSync(sourcePath, original);
     }
@@ -136,10 +165,21 @@ if (claim === "--help" && extra.length === 0) {
     require(readFileSync(sourcePath).equals(original));
     step = "restored original oracle completes";
     const restored = check("restored", positive);
-    const completed = options.positive ? `${options.positive.length} tests run: ${options.positive.length} passed` : "1 passed; 0 failed";
+    const completed = options.positive ? `${options.positive.length} tests run: ${options.positive.length} passed`
+      : options.nextest ? "1 test run: 1 passed" : "1 passed; 0 failed";
     require(restored.status === 0 && !restored.signal && restored.output.includes(completed));
   } catch (error) {
     console.error(`step=${step}; cause=${error.message}; recovery: ${recovery}`);
     process.exitCode = 1;
+  } finally {
+    if (oracle) {
+      try {
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(new URL("phases.json", directory), `${JSON.stringify(phases, null, 2)}\n`);
+      } catch (error) {
+        console.error(`step=write phase report; cause=${error.message}; recovery: ${recovery}`);
+        process.exitCode = 1;
+      }
+    }
   }
 }
