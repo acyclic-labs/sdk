@@ -1,0 +1,8 @@
+diff --git a/rust/crates/actors/src/client.rs b/rust/crates/actors/src/client.rs
+--- a/rust/crates/actors/src/client.rs
++++ b/rust/crates/actors/src/client.rs
+@@ -145,3 +145,4 @@
+                         detail.request_id,
+                     );
++                    metadata.cause = None;
+                 }

@@ -126,6 +126,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "tonic",
 ]
 
 [[package]]

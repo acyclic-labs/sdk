@@ -1,4 +1,4 @@
-//! Authenticated client for the generated Actors v1 service.
+//! Canonical Actors v1 status projection and authenticated client.
 
 pub use crate::client::BearerAuth;
 use crate::wire;
@@ -17,6 +17,36 @@ pub type Client = wire::actors_service_client::ActorsServiceClient<
 /// Shared transport-status channel retaining the originating trace context.
 pub type TracedChannel =
     acyclic_grpc_observability::TracedChannel<acyclic_auth::channel::CredentialChannel>;
+
+/// Encodes a semantic failure with its producer's original optional attribution.
+///
+/// The status message retains the canonical protocol name. Overload retry hints
+/// belong to the admission producer and are not inferred from semantic codes.
+#[must_use]
+pub fn error_status(error: wire::ErrorCode, cause: Option<acyclic_auth::refusal::Cause>) -> Status {
+    use tonic::Code;
+    use wire::ErrorCode as E;
+    let (code, name) = match error {
+        E::Unspecified => (Code::Internal, "ERROR_CODE_UNSPECIFIED"),
+        E::InvalidArgument => (Code::InvalidArgument, "ERROR_CODE_INVALID_ARGUMENT"),
+        E::CapabilityDenied => (Code::PermissionDenied, "ERROR_CODE_CAPABILITY_DENIED"),
+        E::CapabilityExpired => (Code::Unauthenticated, "ERROR_CODE_CAPABILITY_EXPIRED"),
+        E::ActorNotFound => (Code::NotFound, "ERROR_CODE_ACTOR_NOT_FOUND"),
+        E::SubscriptionNotFound => (Code::NotFound, "ERROR_CODE_SUBSCRIPTION_NOT_FOUND"),
+        E::IdempotencyMismatch => (Code::FailedPrecondition, "ERROR_CODE_IDEMPOTENCY_MISMATCH"),
+        E::Conflict => (Code::FailedPrecondition, "ERROR_CODE_CONFLICT"),
+        E::AdmissionDenied => (Code::PermissionDenied, "ERROR_CODE_ADMISSION_DENIED"),
+        E::CheckpointFailed => (Code::Aborted, "ERROR_CODE_CHECKPOINT_FAILED"),
+        E::DependencyUnavailable => (Code::Unavailable, "ERROR_CODE_DEPENDENCY_UNAVAILABLE"),
+    };
+    let mut detail = crate::domain::ServiceError::new(error, name.into());
+    if let Some(cause) = cause {
+        detail = detail.with_cause(cause);
+    }
+    let detail: wire::Error = detail.into();
+    let bytes = detail.encode_to_vec();
+    Status::with_details(code, detail.message, bytes.into())
+}
 
 /// Statically named actors RPC span factory.
 pub(crate) fn transport_span(rpc: Option<&str>) -> tracing::Span {

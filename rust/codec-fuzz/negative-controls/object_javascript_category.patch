@@ -1,0 +1,22 @@
+diff --git a/rust/crates/objects/src/binary/javascript.rs b/rust/crates/objects/src/binary/javascript.rs
+index f7fb9e03d9..d0f1d653e8 100644
+--- a/rust/crates/objects/src/binary/javascript.rs
++++ b/rust/crates/objects/src/binary/javascript.rs
+@@ -62,14 +62,14 @@ fn original_error(value: JsValue) -> Error {
+     }
+     if let Ok(detail) = Reflect::get(&value, &"detailBytes".into())
+         && !detail.is_undefined()
+-        && let Some(error) = detail
++    {
++        return detail
+             .dyn_into::<Uint8Array>()
+             .ok()
+             .and_then(|view| acyclic_stream::javascript_bytes::snapshot(&view, |_| Ok(())).ok())
+             .and_then(|(bytes, ())| wire::ErrorDetail::decode(bytes.as_slice()).ok())
+             .and_then(Error::from_detail)
+-    {
+-        return error;
++            .unwrap_or_else(unavailable);
+     }
+     error_code(&value)
+         .ok()

@@ -18,13 +18,57 @@ async fn native_tail_preserves_the_complete_real_observation()
         panic!("initial append conflicted");
     };
     let revision = wire_codec::revision_to_wire(&receipt.revision);
-    let service = wire::stream_session_service_server::StreamSessionServiceServer::new(
+    // Derive adversarial diagnostics from the actual service's rejection. This
+    // is a wire admission control, not a captured member attribution.
+    let original = wire::stream_service_server::StreamService::tail(
+        &grpc::Service::new(Arc::clone(&provider)),
+        Request::new(wire::TailRequest {
+            path: "observed".into(),
+            at_least: vec![wire::Revision::default()],
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect_err("the real service must reject a malformed revision");
+    let mut metadata = original.metadata().clone();
+    metadata.append("acyclic-original", original.message().parse()?);
+    metadata.append("acyclic-original", original.message().parse()?);
+    metadata.insert_bin(
+        "acyclic-original-bin",
+        tonic::metadata::MetadataValue::from_bytes(original.message().as_bytes()),
+    );
+    let refusal = Status::with_details_and_metadata(
+        tonic::Code::Unknown,
+        original.message(),
+        original.message().as_bytes().to_vec().into(),
+        metadata,
+    );
+    let expected = serde_json::json!({
+        "status": refusal.code() as i32,
+        "message": refusal.message(),
+        "details": refusal.details(),
+        "metadata": refusal.metadata().as_ref().iter().map(|(name, value)|
+            (name.as_str(), value.as_bytes())).collect::<Vec<_>>(),
+    });
+    let refused = Arc::new(AtomicBool::new(false));
+    let refuse = Arc::clone(&refused);
+    let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let attempted = Arc::clone(&attempts);
+    let service = wire::stream_session_service_server::StreamSessionServiceServer::with_interceptor(
         acyclic_stream::session::Service::new(
             Arc::clone(&provider),
             acyclic_stream::session::testing::authority(),
             "native".into(),
             acyclic_stream::session::Limits::default(),
         ),
+        move |request: Request<()>| {
+            attempted.fetch_add(1, Ordering::SeqCst);
+            if refuse.load(Ordering::SeqCst) {
+                Err(refusal.clone())
+            } else {
+                Ok(request)
+            }
+        },
     );
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("http://{}", listener.local_addr()?);
@@ -46,7 +90,7 @@ async fn native_tail_preserves_the_complete_real_observation()
     });
     let result = async {
         let client = NativeStreamClient::from_client(
-            grpc::Client::connect_loopback(endpoint, "exact-token").await?,
+            grpc::Client::connect_loopback(endpoint.clone(), "exact-token").await?,
         );
         client.register_credential(
             0,
@@ -124,6 +168,38 @@ async fn native_tail_preserves_the_complete_real_observation()
             "cancelled"
         );
         assert_eq!(provider.requests().since(before), observed);
+
+        let client = NativeStreamClient::from_client(
+            grpc::Client::connect_loopback(endpoint, "exact-token").await?,
+        );
+        client.register_credential(
+            0,
+            Buffer::from(acyclic_stream::session::testing::credential().to_vec()),
+        )?;
+        let attempts_before = attempts.load(Ordering::SeqCst);
+        refused.store(true, Ordering::SeqCst);
+        let response = client
+            .tail_result(
+                Buffer::from(
+                    wire::TailRequest {
+                        path: "observed".into(),
+                        ..Default::default()
+                    }
+                    .encode_to_vec(),
+                ),
+                None,
+            )
+            .await?;
+        assert!(response.value.is_none());
+        let error = response.error.expect("the original request must refuse");
+        assert_eq!(error.code, "unavailable");
+        assert_eq!(attempts.load(Ordering::SeqCst) - attempts_before, 1);
+        assert_eq!(provider.requests().since(before), observed);
+        assert_eq!(
+            serde_json::to_value(error)?.get("refusal"),
+            Some(&expected),
+            "native results must retain original status, details and metadata"
+        );
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     }
     .await;

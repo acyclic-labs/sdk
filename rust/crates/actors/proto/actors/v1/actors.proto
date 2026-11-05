@@ -153,6 +153,9 @@ message EntrySource {
 message Error {
   ErrorCode code = 1;
   string message = 2;
+  string component = 3;
+  string reason = 4;
+  string request_id = 5;
 }
 
 message FetchBinding {
