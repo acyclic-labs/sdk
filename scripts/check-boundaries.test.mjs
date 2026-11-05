@@ -50,13 +50,16 @@ test("tracked public types and recorded fake-server fixtures pass on LF and CRLF
 });
 
 test("credential admission binds both fixture paths and complete contents", t => {
-  for (const path of fixtures) {
+  const files = {};
+  for (const [index, path] of fixtures.entries()) {
     const content = readFileSync(join(root, path), "utf8");
-    for (const files of [{ [path]: content + "\nchanged\n" }, { "copied.mjs": content }]) {
-      const result = scan(t, files);
-      assert.equal(result.status, 1);
-      assert.match(result.stderr, /credential outside a recorded fake-server fixture/);
-    }
+    files[path] = content + "\nchanged\n";
+    files[`copied-${index}.mjs`] = content;
+  }
+  const result = scan(t, files);
+  assert.equal(result.status, 1);
+  for (const path of Object.keys(files)) {
+    assert.ok(result.stderr.includes(`${path}: credential outside a recorded fake-server fixture`), result.stderr);
   }
 });
 
@@ -69,20 +72,22 @@ test("literal source credentials, plaintext configuration and private implementa
     ["proto/private/admin.proto", 'syntax = "proto3";'],
     ["rust/crates/machines/proto/machines/v1/leak.proto", "package vmm." + "fleet.v1;"],
   ];
-  for (const [path, content] of cases) {
-    const result = scan(t, { [path]: content });
-    assert.equal(result.status, 1, path);
+  const result = scan(t, Object.fromEntries(cases));
+  assert.equal(result.status, 1, result.stderr);
+  for (const [path] of cases) {
     assert.ok(result.stderr.includes(path), result.stderr);
   }
 });
 
 test("backticks, quoted dollar/braces and authorization literals reject", t => {
-  for (const value of ['`unrecorded-secret`', '"unrecorded$secret"', '"unrecorded{secret}"', '"${secret}"', '`unrecorded\\${secret}`']) {
-    const result = scan(t, { "consumer.ts": "const github_" + "token = " + value + ";" });
-    assert.equal(result.status, 1, value);
+  const values = ['`unrecorded-secret`', '"unrecorded$secret"', '"unrecorded{secret}"', '"${secret}"', '`unrecorded\\${secret}`'];
+  const files = Object.fromEntries(values.map((value, index) => [`consumer-${index}.ts`, "const github_" + "token = " + value + ";"]));
+  files["consumer.mjs"] = 'const headers = { author' + 'ization: "Bearer unrecorded" };';
+  const result = scan(t, files);
+  assert.equal(result.status, 1, result.stderr);
+  for (const path of Object.keys(files)) {
+    assert.ok(result.stderr.includes(`${path}: credential outside a recorded fake-server fixture`), result.stderr);
   }
-  const result = scan(t, { "consumer.mjs": 'const headers = { author' + 'ization: "Bearer unrecorded" };' });
-  assert.equal(result.status, 1);
 });
 
 test("credential literals nested inside interpolated headers reject", t => {
