@@ -23,7 +23,7 @@ with retained leases, which is the distinct fence exercised here. The native
 property uses small amounts and does not extend this full-width arithmetic
 claim to native resource admission.
 
-Run `python3 rust/proofs/qualify.py retained-credit` from the repository root. The
+Run `node rust/proofs/qualify.mjs retained-credit` from the repository root. The
 kept mutation removes the production scratch/retained fence. The unchanged
 property must fail at `scratch retirement accepted retained credit`. A compile
 error, signal, empty selection or timeout is not a qualifying negative result.
