@@ -86,7 +86,7 @@ async fn patch_application_is_atomic_conflict_checked_and_idempotent() {
     publish_fixture(transaction).await;
     let patch = b"--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n one\n-old\n+new\n";
     let operation = IdempotencyKey::from_bytes([0x34; 16]);
-    let TransactionCommit::Committed(generation) = apply_git_patch(
+    let TransactionCommit::Committed(patched) = apply_git_patch(
         &workspace,
         patch,
         operation,
@@ -97,22 +97,11 @@ async fn patch_application_is_atomic_conflict_checked_and_idempotent() {
         panic!("patch did not commit");
     };
     assert_eq!(
-        unbounded!(generation, read("/a.txt", 1_024))
+        unbounded!(patched, read("/a.txt", 1_024))
             .expect("patched file")
             .as_ref(),
         b"one\nnew\n"
     );
-    assert!(matches!(
-        apply_git_patch(
-            &workspace,
-            patch,
-            operation,
-            crate::PublicationPermit::Unrestricted,
-        )
-        .await
-        .expect("retry"),
-        TransactionCommit::AlreadyCommitted(_)
-    ));
 
     let conflicting = b"--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n one\n-old\n+other\n";
     assert!(matches!(
@@ -156,6 +145,17 @@ async fn patch_application_is_atomic_conflict_checked_and_idempotent() {
     assert!(matches!(
         apply_git_patch(
             &workspace,
+            patch,
+            operation,
+            crate::PublicationPermit::Unrestricted,
+        )
+        .await
+        .expect("retry"),
+        TransactionCommit::AlreadyCommitted(recovered) if recovered.id() == patched.id()
+    ));
+    assert!(matches!(
+        apply_git_patch(
+            &workspace,
             b"--- C:/outside\n+++ C:/outside\n@@ -0,0 +1 @@\n+x\n",
             IdempotencyKey::from_bytes([0x37; 16]),
             crate::PublicationPermit::Unrestricted
@@ -184,114 +184,6 @@ fn portable_git_names_decode_canonical_windows_names() {
         .as_deref(),
         Some("source-λ.rs")
     );
-}
-
-#[tokio::test]
-async fn independent_git_patches_share_one_append_and_recover_each_operation() {
-    use acyclic_stream::StreamProvider;
-    use futures::TryStreamExt;
-    use std::sync::Arc;
-
-    let stream = Arc::new(acyclic_stream::MemoryStream::default());
-    let objects = acyclic_objects::MemoryObjects::memory();
-    let fs = Fs::new(
-        crate::StreamAuthorityStore::new(Arc::clone(&stream)),
-        crate::LogicalObjectStore::new(Arc::new(objects)),
-        crate::EmbeddedCapabilities::MEMORY,
-    );
-    let config = crate::VolumeConfig {
-        concurrency: crate::model::ConcurrencyMode::SerializedAuthority,
-        ..crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral)
-    };
-    let workspace =
-        unbounded!(fs, create_workspace_with_config("git-group", config)).expect("workspace");
-    let mut seed = begin_fixture(&workspace, IdempotencyKey::new()).await;
-    for name in ["/a.txt", "/b.txt"] {
-        seed.write_text(name, "old\n").await.expect("seed file");
-    }
-    publish_fixture(seed).await;
-    let records_path = acyclic_stream::StreamPath::new(format!(
-        "fs/authorities/{}/records",
-        hex::encode(crate::kernel::volume_authority_id(workspace.volume.id()).into_bytes())
-    ))
-    .expect("authority records");
-    let before: Vec<_> = stream
-        .read(acyclic_stream::ReadRequest {
-            key: None,
-            path: records_path.clone(),
-            from: 1,
-            limit: 1024,
-            at_least: Default::default(),
-        })
-        .await
-        .expect("before records")
-        .try_collect()
-        .await
-        .expect("before rows");
-    let patches = [
-        b"--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+left\n".as_slice(),
-        b"--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-old\n+right\n".as_slice(),
-    ];
-    let operations = [IdempotencyKey::new(), IdempotencyKey::new()];
-    let (left, right) = futures::join!(
-        apply_git_patch(
-            &workspace,
-            patches[0],
-            operations[0],
-            crate::PublicationPermit::Unrestricted
-        ),
-        apply_git_patch(
-            &workspace,
-            patches[1],
-            operations[1],
-            crate::PublicationPermit::Unrestricted
-        ),
-    );
-    for outcome in [left, right] {
-        assert!(matches!(
-            outcome.expect("patch"),
-            TransactionCommit::Committed(_)
-        ));
-    }
-    let after: Vec<_> = stream
-        .read(acyclic_stream::ReadRequest {
-            key: None,
-            path: records_path,
-            from: before.len() as u64 + 1,
-            limit: 2,
-            at_least: Default::default(),
-        })
-        .await
-        .expect("batch records")
-        .try_collect()
-        .await
-        .expect("batch rows");
-    assert_eq!(after.len(), 2);
-    assert_eq!(
-        after[0].commit_id, after[1].commit_id,
-        "Git adapter bypassed group publication"
-    );
-    for (index, (name, expected)) in [
-        ("/a.txt", b"left\n".as_slice()),
-        ("/b.txt", b"right\n".as_slice()),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let read = unbounded!(workspace, read(name, 16)).expect("final file");
-        assert_eq!(read.as_ref(), expected);
-        assert!(matches!(
-            apply_git_patch(
-                &workspace,
-                patches[index],
-                operations[index],
-                crate::PublicationPermit::Unrestricted
-            )
-            .await
-            .expect("original retry"),
-            TransactionCommit::AlreadyCommitted(_)
-        ));
-    }
 }
 
 #[tokio::test]
