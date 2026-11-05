@@ -1,4 +1,5 @@
 use super::*;
+use crate::storage::ObjectWriteSource;
 
 impl AsyncObjectStore for IndexedDbObjectStore {
     async fn put(
@@ -10,103 +11,26 @@ impl AsyncObjectStore for IndexedDbObjectStore {
         self.put_many(&[ObjectWrite { object_id, bytes }], context)
             .await
     }
-    #[allow(
-        clippy::too_many_lines,
-        reason = "All writes and existing-object probes share one IndexedDB transaction"
-    )]
+    async fn put_hashed(
+        &self,
+        object: crate::HashedObject,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        self.put_batch(std::slice::from_ref(&object), context).await
+    }
     async fn put_many(
         &self,
         writes: &[ObjectWrite],
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
-        let io = context;
-        io.check().map_err(object_error)?;
-        if writes.is_empty() {
-            return Err(ObjectStoreError::Rejected(
-                "empty object write batch".to_owned(),
-            ));
-        }
-        for write in writes {
-            let length = write.bytes.len() as u64;
-            self.bound(length, self.maximum_object_bytes)?;
-            work::charge(
-                io,
-                WorkCounters {
-                    object_probes: 1,
-                    backend_read_operations: 1,
-                    bytes_hashed: length,
-                    allocation_operations: 1,
-                    peak_allocation_bytes: object_key_bytes(write.object_id),
-                    ..Default::default()
-                },
-            )
-            .map_err(object_error)?;
-            if object_digest(&write.bytes) != write.object_id.digest {
-                return Err(ObjectStoreError::DigestMismatch);
-            }
-        }
-        let retained = writes.len() as u64 * size_of::<(Blob, &OwnedBytes)>() as u64;
-        work::charge(
-            io,
-            WorkCounters {
-                allocation_operations: 1,
-                peak_allocation_bytes: retained,
-                ..Default::default()
-            },
-        )
-        .map_err(object_error)?;
-        let mut existing = Vec::new();
-        existing
-            .try_reserve_exact(writes.len())
-            .map_err(|e| object_error(backend(e)))?;
-        let tx = transaction(&self.database, &[OBJECTS], TransactionMode::Readwrite)
-            .map_err(|e| object_error(backend(e)))?;
-        for write in writes {
-            let key = Self::key(write.object_id);
-            let length = write.bytes.len() as u64;
-            let stored = Self::object(io, &tx, &key).await?;
-            let copy = WorkCounters {
-                bytes_copied: length * 2,
-                allocation_operations: 2 * u64::from(length != 0),
-                peak_allocation_bytes: object_key_bytes(write.object_id) + length * 2 + retained,
-                ..Default::default()
-            };
-            if let Some(stored) = stored {
-                if work::blob_length(&stored).map_err(object_error)? != length {
-                    return Err(ObjectStoreError::Corrupt);
-                }
-                existing.push((stored, &write.bytes));
-            } else {
-                work::charge(
-                    io,
-                    WorkCounters {
-                        backend_write_operations: 1,
-                        object_bytes_written: length,
-                        ..copy
-                    },
-                )
-                .map_err(object_error)?;
-                io.cancellation
-                    .check()
-                    .map_err(|_| ObjectStoreError::Cancelled)?;
-                let blob =
-                    create_blob(&write.bytes).map_err(|e| object_error(backend(js_message(&e))))?;
-                io.insert(&tx, OBJECTS, &key, blob.into())
-                    .await
-                    .map_err(object_error)?;
-            }
-        }
-        if existing.len() == writes.len() {
-            drop(tx);
-        } else {
-            io.commit(tx).await.map_err(object_error)?;
-        }
-        for (blob, bytes) in existing {
-            if io.blob_bytes(&blob, bytes.len() as u64).await?.as_ref() != bytes.as_ref() {
-                return Err(ObjectStoreError::Corrupt);
-            }
-        }
-        Ok(())
+        self.put_batch(writes, context).await
+    }
+    async fn put_many_hashed(
+        &self,
+        objects: &[crate::HashedObject],
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        self.put_batch(objects, context).await
     }
     async fn read(
         &self,
@@ -245,5 +169,113 @@ impl AsyncObjectStore for IndexedDbObjectStore {
             Err(ObjectStoreError::Missing) => Ok(false),
             Err(error) => Err(error),
         }
+    }
+}
+
+impl IndexedDbObjectStore {
+    fn admit_batch<T: ObjectWriteSource>(
+        &self,
+        writes: &[T],
+        io: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        io.check().map_err(object_error)?;
+        if writes.is_empty() {
+            return Err(ObjectStoreError::Rejected(
+                "empty object write batch".to_owned(),
+            ));
+        }
+        for write in writes {
+            let (id, _, bytes) = write.parts();
+            let length = bytes.len() as u64;
+            let authenticate = write.sealed().is_none();
+            self.bound(length, self.maximum_object_bytes)?;
+            work::charge(
+                io,
+                WorkCounters {
+                    object_probes: 1,
+                    backend_read_operations: 1,
+                    bytes_hashed: if authenticate { length } else { 0 },
+                    allocation_operations: 1,
+                    peak_allocation_bytes: object_key_bytes(id),
+                    ..Default::default()
+                },
+            )
+            .map_err(object_error)?;
+            if authenticate && object_digest(bytes) != id.digest {
+                return Err(ObjectStoreError::DigestMismatch);
+            }
+        }
+        Ok(())
+    }
+    async fn put_batch<T: ObjectWriteSource>(
+        &self,
+        writes: &[T],
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        let io = context;
+        self.admit_batch(writes, io)?;
+        let retained = writes.len() as u64 * size_of::<(Blob, &OwnedBytes)>() as u64;
+        work::charge(
+            io,
+            WorkCounters {
+                allocation_operations: 1,
+                peak_allocation_bytes: retained,
+                ..Default::default()
+            },
+        )
+        .map_err(object_error)?;
+        let mut existing = Vec::new();
+        existing
+            .try_reserve_exact(writes.len())
+            .map_err(|e| object_error(backend(e)))?;
+        let tx = transaction(&self.database, &[OBJECTS], TransactionMode::Readwrite)
+            .map_err(|e| object_error(backend(e)))?;
+        for write in writes {
+            // This plain store preserves the authenticated plaintext representation.
+            let (id, _, bytes) = write.parts();
+            let key = Self::key(id);
+            let length = bytes.len() as u64;
+            let stored = Self::object(io, &tx, &key).await?;
+            let copy = WorkCounters {
+                bytes_copied: length * 2,
+                allocation_operations: 2 * u64::from(length != 0),
+                peak_allocation_bytes: object_key_bytes(id) + length * 2 + retained,
+                ..Default::default()
+            };
+            if let Some(stored) = stored {
+                if work::blob_length(&stored).map_err(object_error)? != length {
+                    return Err(ObjectStoreError::Corrupt);
+                }
+                existing.push((stored, bytes));
+            } else {
+                work::charge(
+                    io,
+                    WorkCounters {
+                        backend_write_operations: 1,
+                        object_bytes_written: length,
+                        ..copy
+                    },
+                )
+                .map_err(object_error)?;
+                io.cancellation
+                    .check()
+                    .map_err(|_| ObjectStoreError::Cancelled)?;
+                let blob = create_blob(bytes).map_err(|e| object_error(backend(js_message(&e))))?;
+                io.insert(&tx, OBJECTS, &key, blob.into())
+                    .await
+                    .map_err(object_error)?;
+            }
+        }
+        if existing.len() == writes.len() {
+            drop(tx);
+        } else {
+            io.commit(tx).await.map_err(object_error)?;
+        }
+        for (blob, bytes) in existing {
+            if io.blob_bytes(&blob, bytes.len() as u64).await?.as_ref() != bytes.as_ref() {
+                return Err(ObjectStoreError::Corrupt);
+            }
+        }
+        Ok(())
     }
 }

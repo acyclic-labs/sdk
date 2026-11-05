@@ -691,6 +691,28 @@ impl HashedObject {
     }
 }
 
+/// A single canonical reference with its authenticated immutable bytes.
+pub(crate) trait ObjectWriteSource {
+    fn parts(&self) -> (ObjectId, &OwnedBytes, &OwnedBytes);
+    fn sealed(&self) -> Option<&acyclic_stream::SealedBytes>;
+}
+impl ObjectWriteSource for ObjectWrite {
+    fn parts(&self) -> (ObjectId, &OwnedBytes, &OwnedBytes) {
+        (self.object_id, &self.bytes, &self.bytes)
+    }
+    fn sealed(&self) -> Option<&acyclic_stream::SealedBytes> {
+        None
+    }
+}
+impl ObjectWriteSource for HashedObject {
+    fn parts(&self) -> (ObjectId, &OwnedBytes, &OwnedBytes) {
+        (self.object_id(), self.stored_bytes(), self.bytes())
+    }
+    fn sealed(&self) -> Option<&acyclic_stream::SealedBytes> {
+        Some(self.sealed())
+    }
+}
+
 /// Exact bounded logical byte range.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ByteRange {

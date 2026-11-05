@@ -1,3 +1,4 @@
+//! Physical Blob funding through withdrawal and final aliases.
 #![cfg(target_arch = "wasm32")]
 
 use acyclic_fs::kernel::allocation::{AllocationLedger, KernelAccounting};
@@ -92,7 +93,7 @@ async fn physical_blob_custody_survives_withdrawal_and_final_alias() -> Result<(
         for _ in 0..2 {
             let held = held_blob(&expected);
             let blob = held.blob();
-            held.release();
+            let _ = held.release();
             let bytes =
                 acyclic_fs::browser::blob_bytes(&blob, length as u64, &accounting, &cancellation)
                     .await

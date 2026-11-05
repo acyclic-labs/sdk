@@ -306,6 +306,13 @@ bash scripts/run-browser-tests.sh cargo test --locked -p acyclic-fs \
   --target wasm32-unknown-unknown --test main browser_commit::conformance::browser_public_conformance_benchmark
 ```
 
+The existing `browser_commit::storage::indexed_db_object_batches_commit_all_or_nothing`
+property also compares raw and authenticated submissions, including duplicate
+members, an idempotent retry and a zero-hash budget. The retained
+`fuzz/mutations/indexed_db_sealed_rehash.patch` must fail that property by
+reintroducing input hashing. Run it through the same browser command above,
+selecting that exact property.
+
 The runner uses installed Chrome/Chromedriver. Set `CHROME_BINARY_DIR` and
 `CHROMEDRIVER` when selecting another installed distribution.
 
