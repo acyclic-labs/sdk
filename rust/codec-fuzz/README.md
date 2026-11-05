@@ -219,8 +219,8 @@ both a retained action binding and an explicit absent binding for external hosts
 
 The roster seeds use `Roster::new`, its retained canonical announcement and the
 tuple writer over its original home and targets. Both named and positional JSON
-must reach the same `harness_codecs` oracle, which compares original wire records, exact target
-positions and each owner's first attached device, including an offline first
+must reach the same `harness_codecs` oracle, which compares original wire records,
+exact target positions and each owner's first attached device, including an offline first
 device and complete maximum-width name and owner bytes. Cached positions cannot
 be supplied through JSON. The retained `roster-owner-position.patch` publishes
 the wrong owner position; the writer-corpus check below must refuse it. The
