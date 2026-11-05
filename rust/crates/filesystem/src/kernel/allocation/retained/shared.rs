@@ -127,12 +127,14 @@ mod tests {
         let mut accounting =
             KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancel);
         let value = RetainedArc::new(73_u64, &mut accounting)?;
-        let ledger = match value.allocation.0.as_deref() {
-            Some(RetainedAllocation::Standalone { _lease }) => Arc::clone(&_lease.ledger),
-            #[cfg(not(target_arch = "wasm32"))]
-            Some(RetainedAllocation::Native { .. }) => unreachable!("standalone accounting"),
-            None => unreachable!("funded retained value"),
-        };
+        let ledger = value
+            .allocation
+            .0
+            .as_deref()
+            .and_then(RetainedAllocation::standalone_ledger)
+            .expect("funded standalone value")
+            .upgrade()
+            .unwrap();
         let funded = ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
