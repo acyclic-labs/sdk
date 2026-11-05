@@ -18,23 +18,21 @@ fn record<T: AgentRecord + std::fmt::Debug + PartialEq>(bytes: &[u8]) {
 fn header<T: serde::Serialize + for<'de> serde::Deserialize<'de>>(value: &T) {
     fn refuses<T: for<'de> serde::Deserialize<'de>>(bytes: &[u8], found: u32) {
         let refused = match records::decode_record::<T>(bytes) {
-            Err(super::Error::Record("record exceeds MAX_RECORD_BYTES")) => {
-                bytes.len() > records::MAX_RECORD_BYTES
-            }
             Err(super::Error::UnsupportedRecordVersion(version)) => {
-                bytes.len() <= records::MAX_RECORD_BYTES
-                    && found != records::RECORD_VERSION
+                found != records::RECORD_VERSION
                     && version.found == found
                     && version.expected == records::RECORD_VERSION
             }
-            Err(super::Error::Record("record is malformed")) => {
-                bytes.len() <= records::MAX_RECORD_BYTES && found == records::RECORD_VERSION
-            }
+            Err(super::Error::Record("record is malformed")) => found == records::RECORD_VERSION,
             _ => false,
         };
         assert!(refused, "agent record header refusal changed");
     }
     let encoded = records::seal(value).expect("admitted record writer");
+    assert_eq!(
+        records::fits_frame(value),
+        encoded.len() <= acyclic_stream::MAX_RECORD_BYTES
+    );
     assert!(records::decode_record::<T>(&encoded).is_ok());
     // Struct records and the struct payload of an externally tagged variant
     // refuse unknown fields. Unit variants have no fields to extend.

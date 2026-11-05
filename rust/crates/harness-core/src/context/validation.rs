@@ -98,7 +98,13 @@ fn validate_projection_metadata(
         {
             return Err(invalid("current input index is outside context"));
         }
-        if message_count > limits.context_messages || context.metadata.len() > limits.attachments {
+        if limits
+            .context_messages
+            .is_some_and(|maximum| message_count > maximum.get())
+            || limits
+                .attachments
+                .is_some_and(|maximum| context.metadata.len() > maximum.get())
+        {
             return Err(invalid("context projection exceeded declared bounds"));
         }
         for file in context.metadata.values() {
@@ -180,14 +186,40 @@ pub(crate) fn restrict_context_limits(
         admitted.validate(work)
     })?;
     Ok(Limits {
-        file_bytes: pinned.file_bytes.min(admitted.file_bytes),
-        path_bytes: pinned.path_bytes.min(admitted.path_bytes),
-        attachments: pinned.attachments.min(admitted.attachments),
-        render_bytes: pinned.render_bytes.min(admitted.render_bytes),
+        file_bytes: pinned
+            .file_bytes
+            .into_iter()
+            .chain(admitted.file_bytes)
+            .min(),
+        path_bytes: pinned
+            .path_bytes
+            .into_iter()
+            .chain(admitted.path_bytes)
+            .min(),
+        attachments: pinned
+            .attachments
+            .into_iter()
+            .chain(admitted.attachments)
+            .min(),
+        render_bytes: pinned
+            .render_bytes
+            .into_iter()
+            .chain(admitted.render_bytes)
+            .min(),
         model_events_per_step: pinned
             .model_events_per_step
-            .min(admitted.model_events_per_step),
-        tool_calls_per_step: pinned.tool_calls_per_step.min(admitted.tool_calls_per_step),
-        context_messages: pinned.context_messages.min(admitted.context_messages),
+            .into_iter()
+            .chain(admitted.model_events_per_step)
+            .min(),
+        tool_calls_per_step: pinned
+            .tool_calls_per_step
+            .into_iter()
+            .chain(admitted.tool_calls_per_step)
+            .min(),
+        context_messages: pinned
+            .context_messages
+            .into_iter()
+            .chain(admitted.context_messages)
+            .min(),
     })
 }

@@ -9,6 +9,7 @@ export interface ActorState {
 export interface ActorStateView {
   get(key: string): Uint8Array | undefined;
   put(key: string, value: Uint8Array): void;
+  delete(key: string): void;
   entries(): Iterable<readonly [string, Uint8Array]>;
   readonly journalTail: bigint;
   appendJournal(expected: bigint, frames: readonly Uint8Array[]): void;
@@ -65,8 +66,24 @@ export class ActorStateStorage {
         return value === undefined ? undefined : decoder.decode(value);
       },
       put: (name, value) => this.run(view => view.put(key(name), encoder.encode(value))),
-      entries: () => this.run(view => Array.from(view.entries()).flatMap(([name, value]): [string, string][] =>
-        name.startsWith(`${prefix}/`) ? [[name.slice(prefix.length + 1), decoder.decode(value)]] : [])),
+      delete: name => this.run(view => view.delete(key(name))),
+      entries: (selected, after, limit) => this.run(view => {
+        if (!Number.isSafeInteger(limit) || limit <= 0) throw new RangeError("STEP actor-metadata-page failed; recovery: supply a positive safe page size");
+        const page: [string, Uint8Array][] = [];
+        const selectedPrefix = key(selected), cursor = key(after);
+        for (const [name, value] of view.entries()) {
+          if (!name.startsWith(selectedPrefix) || name <= cursor) continue;
+          if (page.length === limit && name >= page[page.length - 1]![0]) continue;
+          let low = 0, high = page.length;
+          while (low < high) {
+            const middle = low + Math.floor((high - low) / 2);
+            if (page[middle]![0] < name) low = middle + 1; else high = middle;
+          }
+          page.splice(low, 0, [name, value]);
+          if (page.length > limit) page.pop();
+        }
+        return page.map(([name, value]): [string, string] => [name.slice(prefix.length + 1), decoder.decode(value)]);
+      }),
       transaction: operation => this.run(() => operation()),
       flush: () => this.state.flush(),
       alarm: time => {

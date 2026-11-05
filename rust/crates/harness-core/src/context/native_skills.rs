@@ -237,10 +237,11 @@ impl NativeSkills {
         volume: &'a VolumeRef,
         generation: &'a crate::resources::GenerationRef,
         path: &'a str,
-        maximum: u64,
+        maximum: impl Into<Option<u64>>,
         io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<acyclic_stream::OwnedBytes>>>
     {
+        let maximum = maximum.into();
         crate::conversation::BoundedContentFuture::new(io, || {
             self.read_retained(volume, generation, path, maximum, io)
         })
@@ -251,7 +252,7 @@ impl NativeSkills {
         volume: &VolumeRef,
         generation: &crate::resources::GenerationRef,
         path: &str,
-        maximum: u64,
+        maximum: Option<u64>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<acyclic_stream::OwnedBytes>> {
         if !self.matches(volume, generation, path) {
@@ -287,7 +288,7 @@ impl NativeSkills {
         &self,
         volume: &VolumeRef,
         record: &ShadowSource,
-        maximum: u64,
+        maximum: Option<u64>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<acyclic_stream::OwnedBytes>> {
         if &record.volume != volume {
@@ -332,7 +333,7 @@ impl NativeSkills {
     async fn read_native(
         volume: &VolumeRef,
         record: &Source,
-        maximum: u64,
+        maximum: Option<u64>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<acyclic_stream::OwnedBytes>> {
         if record.volume != *volume {
@@ -344,7 +345,7 @@ impl NativeSkills {
             .node
             .logical_bytes
             .ok_or_else(|| Error::Invalid("skill length is absent".into()))?;
-        if length > maximum {
+        if maximum.is_some_and(|maximum| length > maximum) {
             return Err(Error::Invalid("skill body exceeds byte bound".into()));
         }
         let cancellation = work.cancellation();
@@ -596,7 +597,7 @@ impl SkillReader for ProjectCatalog<'_> {
         &'a mut self,
         relative: &'a str,
         cut: &'a Self::Revision,
-        maximum: u32,
+        maximum: u64,
     ) -> Result<
         crate::conversation::BoundedContentFuture<
             'a,
@@ -652,9 +653,9 @@ impl SkillReader for ProjectCatalog<'_> {
                     &path,
                     Some(acyclic_fs::ByteRange {
                         offset: 0,
-                        length: length.min(u64::from(maximum)),
+                        length: length.min(maximum),
                     }),
-                    u64::from(maximum),
+                    maximum,
                     &mut accounting,
                 )
                 .await?;
@@ -734,7 +735,7 @@ impl SkillReader for UserCatalogSource<'_> {
         &'a mut self,
         path: &'a str,
         reference: &'a SourceReference,
-        maximum: u32,
+        maximum: u64,
     ) -> Result<
         crate::conversation::BoundedContentFuture<
             'a,
@@ -775,7 +776,7 @@ impl SkillReader for UserCatalogSource<'_> {
                     &parsed,
                     node.version,
                     0,
-                    length.min(u64::from(maximum)),
+                    length.min(maximum),
                     self.work,
                     cancellation,
                 )
@@ -939,9 +940,6 @@ fn storage(error: impl std::fmt::Display) -> Error {
 fn native_work(
     cancellation: &acyclic_fs::CancellationToken,
 ) -> Result<acyclic_fs::NativeMaterializationWork> {
-    acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
-        cancellation,
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
+    acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
 }

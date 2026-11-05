@@ -147,7 +147,7 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
     client.register_credential(0, credential.into())?;
     client.register_credential(1, testing::credential())?;
     let invocation = Bytes::from_static(b"canonical product header");
-    let (mut upload, replies) = client.actor_call_input(&invocation, 0, 128).await?;
+    let (mut upload, replies) = client.actor_call_input(&invocation, 0, None).await?;
     futures::pin_mut!(replies);
     // Dispatch happens with NO input or EOF. The old whole-request collector
     // cannot produce this original handler event.
@@ -232,7 +232,8 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
 
     // Incomplete reply retirement is cancellation, even when the original
     // upload producer and two escaped data owners remain alive.
-    let (mut cancelled, cancelled_reply) = client.actor_call_input(&invocation, 0, 128).await?;
+    let (mut cancelled, cancelled_reply) =
+        client.actor_call_input(&invocation, 0, Some(128)).await?;
     let (mut input, _answer) = dispatches.recv().await.ok_or("no cancellable handler")?;
     cancelled.send(original.clone()).await?;
     cancelled.send(second_original.clone()).await?;
@@ -259,12 +260,13 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
     // Authorization is the original call admission, before body or handler
     // disclosure. No separate socket authority or buffered fallback is used.
     assert!(matches!(
-        client.actor_call_input(&invocation, 1, 128).await,
+        client.actor_call_input(&invocation, 1, Some(128)).await,
         Err(StreamError::AccessDenied)
     ));
     assert!(dispatches.try_recv().is_err());
 
-    let (mut abandoned, abandoned_reply) = client.actor_call_input(&invocation, 0, 128).await?;
+    let (mut abandoned, abandoned_reply) =
+        client.actor_call_input(&invocation, 0, Some(128)).await?;
     let (mut input, _abandoned_answer) = dispatches.recv().await.ok_or("no consumer to retire")?;
     abandoned.send(original.clone()).await?;
     abandoned.send(second_original.clone()).await?;
@@ -286,7 +288,7 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
     assert_eq!(escaped.as_ref().as_ptr(), original.as_ptr());
     assert_eq!(escaped_second.as_ref().as_ptr(), second_original.as_ptr());
 
-    let (mut stopped, lost) = client.actor_call_input(&invocation, 0, 128).await?;
+    let (mut stopped, lost) = client.actor_call_input(&invocation, 0, Some(128)).await?;
     let (mut input, _answer) = dispatches
         .recv()
         .await
@@ -453,7 +455,7 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
     );
     client.register_credential(0, credential.into())?;
     let response = client
-        .actor_call(&Bytes::from_static(b"invocation"), 0, body.len())
+        .actor_call(&Bytes::from_static(b"invocation"), 0, None)
         .await?;
     assert_eq!(response.as_ref(), body.as_ref());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -462,7 +464,7 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
     // The streaming projection must instead expose each original source range.
     assert_ne!(response.as_ptr(), body.as_ptr());
     let chunks = client
-        .actor_call_chunks(&Bytes::from_static(b"invocation"), 0, body.len())
+        .actor_call_chunks(&Bytes::from_static(b"invocation"), 0, None)
         .await?;
     futures::pin_mut!(chunks);
     let mut received = 0;
@@ -479,7 +481,7 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 
     let refused = client
-        .actor_call_chunks(&Bytes::from_static(b"invocation"), 0, body.len() - 1)
+        .actor_call_chunks(&Bytes::from_static(b"invocation"), 0, Some(body.len() - 1))
         .await?;
     futures::pin_mut!(refused);
     assert!(matches!(
@@ -488,7 +490,7 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
     ));
 
     let stopped = client
-        .actor_call_chunks(&Bytes::from_static(b"invocation"), 0, body.len())
+        .actor_call_chunks(&Bytes::from_static(b"invocation"), 0, Some(body.len()))
         .await?;
     futures::pin_mut!(stopped);
     let first = stopped

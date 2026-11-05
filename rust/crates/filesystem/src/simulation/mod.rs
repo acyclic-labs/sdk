@@ -1,4 +1,4 @@
-//! Deterministic bounded fault simulator for storage backends.
+//! Deterministic fault simulator for storage backends.
 use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore, GenerationForkSource};
 use crate::foundation::{
     AuthorityId, DurableCommit, Epoch, Head, OperationId, ProposedCommit, Sequence,
@@ -112,30 +112,6 @@ pub struct ScheduledSimulationFault {
     pub fault: SimulationFault,
 }
 
-/// Hard simulator resource bounds.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SimulationOptions {
-    /// Maximum scheduled fault points retained at once.
-    pub maximum_scheduled_faults: usize,
-    /// Maximum operation trace entries retained before fail-closed saturation.
-    pub maximum_trace_entries: usize,
-    /// Maximum delayed immutable objects retained before visibility flush.
-    pub maximum_pending_objects: usize,
-    /// Maximum cumulative delayed canonical object bytes.
-    pub maximum_pending_object_bytes: u64,
-}
-
-impl Default for SimulationOptions {
-    fn default() -> Self {
-        Self {
-            maximum_scheduled_faults: 4_096,
-            maximum_trace_entries: 65_536,
-            maximum_pending_objects: 4_096,
-            maximum_pending_object_bytes: 256 * 1024 * 1024,
-        }
-    }
-}
-
 /// One retained deterministic interception trace.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SimulationTrace {
@@ -150,9 +126,6 @@ pub struct SimulationTrace {
 /// Simulator configuration or state failure.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum SimulationError {
-    /// Every configured hard bound must be positive.
-    #[error("simulation bounds must be positive")]
-    ZeroBound,
     /// Fault occurrence identities are one-based.
     #[error("simulation fault occurrence must be positive")]
     ZeroOccurrence,
@@ -165,9 +138,6 @@ pub enum SimulationError {
     /// The selected operation occurrence has already completed.
     #[error("simulation operation occurrence has already completed")]
     PastOccurrence,
-    /// The configured fault schedule bound is exhausted.
-    #[error("simulation fault schedule is full")]
-    ScheduleFull,
     /// A simulator lock was poisoned by a failed host thread.
     #[error("simulation state is poisoned")]
     Poisoned,
@@ -187,30 +157,20 @@ pub struct Simulation<
 }
 
 impl Simulation<ReferenceAuthority, ReferenceObjects> {
-    /// Creates a bounded simulator over fresh deterministic memory primitives.
-    pub fn new(options: SimulationOptions) -> Result<Self, SimulationError> {
+    /// Creates a simulator over fresh deterministic memory primitives.
+    #[must_use]
+    pub fn new() -> Self {
         let (authority, objects) = reference_backends();
-        Self::wrap(authority, objects, options)
+        Self::wrap(authority, objects)
     }
 }
 
 impl<A, O> Simulation<A, O> {
-    /// Wraps explicit backends with one bounded deterministic schedule.
-    pub fn wrap(
-        authority: A,
-        objects: O,
-        options: SimulationOptions,
-    ) -> Result<Self, SimulationError> {
-        if options.maximum_scheduled_faults == 0
-            || options.maximum_trace_entries == 0
-            || options.maximum_pending_objects == 0
-            || options.maximum_pending_object_bytes == 0
-        {
-            return Err(SimulationError::ZeroBound);
-        }
-        Ok(Self {
+    /// Wraps explicit backends with one deterministic schedule.
+    #[must_use]
+    pub fn wrap(authority: A, objects: O) -> Self {
+        Self {
             state: Arc::new(Mutex::new(State {
-                options,
                 occurrences: [0; SIMULATION_OPERATION_COUNT],
                 faults: BTreeMap::new(),
                 trace: Vec::new(),
@@ -220,7 +180,7 @@ impl<A, O> Simulation<A, O> {
             })),
             authority: Arc::new(authority),
             objects: Arc::new(objects),
-        })
+        }
     }
 
     /// Returns independently cloneable authority and object handles sharing one schedule.
@@ -275,7 +235,7 @@ impl<A, O> Simulation<A, O> {
         Ok(scheduled)
     }
 
-    /// Returns the complete bounded trace collected so far.
+    /// Returns the complete trace collected so far.
     pub fn trace(&self) -> Result<Vec<SimulationTrace>, SimulationError> {
         Ok(self.lock_state()?.trace.clone())
     }
@@ -303,9 +263,6 @@ fn schedule_locked(
     {
         return Err(SimulationError::PastOccurrence);
     }
-    if state.faults.len() == state.options.maximum_scheduled_faults {
-        return Err(SimulationError::ScheduleFull);
-    }
     state
         .faults
         .insert((scheduled.operation, scheduled.occurrence), scheduled.fault);
@@ -314,7 +271,7 @@ fn schedule_locked(
 
 impl Default for Simulation {
     fn default() -> Self {
-        Self::new(SimulationOptions::default()).expect("positive default simulation bounds")
+        Self::new()
     }
 }
 

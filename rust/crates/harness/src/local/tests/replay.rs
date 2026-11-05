@@ -74,6 +74,7 @@ async fn run(provider: Arc<dyn ModelProvider>, tool: Tool, inputs: &[&str]) -> R
     let mut client = ObservedConversation::open(&harness).await?;
     for input in inputs {
         client.send(input, input).await?;
+        super::agents::settled(&harness, &agents, &root).await?;
     }
     client.conversation.recording().await
 }

@@ -79,7 +79,7 @@ pub(crate) async fn stage_json<T: Serialize>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let hold;
-        let bytes = io.encode(value, io.remaining()?.bytes_encoded, true)?;
+        let bytes = io.encode(value, Some(io.remaining()?.bytes_encoded), true)?;
         hold = io.guard_bytes(&bytes)?;
         let result = stage_bytes(journal, operation, key, &bytes, true, Some(io)).await;
         drop(bytes);

@@ -1,5 +1,5 @@
 use super::{
-    Arc, Carried, Condvar, EntryFacts, HELD_SETTLE_LIMIT, HashMap, KeyedLocks, MATERIALIZE_WORKERS,
+    Arc, Carried, Condvar, EntryFacts, HashMap, KeyedLocks, MATERIALIZE_WORKERS,
     MaterializeHelpers, MaterializeQueue, Materialized, MountFilesystem, MountPath,
     MountSourceError, Mutex, MutexGuard, NativeMountError, Owned,
     PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, Placed, Projection, Projector, ProjectorLifecycle,
@@ -26,7 +26,7 @@ impl Projector {
         state.startup = Some(work.clone());
         self.wake();
         drop(state);
-        self.settle()
+        self.settle(work)
     }
 
     pub(super) fn new() -> Self {
@@ -34,6 +34,7 @@ impl Projector {
             clock: super::super::clock::Clock::capture(),
             state: Mutex::new(ProjectorState::default()),
             tree: Mutex::new(()),
+            progress: tokio::sync::Notify::new(),
             paths: KeyedLocks::default(),
             changed: Condvar::new(),
             worker: Mutex::new(None),
@@ -43,10 +44,17 @@ impl Projector {
         }
     }
 
+    /// Publish one projector change to both native worker and future waiters.
+    /// Future registrations are enabled before observing the protected state.
+    pub(super) fn signal_changed(&self) {
+        self.changed.notify_all();
+        self.progress.notify_waiters();
+    }
+
     /// Signals new work: wakes `settle` waiters and this view's runner,
     /// its own lifecycle thread or the shared instance's projector service.
     pub(super) fn wake(&self) {
-        self.changed.notify_all();
+        self.signal_changed();
         if let Some(hook) = self.service.get() {
             hook.schedule();
         }
@@ -539,7 +547,7 @@ impl Projector {
                 state.failure = Some(error.to_string());
                 state.processed = state.notified;
                 state.retry = false;
-                self.changed.notify_all();
+                self.signal_changed();
                 return (state, false);
             }
         };
@@ -600,7 +608,7 @@ impl Projector {
         if let Some(failure) = failure {
             state.failure.get_or_insert(failure);
         }
-        self.changed.notify_all();
+        self.signal_changed();
         (state, true)
     }
 
@@ -686,53 +694,49 @@ impl Projector {
         }
     }
 
-    pub(super) fn settle(&self) -> Result<(), NativeMountError> {
-        let mut state = lock_recover(&self.state);
-        let target = state.notified;
-        let mut deadline = None;
-        while !state.stopping
-            && (state.startup.is_some()
-                || state.processed < target
-                || state.relisting
-                || !state.stale.is_empty()
-                || !state.pending.is_empty()
-                || !state.vacated.is_empty())
-        {
-            if let Some(failure) = state.failure.take() {
-                return Err(NativeMountError::Driver(failure));
-            }
-            if state.startup.is_some()
-                || state.processed < target
-                || state.relisting
-                || !state.stale.is_empty()
-            {
-                state = self
-                    .changed
-                    .wait(state)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                continue;
-            }
-            let deadline =
-                *deadline.get_or_insert_with(|| self.clock.instant() + HELD_SETTLE_LIMIT);
-            let remaining = deadline.saturating_duration_since(self.clock.instant());
-            if remaining.is_zero() {
-                let held = state.pending.keys().next().cloned();
-                return Err(NativeMountError::Driver(format!(
-                    "a superseded placeholder is held open and cannot be replaced: {held:?}"
-                )));
-            }
-            state = self
-                .changed
-                .wait_timeout(state, remaining)
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .0;
-        }
-        if let Some(failure) = state.failure.take() {
-            return Err(NativeMountError::Driver(failure));
-        }
-        if state.stopping {
-            return Err(std::io::Error::from(std::io::ErrorKind::NotConnected).into());
-        }
-        Ok(())
+    pub(super) fn settle(
+        &self,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
+        let target = lock_recover(&self.state).notified;
+        let cancellation = work.cancellation_wait()?;
+        let mut cancellation = std::pin::pin!(cancellation);
+        acyclic_native_runtime::wait_native_future(
+            async {
+                loop {
+                    let changed = self.progress.notified();
+                    let mut changed = std::pin::pin!(changed);
+                    changed.as_mut().enable();
+                    // No projector lock spans ledger admission or cancellation
+                    // registration. A change before the check remains retained.
+                    work.remaining()?;
+                    {
+                        let mut state = lock_recover(&self.state);
+                        let pending = !state.stopping
+                            && (state.startup.is_some()
+                                || state.processed < target
+                                || state.relisting
+                                || !state.stale.is_empty()
+                                || !state.pending.is_empty()
+                                || !state.vacated.is_empty());
+                        if state.stopping {
+                            return Err(std::io::Error::from(std::io::ErrorKind::NotConnected).into());
+                        }
+                        if !pending {
+                            return state
+                                .failure
+                                .take()
+                                .map_or(Ok(()), |failure| Err(NativeMountError::Driver(failure)));
+                        }
+                    }
+                    // Cancellation must complete the task itself: the native
+                    // executor retains admitted work until its future settles.
+                    let _ = futures::future::select(changed, cancellation.as_mut()).await;
+                }
+            },
+            &work.runtime_meter(),
+            std::future::pending(),
+        )
+        .map_err(|error| NativeMountError::from(work.runtime_error(error)))?
     }
 }

@@ -115,7 +115,7 @@ async fn configured_web_tools_reach_their_action_guards() -> Result<()> {
                             ..RequestMatch::default()
                         }),
                     },
-                    timeout_ms: u64::MAX,
+                    timeout_ms: None,
                     failure: HookFailure::Block,
                 }],
             }])?;

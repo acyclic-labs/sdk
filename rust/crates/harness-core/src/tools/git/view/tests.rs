@@ -92,7 +92,7 @@ async fn saved_command_replay_authenticates_its_original_repository_sources() ->
     let (_directory, filesystem, store, main) = fixture().await?;
     let request = acyclic_fs::GitRequest {
         operation: OperationId::new(),
-        unanswered: Arc::new(|_| true),
+        unanswered: Arc::new(|_| Ok(true)),
     };
     let first = execute_request(
         &filesystem,

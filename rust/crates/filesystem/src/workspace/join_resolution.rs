@@ -402,15 +402,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 });
             view
         };
-        let limits = crate::text_merge::ByteMergeLimits {
-            max_bytes: self
-                .target_head
-                .workspace
-                .volume
-                .config
-                .limits
-                .maximum_read_bytes,
-        };
+        let limits = crate::text_merge::ByteMergeLimits { max_bytes: None };
         for (index, (record, body)) in records.into_iter().zip(&mut bodies).enumerate() {
             let Some(bytes) = self
                 .target_head

@@ -23,7 +23,13 @@ pub(super) async fn prove(
     Ok(crate::kernel::prove_generation_closure(
         objects,
         root,
-        limits(config),
+        crate::kernel::ClosureLimits {
+            decode: crate::kernel::DecodeLimits::default(),
+            profile: config.profile,
+            symbolic_links: config.symbolic_links,
+            hard_links: config.hard_links,
+            sparse_files: config.sparse_files,
+        },
         BUDGET,
         &CancellationToken::new(),
     )

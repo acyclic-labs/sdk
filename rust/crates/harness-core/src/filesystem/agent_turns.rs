@@ -192,7 +192,6 @@ impl<'v> AdmittedAgent<'v> {
                 owner,
                 &private.volume,
                 VolumeOperation::Write,
-                u64::MAX,
                 &mut None,
             )?;
             require_structured_write(scope, owner, &private.volume)?;
@@ -251,7 +250,6 @@ impl<'v> AdmittedAgent<'v> {
                 self.owner,
                 volume,
                 VolumeOperation::Write,
-                u64::MAX,
                 &mut None,
             )?;
             require_structured_write(scope, self.owner, volume)?;
@@ -410,15 +408,17 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
 /// Bounds of one agent turn.
 #[derive(Clone, Copy, Debug)]
 pub struct TurnLimits {
-    /// Journal bytes per turn.
-    pub maximum_bytes: u64,
-    /// Page size of the settled history in the model context. The window
-    /// starts at a multiple of this many conversation entries and holds at
-    /// least this many and fewer than twice as many, so it advances one whole
-    /// page at a time: the prompt prefix, and with it the provider's prompt
-    /// cache, is rebuilt once per page rather than on every turn. Page cuts
-    /// are absolute sequences, so forks that share history share the cut.
-    pub history_turns: u32,
+    /// Optional caller-selected journal file byte policy per turn.
+    pub maximum_bytes: Option<u64>,
+    /// Page size of the settled history selected into model context. Page cuts
+    /// are aligned to absolute sequences so shared fork history keeps its prefix.
+    /// `None` explicitly selects the complete history.
+    pub history_turns: Option<u64>,
+}
+
+impl TurnLimits {
+    /// Shared history page size used by stock native and browser hosts.
+    pub const HISTORY_PAGE_SIZE: u64 = 64;
 }
 
 /// [`TurnHost`] binding every agent to its executor and a journal on its
@@ -713,7 +713,6 @@ where
                 &authority.scope,
                 &binding.volume,
                 operation,
-                u64::MAX,
                 &mut None,
             )?;
             let workspace = self
@@ -907,7 +906,6 @@ where
                 scope,
                 volume,
                 VolumeOperation::Write,
-                u64::MAX,
                 &mut None,
             )?,
         )))
@@ -930,8 +928,10 @@ where
         )
         .await?
         .context;
-        let page = u64::from(self.limits.history_turns);
-        let from = cut.tail.saturating_sub(page) / page.max(1) * page.max(1);
+        let window = self.limits.history_turns.map_or(0, |page| {
+            cut.tail.saturating_sub(page) / page.max(1) * page.max(1)
+        });
+        let from = cut.checkpoint.map_or(window, |at| at.max(window));
         let mut entries = Vec::new();
         if let Some(checkpoint) = cut.checkpoint.filter(|at| *at < from) {
             entries
@@ -946,7 +946,7 @@ where
         Ok(entries)
     }
 
-    /// `count` conversation entries of `agent` from sequence `from`.
+    /// Complete selected context range through successive transport pages.
     async fn context_entries(
         &self,
         path: &acyclic_stream::StreamPath,
@@ -1130,7 +1130,7 @@ impl NoticeBlocks {
                     &crate::model::ModelContentPart::Notices {
                         notices: Vec::new(),
                     },
-                    maximum,
+                    Some(maximum),
                     &mut None,
                 )?;
                 self.bytes = self.envelope;
@@ -1138,7 +1138,7 @@ impl NoticeBlocks {
             // Count the original event once, without a temporary JSON buffer.
             let bytes = crate::executor::json::json_byte_length_at_depth(
                 &notice,
-                maximum - self.envelope,
+                Some(maximum - self.envelope),
                 256,
                 &mut None,
             )?;
@@ -1927,7 +1927,7 @@ struct FilesystemTurnChildren<P: ?Sized, A: 'static, O: 'static> {
     admission: TurnAdmission,
     agent: AgentPath,
     volumes: Vec<VolumeBinding>,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
 }
 
 impl<P, A, O> crate::agent::TurnChildren for FilesystemTurnChildren<P, A, O>
@@ -1980,7 +1980,12 @@ where
                 None,
             )?;
             let bytes = reader
-                .read(&external[0], self.maximum_bytes, None, None)?
+                .read(
+                    &external[0],
+                    external[0].descriptor().byte_length(),
+                    None,
+                    None,
+                )?
                 .await?;
             let output: TurnOutput = serde_json::from_slice(&bytes)
                 .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;

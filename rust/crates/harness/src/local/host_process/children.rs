@@ -391,7 +391,7 @@ impl NativeChildren {
             process,
             claim,
             failure: None,
-            events: acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT),
+            events: acyclic_native_runtime::lines::LineBuffer::new(None),
             answer: NativeAnswer::default(),
             settlement: None,
             wake,

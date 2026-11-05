@@ -247,7 +247,7 @@ fn result(
                         CaptureStop::ControlStopped => NativeProcessStopKind::ControlStopped,
                         CaptureStop::Failed => NativeProcessStopKind::CaptureFailed,
                     },
-                    message: failure.error.to_string().chars().take(128).collect(),
+                    message: failure.error.to_string(),
                     cleanup_completed: failure.cleanup_completed,
                 }),
             }

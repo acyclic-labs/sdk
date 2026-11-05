@@ -32,7 +32,7 @@ async fn native_images_use_verified_bytes_and_keep_mixed_content_order() -> Resu
         });
         provider.files = crate::files::Files {
             reader: Some(reader.clone()),
-            maximum_bytes: 1024,
+            maximum_bytes: None,
         };
         let image = file(bytes, "image/png")?;
         let request = with_parts(
@@ -41,7 +41,7 @@ async fn native_images_use_verified_bytes_and_keep_mixed_content_order() -> Resu
                 ModelContentPart::text("before".into()),
                 ModelContentPart::File {
                     file: image.clone(),
-                    policy: policy(bytes.len()),
+                    policy: FileProjectionPolicy::for_attachment(&image),
                 },
                 ModelContentPart::text("after".into()),
             ],
@@ -123,7 +123,7 @@ async fn image_digest_type_and_size_mismatches_cannot_reach_projection() -> Resu
         });
         provider.files = crate::files::Files {
             reader: Some(reader),
-            maximum_bytes: maximum,
+            maximum_bytes: Some(maximum),
         };
         let request = with_parts(
             &provider,

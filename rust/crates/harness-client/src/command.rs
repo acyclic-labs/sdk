@@ -9,7 +9,7 @@ use acyclic_harness_core::{
 };
 use serde::{Deserialize, Serialize};
 
-/// Most bytes a binding's routing adds to a command frame in its invocation.
+/// Space reserved for routing beside one command frame in its invocation.
 const MAX_ROUTING_BYTES: usize = 64 * 1024;
 /// One command frame: the encoded bytes one invocation carries beside its
 /// routing, within the session's one-frame bound. A larger command is not
@@ -19,8 +19,6 @@ pub const MAX_COMMAND_BYTES: usize = acyclic_stream::MAX_COMMAND_BYTES - MAX_ROU
 /// Most bytes one [`AgentCommand::Read`] returns; its encoded reply stays
 /// within the reply budget.
 pub const MAX_READ_BYTES: u64 = 32 * 1024;
-/// Longest tool-output path a read names.
-const MAX_READ_PATH_BYTES: usize = 1024;
 
 /// Requested page custody. Both ceilings are enforced by the host before it
 /// returns a page; the cursor binds the exact query, authorization and cut.
@@ -64,12 +62,7 @@ impl Default for AgentPageRequest {
 impl AgentPageRequest {
     /// Validate finite page ceilings and retain the host's opaque cursor intact.
     pub fn new(items: u32, bytes: u32, cursor: Option<String>) -> Result<Self, CommandError> {
-        if items == 0
-            || items > 128
-            || bytes == 0
-            || bytes > MAX_COMMAND_BYTES as u32
-            || cursor.as_ref().is_some_and(|cursor| cursor.is_empty())
-        {
+        if items == 0 || bytes == 0 || cursor.as_ref().is_some_and(|cursor| cursor.is_empty()) {
             return Err(CommandError::Capacity);
         }
         Ok(Self {
@@ -446,7 +439,6 @@ impl AgentCommand {
                 target: ReadTarget::ToolOutput { path, .. },
                 ..
             } if path.is_empty()
-                || path.len() > MAX_READ_PATH_BYTES
                 || path
                     .split('/')
                     .any(|part| part.is_empty() || part == "." || part == "..") =>
@@ -746,7 +738,7 @@ mod tests {
         assert_eq!(page.bytes(), 32 * 1024);
         assert_eq!(page.cursor(), Some("cut/opaque+token="));
         assert!(serde_json::from_str::<AgentPageRequest>(r#"{"items":0}"#).is_err());
-        assert!(serde_json::from_str::<AgentPageRequest>(r#"{"bytes":4294967295}"#).is_err());
+        assert!(serde_json::from_str::<AgentPageRequest>(r#"{"bytes":0}"#).is_err());
         Ok(())
     }
 

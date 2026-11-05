@@ -52,8 +52,8 @@ impl ContextStage for Transform {
 async fn sources_and_joins_narrow_admitted_limits() -> Result<()> {
     let input = input();
     let limits = Limits {
-        context_messages: 2,
-        render_bytes: 2048,
+        context_messages: std::num::NonZeroUsize::new(2),
+        render_bytes: Some(2048),
         ..payload_limits()
     };
     let probe = Arc::new(Probe::default());
@@ -72,11 +72,11 @@ async fn sources_and_joins_narrow_admitted_limits() -> Result<()> {
         let exact = "current".len() as u64;
         for rejected in [
             Limits {
-                context_messages: 1,
+                context_messages: std::num::NonZeroUsize::new(1),
                 ..limits
             },
             Limits {
-                render_bytes: exact - 1,
+                render_bytes: Some(exact - 1),
                 ..limits
             },
         ] {
@@ -87,7 +87,7 @@ async fn sources_and_joins_narrow_admitted_limits() -> Result<()> {
                 .run(
                     &input,
                     Limits {
-                        render_bytes: exact,
+                        render_bytes: Some(exact),
                         ..limits
                     },
                     None
@@ -125,7 +125,7 @@ async fn sources_and_joins_narrow_admitted_limits() -> Result<()> {
             .load(
                 &input,
                 Limits {
-                    context_messages: 1,
+                    context_messages: std::num::NonZeroUsize::new(1),
                     ..limits
                 },
                 None
@@ -138,7 +138,7 @@ async fn sources_and_joins_narrow_admitted_limits() -> Result<()> {
             .load(
                 &input,
                 Limits {
-                    file_bytes: 1,
+                    file_bytes: Some(1),
                     ..limits
                 },
                 None

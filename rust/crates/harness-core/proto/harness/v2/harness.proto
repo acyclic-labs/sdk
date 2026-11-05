@@ -414,7 +414,7 @@ message WorkflowRecord {
 }
 
 message RuntimeLimits {
-  uint64 file_bytes = 1;
+  optional uint64 file_bytes = 1;
   uint64 path_bytes = 2;
   uint64 attachments = 3;
   uint64 render_bytes = 4;

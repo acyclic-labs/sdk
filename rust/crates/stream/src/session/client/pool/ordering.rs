@@ -514,10 +514,6 @@ fn credential_actions(actions: &[(u32, u8)]) -> TestCaseResult {
             expected.insert(slot, credential);
         }
         prop_assert_eq!(&pool.credentials, &expected);
-        prop_assert_eq!(
-            pool.credential_bytes,
-            expected.values().map(Bytes::len).sum::<usize>()
-        );
     }
     for slot in expected.keys().copied().collect::<Vec<_>>() {
         pool.command(Command::Credential {
@@ -534,17 +530,15 @@ fn credential_actions(actions: &[(u32, u8)]) -> TestCaseResult {
     })
     .map_err(fail)?;
     expected.insert(0, maximum);
-    // Aggregate rejection must leave both the actual slots and the retained
-    // total unchanged, even though this new credential fits by itself.
-    prop_assert_eq!(
-        pool.command(Command::Credential {
-            slot: 1,
-            credential: Bytes::from_static(b"x")
-        }),
-        Err(StreamError::Capacity)
-    );
+    // Independent slots may exceed the former aggregate Hello byte limit.
+    let additional = Bytes::from_static(b"x");
+    pool.command(Command::Credential {
+        slot: 1,
+        credential: additional.clone(),
+    })
+    .map_err(fail)?;
+    expected.insert(1, additional);
     prop_assert_eq!(&pool.credentials, &expected);
-    prop_assert_eq!(pool.credential_bytes, crate::MAX_COMMAND_BYTES);
 
     // Drive the real original Outbound terminal. Send evicts that link; it
     // cannot roll back an already accepted credential or strand its accounting.
@@ -559,10 +553,6 @@ fn credential_actions(actions: &[(u32, u8)]) -> TestCaseResult {
     expected.insert(0, final_value);
     prop_assert!(!pool.links.contains_key("bad"));
     prop_assert_eq!(&pool.credentials, &expected);
-    prop_assert_eq!(
-        pool.credential_bytes,
-        expected.values().map(Bytes::len).sum::<usize>()
-    );
     Ok(())
 }
 
@@ -573,7 +563,7 @@ proptest! {
         exercise(&actions, false)?;
     }
     #[test]
-    fn credential_mutations_match_original_slots_through_refusal_and_link_loss(
+    fn credential_mutations_match_original_slots_through_revocation_and_link_loss(
         actions in prop::collection::vec((0_u32..4, 0_u8..32), 0..40)
     ) {
         credential_actions(&actions)?;

@@ -11,11 +11,11 @@ pub struct TextMerge {
     pub content: String,
 }
 
-/// Maximum input size accepted by [`merge_bytes`].
+/// Optional input capacity selected by the caller of [`merge_bytes`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ByteMergeLimits {
-    /// Maximum bytes accepted for any one side.
-    pub max_bytes: u64,
+    /// Maximum bytes accepted for any one side; `None` is unbounded.
+    pub max_bytes: Option<u64>,
 }
 
 /// Why byte content cannot enter the text merge engine.
@@ -62,7 +62,10 @@ const BINARY_PROBE_BYTES: usize = 8 * 1024;
 /// probe window is binary even when the complete byte sequence is valid UTF-8.
 /// No content is copied or allocated.
 pub fn text_from_bytes(bytes: &[u8], limits: ByteMergeLimits) -> Result<&str, ByteMergeError> {
-    if bytes.len() as u64 > limits.max_bytes {
+    if limits
+        .max_bytes
+        .is_some_and(|maximum| bytes.len() as u64 > maximum)
+    {
         return Err(ByteMergeError::TooLarge);
     }
     if bytes.iter().take(BINARY_PROBE_BYTES).any(|byte| *byte == 0) {
@@ -265,7 +268,9 @@ mod tests {
 
     #[test]
     fn byte_merge_owns_gate_and_modify_delete_semantics() {
-        let limits = ByteMergeLimits { max_bytes: 16 };
+        let limits = ByteMergeLimits {
+            max_bytes: Some(16),
+        };
         assert_eq!(
             merge_bytes(Some(b"a\n"), Some(b"b\n"), None, "fork", "main", limits),
             Ok(ByteMerge::Conflicted {
@@ -288,6 +293,10 @@ mod tests {
                 limits
             ),
             Err(ByteMergeError::TooLarge)
+        );
+        assert_eq!(
+            text_from_bytes(b"0123456789abcdefg", ByteMergeLimits { max_bytes: None }),
+            Ok("0123456789abcdefg")
         );
     }
 }

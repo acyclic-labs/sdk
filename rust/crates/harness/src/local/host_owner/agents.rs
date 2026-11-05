@@ -31,9 +31,6 @@ pub(super) mod validation;
 
 /// Host name of the inbox records this owner writes for a native session.
 const HOST: &str = "native";
-/// Bound of one session event, prompt or native resume reference.
-pub(super) const MAXIMUM_BYTES: u64 = 65_536;
-
 pub(super) fn request_id(operation: OperationId) -> Result<IntentId> {
     IntentId::try_from(format!("native:{operation}")).map_err(storage)
 }
@@ -110,8 +107,6 @@ pub(super) struct Session {
     version: SessionVersion,
     /// Parent-local name of a spawned session, from its brief.
     pub(super) reference: Option<String>,
-    /// Parent-local names of its children still open, in spawn order.
-    pub(super) spawned: Vec<String>,
     /// The input its open turn runs.
     pub(super) running: Option<Running>,
     /// Settled turns.
@@ -249,9 +244,10 @@ impl HostDriver {
     async fn content(
         &self,
         agent: &AgentState,
-        bound: u64,
+        bound: impl Into<Option<u64>>,
         external: &[FileRef],
     ) -> Result<Content> {
+        let bound = bound.into();
         let AgentAuthority {
             scope,
             verifier,
@@ -286,23 +282,21 @@ impl HostDriver {
 
     /// Reads one file on the agent's own volumes, or the exact brief its
     /// adoption named.
-    async fn read(&self, agent: &AgentState, file: &FileRef, bound: u64) -> Result<Vec<u8>> {
-        let content = self.content(agent, bound, agent.brief_grant(file)).await?;
+    pub(super) async fn read(&self, agent: &AgentState, file: &FileRef) -> Result<Vec<u8>> {
+        let length = file.descriptor().byte_length();
+        let content = self
+            .content(agent, length.max(1), agent.brief_grant(file))
+            .await?;
         Ok(content
             .reader
-            .read(file, bound, None, None)?
+            .read(file, length.max(1), None, None)?
             .await?
             .to_vec())
     }
 
     /// Reads the owner's committed snapshot at its exact published size.
     async fn read_session(&self, agent: &AgentState, file: &FileRef) -> Result<Session> {
-        Session::decode(
-            &self
-                .read(agent, file, file.descriptor().byte_length())
-                .await?,
-        )
-        .map_err(storage)
+        Session::decode(&self.read(agent, file).await?).map_err(storage)
     }
 
     /// Stages `bytes` once on the agent's private volume under `operation`.
@@ -311,9 +305,10 @@ impl HostDriver {
         agent: &AgentState,
         operation: OperationId,
         bytes: &[u8],
-        bound: u64,
     ) -> Result<FileRef> {
-        let content = self.content(agent, bound, &[]).await?;
+        let content = self
+            .content(agent, (bytes.len() as u64).max(1), &[])
+            .await?;
         Ok(content
             .writer
             .stage_once(
@@ -342,16 +337,16 @@ impl HostDriver {
         let mut operation = [0; 16];
         hasher.finalize_xof().fill(&mut operation);
         let operation = OperationId::from_bytes(operation);
-        let content = self.content(agent, MAXIMUM_BYTES, &[]).await?;
+        let content = self.content(agent, None, &[]).await?;
         if let Some(file) = content
             .writer
-            .observe_staged_once(operation, None, MAXIMUM_BYTES, ContentAccess::default())?
+            .observe_staged_once(operation, None, None, ContentAccess::default())?
             .await?
             .0
         {
             let bytes = content
                 .reader
-                .read(&file, MAXIMUM_BYTES, None, None)?
+                .read(&file, file.descriptor().byte_length().max(1), None, None)?
                 .await?;
             let brief = serde_json::from_slice::<Brief>(&bytes).map_err(storage)?;
             if brief.prompt != prompt {
@@ -366,7 +361,7 @@ impl HostDriver {
             prompt: prompt.into(),
         })
         .map_err(storage)?;
-        self.stage(agent, operation, &bytes, MAXIMUM_BYTES).await
+        self.stage(agent, operation, &bytes).await
     }
 
     /// Stages the native event log of the turn claimed under `claim` once.
@@ -438,18 +433,15 @@ impl HostDriver {
         let (mut outs, mut drops) = (Vec::new(), None);
         let settled = match &input {
             TurnInput::Brief { brief } => {
-                let bytes = self.read(agent, brief, MAXIMUM_BYTES).await?;
+                let bytes = self.read(agent, brief).await?;
                 let brief = serde_json::from_slice::<Brief>(&bytes).map_err(storage)?;
                 session.reference = Some(brief.reference);
                 None
             }
             TurnInput::Message { .. } => return start(session, inbox, input),
-            TurnInput::ChildDone { done } => {
-                session.spawned.retain(|reference| {
-                    child(&agent.path, reference).ok().as_ref() != Some(&done.child)
-                });
-                None
-            }
+            // The agent machine owns open-child membership and retires the
+            // completed child before delivering this notification.
+            TurnInput::ChildDone { .. } => None,
             // Native hosts decide their own tool approvals and own their
             // model context.
             TurnInput::Approval { .. }
@@ -459,7 +451,7 @@ impl HostDriver {
                 return Ok(idle(Vec::new()));
             }
             TurnInput::Hook { host, id, event } if host == HOST => {
-                let bytes = self.read(agent, event, MAXIMUM_BYTES).await?;
+                let bytes = self.read(agent, event).await?;
                 match Event::decode(&bytes) {
                     Ok(decoded) => {
                         // A stop drops every input queued before it.
@@ -494,9 +486,7 @@ impl HostDriver {
         };
         let bytes = serde_json::to_vec(&session).map_err(storage)?;
         // Input admission bounds one event, not the session that contains it.
-        let output = self
-            .stage(agent, snapshot(agent, inbox), &bytes, bytes.len() as u64)
-            .await?;
+        let output = self.stage(agent, snapshot(agent, inbox), &bytes).await?;
         let entry = ConversationEntry {
             inbox,
             input,
@@ -594,7 +584,7 @@ impl NativeAgents {
                 stream,
                 Shared(Arc::clone(&driver)),
                 within,
-                ActorLimits::new(60_000, 1 << 20, 1 << 16).map_err(storage)?,
+                ActorLimits::new(None, None, None).map_err(storage)?,
                 Arc::new(SystemClock),
                 volumes,
             )
@@ -697,7 +687,7 @@ impl NativeAgents {
     }
 
     pub(super) async fn read(&self, agent: &AgentState, file: &FileRef) -> Result<Vec<u8>> {
-        self.driver.read(agent, file, MAXIMUM_BYTES).await
+        self.driver.read(agent, file).await
     }
 
     pub(super) async fn outcome(
@@ -723,15 +713,7 @@ impl NativeAgents {
     ) -> Result<()> {
         let state = self.state(agent).await?;
         let bytes = serde_json::to_vec(event).map_err(storage)?;
-        if bytes.len() as u64 > MAXIMUM_BYTES {
-            return Err(Error::Invalid(
-                "native session event exceeds its bound".into(),
-            ));
-        }
-        let file = self
-            .driver
-            .stage(&state, operation, &bytes, MAXIMUM_BYTES)
-            .await?;
+        let file = self.driver.stage(&state, operation, &bytes).await?;
         self.deliver(
             agent,
             InboxRecord::Hook(Hook {
@@ -767,12 +749,7 @@ impl NativeAgents {
         hasher.finalize_xof().fill(&mut bytes);
         let body = self
             .driver
-            .stage(
-                &state,
-                OperationId::from_bytes(bytes),
-                prompt.as_bytes(),
-                MAXIMUM_BYTES,
-            )
+            .stage(&state, OperationId::from_bytes(bytes), prompt.as_bytes())
             .await?;
         self.deliver(
             agent,
