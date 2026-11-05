@@ -699,7 +699,7 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
         let fenced_tail = settled_tail - 1;
         // Each ownership attempt has its own keys: a concurrent host fencing
         // the same tail conflicts instead of replaying this attempt's result.
-        let attempt = uuid::Uuid::new_v4();
+        let attempt = crate::identity::fresh_uuid();
         let epoch = |from| epoch_record(incarnation, from);
         // Fence first: an open of an earlier incarnation commits under
         // `Tail{epochs}` and now fails, so the survivors below are final.

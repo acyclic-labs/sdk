@@ -1,11 +1,11 @@
 //! Namespace-scoped actor IDs and capability-bound stubs. Getting a stub is local.
+use crate::identity;
 use crate::{
     addressing::{AccountId, ActorReference, IdentityError, NamespaceId},
     client, domain,
 };
 use std::{future::Future, sync::Arc};
 use tokio::sync::{Mutex, watch};
-mod entropy;
 
 /// A namespace-scoped ID with optional name-construction provenance.
 #[derive(Clone, Debug)]
@@ -131,7 +131,7 @@ impl<T: Invoker> Namespace<T> {
     }
     /// Generate 128 random bits as lowercase hex, without creating an actor.
     pub fn new_unique_id(&self) -> Result<Id, Error> {
-        self.id(&entropy::random_id()?, false)
+        self.id(&identity::random_id(), false)
     }
     /// Reconstitute an ID only in the exact bound account and namespace.
     pub fn id_from_reference(&self, reference: ActorReference) -> Result<Id, Error> {
@@ -154,7 +154,7 @@ impl<T: Invoker> Namespace<T> {
             location_hint,
             authority: self.authority.clone(),
             binding_name: self.binding_name.clone(),
-            session: entropy::random_id()?,
+            session: identity::random_id(),
             sequence: Mutex::new(0),
             failed: watch::channel(false).0,
         })
@@ -288,6 +288,46 @@ impl<T: Invoker> Stub<T> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn ids_and_stub_sessions_draw_exact_seeded_bytes_in_order() -> Result<(), Error> {
+        use acyclic_native_runtime::testing::{Schedule, fill_seeded};
+        async fn actual(seed: u64) -> Result<(String, String), Error> {
+            let (scope, _) = Schedule::seeded(seed);
+            scope
+                .scope(async {
+                    let namespace =
+                        Namespace::new(b"account", b"ClassOne", Arc::new(Mock::default()))?;
+                    let id = namespace.new_unique_id()?;
+                    let stub = namespace.get(&id, None)?;
+                    Ok((id.as_str().to_owned(), stub.session))
+                })
+                .await
+        }
+        for seed in 0..16 {
+            let first = actual(seed).await?;
+            assert_eq!(first, actual(seed).await?);
+            let (scope, _) = Schedule::seeded(seed);
+            let expected = scope
+                .scope(async {
+                    let mut bytes = [0; 32];
+                    assert!(fill_seeded(&mut bytes));
+                    let (id, session) = bytes.split_at(16);
+                    let hex = |bytes: &[u8]| {
+                        bytes
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<String>()
+                    };
+                    (hex(id), hex(session))
+                })
+                .await;
+            assert_eq!(first, expected);
+        }
+        Ok(())
+    }
+
     #[derive(Default)]
     pub(super) struct Mock {
         calls: AtomicUsize,

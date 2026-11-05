@@ -151,7 +151,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             ready: ReadySet::default(),
             actors: std::array::from_fn(|_| SyncMutex::new(HashMap::new())),
             shards: RandomState::new(),
-            instance: uuid::Uuid::new_v4(),
+            instance: crate::identity::fresh_uuid(),
             limits: RuntimeLimits::default(),
             admission: tokio::sync::Semaphore::new(RuntimeLimits::default().active),
         }
