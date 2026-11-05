@@ -4,11 +4,12 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { packageClosure } from "./package-closure.mjs";
+import test from "node:test";
 
 // Run the real selected generators and Cargo build twice on one persistent
 // target. The second invocation is the freshness control, not a retry.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const [family, mode = "wasm"] = process.argv.slice(2);
+const [family = "workers", mode = "generate"] = process.argv.slice(2);
 assert.ok(family && ["generate", "wasm"].includes(mode),
   "STEP_FAILED selection; recovery: node scripts/check-generation-stability.mjs harness [generate|wasm]");
 function run(command, args) {
@@ -19,6 +20,7 @@ function run(command, args) {
     { cause: result.error });
   return { output: result.stdout + result.stderr, seconds: (performance.now() - started) / 1000 };
 }
+test("selected generators preserve source mtimes and Cargo freshness", () => {
 const args = [join(root, "scripts", mode === "wasm" ? "build-wasm.mjs" : "generate.mjs"), family];
 const first = run(process.execPath, args);
 const paths = new Set(run("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"]).output.split("\0").filter(Boolean));
@@ -37,3 +39,4 @@ const compiling = second.output.split(/\r?\n/).filter(line => /^\s*Compiling\s/.
 console.log(JSON.stringify({ family, mode, first_seconds: first.seconds, warm_seconds: second.seconds, changed, compiling }, null, 2));
 assert.deepEqual(changed, [], "unchanged generation rewrote source files");
 if (mode === "wasm") assert.deepEqual(compiling, [], "unchanged generation caused Cargo compilation");
+});

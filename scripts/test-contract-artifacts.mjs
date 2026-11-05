@@ -77,6 +77,7 @@ JSON.parse = (text, ...args) => {
     const receipt = () => JSON.parse(readFileSync(join(root, "diagnostics/observability/generated-contracts.json"), "utf8"));
     const success = run();
     assert.equal(success.status, 0, success.stderr);
+    env.NODE_OPTIONS = process.env.NODE_OPTIONS;
     // The real exporter repairs changed output and preserves matching output.
     // An old timestamp makes an unconditional write observable without a sleep.
     put("contract.txt", "stale\n");
@@ -90,7 +91,6 @@ JSON.parse = (text, ...args) => {
     assert.equal(receipt().status, "success");
     assert.equal(receipt().source_commit, sourceSha);
     assert.equal(receipt().artifacts.filter(item => item.requested).length, 1);
-    env.NODE_OPTIONS = process.env.NODE_OPTIONS;
     put("metadata", 'process.stdout.write(require("node:fs").readFileSync("metadata.json"));');
     put("build", 'process.stdout.write(require("node:fs").readFileSync("artifacts.jsonl"));');
     env.ACYCLIC_CARGO_BIN = process.execPath;
