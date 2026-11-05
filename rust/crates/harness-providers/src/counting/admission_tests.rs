@@ -428,6 +428,12 @@ fn local_admission_does_not_copy_transport_headers() -> Result<()> {
     // An OpenAI-family model served by the configurable Chat endpoint.
     let mut local = registry.catalog()["vllm"].as_ref().clone();
     local.models = registry.catalog()["openai"].models.clone();
+    local.token_counter = Some(crate::TokenCounterSpec {
+        path: "tokenize".into(),
+        adapter: Adapter::Chat,
+        response_field: crate::TokenCountField::Count,
+        framing_tokens: 0,
+    });
     registry.register("vllm".into(), local)?;
     for id in ["openai", "anthropic", "gemini", "vllm"] {
         let model = registry.catalog()[id].models.keys().next().unwrap();
