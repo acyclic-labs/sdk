@@ -336,7 +336,8 @@ above checks IndexedDB persistence. The kept
 `fuzz/mutations/browser_blob_payload_custody.patch` removes physical payload
 funding and must fail the withdrawal property's live-byte assertion.
 `fuzz/mutations/browser_operation_producer_retirement.patch` retires a pending
-producer and must fail with `physical producer retired before settlement`.
+producer in Stream's shared completion primitive and must fail with
+`physical producer retired before settlement`.
 Both mutations run against the same property and shipping completion path.
 
 `Counted<P>` also forwards `AsyncObjectStore` directly. Cache and collection

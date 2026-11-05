@@ -3,6 +3,11 @@ use std::sync::{
     Arc, OnceLock,
     atomic::{AtomicBool, Ordering},
 };
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+};
 use tokio::sync::Notify;
 
 struct State<T, H, I> {
@@ -35,6 +40,45 @@ impl<T, H, I> Producer<T, H, I> {
     /// Publishes the original result without copying it or its allocation owner.
     pub fn publish(self, result: T) {
         assert!(self.0.result.set(result).is_ok());
+    }
+
+    /// Admits and owns one complete physical operation before starting it.
+    /// The boxed future is destroyed before its original admission retires.
+    /// Submit the returned future to the caller's executor; dropping observers
+    /// stops delivery without cancelling that operation or its continuation.
+    pub fn operation<F, A: Unpin, E>(
+        self,
+        admit: impl FnOnce(usize) -> Result<A, E>,
+        start: impl FnOnce() -> Result<F, E>,
+    ) -> Result<impl Future<Output = ()> + Unpin, E>
+    where
+        F: Future<Output = T>,
+    {
+        let storage = admit(std::mem::size_of::<F>())?;
+        Ok(Operation {
+            future: Box::pin(start()?),
+            producer: Some(self),
+            _storage: storage,
+        })
+    }
+}
+
+struct Operation<F: Future, H, A, I> {
+    future: Pin<Box<F>>,
+    producer: Option<Producer<F::Output, H, I>>,
+    // Physical state retires before the credit that funds its backing.
+    _storage: A,
+}
+
+impl<F: Future, H, A: Unpin, I> Future for Operation<F, H, A, I> {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let value = std::task::ready!(self.future.as_mut().poll(cx));
+        if let Some(producer) = self.producer.take() {
+            producer.publish(value);
+        }
+        Poll::Ready(())
     }
 }
 
