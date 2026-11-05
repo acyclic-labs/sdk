@@ -246,7 +246,7 @@ async fn exec_wakes(
         .exec(manual.id, probe(manual.contract.platform)?)
         .await;
     if !matches!(
-        refused,
+        refused.as_ref().map_err(ProviderError::classification),
         Err(ProviderError::Conflict(_) | ProviderError::Rejected(_))
     ) {
         return Err("exec on a manually suspended Machine was not refused".into());
@@ -707,7 +707,9 @@ async fn live_fork(
     if !matches!(
         provider
             .fork_machine(machine.id, NonZeroU32::MIN, key(0x30)?)
-            .await,
+            .await
+            .as_ref()
+            .map_err(ProviderError::classification),
         Err(ProviderError::Conflict(_))
     ) {
         return Err("live fork idempotency key was rebound".into());

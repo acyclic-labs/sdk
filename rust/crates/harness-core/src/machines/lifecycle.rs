@@ -590,9 +590,16 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         let (operation, key) = intent("destroy", holder, &target.name)?;
         match target.host.destroy(operation, &key, &binding.machine).await {
             Ok(()) => Ok(true),
-            Err(Error::Machines(acyclic_machines::ProviderError::FailedPrecondition(
-                acyclic_machines::Precondition::LiveForks,
-            ))) => Ok(false),
+            Err(Error::Machines(error))
+                if matches!(
+                    error.classification(),
+                    acyclic_machines::ProviderError::FailedPrecondition(
+                        acyclic_machines::Precondition::LiveForks
+                    )
+                ) =>
+            {
+                Ok(false)
+            }
             Err(error) => Err(error),
         }
     }
