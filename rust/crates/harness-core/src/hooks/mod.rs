@@ -300,7 +300,7 @@ impl Hooks {
             let hooks: Vec<_> = self.candidates(event, input, registry)?.collect();
             let quota = capture_quota(maximum_bytes, hooks.len());
             let original = input.tool_input().unwrap_or(&Value::Null);
-            return chain::judge(
+            return match chain::judge(
                 &hooks,
                 event,
                 original,
@@ -316,7 +316,16 @@ impl Hooks {
                 },
                 &mut execute,
             )
-            .await;
+            .await
+            {
+                // Invalid tool arguments, including a hook's rewrite, reject
+                // this call through the ordinary blocking outcome.
+                Err(Error::Invalid(reason)) => Ok(HookOutput {
+                    blocked: Some(reason),
+                    ..HookOutput::default()
+                }),
+                result => result,
+            };
         }
         let commands = self.commands(event, input, registry)?;
         let quota = capture_quota(maximum_bytes, commands.clone().count());

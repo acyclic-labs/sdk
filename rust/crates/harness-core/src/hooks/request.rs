@@ -342,33 +342,38 @@ mod tests {
         );
         // An initially skipped guard must judge the final rewritten patch too.
         let private = public.replace("public/destination", "private/rewritten");
-        let decision = serde_json::json!({"allow":true,"input":{"input":private}}).to_string();
-        let rewrite = HookSpec {
-            run: HookRun::Plugin {
-                instance: "rewrite".into(),
-                sh: Some(format!(
-                    "cat >/dev/null; printf '%s' {}",
-                    literal(&decision)
-                )),
-                ps1: Some(format!(
-                    "$null = [Console]::In.ReadToEnd(); [Console]::Out.Write({})",
-                    powershell(&decision)
-                )),
-                config: "{}".into(),
-                matcher: None,
-            },
-            timeout_ms: 5_000,
-            failure: HookFailure::Block,
+        let rewrite = |arguments: Value| {
+            let decision = serde_json::json!({"allow":true,"input":arguments}).to_string();
+            HookSpec {
+                run: HookRun::Plugin {
+                    instance: "rewrite".into(),
+                    sh: Some(format!(
+                        "cat >/dev/null; printf '%s' {}",
+                        literal(&decision)
+                    )),
+                    ps1: Some(format!(
+                        "$null = [Console]::In.ReadToEnd(); [Console]::Out.Write({})",
+                        powershell(&decision)
+                    )),
+                    config: "{}".into(),
+                    matcher: None,
+                },
+                timeout_ms: 5_000,
+                failure: HookFailure::Block,
+            }
         };
-        let result = hooks(vec![guard, rewrite])?
-            .run(
-                HookEvent::PreToolUse,
-                root.path(),
-                root.path(),
-                input,
-                &registry,
-            )
-            .await?;
+        let result = hooks(vec![
+            guard.clone(),
+            rewrite(serde_json::json!({"input":private})),
+        ])?
+        .run(
+            HookEvent::PreToolUse,
+            root.path(),
+            root.path(),
+            input,
+            &registry,
+        )
+        .await?;
         assert!(
             result.blocks(),
             "rewritten move bypassed its destination guard"
@@ -381,6 +386,52 @@ mod tests {
             received["request"]["paths"],
             serde_json::json!(["public/source", "private/rewritten"])
         );
+        // Invalid rewrites block in either authority order, without starting
+        // a guard process or losing the model's ability to issue another call.
+        let mut guard = guard;
+        guard.failure = HookFailure::Report;
+        for arguments in [
+            serde_json::json!({"input":"*** Begin Patch\n*** Add File: private/unfinished\n+new\n"}),
+            serde_json::json!({"input":7}),
+        ] {
+            for rules in [
+                vec![guard.clone(), rewrite(arguments.clone())],
+                vec![rewrite(arguments.clone()), guard.clone()],
+            ] {
+                std::fs::remove_file(&captured)
+                    .or_else(|error| {
+                        if error.kind() == std::io::ErrorKind::NotFound {
+                            Ok(())
+                        } else {
+                            Err(error)
+                        }
+                    })
+                    .map_err(Error::process_io)?;
+                let result = hooks(rules)?
+                    .run(
+                        HookEvent::PreToolUse,
+                        root.path(),
+                        root.path(),
+                        input,
+                        &registry,
+                    )
+                    .await
+                    .expect("malformed rewritten patch aborted the hook chain");
+                assert!(
+                    result.blocks(),
+                    "malformed rewritten patch escaped its guard"
+                );
+                assert!(
+                    result
+                        .blocked
+                        .as_ref()
+                        .is_some_and(|reason| !reason.is_empty())
+                );
+                assert!(result.updated_input.is_none());
+                assert!(result.diagnostics.is_empty(), "{result:?}");
+                assert!(!captured.exists(), "invalid patch started a guard process");
+            }
+        }
         Ok(())
     }
 

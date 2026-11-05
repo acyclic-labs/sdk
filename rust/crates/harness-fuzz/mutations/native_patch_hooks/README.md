@@ -28,3 +28,15 @@ real-process control and corpus must fail: the original function classifies an
 atomic edit as `other`, so its paths never reach file guards. Reverse the patch
 before positive qualification. Require nonzero instrumented coverage separately;
 an uninstrumented replay is not a coverage measurement.
+
+`matcher-error-escapes.patch` restores the former before-hook error boundary.
+The same real-process control must fail with
+`malformed rewritten patch aborted the hook chain`. It covers an incomplete
+document and a wrongly typed native argument, each with the rewriting hook
+before and after the file guard. Invalid input blocks with the original reason
+even when the guard's process-failure policy only reports failures. No guard
+process starts for the rejected rewrite. Reverse this patch before qualification.
+
+```sh
+cargo nextest run --locked -p acyclic-harness-core --lib --features test-support,filesystem,hooks -E 'test(hooks::request::tests::atomic_edit_guards_cover_every_path_and_rewritten_move_destination)'
+```
