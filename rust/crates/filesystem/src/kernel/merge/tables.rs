@@ -151,7 +151,8 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
                             && base.is_none()
                             && let (Some(a), Some(b)) = (ours_value, theirs_value)
                             && a.kind == b.kind
-                            && matching_payloads(store, a, b, limits, accounting, cancellation).await?
+                            && matching_payloads(store, a, b, limits, accounting, cancellation)
+                                .await?
                             && let Some(metadata) = merge_metadata_async(
                                 store,
                                 None,
