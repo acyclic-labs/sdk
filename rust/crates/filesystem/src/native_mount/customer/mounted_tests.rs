@@ -240,8 +240,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
             PublicationPermit::Unrestricted,
             &publication_work,
             move |work: &NativeMaterializationWork| {
-                assert!(work.shares_ledger(&callback_work));
-                assert!(work.shares_resource_allowance(&callback_work));
+                assert!(work.shares_allocation_context(&callback_work));
                 ready(Ok::<(), MountLifecycleError>(()))
             },
         )

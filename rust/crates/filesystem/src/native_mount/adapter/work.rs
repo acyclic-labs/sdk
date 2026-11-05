@@ -5,7 +5,7 @@ pub(super) enum NativeDemandCarrier<'a> {
     Native(&'a crate::NativeMaterializationWork),
 }
 
-impl NativeDemandCarrier<'_> {
+impl<'a> NativeDemandCarrier<'a> {
     pub(super) fn with_work<T>(
         &mut self,
         operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
@@ -23,9 +23,9 @@ impl NativeDemandCarrier<'_> {
         }
     }
 
-    pub(super) fn original_native_work(&self) -> Option<crate::NativeMaterializationWork> {
+    pub(super) fn original_native_work(&self) -> Option<&'a crate::NativeMaterializationWork> {
         match self {
-            Self::Native(work) => Some((**work).clone()),
+            Self::Native(work) => Some(*work),
             _ => None,
         }
     }
@@ -33,7 +33,7 @@ impl NativeDemandCarrier<'_> {
     pub(super) fn new_custody(
         &mut self,
     ) -> Result<std::sync::Arc<super::NativeMountAllocationCustody>, MountSourceError> {
-        match self.original_native_work() {
+        match self.original_native_work().cloned() {
             Some(mut work) => super::NativeMountAllocationCustody::new(&mut work),
             None => self.with_work(super::NativeMountAllocationCustody::new),
         }

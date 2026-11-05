@@ -137,7 +137,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         let work = carrier
             .original_native_work()
             .ok_or(MountSourceError::OriginalSnapshotUnavailable)?;
-        let lease = self.file_mutation(file, &work)?;
+        let lease = self.file_mutation(file, work)?;
         let guard = await_with_cancellation(
             Arc::clone(&lease.entry).lock_owned(),
             carrier,

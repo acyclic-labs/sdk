@@ -84,7 +84,7 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
         .candidate_diff(
             candidate,
             MAXIMUM_EXACT_INSTALL_CHANGES,
-            &native,
+            native,
             cancellation,
         )
         .await?;
@@ -130,7 +130,7 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
         scope,
         &diff.bindings,
         &mut inputs,
-        &native,
+        native,
         cancellation,
     )
     .await?;

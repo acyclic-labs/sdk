@@ -888,6 +888,7 @@ fn namespace_hint_names_with_work<'a, W: crate::demand::SourceDemandReadWork>(
     let original = if work.is_native_original() {
         Some(
             work.native_source_work()
+                .cloned()
                 .ok_or(DemandError::NativeWorkUnavailable)?,
         )
     } else {
@@ -1692,9 +1693,7 @@ impl NativeWatch {
             .original_work
             .as_ref()
             .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
-        if !original.shares_ledger(incoming.work())
-            || !original.shares_resource_allowance(incoming.work())
-        {
+        if !original.shares_allocation_context(incoming.work()) {
             return Err(crate::NativeTreeMaterializationError::InvalidLayout);
         }
         if let Some(owner) = &mut self.owner_allocation {
@@ -3690,7 +3689,7 @@ impl NativeWatch {
         &self,
         work: &mut W,
     ) -> Result<bool, NativeWatchError> {
-        let original = work.native_source_work();
+        let original = work.native_source_work().cloned();
         let cancellation = match &original {
             Some(original) => original.cancellation().clone(),
             None => work.with_original_leaf(|work| work.cancellation().clone()),

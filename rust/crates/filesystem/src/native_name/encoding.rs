@@ -15,7 +15,7 @@ enum NameWork<'a, W: SourceDemandReadWork = DemandWork> {
     Original {
         work: &'a crate::NativeMaterializationWork,
         allocation: Option<crate::materializer::NativeAllocation>,
-        source: Option<crate::NativeMaterializationWork>,
+        source: Option<&'a crate::NativeMaterializationWork>,
     },
     Source(&'a mut W),
 }
@@ -27,7 +27,7 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
             Self::Source(work) => work.check(),
             Self::Original { work, source, .. } => {
                 if let Some(source) = source {
-                    crate::native_host::NativeHostWork::check(source)?;
+                    crate::native_host::NativeHostWork::check(*source)?;
                 }
                 work.admit(WorkCounters::UNCHARGED)
                     .map_err(DemandError::from)
@@ -206,17 +206,14 @@ fn with_source_name_work<W: SourceDemandReadWork>(
     let source = work
         .native_source_work()
         .ok_or(DemandError::NativeWorkUnavailable)?;
-    let original = {
-        crate::native_host::NativeHostWork::check(&source)?;
-        source.clone()
-    };
+    crate::native_host::NativeHostWork::check(source)?;
     let mut accounting = NameWork::Original {
-        work: &original,
+        work: source,
         allocation: None,
-        source: Some(source.clone()),
+        source: Some(source),
     };
     let name = encode(&mut accounting)?;
-    crate::native_host::NativeHostWork::check(&source)?;
+    crate::native_host::NativeHostWork::check(source)?;
     let NameWork::Original { allocation, .. } = accounting else {
         unreachable!()
     };

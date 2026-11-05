@@ -72,14 +72,14 @@ impl NativeMountSourceWatchOwner {
         let original = carrier
             .original_native_work()
             .ok_or(MountSourceError::NativeUnsupported)?;
-        let mut work = crate::NativeMaterializationWork::clone(&original);
+        let mut work = crate::NativeMaterializationWork::clone(original);
         crate::native_host::NativeHostWork::check(&work).map_err(MountSourceError::from)?;
         let stopped = self.is_stopped();
         let result = if let Some(failure) = &self.startup_failure {
             failure.stop_with_work(&mut work)
         } else if let Some(watch) = &self.watch {
             watch.stop(&mut crate::kernel::KernelAccounting::native(
-                &original,
+                original,
                 original.cancellation(),
             ))
         } else {
