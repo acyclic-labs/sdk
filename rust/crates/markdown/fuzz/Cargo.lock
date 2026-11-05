@@ -20,7 +20,6 @@ version = "0.0.0"
 dependencies = [
  "acyclic-markdown",
  "acyclic-syntect",
- "flate2",
  "libfuzzer-sys",
  "serde",
  "serde_json",

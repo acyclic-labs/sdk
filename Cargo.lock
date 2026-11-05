@@ -1012,7 +1012,6 @@ dependencies = [
  "acyclic-markdown-work",
  "acyclic-syntect",
  "acyclic-test-support",
- "flate2",
  "proptest",
  "pulldown-cmark",
  "serde",

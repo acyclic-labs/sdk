@@ -14,7 +14,6 @@ unicode-width = "0.2"
 syntect = { package = "acyclic-syntect", version = "=0.2.0", path = "../../../vendor/syntect-5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
 serde = "1.0"
 serde_json = "1.0"
-flate2 = "1.0"
 
 [[bin]]
 name = "streaming"
