@@ -18,7 +18,7 @@ or cross-platform execution.
 Run from the repository root:
 
 ```sh
-cargo test --locked -p acyclic-fs --lib source_watch::inotify::tests::collector_loss_rejects_subscriptions_and_preserves_owned_cleanup -- --exact --nocapture
+cargo test --locked -p acyclic-fs --lib source_watch::inotify::admission_tests::collector_loss_rejects_subscriptions_and_preserves_owned_cleanup -- --exact --nocapture
 ```
 
 `original-collector.patch` restores the original production collector, retaining
@@ -32,11 +32,10 @@ git apply rust/crates/filesystem/proofs/source-watch-collector-loss/original-col
 git apply -R rust/crates/filesystem/proofs/source-watch-collector-loss/original-collector.patch
 ```
 
-`omit-exit-guard.patch` removes only the production exit guard. The same control
-must fail at the same subscription assertion after joining the unwound thread;
-it cannot rely on a timeout to detect the missing loss publication. Reverse the
-patch before running restoration. Both controls keep the real driver startup,
-notification, thread entry and cleanup paths.
+The original-production patch also removes the exit guard. Joining the unwound
+thread remains finite, then the subscription assertion detects the missing loss
+publication. This keeps one mutation and one property for that failure, without
+a timeout or a second equivalent guard-omission check.
 
 Subscriber tables use the existing dense index implementation so iteration
 visits live entries rather than historical hash-table capacity. Keyed insertion

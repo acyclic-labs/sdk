@@ -54,12 +54,12 @@ fn collector_loss_rejects_subscriptions_and_preserves_owned_cleanup()
         // tests. The parent removes the real roots after the child exits.
         let root = tempfile::tempdir()?;
         std::fs::create_dir_all(root.path().join("child/grandchild"))?;
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .ok_or("collector-loss control has no test identity")?;
         let status = std::process::Command::new(std::env::current_exe()?)
-            .args([
-                "--exact",
-                "source_watch::inotify::tests::collector_loss_rejects_subscriptions_and_preserves_owned_cleanup",
-                "--nocapture",
-            ])
+            .args(["--exact", test, "--nocapture"])
             .env(CHILD, root.path())
             .status()?;
         assert!(
