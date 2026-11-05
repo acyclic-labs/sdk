@@ -51,7 +51,10 @@ impl<'a> KernelAccounting<'a> {
     /// Waits for a cancel-safe primitive event on the original accounting.
     /// Ready events need no cancellation registration. A blocked event keeps
     /// one funded waiter per distinct caller/native cancellation source.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(
+        any(test, feature = "local", feature = "conformance"),
+        not(target_arch = "wasm32")
+    ))]
     pub(crate) async fn wait_for<T>(
         &mut self,
         event: impl std::future::Future<Output = T>,
@@ -68,7 +71,7 @@ impl<'a> KernelAccounting<'a> {
             .filter(|work| !work.cancellation().same_state(cancellation));
         let mut native_wait = None;
         std::future::poll_fn(|cx| {
-            if let Poll::Ready(value) = event.as_mut().poll(cx) {
+            if let Poll::Ready(value) = Future::poll(event.as_mut(), cx) {
                 self.check()?;
                 return Poll::Ready(Ok(value));
             }
