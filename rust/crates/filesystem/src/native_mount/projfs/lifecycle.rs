@@ -132,7 +132,10 @@ impl ProjFsSession {
                 return Err(NativeMountError::ControlPending);
             }
             self.stop_physical()?;
-            return Ok(crate::native_mount::retirement::TerminalFailures::default());
+            return Ok(crate::native_mount::retirement::TerminalFailures {
+                source: self.take_source_failure(),
+                ..Default::default()
+            });
         }
         if self
             .runtime
@@ -153,7 +156,11 @@ impl ProjFsSession {
         let mut lifecycle = lock_recover(&projector.lifecycle);
         loop {
             if lifecycle.complete {
-                return Ok(crate::native_mount::retirement::TerminalFailures::default());
+                drop(lifecycle);
+                return Ok(crate::native_mount::retirement::TerminalFailures {
+                    source: self.take_source_failure(),
+                    ..Default::default()
+                });
             }
             if let Some(error) = lifecycle.failure.take() {
                 return Err(error);

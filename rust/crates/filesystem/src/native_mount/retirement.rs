@@ -4,21 +4,21 @@ use super::*;
 #[derive(Default)]
 pub(super) struct TerminalFailures {
     pub(super) producer: Option<NativeMountError>,
+    pub(super) source: Option<NativeMountError>,
     pub(super) cleanup: Option<NativeMountError>,
 }
 
 impl TerminalFailures {
     /// Taking one cause never consumes a distinct cause retained by the owner.
     pub(super) fn take(&mut self) -> Option<NativeMountError> {
-        self.producer.take().or_else(|| self.cleanup.take())
-    }
-
-    pub(super) fn take_pair(&mut self) -> Option<(NativeMountError, Option<NativeMountError>)> {
-        self.take().map(|first| (first, self.take()))
+        self.producer
+            .take()
+            .or_else(|| self.source.take())
+            .or_else(|| self.cleanup.take())
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        self.producer.is_none() && self.cleanup.is_none()
+        self.producer.is_none() && self.source.is_none() && self.cleanup.is_none()
     }
 }
 

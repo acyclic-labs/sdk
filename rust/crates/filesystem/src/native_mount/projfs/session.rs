@@ -61,7 +61,7 @@ pub(in crate::native_mount) fn retire_source_in_physical_stop(
         &crate::CancellationToken::new(),
     )
     .map_err(|(cause, _)| cause)?;
-    let mut session = ProjFsSession {
+    let session = ProjFsSession {
         controller: None,
         context: None,
         runtime: None,
@@ -83,8 +83,24 @@ pub(in crate::native_mount) fn retire_source_in_physical_stop(
         projection_cleanup: None,
         shared: None,
     };
-    session.stop_physical()?;
-    Ok(session.retirement.is_none())
+    let mut owner = crate::native_mount::NativeMountSession::new(
+        NativeMountRequest {
+            mount_id: crate::MountId::new(),
+            volume_id: crate::VolumeId::new(),
+            destination: PathBuf::from("not-mounted"),
+            writable: false,
+            shared: false,
+        },
+        None,
+        None,
+    );
+    owner.driver = Some(session);
+    let result = owner.stop_with_context(&crate::native_mount::NativeSessionStopWork::AcceptedDrop);
+    assert!(
+        owner.driver.is_none(),
+        "terminal source cause retained the ProjFS driver"
+    );
+    result
 }
 
 // SAFETY: ProjFS contexts are opaque handles. The provider synchronizes callback
@@ -356,14 +372,7 @@ impl ProjFsSession {
                 drop(self.projection_cleanup.take());
             }
             if let Some(retirement) = self.retirement.as_mut() {
-                retirement.retire(None, SourceRetirementWait::Physical)?;
-            }
-            if self
-                .retirement
-                .as_ref()
-                .is_some_and(super::super::NativeMountRetirement::is_retired)
-            {
-                self.retirement = None;
+                retirement.retire_physical(None, SourceRetirementWait::Physical)?;
             }
             return Ok(());
         };
@@ -436,6 +445,7 @@ impl ProjFsSession {
         self.namespace_outcome = Some(ProjFsNamespaceOutcome {
             failures: crate::native_mount::retirement::TerminalFailures {
                 producer: self.capture_failure.take(),
+                source: None,
                 cleanup: cleanup_failure,
             },
             _state: state,
@@ -472,14 +482,7 @@ impl ProjFsSession {
             drop(self.projection_cleanup.take());
         }
         if let Some(retirement) = self.retirement.as_mut() {
-            retirement.retire(None, SourceRetirementWait::Physical)?;
-        }
-        if self
-            .retirement
-            .as_ref()
-            .is_some_and(super::super::NativeMountRetirement::is_retired)
-        {
-            self.retirement = None;
+            retirement.retire_physical(None, SourceRetirementWait::Physical)?;
         }
         Ok(())
     }
@@ -588,6 +591,16 @@ impl ProjFsSession {
                 .and_then(Self::take_namespace_outcome);
         }
         self.namespace_outcome.take()
+    }
+
+    pub(super) fn take_source_failure(&mut self) -> Option<NativeMountError> {
+        if let Some(projector) = self.controller.as_ref() {
+            return lock_recover(&projector.lifecycle)
+                .owner
+                .as_mut()
+                .and_then(Self::take_source_failure);
+        }
+        self.retirement.as_mut()?.terminal_source_failure.take()
     }
 
     pub(in crate::native_mount) fn take_callback_failure(

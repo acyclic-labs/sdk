@@ -400,6 +400,7 @@ impl NativeMountSession {
                 {
                     self.namespace_outcome = driver.take_namespace_outcome();
                     if let Some(outcome) = self.namespace_outcome.as_mut() {
+                        outcome.failures.source = self.terminal_failures.source.take();
                         self.terminal_failures = std::mem::take(&mut outcome.failures);
                     }
                 }

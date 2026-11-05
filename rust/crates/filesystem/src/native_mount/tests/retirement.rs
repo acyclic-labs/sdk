@@ -16,8 +16,15 @@ fn stopped_session_reports_each_cause_after_releasing_its_fence()
             std::fs::read(root.path()).expect_err("a directory cannot be read as cleanup bytes");
         let producer_code = producer.raw_os_error();
         let cleanup_code = cleanup.raw_os_error();
+        let source = std::io::Write::write_all(
+            &mut std::fs::File::open(root.path().join("authored"))?,
+            b"not-written",
+        )
+        .expect_err("source descriptor is read-only");
+        let source_code = source.raw_os_error();
         session.terminal_failures = crate::native_mount::retirement::TerminalFailures {
             producer: Some(producer.into()),
+            source: Some(source.into()),
             cleanup: Some(cleanup.into()),
         };
         let wait = CancellationToken::new();
@@ -32,6 +39,10 @@ fn stopped_session_reports_each_cause_after_releasing_its_fence()
         );
         retired(root.path(), &fence, before, &work)?;
         assert!(session.cleanup_state().cleanup_complete());
+        assert!(
+            matches!(session.stop_with_context(&stop), Err(NativeMountError::Io(cause)) if cause.raw_os_error() == source_code),
+            "terminal source cause was not retained"
+        );
         assert!(
             matches!(session.stop_with_context(&stop), Err(NativeMountError::Io(cause)) if cause.raw_os_error() == cleanup_code)
         );

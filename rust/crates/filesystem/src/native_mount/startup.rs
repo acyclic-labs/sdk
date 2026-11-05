@@ -166,13 +166,23 @@ impl NativeMountRetirement {
         wait: Option<&crate::CancellationToken>,
         join: retirement::SourceRetirementWait,
     ) -> Result<bool, NativeMountError> {
+        let changed = self.retire_physical(wait, join)?;
+        retirement::finish_retirement(&mut self.terminal_source_failure, changed)
+    }
+
+    /// Keeps terminal data in this packet while its physical owner finishes.
+    pub(super) fn retire_physical(
+        &mut self,
+        wait: Option<&crate::CancellationToken>,
+        join: retirement::SourceRetirementWait,
+    ) -> Result<bool, NativeMountError> {
         let mut changed = self.retire_source_and_watch_with_join(wait, join)?;
         let work = match wait {
             Some(wait) => NativeSessionStopWork::AcceptedWait(wait),
             None => NativeSessionStopWork::AcceptedDrop,
         };
         changed |= retirement::retire_destination(&mut self.destination_guard, &work)?;
-        retirement::finish_retirement(&mut self.terminal_source_failure, changed)
+        Ok(changed)
     }
 
     /// Drains producers after callback admission closes, before driver teardown.

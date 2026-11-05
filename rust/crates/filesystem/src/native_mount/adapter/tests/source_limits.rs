@@ -492,7 +492,8 @@ fn physical_darwin_loop_joins_last_lease_after_caller_cancellation()
 #[test]
 fn physical_projfs_stop_joins_last_lease_after_caller_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
-    physical_cleanup_joins_last_lease(PhysicalCleanupPath::ProjFsStop)
+    physical_cleanup_joins_last_lease(PhysicalCleanupPath::ProjFsStop)?;
+    physical_cleanup_joins_last_lease(PhysicalCleanupPath::ProjFsStopRecordingRefusal)
 }
 
 #[derive(Clone, Copy)]
@@ -509,6 +510,8 @@ enum PhysicalCleanupPath {
     DarwinLoop,
     #[cfg(windows)]
     ProjFsStop,
+    #[cfg(windows)]
+    ProjFsStopRecordingRefusal,
 }
 
 // The worker owns publication of its wait observation. If it fails or unwinds
@@ -578,7 +581,10 @@ fn physical_cleanup_worker(
         );
     }
     #[cfg(windows)]
-    if matches!(path, PhysicalCleanupPath::ProjFsStop) {
+    if matches!(
+        path,
+        PhysicalCleanupPath::ProjFsStop | PhysicalCleanupPath::ProjFsStopRecordingRefusal
+    ) {
         return crate::native_mount::projfs::retire_source_in_physical_stop(mounted);
     }
     let retired = mounted.shutdown_physical_cleanup();
@@ -621,13 +627,15 @@ fn physical_cleanup_joins_last_lease(
         (source.clone(), source as Arc<dyn MountFilesystem>, lease)
     };
     let weak = Arc::downgrade(&source);
-    let source_control = matches!(
-        path,
+    let recording_refused = match path {
         PhysicalCleanupPath::SourceRecordingRefusal
-            | PhysicalCleanupPath::DriverPacketRecordingRefusal
-            | PhysicalCleanupPath::LazySourceRecordingRefusal
-    )
-    .then(|| Arc::clone(&source));
+        | PhysicalCleanupPath::DriverPacketRecordingRefusal
+        | PhysicalCleanupPath::LazySourceRecordingRefusal => true,
+        #[cfg(windows)]
+        PhysicalCleanupPath::ProjFsStopRecordingRefusal => true,
+        _ => false,
+    };
+    let source_control = recording_refused.then(|| Arc::clone(&source));
     let alias = lease.clone();
     root_stop.cancel();
     let wait = CancellationToken::new();

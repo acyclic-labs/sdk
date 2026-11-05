@@ -56,7 +56,7 @@ async fn completed_lazy_retirement_does_not_recheck_a_later_cancelled_waiter()
 }
 
 #[tokio::test]
-async fn retired_mount_proof_preserves_both_terminal_causes_on_every_os()
+async fn retired_mount_proof_preserves_all_terminal_causes_on_every_os()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::native_mount::tests::retirement::{Fixture, retired};
 
@@ -107,8 +107,15 @@ async fn retired_mount_proof_preserves_both_terminal_causes_on_every_os()
         std::fs::read(root.path()).expect_err("a directory cannot be read as cleanup bytes");
     let producer_code = producer.raw_os_error();
     let cleanup_code = cleanup.raw_os_error();
+    let source = std::io::Write::write_all(
+        &mut std::fs::File::open(root.path().join("authored"))?,
+        b"not-written",
+    )
+    .expect_err("source descriptor is read-only");
+    let source_code = source.raw_os_error();
     session.terminal_failures = super::super::retirement::TerminalFailures {
         producer: Some(producer.into()),
+        source: Some(source.into()),
         cleanup: Some(cleanup.into()),
     };
     session.retained_source = Some(crate::native_mount::retirement::RetainedSource::Filesystem(
@@ -138,14 +145,12 @@ async fn retired_mount_proof_preserves_both_terminal_causes_on_every_os()
     else {
         return Err("retirement completion changed the original failure owner".into());
     };
-    let (first, second) = proof
-        .take_retained_capture_failure()
-        .ok_or("drain proof lost the namespace outcomes")?;
-    assert!(matches!(first, NativeMountError::Io(cause) if cause.raw_os_error() == producer_code));
-    assert!(
-        matches!(second, Some(NativeMountError::Io(cause)) if cause.raw_os_error() == cleanup_code)
-    );
-    assert!(proof.take_retained_capture_failure().is_none());
+    for code in [producer_code, source_code, cleanup_code] {
+        assert!(
+            matches!(proof.take_terminal_failure(), Some(NativeMountError::Io(cause)) if cause.raw_os_error() == code)
+        );
+    }
+    assert!(proof.take_terminal_failure().is_none());
     proof.into_result()?;
     assert_eq!(
         retirement_work.receipt().allocation_operations,
