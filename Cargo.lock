@@ -709,6 +709,7 @@ dependencies = [
  "acyclic-fs",
  "acyclic-harness",
  "acyclic-harness-core",
+ "acyclic-mcp",
  "acyclic-native-runtime",
  "acyclic-stream",
  "acyclic-test-support",

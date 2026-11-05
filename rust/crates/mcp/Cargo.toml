@@ -10,6 +10,7 @@ description = "Shared Model Context Protocol framing and native tool serving"
 documentation = "https://docs.rs/acyclic-mcp"
 
 [features]
+model-checking = ["dep:loom"]
 stdio = ["dep:bytes", "dep:futures", "dep:rmcp", "dep:serde", "dep:serde_json", "dep:thiserror", "dep:tokio-util"]
 
 [dependencies]
@@ -21,8 +22,7 @@ serde_json = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
 tokio-util = { workspace = true, features = ["codec"], optional = true }
 
-[target.'cfg(loom)'.dependencies]
-loom = "=0.7.2"
+loom = { version = "=0.7.2", optional = true }
 
 [lints]
 workspace = true
