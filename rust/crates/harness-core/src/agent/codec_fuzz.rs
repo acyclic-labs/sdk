@@ -620,11 +620,11 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
         ]);
     }
     seeds.extend(history_seeds()?);
-    seeds.push(("roster", roster_seed()?));
+    seeds.extend(roster_seeds()?);
     Ok(seeds)
 }
 
-fn roster_seed() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn roster_seeds() -> Result<[(&'static str, Vec<u8>); 2], Box<dyn std::error::Error>> {
     use super::targets::{DeviceKind, PathStyle, TargetClass, TargetRecord, TargetState};
     let owner = format!("{}a", "é".repeat(127));
     let maximum_name = "n".repeat(super::targets::MAX_TARGET_NAME_BYTES);
@@ -647,9 +647,17 @@ fn roster_seed() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     })
     .collect();
     let value = super::Roster::new("laptop", targets)?;
-    let bytes = value.canonical().0.to_vec();
-    assert_eq!(serde_json::from_slice::<super::Roster>(&bytes)?, value);
-    Ok(bytes)
+    let seeds = [
+        ("roster", value.canonical().0.to_vec()),
+        (
+            "roster-positional",
+            serde_json::to_vec(&(value.home_name(), value.targets()))?,
+        ),
+    ];
+    for (_, bytes) in &seeds {
+        assert_eq!(serde_json::from_slice::<super::Roster>(bytes)?, value);
+    }
+    Ok(seeds)
 }
 
 /// History uses the same typed JSON writer as filesystem::history. These seeds
