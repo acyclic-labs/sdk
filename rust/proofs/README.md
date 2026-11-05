@@ -117,6 +117,12 @@ the error kind, diagnostic and completion are preserved. The shared assertion
 also accepts the deterministic executor's original channel cause; the retained
 command qualifies the native entry point only.
 
+The [shared-completion cause control](shared-completion-cause/README.md) mutates
+the original producer's error mapping before sharing. Rebuilding an error once
+preserves observer identity but loses its typed cause. The same native custody
+test checks the original channel failure and the later native task panic behind
+their shared errors; the retained negative must fail the first cause check.
+
 The open whole-operation and topology obligations in the table must remain
 explicit until their checked refinement, original counters and independent
 negative controls exist. In particular, a single-member memory fixture cannot
