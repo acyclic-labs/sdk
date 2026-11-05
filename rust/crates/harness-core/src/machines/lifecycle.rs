@@ -154,33 +154,53 @@ pub trait MachineExecutors: acyclic_stream::ProviderPlatform {
 /// provider that holds the agents' subtrees.
 pub struct AgentMachines<P: ?Sized> {
     stream: Arc<P>,
-    targets: Vec<ProvisionedTarget>,
+    targets: acyclic_collections::CompiledPrefixIndex<
+        ProvisionedTarget,
+        crate::NativeCustody,
+        fn(&ProvisionedTarget) -> &[u8],
+    >,
 }
 
 impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     /// The lifecycle of `targets`, whose bindings live in `stream`.
     ///
     /// # Errors
-    /// When a target name repeats or is not one canonical path segment.
+    /// When a target name repeats, is not one canonical path segment, or the
+    /// index backing cannot be reserved.
     pub fn new(stream: Arc<P>, targets: Vec<ProvisionedTarget>) -> Result<Self> {
-        let mut names = std::collections::BTreeSet::new();
         for target in &targets {
             acyclic_stream::StreamPath::validate(&target.name).map_err(|_| {
                 Error::Invalid("provisioned target name is not a canonical path segment".into())
             })?;
-            if target.name.contains('/') || !names.insert(target.name.as_str()) {
+            if target.name.contains('/') {
                 return Err(Error::Invalid(
                     "provisioned target names must be unique canonical path segments".into(),
                 ));
             }
         }
+        let targets = acyclic_collections::CompiledPrefixIndex::from_entries(
+            targets,
+            (|target: &ProvisionedTarget| target.name.as_bytes())
+                as fn(&ProvisionedTarget) -> &[u8],
+            &mut crate::NativeIndexWork(None),
+        )
+        .map_err(|error| match error {
+            acyclic_collections::CompiledPrefixError::Work(error) => error,
+            acyclic_collections::CompiledPrefixError::Order(_) => Error::Invalid(
+                "provisioned target names must be unique canonical path segments".into(),
+            ),
+            acyclic_collections::CompiledPrefixError::Capacity => {
+                Error::Invalid("provisioned target index exceeds addressable capacity".into())
+            }
+            acyclic_collections::CompiledPrefixError::Allocation(error) => Error::Allocation(error),
+        })?;
         Ok(Self { stream, targets })
     }
 
     /// The provisioned targets.
     #[must_use]
     pub fn targets(&self) -> &[ProvisionedTarget] {
-        &self.targets
+        self.targets.entries()
     }
 
     fn target(&self, name: &str) -> Result<&ProvisionedTarget> {
@@ -188,14 +208,23 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     }
 
     fn target_position(&self, name: &str) -> Result<usize> {
-        self.targets
-            .iter()
-            .position(|target| target.name == name)
+        self.lookup(name, &mut crate::NativeIndexWork(None))?
             .ok_or_else(|| Error::Invalid(format!("'{name}' is not a provisioned target")))
+    }
+
+    fn lookup<W: acyclic_collections::IndexReadWork>(
+        &self,
+        name: &str,
+        work: &mut W,
+    ) -> std::result::Result<Option<usize>, W::Error> {
+        self.targets
+            .matches(name.as_bytes(), |_| false, work)
+            .map(|matches| matches.exact.map(|matched| matched.position))
     }
 
     fn target_at(&self, position: usize) -> Result<&ProvisionedTarget> {
         self.targets
+            .entries()
             .get(position)
             .ok_or_else(|| Error::Invalid("admitted Machine target is missing".into()))
     }
