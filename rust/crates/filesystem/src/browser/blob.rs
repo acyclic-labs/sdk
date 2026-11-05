@@ -5,38 +5,14 @@ use crate::kernel::allocation::{
     retained::{Retained, RetainedAllocation},
 };
 use crate::{CancellationToken, ObjectStoreError, WorkCounters};
-use acyclic_stream::completion::{Completion, Producer};
+use acyclic_stream::completion::Completion;
 use acyclic_stream::{OwnedBytes, javascript_bytes};
-use std::{
-    cell::RefCell,
-    future::Future,
-    pin::Pin,
-    task::{Context, Poll},
-};
+use std::{cell::RefCell, future::Future, pin::Pin, task::Poll};
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::Blob;
 
 type RawBuffer = Retained<Result<JsValue, JsValue>>;
-
-struct Physical<F: Future> {
-    future: Pin<Box<F>>,
-    producer: Option<Producer<F::Output, RetainedAllocation>>,
-    // The original future is destroyed before its admission retires.
-    _storage: RetainedAllocation,
-}
-
-impl<F: Future> Future for Physical<F> {
-    type Output = ();
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        let value = std::task::ready!(self.future.as_mut().poll(cx));
-        if let Some(producer) = self.producer.take() {
-            producer.publish(value);
-        }
-        Poll::Ready(())
-    }
-}
 
 /// Materializes one actual Blob on the caller's original work and allocation
 /// ledger. Cancellation stops delivery; a submitted physical read retains its
@@ -166,18 +142,16 @@ where
         RetainedAllocation::claim(bytes as u64, 1, &mut accounting.borrow_mut())
     })
     .map_err(object_error)?;
-    let storage = RetainedAllocation::claim(
-        std::mem::size_of::<F>() as u64,
-        1,
-        &mut accounting.borrow_mut(),
-    )
-    .map_err(object_error)?;
-    accounting.borrow_mut().charge(work).map_err(object_error)?;
-    acyclic_stream::runtime::PlatformExecutor.spawn_owned(Physical {
-        future: Box::pin(start()?),
-        producer: Some(producer),
-        _storage: storage,
-    });
+    let operation = producer.operation(
+        |bytes| {
+            let storage = RetainedAllocation::claim(bytes as u64, 1, &mut accounting.borrow_mut())
+                .map_err(object_error)?;
+            accounting.borrow_mut().charge(work).map_err(object_error)?;
+            Ok::<_, ObjectStoreError>(storage)
+        },
+        start,
+    )?;
+    acyclic_stream::runtime::PlatformExecutor.spawn_owned(operation);
     wait(&completion, accounting, cancellation).await?;
     let (_, raw, control) = completion
         .try_take()
