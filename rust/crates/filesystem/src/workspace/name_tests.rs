@@ -27,8 +27,20 @@ async fn creation_retains_complete_name_backing_on_original_accounting()
     ] {
         let cancellation = CancellationToken::new();
         *authority.replay_minimum.lock().unwrap() = Some(canonical.len() as u64 + header);
-        let created = fs.create_workspace(input, budget, &cancellation).await?;
-        assert_eq!(created.value.name().as_str(), canonical);
+        let created = fs
+            .create_workspace_with_operation::<_, (), WorkspaceError>(
+                input,
+                crate::VolumeInitialization::new(
+                    crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+                    None,
+                ),
+                crate::OperationId::new(),
+                budget,
+                &cancellation,
+                None,
+            )
+            .await?;
+        assert_eq!(created.value.workspace().name().as_str(), canonical);
         created.work.verify(budget)?;
         assert!(authority.replay_minimum.lock().unwrap().is_none());
     }
