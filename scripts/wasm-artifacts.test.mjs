@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -20,6 +20,10 @@ test("artifact trees retain nested snippets and refuse changed bytes or symlinks
     writeFileSync(join(output, "snippets", "stale", "inline.js"), "previous build");
     assert.deepEqual(copyWasmArtifacts(source, output), receipt);
     assert.deepEqual(wasmArtifactInventory(wasmArtifactFiles(output)), receipt);
+    utimesSync(join(output, snippet), 1, 1);
+    const unchanged = statSync(join(output, snippet), { bigint: true }).mtimeNs;
+    assert.deepEqual(copyWasmArtifacts(source, output), receipt);
+    assert.equal(statSync(join(output, snippet), { bigint: true }).mtimeNs, unchanged);
     writeFileSync(join(output, snippet), "modified snippet");
     assert.notDeepEqual(wasmArtifactInventory(wasmArtifactFiles(output)), receipt);
     for (const present of [true, false]) {

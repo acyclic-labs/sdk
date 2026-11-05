@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildContractTargets, captureContractCommand, contractTargetOutputs } from "./contract-targets.mjs";
 import { workspaceManifests } from "./package-closure.mjs";
+import { writeChanged } from "./generated-bindings.mjs";
 
 // Rust-owned contracts mirrored into TypeScript. Each module lists the Rust
 // targets it reads as [package, kind, name] and renders their stdout into
@@ -103,7 +104,7 @@ try {
     for (const [relative, content] of Object.entries(files)) {
       const path = join(root, relative);
       const baseline = relative.startsWith("fixtures/") || relative.startsWith("rust/crates/harness/fixtures/");
-      if (mode === "write" && !baseline) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, content); }
+      if (mode === "write" && !baseline) writeChanged(path, content);
       else if (!existsSync(path) || !Buffer.from(content).equals(readFileSync(path))) stale.push(relative);
     }
     report.generators.push({ name: modules[index], execute_ms, render_compare_ms: performance.now() - renderStart });

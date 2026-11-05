@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -27,6 +27,7 @@ test("the generator compares executed bytes and records failure without changing
     put("scripts/generate-contracts.mjs", generator);
     put("scripts/contract-targets.mjs", source("contract-targets.mjs"));
     put("scripts/package-closure.mjs", source("package-closure.mjs"));
+    put("scripts/generated-bindings.mjs", source("generated-bindings.mjs"));
     put("package.json", JSON.stringify({ workspaces: [] }));
     for (const [, name] of generator.matchAll(/^  "([^"]+\.mjs)",/gm)) {
       put(`scripts/${name}`, name === "generate-actors-routes.mjs"
@@ -76,6 +77,16 @@ JSON.parse = (text, ...args) => {
     const receipt = () => JSON.parse(readFileSync(join(root, "diagnostics/observability/generated-contracts.json"), "utf8"));
     const success = run();
     assert.equal(success.status, 0, success.stderr);
+    // The real exporter repairs changed output and preserves matching output.
+    // An old timestamp makes an unconditional write observable without a sleep.
+    put("contract.txt", "stale\n");
+    const write = () => spawnSync(process.execPath, [join(root, "scripts/generate-contracts.mjs"), "write"], { cwd: root, env, encoding: "utf8" });
+    assert.equal(write().status, 0);
+    assert.equal(readFileSync(join(root, "contract.txt"), "utf8"), "current\n");
+    utimesSync(join(root, "contract.txt"), 1, 1);
+    const unchanged = statSync(join(root, "contract.txt"), { bigint: true }).mtimeNs;
+    assert.equal(write().status, 0);
+    assert.equal(statSync(join(root, "contract.txt"), { bigint: true }).mtimeNs, unchanged);
     assert.equal(receipt().status, "success");
     assert.equal(receipt().source_commit, sourceSha);
     assert.equal(receipt().artifacts.filter(item => item.requested).length, 1);

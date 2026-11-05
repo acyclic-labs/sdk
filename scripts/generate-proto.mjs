@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { compatibilityArtifacts, packagedTypeScriptBindings, retiredTypeScriptBindingPackages, writeChanged } from "./generated-bindings.mjs";
@@ -56,7 +56,6 @@ export function generateProto(packages = new Set([...packagedTypeScriptBindings.
           let expected = outputs.get(directory);
           if (!expected) { expected = new Set(); outputs.set(directory, expected); }
           expected.add(destination);
-          mkdirSync(dirname(destination), { recursive: true });
           writeChanged(destination, bytes);
         }
       }

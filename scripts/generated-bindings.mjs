@@ -1,9 +1,37 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, relative } from "node:path";
 
 export const writeChanged = (path, content) => {
   const bytes = typeof content === "string" ? Buffer.from(content) : content;
-  if (!existsSync(path) || !readFileSync(path).equals(bytes)) writeFileSync(path, bytes);
+  if (!existsSync(path) || !readFileSync(path).equals(bytes)) {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, bytes);
+  }
 };
+
+// Exporters overwrite private output; one publisher preserves unchanged sources.
+export async function generateFiles(destination, render, prune = []) {
+  const temporary = mkdtempSync(join(tmpdir(), "sdk-generation-"));
+  try {
+    await render(temporary);
+    const current = new Set();
+    for (const entry of readdirSync(temporary, { recursive: true, withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const path = join(entry.parentPath, entry.name);
+      const name = relative(temporary, path);
+      current.add(name);
+      writeChanged(join(destination, name), readFileSync(path));
+    }
+    for (const directory of prune.map(name => join(destination, name))) {
+      if (!existsSync(directory)) continue;
+      for (const entry of readdirSync(directory, { recursive: true, withFileTypes: true })) {
+        const path = join(entry.parentPath, entry.name);
+        if (entry.isFile() && !current.has(relative(destination, path))) rmSync(path);
+      }
+    }
+  } finally { rmSync(temporary, { recursive: true, force: true }); }
+}
 
 // Canonical generation inputs and their published copies live here.
 // Every family that negotiates a protocol ships the shared handshake schema.

@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { writeChanged } from "./generated-bindings.mjs";
 
 export function sha256(payload) {
   return createHash("sha256").update(payload).digest("hex");
@@ -131,7 +132,7 @@ export function copyWasmArtifacts(source, output) {
   const previous = existsSync(output) ? [...wasmArtifactPaths(output, { receipt: true })] : [];
   for (const path of previous) if (!current.has(path)) unlinkSync(join(output, path));
   mkdirSync(output, { recursive: true });
-  cpSync(source, output, { recursive: true });
+  for (const [path, bytes] of wasmArtifactFiles(source)) writeChanged(join(output, path.slice("generated/wasm/".length)), bytes);
   return artifacts;
 }
 

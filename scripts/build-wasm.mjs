@@ -1,11 +1,12 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { packageClosure } from "./package-closure.mjs";
 import { copyWasmArtifacts } from "./archive-utils.mjs";
+import { writeChanged } from "./generated-bindings.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // Manual caller-array copies must stay behind the admitted byte snapshot.
@@ -39,7 +40,7 @@ const stripHarnessClosureShims = output => {
     const declaration = resolve(output, name);
     const source = readFileSync(declaration, "utf8");
     const normalized = source.replace(closureInvokeShim, "");
-    if (normalized !== source) writeFileSync(declaration, normalized);
+    if (normalized !== source) writeChanged(declaration, normalized);
   }
 };
 
@@ -164,7 +165,7 @@ for (const name of targets) {
       "--remove-name-section", "--remove-producers-section",
     ]);
     postprocess?.(bindings);
-    writeFileSync(stamp, key);
+    writeChanged(stamp, key);
   }
   const artifacts = copyWasmArtifacts(bindings, output);
   if (producer) {
@@ -184,7 +185,7 @@ for (const name of targets) {
       receipt.source_commit = revision;
     }
     const receiptBytes = `${JSON.stringify(receipt, null, 2)}\n`;
-    writeFileSync(resolve(output, "producer-receipt.json"), receiptBytes);
-    writeFileSync(cachedReceipt, receiptBytes);
+    writeChanged(resolve(output, "producer-receipt.json"), receiptBytes);
+    writeChanged(cachedReceipt, receiptBytes);
   }
 }
