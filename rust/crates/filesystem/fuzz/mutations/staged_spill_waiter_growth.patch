@@ -1,0 +1,8 @@
+diff --git a/rust/crates/filesystem/src/kernel/allocation/accounting.rs b/rust/crates/filesystem/src/kernel/allocation/accounting.rs
+--- a/rust/crates/filesystem/src/kernel/allocation/accounting.rs
++++ b/rust/crates/filesystem/src/kernel/allocation/accounting.rs
+@@ -77,3 +77,1 @@
+-            if caller_wait.is_none() {
+-                caller_wait = Some(self.cancellation_wait(cancellation)?);
+-            }
++            caller_wait = Some(self.cancellation_wait(cancellation)?);
