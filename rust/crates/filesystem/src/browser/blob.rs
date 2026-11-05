@@ -1,4 +1,4 @@
-//! Physical browser reads retain their original funding through settlement.
+//! Physical browser operations retain their original funding through settlement.
 use crate::async_storage::object_error;
 use crate::kernel::allocation::{
     KernelAccounting,
@@ -19,20 +19,20 @@ use web_sys::Blob;
 
 type RawBuffer = Retained<Result<JsValue, JsValue>>;
 
-struct Read {
-    future: JsFuture,
-    completion: Option<(Producer<RawBuffer, RetainedAllocation>, RetainedAllocation)>,
-    // The boxed producer frame is destroyed before its admission retires.
+struct Physical<F: Future> {
+    future: Pin<Box<F>>,
+    producer: Option<Producer<F::Output, RetainedAllocation>>,
+    // The original future is destroyed before its admission retires.
     _storage: RetainedAllocation,
 }
 
-impl Future for Read {
+impl<F: Future> Future for Physical<F> {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        let value = std::task::ready!(Pin::new(&mut self.future).poll(cx));
-        if let Some((producer, allocation)) = self.completion.take() {
-            producer.publish(Retained { value, allocation });
+        let value = std::task::ready!(self.future.as_mut().poll(cx));
+        if let Some(producer) = self.producer.take() {
+            producer.publish(value);
         }
         Poll::Ready(())
     }
@@ -128,33 +128,56 @@ async fn retained_promise(
     accounting: &RefCell<KernelAccounting<'_>>,
     cancellation: &CancellationToken,
 ) -> Result<RawBuffer, ObjectStoreError> {
-    let (completion, producer) = acyclic_stream::completion::channel(|bytes| {
-        RetainedAllocation::claim(bytes as u64, 1, &mut accounting.borrow_mut())
-    })
-    .map_err(object_error)?;
     let payload =
         RetainedAllocation::claim(length, u64::from(length != 0), &mut accounting.borrow_mut())
             .map_err(object_error)?;
-    let storage = RetainedAllocation::claim(
-        std::mem::size_of::<Read>() as u64,
-        1,
-        &mut accounting.borrow_mut(),
-    )
-    .map_err(object_error)?;
-    accounting
-        .borrow_mut()
-        .charge(WorkCounters {
+    complete(
+        || {
+            let promise = start()?;
+            Ok(async move { payload.into_value(JsFuture::from(promise).await) })
+        },
+        WorkCounters {
             backend_read_operations: 1,
             object_bytes_read: length,
             bytes_copied: length,
             ..Default::default()
-        })
-        .map_err(object_error)?;
-    acyclic_stream::runtime::PlatformExecutor.spawn_owned(Box::pin(Read {
-        future: JsFuture::from(start()?),
-        completion: Some((producer, payload)),
+        },
+        accounting,
+        cancellation,
+    )
+    .await
+}
+
+/// Owns one complete physical browser operation on its original ledger.
+/// Admission precedes `start`; the result slot and boxed future remain funded
+/// until the producer settles, even if delivery is cancelled or dropped.
+/// The future owns its payload leases and any required terminal cleanup.
+/// There is one producer and one completion event, with no retry or timer.
+pub async fn complete<F: Future + 'static>(
+    start: impl FnOnce() -> Result<F, ObjectStoreError>,
+    work: WorkCounters,
+    accounting: &RefCell<KernelAccounting<'_>>,
+    cancellation: &CancellationToken,
+) -> Result<F::Output, ObjectStoreError>
+where
+    F::Output: 'static,
+{
+    let (completion, producer) = acyclic_stream::completion::channel(|bytes| {
+        RetainedAllocation::claim(bytes as u64, 1, &mut accounting.borrow_mut())
+    })
+    .map_err(object_error)?;
+    let storage = RetainedAllocation::claim(
+        std::mem::size_of::<F>() as u64,
+        1,
+        &mut accounting.borrow_mut(),
+    )
+    .map_err(object_error)?;
+    accounting.borrow_mut().charge(work).map_err(object_error)?;
+    acyclic_stream::runtime::PlatformExecutor.spawn_owned(Physical {
+        future: Box::pin(start()?),
+        producer: Some(producer),
         _storage: storage,
-    }));
+    });
     wait(&completion, accounting, cancellation).await?;
     let (_, raw, control) = completion
         .try_take()
@@ -163,8 +186,8 @@ async fn retained_promise(
     raw.ok_or(ObjectStoreError::SharedReadUnavailable)
 }
 
-async fn wait(
-    completion: &Completion<RawBuffer, RetainedAllocation>,
+async fn wait<T>(
+    completion: &Completion<T, RetainedAllocation>,
     accounting: &RefCell<KernelAccounting<'_>>,
     cancellation: &CancellationToken,
 ) -> Result<(), ObjectStoreError> {

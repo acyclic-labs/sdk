@@ -1,6 +1,7 @@
 //! Physical Blob funding through withdrawal and final aliases.
 #![cfg(target_arch = "wasm32")]
 
+use acyclic_fs::kernel::RetainedAllocation;
 use acyclic_fs::kernel::allocation::{AllocationLedger, KernelAccounting};
 use acyclic_fs::{CancellationToken, ObjectStoreError, WorkBudget, WorkCounters};
 use futures::FutureExt;
@@ -97,7 +98,7 @@ async fn physical_blob_custody_survives_withdrawal_and_final_alias() -> Result<(
             let bytes =
                 acyclic_fs::browser::blob_bytes(&blob, length as u64, &accounting, &cancellation)
                     .await
-                    .unwrap();
+                    .expect("physical producer retired before settlement");
             assert_eq!(&*bytes, expected.as_slice());
             let alias = bytes.clone();
             let funded = live(&accounting);
@@ -152,6 +153,57 @@ async fn physical_blob_custody_survives_withdrawal_and_final_alias() -> Result<(
                 live(&accounting),
                 baseline,
                 "settled abandoned producer retained storage"
+            );
+        }
+        // Withdrawing delivery during the first real Promise must not discard
+        // the continuation that owns the second physical step and its buffers.
+        for cancelled in [false, true] {
+            let first = held_blob(&expected);
+            let second = held_blob(&expected);
+            let first_blob = first.blob();
+            let second_blob = second.blob();
+            let cancellation = CancellationToken::new();
+            let payload =
+                RetainedAllocation::claim((2 * length) as u64, 2, &mut accounting.borrow_mut())
+                    .unwrap();
+            let mut operation = Box::pin(acyclic_fs::browser::complete(
+                || {
+                    Ok(async move {
+                        let first = JsFuture::from(first_blob.array_buffer()).await?;
+                        let second = JsFuture::from(second_blob.array_buffer()).await?;
+                        Ok::<_, JsValue>(payload.into_value((first, second)))
+                    })
+                },
+                WorkCounters::UNCHARGED,
+                &accounting,
+                &cancellation,
+            ));
+            let ready = JsFuture::from(first.ready()).fuse();
+            futures::pin_mut!(ready);
+            futures::select_biased! {
+                _ = operation.as_mut().fuse() => panic!("held physical pipeline completed"),
+                result = ready => { result?; }
+            }
+            assert_eq!(second.calls(), 0);
+            if cancelled {
+                cancellation.cancel();
+                assert!(matches!(operation.await, Err(ObjectStoreError::Cancelled)));
+            } else {
+                drop(operation);
+            }
+            JsFuture::from(first.release()).await?;
+            JsFuture::from(second.ready()).await?;
+            assert_eq!(first.calls(), 1);
+            assert_eq!(second.calls(), 1);
+            assert!(
+                live(&accounting) >= baseline + (2 * length) as u64,
+                "withdrawal retired an unfinished physical pipeline"
+            );
+            JsFuture::from(second.release()).await?;
+            assert_eq!(
+                live(&accounting),
+                baseline,
+                "completed physical pipeline retained storage"
             );
         }
     }
