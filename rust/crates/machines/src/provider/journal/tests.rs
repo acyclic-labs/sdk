@@ -400,14 +400,20 @@ async fn machines_call_has_one_terminal_and_never_reenters_accepted_work()
     ));
     assert_eq!(entered.get(), 1);
 
-    // A logical no-op needs only the terminal commit, joined with its state.
+    // A logical completion needs only the terminal commit, joined with its state.
     let logical = IdempotencyKey::new();
     assert!(matches!(
         journal.begin(logical, digest, None, || Ok(|| {})).await?,
         Admission::Original(None)
     ));
     journal
-        .finish(logical, digest, None, &machine, outcome)
+        .finish(
+            logical,
+            digest,
+            None,
+            &machine,
+            MutationOutcome::VolumeAttached(machine.clone()),
+        )
         .await?;
     let logical_path = journal.call(logical)?;
     assert_eq!(streams.head(logical_path.log().clone()).await?.tail, 1);
@@ -415,6 +421,23 @@ async fn machines_call_has_one_terminal_and_never_reenters_accepted_work()
         journal.inspect(OperationId(logical.0)).await?.phase,
         OperationPhase::Succeeded
     );
+    // Read and fold the original committed terminal, then retain its decoded
+    // observation directly. The former result clone replaced these allocations.
+    let snapshot = journal.existing_call(&logical_path).await?;
+    let Some(MutationOutcome::VolumeAttached(decoded)) = &snapshot.completed else {
+        panic!("original terminal must carry the observation");
+    };
+    assert!(!decoded.endpoints.is_empty());
+    let endpoints = decoded.endpoints.as_ptr();
+    let name = decoded.endpoints[0].name.as_ptr();
+    let uri = decoded.endpoints[0].uri.as_ptr();
+    let MutationOutcome::VolumeAttached(retained) = snapshot.outcome(logical)? else {
+        panic!("original observation result");
+    };
+    assert_eq!(retained.endpoints.as_ptr(), endpoints);
+    assert_eq!(retained.endpoints[0].name.as_ptr(), name);
+    assert_eq!(retained.endpoints[0].uri.as_ptr(), uri);
+    assert_eq!(retained, machine);
     Ok(())
 }
 
