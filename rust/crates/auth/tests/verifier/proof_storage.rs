@@ -13,9 +13,8 @@ fn protected_buffers_are_scrubbed_before_deallocation() {
     let library = directory.path().join("scrub.so");
     let compiler = Command::new("cc")
         .args(["-shared", "-fPIC", "-O2", "-Wall", "-Wextra", "-Werror"])
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/common/scrub_allocator.c"
+        .arg(acyclic_test_support::crate_path!(
+            "tests/common/scrub_allocator.c"
         ))
         .arg("-o")
         .arg(&library)
