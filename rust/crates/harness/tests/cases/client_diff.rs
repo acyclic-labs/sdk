@@ -568,7 +568,7 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
     // scalar needs more bytes than that prefix did.
     let scalar_base = expensive_current.clone();
     fixture
-        .put("scalar.txt", "🙂ab\na🙂\nnext\n", "scalar")
+        .put("scalar.txt", "🙂ab\na🙂\nnext\nlast\n", "scalar")
         .await?;
     let scalar_current = fixture.source("scalar.txt").await?.generation;
     let publication = fixture
