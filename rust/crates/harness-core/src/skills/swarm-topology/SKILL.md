@@ -9,6 +9,13 @@ Split independent work when it saves more than the coordination costs. Sequence
 only real dependencies, and name the artifact that joins each branch. Choose a
 pattern below, then give each participant its inputs, output and ownership.
 
+For native `spawn {name, task, role}`, the `pipeline`, `group-chat`,
+`debate-ring` and `blackboard` roles select fresh coordinators through the
+ordinary template loader. Give the coordinator a self-contained task with its
+participants, artifacts and completion condition. Each delegates through the
+existing worker, advisor and reviewer roles. These role files guide behavior;
+they do not create channels or grant access to another participant's files.
+
 | Pattern | Use it for |
 | --- | --- |
 | [Pipeline](../../plugins/spawn/topologies/pipeline.md) | Successive transformations of one artifact |

@@ -2,6 +2,18 @@ Cases launch the shipping GraphCoder binary with an ordinary provider catalog an
 
 `pty-conversation` submits its first prompt and terminal-query replies together on the first terminal output bytes, before admitting a rendered frame, then checks both conversational turns. `pty-cancel-preparation` holds the acknowledged token-count request, observes two distinct thinking highlights, then cancels before any model dispatch and requires the animation to stop. Resume cases use the public text/JSONL and explicit terminal-resume contracts.
 
+`topology-pipeline`, `topology-group-chat`, `topology-debate-ring` and
+`topology-blackboard` select the embedded role files through native `spawn`.
+Their authored SDK conversations forward actual wait results into dependent
+briefs and follow-up messages. Group chat uses an explicitly attributed
+coordinator relay; the blackboard uses that coordinator's private home and an
+edit pinned to its original publication. These cases cover those compositions,
+not direct peer-channel grants or concurrent shared-board writers.
+`node scripts/qualify-topology-presets.mjs GRAPHCODER MOCK_MODEL FRESH_ABSOLUTE_OUTPUT`
+first selects generic workers instead: each unchanged conversation must fail at
+the actual provider request missing its role directive. It then restores the
+role selection and runs the same shipping cases. Windows selections run serially.
+
 Search seeds `.codex/search.json` under the selected settings root (`CODEX_HOME/search.json` otherwise). Fields are `provider` (`exa` or `tinyfish`), `api_keys` (provider id to key), and optional `endpoint`. The case points the ordinary HTTP adapter at the shared mock namespace; there is no search CLI flag or alternate executor.
 
 `pty-search-cancel-resume` waits for the acknowledged configured search HTTP request, cancels its held body with Escape and reopens the retained cancellation without redispatch. `node scripts/qualify-web-lifecycle.mjs /absolute/graphcoder` separately follows an actual search result into `url_fetch`, checks exact UTF-8 bytes and source URLs, completes with a citation and replays with provider/search/fetch dispatch disabled.
