@@ -20,6 +20,13 @@ pub fn check_workspace_name(data: &[u8]) {
     let mut old = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let decoded = WorkspaceName::with_accounting(text, &mut actual);
     let expected = reference::decode(text, &mut old, false, &mut |_, _, _| {});
+    let canonical = expected.as_ref().is_ok_and(|name| name.as_str() == text);
+    let mut validation = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    assert_eq!(
+        WorkspaceName::is_canonical(text, &mut validation).unwrap_or(false),
+        canonical,
+        "stored workspace names must already have exact canonical bytes"
+    );
     assert_eq!(
         outcome(decoded),
         outcome(expected),
