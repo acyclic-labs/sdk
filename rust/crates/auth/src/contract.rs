@@ -54,6 +54,14 @@ pub struct ResourceGrant {
     pub actions: Vec<String>,
 }
 
+impl ResourceGrant {
+    /// Validate the original resource and its action association without copying it.
+    pub fn validate(&self) -> Result<(), Error> {
+        crate::validation::resource(&self.resource)?;
+        crate::validation::grant(self)
+    }
+}
+
 /// Execution authority with a typed compute ceiling.
 #[acyclic_contract_derive::message(error = Error, file = AuthFile)]
 #[derive(Clone, Debug, PartialEq, TS)]

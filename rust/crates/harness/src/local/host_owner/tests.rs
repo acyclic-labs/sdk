@@ -123,6 +123,7 @@ async fn pi_native_session_lifecycle() -> Result<()> {
 /// interruption and merge: every turn is the child agent's own commit.
 async fn native_session_lifecycle(host: &str) -> Result<()> {
     let mut fixture = Fixture::for_host(host).await?;
+    let reference = "child".repeat(205);
     std::fs::write(
         fixture.checkout.path().join("instructions.md"),
         b"discovered in child view",
@@ -130,7 +131,7 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
     .map_err(storage)?;
     let spawned = fixture
         .session(
-            "child",
+            &reference,
             SessionAction::Spawn {
                 prompt: "initial".into(),
             },
@@ -142,7 +143,7 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
     assert_eq!(child.parent().as_ref(), Some(&fixture.parent));
     let sent = fixture
         .session(
-            "child",
+            &reference,
             SessionAction::Send {
                 prompt: "follow-up".into(),
             },
@@ -153,7 +154,7 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
     let parent = fixture.parent.clone();
     let next = || HostAction::Session {
         parent: parent.clone(),
-        reference: "child".into(),
+        reference: reference.clone(),
         action: SessionAction::Next,
         next: false,
     };
@@ -181,12 +182,18 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
     assert_eq!(recovered, expected);
     let first = recovered;
     assert!(matches!(
-        fixture.session("child", SessionAction::Next).await,
+        fixture.session(&reference, SessionAction::Next).await,
         Err(Error::Conflict(_))
     ));
     assert_eq!(fixture.owner.dispatch(operation, next()).await?, first);
     assert!(
-        fixture.merge("child").await.is_err(),
+        fixture
+            .session(&reference, SessionAction::Next)
+            .await
+            .is_err()
+    );
+    assert!(
+        fixture.merge(&reference).await.is_err(),
         "a running session cannot merge"
     );
     assert_eq!(
@@ -235,7 +242,7 @@ not json naming a session_id
     );
     let failed = fixture
         .session(
-            "child",
+            &reference,
             SessionAction::Complete {
                 claim: claim(&first)?,
                 outcome: crate::Outcome::Failed {
@@ -260,7 +267,7 @@ not json naming a session_id
         Some(&json!(diagnostic)),
         "owner restart must preserve the complete native outcome"
     );
-    let next = fixture.session("child", SessionAction::Next).await?;
+    let next = fixture.session(&reference, SessionAction::Next).await?;
     assert_eq!(next["turn"], 2);
     assert_eq!(next["prompt"], "follow-up");
     assert_eq!(
@@ -274,7 +281,7 @@ not json naming a session_id
     );
     fixture
         .session(
-            "child",
+            &reference,
             SessionAction::Control {
                 control: Control::Interrupt,
             },
@@ -282,7 +289,7 @@ not json naming a session_id
         .await?;
     let settled = fixture
         .session(
-            "child",
+            &reference,
             SessionAction::Complete {
                 claim: claim(&next)?,
                 outcome: crate::Outcome::Cancelled,
@@ -293,7 +300,7 @@ not json naming a session_id
     assert_eq!(settled["control"], "interrupt");
     fixture
         .session(
-            "child",
+            &reference,
             SessionAction::Control {
                 control: Control::Resume,
             },
@@ -301,19 +308,19 @@ not json naming a session_id
         .await?;
     assert!(
         fixture
-            .session("child", SessionAction::Next)
+            .session(&reference, SessionAction::Next)
             .await?
             .is_null()
     );
     fixture
         .session(
-            "child",
+            &reference,
             SessionAction::Send {
                 prompt: "complete output".into(),
             },
         )
         .await?;
-    let final_turn = fixture.session("child", SessionAction::Next).await?;
+    let final_turn = fixture.session(&reference, SessionAction::Next).await?;
     let final_claim = claim(&final_turn)?;
     // Use the original staged event log as an attachment, not a fabricated file.
     let mut output = crate::executor::TurnOutput::new(String::new(), json!({"native": host}), 1);
@@ -321,43 +328,12 @@ not json naming a session_id
         file: serde_json::from_value(failed["events"].clone()).map_err(storage)?,
         label: Some("original native log".into()),
     });
-    let overhead = serde_json::to_vec(&agents::Event::Complete {
-        operation: final_claim.operation,
-        outcome: crate::Outcome::Succeeded(output.clone()),
-        events: None,
-    })
-    .map_err(storage)?
-    .len();
-    output.text = "s".repeat(agents::MAXIMUM_BYTES as usize - overhead);
-    assert_eq!(
-        serde_json::to_vec(&agents::Event::Complete {
-            operation: final_claim.operation,
-            outcome: crate::Outcome::Succeeded(output.clone()),
-            events: None,
-        })
-        .map_err(storage)?
-        .len(),
-        agents::MAXIMUM_BYTES as usize
-    );
-    let mut oversized = output.clone();
-    oversized.text.push('x');
-    assert!(matches!(
-        fixture
-            .session(
-                "child",
-                SessionAction::Complete {
-                    claim: final_claim.clone(),
-                    outcome: crate::Outcome::Succeeded(oversized),
-                }
-            )
-            .await,
-        Err(Error::Invalid(_))
-    ));
+    output.text = "complete output ".repeat(10_000);
     let outcome = crate::Outcome::Succeeded(output);
     let expected = serde_json::to_value(&outcome).map_err(storage)?;
     let completed = fixture
         .session(
-            "child",
+            &reference,
             SessionAction::Complete {
                 claim: final_claim,
                 outcome,
@@ -385,14 +361,14 @@ not json naming a session_id
     );
     let sent = fixture
         .session(
-            "child",
+            &reference,
             SessionAction::Send {
                 prompt: "after complete output".into(),
             },
         )
         .await?;
     assert_eq!(sent.pointer("/results/0/outcome"), Some(&expected));
-    let after = fixture.session("child", SessionAction::Next).await?;
+    let after = fixture.session(&reference, SessionAction::Next).await?;
     assert_eq!(after["turn"], 4);
     assert_eq!(after["prompt"], "after complete output");
     assert_eq!(
@@ -406,14 +382,14 @@ not json naming a session_id
     );
     fixture
         .session(
-            "child",
+            &reference,
             SessionAction::Complete {
                 claim: claim(&after)?,
                 outcome: crate::Outcome::Cancelled,
             },
         )
         .await?;
-    fixture.merge("child").await?;
+    fixture.merge(&reference).await?;
     assert_eq!(
         std::fs::read(fixture.checkout.path().join("child.txt")).map_err(storage)?,
         b"native"
@@ -759,8 +735,8 @@ async fn native_prompts_resolve_through_the_committed_reply() -> Result<()> {
     let complete = SessionAction::Complete {
         claim: claim(&turn)?,
         outcome: crate::Outcome::Succeeded(crate::executor::TurnOutput::new(
-            "done".into(),
-            Value::Null,
+            "complete result ".repeat(400),
+            json!({"preserve": "native metadata"}),
             1,
         )),
     };
@@ -769,7 +745,11 @@ async fn native_prompts_resolve_through_the_committed_reply() -> Result<()> {
     assert_eq!(answered["reply"]["kind"], "answered");
     assert_eq!(
         answered.pointer("/reply/outcome/Succeeded/text"),
-        Some(&json!("done"))
+        Some(&json!("complete result ".repeat(400)))
+    );
+    assert_eq!(
+        answered.pointer("/reply/outcome/Succeeded/metadata"),
+        Some(&json!({"preserve": "native metadata"}))
     );
     let send = SessionAction::Send {
         prompt: "third".into(),

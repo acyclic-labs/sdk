@@ -89,8 +89,7 @@ impl Pool {
                 0,
                 Body::Credential(wire::SessionCredential { slot, credential }),
             );
-            let bytes = value.encoded_len();
-            link.sender.push(value, bytes)?;
+            link.sender.push(value)?;
         }
         self.links.insert(node.clone(), link);
         self.read(node.clone(), response);
@@ -132,7 +131,7 @@ impl Pool {
             .observation
             .in_scope(|| super::super::runtime::OperationSpan::new_root(tracing::Span::none()));
         let progress = Arc::clone(&route.progress);
-        // Hello carries the first interest without going through subscribe().
+        // The opening carries the first interest without going through subscribe().
         // Link its physical root while the original cause is still alive;
         // follows_from retains no caller span across credential/connection I/O.
         let mut observation = route.observation.in_scope(|| {
@@ -147,7 +146,7 @@ impl Pool {
             Dial {
                 opening: Arc::clone(&progress),
                 future: Box::pin(context.scope(async move {
-                    let mut attempt = 0_u32;
+                    let mut attempt = 0_u64;
                     let outcome = loop {
                         let result = observation
                             .operation
@@ -181,7 +180,9 @@ impl Pool {
                                     break Err(error);
                                 }
                                 attempt = attempt.saturating_add(1);
-                                executor.sleep(10).await;
+                                if executor.sleep(10).await.is_err() {
+                                    break Err(StreamError::Unavailable);
+                                }
                                 let retry = Observation::session(attempt);
                                 retry
                                     .operation
@@ -240,8 +241,7 @@ impl Pool {
         {
             wire_codec::session::grant_credit(&mut link.credit, grant)?;
         }
-        let bytes = value.encoded_len();
-        let queued = link.sender.push(value, bytes);
+        let queued = link.sender.push(value);
         if let Err(error) = &queued {
             // A full control queue cannot safely retain remote interests after
             // cancellation. Evict this node's session, never the shared pool.
@@ -281,8 +281,7 @@ impl Pool {
                 remove: Vec::new(),
             }),
         );
-        let bytes = value.encoded_len();
-        match link.sender.push(value, bytes) {
+        match link.sender.push(value) {
             Ok(()) => link.revision = revision,
             Err(error) => self.reject(id, error),
         }
@@ -458,11 +457,16 @@ impl Pool {
         );
         if registering && let Some(mut dial) = self.dials.remove(destination) {
             let executor = self.executor.clone();
+            let destination = destination.to_owned();
+            let failed_destination = destination.clone();
+            let epoch = self.dial_epoch;
             // Back off after EOF so a repeatedly disconnected transport yields
             // to cancellation and other work before opening another RPC.
             let opening = dial.future;
             dial.future = Box::pin(async move {
-                executor.sleep(10).await;
+                if executor.sleep(10).await.is_err() {
+                    return (failed_destination, epoch, Err(StreamError::Unavailable));
+                }
                 opening.await
             });
             self.dials.insert(destination.into(), dial);
@@ -480,18 +484,13 @@ async fn handshake(
     progress: Arc<Progress>,
 ) -> Result<Ready, StreamError> {
     progress.reset_opening();
-    let sender = Arc::new(Outbound::new(crate::MAX_ITEMS, crate::MAX_COMMAND_BYTES));
+    let sender = Arc::new(Outbound::new());
     let credit = wire::SessionWindow {
         bytes: crate::MAX_COMMAND_BYTES as u64,
         frames: u32::try_from(crate::MAX_ITEMS).map_err(|_| StreamError::Capacity)?,
     };
     let opening_credentials = credentials.clone();
-    let credentials = match credentials.keys().next_back().copied() {
-        Some(last) => (0..=last)
-            .map(|slot| credentials.get(&slot).cloned().unwrap_or_default())
-            .collect::<Vec<_>>(),
-        None => vec![],
-    };
+
     let opening_subscription = interest
         .upsert
         .first()
@@ -502,19 +501,18 @@ async fn handshake(
         0,
         Body::Hello(wire::SessionHello {
             version: super::super::VERSION,
-            interest: Some(interest),
+            interest: None,
             client_id: identity,
             destination_node: destination.into(),
             receive_bytes: credit.bytes,
             receive_frames: credit.frames,
-            credentials,
+            credentials: Vec::new(),
         }),
     );
     let bytes = hello.encoded_len();
     if bytes > crate::MAX_COMMAND_BYTES {
         return Err(StreamError::LimitExceeded);
     }
-    sender.push(hello, bytes)?;
     // Ownership is installed before either credential or connection I/O await.
     let link = Link {
         opening_subscription,
@@ -530,23 +528,29 @@ async fn handshake(
         credit,
         input: Arc::new(input::Window::new()),
     };
-    // Credentials can suspend before the transport consumes its first frame.
-    // Admit only a still-owned first interest through the same queue that
-    // fences link retirement. Later cancellations use removal after Welcome.
-    let input: transport::Requests = Box::pin(stream::unfold(
-        (Arc::clone(&link.sender), Some(progress)),
-        |(sender, opening)| async move {
-            let mut frame = sender.next().await.ok()?;
-            if let Some(progress) = opening
-                && !progress.admit_opening()
-                && let Some(Body::Hello(hello)) = &mut frame.body
-                && let Some(interest) = &mut hello.interest
-            {
-                interest.upsert.clear();
-            }
-            Some((frame, (sender, None)))
-        },
-    ));
+    // Credentials are individual bounded frames: sparse slot identities and the
+    // aggregate credential set never expand the opening frame. They precede
+    // the original first interest and any updates queued during the handshake.
+    let opening = stream::once(future::ready(hello));
+    let credentials = stream::iter(credentials).map(|(slot, credential)| {
+        frame(
+            0,
+            0,
+            Body::Credential(wire::SessionCredential { slot, credential }),
+        )
+    });
+    let interest = stream::once(async move {
+        let mut interest = interest;
+        if !progress.admit_opening() {
+            interest.upsert.clear();
+        }
+        frame(0, 0, Body::Interest(interest))
+    });
+    let controls = stream::unfold(Arc::clone(&link.sender), |sender| async move {
+        sender.next().await.ok().map(|frame| (frame, sender))
+    });
+    let input: transport::Requests =
+        Box::pin(opening.chain(credentials).chain(interest).chain(controls));
     let mut response = link.channel.session(input).await?;
     let welcome = response
         .next()

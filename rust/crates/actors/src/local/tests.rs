@@ -5,6 +5,7 @@ use bytes::Bytes;
 use futures::TryStreamExt;
 use proptest::prelude::*;
 
+mod disposition;
 mod hot_path;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -46,6 +47,34 @@ async fn fork_replay_retains_original_cut_after_parent_and_input_progress() -> T
     };
     // The original operation commits, but its caller loses the reply.
     store.fork_actor(&[], &request).await?;
+    // The former acceptance identity must not select this generation's
+    // changed exclusion semantics. A restored v1 key fails this real retained
+    // envelope oracle, without a migration reader or synthetic provider.
+    {
+        use prost::Message as _;
+        use sha2::Digest as _;
+        let mut old = sha2::Sha256::new();
+        old.update(b"acyclic.actors.fork.v1\0");
+        old.update(store.path(&child)?.as_str().as_bytes());
+        old.update([0]);
+        old.update(request.encode_to_vec());
+        assert!(
+            provider
+                .inspect_idempotency(IdempotencyKey::new(old.finalize().to_vec())?)
+                .await?
+                .is_none()
+        );
+        let current = provider
+            .inspect_idempotency(fork_key(&store.path(&child)?, &request)?)
+            .await?
+            .ok_or("missing versioned acceptance")?;
+        let acyclic_stream::IdempotencyOutcome::Commit(envelope) = current.outcome else {
+            return Err("fork acceptance is not a commit".into());
+        };
+        assert!(envelope.mutations.iter().any(|mutation| matches!(mutation,
+            acyclic_stream::CommittedMutation::Fork(fork)
+                if super::disposition::is_fork_exclusion(&fork.exclude))));
+    }
     let accepted = store.load(&child).await?;
     assert_eq!(
         accepted.state().ok_or("missing child")?.cursor("inbox"),
@@ -188,11 +217,11 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
     let before_refusal = provider.requests();
     let refusal = acyclic_test_support::measure(|| {
         assert!(matches!(
-            store.prepare_invocation_failure(
+            store.prepare_failed_input(
                 &before,
                 1,
                 &trigger,
-                Some(ticket.record()),
+                ticket.record(),
                 &crate::guest::GuestError::PreconditionChanged,
                 failure_key,
             ),
@@ -244,11 +273,11 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
             Err(Error::Handler(crate::guest::GuestError::UnsupportedFormat))
         ));
         assert!(matches!(
-            store.prepare_invocation_failure(
+            store.prepare_failed_input(
                 &before,
                 1,
                 &record(0),
-                Some(&obsolete),
+                &obsolete,
                 &crate::guest::GuestError::Decode("failed".into()),
                 key("invoked/unsupported-failure")?
             ),
@@ -741,14 +770,19 @@ async fn place<P: StreamProvider + ?Sized>(
     store: &Store<P>,
     address: &ActorReference,
 ) -> Result<(), Error> {
-    let mut prepared = PreparedPublish::foreign(key("create")?);
+    let path = store.path(address)?;
+    let mut prepared = PreparedPublish::foreign(key(&format!("create/{path}"))?);
     for effect in store.create(address, inbox(address)?, None)? {
         prepared.join(effect)?;
     }
     let created = store.provider().commit(prepared.into_request()?).await?;
     PreparedPublish::settle(&created)?;
     store
-        .claim(&store.load(address).await?, 1, key("place")?)
+        .claim(
+            &store.load(address).await?,
+            1,
+            key(&format!("place/{path}"))?,
+        )
         .await
         .map(|_| ())
 }
@@ -1127,10 +1161,17 @@ async fn state_transaction_flush_is_one_durable_fenced_journal_commit() -> TestR
         let mut binding = store.bind_state(initial, 1)?;
         assert_eq!(binding.seed()?.journal_tail, "0");
         binding.apply(crate::guest::ActorStateCommit {
-            writes: vec![crate::guest::ActorMetadataWrite {
-                key: "metadata".into(),
-                value: Bytes::from_static(b"accepted"),
-            }],
+            writes: vec![
+                crate::guest::ActorMetadataWrite {
+                    key: "metadata".into(),
+                    value: Bytes::from_static(b"accepted"),
+                },
+                crate::guest::ActorMetadataWrite {
+                    key: "removed".into(),
+                    value: Bytes::from_static(b"delete-after-commit"),
+                },
+            ],
+            deletions: vec!["absent".into()],
             journal_from: "0".into(),
             journal: vec![Bytes::from_static(b"first"), Bytes::from_static(b"second")],
             alarm: crate::guest::ActorStateAlarm::Set {
@@ -1142,10 +1183,12 @@ async fn state_transaction_flush_is_one_durable_fenced_journal_commit() -> TestR
                 state.get("metadata").map(Bytes::as_ref),
                 Some(b"accepted".as_slice())
             );
-            assert_eq!(state.entries().count(), 1);
+            assert_eq!(state.entries().count(), 2);
             Ok(())
         })?;
         let refused: Result<(), Error> = binding.transaction(|state| {
+            state.delete("metadata");
+            assert!(state.get("metadata").is_none());
             state.put("metadata".into(), Bytes::from_static(b"rolled-back"));
             state.append_journal(2, vec![Bytes::from_static(b"rolled-back")])?;
             state.alarm(None)?;
@@ -1202,6 +1245,17 @@ async fn state_transaction_flush_is_one_durable_fenced_journal_commit() -> TestR
                 key("state-transaction/checkpoint")?,
             )
             .await?;
+        // Deletion is part of the original packet and survives provider reopen.
+        let mut deleting = store.bind_state(store.load(&address).await?, 1)?;
+        deleting.apply(crate::guest::ActorStateCommit {
+            writes: vec![],
+            deletions: vec!["removed".into()],
+            journal_from: "2".into(),
+            journal: vec![],
+            alarm: crate::guest::ActorStateAlarm::Keep,
+        })?;
+        deleting.flush(key("state-transaction/delete")?).await?;
+        deleting.finish()?;
         // A changed native journal tail must refuse metadata and alarm too.
         let mut stale = store.bind_state(store.load(&address).await?, 1)?;
         let current = store.load(&address).await?;

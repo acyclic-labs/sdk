@@ -12,7 +12,7 @@ pub(super) fn plugin(instance: &str, matcher: Option<RequestMatch>) -> HookSpec 
             config: "{}".into(),
             matcher,
         },
-        timeout_ms: u64::MAX,
+        timeout_ms: None,
         failure: HookFailure::Block,
     }
 }

@@ -1,9 +1,10 @@
+import { commandOutput } from "./process-capture.mjs";
 // Formatting gate for every tracked Rust file: root-workspace members and the
 // standalone fuzz, proof, model and binding crates that `cargo fmt --all` never
 // visits. Each file is checked under the edition of its nearest Cargo.toml, as
 // `cargo fmt` would. Vendored crates and hash-bound historical source captures
 // are data, not current source: formatting them would invalidate their receipts.
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { dirname, relative, resolve, sep } from "node:path";
@@ -25,9 +26,9 @@ export function parseManifest(text) {
 // The planner uses Python's standard tomllib. Parse the entire manifest set in
 // one invocation, independently of the JavaScript runtime running this gate.
 export function parseManifests(texts) {
-  return JSON.parse(execFileSync(process.platform === "win32" ? "python" : "python3", [
+  return JSON.parse(commandOutput(process.platform === "win32" ? "python" : "python3", [
     fileURLToPath(new URL("./rustfmt-manifests.py", import.meta.url)),
-  ], { input: JSON.stringify(texts), encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }));
+  ], { input: JSON.stringify(texts), encoding: "utf8" }));
 }
 
 const nearest = (path, table) => {
@@ -39,7 +40,7 @@ const nearest = (path, table) => {
 
 // Groups the tracked Rust files under `root` by the edition cargo would format them with.
 export function filesByEdition(root) {
-  const list = (pattern) => execFileSync("git", ["ls-files", "-z", "--", pattern, VENDORED, CAPTURED_EVIDENCE], { cwd: root, encoding: "utf8" })
+  const list = (pattern) => commandOutput("git", ["ls-files", "-z", "--", pattern, VENDORED, CAPTURED_EVIDENCE], { cwd: root, encoding: "utf8" })
     .split("\0").filter(Boolean);
   const texts = Object.fromEntries(list("*Cargo.toml").filter((path) => /(^|\/)Cargo\.toml$/.test(path))
     .map((path) => [path, readFileSync(resolve(root, path), "utf8")]));

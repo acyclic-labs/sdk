@@ -4,7 +4,7 @@ The `native_claim_record` target includes the production claim codec directly.
 Its shared oracle and original writer corpus live under
 `rust/crates/native-runtime/tests/claim_codec`, inside the published crate.
 The fuzzer and capture example include this same oracle from there.
-It checks arbitrary bytes, writer round trips, bounded admission, torn writes,
+It checks arbitrary bytes, writer round trips without a whole-record ceiling, torn writes,
 checksum rejection, domain separation, all five field lengths and trailing data.
 Checksum-valid short bodies and invalid PID/token widths exercise grammar refusal
 without relying on a random checksum collision.
@@ -41,6 +41,9 @@ external-tool responses or evidence of an admitted OS process.
 | native-bytes | 70 | f0073edf49f0d5db735df34016dee2986a41c4b9a9177e889a13e5382f429a1d |
 | at-bound | 4096 | e305bedb50e4c1f83f6a5da59b873ec9f20066aab241701b8d25ec18b0994961 |
 | past-bound | 4097 | 350469ea2abda9aa05a144747fb0141f35d4333c6b8e48f3d79559a14e4ea541 |
+
+The historical `at-bound` and `past-bound` names identify unchanged 4096-byte
+and 4097-byte writer captures; both are valid records. They impose no limit.
 
 The ordinary `acyclic-native-runtime` integration test replays all four retained
 corpus files through the same `check` function used by the fuzzer:

@@ -54,7 +54,7 @@ pub(super) struct ContentPublication<'a> {
     pub path: &'a str,
     pub media_type: &'a str,
     pub display_name: &'a str,
-    pub maximum_bytes: u64,
+    pub maximum_bytes: Option<u64>,
     pub idempotency_key: &'a IdempotencyKey,
     pub internal_class: Option<InternalContentClass>,
     pub expected_generation: Option<&'a GenerationRef>,
@@ -168,7 +168,7 @@ mod tests {
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = work.live_allocation_bytes();
         let io = PreparationIo::from_native_work(&work)?;
-        let encoded = io.encode(&"q".repeat(128 * 1024), u64::MAX, false)?;
+        let encoded = io.encode(&"q".repeat(128 * 1024), None, false)?;
         let original = encoded.as_ptr();
         let copied = work.receipt().bytes_copied;
         let mut shared = None;

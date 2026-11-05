@@ -1,10 +1,11 @@
 use super::*;
 
-fn waiting_client() -> (Client, mpsc::Receiver<Command>) {
-    let (commands, receiver) = mpsc::channel(1);
+fn waiting_client() -> (Client, commands::Receiver) {
+    let (commands, receiver) = commands::channel(1);
     (
         Client {
             pool: PoolHandle {
+                executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
                 connections: super::super::super::Connections::new(),
                 commands,
                 removed: Arc::new(signal::Signal::new()),
@@ -14,8 +15,10 @@ fn waiting_client() -> (Client, mpsc::Receiver<Command>) {
                 attempt_epoch: Arc::new(AtomicU64::new(0)),
                 abandoned: Arc::new(gate::Gate::new()),
             },
+            registration_timeout: None,
             revisions: Arc::default(),
-        },
+        }
+        .with_registration_timeout(Some(10_000)),
         receiver,
     )
 }
@@ -355,5 +358,20 @@ fn negative_control_reports_physical_failures_as_normal_closure() -> TestResult 
         .downcast_ref::<String>()
         .ok_or("unexpected trace failure")?;
     assert!(message.contains("physical session outcomes must distinguish failure from closure"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn dispatch_shutdown_wakes_pending_open_credit() -> TestResult {
+    let (client, commands) = waiting_client();
+    let path = StreamPath::new("pending")?;
+    let mut first = Box::pin(client.follow_records(crate::FollowRequest::new(path.clone(), 0)));
+    let mut waiting = Box::pin(client.follow_records(crate::FollowRequest::new(path, 0)));
+    assert!(futures::poll!(first.as_mut()).is_pending());
+    assert!(futures::poll!(waiting.as_mut()).is_pending());
+    drop(commands);
+    assert!(matches!(waiting.await, Err(StreamError::Unavailable)));
+    assert!(matches!(first.await, Err(StreamError::Unavailable)));
+    assert_eq!(client.pool.active.load(Ordering::Acquire), 0);
     Ok(())
 }

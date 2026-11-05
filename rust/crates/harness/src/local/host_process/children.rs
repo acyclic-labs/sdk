@@ -24,7 +24,7 @@ use std::sync::{Mutex, PoisonError};
 use std::task::{Context, Poll, Waker};
 
 mod answer;
-use answer::{EVENT_LIMIT, NativeAnswer};
+use answer::NativeAnswer;
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod readiness_validation;
@@ -391,7 +391,7 @@ impl NativeChildren {
             process,
             claim,
             failure: None,
-            events: acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT),
+            events: acyclic_native_runtime::lines::LineBuffer::new(None),
             answer: NativeAnswer::default(),
             settlement: None,
             wake,

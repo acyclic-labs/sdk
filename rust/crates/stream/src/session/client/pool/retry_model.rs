@@ -9,7 +9,10 @@ impl Executor for Clock {
     fn spawn(&self, _: crate::BoxProviderFuture<'static, ()>) {
         panic!("this bounded driver owns all polling");
     }
-    fn sleep(&self, milliseconds: u32) -> crate::BoxProviderFuture<'static, ()> {
+    fn sleep(
+        &self,
+        milliseconds: u64,
+    ) -> crate::BoxProviderFuture<'static, Result<(), crate::runtime::SleepError>> {
         let release = Arc::clone(&self.release);
         let broken = self.broken;
         Box::pin(async move {
@@ -20,6 +23,7 @@ impl Executor for Clock {
             } else {
                 future::pending::<()>().await;
             }
+            Ok(())
         })
     }
 }

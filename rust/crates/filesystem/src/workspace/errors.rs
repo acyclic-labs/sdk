@@ -9,9 +9,6 @@ pub enum WorkspaceNameError {
     /// Dot names are reserved for namespace traversal prevention.
     #[error("workspace name is reserved")]
     Reserved,
-    /// Canonical UTF-8 exceeds the stable bound.
-    #[error("workspace name exceeds 255 UTF-8 bytes")]
-    TooLong,
     /// Names cannot contain separators or control characters.
     #[error("workspace name contains a path separator or control character")]
     InvalidCharacter,

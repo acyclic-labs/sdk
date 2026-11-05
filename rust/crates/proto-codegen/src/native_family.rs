@@ -231,6 +231,7 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
         "scripts/build-native-family.mjs",
         "scripts/assemble-native-family.mjs",
         "scripts/archive-utils.mjs",
+        "scripts/process-capture.mjs",
         "scripts/contract-targets.mjs",
         "scripts/filesystem-napi-types.mjs",
         "scripts/build-wasm.mjs",
@@ -251,7 +252,11 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
         if let Some(patches) = package_manifest.get("patchedDependencies") {
             for patch in patches.as_object().ok_or("patch dependencies must be an object")?.values() {
                 let path = patch.as_str().ok_or("patch paths must be strings")?;
-                roots.insert(relative(&root.join(path).canonicalize()?)?);
+                let canonical = relative(&root.join(path))?;
+                if canonical != path {
+                    return Err("dependency patch path must be canonical and relative".into());
+                }
+                roots.insert(canonical);
             }
         }
         Ok(())

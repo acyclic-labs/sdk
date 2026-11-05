@@ -3,31 +3,49 @@ use super::*;
 #[test]
 fn tool_json_handoffs_keep_sparse_map_custody_until_value_destruction() -> Result<()> {
     let source = serde_json::json!({"outer": [{"inner": "value"}]});
-    for encode in [false, true] {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
-        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
-        let (copied, custody) = if encode {
-            let (copied, custody) = value(&source, 4096, Some(&work))?;
-            (
-                copied,
-                custody.ok_or_else(|| Error::Invalid("missing JSON custody".into()))?,
-            )
-        } else {
-            clone_value(&source, Some(4096), &work)?
-        };
-        assert_eq!(copied, source);
-        let retained = retained_value_bytes(&copied)?;
-        assert_eq!(work.live_allocation_bytes(), baseline + retained);
-        // The old handoff resized custody to logical entries, losing the
-        // sparse BTreeMap slots while the returned Value was still alive.
-        assert!(crate::executor::json::json_value_logical_owned_bytes(&copied)? < retained);
-        drop(copied);
-        drop(custody);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+    for policy in [None, Some(4096)] {
+        for encode in [false, true] {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
+            let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let baseline = work.live_allocation_bytes();
+            let encoded = work.remaining()?.bytes_encoded;
+            let (copied, custody) = if encode {
+                let (copied, custody) = value(&source, policy, Some(&work))?;
+                (
+                    copied,
+                    custody.ok_or_else(|| Error::Invalid("missing JSON custody".into()))?,
+                )
+            } else {
+                clone_value(&source, policy, &work)?
+            };
+            assert_eq!(copied, source);
+            if encode {
+                assert!(work.remaining()?.bytes_encoded < encoded);
+            }
+            let retained = retained_value_bytes(&copied)?;
+            assert_eq!(work.live_allocation_bytes(), baseline + retained);
+            // The old handoff resized custody to logical entries, losing the
+            // sparse BTreeMap slots while the returned Value was still alive.
+            assert!(crate::executor::json::json_value_logical_owned_bytes(&copied)? < retained);
+            drop(copied);
+            drop(custody);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+        }
     }
+    let mut budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
+    budget.bytes_encoded = 0;
+    let original =
+        acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new())
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    for policy in [None, Some(4096)] {
+        assert!(matches!(
+            value(&source, policy, Some(&original)),
+            Err(Error::NativeWork { .. })
+        ));
+    }
+    assert!(value(&source, Some(0), None).is_err());
     Ok(())
 }
 

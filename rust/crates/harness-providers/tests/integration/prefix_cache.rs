@@ -263,7 +263,7 @@ fn resolve(
                 response_field: TokenCountField::InputTokens,
                 framing_tokens: 0,
             }),
-            max_event_bytes: 1 << 16,
+            max_event_bytes: Some(1 << 16),
             retry: acyclic_harness_providers::RetrySpec::DEFAULT,
             timeouts: acyclic_harness_providers::TimeoutSpec { total_ms: None },
         },
@@ -384,10 +384,10 @@ async fn run(adapter: Adapter, path: &'static str, family: &str, messages: &[u8]
         Turns {
             executors: changing.clone(),
             limits: TurnLimits {
-                maximum_bytes: 1 << 20,
+                maximum_bytes: Some(1 << 20),
                 // A page of four entries: the parent's later turns cross one
                 // page cut, while the child's history stays on the first.
-                history_turns: 4,
+                history_turns: Some(4),
             },
             actors: acyclic_actors::domain::ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             clock: Arc::new(acyclic_actors::local::SystemClock),

@@ -571,18 +571,17 @@ fn host_error(error: crate::Error) -> Error {
 }
 
 /// The children `effects` spawn that `agent` does not already have open.
-fn reserved(agent: &AgentState, effects: Vec<super::TurnEffect>) -> usize {
-    effects
-        .into_iter()
-        .filter_map(|effect| match effect {
-            super::TurnEffect::Spawn { intent, .. } => {
-                super::TurnEffect::child(&agent.path, &intent).ok()
-            }
-            _ => None,
-        })
-        .filter(|child| !agent.open_children.contains(child))
-        .collect::<std::collections::BTreeSet<_>>()
-        .len()
+async fn reserved(agent: &AgentState, effects: Vec<super::TurnEffect>) -> Result<usize, Error> {
+    let mut children = std::collections::BTreeSet::new();
+    for effect in effects {
+        if let super::TurnEffect::Spawn { intent, .. } = effect
+            && let Ok(child) = super::TurnEffect::child(&agent.path, &intent)
+            && !agent.open_children.contains(&child).await?
+        {
+            children.insert(child);
+        }
+    }
+    Ok(children.len())
 }
 
 /// Stages `text` as `turn`'s whole output.
@@ -955,7 +954,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     // settlement resumes it in this same segment.
                     let reserved_children = match &open.effects {
                         Some(effects) => {
-                            reserved(agent, effects.recorded().await.map_err(host_error)?)
+                            reserved(agent, effects.recorded().await.map_err(host_error)?).await?
                         }
                         None => 0,
                     };
@@ -1003,7 +1002,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     // The paused turn's recorded spawns keep their slots.
                     let reserved_children = match &open.effects {
                         Some(effects) => {
-                            reserved(agent, effects.recorded().await.map_err(host_error)?)
+                            reserved(agent, effects.recorded().await.map_err(host_error)?).await?
                         }
                         None => 0,
                     };

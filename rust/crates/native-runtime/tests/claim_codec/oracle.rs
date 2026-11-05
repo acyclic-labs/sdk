@@ -2,19 +2,17 @@
 #[path = "../../src/claim/record.rs"]
 mod record;
 
-use record::{Contents, MAGIC, Process, RECORD_LIMIT, Record};
+use record::{Contents, MAGIC, Process, Record};
 
 fn wire(bytes: &[u8]) {
     match Contents::decode(bytes) {
         Contents::Empty => assert!(bytes.is_empty()),
-        Contents::Oversized => assert!(bytes.len() > RECORD_LIMIT),
-        Contents::Torn => assert!(!bytes.is_empty() && bytes.len() <= RECORD_LIMIT),
+        Contents::Torn | Contents::Malformed => assert!(!bytes.is_empty()),
         Contents::Record(value) => assert_eq!(value.encode(), bytes, "claim bytes changed"),
     }
 }
 
 fn value(bytes: &[u8]) -> Record {
-    let bytes = &bytes[..bytes.len().min(RECORD_LIMIT)];
     let split = bytes.len() / 3;
     Record {
         process: Process {
@@ -31,8 +29,7 @@ fn value(bytes: &[u8]) -> Record {
 /// actual writer output. No alternate parser or checksum is implemented here.
 pub fn check(bytes: &[u8]) {
     wire(bytes);
-    let overhead = value(&[]).encode().len();
-    let value = value(&bytes[..bytes.len().min(RECORD_LIMIT - overhead)]);
+    let value = value(bytes);
     let mut encoded = value.encode();
     let mut offset = MAGIC.len();
     let lengths = [
@@ -47,12 +44,16 @@ pub fn check(bytes: &[u8]) {
         offset += 4 + length;
         field
     });
-    assert_eq!(Contents::decode(&encoded), Contents::Record(value));
-    if encoded.len() == RECORD_LIMIT {
-        let mut past = encoded.clone();
-        past.push(0);
-        assert_eq!(Contents::decode(&past), Contents::Oversized);
-    }
+    assert_eq!(
+        Contents::decode(&encoded),
+        Contents::Record(Record {
+            process: value.process.borrowed(),
+            token: value.token,
+        })
+    );
+    let mut trailing = encoded.clone();
+    trailing.push(0);
+    assert_eq!(Contents::decode(&trailing), Contents::Malformed);
     let body = encoded.len() - 8;
     let original = encoded[body];
     encoded[body] ^= 1;
@@ -98,15 +99,13 @@ pub fn check(bytes: &[u8]) {
     let body = encoded.len() - 8;
     let sum = record::checksum(&encoded[..body]);
     encoded[body..].copy_from_slice(&sum);
-    if encoded.len() > RECORD_LIMIT {
-        assert_eq!(Contents::decode(&encoded), Contents::Oversized);
-    } else {
-        assert_eq!(
+    assert!(
+        matches!(
             Contents::decode(&encoded),
-            Contents::Torn,
-            "claim grammar widened"
-        );
-    }
+            Contents::Torn | Contents::Malformed
+        ),
+        "claim grammar widened"
+    );
 }
 
 /// Exhaust every cut of an original writer seed outside the fuzz hot path.
@@ -130,7 +129,8 @@ pub fn check_prefixes(bytes: &[u8]) {
 pub fn seeds() -> Vec<(&'static str, Vec<u8>)> {
     let empty = value(&[]);
     let mut boundary = value(b"native\0\xff\nlock");
-    let length = RECORD_LIMIT - boundary.encode().len() + boundary.process.lock.len();
+    // Preserve the original 4096-byte writer capture, independently of policy.
+    let length = 4096 - boundary.encode().len() + boundary.process.lock.len();
     boundary.process.lock.resize(length, b'/');
     let mut oversized = boundary.clone();
     oversized.process.lock.push(b'/');

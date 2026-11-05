@@ -241,7 +241,35 @@ fn an_unusable_peer_identity_is_refused_at_configuration() -> Outcome {
 
 #[tokio::test]
 async fn the_listener_yields_only_verified_connections_without_stalling() -> Outcome {
+    use futures::{FutureExt as _, future::Either};
+
     let fixture = Fixture::new()?;
+    let acceptor = TlsAcceptor::from(Arc::new(config(&fixture.tls(fixture.peer()))?));
+    // Drive the same real handshake under virtual time. The bare-handshake
+    // negative stays pending after the cut, then retires through owner drop.
+    for protected in [true, false] {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let mut peer = TcpStream::connect(listener.local_addr()?).await?;
+        let (socket, _) = listener.accept().await?;
+        tokio::time::pause();
+        let mut pending = Box::pin(if protected {
+            Either::Left(handshake(&acceptor, socket).map(|result| result.is_err()))
+        } else {
+            Either::Right(acceptor.accept(socket).map(|_| false))
+        });
+        assert!(futures::poll!(pending.as_mut()).is_pending());
+        tokio::time::advance(HANDSHAKE).await;
+        if protected {
+            // Await the original timer event: advancing the clock does not
+            // imply the runtime has delivered its timer-wheel notification.
+            assert!(pending.as_mut().await);
+        } else {
+            assert!(pending.as_mut().now_or_never().is_none());
+        }
+        drop(pending);
+        tokio::time::resume();
+        assert_eq!(tokio::io::AsyncReadExt::read(&mut peer, &mut [0]).await?, 0);
+    }
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let mut incoming = Box::pin(incoming(listener, config(&fixture.tls(fixture.peer()))?));
@@ -249,7 +277,7 @@ async fn the_listener_yields_only_verified_connections_without_stalling() -> Out
     // the first that verified.
     let first = tokio::spawn(async move { incoming.next().await });
     // A peer that never handshakes, and one that fails, hold back no other.
-    let _stalled = TcpStream::connect(address).await?;
+    let mut stalled = TcpStream::connect(address).await?;
     let foreign = client(&fixture.untrusted, PEER)?;
     let refused = fixture.connector(Some(&foreign), TLS13)?;
     let _ = refused
@@ -261,6 +289,13 @@ async fn the_listener_yields_only_verified_connections_without_stalling() -> Out
         .connect("localhost".try_into()?, TcpStream::connect(address).await?)
         .await?;
     let accepted = first.await?.ok_or("the listener ended")??;
+    // The serving future has dropped its listener stream and all unfinished
+    // handshakes. Its original socket EOF proves there is no detached owner.
+    let mut byte = [0];
+    assert_eq!(
+        tokio::io::AsyncReadExt::read(&mut stalled, &mut byte).await?,
+        0
+    );
     let expected = certificates(peer.certificate.as_bytes(), "client")?;
     assert_eq!(
         accepted

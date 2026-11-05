@@ -264,7 +264,7 @@ fn declared_method_credentials_match_session_admission() {
             };
             let credential = testing::credential_with_grants(grants);
             let mut slots = Slots::default();
-            auth.register(&mut slots, 0, &credential, 1).unwrap();
+            auth.register(&mut slots, 0, &credential).unwrap();
             assert_eq!(
                 admit(&auth, &slots, method, "allowed").is_ok(),
                 removed.is_none(),
@@ -297,7 +297,7 @@ fn product_call_targets_retain_exact_action_resource_and_live_credential() {
             actions: vec![action.into()],
         }]);
         let mut slots = Slots::default();
-        authority.register(&mut slots, 0, &credential, 1).unwrap();
+        authority.register(&mut slots, 0, &credential).unwrap();
         let target = CallTarget::new(resource.into(), action).unwrap();
         let (mut binding, original) = authority.bind_call(&slots, 0, target, 1).unwrap();
         original
@@ -339,12 +339,12 @@ fn product_call_targets_retain_exact_action_resource_and_live_credential() {
             },
             actions: vec![other_action.into()],
         }]);
-        authority.register(&mut slots, 0, &replacement, 1).unwrap();
+        authority.register(&mut slots, 0, &replacement).unwrap();
         assert!(matches!(
             authority.validate(&slots, &mut binding, 1),
             Err(Rejection::Forbidden)
         ));
-        authority.register(&mut slots, 0, &credential, 1).unwrap();
+        authority.register(&mut slots, 0, &credential).unwrap();
         authority.validate(&slots, &mut binding, 1).unwrap();
         // Revalidation retained this same provider authorization, action and
         // target. No new context can bypass the original owner's policy.
@@ -407,7 +407,7 @@ fn revision_only_bindings_recheck_credential_context_without_resource_access() {
             }),
         });
     });
-    auth.register(&mut slots, 0, &bytes, 2).unwrap();
+    auth.register(&mut slots, 0, &bytes).unwrap();
     let request = crate::HeadsRequest {
         retained: Default::default(),
         durable_through: None,
@@ -466,7 +466,7 @@ fn slots_reject_forgery_expiry_wrong_audience_holder_and_widening() {
         Err(Rejection::Forbidden)
     ));
     let bytes = token("allowed", |_| {});
-    auth.register(&mut slots, 0, &bytes, 2).unwrap();
+    auth.register(&mut slots, 0, &bytes).unwrap();
     assert!(bind(&auth, &slots, "allowed/child").is_ok());
     assert!(matches!(
         bind(&auth, &slots, "allowed-other"),
@@ -476,15 +476,12 @@ fn slots_reject_forgery_expiry_wrong_audience_holder_and_widening() {
         bind(&auth, &slots, "other"),
         Err(Rejection::Forbidden)
     ));
-    assert_eq!(
-        auth.register(&mut slots, 2, &bytes, 2),
-        Err(StreamError::Capacity)
-    );
+    auth.register(&mut slots, u32::MAX, &bytes).unwrap();
     let mut forged = bytes.clone();
     if let Some(byte) = forged.get_mut(20) {
         *byte ^= 1;
     }
-    auth.register(&mut slots, 0, &forged, 2).unwrap();
+    auth.register(&mut slots, 0, &forged).unwrap();
     assert!(matches!(
         bind(&auth, &slots, "allowed"),
         Err(Rejection::Forbidden)
@@ -507,12 +504,11 @@ fn slots_reject_forgery_expiry_wrong_audience_holder_and_widening() {
                     kind: caveat.clone(),
                 }];
             }),
-            2,
         )
         .unwrap();
         assert!(bind(&auth, &slots, "allowed").is_err());
     }
-    auth.register(&mut slots, 0, &bytes, 2).unwrap();
+    auth.register(&mut slots, 0, &bytes).unwrap();
     let (mut binding, _) = bind(&auth, &slots, "allowed").unwrap();
     state.publish(signed::Snapshot::default(), 1000);
     assert_eq!(
@@ -526,7 +522,7 @@ async fn revocation_and_drop_invalidate_idle_bindings_without_record_credit() {
     let auth = authority(state.clone());
     let mut slots = Slots::default();
     let bytes = token("allowed", |_| {});
-    auth.register(&mut slots, 0, &bytes, 2).unwrap();
+    auth.register(&mut slots, 0, &bytes).unwrap();
     let (mut binding, _) = bind(&auth, &slots, "allowed").unwrap();
     let mut registration = auth.register_change();
     let deadline = auth.deadline(&mut slots);
@@ -547,7 +543,7 @@ async fn revocation_and_drop_invalidate_idle_bindings_without_record_credit() {
         Err(Rejection::Revoked)
     );
     state.publish(signed::Snapshot::default(), signed::NOW);
-    auth.register(&mut slots, 0, &[], 2).unwrap();
+    auth.register(&mut slots, 0, &[]).unwrap();
     assert_eq!(
         auth.validate(&slots, &mut binding, 1),
         Err(Rejection::Forbidden)
@@ -566,7 +562,7 @@ fn rotation_cannot_drop_pins_filters_or_rebind_the_declaring_subject() {
             }),
         }];
     });
-    auth.register(&mut slots, 0, &bytes, 2).unwrap();
+    auth.register(&mut slots, 0, &bytes).unwrap();
     let (mut binding, filter) = bind(&auth, &slots, "allowed").unwrap();
     let headers = |author: &'static str| {
         crate::RecordHeaders::new(
@@ -599,7 +595,7 @@ fn rotation_cannot_drop_pins_filters_or_rebind_the_declaring_subject() {
     assert!(child_filter.matches(&headers("issuer")));
     assert!(!child_filter.matches(&headers("child")));
     let plain = token("allowed", |_| {});
-    auth.register(&mut slots, 0, &plain, 2).unwrap();
+    auth.register(&mut slots, 0, &plain).unwrap();
     assert_eq!(
         auth.validate(&slots, &mut binding, 1),
         Err(Rejection::Forbidden)
@@ -757,13 +753,21 @@ fn live_session(
         0,
         0,
         Body::Hello(wire::SessionHello {
+            credentials: vec![],
             interest: None,
             version: crate::session::VERSION,
             client_id: Bytes::from_static(b"authority-control"),
             destination_node: "node".into(),
             receive_bytes: 1_000_000,
             receive_frames: 100,
-            credentials: vec![bytes.into()],
+        }),
+    )))?;
+    sender.unbounded_send(Ok(frame(
+        0,
+        0,
+        Body::Credential(wire::SessionCredential {
+            slot: 0,
+            credential: bytes.into(),
         }),
     )))?;
     sender.unbounded_send(Ok(frame(
@@ -826,7 +830,7 @@ fn filesystem_discovery_defers_only_list_and_checks_full_paths_and_deny_wins() {
     let auth = Arc::new(authority(State::new()));
     let mut slots = Slots::default();
     let bytes = fs_token("fs:/volume/public", |_| {});
-    auth.register(&mut slots, 0, &bytes, 2).unwrap();
+    auth.register(&mut slots, 0, &bytes).unwrap();
     let (_, filter, context) = auth
         .bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
         .unwrap();
@@ -895,7 +899,6 @@ fn filesystem_prefix_grant_trailing_slash_indexes_the_same_subtree() {
             &mut slots,
             0,
             &fs_token(&format!("fs:/volume/{encoded}/"), |_| {}),
-            2,
         )
         .unwrap();
         let (_, filter, context) = auth
@@ -916,7 +919,7 @@ fn filesystem_context_borrows_its_resource_and_rechecks_current_authority() {
         let auth = Arc::new(authority(state.clone()));
         let mut slots = Slots::default();
         let bytes = fs_token("fs:/volume/public", |_| {});
-        auth.register(&mut slots, 0, &bytes, 2).unwrap();
+        auth.register(&mut slots, 0, &bytes).unwrap();
         let (_, _, context) = auth
             .bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
             .unwrap();
@@ -973,12 +976,12 @@ fn filesystem_context_borrows_its_resource_and_rechecks_current_authority() {
     }
     let auth = Arc::new(authority(State::new()));
     let mut slots = Slots::default();
-    auth.register(&mut slots, 0, &fs_token("fs:/volume", |_| {}), 2)
+    auth.register(&mut slots, 0, &fs_token("fs:/volume", |_| {}))
         .unwrap();
     let (mut binding, _, _) = auth
         .bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
         .unwrap();
-    auth.register(&mut slots, 0, &fs_token("fs:/volume/public", |_| {}), 2)
+    auth.register(&mut slots, 0, &fs_token("fs:/volume/public", |_| {}))
         .unwrap();
     assert!(
         matches!(
@@ -1013,7 +1016,7 @@ fn filesystem_context_rejects_forged_expired_and_wrong_audience_credentials() {
             });
         }),
     ] {
-        auth.register(&mut slots, 0, &bytes, 2).unwrap();
+        auth.register(&mut slots, 0, &bytes).unwrap();
         assert!(
             auth.bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
                 .is_err()

@@ -46,7 +46,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         volume: &'a VolumeRef,
         grant: &'a ContentGrant,
         key: &'a IdempotencyKey,
-        maximum_receipt_bytes: u64,
+        maximum_receipt_bytes: Option<u64>,
         access: ContentAccess<'a, 'a>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<ContentChanges>>> {
         grant.require(volume, VolumeOperation::Write, access.io)?;
@@ -153,10 +153,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant: &'a ContentGrant,
         changes: &'a [ContentChange<'a>],
         key: &'a IdempotencyKey,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
         access: ContentAccess<'a, 'a>,
         check: Option<&'a (dyn Fn(Action, &str) -> Result<()> + Send + Sync)>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ContentChanges>> {
+        let maximum_bytes = maximum_bytes.into();
         let ContentAccess { ceiling, io } = access;
         grant.require(volume, VolumeOperation::Write, io)?;
         if volume.provider() != &self.provider || changes.is_empty() {
@@ -233,7 +234,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     ContentChange::DeleteExpected { .. } => None,
                 };
                 let file = if let Some((path, bytes, media, display)) = output {
-                    if bytes.len() as u64 > maximum_bytes {
+                    if maximum_bytes.is_some_and(|limit| bytes.len() as u64 > limit) {
                         return Err(
                             io.invalid("conditional file exceeds admitted content capacity")
                         );
@@ -256,7 +257,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             // Versioned as a fresh public contract; the key uses the original
             // workspace operation index and the receipt commits with all files.
-            let receipt = io.encode(&(1_u8, &records), io.remaining()?.bytes_encoded, true)?;
+            let receipt =
+                io.encode(&(1_u8, &records), Some(io.remaining()?.bytes_encoded), true)?;
             let receipt_path = content_receipt_path_io(key.as_str(), false, true, Some(io))?;
             let reference = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
             let root = self.open(&reference, Some(io)).await?;
@@ -451,7 +453,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     if let Some(file) = &record.file {
                         let bytes = io.encode(
                             &(file, Option::<&GenerationRef>::None),
-                            io.remaining()?.bytes_encoded,
+                            Some(io.remaining()?.bytes_encoded),
                             true,
                         )?;
                         io.sdk(

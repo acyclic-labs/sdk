@@ -35,7 +35,7 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     source_root: &HostRoot,
     host_path: &CaptureHostPath,
     snapshot: &HostStat,
-    maximum_extent_spans: u32,
+    maximum_extent_spans: Option<u32>,
     meter: &NativeMaterializationWork,
     staged_file_bytes: &mut u64,
 ) -> Result<StagedRegularBody, CaptureError> {

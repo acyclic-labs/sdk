@@ -1,5 +1,6 @@
 use super::tests::{TestResult, client};
 use super::*;
+use crate::CommitRequest;
 
 async fn append(provider: &impl StreamProvider, path: &StreamPath) -> TestResult {
     let outcome = provider

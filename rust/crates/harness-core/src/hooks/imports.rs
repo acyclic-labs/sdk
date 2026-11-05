@@ -9,8 +9,7 @@ struct CommandHook {
     command: String,
     #[serde(default)]
     args: Option<Vec<String>>,
-    #[serde(default = "default_timeout")]
-    timeout: u64,
+    timeout: Option<u64>,
     #[serde(default)]
     shell: Option<String>,
     #[serde(default, rename = "async")]
@@ -25,10 +24,6 @@ enum OnFailure {
     #[default]
     Continue,
     Block,
-}
-
-fn default_timeout() -> u64 {
-    60
 }
 
 impl CommandHook {
@@ -53,8 +48,12 @@ impl CommandHook {
             run,
             timeout_ms: self
                 .timeout
-                .checked_mul(1_000)
-                .ok_or_else(|| Error::Invalid("hook timeout overflows milliseconds".into()))?,
+                .map(|timeout| {
+                    timeout
+                        .checked_mul(1_000)
+                        .ok_or_else(|| Error::Invalid("hook timeout overflows milliseconds".into()))
+                })
+                .transpose()?,
             failure: match self.on_failure {
                 OnFailure::Continue => HookFailure::Report,
                 OnFailure::Block => HookFailure::Block,

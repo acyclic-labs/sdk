@@ -44,20 +44,21 @@ fn credential_callbacks_are_fresh_sensitive_and_never_use_a_fixed_fallback() {
         .unwrap();
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
-    #[test]
-    fn credential_callbacks_preserve_the_inference_byte_limit(length in 8193..=12288usize) {
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        runtime.block_on(async {
-            let client = Inference(Arc::new(Connection {
-                channel: Endpoint::from_static("https://fixture.invalid").connect_lazy(),
-                authorization: Some(authorization("stale").unwrap()),
-                credential: Some(CredentialProvider::new(move || std::future::ready(Ok("a".repeat(length))))),
-                client_instance: [1; 16],
-            }));
-            prop_assert!(matches!(client.request(()).await, Err(Error::Invalid(_))));
-            Ok(())
-        })?;
+#[tokio::test]
+async fn long_credentials_preserve_exact_sensitive_identity_without_a_default_deadline() {
+    let value = "a".repeat(16_385);
+    let client = Inference(Arc::new(Connection {
+        channel: Endpoint::from_static("https://fixture.invalid").connect_lazy(),
+        authorization: Some(authorization(&value).unwrap()),
+        credential: None,
+        client_instance: [1; 16],
+    }));
+    let request = client.request(()).await.unwrap();
+    let header = request.metadata().get("authorization").unwrap();
+    assert!(header.is_sensitive());
+    assert_eq!(header.to_str().unwrap(), format!("Bearer {value}"));
+    assert!(request.metadata().get("grpc-timeout").is_none());
+    for invalid in ["", "bad\nkey", "bad\rkey"] {
+        assert!(authorization(invalid).is_err());
     }
 }

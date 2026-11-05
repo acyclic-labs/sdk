@@ -139,8 +139,8 @@ async fn opening_history_is_cancelled_and_source_loss_is_terminal() -> Result<()
             TurnAdmission::LocalRoot,
             Arc::new(NoDispatch),
             TurnLimits {
-                maximum_bytes: 64 * 1024,
-                history_turns: 8,
+                maximum_bytes: Some(64 * 1024),
+                history_turns: Some(8),
             },
             Default::default(),
         );

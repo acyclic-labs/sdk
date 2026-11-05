@@ -375,7 +375,7 @@ pub fn children_page_from_wire(
                 Ok(crate::CommitId::from_bytes(array))
             })
             .transpose()?,
-        limit: value.limit,
+        limit: crate::memory::page_limit(value.limit)?,
     })
 }
 
