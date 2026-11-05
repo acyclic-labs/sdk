@@ -579,6 +579,7 @@ pub enum MountSourceError {
     #[error("source retirement recording failed: {completion}; watcher retirement failed: {watch}")]
     RetirementFinalization {
         /// Original source completion cause, retained without boxing.
+        #[source]
         completion: crate::NativeTreeMaterializationError,
         /// Original dependent watcher cause, retained without replacing completion.
         watch: crate::DemandError,
