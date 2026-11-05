@@ -393,15 +393,37 @@ async fn failed_spawn_cannot_become_a_positive_destroy_receipt()
     )
     .await?;
     let missing = std::env::temp_dir().join(format!("absent-machine-command-{machine}"));
-    let mut result = local
-        .exec(
-            machine,
-            ExecCommand::new(vec![missing.to_str().unwrap().into()], Some(5_000))?,
-        )
-        .await?;
+    let command = ExecCommand::new(vec![missing.to_str().unwrap().into()], None)?;
+    let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
+    let mut submitted = Box::pin(schedule.scope(local.exec(machine, command)));
+    assert!(futures::poll!(&mut submitted).is_pending());
+    let completed = loop {
+        let boundary = boundaries.recv().await.unwrap();
+        if boundary.name == "native:completed" {
+            break boundary;
+        }
+        boundary.release();
+    };
+    // Physical retirement has marked this incarnation uncertain, but the
+    // original worker still owns its OS error until completion is released.
     assert!(
-        matches!(result.next().await, Some(Err(error)) if error.classification() == &ProviderError::CommandIndeterminate(machine))
+        futures::poll!(&mut submitted).is_pending(),
+        "retirement replaced the original pending launch result"
     );
+    completed.release();
+    let mut result = submitted.await?;
+    let error = result.next().await.unwrap().unwrap_err();
+    assert_eq!(
+        error.classification(),
+        &ProviderError::CommandIndeterminate(machine)
+    );
+    let original = std::error::Error::source(&error)
+        .and_then(|source| source.downcast_ref::<std::io::Error>())
+        .expect("original native launch cause must survive retirement");
+    assert_eq!(original.kind(), std::io::ErrorKind::NotFound);
+    assert!(original.raw_os_error().is_some());
+    assert!(result.next().await.is_none());
+    schedule.drained().await;
     let key = IdempotencyKey::new();
     assert!(
         matches!(local.destroy_machine(machine, key).await, Err(ProviderError::Indeterminate(original)) if original == key)
