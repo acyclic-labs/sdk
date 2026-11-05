@@ -1,0 +1,10 @@
+--- a/rust/crates/filesystem/src/kernel/allocation/retained.rs
++++ b/rust/crates/filesystem/src/kernel/allocation/retained.rs
+@@ -452,6 +452,7 @@
+             acyclic_auth::operation::bytes_owner_allocation_bytes::<RetainedBytes<T>>() as u64;
+         let mut allocation = RetainedAllocation::claim(control, 1, accounting)?;
+         self.allocation.absorb(&mut allocation)?;
++        std::mem::forget(self.allocation.split_off(0)?);
+         Ok(bytes::Bytes::from_owner(RetainedBytes {
+             bytes: self.value,
+             _custody: custody,

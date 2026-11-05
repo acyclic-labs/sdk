@@ -831,9 +831,16 @@ mod tests {
             KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancel);
         let anchor = crate::kernel::RetainedAllocation::claim(0, 0, &mut accounting)?;
         let ledger = Arc::clone(anchor.standalone_ledger().expect("ordinary accounting"));
-        retained_bytes_outlive_caller(accounting, &cancel, || {
+        let baseline = ledger.lock().unwrap().allocations.live_bytes();
+        let alias = retained_bytes_outlive_caller(accounting, &cancel, || {
             ledger.lock().unwrap().allocations.live_bytes()
         })?;
+        drop(alias);
+        assert_eq!(
+            ledger.lock().unwrap().allocations.live_bytes(),
+            baseline,
+            "last alias did not retire original backing"
+        );
         drop(anchor);
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -842,11 +849,23 @@ mod tests {
             let original =
                 crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
                     .map_err(|(error, _)| crate::FsError::from(error))?;
-            retained_bytes_outlive_caller(
+            let lifetime = Arc::downgrade(&original.state);
+            let alias = retained_bytes_outlive_caller(
                 KernelAccounting::native(&original, &cancel),
                 &cancel,
                 || original.live_allocation_bytes(),
             )?;
+            drop(original);
+            assert!(
+                lifetime.upgrade().is_some(),
+                "last alias lost the original caller's ledger"
+            );
+            assert_eq!(alias.as_ref(), [2, 3]);
+            drop(alias);
+            assert!(
+                lifetime.upgrade().is_none(),
+                "last alias did not retire the original caller's ledger"
+            );
         }
         Ok(())
     }
@@ -855,7 +874,7 @@ mod tests {
         mut accounting: KernelAccounting<'_>,
         cancel: &crate::CancellationToken,
         live: impl Fn() -> u64,
-    ) -> Result<(), crate::FsError> {
+    ) -> Result<bytes::Bytes, crate::FsError> {
         let baseline = live();
         let before = accounting.spent();
         let mut allocation = crate::kernel::RetainedAllocation::claim(4, 1, &mut accounting)?;
@@ -922,13 +941,7 @@ mod tests {
         drop(bytes);
         assert_eq!(alias.as_ref(), [2, 3]);
         assert_eq!(live(), funded, "last alias lost original allocation credit");
-        drop(alias);
-        assert_eq!(
-            live(),
-            baseline,
-            "last alias did not retire original backing"
-        );
-        Ok(())
+        Ok(alias)
     }
 
     proptest! {
