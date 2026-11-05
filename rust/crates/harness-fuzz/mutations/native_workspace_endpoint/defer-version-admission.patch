@@ -1,0 +1,11 @@
+diff --git a/rust/crates/harness/src/local/host_files.rs b/rust/crates/harness/src/local/host_files.rs
+--- a/rust/crates/harness/src/local/host_files.rs
++++ b/rust/crates/harness/src/local/host_files.rs
+@@ -100,6 +100,7 @@
+ 
+ impl Endpoint {
+     fn decode(bytes: &[u8]) -> Result<Self> {
++        let _: Self = serde_json::from_slice(bytes).map_err(storage)?;
+         #[derive(Deserialize)]
+         struct Version {
+             version: u32,

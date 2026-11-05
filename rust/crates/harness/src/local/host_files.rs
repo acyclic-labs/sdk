@@ -94,6 +94,60 @@ struct Endpoint {
     version: u32,
     session: uuid::Uuid,
     workspace: PathBuf,
+    requests: [u8; 16],
+    status: [u8; 16],
+}
+
+impl Endpoint {
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        #[derive(Deserialize)]
+        struct Version {
+            version: u32,
+        }
+        let version: Version = serde_json::from_slice(bytes).map_err(storage)?;
+        if version.version != 4 {
+            return Err(Error::Unsupported(format!(
+                "step=admit native workspace protocol: version {}; requires 4; recovery=run graphcoder --host-workspace in a fresh workspace with its matching plugin",
+                version.version
+            )));
+        }
+        serde_json::from_slice(bytes).map_err(storage)
+    }
+
+    fn new(
+        session: uuid::Uuid,
+        workspace: PathBuf,
+        requests: &acyclic_fs::HeldRoot,
+        status: &acyclic_fs::HeldRoot,
+    ) -> Self {
+        Self {
+            version: 4,
+            session,
+            workspace,
+            requests: requests.identity().to_bytes(),
+            status: status.identity().to_bytes(),
+        }
+    }
+
+    fn open_roots(
+        &self,
+        directory: &acyclic_fs::HeldRoot,
+    ) -> Result<(acyclic_fs::HeldRoot, acyclic_fs::HeldRoot)> {
+        let requests = directory
+            .open_directory(Path::new("requests"))
+            .map_err(native_file_error)?;
+        let status = directory
+            .open_directory(Path::new("status"))
+            .map_err(native_file_error)?;
+        if requests.identity().to_bytes() != self.requests
+            || status.identity().to_bytes() != self.status
+        {
+            return Err(Error::Unauthorized(
+                "native host endpoint directories differ from the original owner's".into(),
+            ));
+        }
+        Ok((requests, status))
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -286,13 +340,10 @@ impl Bridge {
                 )));
             }
         }
+        let (requests, status) = endpoint.open_roots(&root)?;
         let shared = Arc::new(Shared {
-            status: root
-                .open_directory(Path::new("status"))
-                .map_err(native_file_error)?,
-            requests: root
-                .open_directory(Path::new("requests"))
-                .map_err(native_file_error)?,
+            status,
+            requests,
             waiters: Mutex::default(),
         });
         let exited = Arc::clone(&shared);
@@ -673,13 +724,7 @@ fn discover(cwd: &Path) -> Result<(acyclic_fs::HeldRoot, Endpoint)> {
         })();
         match candidate {
             Ok((directory, bytes)) => {
-                let endpoint: Endpoint = serde_json::from_slice(&bytes).map_err(storage)?;
-                if endpoint.version != 3 {
-                    return Err(Error::Unsupported(format!(
-                        "step=admit native workspace protocol: version {}; requires 3; recovery=run graphcoder --host-workspace in a fresh workspace with its matching plugin",
-                        endpoint.version
-                    )));
-                }
+                let endpoint = Endpoint::decode(&bytes)?;
                 if endpoint.workspace != ancestor
                     || std::fs::canonicalize(directory.path()).map_err(storage)? != directory.path()
                 {
@@ -745,11 +790,7 @@ pub async fn serve_until(
         )
         .into_bytes(),
     );
-    let endpoint = Endpoint {
-        version: 3,
-        session,
-        workspace,
-    };
+    let endpoint = Endpoint::new(session, workspace, &request_root, &status);
     let bytes = serde_json::to_vec(&endpoint).map_err(storage)?;
     if bytes.len() as u64 > MAXIMUM_REQUEST_BYTES {
         return Err(Error::Invalid(
