@@ -1,6 +1,18 @@
 use super::*;
 
 impl NativeSourceWatch {
+    pub(crate) fn stop_with_work<W: SourceDemandReadWork>(
+        &self,
+        work: &mut W,
+    ) -> Result<(), DemandError> {
+        self.stop_and_observe(work, None, false)
+    }
+
+    /// Whether the original native driver has retired its physical resources.
+    pub(crate) fn is_stopped(&self) -> bool {
+        self.delivery().is_retired()
+    }
+
     /// Retires accepted cleanup on its birth credits without caller cancellation.
     pub(crate) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
         self.cleanup(None)
@@ -12,6 +24,30 @@ impl NativeSourceWatch {
         wait: &crate::CancellationToken,
     ) -> Result<(), DemandError> {
         self.cleanup(Some(wait))
+    }
+
+    fn cleanup(&self, wait: Option<&crate::CancellationToken>) -> Result<(), DemandError> {
+        check_wait(wait)?;
+        let mut work = self
+            .delivery()
+            .original
+            .as_ref()
+            .ok_or(DemandError::NativeWorkUnavailable)?
+            .clone();
+        self.stop_and_observe(&mut work, wait, true)
+    }
+
+    fn stop_and_observe<W: SourceDemandReadWork>(
+        &self,
+        work: &mut W,
+        wait: Option<&crate::CancellationToken>,
+        prepaid: bool,
+    ) -> Result<(), DemandError> {
+        self.stop_driver(work, wait, prepaid)?;
+        // Physical retirement does not erase a failed callback's original
+        // cause. All controller entry points consume the same saved outcome.
+        self.delivery().take_failure(work)?;
+        check_wait(wait)
     }
 
     /// Observes destruction of the original data, after its payload and keepers.

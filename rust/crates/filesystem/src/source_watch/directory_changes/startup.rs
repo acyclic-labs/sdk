@@ -98,7 +98,6 @@ impl NativeSourceWatch {
                 arrivals: Mutex::new(()),
                 missed: AtomicBool::new(false),
                 stopping: AtomicBool::new(false),
-                stop_completed: AtomicBool::new(false),
                 parked: AtomicBool::new(false),
                 ownership,
                 cleanup: Mutex::new([active, terminal]),
@@ -152,7 +151,7 @@ impl NativeSourceWatch {
                 None => Err(error),
                 Some(shared) => {
                     let failed = Self { shared };
-                    let cleanup = failed.stop(work, true, None);
+                    let cleanup = failed.stop_driver(work, None, true);
                     if !failed.is_stopped() {
                         if !native {
                             work.release(bytes)?;

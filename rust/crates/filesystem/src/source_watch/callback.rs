@@ -50,14 +50,11 @@ impl SourceDemandReadWork for CallbackWork {
             Self::Original(_) => None,
         }
     }
-    fn native_source_work(&self) -> Option<crate::NativeMaterializationWork> {
+    fn native_source_work(&self) -> Option<&crate::NativeMaterializationWork> {
         match self {
             Self::Ordinary(_) => None,
             Self::Original(work) => work.native_source_work(),
         }
-    }
-    fn is_native_original(&self) -> bool {
-        matches!(self, Self::Original(_))
     }
 }
 

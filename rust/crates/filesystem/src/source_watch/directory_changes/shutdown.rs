@@ -2,36 +2,16 @@ use super::ERROR_NOT_FOUND;
 use super::{
     CancelIoEx, DemandError, DemandWork, ERROR_NOTIFY_ENUM_DIR, ERROR_OPERATION_ABORTED,
     GetOverlappedResult, HANDLE, NativeSourceWatch, Ordering, PoisonError, READ, Reads, ReadsGuard,
-    Shared, SourceDemandReadWork, WRITE, WorkCounters, check_wait, close, hub, io, io_work,
-    is_open,
+    Shared, SourceDemandReadWork, WRITE, WorkCounters, close, hub, io, io_work, is_open,
 };
+use crate::source_watch::check_wait;
 
 impl NativeSourceWatch {
-    pub(crate) fn stop_with_work<W: SourceDemandReadWork>(
+    pub(in crate::source_watch) fn stop_driver<W: SourceDemandReadWork>(
         &self,
         work: &mut W,
-    ) -> Result<(), DemandError> {
-        self.stop(work, false, None)
-    }
-    pub(in crate::source_watch) fn cleanup(
-        &self,
         wait: Option<&crate::CancellationToken>,
-    ) -> Result<(), DemandError> {
-        check_wait(wait)?;
-        let mut work = self
-            .shared
-            .delivery
-            .original
-            .as_ref()
-            .ok_or(DemandError::NativeWorkUnavailable)?
-            .clone();
-        self.stop(&mut work, true, wait)
-    }
-    pub(super) fn stop<W: SourceDemandReadWork>(
-        &self,
-        work: &mut W,
         retiring: bool,
-        wait: Option<&crate::CancellationToken>,
     ) -> Result<(), DemandError> {
         if !retiring {
             work.check()?;
@@ -97,11 +77,11 @@ impl NativeSourceWatch {
                 Some(birth) => birth.with_original_leaf(DemandWork::take_native_io_failure),
                 None => work.with_original_leaf(DemandWork::take_native_io_failure),
             };
-            if !self.is_stopped() {
+            if !self.shared.retired(&reads) {
                 return Err(failure.unwrap_or(DemandError::NativeWorkUnavailable));
             }
             drop(reads);
-            return failure.map_or(Ok(()), Err).and(check_wait(wait));
+            return failure.map_or(Ok(()), Err);
         }
         let mut result = self.shared.cancel_pending(&mut reads, work);
         if reads.pending {
@@ -116,7 +96,7 @@ impl NativeSourceWatch {
         self.shared.stopping.store(true, Ordering::Release);
         result = result.and(self.shared.retire(&mut reads, work));
         if self.shared.retired(&reads) {
-            self.shared.publish_retirement(true);
+            reads.retired = true;
         }
         result
     }
@@ -129,7 +109,7 @@ impl Drop for NativeSourceWatch {
         }
         if self.shared.delivery.original.is_none() {
             let mut work = self.shared.delivery.callback_work();
-            if let Err(error) = self.stop(&mut work, true, None) {
+            if let Err(error) = self.stop_driver(&mut work, None, true) {
                 self.shared.delivery.failed_with_work(error, &mut work);
             }
             return;
@@ -269,8 +249,8 @@ impl Shared {
     /// Retires a native owner on its credits: the active one first, then,
     /// once its owner has dropped, the terminal one. An owner whose terminal
     /// attempt fails stays parked with its resources.
-    pub(super) fn retire_native(&self, reads: &mut Reads) {
-        if self.stop_completed.load(Ordering::Acquire) || self.parked.load(Ordering::Acquire) {
+    pub(super) fn retire_native(&self, reads: &mut ReadsGuard<'_>) {
+        if self.delivery.is_retired() || self.parked.load(Ordering::Acquire) {
             return;
         }
         self.stopping.store(true, Ordering::Release);
@@ -301,8 +281,13 @@ impl Shared {
                 }
             };
             drop(credit);
-            if retired || terminal {
-                self.publish_retirement(retired);
+            if retired {
+                reads.retired = true;
+                return;
+            }
+            if terminal {
+                // Park under the reads so another packet cannot spend the exhausted credit.
+                self.publish_retirement(false);
                 return;
             }
         }
@@ -331,6 +316,7 @@ impl Shared {
         let mut reads = ReadsGuard {
             shared: self,
             reads: None,
+            retired: false,
         };
         reads.reads = Some(self.reads.lock_with_wait(wait)?);
         Ok(reads)
