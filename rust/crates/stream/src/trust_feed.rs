@@ -337,10 +337,10 @@ impl<S: Source> TrustFeed<S> {
                 }
                 Either::Left(Some(((None, Event::Record(record)), records))) => {
                     let now = follower.protected_now(clock.now_unix_millis() / 1000);
-                    let applied = match follower.apply_environment(&record.value, now) {
+                    let (applied, now) = match follower.apply_environment(&record.value, now) {
                         Ok(applied) => {
                             *pending = None;
-                            applied
+                            (applied, now)
                         }
                         Err(_)
                             if !follower
@@ -414,17 +414,13 @@ impl<S: Source> TrustFeed<S> {
 
 /// Keep the original record, follow and refusal on the suspended driver stack.
 /// Only the key-set producer can retry it; closing the follower ends the wait.
-async fn apply_environment(
+async fn retry_environment(
     follower: &Follower,
     clock: &dyn UnixMillisClock,
     anchor: &mut Option<tokio::sync::watch::Receiver<AnchorKeys>>,
     record: &Record,
 ) -> Result<(Applied, u64), StreamError> {
     loop {
-        let now = follower.protected_now(clock.now_unix_millis() / 1000);
-        if let Ok(applied) = follower.apply_environment(&record.value, now) {
-            return Ok((applied, now));
-        }
         let mut state = follower.state();
         let changed = async {
             anchor_changed(anchor, follower).await?;
@@ -443,6 +439,10 @@ async fn apply_environment(
             Either::Left((result, _)) | Either::Right((result, _)) => result,
         };
         result?;
+        let now = follower.protected_now(clock.now_unix_millis() / 1000);
+        if let Ok(applied) = follower.apply_environment(&record.value, now) {
+            return Ok((applied, now));
+        }
     }
 }
 
