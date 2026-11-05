@@ -1,3 +1,6 @@
+[env]
+ACYCLIC_TEST_SOURCE_ROOT = { value = ".", relative = true }
+
 # Every hook starts a fresh process. Linking the C runtime statically spares
 # each start loading vcruntime and the UCRT, about 0.4 ms on Windows, and frees
 # the executables from the Visual C++ redistributable.

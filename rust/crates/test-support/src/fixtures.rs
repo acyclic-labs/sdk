@@ -33,18 +33,29 @@ macro_rules! cargo_binary {
 
 /// Locates a checked-in fixture relative to the SDK repository.
 ///
-/// Cross-built test executables run against an explicitly supplied source
-/// snapshot: set `ACYCLIC_TEST_SOURCE_ROOT` to its absolute repository root.
-/// Ordinary Cargo tests use the source tree they were compiled from.
+/// `ACYCLIC_TEST_SOURCE_ROOT` supplies the absolute source snapshot root at
+/// execution time. The repository's Cargo configuration supplies its own root
+/// by default; an explicit environment value takes precedence. Set the variable
+/// before launching a test executable directly or after relocation.
 ///
 /// # Panics
 ///
-/// If the explicit source root is relative, or the fixture path is absolute.
+/// If the source root is missing or relative, or the fixture path is absolute.
 pub fn source_path(relative: impl AsRef<Path>) -> PathBuf {
-    resolve(
-        std::env::var_os("ACYCLIC_TEST_SOURCE_ROOT").map(PathBuf::from),
-        relative.as_ref(),
-    )
+    let root = PathBuf::from(std::env::var_os("ACYCLIC_TEST_SOURCE_ROOT").expect(
+        "step=fixture-source-root: test source root is missing; recovery command: cargo test --locked -p acyclic-test-support --lib (from the SDK source root)",
+    ));
+    assert!(
+        root.is_absolute(),
+        "test source root must be absolute: {}",
+        root.display()
+    );
+    let relative = relative.as_ref();
+    assert!(
+        relative.is_relative(),
+        "fixture path must be repository-relative"
+    );
+    root.join(relative)
 }
 
 /// Locates `relative` inside the crate whose compile-time manifest directory is
@@ -73,20 +84,6 @@ macro_rules! crate_path {
     };
 }
 
-fn resolve(root: Option<PathBuf>, relative: &Path) -> PathBuf {
-    let root = root.unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."));
-    assert!(
-        root.is_absolute(),
-        "test source root must be absolute: {}",
-        root.display()
-    );
-    assert!(
-        relative.is_relative(),
-        "fixture path must be repository-relative"
-    );
-    root.join(relative)
-}
-
 #[cfg(test)]
 mod tests {
     use super::source_path;
@@ -101,6 +98,10 @@ mod tests {
             );
             return;
         }
+        assert_eq!(
+            std::fs::read(crate::crate_path!("Cargo.toml")).unwrap(),
+            include_bytes!("../Cargo.toml")
+        );
         let root = tempfile::tempdir().unwrap();
         let fixture = root.path().join("fixture");
         std::fs::write(&fixture, b"runtime source").unwrap();
