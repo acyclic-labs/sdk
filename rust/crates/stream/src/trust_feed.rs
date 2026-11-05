@@ -435,24 +435,8 @@ async fn retry_environment(
     record: &Record,
 ) -> Result<(Applied, u64), StreamError> {
     loop {
-        let mut state = follower.state();
-        let changed = async {
-            anchor_changed(anchor, follower).await?;
-            follower.anchor_changed();
-            Ok(())
-        };
-        let closed = async {
-            state
-                .wait_for(|state| matches!(state, FollowerState::Closed(_)))
-                .await
-                .map_err(|_| StreamError::Unavailable)?;
-            Err::<(), _>(StreamError::Unavailable)
-        };
-        futures::pin_mut!(changed, closed);
-        let result = match future::select(closed, changed).await {
-            Either::Left((result, _)) | Either::Right((result, _)) => result,
-        };
-        result?;
+        anchor_changed(anchor, follower).await?;
+        follower.anchor_changed();
         let now = follower.protected_now(clock.now_unix_millis() / 1000);
         if let Ok(applied) = follower.apply_environment(&record.value, now) {
             return Ok((applied, now));
@@ -464,16 +448,30 @@ async fn anchor_changed(
     anchor: &mut Option<tokio::sync::watch::Receiver<AnchorKeys>>,
     follower: &Follower,
 ) -> Result<(), StreamError> {
-    match anchor {
-        Some(anchor) => {
-            anchor.changed().await.map_err(|_| {
-                follower.fence(FenceCause::AnchorLost);
-                StreamError::Unavailable
-            })?;
-            anchor.borrow_and_update();
-            Ok(())
+    let mut state = follower.state();
+    let closed = async {
+        state
+            .wait_for(|state| matches!(state, FollowerState::Closed(_)))
+            .await
+            .map_err(|_| StreamError::Unavailable)?;
+        Err::<(), _>(StreamError::Unavailable)
+    };
+    let changed = async {
+        match anchor {
+            Some(anchor) => {
+                anchor.changed().await.map_err(|_| {
+                    follower.fence(FenceCause::AnchorLost);
+                    StreamError::Unavailable
+                })?;
+                anchor.borrow_and_update();
+                Ok(())
+            }
+            None => future::pending().await,
         }
-        None => future::pending().await,
+    };
+    futures::pin_mut!(changed, closed);
+    match future::select(closed, changed).await {
+        Either::Left((result, _)) | Either::Right((result, _)) => result,
     }
 }
 
