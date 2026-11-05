@@ -24,7 +24,6 @@ struct Endpoint {
 }
 struct Writing {
     channel: wire::SessionChannel,
-    subscription: bool,
     controller: web_sys::AbortController,
     abort: AbortHandle,
 }
@@ -36,8 +35,13 @@ impl Writing {
 }
 fn owner(frame: &wire::SessionFrame) -> wire::SessionChannel {
     use wire::session_frame::Body;
+    let interest = match &frame.body {
+        Some(Body::Hello(hello)) => hello.interest.as_ref(),
+        Some(Body::Interest(interest)) => Some(interest),
+        _ => None,
+    };
     if frame.channel_id == 0
-        && let Some(Body::Interest(interest)) = &frame.body
+        && let Some(interest) = interest
         && interest.upsert.len() == 1
         && interest.remove.is_empty()
         && let Some(channel) = interest.upsert[0].channel
@@ -108,26 +112,10 @@ impl Responses {
                 match Pin::new(write).poll(cx) {
                     Poll::Pending => break,
                     Poll::Ready(result) => {
-                        let writing = self.writing.borrow_mut().take();
+                        self.writing.borrow_mut().take();
                         self.write = None;
                         if let Ok(Err(error)) = result {
-                            let error = failure(error);
-                            if let Some(writing) = writing.filter(|writing| writing.subscription) {
-                                // A rejected interest never installed its channel. Surface
-                                // that local failure through the engine's terminal path;
-                                // sibling interests keep their physical connection.
-                                return Poll::Ready(Some(Ok(wire::SessionFrame {
-                                    channel_id: writing.channel.channel_id,
-                                    generation: writing.channel.generation,
-                                    body: Some(wire::session_frame::Body::Closed(
-                                        wire::SessionClosed {
-                                            code: error.code().into(),
-                                            ..Default::default()
-                                        },
-                                    )),
-                                })));
-                            }
-                            return Poll::Ready(Some(Err(error)));
+                            return Poll::Ready(Some(Err(failure(error))));
                         }
                     }
                 }
@@ -142,7 +130,6 @@ impl Responses {
                     let (abort, registration) = AbortHandle::new_pair();
                     *self.writing.borrow_mut() = Some(Writing {
                         channel: owner(&frame),
-                        subscription: matches!(&frame.body, Some(wire::session_frame::Body::Interest(interest)) if interest.upsert.len() == 1 && interest.remove.is_empty()),
                         controller,
                         abort,
                     });

@@ -56,8 +56,8 @@ pub fn execute_local(
 /// Local Cargo examples and endpoint-backed fixture scripts are both selected
 /// from the Rust-owned registry. The latter are deliberately invoked through
 /// the checked-in fixture path recorded on [`Scenario::fixture_script`], so a
-/// generation run cannot silently report the 17 local examples as the full
-/// 17-scenario release result.
+/// generation run cannot silently report only the local examples as the full
+/// release result.
 pub fn execute_all(
     root: &Path,
     sources: &[ScenarioSource],

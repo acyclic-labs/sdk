@@ -1,3 +1,14 @@
+experimental = ["setup-scripts"]
+
+# The transport models execute the packaged TypeScript and WASM implementation.
+# Prepare its ignored artifacts once, before any selected model starts.
+[scripts.setup.stream-typescript]
+command = ["bun", "run", "--filter", "@acyclic-labs/stream", "build"]
+
+[[profile.default.scripts]]
+filter = 'package(=acyclic-stream-typescript-models)'
+setup = "stream-typescript"
+
 # CI test profile: flags slow tests in the log and records per-test timings
 # as JUnit for the job summary (scripts/ci-summary.mjs).
 [profile.ci]
