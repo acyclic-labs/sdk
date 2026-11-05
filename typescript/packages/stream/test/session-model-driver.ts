@@ -31,7 +31,7 @@ const sessions = new StreamSessions(async (node, signal) => {
     const interest = frame.body.case === "hello" ? frame.body.value.interest
       : frame.body.case === "interest" ? frame.body.value : undefined;
     if (rejectWrite && interest?.upsert.some(item => item.kind.case === "follow" && item.kind.value.resource === "streams:/events")) {
-      if (failedSends++ === 0) throw new StreamError("unavailable", "Streams session is closed");
+      if (failedSends++ === 0) throw Object.assign(new StreamError("unavailable", "Streams session is closed"), { transient: true });
       observedRejection = true;
       for (const notify of peer.changed) notify();
       if (fault === "rejection") await new Promise<void>(() => {});
