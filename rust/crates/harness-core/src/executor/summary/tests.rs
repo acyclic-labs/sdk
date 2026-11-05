@@ -12,6 +12,7 @@ proptest! {
     fn summary_source_encoding_owns_its_bound_without_a_count_pass(
         texts in prop::collection::vec(".{0,64}", 1..4),
     ) {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let source = crate::context::Context {
             messages: texts.into_iter().map(|text| ModelMessage {
                 role: ModelRole::User,
@@ -22,10 +23,14 @@ proptest! {
         let expected = crate::contract::canonical_json_bytes(&source).unwrap();
         let mut stock = StockExecutor::new(
             Model::new("test".into(), "summary-source".into(), "1".into()).unwrap(),
-            Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+            Arc::new(crate::test_support::ScriptedModelProvider::new([
+                crate::test_support::ScriptedTurn::Text("summary".into()),
+                crate::test_support::ScriptedTurn::Text("summary".into()),
+            ])),
             ContextPipeline::default(),
             ToolRegistry::default(),
-        );
+        ).with_compaction_policy(crate::context::CompactionPolicy::Disabled)
+            .with_max_output_tokens(128).unwrap();
         stock.limits.file_bytes = expected.len() as u64;
         let check = |execution: &StockExecution<'_>| {
             let (bytes, digest, messages) = execution.summary_source_identity(&source).unwrap();
@@ -35,27 +40,32 @@ proptest! {
         };
         check(&StockExecution::ordinary(&stock));
         for native in [false, true] {
+            let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
+                crate::AgentId::new(), 65_536,
+            )).unwrap();
+            let journal = storage.journal();
             let observed = crate::test_support::accounted::accounted(native, 262_144, false, |io| {
                 let execution = StockExecution {
                     io: Some(io),
                     ..StockExecution::ordinary(&stock)
                 };
-                let (_, trace) = acyclic_test_support::differential::observe::<_, _, super::super::json::CodecOperation>(
+                let material = (source.clone(), ModelContent::Text("Summarize".into()));
+                let (result, trace) = acyclic_test_support::differential::observe::<_, _, super::super::json::SerializedType>(
                     || (),
-                    |()| check(&execution),
+                    |()| runtime.block_on(execution.summarize(
+                        journal.as_ref(), None, OperationId::new(), 0, material,
+                        &mut DispatchPhase::new(),
+                    )),
                 );
-                let passes = |trace: &[super::super::json::CodecOperation]| trace.iter()
-                    .filter(|event| **event == super::super::json::CodecOperation::Serialize).count();
-                assert_eq!(passes(&trace), 2, "source must use only canonical encoding's two passes");
-                // Restore the real count traversal before the same production encoder.
-                let (_, repeated) = acyclic_test_support::differential::observe::<_, _, super::super::json::CodecOperation>(
-                    || (),
-                    |()| {
-                        stock_json_bound(&source, stock.limits.file_bytes, Some(io)).unwrap();
-                        check(&execution);
-                    },
+                let (summary, text) = result.unwrap();
+                assert_eq!(text, "summary");
+                assert_eq!(summary.source_digest, *blake3::hash(&expected).as_bytes());
+                assert_eq!(summary.source_messages as usize, source.messages.len());
+                assert_eq!(runtime.block_on(journal.load(&summary.output, None).unwrap()).unwrap().as_ref(), b"summary");
+                assert_eq!(
+                    trace.iter().filter(|event| event.0 == std::any::type_name::<crate::context::Context>()).count(),
+                    2, "summarize must encode its source without a separate count pass",
                 );
-                assert!(passes(&repeated) > 2, "restored preflight escaped the same cost detector");
             });
             prop_assert!(observed.is_ok());
         }

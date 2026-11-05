@@ -340,7 +340,7 @@ impl Formatter for Format<'_, '_, '_> {
             feature = "filesystem",
             not(target_arch = "wasm32")
         ))]
-        acyclic_differential::record(super::CodecOperation::Serialize);
+        super::record_serialization::<Value>();
         let result = serde_json::to_writer(writer, &value);
         drop(value);
         let mut scope = self.state.borrow_mut();
@@ -380,7 +380,7 @@ fn write<T: Serialize + ?Sized>(
         feature = "filesystem",
         not(target_arch = "wasm32")
     ))]
-    acyclic_differential::record(super::CodecOperation::Serialize);
+    super::record_serialization::<T>();
     let result = value.serialize(&mut serde_json::Serializer::with_formatter(
         &mut writer,
         Format {
