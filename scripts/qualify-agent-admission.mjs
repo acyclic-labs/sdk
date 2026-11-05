@@ -22,12 +22,12 @@ function command(executable, args, expected, capture = false) {
   return capture ? result.stdout : output;
 }
 
-function mutation(name, source, test, assertion) {
+function mutation(name, source, test, assertion, binary = ['--lib']) {
   const original = readFileSync(source);
   try {
     command('git', ['apply', `rust/codec-fuzz/mutations/${name}.patch`]);
     command('cargo', ['test', '--locked', '-p', 'acyclic-harness-core', '--features', features,
-      '--lib', test, '--', '--exact'], assertion);
+      ...binary, test, '--', '--exact'], assertion);
   } finally {
     writeFileSync(source, original);
   }
@@ -38,6 +38,9 @@ try {
     'membership operation scanned beyond its fixed node credit');
   mutation('agent-record-version', 'rust/crates/harness-core/src/agent/records.rs', writer,
     'agent record header refusal changed');
+  mutation('agent-spawn-reply-read', 'rust/crates/harness-core/src/agent/host.rs',
+    'agent_model::runtime::a_spawn_retry_after_later_steps_names_the_same_child',
+    'request budget exceeded for control', ['--test', 'main']);
   const tests = [membership, writer,
     'agent_model::a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it',
     'agent_model::slot_schedules::admission_schedules_preserve_every_spawn_and_replay',

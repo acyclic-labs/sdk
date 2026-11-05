@@ -1,0 +1,11 @@
+diff --git a/rust/crates/harness-core/src/agent/host.rs b/rust/crates/harness-core/src/agent/host.rs
+--- a/rust/crates/harness-core/src/agent/host.rs
++++ b/rust/crates/harness-core/src/agent/host.rs
+@@ -504,6 +504,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
+         intent: &IntentId,
+         checkpoint: Option<&acyclic_actors::guest::Checkpoint>,
+     ) -> Result<SpawnOutcome, Error> {
++        self.provider.tail(parent.inbox()?).await.map_err(Error::Stream)?;
+         let Ok(child) = parent.child(&super::AgentId::derive(&parent.id(), intent.as_str())) else {
+             return Ok(SpawnOutcome::Refused {
+                 reason: SpawnRefusal::Depth,

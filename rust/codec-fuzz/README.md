@@ -248,6 +248,7 @@ qualify it. Restore with `git apply -R rust/codec-fuzz/mutations/PATCH`.
 | `agent-record-trailing.patch` | `agent record header refusal changed` |
 | `agent-record-unknown-field.patch` | `agent record discarded an unknown payload field` |
 | `agent-membership-scan.patch` | `membership operation scanned beyond its fixed node credit` |
+| `agent-spawn-reply-read.patch` | `request budget exceeded for control` |
 | `agent-spawn-history.patch` | `agent record lost the writer's input` |
 
 The membership scan mutation uses the existing production-backed membership
@@ -267,9 +268,17 @@ building unrelated decoder families:
 cargo run --locked -p acyclic-harness-core --features test-support --example agent-record-corpus -- --codecs
 ```
 
-`node scripts/qualify-agent-admission.mjs` runs both production mutations,
+The spawn reply mutation adds an unnecessary tail read to the actual host.
+The retained retry property requires one control request and one data request,
+including after child retirement and parent archival:
+
+```sh
+cargo test --locked -p acyclic-harness-core --features filesystem-local,native-execution,test-support --test main agent_model::runtime::a_spawn_retry_after_later_steps_names_the_same_child -- --exact
+```
+
+`node scripts/qualify-agent-admission.mjs` runs all three production mutations,
 requires their runtime assertions, restores the sources and checks the exact
-eight admission, replay, reopen and writer properties. It also checks the harness
+ten admission, replay, reopen and writer properties. It also checks the harness
 consumer and exports the same writer's bytes to `target/agent-codec-corpus.json`.
 
 Replaying the retained `harness_codecs/agent-v13-spawn-history` input through
