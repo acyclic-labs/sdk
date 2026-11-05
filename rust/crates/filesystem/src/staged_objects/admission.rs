@@ -16,7 +16,11 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         if id.storage.is_none() {
             return self.put(id, bytes, work).await;
         }
-        let unswept = self.collection.unswept().await;
+        let unswept = self
+            .collection
+            .unswept(&mut work.accounting())
+            .await
+            .map_err(crate::async_storage::object_error)?;
         self.collection.writing(&unswept, [id]);
         self.inner.put_stored(id, bytes, work).await
     }
@@ -95,7 +99,11 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         let native = work.original;
         if object.object_id().storage.is_some() || object.length() > MAXIMUM_DRAIN_BYTES {
             return in_frame(native, || async {
-                let unswept = self.collection.unswept().await;
+                let unswept = self
+                    .collection
+                    .unswept(&mut work.accounting())
+                    .await
+                    .map_err(crate::async_storage::object_error)?;
                 self.collection.writing(&unswept, [object.object_id()]);
                 self.inner.put_hashed(object, work).await
             })

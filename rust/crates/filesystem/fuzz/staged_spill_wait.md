@@ -14,6 +14,12 @@ relief with their original lease and collection producers held. Cancellation
 wakes each writer and returns its original typed error without publishing,
 writing, or releasing private objects.
 
+Publication also acquires the spill lease before blocking on the actual
+collection sweep gate. The original gate notification confirms this branch;
+ordinary caller, native caller and native original cancellation must finish
+while the sweep guard stays held. Collection admission, direct durable writes,
+spill draining and generation pins share this funded primitive wait.
+
 Both properties exercise ordinary accounting and distinct caller/native
 cancellation. The original alias and batch-read properties retain their
 physical ownership and I/O checks. The ready branch of the shared wait returns
@@ -34,6 +40,9 @@ that patch with `git apply -R` before requiring the unchanged property to pass:
   actual caller waiter. Its original allocation count must fail.
 - `mutations/staged_spill_waiter_growth.patch` replaces the original waiter on
   every pending poll. The unchanged-counter assertion must fail.
+- `mutations/staged_collection_cancellation.patch` removes cancellation from
+  the actual collection gate wait. Run the writer property; cancellation must
+  fail to wake it while the original sweep guard stays held.
 
 The shared `KernelAccounting::wait_for` uses the existing cancellation nodes.
 A ready event needs zero waiter allocations. A blocked event retains one
@@ -48,3 +57,5 @@ The unchanged-counter control establishes bounded waiter registration, not a
 bound on the existing cancellation token's ancestry traversal. The underlying
 `CancellationToken::is_cancelled` still checks its parent chain; this property
 does not establish constant cost in that separate dimension.
+Collection admission also retains its existing generation retry; this property
+does not establish constant work across concurrent generation replacement.
