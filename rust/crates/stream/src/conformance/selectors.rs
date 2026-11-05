@@ -13,7 +13,7 @@ async fn selected<P: StreamProvider + ?Sized>(
 ) -> Result<Vec<u64>, StreamError> {
     let mut sequences = Vec::new();
     loop {
-        let records: Vec<_> = provider
+        let mut records = provider
             .read(ReadRequest {
                 key: Some(seek.clone()),
                 path: source.clone(),
@@ -21,14 +21,23 @@ async fn selected<P: StreamProvider + ?Sized>(
                 limit: page,
                 at_least: Default::default(),
             })
-            .await?
-            .try_collect()
             .await?;
-        for record in &records {
+        let mut count = 0;
+        let mut upper = usize::MAX;
+        loop {
+            upper = upper.min(records.size_hint().1.unwrap_or(usize::MAX));
+            let Some(record) = records.try_next().await? else {
+                break;
+            };
+            if upper == 0 {
+                return Err(StreamError::InvalidResponse);
+            }
+            upper -= 1;
             seek.advance(&mut from, record.sequence, record.headers.keys())?;
             sequences.push(record.sequence);
+            count += 1;
         }
-        if records.len() < page as usize {
+        if count < page {
             return Ok(sequences);
         }
     }
@@ -199,4 +208,41 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         return Err(StreamError::Unavailable);
     }
     Ok(())
+}
+
+#[cfg(all(test, target_arch = "wasm32", feature = "wasm"))]
+mod injected {
+    use wasm_bindgen::prelude::*;
+
+    // Only the host port's method names and result envelope are adapted.
+    // The shipping WASM provider produces every frame and owns cancellation.
+    #[wasm_bindgen(inline_js = r#"
+export function selectorPort(stream) {
+  return {
+    async dispatch(operation, input) {
+      return {value: await stream.dispatch(operation, input)};
+    },
+    async open(operation, input, preceding) {
+      const cursor = await stream.openProviderCursor(operation, input, preceding);
+      return {value: {
+        async next() { return {value: await cursor.next()}; },
+        close() { cursor.close(); }
+      }};
+    }
+  };
+}
+"#)]
+    extern "C" {
+        #[wasm_bindgen(js_name = selectorPort)]
+        fn port(stream: JsValue) -> JsValue;
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn selectors_survive_the_paired_injected_provider() {
+        let provider = crate::wasm::provider_rpc::InjectedStream::new(port(
+            crate::wasm::WasmStream::new().into(),
+        ))
+        .unwrap();
+        super::verify(&provider).await.unwrap();
+    }
 }

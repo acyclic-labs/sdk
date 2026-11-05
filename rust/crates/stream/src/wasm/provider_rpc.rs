@@ -475,12 +475,13 @@ impl super::WasmStream {
     ) -> Result<super::WasmFollow, JsValue> {
         super::check_command_size(input)?;
         let provider = self.provider();
-        let (path, mut updates): (_, FollowStream) = match operation {
+        let (path, mut updates, indexed): (_, FollowStream, bool) = match operation {
             "read" if preceding.is_empty() => {
                 let request =
                     wire_codec::read_from_wire(super::decode::<wire::ReadRequest>(input)?)
                         .map_err(super::js_error)?;
                 let path = request.path.clone();
+                let indexed = request.key.is_some();
                 let records = provider
                     .read(request)
                     .await
@@ -490,7 +491,7 @@ impl super::WasmStream {
                             .map(|item| item.map(FollowUpdate::Record))
                             .boxed_local()
                     });
-                (path, records)
+                (path, records, indexed)
             }
             "follow" => {
                 let mut request =
@@ -513,7 +514,7 @@ impl super::WasmStream {
                     .transpose()
                     .map_err(super::js_error)?
                     .flatten();
-                (path, updates)
+                (path, updates, false)
             }
             _ => return Err(super::js_error(StreamError::InvalidArgument)),
         };
@@ -530,10 +531,11 @@ impl super::WasmStream {
             .bootstrap
             .take()
             .map(|record| Ok(FollowUpdate::Record(record)));
+        let mut next = updates.selection.from;
         let stream = futures::stream::iter(bootstrap)
             .chain(updates)
             .map(move |item| {
-                item.map(|update| {
+                item.and_then(|update| {
                     let body = match update {
                         FollowUpdate::Opening { tail } => {
                             wire::session_frame::Body::Watermark(wire::SessionWatermark {
@@ -543,13 +545,20 @@ impl super::WasmStream {
                             })
                         }
                         FollowUpdate::Record(record) => {
-                            let after = record.sequence + 1;
+                            let accepted = record
+                                .sequence
+                                .checked_add(1)
+                                .ok_or(StreamError::OutOfRange)?;
+                            let after = if indexed { next } else { record.sequence }
+                                .checked_add(1)
+                                .ok_or(StreamError::OutOfRange)?;
+                            next = after;
                             wire::session_frame::Body::Data(wire::SessionData {
                                 after: Some(wire::SessionCursor {
                                     next: after,
                                     opaque: bytes::Bytes::new(),
                                 }),
-                                accepted: after,
+                                accepted,
                                 durable: 0,
                                 item: Some(wire::session_data::Item::Record(
                                     wire_codec::record_wire(record, Some(&path)),
@@ -571,12 +580,12 @@ impl super::WasmStream {
                             })
                         }
                     };
-                    wire::SessionFrame {
+                    Ok(wire::SessionFrame {
                         channel_id: 1,
                         generation: 1,
                         body: Some(body),
                     }
-                    .encode_length_delimited_to_vec()
+                    .encode_length_delimited_to_vec())
                 })
             })
             .boxed_local();

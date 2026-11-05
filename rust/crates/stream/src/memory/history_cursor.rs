@@ -295,11 +295,14 @@ impl Iterator for FiniteRead {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self
-            .history
-            .tail
-            .saturating_sub(self.next)
-            .min(u64::from(self.remaining));
+        let remaining = if self.key.is_some() {
+            u64::from(self.remaining)
+        } else {
+            self.history
+                .tail
+                .saturating_sub(self.next)
+                .min(u64::from(self.remaining))
+        };
         (0, usize::try_from(remaining).ok())
     }
 }
