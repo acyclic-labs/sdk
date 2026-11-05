@@ -26,11 +26,9 @@ const tool=(client,name,reference,prompt)=>client.request(name,{reference,...(pr
   assert.ok(value&&typeof value==='object'&&!Array.isArray(value),'expected a coordination result object');
   return value;
  });
-async function waitSucceeded(client,reference){
- const result=await tool(client,'wait',reference);
- assert.equal(result.reply.kind,'answered',JSON.stringify(result));
- assert.ok(result.reply.outcome.Succeeded!==undefined,JSON.stringify(result));
- return result;
+function requireSucceeded(result){
+ if(result.reply.kind!=='answered'||result.reply.outcome.Succeeded===undefined)
+  assert.fail(JSON.stringify(result));
 }
 function connect(child){
  return new McpClient(child,{name:'native-session-conformance',version:'1',recovery});
@@ -99,7 +97,7 @@ async function host(){
   try{
    const client=connect(nested.child);
    await tool(client,'spawn','nested','first');
-   await waitSucceeded(client,'nested');
+   requireSucceeded(await tool(client,'wait','nested'));
    const merged=await scope.run(process.env.FIXTURE_CODEX,[...base,process.env.FIXTURE_ACYCLIC,'fs','merge','agents/nested'],options());
    assert.equal(merged.code,0,merged.stderr);
    assert.equal(await readFile('first.txt','utf8'),'native');
@@ -216,14 +214,14 @@ async function scenario(){
    assert.ok(interrupted.status.settled);assert.equal(interrupted.control,'interrupt');announce('blocked-input-cancel');
   }
   if(name==='recursive'){
-   const recursive=await call('spawn','recursive','recursive');await waitSucceeded(client,'recursive');
+   const recursive=await call('spawn','recursive','recursive');requireSucceeded(await call('wait','recursive'));
    assert.ok(!existsSync(join(recursive.cwd,'.acyclic-sdk')),'coordination metadata entered project history');
    await merge('recursive');await authored('recursive.txt');await authored('first.txt');announce('recursive-native-session-merge');
   }
   if(name==='resume'){
-   const original=await call('spawn','retained','first');await waitSucceeded(client,'retained');
+   const original=await call('spawn','retained','first');requireSucceeded(await call('wait','retained'));
    await stopBridge();await stopOwner();await startOwner();await startBridge();
-   const resumed=await call('resume','retained','resumed');await waitSucceeded(client,'retained');
+   const resumed=await call('resume','retained','resumed');requireSucceeded(await call('wait','retained'));
    assert.notEqual(resumed.cwd,original.cwd,'retained view was not recreated');
    assert.ok(!existsSync(join(workspace,'resumed.txt')),'resumed child write leaked before merge');
    await merge('retained');await authored('resumed.txt');
