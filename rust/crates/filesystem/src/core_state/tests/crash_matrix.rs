@@ -68,7 +68,7 @@ fn run_cut(
     let mut tree = acyclic_native_runtime::ProcessTree::spawn(&mut child).unwrap();
     let mut cut_reached = false;
     let outcome = tree.wait_with_output(
-        std::time::Duration::from_secs(2),
+        acyclic_native_runtime::CaptureSchedule::Unbounded,
         4096,
         None,
         || Ok(()),

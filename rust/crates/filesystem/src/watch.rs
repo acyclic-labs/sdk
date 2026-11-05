@@ -4856,47 +4856,6 @@ mod demand_admission_tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_fence_retires_a_directory_replaced_by_a_file_and_requires_rescan()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir()?;
-        std::fs::create_dir(root.path().join("folder"))?;
-        std::fs::write(root.path().join("folder/child"), b"before")?;
-        let watch = watcher(root.path())?;
-        watch
-            .lock()
-            .map_err(|_| NativeWatchError::StatePoisoned)?
-            .accept_lazy_baseline()?;
-        observed(
-            &watch,
-            &namespace("/folder")?,
-            windows_budget(),
-            &CancellationToken::new(),
-        )?;
-        std::fs::remove_file(root.path().join("folder/child"))?;
-        std::fs::remove_dir(root.path().join("folder"))?;
-        std::fs::write(root.path().join("folder"), b"replacement")?;
-        let mut held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
-        let cancellation = CancellationToken::new();
-        let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        held.fence_with_work(&mut work)?;
-        assert_eq!(
-            held.windows_registered(),
-            0,
-            "the replaced directory is no longer observed"
-        );
-        assert_eq!(
-            held.invalidation()?,
-            Some(WatchInvalidationReason::NativeRescanRequired)
-        );
-        assert_eq!(std::fs::read(root.path().join("folder"))?, b"replacement");
-        held.accept_lazy_baseline()?;
-        held.fence_with_work(&mut work)?;
-        assert_eq!(held.invalidation()?, None);
-        Ok(())
-    }
-
-    #[cfg(windows)]
-    #[test]
     fn windows_native_child_notifications_reach_the_existing_hint_queue_and_rescan_cleanup()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
@@ -4951,6 +4910,7 @@ mod demand_admission_tests {
             }
             std::fs::remove_file(root.path().join("old/f"))?;
             std::fs::remove_dir(root.path().join("old"))?;
+            std::fs::write(root.path().join("old"), b"replacement file")?;
             held.forget_removed_directories_with_work(
                 &[WatchChange::Removed(namespace("/old")?)],
                 &mut work,

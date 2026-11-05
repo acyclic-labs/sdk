@@ -142,6 +142,8 @@ impl SourceChangeSink for State {
         changes: &[SourceChange],
         _: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<(), DemandError> {
+        #[cfg(test)]
+        eprintln!("credential delivered: {changes:?}");
         let mut observation = self
             .observation
             .lock()

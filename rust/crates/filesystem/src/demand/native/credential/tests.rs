@@ -260,7 +260,7 @@ async fn bind(
     .await?)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PublicationControl {
     Current,
     Altered,
@@ -271,6 +271,7 @@ enum PublicationControl {
 }
 
 async fn publication_control(control: PublicationControl) -> TestResult {
+    eprintln!("credential publication: {control:?}");
     use acyclic_native_runtime::{RenameMode, private_file::StagedFile};
     use std::io::Write;
     let directory = tempfile::tempdir()?;
@@ -458,6 +459,7 @@ async fn native_source_fences_rotation_and_owner_loss_without_warm_reads() -> Te
     let root = native_source(directory.path(), &original).await?;
     let source = bind(root.clone(), "credential", &original, &reads).await?;
     let other = bind(root, "independent", &original, &other_reads).await?;
+    eprintln!("credential phase: cold");
     let (first, follower) = tokio::join!(source.resolve(), source.resolve());
     let first = first?;
     let follower = follower?;
@@ -490,6 +492,7 @@ async fn native_source_fences_rotation_and_owner_loss_without_warm_reads() -> Te
         "a physical fence is asynchronous"
     );
 
+    eprintln!("credential phase: independent");
     let independent_request = other.resolve().await?;
     assert_ne!(
         independent_request.binding(),
@@ -510,6 +513,7 @@ async fn native_source_fences_rotation_and_owner_loss_without_warm_reads() -> Te
         first.check().await.is_err(),
         "old source cannot retain effects"
     );
+    eprintln!("credential phase: rotation");
     let current = source.resolve().await?;
     assert_ne!(current.binding(), first.binding());
     assert_eq!(current.as_str(), "rotated-source-snapshot");
@@ -523,6 +527,7 @@ async fn native_source_fences_rotation_and_owner_loss_without_warm_reads() -> Te
     assert!(independent_change.now_or_never().is_none());
     assert_eq!(other_reads.load(Ordering::Relaxed), 1);
 
+    eprintln!("credential phase: owner loss");
     let lost = source.watch().await?.ok_or("missing owner-loss watch")?;
     let physical = source.0.watch.clone();
     drop(source);
