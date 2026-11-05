@@ -91,6 +91,14 @@ async fn durable_reads_do_not_wait_for_the_private_spill_publication_gate()
             &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
         )
         .await?;
+    let (resident_id, resident) = blob(OwnedBytes::from_static(b"resident batch member"));
+    store
+        .put(
+            resident_id,
+            resident.clone(),
+            &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
+        )
+        .await?;
     // A publication can remain suspended on this runtime. Neither a direct
     // read nor a batch read of an already durable object depends on its spill.
     let _publication = store.spill_io.write().await;
@@ -110,26 +118,92 @@ async fn durable_reads_do_not_wait_for_the_private_spill_publication_gate()
         };
         assert_eq!(result?.bytes, bytes);
         drop(future);
-        let requests = [ObjectReadRequest {
+        let durable_request = ObjectReadRequest {
             object_id: id,
             maximum_bytes: bytes.len() as u64,
-        }];
-        let mut work = if native {
-            AuthorityWork::native(&original, &token)
-        } else {
-            AuthorityWork::new(native_read_budget(), &token)
         };
-        let mut future = std::pin::pin!(store.read_many(&requests, &mut work));
-        let Poll::Ready(result) =
-            Future::poll(future.as_mut(), &mut Context::from_waker(Waker::noop()))
-        else {
-            panic!("durable batch read waited for an unrelated spill publication");
+        let resident_request = ObjectReadRequest {
+            object_id: resident_id,
+            maximum_bytes: resident.len() as u64,
         };
-        assert_eq!(result?.0[0].bytes, bytes);
-        assert_eq!(
-            original.live_allocation_bytes(),
-            NativeMaterializationWork::accounting_state_bytes()
-        );
+        for stored in [false, true] {
+            for (requests, expected) in [
+                (vec![durable_request], vec![&bytes]),
+                (
+                    vec![durable_request, resident_request, durable_request],
+                    vec![&bytes, &resident, &bytes],
+                ),
+                (vec![resident_request, resident_request], vec![&resident; 2]),
+            ] {
+                let count = requests.len() as u64;
+                let budget = WorkBudget {
+                    items_returned: count + 1,
+                    ..native_read_budget()
+                };
+                let original =
+                    NativeMaterializationWork::new(budget, &token).map_err(|(cause, _)| cause)?;
+                let mut work = if native {
+                    AuthorityWork::native(&original, &token)
+                } else {
+                    AuthorityWork::new(budget, &token)
+                };
+                // A prior real provider result shares this frame. Only work
+                // returned by this batch can pay for this batch's results.
+                drop(
+                    store
+                        .inner()
+                        .read_many(&[durable_request], &mut work)
+                        .await?,
+                );
+                let prefix = work.spent();
+                let result = {
+                    let read = async {
+                        if stored {
+                            store.read_many_stored(&requests, &mut work).await
+                        } else {
+                            store.read_many(&requests, &mut work).await
+                        }
+                    };
+                    let mut read = std::pin::pin!(read);
+                    let Poll::Ready(result) =
+                        Future::poll(read.as_mut(), &mut Context::from_waker(Waker::noop()))
+                    else {
+                        panic!("durable batch read waited for an unrelated spill publication");
+                    };
+                    result
+                };
+                let (values, allocation) = result.unwrap_or_else(|error| {
+                    panic!("staged batch must fit its exact returned-item budget: {error}")
+                });
+                for (read, expected) in values.iter().zip(expected) {
+                    assert_eq!(&read.bytes, expected);
+                }
+                assert_eq!(values.len() as u64, count);
+                assert_eq!(work.spent().items_returned, prefix.items_returned + count);
+                drop(values);
+                drop(allocation);
+                let exhausted = work.spent().items_returned;
+                assert!(matches!(
+                    store.read_many(&requests, &mut work).await,
+                    Err(ObjectStoreError::Work(crate::WorkError::BudgetExceeded {
+                        counter: "items_returned",
+                        ..
+                    })) | Err(ObjectStoreError::Native(
+                        crate::NativeTreeMaterializationError::Work(
+                            crate::WorkError::BudgetExceeded {
+                                counter: "items_returned",
+                                ..
+                            }
+                        )
+                    ))
+                ));
+                assert_eq!(work.spent().items_returned, exhausted);
+                assert_eq!(
+                    original.live_allocation_bytes(),
+                    NativeMaterializationWork::accounting_state_bytes()
+                );
+            }
+        }
     }
     let denied = NativeMaterializationWork::new(
         WorkBudget {

@@ -155,6 +155,9 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
                 .map_err(crate::async_storage::object_error)?;
             let mut prepared = self.prepare_batch(requests, &mut work)?;
             let leaders = self.load_batch_leaders(&mut prepared, &mut work).await?;
+            // These completed provider results already paid for this many
+            // output members. Hits, followers and duplicates pay the rest.
+            let mut provider_results = leaders.0.len();
             let mut values = Owned::allocate(requests.len(), &mut work.accounting())
                 .map_err(crate::async_storage::object_error)?;
             for (request, slot) in requests
@@ -168,12 +171,16 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
                     .resolve_batch_slot(request, slot, &leaders.0, &mut work)
                     .await?;
                 values.value.push(read);
-                work.accounting()
-                    .record_completed(WorkCounters {
-                        items_returned: 1,
-                        ..WorkCounters::UNCHARGED
-                    })
-                    .map_err(crate::async_storage::object_error)?;
+                if provider_results != 0 {
+                    provider_results -= 1;
+                } else {
+                    work.accounting()
+                        .record_completed(WorkCounters {
+                            items_returned: 1,
+                            ..WorkCounters::UNCHARGED
+                        })
+                        .map_err(crate::async_storage::object_error)?;
+                }
             }
             let retained = values.bytes;
             let (values, allocation) = crate::async_storage::authority_parts(values);

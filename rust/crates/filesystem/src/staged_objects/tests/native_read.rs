@@ -561,13 +561,17 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
                 (mixed_requests.as_slice(), mixed_values.as_slice()),
                 (draining_requests.as_slice(), draining_values.as_slice()),
             ] {
-                let original = NativeMaterializationWork::new(native_read_budget(), &token)
-                    .map_err(|(cause, _)| cause)?;
+                let budget = WorkBudget {
+                    items_returned: requests.len() as u64 + u64::from(native),
+                    ..native_read_budget()
+                };
+                let original =
+                    NativeMaterializationWork::new(budget, &token).map_err(|(cause, _)| cause)?;
                 let baseline = original.live_allocation_bytes();
                 let mut work = if native {
                     AuthorityWork::native(&original, &token)
                 } else {
-                    AuthorityWork::new(native_read_budget(), &token)
+                    AuthorityWork::new(budget, &token)
                 };
                 let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::new();
                 let mut batch = Box::pin(schedule.scope(async {
@@ -603,6 +607,20 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
                 // Both original LocalMedium persistence jobs must be accepted
                 // before the driver releases any native execution boundary.
                 let admitted = schedule.pending_native_work();
+                if native {
+                    // A separate physical read shares the original ledger
+                    // while this batch waits. Its returned item cannot cover
+                    // any of this batch's private members.
+                    drop(
+                        store
+                            .inner()
+                            .read_many(
+                                &durable_requests[..1],
+                                &mut AuthorityWork::native(&original, &token),
+                            )
+                            .await?,
+                    );
+                }
                 if requests.len() == draining_requests.len() {
                     // The read has classified this identity as private. Drain it
                     // through the real publication path while its independent
@@ -638,11 +656,15 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
                 assert_eq!(admitted, 2, "durable misses must overlap before release");
                 let (values, allocation) = result?;
                 assert_eq!(values.len(), expected.len());
+                assert_eq!(
+                    work.spent().items_returned,
+                    requests.len() as u64 + u64::from(native)
+                );
                 for (read, bytes) in values.iter().zip(expected) {
                     assert_eq!(&read.bytes, *bytes);
                 }
                 let drained = u64::from(requests.len() == draining_requests.len());
-                assert_eq!(work.spent().object_probes, 2 + drained);
+                assert_eq!(work.spent().object_probes, 2 + drained + u64::from(native));
                 if !native {
                     assert_eq!(
                         work.spent().backend_read_operations,
