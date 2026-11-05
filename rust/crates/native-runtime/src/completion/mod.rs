@@ -3,6 +3,7 @@ pub(crate) use fence::{OperationFence, reserve_if_needed};
 pub(crate) use file::FileCompletion;
 #[cfg(any(windows, target_os = "linux"))]
 pub(crate) use file::submit_file_io;
+pub use state::NativeCompletionProducer;
 pub(crate) use state::{CompletionState, TaskTerminal};
 
 mod fence;
@@ -53,6 +54,31 @@ impl NativeCompletion<Vec<Bytes>> {
 }
 
 impl<T> NativeCompletion<T> {
+    /// Creates a measured completion published by an existing native driver.
+    ///
+    /// The driver retains the sole producer until physical retirement. This
+    /// allocates one shared result state and one reusable measured wait wake;
+    /// it creates no worker, task, queue entry or native operation. Repeated
+    /// interrupted waits use these same controls. A lost producer returns
+    /// `BrokenPipe`, which is not evidence that physical cleanup completed.
+    pub fn from_driver(
+        meter: &Arc<dyn NativeReadMeter>,
+    ) -> io::Result<(Self, NativeCompletionProducer<T>)> {
+        meter.check()?;
+        let allocation = ReadAllocation::new(
+            meter,
+            arc_allocation_bytes::<CompletionMutex<CompletionState<T>>>(),
+        )?;
+        let state = Arc::new(CompletionMutex::new(CompletionState {
+            _allocation: Some(allocation),
+            ..CompletionState::default()
+        }));
+        let prepared_wake = crate::blocking::allocate_blocking_wait_wake(meter)?;
+        let mut completion = Self::observing(Arc::clone(&state), &NATIVE_WORKERS);
+        completion.prepared_wake = Some(prepared_wake);
+        Ok((completion, NativeCompletionProducer::new(state)))
+    }
+
     /// Awaits this operation on its shared workers even when the caller admits
     /// inline blocking I/O. Deferral is scoped to each poll, so a suspended or
     /// moved future never changes another task's thread-local permission.
@@ -69,6 +95,15 @@ impl<T> NativeCompletion<T> {
         state: Arc<CompletionMutex<CompletionState<T>>>,
         pool: &'static LazyLock<io::Result<NativeWorkers>>,
     ) -> Self {
+        let mut completion = Self::observing(state, pool);
+        completion.pending = Some(job);
+        completion
+    }
+
+    fn observing(
+        state: Arc<CompletionMutex<CompletionState<T>>>,
+        pool: &'static LazyLock<io::Result<NativeWorkers>>,
+    ) -> Self {
         Self {
             #[cfg(feature = "test-support")]
             test_completion: None,
@@ -76,7 +111,7 @@ impl<T> NativeCompletion<T> {
             prepared_wake: None,
             state: Some(state),
             ready: None,
-            pending: Some(job),
+            pending: None,
             waiter: None,
             predecessor: None,
             completion: None,
