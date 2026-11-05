@@ -158,13 +158,8 @@ impl Key {
                 key.verify(message, &signature)
                     .map_err(|_| refused("invalid OIDC ECDSA signature"))
             }
-            Self::Ed(key) => {
-                use ed25519_dalek::{Signature, Verifier as _};
-                let signature = Signature::from_slice(signature)
-                    .map_err(|_| refused("invalid OIDC Ed25519 signature"))?;
-                key.verify(message, &signature)
-                    .map_err(|_| refused("invalid OIDC Ed25519 signature"))
-            }
+            Self::Ed(key) => acyclic_auth::crypto::verify_signature(key, message, signature)
+                .map_err(|_| refused("invalid OIDC Ed25519 signature")),
         }
     }
 }
@@ -287,7 +282,7 @@ pub(super) async fn fetch(
                 )
             }
             (SigningAlgorithm::EdDsa, "OKP", Some("Ed25519")) => Key::Ed(
-                ed25519_dalek::VerifyingKey::from_bytes(&fixed_component(&raw.x)?)
+                acyclic_auth::crypto::public_key(&fixed_component(&raw.x)?)
                     .map_err(|_| refused("invalid OIDC Ed25519 public key"))?,
             ),
             _ => return Err(refused("OIDC key type or algorithm is not allowed")),

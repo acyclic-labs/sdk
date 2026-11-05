@@ -21,6 +21,12 @@ reaches their production decoder beyond the signature boundary. `dex-claims`
 contains the exact decoded payload of the captured ID token. These generated
 cryptographic vectors are not external-server responses.
 
+The same Ed25519 path also rejects an internal small-order-key forgery: the
+identity public point, identity signature point and zero scalar authenticate
+the captured claims under permissive verification. Refresh must reject that
+key and retain the last-good snapshot, or verification must reject its forged
+signature. Auth owns both strict public-key admission and signature checking.
+
 Every invocation requires original signature/identity/expiry acceptance and
 refusal of an actual corrupted signature. Arbitrary input reaches the compact
 header, signature and claims decoders and all three pinned JWKS families.
@@ -34,4 +40,13 @@ assertion, then pass after byte-identical restoration:
 
 ```sh
 python3 rust/crates/harness-fuzz/oidc-control.py
+```
+
+The weak-issuer control restores the former permissive key admission and
+verification in production. It runs the retained corpus before and after that
+mutation, requires the unchanged forgery assertion to fail, restores
+the source byte for byte, then runs 1,000 decoder inputs:
+
+```sh
+python3 rust/crates/harness-fuzz/oidc-control.py weak-issuer
 ```
