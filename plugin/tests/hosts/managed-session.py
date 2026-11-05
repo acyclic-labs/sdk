@@ -191,15 +191,15 @@ if prompt=='resumed':
    assert stopped['status']['settled'] and stopped['control']=='interrupt',stopped
    print('NATIVE_FIXTURE_PASS blocked-input-cancel',flush=True)
   if scenario=='recursive':
-   recursive=tool('spawn','recursive','recursive');succeeded('recursive')
+   tool('spawn','recursive','recursive');recursive=succeeded('recursive')
    assert not (pathlib.Path(recursive['cwd'])/'.acyclic-sdk').exists(),'coordination metadata entered project history'
    assert (pathlib.Path(recursive['cwd'])/'first.txt').read_text()=='native'
    client({'kind':'fs','task':parent,'command':'merge agents/recursive'});assert (workspace/'recursive.txt').read_text()=='native'
    print('NATIVE_FIXTURE_PASS recursive-native-session-merge',flush=True)
   if scenario=='resume':
-   original=tool('spawn','retained','first');succeeded('retained');old_view=original['cwd']
+   tool('spawn','retained','first');original=succeeded('retained');old_view=original['cwd']
    close_bridge();stop_owner();start_owner();start_bridge(parent)
-   resumed=tool('resume','retained','resumed');succeeded('retained')
+   tool('resume','retained','resumed');resumed=succeeded('retained')
    assert resumed['cwd']!=old_view,'retained view was not recreated'
    launch=json.loads((pathlib.Path(resumed['cwd'])/'native-launch.json').read_text());assert 'resume' in launch['args'] and native_session_id in launch['args']
    assert not (workspace/'resumed.txt').exists(),'resumed child write leaked before merge'
