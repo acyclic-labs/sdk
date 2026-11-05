@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { generatedReadmes, services } from "./generate-sdk-readmes.mjs";
+import { workspaceManifests } from "./package-closure.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -38,34 +39,28 @@ function checkReadmes() {
   const directory = resolve(root, ".tools/sdk-readme-examples");
   mkdirSync(directory, { recursive: true });
   for (const [name, code] of guide) writeFileSync(resolve(directory, `${name}.mts`), code);
-  const paths = {
-    "@acyclic-labs/objects": ["typescript/packages/objects/src/index.ts"],
-    "@acyclic-labs/objects/proto": ["typescript/packages/objects/generated/proto/objects/v1/objects_pb.d.ts"],
-    "@acyclic-labs/stream": ["typescript/packages/stream/src/index.ts"],
-    "@acyclic-labs/actors": ["typescript/packages/actors/src/index.ts"],
-    "@acyclic-labs/workers": ["typescript/packages/workers/src/index.ts"],
-    "@acyclic-labs/fs/grpc": ["typescript/packages/filesystem/src/grpc.ts"],
-  };
-  // Fail if a documentation import no longer names a public package export.
-  for (const specifier of Object.keys(paths)) {
-    const parts = specifier.split("/");
-    const name = parts[1] === "fs" ? "filesystem" : parts[1];
-    const manifest = JSON.parse(read(`typescript/packages/${name}/package.json`));
-    const subpath = parts.length === 2 ? "." : `./${parts.slice(2).join("/")}`;
-    if (!Object.hasOwn(manifest.exports, subpath)) throw new Error(`missing public export: ${specifier}`);
+  const paths = {};
+  // Resolve each public export to its source, including transitive imports.
+  // Missing exports remain missing; no wildcard can admit a private module.
+  for (const [directory, manifest] of workspaceManifests(root)) {
+    for (const [subpath, entry] of Object.entries(manifest.exports ?? {})) {
+      const target = typeof entry === "string" ? entry : entry.types ?? entry.default;
+      if (typeof target !== "string" || !/\.(?:d\.ts|js)$/.test(target)) continue;
+      const source = target.startsWith("./dist/")
+        ? target.replace("./dist/", "./src/").replace(/\.(?:d\.ts|js)$/, ".ts") : target;
+      paths[manifest.name + (subpath === "." ? "" : subpath.slice(1))] = [resolve(root, "typescript/packages", directory, source)];
+    }
   }
   writeFileSync(resolve(directory, "tsconfig.json"), JSON.stringify({
     compilerOptions: {
       strict: true, noEmit: true, target: "ES2022", module: "NodeNext",
-      types: ["node"], paths: Object.fromEntries(Object.entries(paths)
-        .map(([name, files]) => [name, files.map(file => resolve(root, file))])),
+      types: ["node"], paths,
     },
     files: services.map(name => `${name}.mts`),
   }, null, 2));
   const compiler = resolve(root, "node_modules/typescript/bin/tsc");
   const result = spawnSync(process.execPath, [compiler, "-p", resolve(directory, "tsconfig.json"), "--pretty", "false"], { cwd: root, stdio: "inherit" });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`README TypeScript examples failed (${result.status})`);
+  if (result.error || result.status !== 0) throw new Error(`STEP_FAILED README TypeScript compilation (${result.error?.message ?? result.status}); recovery: bun run generate && bun run build:wasm && bun run check:docs`);
   console.log(`${services.length} TypeScript README/llms.txt examples compiled; ${services.length} generated Rust doctests inventoried`);
 }
 

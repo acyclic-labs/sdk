@@ -7,28 +7,34 @@ export const services = ["Objects", "Streams", "Actors", "Workers", "fs"];
 const root = fileURLToPath(new URL("../", import.meta.url));
 const recovery = "node scripts/generate-sdk-readmes.mjs write";
 
-function renderExample(source, code) {
-  const block = /^```rust,no_run\n[\s\S]*?^```$/gm;
+function renderExample(source, code, language) {
+  const block = new RegExp(`^\`\`\`${language}\\n[\\s\\S]*?^\`\`\`$`, "gm");
   const matches = [...source.matchAll(block)];
-  if (matches.length > 1) throw new Error(`STEP_FAILED README generation: duplicate Rust example; recovery: ${recovery}`);
-  const example = `\`\`\`rust,no_run\n${code}\`\`\``;
+  if (matches.length > 1) throw new Error(`STEP_FAILED README generation: duplicate ${language} example; recovery: ${recovery}`);
+  const example = `\`\`\`${language}\n${code}\`\`\``;
   return matches.length ? source.replace(block, () => example) : `${source.trimEnd()}\n\n${example}\n\n`;
 }
 
 export function generatedReadmes(read) {
-  const snippets = new Map(services.map(name => [name,
-    read(`examples/sdk-services/examples/${name.toLowerCase()}.rs`).replaceAll("\r\n", "\n"),
-  ]));
-  const guide = read("rust/README.md").replaceAll("\r\n", "\n");
-  const workers = read("rust/crates/workers/README.md").replaceAll("\r\n", "\n");
-  const sections = guide.split(/(?=^## )/m).map(section => {
-    const name = /^## ([^\n]+)\n/.exec(section)?.[1];
-    return name && snippets.has(name) ? renderExample(section, snippets.get(name)) : section;
-  });
-  return new Map([
-    ["rust/README.md", { source: guide, generated: `${sections.join("").trimEnd()}\n` }],
-    ["rust/crates/workers/README.md", { source: workers, generated: renderExample(workers, snippets.get("Workers")) }],
-  ]);
+  const outputs = new Map();
+  for (const [extension, language, guidePaths, workerPath] of [
+    ["rs", "rust,no_run", ["rust/README.md"], "rust/crates/workers/README.md"],
+    ["mts", "ts", ["typescript/packages/sdk/README.md", "llms.txt"], "typescript/packages/workers/README.md"],
+  ]) {
+    const snippets = new Map(services.map(name => [name,
+      read(`examples/sdk-services/examples/${name.toLowerCase()}.${extension}`).replaceAll("\r\n", "\n"),
+    ]));
+    for (const file of [...guidePaths, workerPath]) {
+      const source = read(file).replaceAll("\r\n", "\n");
+      const generated = file === workerPath ? renderExample(source, snippets.get("Workers"), language)
+        : source.split(/(?=^## )/m).map(section => {
+          const name = /^## ([^\n]+)\n/.exec(section)?.[1];
+          return name && snippets.has(name) ? renderExample(section, snippets.get(name), language) : section;
+        }).join("");
+      outputs.set(file, { source, generated: `${generated.trimEnd()}\n` });
+    }
+  }
+  return outputs;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

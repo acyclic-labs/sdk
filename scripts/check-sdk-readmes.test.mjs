@@ -29,6 +29,10 @@ test("llms drift fails even when the code still compiles", () => {
   assert.throws(() => checkCopies(ts, changed), /Streams: llms.txt differs/);
   const read = file => readFileSync(new URL(`../${file}`, import.meta.url), "utf8").replaceAll("\r\n", "\n");
   const original = generatedReadmes(read);
-  const changedRust = generatedReadmes(file => `${read(file)}${file.endsWith("workers.rs") ? "// source changed\n" : ""}`);
-  for (const file of ["rust/README.md", "rust/crates/workers/README.md"]) assert.notEqual(changedRust.get(file).generated, original.get(file).generated);
+  for (const extension of ["rs", "mts"]) {
+    const changedSource = generatedReadmes(file => `${read(file)}${file.endsWith(`workers.${extension}`) ? "// source changed\n" : ""}`);
+    const copies = extension === "rs" ? ["rust/README.md", "rust/crates/workers/README.md"]
+      : ["typescript/packages/sdk/README.md", "llms.txt", "typescript/packages/workers/README.md"];
+    for (const file of copies) assert.notEqual(changedSource.get(file)?.generated, original.get(file)?.generated);
+  }
 });
