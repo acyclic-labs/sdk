@@ -1,0 +1,289 @@
+{
+  "id": "topology-debate-ring",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "RING_ROOT"
+        },
+        "tools": [
+          {
+            "id": "spawn-a",
+            "name": "spawn",
+            "arguments": {
+              "name": "a",
+              "task": "RING_A",
+              "role": "advisor",
+              "peers": [
+                "b"
+              ]
+            }
+          },
+          {
+            "id": "spawn-b",
+            "name": "spawn",
+            "arguments": {
+              "name": "b",
+              "task": "RING_B",
+              "role": "advisor",
+              "peers": [
+                "c"
+              ]
+            }
+          },
+          {
+            "id": "spawn-c",
+            "name": "spawn",
+            "arguments": {
+              "name": "c",
+              "task": "RING_C",
+              "role": "advisor",
+              "peers": [
+                "a"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "RING_ROOT"
+        },
+        "tools": [
+          {
+            "id": "wait-all",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "a",
+                "b",
+                "c"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "RING_ROOT",
+          "tool_result": "RING_C_READY"
+        },
+        "tools": [
+          {
+            "id": "start",
+            "name": "send",
+            "arguments": {
+              "agent": "a",
+              "message": "RING_GO",
+              "delivery": "follow_up"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "RING_ROOT",
+          "tool_result": "queued"
+        },
+        "tools": [
+          {
+            "id": "wait-a1",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "a"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "RING_ROOT",
+          "tool_result": "RING_A_SENT"
+        },
+        "tools": [
+          {
+            "id": "wait-b",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "b"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "RING_ROOT",
+          "tool_result": "RING_B_SENT"
+        },
+        "tools": [
+          {
+            "id": "wait-c",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "c"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "RING_ROOT",
+          "tool_result": "RING_C_SENT"
+        },
+        "tools": [
+          {
+            "id": "wait-a2",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "a"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "RING_ROOT",
+          "tool_result": "RING_CLOSED"
+        },
+        "text": [
+          "RING_ROOT_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "RING_A"
+        },
+        "text": [
+          "RING_A_READY"
+        ]
+      },
+      {
+        "when": {
+          "user": "RING_B"
+        },
+        "text": [
+          "RING_B_READY"
+        ]
+      },
+      {
+        "when": {
+          "user": "RING_C"
+        },
+        "text": [
+          "RING_C_READY"
+        ]
+      },
+      {
+        "when": {
+          "user": "RING_GO"
+        },
+        "tools": [
+          {
+            "id": "a-to-b",
+            "name": "send",
+            "arguments": {
+              "agent": "b",
+              "message": "RING_1_PROPOSAL",
+              "delivery": "follow_up"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "RING_GO",
+          "tool_result": "queued"
+        },
+        "text": [
+          "RING_A_SENT"
+        ]
+      },
+      {
+        "when": {
+          "user": "RING_1_PROPOSAL"
+        },
+        "tools": [
+          {
+            "id": "b-to-c",
+            "name": "send",
+            "arguments": {
+              "agent": "c",
+              "message": "RING_2_COUNTER",
+              "delivery": "follow_up"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "RING_1_PROPOSAL",
+          "tool_result": "queued"
+        },
+        "text": [
+          "RING_B_SENT"
+        ]
+      },
+      {
+        "when": {
+          "user": "RING_2_COUNTER"
+        },
+        "tools": [
+          {
+            "id": "c-to-a",
+            "name": "send",
+            "arguments": {
+              "agent": "a",
+              "message": "RING_3_REPAIR",
+              "delivery": "follow_up"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "RING_2_COUNTER",
+          "tool_result": "queued"
+        },
+        "text": [
+          "RING_C_SENT"
+        ]
+      },
+      {
+        "when": {
+          "user": "RING_3_REPAIR"
+        },
+        "text": [
+          "RING_CLOSED"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "RING_ROOT",
+      "answer": "RING_ROOT_DONE"
+    }
+  ],
+  "assert": {
+    "requests": 18,
+    "tool_contains": [
+      "RING_A_SENT",
+      "RING_B_SENT",
+      "RING_C_SENT",
+      "RING_CLOSED"
+    ]
+  }
+}
