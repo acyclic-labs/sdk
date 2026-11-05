@@ -40,6 +40,7 @@ struct ControlledSource {
     provider: Arc<MemoryStream>,
     paths: Mutex<HashMap<String, Path>>,
     slow: Mutex<HashMap<String, oneshot::Receiver<()>>>,
+    held: Mutex<HashMap<String, (usize, oneshot::Receiver<()>)>>,
     appended: AtomicUsize,
 }
 
@@ -90,6 +91,21 @@ impl Source for Src {
     ) -> BoxFuture<'a, Result<Records, StreamError>> {
         async move {
             let records = Source::follow(&self.0.provider, path, from).await?;
+            let held = self.0.held.lock().unwrap().remove(path);
+            let records = stream::unfold(
+                (records, held, 0),
+                |(mut records, mut held, read)| async move {
+                    if held.as_ref().is_some_and(|(after, _)| read == *after)
+                        && held.take().unwrap().1.await.is_err()
+                    {
+                        return Some((Err(StreamError::Unavailable), (records, None, read)));
+                    }
+                    records
+                        .next()
+                        .await
+                        .map(|record| (record, (records, held, read + 1)))
+                },
+            );
             let (sender, ended) = oneshot::channel();
             let read = {
                 let mut paths = self.0.paths.lock().unwrap();
@@ -442,5 +458,32 @@ async fn a_member_anchored_after_a_key_reload_replays_older_history() {
     let mut run = Box::pin(feed.run());
     assert!(step(&mut run).is_none());
     assert_eq!(*follower.state().borrow(), FollowerState::Serving);
+    assert!(served(&follower, "account"));
+}
+
+#[tokio::test]
+async fn an_account_refused_across_an_anchor_reload_reopens_under_the_new_anchor() {
+    let old = Issuer::new("test", key(1));
+    let new = Issuer::new("test", key(9));
+    let (_, genesis) = new.genesis("account", key(2), NOW).unwrap();
+    assert!(genesis.len() > 1);
+    let source = Arc::new(ControlledSource::default());
+    let path = account_path("test", "account");
+    for value in genesis {
+        source.push(&path, value).await;
+    }
+    // The original follow refuses the keyring, then waits for its checkpoint.
+    let (release, held) = oneshot::channel();
+    source.held.lock().unwrap().insert(path, (1, held));
+    let (owner, anchor) = tokio::sync::watch::channel(AnchorKeys::new(old.anchor()));
+    let (follower, mut feed, _accounts) = anchored(&source, anchor);
+    let mut run = Box::pin(feed.run());
+    assert!(step(&mut run).is_none());
+    owner.send_modify(|keys| *keys = keys.rotate(new.anchor(), NOW, 0));
+    assert!(step(&mut run).is_none());
+    assert!(!served(&follower, "account"));
+    // No second publication: completing the old opening must replay now.
+    release.send(()).unwrap();
+    assert!(step(&mut run).is_none());
     assert!(served(&follower, "account"));
 }

@@ -1,0 +1,11 @@
+--- a/rust/crates/stream/src/trust_feed.rs
++++ b/rust/crates/stream/src/trust_feed.rs
+@@ -398,7 +398,7 @@
+                         .transpose()
+                         .map_err(|_| StreamError::Unavailable)?
+                         .unwrap_or(false);
+-                    if changed {
++                    if changed && false {
+                         let key = Some(account);
+                         let from = next.get(&key).copied().unwrap_or(0);
+                         follows.push(open(&*source, follower, &**clock, &environment, key, from));

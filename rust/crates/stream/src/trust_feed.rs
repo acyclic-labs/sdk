@@ -87,7 +87,7 @@ enum Event {
     },
     Record(Record),
     /// No authenticated checkpoint at the observed cut; retry on trust change.
-    Refused,
+    Refused(Option<tokio::sync::watch::Receiver<AnchorKeys>>),
     /// The follow ended: the Stream was lost.
     Ended(StreamError),
 }
@@ -106,6 +106,7 @@ enum Reading<'a> {
 struct Next<'a> {
     key: Option<String>,
     reading: Option<Reading<'a>>,
+    anchor: Option<tokio::sync::watch::Receiver<AnchorKeys>>,
 }
 
 impl Future for Next<'_> {
@@ -116,9 +117,10 @@ impl Future for Next<'_> {
         let (event, records) = match this.reading.as_mut().expect("pending original read") {
             Reading::Opening(opening) => match futures::ready!(opening.as_mut().poll(cx)) {
                 Ok((tail, position, records)) => (Event::Opened { tail, position }, records),
-                Err(StreamError::AccessDenied) if this.key.is_some() => {
-                    (Event::Refused, futures::stream::empty().boxed())
-                }
+                Err(StreamError::AccessDenied) if this.key.is_some() => (
+                    Event::Refused(this.anchor.take()),
+                    futures::stream::empty().boxed(),
+                ),
                 Err(error) => (Event::Ended(error), futures::stream::empty().boxed()),
             },
             Reading::Records(records) => {
@@ -141,6 +143,7 @@ fn read(key: Option<String>, records: Records) -> Next<'static> {
     Next {
         key,
         reading: Some(Reading::Records(records)),
+        anchor: None,
     }
 }
 
@@ -384,11 +387,26 @@ impl<S: Source> TrustFeed<S> {
                         blocked.insert(account, Some((record, records)));
                     }
                 }
-                Either::Left(Some(((Some(account), Event::Refused), _))) => {
+                Either::Left(Some(((Some(account), Event::Refused(opened)), _))) => {
                     follower.refuse(&account);
-                    blocked.insert(account, None);
+                    // A publication may have passed while this opening was
+                    // still reading its checkpoint. Its original watch cut
+                    // prevents that event from being lost before it blocks.
+                    let changed = opened
+                        .as_ref()
+                        .map(|anchor| anchor.has_changed())
+                        .transpose()
+                        .map_err(|_| StreamError::Unavailable)?
+                        .unwrap_or(false);
+                    if changed {
+                        let key = Some(account);
+                        let from = next.get(&key).copied().unwrap_or(0);
+                        follows.push(open(&*source, follower, &**clock, &environment, key, from));
+                    } else {
+                        blocked.insert(account, None);
+                    }
                 }
-                Either::Left(Some(((None, Event::Refused), _))) => {
+                Either::Left(Some(((None, Event::Refused(_)), _))) => {
                     return Err(StreamError::AccessDenied);
                 }
                 Either::Left(Some(((_, Event::Ended(error)), _))) => return Err(error),
@@ -470,6 +488,10 @@ fn open<'a, S: Source>(
     key: Option<String>,
     from: u64,
 ) -> Next<'a> {
+    let mut anchor = follower.anchor();
+    if let Some(anchor) = &mut anchor {
+        anchor.borrow_and_update();
+    }
     let path = key.as_deref().map_or_else(
         || environment_path(environment),
         |account| account_path(environment, account),
@@ -526,6 +548,7 @@ fn open<'a, S: Source>(
     Next {
         key,
         reading: Some(Reading::Opening(opened.boxed())),
+        anchor,
     }
 }
 
