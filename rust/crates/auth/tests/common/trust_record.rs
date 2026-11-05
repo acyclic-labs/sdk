@@ -2,7 +2,7 @@
 use acyclic_auth::{
     contract::{RevocationPublication, TrustRecord, TrustRecordKind, TrustRecordProto},
     crypto::BlockId,
-    trust::{Applied, FenceCause, Follower, FollowerState, Issuer, KeyringFrontier},
+    trust::{AnchorKeys, Applied, FenceCause, Follower, FollowerState, Issuer, KeyringFrontier},
     verify::{Trust as _, VerifyError},
 };
 use ed25519_dalek::SigningKey;
@@ -11,35 +11,45 @@ use std::sync::Arc;
 
 /// Re-anchoring a refused record must agree with fresh current-key admission.
 fn check_reanchor(bytes: &[u8]) -> Result<(), String> {
-    check_publication(bytes, Follower::reanchor)
+    check_publication(bytes, |owner, keys| {
+        owner.send_replace(AnchorKeys::new(keys.to_vec()));
+        Ok(())
+    })
 }
 
 fn check_publication(
     bytes: &[u8],
-    publish: impl FnOnce(&Follower, Arc<[BlockId]>) -> Result<(), VerifyError>,
+    publish: impl FnOnce(
+        &tokio::sync::watch::Sender<AnchorKeys>,
+        Arc<[BlockId]>,
+    ) -> Result<(), VerifyError>,
 ) -> Result<(), String> {
     let keys = Issuer::new("test", SigningKey::from_bytes(&[1; 32])).anchor();
     let placeholder = Issuer::new("test", SigningKey::from_bytes(&[9; 32])).anchor();
-    let recovering = Follower::new("test", placeholder);
+    let (owner, watched) = tokio::sync::watch::channel(AnchorKeys::new(placeholder));
+    let recovering = Follower::new("test", watched);
     if let Err(cause) = recovering.apply_environment(bytes, 100) {
         if *recovering.state().borrow() != FollowerState::Fenced(FenceCause::Refused)
             || recovering.environment_refusal() != Some(cause)
-            || recovering.environment_keys("test").err() != Some(VerifyError::Unavailable)
+            || recovering.environment_keys("test", 100).err() != Some(VerifyError::Unavailable)
         {
             return Err(
                 "refused environment must retain its cause behind an unavailable fence".into(),
             );
         }
-        publish(&recovering, keys.clone().into()).map_err(|error| error.to_string())?;
-        let fresh = Follower::new("test", keys);
+        publish(&owner, keys.clone().into()).map_err(|error| error.to_string())?;
+        let fresh = Follower::new("test", AnchorKeys::fixed(keys));
         if recovering.apply_environment(bytes, 100) != fresh.apply_environment(bytes, 100) {
             return Err("reanchored frontier differs from a fresh current-anchor frontier".into());
         }
     } else {
         recovering.resume();
-        let accepted = recovering.environment_keys("test").unwrap().to_vec();
-        publish(&recovering, keys.into()).map_err(|error| error.to_string())?;
-        if *recovering.environment_keys("test").unwrap() != accepted {
+        let established = recovering
+            .environment_initialized()
+            .map_err(|error| error.to_string())?;
+        let accepted = recovering.environment_keys("test", 100).unwrap().to_vec();
+        publish(&owner, keys.into()).map_err(|error| error.to_string())?;
+        if established && *recovering.environment_keys("test", 100).unwrap() != accepted {
             return Err("anchor publication replaced an authenticated signed frontier".into());
         }
     }
@@ -49,7 +59,7 @@ fn check_publication(
 pub fn check(bytes: &[u8]) {
     let issuer = Issuer::new("test", SigningKey::from_bytes(&[1; 32]));
     let anchor = issuer.anchor();
-    let follower = Follower::new("test", anchor.clone());
+    let follower = Follower::new("test", AnchorKeys::fixed(anchor.clone()));
     let (mut root, genesis) = issuer
         .genesis("account", SigningKey::from_bytes(&[2; 32]), 100)
         .unwrap();
@@ -90,7 +100,7 @@ pub fn check(bytes: &[u8]) {
                     TrustRecord::try_from(TrustRecordProto::decode(record).unwrap()).unwrap();
                 // Exercise actual cross-scope admission on an independent
                 // follower: its refusal must not fence the live floor oracle.
-                let scoped = Follower::new("test", anchor.clone());
+                let scoped = Follower::new("test", AnchorKeys::fixed(anchor.clone()));
                 match &decoded.record {
                     TrustRecordKind::Environment(_) => assert!(
                         scoped.apply_account("account", record, 100).is_err(),

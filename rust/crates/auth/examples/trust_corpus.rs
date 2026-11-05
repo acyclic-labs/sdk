@@ -1,5 +1,5 @@
 //! Capture signed trust inputs from the original SDK custody implementation.
-use acyclic_auth::trust::{EnvironmentFrontier, Issuer};
+use acyclic_auth::trust::{AnchorKeys, EnvironmentFrontier, Issuer};
 use ed25519_dalek::SigningKey;
 use std::error::Error;
 mod corpus;
@@ -18,7 +18,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
     }
     let (key, foreign) = foreign.ok_or("no separator-free signed foreign record")?;
     let (mut account, _) = issuer.genesis("account", SigningKey::from_bytes(&[2; 32]), 100)?;
-    let mut environment = EnvironmentFrontier::genesis("test", issuer.anchor());
+    let mut environment = EnvironmentFrontier::genesis("test", AnchorKeys::new(issuer.anchor()));
     let next_key = SigningKey::from_bytes(&[9; 32]);
     let rotation = issuer.environment_keyring(
         &mut environment,
@@ -27,7 +27,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
     )?;
     let next = Issuer::new("test", next_key);
     let rotation_next = next.environment_keyring(&mut environment, &issuer.anchor(), 100)?;
-    let mut bootstrap = EnvironmentFrontier::genesis("test", next.anchor());
+    let mut bootstrap = EnvironmentFrontier::genesis("test", AnchorKeys::new(next.anchor()));
     let bootstrap = next.environment_keyring(&mut bootstrap, &next.anchor(), 100)?;
     let records = [
         (

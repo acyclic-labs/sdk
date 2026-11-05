@@ -8,9 +8,8 @@
 //! `VerifyError::Refused`, and pauses its original follow until an
 //! environment record or bootstrap key publication lets it apply.
 use crate::{FollowFilter, Record, Stream, StreamError, StreamProvider, UnixMillisClock};
-use acyclic_auth::crypto::BlockId;
 use acyclic_auth::trust::{
-    Applied, FenceCause, Follower, FollowerState, account_path, environment_path,
+    AnchorKeys, Applied, FenceCause, Follower, FollowerState, account_path, environment_path,
 };
 use futures::{
     FutureExt as _, StreamExt as _,
@@ -166,7 +165,7 @@ pub struct TrustFeed<S> {
     next: HashMap<Option<String>, u64>,
     /// Absent once every [`Accounts`] handle is dropped.
     added: Option<mpsc::UnboundedReceiver<String>>,
-    anchor: Option<tokio::sync::watch::Receiver<Arc<[BlockId]>>>,
+    anchor: Option<tokio::sync::watch::Receiver<AnchorKeys>>,
 }
 
 impl<S: Source> TrustFeed<S> {
@@ -180,6 +179,7 @@ impl<S: Source> TrustFeed<S> {
         let (sender, added) = mpsc::unbounded();
         let mut next = HashMap::new();
         next.insert(None, 0);
+        let anchor = follower.anchor();
         (
             Self {
                 source,
@@ -187,19 +187,10 @@ impl<S: Source> TrustFeed<S> {
                 clock,
                 next,
                 added: Some(added),
-                anchor: None,
+                anchor,
             },
             Accounts(sender),
         )
-    }
-
-    /// Watch the authenticated owner's bootstrap key set. The current value
-    /// applies before opening any follow; later publications retry the retained
-    /// environment record and blocked accounts. Losing this producer ends the run as unavailable.
-    #[must_use]
-    pub fn watch_anchor(mut self, anchor: tokio::sync::watch::Receiver<Arc<[BlockId]>>) -> Self {
-        self.anchor = Some(anchor);
-        self
     }
 
     /// Follows until a Stream is lost, then fences the follower and returns
@@ -250,14 +241,7 @@ impl<S: Source> TrustFeed<S> {
             added,
             anchor,
         } = self;
-        if let Some(anchor) = anchor {
-            follower
-                .reanchor(anchor.borrow_and_update().clone())
-                .map_err(|_| StreamError::Unavailable)?;
-        }
-        let environment = follower
-            .environment()
-            .map_err(|_| StreamError::Unavailable)?;
+        let environment = follower.environment().to_owned();
         let mut follows = FuturesUnordered::new();
         for (key, from) in next.iter() {
             follows.push(open(
@@ -319,9 +303,8 @@ impl<S: Source> TrustFeed<S> {
                 futures::pin_mut!(publication);
                 match future::select(publication, input).await {
                     Either::Left((keys, _)) => {
-                        follower
-                            .reanchor(keys?)
-                            .map_err(|_| StreamError::Unavailable)?;
+                        keys?;
+                        follower.anchor_changed();
                         if !blocked.is_empty() {
                             retry_blocked =
                                 Some(follower.protected_now(clock.now_unix_millis() / 1000));
@@ -400,7 +383,7 @@ impl<S: Source> TrustFeed<S> {
 async fn apply_environment(
     follower: &Follower,
     clock: &dyn UnixMillisClock,
-    anchor: &mut Option<tokio::sync::watch::Receiver<Arc<[BlockId]>>>,
+    anchor: &mut Option<tokio::sync::watch::Receiver<AnchorKeys>>,
     record: &Record,
 ) -> Result<(Applied, u64), StreamError> {
     loop {
@@ -410,10 +393,9 @@ async fn apply_environment(
         }
         let mut state = follower.state();
         let changed = async {
-            let keys = anchor_changed(anchor, follower).await?;
-            follower
-                .reanchor(keys)
-                .map_err(|_| StreamError::Unavailable)
+            anchor_changed(anchor, follower).await?;
+            follower.anchor_changed();
+            Ok(())
         };
         let closed = async {
             state
@@ -431,16 +413,17 @@ async fn apply_environment(
 }
 
 async fn anchor_changed(
-    anchor: &mut Option<tokio::sync::watch::Receiver<Arc<[BlockId]>>>,
+    anchor: &mut Option<tokio::sync::watch::Receiver<AnchorKeys>>,
     follower: &Follower,
-) -> Result<Arc<[BlockId]>, StreamError> {
+) -> Result<(), StreamError> {
     match anchor {
         Some(anchor) => {
             anchor.changed().await.map_err(|_| {
                 follower.fence(FenceCause::AnchorLost);
                 StreamError::Unavailable
             })?;
-            Ok(anchor.borrow_and_update().clone())
+            anchor.borrow_and_update();
+            Ok(())
         }
         None => future::pending().await,
     }

@@ -5,7 +5,7 @@ mod anchor;
 mod follower;
 pub mod issuance;
 mod issuer;
-pub use anchor::AnchorKeys;
+pub use anchor::{AnchorKeys, AnchorSource};
 pub use follower::{
     Applied, EnvironmentFrontier, FenceCause, Follower, FollowerState, account_path,
     environment_path,

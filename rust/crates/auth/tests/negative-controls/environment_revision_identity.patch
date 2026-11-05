@@ -1,0 +1,20 @@
+--- a/rust/crates/auth/src/trust/follower.rs
++++ b/rust/crates/auth/src/trust/follower.rs
+@@ -634,7 +634,7 @@
+             .read()
+             .map_err(|_| VerifyError::Unavailable)?
+             .clone();
+-        let keys = prepared.keys.clone();
++        let frontier = (prepared.sequence, prepared.digest);
+         // Exactly one published anchor snapshot authenticates this record.
+         let anchor = self.anchor.snapshot();
+         let result = prepared.apply(signed, &anchor, now)?;
+@@ -647,7 +647,7 @@
+                 .write()
+                 .map_err(|_| VerifyError::Unavailable)?;
+             self.anchor.with_snapshot(|current| {
+-                if !Arc::ptr_eq(&environment.keys, &keys)
++                if (environment.sequence, environment.digest) != frontier
+                     || (environment.cold() && !anchor.same(current))
+                 {
+                     return Err(VerifyError::Unavailable);

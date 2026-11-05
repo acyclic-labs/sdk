@@ -30,8 +30,8 @@ impl AnchorKeys {
     /// The live anchor of an owner that never rotates it: fixed host
     /// configuration, or a test.
     #[must_use]
-    pub fn fixed(keys: Vec<BlockId>) -> tokio::sync::watch::Receiver<Self> {
-        tokio::sync::watch::Sender::new(Self::new(keys)).subscribe()
+    pub fn fixed(keys: Vec<BlockId>) -> AnchorSource {
+        AnchorSource::Fixed(Self::new(keys))
     }
 
     /// The snapshot after the owner replaced its keys with `keys` at `now`.
@@ -84,6 +84,10 @@ impl AnchorKeys {
             .collect()
     }
 
+    pub(super) fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     fn build(current: Vec<BlockId>, retiring: Vec<(BlockId, u64)>) -> Self {
         let all = current
             .iter()
@@ -95,5 +99,41 @@ impl AnchorKeys {
             retiring,
             all,
         }))
+    }
+}
+
+/// An immutable configuration or the authenticated owner's live publication.
+/// Only live sources can be lost; a fixed configuration has no event producer.
+#[derive(Clone)]
+pub enum AnchorSource {
+    /// A configuration that never rotates.
+    Fixed(AnchorKeys),
+    /// The owner's original key-set watch.
+    Live(tokio::sync::watch::Receiver<AnchorKeys>),
+}
+
+impl From<tokio::sync::watch::Receiver<AnchorKeys>> for AnchorSource {
+    fn from(source: tokio::sync::watch::Receiver<AnchorKeys>) -> Self {
+        Self::Live(source)
+    }
+}
+
+impl AnchorSource {
+    pub(super) fn snapshot(&self) -> AnchorKeys {
+        self.with_snapshot(Clone::clone)
+    }
+
+    pub(super) fn with_snapshot<T>(&self, read: impl FnOnce(&AnchorKeys) -> T) -> T {
+        match self {
+            Self::Fixed(keys) => read(keys),
+            Self::Live(source) => read(&source.borrow()),
+        }
+    }
+
+    pub(super) fn watch(&self) -> Option<tokio::sync::watch::Receiver<AnchorKeys>> {
+        match self {
+            Self::Fixed(_) => None,
+            Self::Live(source) => Some(source.clone()),
+        }
     }
 }

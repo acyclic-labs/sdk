@@ -42,7 +42,7 @@
 //! keyring publication also checks the environment revision it authenticated.
 //! Environment signatures hold no publication lock and must extend the same
 //! retained environment revision when they publish.
-use super::{AnchorKeys, ChangeSource, Changed, SourceClosed};
+use super::{AnchorKeys, AnchorSource, ChangeSource, Changed, SourceClosed};
 use crate::{
     ENVIRONMENT_DOMAIN, KEYRING_DOMAIN,
     contract::*,
@@ -122,8 +122,8 @@ impl EnvironmentFrontier {
     }
 
     /// Replays the environment Stream's records from its start, through the
-    /// same validation as [`Follower::apply`]: records before the first one
-    /// `anchor` authenticates are superseded history.
+    /// same validation and trusted time `now` as [`Follower::apply`]. Records
+    /// before the first one `anchor` authenticates are superseded history.
     ///
     /// # Errors
     /// A gap, a foreign signer, a rollback, a non-environment record, or
@@ -132,13 +132,14 @@ impl EnvironmentFrontier {
         environment: impl Into<String>,
         anchor: AnchorKeys,
         records: &[&[u8]],
+        now: u64,
     ) -> Result<Self, VerifyError> {
         let mut frontier = Self::genesis(environment, anchor);
         for record in records {
             let TrustRecordKind::Environment(signed) = decode(record)?.record else {
                 return Err(VerifyError::Trust);
             };
-            match frontier.apply(&signed, u64::MAX) {
+            match frontier.apply(&signed, now) {
                 Err(_) if frontier.revision.cold() => {}
                 result => {
                     result?;
@@ -388,7 +389,7 @@ pub enum FollowerState {
 pub struct Follower {
     name: String,
     environment: RwLock<EnvironmentRevision>,
-    anchor: tokio::sync::watch::Receiver<AnchorKeys>,
+    anchor: AnchorSource,
     environment_refusal: RwLock<Option<VerifyError>>,
     accounts: RwLock<HashMap<String, Arc<AccountEntry>>>,
     floor: AtomicU64,
@@ -425,14 +426,11 @@ impl Follower {
     /// once its driver has applied every Stream up to the tail it observed and
     /// called [`Self::resume`].
     #[must_use]
-    pub fn new(
-        environment: impl Into<String>,
-        anchor: tokio::sync::watch::Receiver<AnchorKeys>,
-    ) -> Self {
+    pub fn new(environment: impl Into<String>, anchor: impl Into<AnchorSource>) -> Self {
         Self {
             name: environment.into(),
             environment: RwLock::default(),
-            anchor,
+            anchor: anchor.into(),
             environment_refusal: RwLock::new(None),
             accounts: RwLock::default(),
             floor: AtomicU64::new(0),
@@ -440,33 +438,6 @@ impl Follower {
             state: tokio::sync::watch::Sender::new(FollowerState::Connecting),
             global: tokio::sync::watch::Sender::new(()),
         }
-    }
-
-    /// Replace the owner's bootstrap keys before the first environment record
-    /// authenticates. An established signed chain keeps its original frontier;
-    /// an anchor update cannot replace its keys or skip a signed rotation.
-    /// The feed calls this only on an actual owner key-set publication.
-    ///
-    /// # Errors
-    /// Inaccessible frontier storage. This does not serve trust:
-    /// the refused record must still authenticate and catch up first.
-    pub fn reanchor(&self, anchor: Arc<[BlockId]>) -> Result<(), VerifyError> {
-        let retired = {
-            let mut environment = self
-                .environment
-                .write()
-                .map_err(|_| VerifyError::Unavailable)?;
-            if environment.revision.sequence != 0
-                || Arc::ptr_eq(&environment.revision.keys, &anchor)
-            {
-                return Ok(());
-            }
-            std::mem::replace(&mut environment.revision.keys, anchor)
-        };
-        drop(retired);
-        self.notify(None);
-        self.global.send_replace(());
-        Ok(())
     }
 
     /// Original environment-record failure behind the retryable refusal fence.
@@ -505,8 +476,8 @@ impl Follower {
     /// The anchor's publications: a driver awaits `changed` on it to retry a
     /// refused environment record, never probing.
     #[must_use]
-    pub fn anchor(&self) -> tokio::sync::watch::Receiver<AnchorKeys> {
-        self.anchor.clone()
+    pub fn anchor(&self) -> Option<tokio::sync::watch::Receiver<AnchorKeys>> {
+        self.anchor.watch()
     }
 
     /// The anchor published a new snapshot. Before any environment keyring the
@@ -663,10 +634,9 @@ impl Follower {
             .read()
             .map_err(|_| VerifyError::Unavailable)?
             .clone();
-        let frontier = (prepared.sequence, prepared.digest);
         let keys = prepared.keys.clone();
         // Exactly one published anchor snapshot authenticates this record.
-        let anchor = self.anchor.borrow().clone();
+        let anchor = self.anchor.snapshot();
         let result = prepared.apply(signed, &anchor, now)?;
         if result.0 == Applied::Duplicate {
             return Ok(result);
@@ -676,10 +646,14 @@ impl Follower {
                 .environment
                 .write()
                 .map_err(|_| VerifyError::Unavailable)?;
-            if (environment.sequence, environment.digest) != frontier || !Arc::ptr_eq(&environment.keys, &keys) {
-                return Err(VerifyError::Unavailable);
-            }
-            std::mem::replace(&mut *environment, prepared)
+            self.anchor.with_snapshot(|current| {
+                if !Arc::ptr_eq(&environment.keys, &keys)
+                    || (environment.cold() && !anchor.same(current))
+                {
+                    return Err(VerifyError::Unavailable);
+                }
+                Ok(std::mem::replace(&mut *environment, prepared))
+            })?
         };
         // The same signature proof can publish only against its captured
         // frontier. Retiring the replaced key owner holds no publication lock.
@@ -703,7 +677,7 @@ impl Follower {
                         .environment
                         .read()
                         .map_err(|_| VerifyError::Unavailable)?;
-                    let anchor = self.anchor.borrow().clone();
+                    let anchor = self.anchor.snapshot();
                     environment.keys(&anchor, now)
                 };
                 prepare_keyring(&account, signed, &keys, now)
@@ -735,11 +709,12 @@ impl Follower {
         // the environment's trusted keys. Comparing the key set itself covers
         // every way they change: a new revision, an unproven position becoming
         // proven, and an anchor publication.
-        let anchor = self.anchor.borrow().clone();
-        if *environment.keys(&anchor, now) != *authenticated {
-            return Err(VerifyError::Unavailable);
-        }
-        let retired = prepared.next.and_then(|next| account.keyring.replace(next));
+        let retired = self.anchor.with_snapshot(|anchor| {
+            if *environment.keys(anchor, now) != *authenticated {
+                return Err(VerifyError::Unavailable);
+            }
+            Ok(prepared.next.and_then(|next| account.keyring.replace(next)))
+        })?;
         // Retiring an old checkpoint can free accumulated indexes. It must not
         // retain the environment publication lock during that destruction.
         drop(environment);
@@ -894,7 +869,7 @@ impl Follower {
             .environment
             .read()
             .map_err(|_| VerifyError::Unavailable)?;
-        let anchor = self.anchor.borrow().clone();
+        let anchor = self.anchor.snapshot();
         Ok(environment.keys(&anchor, now.max(self.floor.load(Ordering::SeqCst))))
     }
 

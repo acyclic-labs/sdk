@@ -204,7 +204,7 @@ async fn reconnect_completes_an_interrupted_authenticated_replay() {
                 .unwrap();
         }
     }
-    let follower = Arc::new(Follower::new("test", anchor.anchor()));
+    let follower = Arc::new(Follower::new("test", AnchorKeys::fixed(anchor.anchor())));
     let (mut feed, accounts) = TrustFeed::new(
         InterruptedReplay {
             source,
@@ -340,7 +340,7 @@ async fn a_new_account_replays_from_a_current_checkpoint_after_environment_rotat
     assert!(!served(&follower, "foreign"));
     assert!(served(&follower, "late"));
     assert_eq!(
-        &*follower.environment_keys("test").unwrap(),
+        &*follower.environment_keys("test", NOW).unwrap(),
         current.anchor().as_slice()
     );
 }
@@ -377,7 +377,7 @@ async fn a_slow_account_open_never_delays_another_accounts_revocations() {
 
 /// A feed over `fake` that follows `account`, its follower read from `anchor`.
 fn anchored(
-    fake: &Arc<Fake>,
+    fake: &Arc<ControlledSource>,
     anchor: tokio::sync::watch::Receiver<AnchorKeys>,
 ) -> (Arc<Follower>, TrustFeed<Src>, Accounts) {
     let follower = Arc::new(Follower::new("test", anchor));
@@ -390,8 +390,8 @@ fn anchored(
     (follower, feed, accounts)
 }
 
-#[test]
-fn a_member_built_before_a_key_reload_converges_on_the_anchor_event() {
+#[tokio::test]
+async fn a_member_built_before_a_key_reload_converges_on_the_anchor_event() {
     let old = Issuer::new("test", key(1));
     let new = Issuer::new("test", key(9));
     // Global reloaded its key and signed everything with the new one.
@@ -400,10 +400,10 @@ fn a_member_built_before_a_key_reload_converges_on_the_anchor_event() {
         .environment_keyring(&mut frontier, &new.anchor(), NOW)
         .unwrap();
     let (_root, genesis) = new.genesis("account", key(2), NOW).unwrap();
-    let fake = Arc::new(Fake::default());
-    fake.push(&environment_path("test"), environment);
+    let fake = Arc::new(ControlledSource::default());
+    fake.push(&environment_path("test"), environment).await;
     for value in genesis {
-        fake.push(&account_path("test", "account"), value);
+        fake.push(&account_path("test", "account"), value).await;
     }
     let (owner, anchor) = tokio::sync::watch::channel(AnchorKeys::new(old.anchor()));
     let (follower, mut feed, _accounts) = anchored(&fake, anchor);
@@ -417,22 +417,25 @@ fn a_member_built_before_a_key_reload_converges_on_the_anchor_event() {
     assert!(step(&mut run).is_none());
     assert_eq!(*follower.state().borrow(), FollowerState::Serving);
     assert!(served(&follower, "account"));
-    assert_eq!(&*follower.environment_keys("test").unwrap(), new.anchor());
+    assert_eq!(
+        &*follower.environment_keys("test", NOW).unwrap(),
+        new.anchor()
+    );
 }
 
-#[test]
-fn a_member_anchored_after_a_key_reload_replays_older_history() {
+#[tokio::test]
+async fn a_member_anchored_after_a_key_reload_replays_older_history() {
     let old = Issuer::new("test", key(1));
     let new = Issuer::new("test", key(9));
     let mut frontier = EnvironmentFrontier::genesis("test", AnchorKeys::new(old.anchor()));
-    let fake = Arc::new(Fake::default());
+    let fake = Arc::new(ControlledSource::default());
     for keys in [old.anchor(), new.anchor()] {
         let record = old.environment_keyring(&mut frontier, &keys, NOW).unwrap();
-        fake.push(&environment_path("test"), record);
+        fake.push(&environment_path("test"), record).await;
     }
     let (_root, genesis) = new.genesis("account", key(2), NOW).unwrap();
     for value in genesis {
-        fake.push(&account_path("test", "account"), value);
+        fake.push(&account_path("test", "account"), value).await;
     }
     // The replacement reads the reloaded file: the new key alone.
     let (follower, mut feed, _accounts) = anchored(&fake, AnchorKeys::fixed(new.anchor()));
