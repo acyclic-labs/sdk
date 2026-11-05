@@ -96,6 +96,29 @@ type Mapped = (
 /// One profile's mapped declarations, decoded and checked once.
 pub struct NativeTools(Vec<Mapped>);
 
+/// One immutable selection's declarations. The fallible initializer owns the
+/// reservation before it reads the profile or decodes any declarations.
+#[cfg(any(feature = "filesystem", test))]
+#[derive(Default)]
+pub(crate) struct Cache(once_cell::sync::OnceCell<Option<Arc<NativeTools>>>);
+
+#[cfg(any(feature = "filesystem", test))]
+impl Cache {
+    pub(crate) fn get(
+        &self,
+        profile: impl FnOnce() -> Result<Option<NativeToolProfile>>,
+    ) -> Result<Option<Arc<NativeTools>>> {
+        self.0
+            .get_or_try_init(|| {
+                profile()?
+                    .map(NativeTools::new)
+                    .transpose()
+                    .map(|tools| tools.map(Arc::new))
+            })
+            .cloned()
+    }
+}
+
 impl NativeTools {
     /// The declarations `profile`'s layer maps, in the layer's order.
     /// Unmapped declarations are left out.

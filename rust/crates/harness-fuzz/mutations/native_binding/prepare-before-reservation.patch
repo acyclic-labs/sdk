@@ -1,0 +1,26 @@
+diff --git a/rust/crates/harness-core/src/tools/native/mod.rs b/rust/crates/harness-core/src/tools/native/mod.rs
+index a9d161eea7..8052c69af2 100644
+--- a/rust/crates/harness-core/src/tools/native/mod.rs
++++ b/rust/crates/harness-core/src/tools/native/mod.rs
+@@ -106,14 +106,13 @@ impl Cache {
+         &self,
+         profile: impl FnOnce() -> Result<Option<NativeToolProfile>>,
+     ) -> Result<Option<Arc<NativeTools>>> {
+-        self.0
+-            .get_or_try_init(|| {
+-                profile()?
+-                    .map(NativeTools::new)
+-                    .transpose()
+-                    .map(|tools| tools.map(Arc::new))
+-            })
+-            .cloned()
++        match self.0.get() {
++            Some(tools) => Ok(tools.clone()),
++            None => {
++                let tools = profile()?.map(NativeTools::new).transpose()?.map(Arc::new);
++                Ok(self.0.get_or_init(|| tools).clone())
++            }
++        }
+     }
+ }
+ 
