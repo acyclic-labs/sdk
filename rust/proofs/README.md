@@ -103,6 +103,13 @@ diagnosis for its macOS timeout. This event-consumption control does not qualify
 its native projection or identify that timeout's cause. Increasing a timeout
 or using a successful model response would not prove it.
 
+The [shared-completion error control](shared-completion-error/README.md) retains
+a mutation that reconstructs each observer's terminal error. The existing native
+task custody test cancels a waiter, drops its observer and loses the original
+release producer; both surviving observers must retain the same original error.
+This challenges cause identity without adding a second task implementation.
+Complete scheduler, population cost and platform obligations remain open.
+
 The open whole-operation and topology obligations in the table must remain
 explicit until their checked refinement, original counters and independent
 negative controls exist. In particular, a single-member memory fixture cannot

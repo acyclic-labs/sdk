@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "auth-generation", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost", "guest-refusal", "trust-catchup"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "auth-generation", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost", "guest-refusal", "trust-catchup", "shared-completion-error"])
 claim = parser.parse_args().claim
 target = ["--lib"]
 if claim == "retained-credit":
@@ -58,6 +58,12 @@ elif claim in ("work-arithmetic", "work-mixed"):
     crate = "acyclic-fs"
     test = "performance::tests::full_width_work_arithmetic_preserves_exact_sums_and_refusals"
     diagnostic = "full-width work sum disagreed with wider arithmetic"
+    features = []
+elif claim == "shared-completion-error":
+    source = "rust/crates/native-runtime/src/task/custody.rs"
+    crate = "acyclic-native-runtime"
+    test = "task::custody::tests::original_tasks_conform_to_scoped_and_shared_completion_custody"
+    diagnostic = "shared completion replaced the original operation error"
     features = []
 elif claim == "trust-catchup":
     source = "rust/crates/stream/src/trust_feed.rs"

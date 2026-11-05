@@ -103,10 +103,10 @@ fn original_tasks_conform_to_scoped_and_shared_completion_custody() {
                     .unwrap()
                     .clone()
             };
-            assert!(Arc::ptr_eq(
-                &retained(&first_error),
-                &retained(&later_error)
-            ));
+            assert!(
+                Arc::ptr_eq(&retained(&first_error), &retained(&later_error)),
+                "shared completion replaced the original operation error"
+            );
 
             let completion = TaskCompletion::new(super::super::spawn(async {
                 panic!("private physical task payload")
