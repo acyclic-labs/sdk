@@ -144,7 +144,7 @@ impl PreparedNativeMountStart {
             error => (None, error),
         };
         let mut owner = NativeMountSession::new(request, None, Some(destination_custody));
-        owner.startup_source_watch = startup_source_watch;
+        owner.retained_source = startup_source_watch.map(retirement::RetainedSource::Watch);
         owner.measured_cleanup_failed = true;
         NativeMountError::StartupFailed(self.failed(error, owner))
     }
@@ -152,9 +152,8 @@ impl PreparedNativeMountStart {
 
 /// Upper lifecycle payload held by the existing physical driver loop.
 pub(super) struct NativeMountRetirement {
-    pub(super) retained_source: Option<Arc<dyn MountFilesystem>>,
+    pub(super) retained_source: Option<retirement::RetainedSource>,
     pub(super) destination_guard: Option<MountDestinationGuard>,
-    pub(super) startup_source_watch: Option<lazy::NativeMountSourceWatchOwner>,
     pub(super) terminal_source_failure: Option<NativeMountError>,
     #[cfg(windows)]
     pub(super) warm_namespace: Option<projfs::ProjFsNamespaceQualification>,
@@ -188,7 +187,6 @@ impl NativeMountRetirement {
         };
         retirement::retire_sources(
             &mut self.retained_source,
-            &mut self.startup_source_watch,
             &mut self.terminal_source_failure,
             &work,
             join,
@@ -196,8 +194,6 @@ impl NativeMountRetirement {
     }
 
     pub(super) fn is_retired(&self) -> bool {
-        self.retained_source.is_none()
-            && self.startup_source_watch.is_none()
-            && self.destination_guard.is_none()
+        self.retained_source.is_none() && self.destination_guard.is_none()
     }
 }

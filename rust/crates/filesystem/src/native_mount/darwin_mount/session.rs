@@ -192,7 +192,7 @@ impl DarwinMountSession {
             .map_or((false, false), |packet| {
                 (
                     packet.destination_guard.is_some(),
-                    packet.retained_source.is_some() || packet.startup_source_watch.is_some(),
+                    packet.retained_source.is_some(),
                 )
             })
     }

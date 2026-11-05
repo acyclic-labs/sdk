@@ -140,9 +140,10 @@ pub(in crate::native_mount) fn retire_source_in_physical_loop(
         assert!(state.resources.is_none());
         assert!(state.control.namespace_detach_confirmed());
         state.retirement = Some(crate::native_mount::NativeMountRetirement {
-            retained_source: Some(source),
+            retained_source: Some(crate::native_mount::retirement::RetainedSource::Filesystem(
+                source,
+            )),
             destination_guard: None,
-            startup_source_watch: None,
             terminal_source_failure: None,
         });
     }
@@ -551,7 +552,6 @@ fn physical_retirement_finishes_with_its_original_terminal_source_outcome() -> T
         state.retirement = Some(crate::native_mount::NativeMountRetirement {
             retained_source: None,
             destination_guard: None,
-            startup_source_watch: None,
             terminal_source_failure: Some(NativeMountError::Io(error)),
         });
     }

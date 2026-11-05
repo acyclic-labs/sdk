@@ -66,9 +66,10 @@ pub(in crate::native_mount) fn retire_source_in_physical_stop(
         context: None,
         runtime: None,
         retirement: Some(crate::native_mount::NativeMountRetirement {
-            retained_source: Some(source),
+            retained_source: Some(crate::native_mount::retirement::RetainedSource::Filesystem(
+                source,
+            )),
             destination_guard: None,
-            startup_source_watch: None,
             terminal_source_failure: None,
             warm_namespace: None,
         }),
@@ -562,8 +563,7 @@ impl ProjFsSession {
             .map_or((false, false), |retirement| {
                 (
                     retirement.destination_guard.is_some(),
-                    retirement.retained_source.is_some()
-                        || retirement.startup_source_watch.is_some(),
+                    retirement.retained_source.is_some(),
                 )
             })
     }

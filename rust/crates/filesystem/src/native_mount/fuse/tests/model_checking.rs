@@ -51,7 +51,7 @@ impl MountFilesystem for NoContent {
         binding_epoch_with_meter(work: &NativeMaterializationWork) -> Result<Option<u64>, MountSourceError>;
         unchanged_since_with_meter(path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp, work: &NativeMaterializationWork) -> Result<bool, MountSourceError>;
         reported_unchanged_since_with_meter(path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp, work: &NativeMaterializationWork) -> Result<bool, MountSourceError>;
-        shutdown_with_meter(work: &NativeMaterializationWork) -> Result<bool, MountSourceError>;
+        shutdown_with_meter(work: &NativeMaterializationWork) -> Result<crate::MountSourceRetirement, MountSourceError>;
         node_unchanged_since_with_meter(file_id: FileId, stamp: ViewStamp, work: &NativeMaterializationWork) -> Result<bool, MountSourceError>;
         listing_unchanged_since_with_meter(path: &MountPath, stamp: ViewStamp, work: &NativeMaterializationWork) -> Result<bool, MountSourceError>;
         lookup(path: &MountPath) -> Result<Option<MountLookup>, MountSourceError>;

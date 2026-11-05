@@ -49,7 +49,6 @@ fn retirement(control: Control, authored: usize) -> Result<bool, Box<dyn std::er
     let mut packet = crate::native_mount::startup::NativeMountRetirement {
         destination_guard: guard,
         retained_source: None,
-        startup_source_watch: None,
         terminal_source_failure: None,
     };
     let before = work.receipt();

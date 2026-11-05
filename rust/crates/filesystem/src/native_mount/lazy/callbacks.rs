@@ -166,37 +166,32 @@ where
     fn shutdown_with_meter(
         &self,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<bool, MountSourceError> {
+    ) -> Result<MountSourceRetirement, MountSourceError> {
         work.admit(crate::WorkCounters::UNCHARGED)
             .map_err(MountSourceError::NativeWork)?;
-        let changed = !self.physically_retired()?;
-        self.cancel_cleanup(Some(work.cancellation()))?;
-        Ok(changed)
+        self.shutdown_with_cleanup_wait(work.cancellation())
     }
     fn shutdown_with_cleanup_wait(
         &self,
         wait: &CancellationToken,
-    ) -> Result<bool, MountSourceError> {
-        let changed = !self.physically_retired()?;
-        self.cancel_cleanup(Some(wait))?;
-        Ok(changed)
+    ) -> Result<MountSourceRetirement, MountSourceError> {
+        self.cancel_cleanup_with_join(
+            Some(wait),
+            crate::native_mount::retirement::SourceRetirementWait::Caller,
+        )
     }
-    fn shutdown_accepted_cleanup(&self) -> Result<bool, MountSourceError> {
-        let changed = !self.physically_retired()?;
-        self.cancel_cleanup(None)?;
-        Ok(changed)
+    fn shutdown_accepted_cleanup(&self) -> Result<MountSourceRetirement, MountSourceError> {
+        self.cancel_cleanup_with_join(
+            None,
+            crate::native_mount::retirement::SourceRetirementWait::Caller,
+        )
     }
 
     fn shutdown_physical_cleanup(&self) -> Result<MountSourceRetirement, MountSourceError> {
-        let changed = !self.physically_retired()?;
         self.cancel_cleanup_with_join(
             None,
             crate::native_mount::retirement::SourceRetirementWait::Physical,
-        )?;
-        Ok(MountSourceRetirement {
-            changed,
-            failure: None,
-        })
+        )
     }
 
     super::mutations::mutation_callbacks!();

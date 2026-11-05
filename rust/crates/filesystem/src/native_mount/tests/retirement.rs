@@ -117,7 +117,6 @@ fn detached_driver_retirement_completes_fence_after_waiter_cancellation()
     } = Fixture::new()?;
     let mut packet = NativeMountRetirement {
         retained_source: None,
-        startup_source_watch: None,
         terminal_source_failure: None,
         destination_guard: session.destination_guard.take(),
         #[cfg(windows)]
@@ -194,7 +193,6 @@ fn terminal_source_outcome_is_reported_after_its_destination_retires()
         let result = if driver_owned {
             let mut packet = NativeMountRetirement {
                 retained_source: None,
-                startup_source_watch: None,
                 terminal_source_failure: Some(NativeMountError::Io(error)),
                 destination_guard: session.destination_guard.take(),
                 #[cfg(windows)]
@@ -238,13 +236,13 @@ fn stopped_watch_cancellation_releases_the_driver_and_session_fences()
         std::fs::create_dir(&watched)?;
         let wait = CancellationToken::new();
         let watch = crate::source_watch::terminal_cancellation_watch(&watched, &mut work, &wait)?;
-        session.startup_source_watch =
-            Some(lazy::NativeMountSourceWatchOwner::from_native_watch_fixture(watch));
+        session.retained_source = Some(retirement::RetainedSource::Watch(
+            lazy::NativeMountSourceWatchOwner::from_native_watch_fixture(watch),
+        ));
         let before = work.receipt();
         let result = if driver_owned {
             let mut packet = NativeMountRetirement {
                 retained_source: session.retained_source.take(),
-                startup_source_watch: session.startup_source_watch.take(),
                 terminal_source_failure: None,
                 destination_guard: session.destination_guard.take(),
             };
@@ -320,7 +318,6 @@ fn failed_view_startup_retains_directory_until_original_physical_retirement()
         owner.namespace_detach_confirmed = true;
         let mut packet = NativeMountRetirement {
             retained_source: None,
-            startup_source_watch: None,
             terminal_source_failure: None,
             destination_guard: driver_owned
                 .then(|| owner.destination_guard.take())
@@ -395,7 +392,6 @@ fn replaced_view_parent_is_not_adopted() -> Result<(), Box<dyn std::error::Error
     assert!(destination.is_dir(), "replacement directory was adopted");
     let mut packet = NativeMountRetirement {
         retained_source: None,
-        startup_source_watch: None,
         terminal_source_failure: None,
         destination_guard: guard,
         #[cfg(windows)]

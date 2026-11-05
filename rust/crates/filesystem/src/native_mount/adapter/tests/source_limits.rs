@@ -93,11 +93,19 @@ fn source_cleanup_cases() -> Result<(), Box<dyn std::error::Error>> {
                 .is_err()
         );
         let healthy_wait = CancellationToken::new();
-        assert!(source.shutdown_with_cleanup_wait(&healthy_wait)?);
+        assert!(
+            source
+                .shutdown_with_cleanup_wait(&healthy_wait)?
+                .into_result()?
+        );
         assert!(source.capture_retired());
         let completed = root.receipt();
         healthy_wait.cancel();
-        assert!(!source.shutdown_with_cleanup_wait(&healthy_wait)?);
+        assert!(
+            !source
+                .shutdown_with_cleanup_wait(&healthy_wait)?
+                .into_result()?
+        );
         assert_eq!(root.receipt(), completed);
     }
     Ok(())
@@ -284,7 +292,7 @@ fn native_source_io_projection_rejects_foreign_root_and_resource_before_allocati
         assert_eq!(foreign_root.receipt(), foreign_prefix);
     }
     drop(lease);
-    source.shutdown_accepted_cleanup()?;
+    source.shutdown_accepted_cleanup()?.into_result()?;
     Ok(())
 }
 
@@ -332,8 +340,8 @@ fn native_source_io_last_physical_lease_retires_after_caller_cancellation()
     assert_eq!(root.receipt(), closing_prefix);
     drop(lease);
     drop(last_lease);
-    assert!(source.shutdown_accepted_cleanup()?);
-    assert!(!source.shutdown_accepted_cleanup()?);
+    assert!(source.shutdown_accepted_cleanup()?.into_result()?);
+    assert!(!source.shutdown_accepted_cleanup()?.into_result()?);
     Ok(())
 }
 
@@ -341,7 +349,9 @@ fn native_source_io_last_physical_lease_retires_after_caller_cancellation()
 fn retirement_paths_keep_source_until_its_last_physical_io_lease_retires()
 -> Result<(), Box<dyn std::error::Error>> {
     let borrowed = source(FilesystemProfile::Portable)?;
-    for driver_owned in [false, true] {
+    for (driver_owned, recording_refused) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
         let root_stop = CancellationToken::new();
         let root = capture_meter(BOUNDARY_BUDGET, &root_stop)?;
         let original = root.native_volume_work(WorkBudget {
@@ -354,7 +364,6 @@ fn retirement_paths_keep_source_until_its_last_physical_io_lease_retires()
         let last_lease = lease.clone();
         let mut packet = crate::native_mount::NativeMountRetirement {
             retained_source: None,
-            startup_source_watch: None,
             terminal_source_failure: None,
             destination_guard: None,
             #[cfg(windows)]
@@ -372,9 +381,13 @@ fn retirement_paths_keep_source_until_its_last_physical_io_lease_retires()
             None,
         );
         if driver_owned {
-            packet.retained_source = Some(source);
+            packet.retained_source = Some(
+                crate::native_mount::retirement::RetainedSource::Filesystem(source),
+            );
         } else {
-            session.retained_source = Some(source);
+            session.retained_source = Some(
+                crate::native_mount::retirement::RetainedSource::Filesystem(source),
+            );
         }
         root_stop.cancel();
         let wait = CancellationToken::new();
@@ -400,15 +413,27 @@ fn retirement_paths_keep_source_until_its_last_physical_io_lease_retires()
         });
         drop(lease);
         drop(last_lease);
-        let changed = if driver_owned {
+        if recording_refused {
+            original.state(crate::demand::DemandWork::poison_native_original_work);
+        }
+        let result = if driver_owned {
             packet.retire(
                 None,
                 crate::native_mount::retirement::SourceRetirementWait::Caller,
-            )?
+            )
         } else {
-            session.stop_with_context(&crate::native_mount::NativeSessionStopWork::AcceptedDrop)?
+            session.stop_with_context(&crate::native_mount::NativeSessionStopWork::AcceptedDrop)
         };
-        assert!(changed);
+        if recording_refused {
+            assert!(matches!(
+                result,
+                Err(NativeMountError::Materialization(
+                    crate::NativeTreeMaterializationError::OriginalWorkPoisoned
+                ))
+            ));
+        } else {
+            assert!(result?);
+        }
         assert!(
             weak.upgrade().is_none(),
             "physical source owner was retained after quiescence"
@@ -519,8 +544,9 @@ fn physical_cleanup_worker(
         } = crate::native_mount::tests::retirement::Fixture::new()
             .expect("original destination fence");
         let mut packet = crate::native_mount::NativeMountRetirement {
-            retained_source: Some(mounted),
-            startup_source_watch: None,
+            retained_source: Some(crate::native_mount::retirement::RetainedSource::Filesystem(
+                mounted,
+            )),
             terminal_source_failure: None,
             destination_guard: session.destination_guard.take(),
             #[cfg(windows)]
@@ -852,6 +878,6 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
     borrowed.create_file(&fenced, metadata(), None, &root)?;
     drop(retry);
     drop(file);
-    source.shutdown_accepted_cleanup()?;
+    source.shutdown_accepted_cleanup()?.into_result()?;
     Ok(())
 }
