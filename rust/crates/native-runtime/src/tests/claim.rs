@@ -461,53 +461,22 @@ fn a_claim_file_longer_than_any_record_refuses() -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-#[test]
-fn a_claim_check_counts_each_read_it_makes() -> io::Result<()> {
-    let directory = tempfile::tempdir()?;
-    let path = directory.path().join("owner.lock");
-    let checked =
-        |path: &Path| StoreClaim::check(&crate::FileLock::new(std::fs::File::open(path)?));
-    std::fs::write(&path, b"")?;
-    assert_eq!(checked(&path)?.read_operations, 1, "the record alone");
-    let claim = StoreClaim::acquire(&path)?;
-    assert_eq!(
-        checked(&path)?,
-        crate::ClaimCheck {
-            claimed: true,
-            read_operations: 1
-        },
-        "this process's own record needs no probe"
-    );
-    drop(claim);
-    // A dead owner whose process lock is gone: the lock, the boot, the process.
-    std::fs::write(
-        &path,
-        lockless_record(directory.path(), u32::MAX, b"boot:1"),
-    )?;
-    assert_eq!(
-        checked(&path)?.read_operations,
-        StoreClaim::CHECK_READ_OPERATIONS
-    );
-    Ok(())
-}
-
 /// A record naming a process whose lock path is as long as a record allows,
 /// so a check makes every allocation and probe it can.
 #[cfg(target_os = "linux")]
-fn longest_lockless_record(directory: &Path) -> Vec<u8> {
+fn longest_lockless_record(directory: &Path) -> io::Result<Vec<u8>> {
     let mut lock = directory.join("gone");
-    let mut record = Vec::new();
-    loop {
-        let longer = lock.join("l");
-        let candidate =
-            crate::claim::foreign_record(std::process::id(), b"another-boot:1", &longer);
-        if candidate.len() > crate::claim::RECORD_LIMIT {
-            return record;
-        }
-        lock = longer;
-        record = candidate;
-    }
+    let prefix = crate::claim::foreign_record(std::process::id(), b"another-boot:1", &lock).len();
+    // Each /l extends the length-prefixed path by exactly two bytes.
+    let count = crate::claim::RECORD_LIMIT
+        .checked_sub(prefix)
+        .ok_or(io::ErrorKind::InvalidInput)?
+        / 2;
+    lock.extend(std::iter::repeat_n("l", count));
+    let record = crate::claim::foreign_record(std::process::id(), b"another-boot:1", &lock);
+    assert!(record.len() <= crate::claim::RECORD_LIMIT);
+    assert!(crate::claim::RECORD_LIMIT - record.len() < 2);
+    Ok(record)
 }
 
 #[cfg(target_os = "linux")]
@@ -520,19 +489,36 @@ fn a_claim_check_allocates_within_its_bound() -> io::Result<()> {
     let mut oversized = lockless_record(directory.path(), u32::MAX, b"boot:1");
     oversized.resize(crate::claim::RECORD_LIMIT + 1, 0);
     let records = [
-        Vec::new(),
-        longest_lockless_record(directory.path()),
-        oversized,
-        std::fs::read(&held)?,
+        (Vec::new(), false, 1),
+        (
+            longest_lockless_record(directory.path())?,
+            false,
+            StoreClaim::CHECK_READ_OPERATIONS,
+        ),
+        (oversized, true, 1),
+        (std::fs::read(&held)?, true, 1),
+        (
+            lockless_record(directory.path(), u32::MAX, b"boot:1"),
+            false,
+            StoreClaim::CHECK_READ_OPERATIONS,
+        ),
     ];
-    for record in records {
+    for (record, claimed, read_operations) in records {
         std::fs::write(&path, &record)?;
         let file = crate::FileLock::new(std::fs::File::open(&path)?);
         let mut checked = None;
         let allocated = acyclic_test_support::measure(|| {
-            checked = Some(StoreClaim::check(&file).map(|check| check.read_operations));
+            checked = Some(StoreClaim::check(&file));
         });
-        let read_operations = checked.ok_or_else(|| io::Error::other("unchecked"))??;
+        assert_eq!(
+            checked.ok_or_else(|| io::Error::other("unchecked"))??,
+            crate::ClaimCheck {
+                claimed,
+                read_operations,
+            },
+            "{}-byte record",
+            record.len()
+        );
         assert!(
             allocated.count_total <= StoreClaim::CHECK_ALLOCATIONS
                 && allocated.bytes_total <= StoreClaim::CHECK_ALLOCATION_BYTES,
