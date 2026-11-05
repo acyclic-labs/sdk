@@ -258,22 +258,30 @@ async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()>
         )?
         .await?;
     let mounts = &publisher.tools.workspace.mounts;
+    let mut replacement = Box::pin(publisher.stage_at(
+        OperationId::new(),
+        &auxiliary,
+        b"live replacement",
+        None,
+        None,
+    )?);
     crate::local::workspace::volumes::native_scope(mounts, async |claims| {
         let path = directory.path().join(".volumes/home/note");
         assert_eq!(std::fs::read(&path).map_err(storage)?, b"original");
-        publisher
-            .stage_at(
-                OperationId::new(),
-                &auxiliary,
-                b"live replacement",
-                None,
-                None,
-            )?
-            .await?;
+        assert!(futures::poll!(&mut replacement).is_pending());
         assert_eq!(
             std::fs::read(path).map_err(storage)?,
-            b"live replacement",
-            "logical replacement did not refresh the active projection"
+            b"original",
+            "publication changed an active command's projection"
+        );
+        Ok(((), claims))
+    })
+    .await?;
+    replacement.await?;
+    crate::local::workspace::volumes::native_scope(mounts, async |claims| {
+        assert_eq!(
+            std::fs::read(directory.path().join(".volumes/home/note")).map_err(storage)?,
+            b"live replacement"
         );
         Ok(((), claims))
     })

@@ -381,12 +381,28 @@ impl LocalHarness {
     /// starts the runtime; it stops when this harness drops. Controls are
     /// [`AgentHost`] commits; observation is the agents' status and
     /// conversation streams.
+    /// A retained root must already bind this session's shared volume. A
+    /// session created without that admission is refused before hosting;
+    /// start a new session rather than changing its saved authority.
     pub async fn agents(self: &Arc<Self>) -> Result<(&Arc<LocalAgents>, &AgentPath)> {
         let hosted = self
             .agents
             .get_or_try_init(|| async { self.host_agents().await })
             .await?;
         Ok((hosted.agents(), hosted.root()))
+    }
+
+    pub(super) fn require_shared_binding(&self, state: &AgentState) -> Result<()> {
+        if state
+            .volumes
+            .iter()
+            .any(|binding| binding.name == super::SHARED_VOLUME && binding.volume == self.shared)
+        {
+            return Ok(());
+        }
+        Err(Error::Unsupported(
+            "session has no admitted shared volume; start a new session to use this harness".into(),
+        ))
     }
 
     /// The configured approval policy, staged once on the root's private
@@ -487,6 +503,7 @@ impl LocalHarness {
         let configured = self.root_policy(&id).await?;
         let server = match bound.agents().state(&existing).await {
             Ok(state) => {
+                self.require_shared_binding(&state)?;
                 if state.policy.as_ref() != Some(&configured) {
                     tracing::warn!(
                         "the configured approval policy differs from the one this workspace's \
