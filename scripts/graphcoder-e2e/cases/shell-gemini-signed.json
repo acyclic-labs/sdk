@@ -1,0 +1,50 @@
+{
+  "id": "shell-gemini-signed",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "gemini": {
+          "parts": [
+            {
+              "functionCall": {
+                "name": "shell",
+                "args": {
+                  "command": "printf %s GEMINI_SIGNED_E2E > signed.txt"
+                },
+                "id": "call_signed"
+              },
+              "thoughtSignature": "E2E/signed+call=="
+            }
+          ]
+        }
+      },
+      {
+        "when": {
+          "contains": "\"thoughtSignature\":\"E2E/signed+call==\""
+        },
+        "text": [
+          "done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "hello",
+      "answer": "done"
+    }
+  ],
+  "assert": {
+    "requests": 2,
+    "files": {
+      "signed.txt": "GEMINI_SIGNED_E2E"
+    }
+  },
+  "adapter": "gemini"
+}

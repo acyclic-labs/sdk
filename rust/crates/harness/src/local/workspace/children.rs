@@ -213,7 +213,7 @@ impl LocalWorkspace {
     ) -> Result<()> {
         let names: Vec<&str> = arguments
             .iter()
-            .filter_map(|argument| argument.strip_prefix("agents/"))
+            .filter_map(|argument| crate::tools::branch_child(argument))
             .collect();
         if names.is_empty() {
             return Ok(());
@@ -258,7 +258,7 @@ impl LocalWorkspace {
                 .is_some_and(|state| {
                     state.fork_origin.is_some() && state.parent_workspace_id == Some(repository)
                 });
-            let branch = format!("agents/{name}");
+            let branch = crate::tools::child_branch(name);
             if !forked || registered.contains_key(&branch) {
                 continue;
             }

@@ -1,3 +1,4 @@
+import { authorization } from "./authorization.js";
 import { expect, test } from "bun:test";
 import { create, toJsonString } from "@bufbuild/protobuf";
 import { CredentialCache, CredentialSnapshot, resolveCredential } from "@acyclic-labs/actors/credential";
@@ -277,7 +278,7 @@ test.each([false, true].flatMap(final =>
       try { await Promise.race([release.promise, cancelled.promise]); }
       finally { signal?.removeEventListener("abort", abort); }
     }
-    return { authorization: "Bearer result-recovery" };
+    return { authorization };
   }, async (input, init) => {
     if (selected() && cut !== "credential") {
       original = init?.signal;

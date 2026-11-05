@@ -16,6 +16,7 @@
       "owner": "tool-latency",
       "cases": [
         "bash-capture",
+        "shell-gemini-signed",
         "file-tools-responses",
         "file-tools-chat",
         "file-tools-anthropic"
