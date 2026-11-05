@@ -69,8 +69,8 @@ impl Fixture {
             Turns {
                 executors: Arc::new(executors),
                 limits: TurnLimits {
-                    maximum_bytes: 64 * 1024,
-                    history_turns: 8,
+                    maximum_bytes: Some(64 * 1024),
+                    history_turns: Some(8),
                 },
                 actors: vectors::limits()?,
                 clock: Arc::new(acyclic_actors::local::SystemClock),
