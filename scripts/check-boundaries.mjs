@@ -15,7 +15,7 @@ const credentialAssignment = /\b(?:aws_secret_access_key|github_token|authorizat
 // Only the recorded public fake-server fixtures may contain credential literals.
 const fixtureDigests = new Map([
   ["typescript/packages/machines/test/fixtures/server-key.pem", "048bbcff062c2c0ccb0ed19df146e59b9cc937f86210be0158076123f24b2340"],
-  ["typescript/packages/inference/test/client.test.ts", "69bf9379c89e4412c81c0228dc996a2eb624fb94f253e601bddacb492300452b"],
+  ["typescript/packages/inference/test/client.test.ts", "80c93efb26d4e4e6fe7ea54e84f53082d4d0c4660b1e01806a820c832f5afa94"],
   ["typescript/packages/inference/test/idle-kv.test.ts", "6ee7f3e2aaeb15ea681f5de19cd3be5ddfb5a9c9b699d0cd40178ee6e55def58"],
 ]);
 export const credentialFixturePaths = [...fixtureDigests.keys()];

@@ -211,8 +211,10 @@ where
     let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, maximum_payload_bytes, observe)?;
     let volume_id = VolumeId::from_bytes(decoder.fixed(observe)?);
     let kind = RetentionKind::from_tag(decoder.u8(observe)?)?;
-    let label = std::str::from_utf8(decoder.bounded_slice(u32::try_from(bytes.len()).unwrap_or(u32::MAX), observe)?)
-        .map_err(|_| RetentionCreatedError::InvalidLabel)?;
+    let label = std::str::from_utf8(
+        decoder.bounded_slice(u32::try_from(bytes.len()).unwrap_or(u32::MAX), observe)?,
+    )
+    .map_err(|_| RetentionCreatedError::InvalidLabel)?;
     let generation_root = decoder.object(ObjectKind::GenerationRoot, observe)?;
     let config = decode_config(&mut decoder, observe)?
         .validate()
