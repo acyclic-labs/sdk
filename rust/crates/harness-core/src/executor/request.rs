@@ -10,6 +10,12 @@ pub(super) enum ModelStepHistory<'a> {
     Selected(&'a [ModelMessage]),
 }
 
+/// An optional admission owner moves into the same dispatch path as its history.
+pub(super) struct ModelStepRequest<'a> {
+    pub history: ModelStepHistory<'a>,
+    pub prepared: Option<crate::model::PreparedModelRequest>,
+}
+
 impl StockExecution<'_> {
     /// Runs one admitted model step independently of the stock control loop.
     pub async fn model_step(
@@ -36,7 +42,10 @@ impl StockExecution<'_> {
                 journal,
                 input,
                 step,
-                ModelStepHistory::Selected(prior_messages),
+                ModelStepRequest {
+                    history: ModelStepHistory::Selected(prior_messages),
+                    prepared: None,
+                },
                 ModelPurpose::Response,
                 phase,
             )?
@@ -50,7 +59,7 @@ impl StockExecution<'_> {
         journal: &'a dyn ExecutionJournal,
         input: &'a TurnInput,
         step: u32,
-        prior_messages: ModelStepHistory<'a>,
+        request: ModelStepRequest<'a>,
         purpose: ModelPurpose,
         phase: &'a mut DispatchPhase,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ModelEvent>>> {
@@ -65,16 +74,9 @@ impl StockExecution<'_> {
             #[cfg(not(target_arch = "wasm32"))]
             {
                 crate::obs::traced_future(span, async move {
-                    self.cancellable_model_step(
-                        journal,
-                        input,
-                        step,
-                        prior_messages,
-                        purpose,
-                        phase,
-                    )
-                    .await
-                    .and_then(|events| completed_model_events(events, input.operation_id))
+                    self.cancellable_model_step(journal, input, step, request, purpose, phase)
+                        .await
+                        .and_then(|events| completed_model_events(events, input.operation_id))
                 })
             }
             #[cfg(target_arch = "wasm32")]
@@ -82,14 +84,7 @@ impl StockExecution<'_> {
                 let _ = span;
                 async move {
                     let events = self
-                        .cancellable_model_step(
-                            journal,
-                            input,
-                            step,
-                            prior_messages,
-                            purpose,
-                            phase,
-                        )
+                        .cancellable_model_step(journal, input, step, request, purpose, phase)
                         .await?;
                     completed_model_events(events, input.operation_id)
                 }

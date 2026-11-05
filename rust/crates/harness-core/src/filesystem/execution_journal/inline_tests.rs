@@ -168,11 +168,11 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
         length: 16,
     };
     {
-        // Original storage chunks are authenticated whole. Credit for exactly
-        // one chunk leaves no room for metadata and must refuse before output.
+        // Credit cannot fund even the requested output. Refusal must not
+        // depend on the storage provider's chunk size or cache residency.
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::WorkBudget {
-                peak_allocation_bytes: 1024 * 1024,
+                peak_allocation_bytes: range.length - 1,
                 ..acyclic_fs::WorkBudget::UNBOUNDED
             },
             &stop,

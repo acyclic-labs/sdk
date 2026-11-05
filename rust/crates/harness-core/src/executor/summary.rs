@@ -23,11 +23,10 @@ impl StockExecution<'_> {
         crate::executor::with_history_io(self.io, |work| {
             instruction.validate_limits(self.stock.limits, work)
         })?;
-        stock_json_bound(&source, self.stock.limits.file_bytes, self.io)?;
         stock_json_bound(&instruction, self.stock.limits.file_bytes, self.io)?;
-        let summary_output = self.output_budget()?;
         let (source_bytes, source_digest, source_messages) =
             self.summary_source_identity(&source)?;
+        let summary_output = self.output_budget()?;
         let revision = with_history_io(self.io, |work| {
             crate::executor::preparation_format(
                 format_args!("{}", blake3::Hash::from(source_digest).to_hex()),
@@ -55,7 +54,8 @@ impl StockExecution<'_> {
             input: instruction,
             selected_context: None,
         };
-        self.validate_summary_capacity(&executor, journal, &input, step)
+        let prepared = self
+            .prepare_summary_admission(&executor, journal, &input, step)
             .await?;
         executor.validate_turn_input(journal, &input).await?;
         if let Some(parent) = parent {
@@ -84,7 +84,10 @@ impl StockExecution<'_> {
                 journal,
                 &input,
                 step,
-                request::ModelStepHistory::Selected(&[]),
+                request::ModelStepRequest {
+                    history: request::ModelStepHistory::Selected(&[]),
+                    prepared,
+                },
                 ModelPurpose::Summary,
                 phase,
             )?
@@ -125,7 +128,10 @@ impl StockExecution<'_> {
         let source_bytes: acyclic_stream::OwnedBytes = match self.io {
             #[cfg(feature = "filesystem")]
             Some(io) => io.encode(&source, self.stock.limits.file_bytes, true)?,
-            _ => crate::contract::canonical_json_bytes(&source)?.into(),
+            _ => {
+                stock_json_bound(source, self.stock.limits.file_bytes, self.io)?;
+                crate::contract::canonical_json_bytes(&source)?.into()
+            }
         };
         let source_digest = crate::model::hash_bytes(&source_bytes, self.io)?;
         Ok((source_bytes, source_digest, source_messages))

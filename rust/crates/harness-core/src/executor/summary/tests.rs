@@ -4,6 +4,77 @@ use crate::executor::content::validate_model_content_scope;
 use crate::resources::ProviderRef;
 use proptest::prelude::*;
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    #[test]
+    fn summary_source_encoding_owns_its_bound_without_a_count_pass(
+        texts in prop::collection::vec(".{0,64}", 1..4),
+    ) {
+        let source = crate::context::Context {
+            messages: texts.into_iter().map(|text| ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text(text),
+            }).collect(),
+            ..Default::default()
+        };
+        let expected = crate::contract::canonical_json_bytes(&source).unwrap();
+        let mut stock = StockExecutor::new(
+            Model::new("test".into(), "summary-source".into(), "1".into()).unwrap(),
+            Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        );
+        stock.limits.file_bytes = expected.len() as u64;
+        let check = |execution: &StockExecution<'_>| {
+            let (bytes, digest, messages) = execution.summary_source_identity(&source).unwrap();
+            assert_eq!(bytes.as_ref(), expected);
+            assert_eq!(digest, *blake3::hash(&expected).as_bytes());
+            assert_eq!(messages as usize, source.messages.len());
+        };
+        check(&StockExecution::ordinary(&stock));
+        for native in [false, true] {
+            let observed = crate::test_support::accounted::accounted(native, 262_144, false, |io| {
+                let execution = StockExecution {
+                    io: Some(io),
+                    ..StockExecution::ordinary(&stock)
+                };
+                let (_, trace) = acyclic_test_support::differential::observe::<_, _, super::super::json::CodecOperation>(
+                    || (),
+                    |()| check(&execution),
+                );
+                let passes = |trace: &[super::super::json::CodecOperation]| trace.iter()
+                    .filter(|event| **event == super::super::json::CodecOperation::Serialize).count();
+                assert_eq!(passes(&trace), 2, "source must use only canonical encoding's two passes");
+                // Restore the real count traversal before the same production encoder.
+                let (_, repeated) = acyclic_test_support::differential::observe::<_, _, super::super::json::CodecOperation>(
+                    || (),
+                    |()| {
+                        stock_json_bound(&source, stock.limits.file_bytes, Some(io)).unwrap();
+                        check(&execution);
+                    },
+                );
+                assert!(passes(&repeated) > 2, "restored preflight escaped the same cost detector");
+            });
+            prop_assert!(observed.is_ok());
+        }
+        stock.limits.file_bytes -= 1;
+        prop_assert!(matches!(StockExecution::ordinary(&stock).summary_source_identity(&source), Err(Error::Invalid(_))));
+        for native in [false, true] {
+            let observed = crate::test_support::accounted::accounted(native, 262_144, false, |io| {
+                let execution = StockExecution {
+                    io: Some(io),
+                    ..StockExecution::ordinary(&stock)
+                };
+                assert!(matches!(execution.summary_source_identity(&source),
+                    Err(Error::Invalid(_) | Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
+            });
+            prop_assert!(observed.is_ok());
+        }
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
 

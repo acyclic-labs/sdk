@@ -11,7 +11,7 @@ impl StockExecution<'_> {
         projection: &ResponseProjection,
         accounting: &ContextAccounting,
         policy: &crate::context::ThresholdCompaction,
-    ) -> Result<(crate::context::Context, bool)> {
+    ) -> Result<CompactionSource> {
         let selected_base = turn.1 == 0 && turn.0.selected_context.is_some();
         if selected_base
             || projection.working.is_some()
@@ -20,7 +20,10 @@ impl StockExecution<'_> {
             let (input, step, prior) = turn;
             let (_, base, _) = self.response_base(journal, input, step, prior).await?;
             if selected_base {
-                return Ok((base, true));
+                return Ok(CompactionSource::Base {
+                    context: base,
+                    count: None,
+                });
             }
             let request = crate::model::PreparedModelRequest::prepare(
                 self.request_from_context(&base)?,
@@ -33,12 +36,12 @@ impl StockExecution<'_> {
                     .await?;
             let tokens = with_history_io(self.io, |work| count.validate(&request, work))?;
             if policy.needs_compaction(accounting.capacity, tokens, self.output_tokens())? {
-                return Ok((base, true));
+                return Ok(CompactionSource::Base {
+                    context: base,
+                    count: Some(count),
+                });
             }
         }
-        Ok((
-            crate::context::copy_context(&projection.context, self.io)?,
-            false,
-        ))
+        Ok(CompactionSource::Projected)
     }
 }
