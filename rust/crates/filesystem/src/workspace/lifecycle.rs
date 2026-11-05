@@ -9,7 +9,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
         permit: crate::PublicationPermit,
         work: W,
         cancellation: &CancellationToken,
-        mut guard: G,
+        guard: G,
     ) -> W::Output<Self, E>
     where
         W: crate::facade::FsWork,
@@ -18,50 +18,71 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
         E: From<FsError> + From<WorkspaceError> + Send,
     {
         let mut accounting = work.accounting(cancellation);
-        let result = async {
-            let mut frame = None;
-            let (mut future, bytes) = crate::heap_future::in_heap_admitted(
-                (&mut accounting, &mut frame),
-                |(accounting, frame), bytes| {
-                    **frame = Some(accounting.claim_owned(bytes, u64::from(bytes != 0))?);
-                    Ok::<_, E>(())
-                },
-                |(accounting, _)| async move {
-                    let bytes = options
-                        .paths
-                        .as_ref()
-                        .map_or(Ok(0), workspace_owned_strings_bytes)
-                        .map_err(E::from)?;
-                    let (allocation, admitted) = accounting.record_actual_owned(bytes)?;
-                    admitted?;
-                    if options.generation.workspace.id != self.id {
-                        return Err(WorkspaceError::ForeignGeneration.into());
-                    }
-                    let name = WorkspaceName::with_accounting(destination.as_ref(), accounting)
-                        .map_err(E::from)?;
-                    self.volume
-                        .fs
-                        .fork_workspace(
-                            name,
-                            &options.generation,
-                            options.idempotency_key,
-                            crate::kernel::Owned::new(options.paths, allocation, bytes),
-                            permit,
-                            accounting,
-                            Some(&mut guard),
-                        )
-                        .await
-                },
-            )?;
-            let result = future.as_mut().await;
-            drop(future);
-            if let Some(mut frame) = frame {
-                accounting.release_owned(&mut frame, bytes)?;
-            }
-            result
-        }
-        .await;
+        let result = self
+            .fork_accounted(
+                destination.as_ref(),
+                options,
+                permit,
+                &mut accounting,
+                guard,
+            )
+            .await;
         work.finish(result, &accounting)
+    }
+
+    pub(crate) async fn fork_accounted<G, E>(
+        &self,
+        destination: &str,
+        options: ForkOptions<A, O>,
+        permit: crate::PublicationPermit,
+        accounting: &mut KernelAccounting<'_>,
+        mut guard: G,
+    ) -> Result<Self, E>
+    where
+        G: crate::AuthorityGuard,
+        G::Error: Into<E>,
+        E: From<FsError> + From<WorkspaceError> + Send,
+    {
+        let mut frame = None;
+        let (mut future, bytes) = crate::heap_future::in_heap_admitted(
+            (&mut *accounting, &mut frame),
+            |(accounting, frame), bytes| {
+                **frame = Some(accounting.claim_owned(bytes, u64::from(bytes != 0))?);
+                Ok::<_, E>(())
+            },
+            |(accounting, _)| async move {
+                let bytes = options
+                    .paths
+                    .as_ref()
+                    .map_or(Ok(0), workspace_owned_strings_bytes)
+                    .map_err(E::from)?;
+                let (allocation, admitted) = accounting.record_actual_owned(bytes)?;
+                admitted?;
+                if options.generation.workspace.id != self.id {
+                    return Err(WorkspaceError::ForeignGeneration.into());
+                }
+                let name =
+                    WorkspaceName::with_accounting(destination, accounting).map_err(E::from)?;
+                self.volume
+                    .fs
+                    .fork_workspace(
+                        name,
+                        &options.generation,
+                        options.idempotency_key,
+                        crate::kernel::Owned::new(options.paths, allocation, bytes),
+                        permit,
+                        accounting,
+                        Some(&mut guard),
+                    )
+                    .await
+            },
+        )?;
+        let result = future.as_mut().await;
+        drop(future);
+        if let Some(mut frame) = frame {
+            accounting.release_owned(&mut frame, bytes)?;
+        }
+        result
     }
 
     /// Retains the current generation under a permanent label.

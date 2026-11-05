@@ -429,15 +429,25 @@ async fn recursive_lineage_and_direct_parent_authorization_survive_restart()
     let root = unbounded!(fs, create_workspace("graph-root"))?;
     graph.register_root(&root).await?;
     let child = graph
-        .fork(&root, "graph-child", IdempotencyKey::from_bytes([1; 16]))
-        .await?;
+        .fork(
+            &root,
+            "graph-child",
+            IdempotencyKey::from_bytes([1; 16]),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?
+        .value;
     let grandchild = graph
         .fork(
             &child,
             "graph-grandchild",
             IdempotencyKey::from_bytes([2; 16]),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
         )
-        .await?;
+        .await?
+        .value;
     drop(graph);
 
     let restarted = WorkspaceGraph::new(store);

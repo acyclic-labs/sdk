@@ -19,31 +19,50 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
         .await?
         .value;
     root.write_text("/source", "original").await?;
+    let graph = crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new());
     let mut workspaces = vec![root];
-    for (index, name) in ["left", "right", "grandchild"].into_iter().enumerate() {
-        let parent = &workspaces[usize::from(index == 2)];
+    for (parent_index, name, native, via_graph) in [
+        (0, "left", false, false),
+        (0, "right", true, false),
+        (1, "grandchild", false, false),
+        (2, "lineage-child", false, true),
+        (4, "lineage-grandchild", true, true),
+    ] {
+        let parent = &workspaces[parent_index];
         let generation = parent.head(budget, &cancellation).await?.value;
         let options = ForkOptions::from_generation(generation, IdempotencyKey::new());
-        let options = if index == 2 {
+        let options = if name == "grandchild" {
             options.inherit_paths(vec!["/source".to_owned()])
         } else {
             options
         };
-        let child = if index == 1 {
+        let child = if native {
             let original = crate::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(error, _)| error)?;
             *authority.replay_custody.lock().unwrap() =
                 Some(ReplayCustody::Native(original.clone()));
-            let child = parent
-                .fork::<_, _, WorkspaceError>(
-                    name,
-                    options,
-                    crate::PublicationPermit::Unrestricted,
-                    &original,
-                    &cancellation,
-                    (),
-                )
-                .await?;
+            let child = if via_graph {
+                graph
+                    .fork(
+                        parent,
+                        name,
+                        IdempotencyKey::new(),
+                        &original,
+                        &cancellation,
+                    )
+                    .await?
+            } else {
+                parent
+                    .fork::<_, _, WorkspaceError>(
+                        name,
+                        options,
+                        crate::PublicationPermit::Unrestricted,
+                        &original,
+                        &cancellation,
+                        (),
+                    )
+                    .await?
+            };
             original.receipt().verify(budget)?;
             child
         } else {
@@ -53,16 +72,34 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
             });
             *authority.replay_custody.lock().unwrap() =
                 Some(ReplayCustody::Standalone(original.clone()));
-            let (result, spent, live, baseline) = parent
-                .fork::<_, _, WorkspaceError>(
-                    name,
-                    options,
-                    crate::PublicationPermit::Unrestricted,
-                    original.as_ref(),
-                    &cancellation,
-                    (),
+            let (result, spent, live, baseline) = if via_graph {
+                graph
+                    .fork(
+                        parent,
+                        name,
+                        IdempotencyKey::new(),
+                        original.as_ref(),
+                        &cancellation,
+                    )
+                    .await
+            } else {
+                let (result, spent, live, baseline) = parent
+                    .fork::<_, _, WorkspaceError>(
+                        name,
+                        options,
+                        crate::PublicationPermit::Unrestricted,
+                        original.as_ref(),
+                        &cancellation,
+                        (),
+                    )
+                    .await;
+                (
+                    result.map_err(crate::WorkspaceLineageError::Workspace),
+                    spent,
+                    live,
+                    baseline,
                 )
-                .await;
+            };
             spent.verify(budget)?;
             assert!(live >= baseline, "fork retired earlier original backing");
             result?
@@ -75,7 +112,7 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
     }
     let root = &workspaces[0];
     let generation = root.head(budget, &cancellation).await?.value;
-    for cancelled in [false, true] {
+    for (cancelled, via_graph) in [(false, false), (true, false), (false, true), (true, true)] {
         let cancellation = CancellationToken::new();
         if cancelled {
             cancellation.cancel();
@@ -85,8 +122,20 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
             ..budget
         };
         *authority.replay_minimum.lock().unwrap() = Some(0);
-        let failure = root
-            .fork::<_, _, WorkspaceError>(
+        let failure = if via_graph {
+            graph
+                .fork(
+                    root,
+                    "refused-child",
+                    IdempotencyKey::new(),
+                    constrained,
+                    &cancellation,
+                )
+                .await
+                .err()
+                .ok_or("lineage fork escaped cancellation or its allocation allowance")?
+        } else {
+            root.fork::<_, _, WorkspaceError>(
                 "refused-child",
                 ForkOptions::from_generation(generation.clone(), IdempotencyKey::new()),
                 crate::PublicationPermit::Unrestricted,
@@ -96,17 +145,24 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
             )
             .await
             .err()
-            .ok_or("fork escaped cancellation or its allocation allowance")?;
+            .ok_or("fork escaped cancellation or its allocation allowance")?
+            .map_error(crate::WorkspaceLineageError::Workspace)
+        };
         if cancelled {
-            assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
+            assert!(matches!(
+                failure.error,
+                crate::WorkspaceLineageError::Workspace(WorkspaceError::Cancelled(_))
+            ));
             assert_eq!(*failure.work, crate::WorkCounters::UNCHARGED);
         } else {
             assert!(matches!(
                 failure.error,
-                WorkspaceError::Work(crate::WorkError::BudgetExceeded {
-                    counter: "allocation_operations",
-                    ..
-                })
+                crate::WorkspaceLineageError::Workspace(WorkspaceError::Work(
+                    crate::WorkError::BudgetExceeded {
+                        counter: "allocation_operations",
+                        ..
+                    }
+                ))
             ));
         }
         assert_eq!(failure.work.backend_read_operations, 0);

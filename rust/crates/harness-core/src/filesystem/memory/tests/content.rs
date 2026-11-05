@@ -229,8 +229,15 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
     let graph = acyclic_fs::WorkspaceGraph::new(store.clone());
     graph.register_root(&root).await?;
     let branch = graph
-        .fork(&root, "uploads", acyclic_fs::IdempotencyKey::new())
-        .await?;
+        .fork(
+            &root,
+            "uploads",
+            acyclic_fs::IdempotencyKey::new(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
     let repository = acyclic_fs::GitCompatRepository::new(root.id(), store.clone());
     repository
         .register_branch_workspace("uploads", branch.id(), None, true)

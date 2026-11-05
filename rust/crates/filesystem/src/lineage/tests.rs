@@ -337,9 +337,16 @@ async fn a_durable_planned_child_is_completed_by_retry_after_a_crash() {
     ));
 
     let child = graph
-        .fork(&parent, "child", IdempotencyKey::from_bytes([31; 16]))
+        .fork(
+            &parent,
+            "child",
+            IdempotencyKey::from_bytes([31; 16]),
+            crate::performance::BOUNDARY_BUDGET,
+            &crate::CancellationToken::new(),
+        )
         .await
-        .expect("retry completes child");
+        .expect("retry completes child")
+        .value;
     assert_eq!(child.id(), child_id);
     let recovered = graph.resolve(child_id).await.expect("ready lineage");
     assert!(recovered.ready);
