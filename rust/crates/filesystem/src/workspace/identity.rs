@@ -146,6 +146,7 @@ impl WorkspaceId {
     }
 
     /// Derives the stable identity for a canonical name in one deployment namespace. The namespace is deliberately internal to the selected `Fs` deployment.
+    #[cfg(test)]
     pub(crate) fn derive<W: crate::facade::FsWork>(
         namespace: [u8; 16],
         name: &WorkspaceName,
