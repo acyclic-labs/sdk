@@ -6,7 +6,7 @@ import {join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {stageArtifacts} from '../../../scripts/graphcoder-e2e/artifacts.mjs';
 import {Processes} from '../../../scripts/graphcoder-e2e/process.mjs';
-import {environment,scratchDirectory} from '../../../scripts/graphcoder-e2e/scratch.mjs';
+import {environment,nativeEnvironment,scratchDirectory} from '../../../scripts/graphcoder-e2e/scratch.mjs';
 import {withOwnedCase} from '../../../scripts/graphcoder-e2e/suite.mjs';
 const here=fileURLToPath(new URL('.',import.meta.url));
 export const scriptedSelections=Object.freeze([
@@ -68,7 +68,7 @@ async function main(){
  for(const selection of selections){
   const entry=scriptedScenario(artifacts,codex,selection);
   const home=scratchDirectory('fixture-'+entry.name+'-');
-  const env=environment(home,{PATH:process.env.PATH,RUST_TEST_THREADS:'4'});
+  const env=environment(home,{...nativeEnvironment(),RUST_TEST_THREADS:'4'});
   const scope=new Processes();
   const {run,seconds}=await withOwnedCase({processes:scope,
    run:()=>runScriptedScenario({scenario:entry,processes:scope,directory,env})});
