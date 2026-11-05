@@ -44,6 +44,8 @@ try {
     'agent_model::slot_schedules::an_invalid_host_wait_fails_before_publishing_status_or_effects',
     'agent_model::slot_schedules::a_child_finishing_during_pause_cannot_strand_a_recorded_replay',
     'agent_model::runtime::native_reopen_preserves_paused_spawns_until_the_matching_approval',
+    'agent_model::runtime::a_spawn_reply_is_the_outcome_the_parent_step_committed',
+    'agent_model::runtime::a_spawn_retry_after_later_steps_names_the_same_child',
     'agent_model::runtime::a_root_crosses_the_former_child_ceiling_with_a_paged_checkpoint'];
   const positive = command('cargo', ['nextest', 'run', '--locked', '-p', 'acyclic-harness-core', '--features', features,
     '--lib', '--test', 'main', '-E', tests.map(test => `test(=${test})`).join(' | ')]);

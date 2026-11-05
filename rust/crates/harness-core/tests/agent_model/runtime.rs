@@ -1150,7 +1150,17 @@ async fn native_reopen_preserves_paused_spawns_until_the_matching_approval() -> 
         paused.turn.as_ref().map(|turn| turn.checkpoint.as_slice()),
         Some([7; 8].as_slice())
     );
+    let paused_checkpoint = {
+        let snapshot = host.runtime().store().load(&host.actor(&root)?).await?;
+        snapshot
+            .state()
+            .and_then(|state| state.checkpoint())
+            .ok_or("paused agent has no committed checkpoint")?
+            .clone()
+    };
     // Neither the runtime nor the native provider survives the reopen.
+    // A bound membership snapshot also owns its provider; retain only bytes.
+    drop(paused);
     drop(host);
     drop(provider);
     let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
@@ -1179,7 +1189,12 @@ async fn native_reopen_preserves_paused_spawns_until_the_matching_approval() -> 
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
         Arc::new(SystemClock),
     )?;
-    assert_eq!(host.state(&root).await?, paused);
+    let reopened = host.runtime().store().load(&host.actor(&root)?).await?;
+    assert_eq!(
+        reopened.state().and_then(|state| state.checkpoint()),
+        Some(&paused_checkpoint)
+    );
+    let paused = host.state(&root).await?;
     for decision in ["unrelated", "decision"] {
         host.send(
             &root,
@@ -1695,8 +1710,41 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
             control = 1,
             data = 1
         )?,
+        SpawnOutcome::Spawned {
+            child: child.clone()
+        }
+    );
+    let Delivered::Committed { inbox: archived } = host
+        .archive(&root, &user(), &intent("retire-parent"))
+        .await?
+    else {
+        return Err("parent archive was not committed".into());
+    };
+    let failures = host.runtime().drain().await;
+    assert!(failures.is_empty(), "{failures:?}");
+    assert_eq!(
+        acyclic_stream::assert_requests!(
+            provider,
+            host.spawned(&root, inbox, &first).await,
+            control = 1,
+            data = 1
+        )?,
         SpawnOutcome::Spawned { child }
     );
+    let (not_a_spawn, _) = requested_child(&root, archived)?;
+    assert!(matches!(
+        host.spawned(&root, archived, &not_a_spawn).await,
+        Err(Error::Conflict(_))
+    ));
+    // No producer can commit an unadmitted future input after closure.
+    let missing = archived + 100;
+    let (never_admitted, _) = requested_child(&root, missing)?;
+    let reply = host.spawned(&root, missing, &never_admitted);
+    futures::pin_mut!(reply);
+    assert!(matches!(
+        futures::poll!(reply.as_mut()),
+        std::task::Poll::Ready(Err(Error::Conflict(_)))
+    ));
     Ok(())
 }
 
