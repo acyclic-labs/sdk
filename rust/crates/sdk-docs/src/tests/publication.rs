@@ -106,11 +106,9 @@ fn version_index_must_be_a_regular_non_reparse_file() {
     let data = publication_data("1.0.0", 'a');
     let error = write_bundle(&data, &output, false)
         .expect_err("directory at the index path must block publication");
-    assert!(
-        error
-            .to_string()
-            .contains("version index is not a regular file")
-    );
+    assert!(error
+        .to_string()
+        .contains("version index is not a regular file"));
     assert!(output.join("sdk-docs-versions.v1.json").is_dir());
     assert!(!output.join("releases").exists());
     directory.close().expect("test output should be removable");
@@ -346,11 +344,9 @@ fn version_index_rejects_bundle_revision_mismatch() {
     let before = fs::read(&index_path).expect("index should remain readable");
     let error = write_bundle(&data, &output, false)
         .expect_err("bundle revision mismatch must block publication");
-    assert!(
-        error
-            .to_string()
-            .contains("data revision does not match the index")
-    );
+    assert!(error
+        .to_string()
+        .contains("data revision does not match the index"));
     assert_eq!(
         before,
         fs::read(&index_path).expect("index should be unchanged")
@@ -426,16 +422,12 @@ fn version_index_advances_candidates_and_preview_without_rewriting_data() {
         index.preview.as_ref().map(|entry| entry.version.as_str()),
         Some("branch_ABC")
     );
-    assert!(
-        output
-            .join("preview/branch_abc/sdk-docs-data.v1.json")
-            .is_file()
-    );
-    assert!(
-        output
-            .join("preview/~6272616e63685f414243/sdk-docs-data.v1.json")
-            .is_file()
-    );
+    assert!(output
+        .join("preview/branch_abc/sdk-docs-data.v1.json")
+        .is_file());
+    assert!(output
+        .join("preview/~6272616e63685f414243/sdk-docs-data.v1.json")
+        .is_file());
     // Physical version components cannot contain a long logical version.
     // Publish complete ASCII and Unicode identities through the same catalog,
     // reopen their exact data files, and reject a same-identity rewrite.
@@ -567,11 +559,9 @@ fn concurrent_publications_preserve_both_entries_and_index_hashes() {
     fs::write(sidecar, b"{}").unwrap();
     let index_bytes = fs::read(output.join("sdk-docs-versions.v1.json")).unwrap();
     let error = write_bundle(&publication_data("3.0.0", 'c'), &output, false).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("does not match the pinned schema")
-    );
+    assert!(error
+        .to_string()
+        .contains("does not match the pinned schema"));
     assert_eq!(
         fs::read(output.join("sdk-docs-versions.v1.json")).unwrap(),
         index_bytes
