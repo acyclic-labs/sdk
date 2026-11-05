@@ -1230,6 +1230,7 @@ name = "acyclic-proto-build"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth-action",
+ "acyclic-test-support",
  "proptest",
  "prost",
  "prost-reflect",
