@@ -114,12 +114,16 @@ proptest! {
     ) {
         use crate::toolchains::cargo_context;
         let environment = || inputs.iter().map(|(key, value)| (key.into(), value.into()));
-        let path = PathBuf::from(root);
+        let path = PathBuf::from(&root);
         let context = cargo_context(&path, &discovery, environment());
         prop_assert_eq!(&context, &cargo_context(&path, &discovery, environment().rev()));
         prop_assert_ne!(&context, &cargo_context(&path.join("different"), &discovery, environment()));
         prop_assert_ne!(&context, &cargo_context(&path, &format!("{discovery}!"), environment()));
         prop_assert_ne!(context, cargo_context(&path, &discovery, environment().chain([("NEW_INPUT".into(), "value".into())])));
+        prop_assert_ne!(
+            cargo_context(&path, &discovery, [("A".into(), format!("{root}C").into())]),
+            cargo_context(&path, &discovery, [(format!("A{root}").into(), "C".into())]),
+        );
     }
 
     #[test]
@@ -134,14 +138,6 @@ proptest! {
         changed["digest"] = serde_json::json!(crate::sha256_bytes(digest.as_bytes()));
         prop_assert!(crate::cache_record::decode(&serde_json::to_vec(&changed).unwrap(), &key).is_none());
     }
-}
-
-#[test]
-fn cargo_probe_key_frames_environment_names_and_values() {
-    let context = |key: &str, value: &str| {
-        crate::toolchains::cargo_context(Path::new("root"), "", [(key.into(), value.into())])
-    };
-    assert_ne!(context("A", "BC"), context("AB", "C"));
 }
 
 #[test]
