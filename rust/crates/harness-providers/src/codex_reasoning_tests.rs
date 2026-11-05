@@ -89,7 +89,7 @@ async fn encrypted_reasoning_survives_login_refresh_and_durable_tool_followup() 
                     };
                     assert_eq!(
                         count.input_tokens,
-                        provider.usage.codex_estimate(&prepared)?
+                        provider.accounting.usage.codex_estimate(&prepared)?
                     );
                     assert!(count.input_tokens >= 8);
                 }

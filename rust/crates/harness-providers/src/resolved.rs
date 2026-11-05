@@ -1,4 +1,4 @@
-use crate::{HttpTransport, ProviderSpec, invalid};
+use crate::{Adapter, HttpTransport, ProviderSpec, invalid};
 use acyclic_harness_core::{
     Result,
     context::{ModelContextCapacity, ModelTokenCount},
@@ -6,11 +6,27 @@ use acyclic_harness_core::{
 };
 use std::sync::Arc;
 
+/// One selection's calibration and authoritative usage anchor. Reader-bound
+/// copies retain this owner together, without separate allocation/refcounts.
+pub(crate) struct Accounting {
+    pub(crate) estimator: crate::accounting::TokenEstimator,
+    pub(crate) usage: crate::usage_count::Counter,
+}
+
+impl Accounting {
+    pub(crate) fn new(adapter: Adapter) -> Arc<Self> {
+        Arc::new(Self {
+            estimator: crate::accounting::TokenEstimator::new(adapter),
+            usage: crate::usage_count::Counter::default(),
+        })
+    }
+}
+
 /// Exact model selection and its provider, ready for a harness execution scope.
 pub struct ResolvedModel {
     pub(crate) files: crate::files::Files,
-    /// Calibration shared by every reader-bound copy of this selection.
-    pub(crate) estimator: Arc<crate::accounting::TokenEstimator>,
+    /// Calibration and observed usage share one original selection owner.
+    pub(crate) accounting: Arc<Accounting>,
     /// Immutable harness model identity.
     pub(crate) model: Model,
     /// Sealed settings derived from the parsed profile, never a root option map.
@@ -24,8 +40,6 @@ pub struct ResolvedModel {
     pub(crate) credential_scope: Option<[u8; 32]>,
     /// The platform transport with the endpoint's optional caller-selected deadline.
     pub(crate) transport: Arc<dyn HttpTransport>,
-    /// The last reported generation input, anchoring later admission bounds.
-    pub(crate) usage: Arc<crate::usage_count::Counter>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) codex_login: Option<Arc<crate::CodexLogin>>,
 }
@@ -124,8 +138,10 @@ impl ResolvedModel {
         input_bytes: usize,
         metadata: &serde_json::Value,
     ) -> Result<()> {
-        self.estimator.observe(input_bytes, metadata);
-        self.usage.observe(self.config.adapter, request, metadata)
+        self.accounting.estimator.observe(input_bytes, metadata);
+        self.accounting
+            .usage
+            .observe(self.config.adapter, request, metadata)
     }
 
     pub(crate) fn admitted_capacity(&self) -> ModelContextCapacity {
@@ -152,7 +168,7 @@ impl ModelProvider for ResolvedModel {
                 reader: Some(reader),
                 maximum_bytes: maximum_bytes.min(self.files.maximum_bytes),
             },
-            estimator: Arc::clone(&self.estimator),
+            accounting: Arc::clone(&self.accounting),
             model: self.model.clone(),
             profile: self.profile,
             config: self.config.clone(),
@@ -162,7 +178,6 @@ impl ModelProvider for ResolvedModel {
             key: self.key.clone(),
             credential_scope: self.credential_scope,
             transport: self.transport.clone(),
-            usage: Arc::clone(&self.usage),
             #[cfg(not(target_arch = "wasm32"))]
             codex_login: self.codex_login.clone(),
         }))
