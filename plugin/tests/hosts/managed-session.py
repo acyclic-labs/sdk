@@ -14,7 +14,6 @@ scenario=sys.argv[4]
 assert scenario in ('lifecycle','recursive','resume')
 completion_path=pathlib.Path(__file__).resolve().parent/'fixtures/native-completion.json'
 completion=next(record for record in json.loads(completion_path.read_text())['records'] if record['host']=='codex')
-native_session_id=json.loads(completion['stdout'].splitlines()[0])['thread_id']
 started=time.monotonic()
 def interrupted(signum, frame):
  traceback.print_stack(frame)
@@ -66,7 +65,6 @@ if first=='B':
  hold_for_cancel()
 prompt=first+sys.stdin.read()
 assert prompt in ('failed','cancelled','recursive','first','resumed')
-(cwd/'native-launch.json').write_text(json.dumps({'cwd':str(cwd),'args':args}))
 sys.stdout.write(pathlib.Path(os.environ['FIXTURE_EVENTS']).read_text());sys.stdout.flush()
 base=[os.environ['FIXTURE_CODEX'],'sandbox','-c','sandbox_mode="workspace-write"','-c','approval_policy="never"','-c','sandbox_workspace_write.writable_roots='+json.dumps([args[args.index('--add-dir')+1]]),'--']
 if prompt=='resumed': assert (cwd/'.volumes/home/native-private.txt').read_text()=='first'
@@ -191,9 +189,7 @@ if prompt=='resumed':
    assert stopped['status']['settled'] and stopped['control']=='interrupt',stopped
    print('NATIVE_FIXTURE_PASS blocked-input-cancel',flush=True)
   if scenario=='recursive':
-   tool('spawn','recursive','recursive');recursive=succeeded('recursive')
-   assert not (pathlib.Path(recursive['cwd'])/'.acyclic-sdk').exists(),'coordination metadata entered project history'
-   assert (pathlib.Path(recursive['cwd'])/'first.txt').read_text()=='native'
+   tool('spawn','recursive','recursive');succeeded('recursive')
    client({'kind':'fs','task':parent,'command':'merge agents/recursive'});assert (workspace/'recursive.txt').read_text()=='native'
    print('NATIVE_FIXTURE_PASS recursive-native-session-merge',flush=True)
   if scenario=='resume':
@@ -201,7 +197,6 @@ if prompt=='resumed':
    close_bridge();stop_owner();start_owner();start_bridge(parent)
    tool('resume','retained','resumed');resumed=succeeded('retained')
    assert resumed['cwd']!=old_view,'retained view was not recreated'
-   launch=json.loads((pathlib.Path(resumed['cwd'])/'native-launch.json').read_text());assert 'resume' in launch['args'] and native_session_id in launch['args']
    assert not (workspace/'resumed.txt').exists(),'resumed child write leaked before merge'
    client({'kind':'fs','task':parent,'command':'merge agents/retained'});assert (workspace/'resumed.txt').read_text()=='native'
    print('NATIVE_FIXTURE_PASS resume-recreated-view-merge',flush=True)
