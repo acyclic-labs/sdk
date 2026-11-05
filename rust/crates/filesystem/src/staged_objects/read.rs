@@ -145,10 +145,15 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         drop(plan);
         drop(durable);
         scope.check()?;
-        scope.charge(WorkCounters {
-            items_returned: count,
-            ..WorkCounters::UNCHARGED
-        })?;
+        // The provider counts its durable batch. Private members, including a
+        // drained member's scalar fallback, return through this batch alone.
+        let private = count - misses as u64;
+        if private != 0 {
+            scope.charge(WorkCounters {
+                items_returned: private,
+                ..WorkCounters::UNCHARGED
+            })?;
+        }
         Ok(crate::async_storage::authority_parts(
             scope
                 .finish_owned(values)

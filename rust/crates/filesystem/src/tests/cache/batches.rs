@@ -118,7 +118,10 @@ async fn cached_reads_keep_only_returned_owned_storage_on_the_original_ledger()
 -> Result<(), Box<dyn std::error::Error>> {
     crate::initialize_test_native_io();
     let cancellation = CancellationToken::new();
-    let budget = crate::performance::BOUNDARY_BUDGET;
+    let budget = WorkBudget {
+        items_returned: 2,
+        ..crate::performance::BOUNDARY_BUDGET
+    };
     let (id, bytes) = object(b"owned cache read");
     for maximum_bytes in [1, 1024] {
         for batch in [false, true] {
@@ -147,6 +150,7 @@ async fn cached_reads_keep_only_returned_owned_storage_on_the_original_ledger()
                 }; 2];
                 let (values, allocation) = cached.read_many(&requests, &mut work).await?;
                 assert_eq!(values.len(), 2);
+                assert_eq!(work.spent().items_returned, 2);
                 assert_eq!(values[0].bytes, bytes);
                 assert_eq!(values[1].bytes, bytes);
                 let retained = (values.capacity() * size_of::<ObjectRead>()) as u64;
