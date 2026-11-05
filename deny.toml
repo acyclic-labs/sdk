@@ -4,9 +4,9 @@ yanked = "deny"
 # Keep that proof coverage until Loom publishes its core::pin::pin! replacement:
 # https://github.com/tokio-rs/loom/blob/v0.7.2/Cargo.toml#L22-L34
 # This also covers synchrony's cfg(loom) dependency in the compio graph.
-# No other direct parent or Loom version may introduce this dependency.
+# The bans rule below refuses every other direct parent.
 ignore = [
-  { id = "RUSTSEC-2026-0441", allow = ["loom@0.7.2"], reason = "Loom 0.7.2 is the latest published release; its futures model requires pin-utils. Removing it drops concurrency proofs, and the core pin replacement is not released upstream." },
+  { id = "RUSTSEC-2026-0441", reason = "Loom 0.7.2 is the latest published release; its futures model requires pin-utils. Removing it drops concurrency proofs, and the core pin replacement is not released upstream." },
 ]
 
 [licenses]
@@ -37,6 +37,9 @@ version = "=0.2.0"
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+deny = [
+  { crate = "pin-utils", wrappers = ["loom"], reason = "Use core::pin::pin!; only Loom's unreleased upstream replacement prevents removal of its proof dependency." },
+]
 # Path-only dev-dependencies of publishable crates and path dependencies of
 # private crates never reach a published manifest.
 allow-wildcard-paths = true
