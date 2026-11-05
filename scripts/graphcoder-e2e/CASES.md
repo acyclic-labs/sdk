@@ -1,13 +1,15 @@
 Cases launch the shipping GraphCoder binary with an ordinary provider catalog and isolated settings. Build GraphCoder and harness-mock-model and install scripts/graphcoder-pty dependencies before timing. Run `node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL [CASE ...]`.
 
 `topology-blackboard` selects the embedded role file through native `spawn`.
-Its authored SDK conversation forwards actual wait results into a board in
-the coordinator's private home, then edits it pinned to its original
-publication. Shared-volume grants and concurrent writers need separate cases.
+Its authored SDK conversation waits for one child to publish a session-shared
+board, then a sibling reads and extends that original publication. Two edits
+use the same original version: the second must report a conflict. The
+coordinator reads the unchanged contributions after both producers finish.
+A second GraphCoder process reopens the same session and reads the retained board.
 `node scripts/qualify-topology-presets.mjs GRAPHCODER MOCK_MODEL FRESH_ABSOLUTE_OUTPUT`
-first selects a generic worker instead: the unchanged conversation must fail at
-the actual provider request missing its role directive. It then restores the
-role selection and runs the same shipping case.
+checks the same conversation with a generic worker, private sibling volumes,
+and an omitted edit version. Each must fail the unchanged assertions before
+the original role, sharing and version condition pass together.
 The qualifier retains its modified `cases/` and `coverage.json` input under
 the fresh output directory. `E2E_CASES_ROOT` selects that tree in the ordinary
 runner; checked-in inputs are read only, including if qualification is killed.

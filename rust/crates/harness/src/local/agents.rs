@@ -512,6 +512,7 @@ impl LocalHarness {
                         bind(PRIVATE_VOLUME, &self.journal),
                         bind("project", &self.project),
                         bind(HOME_VOLUME, &self.scratch),
+                        bind(super::SHARED_VOLUME, &self.shared),
                     ],
                     brief: None,
                     policy: Some(configured),

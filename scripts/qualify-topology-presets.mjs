@@ -19,14 +19,22 @@ cpSync(join(root, "scripts/graphcoder-e2e/cases"), join(input, "cases"), { recur
 copyFileSync(join(root, "scripts/graphcoder-e2e/coverage.json"), join(input, "coverage.json"));
 const id = "topology-blackboard", path = join(input, "cases", `${id}.json`);
 chmodSync(path, 0o600);
-const original = readFileSync(path), wrongRole = JSON.parse(original);
-assert.equal(wrongRole.model.steps[0].tools[0].arguments.role, "blackboard",
+const original = JSON.parse(readFileSync(path));
+assert.equal(original.model.steps[0].tools[0].arguments.role, "blackboard",
   `step=locate original blackboard admission; recovery=${recovery}`);
-wrongRole.model.steps[0].tools[0].arguments.role = "worker";
+const stale = original.model.steps.flatMap(step => step.tools ?? []).filter(tool => tool.id === "stale-board");
+assert.equal(stale.length, 1, `step=locate original stale edit; recovery=${recovery}`);
+assert.ok(stale[0].arguments.version, `step=require original version condition; recovery=${recovery}`);
 // A killed qualification can leave only its own input tree modified.
-for (const phase of ["generic-worker-control", "selected-role"]) {
-  const negative = phase === "generic-worker-control";
-  writeFileSync(path, negative ? JSON.stringify(wrongRole) : original);
+for (const phase of ["generic-worker-control", "private-volume-control", "unconditional-edit-control", "selected-role"]) {
+  const negative = phase !== "selected-role", inputCase = structuredClone(original);
+  if (phase === "generic-worker-control") inputCase.model.steps[0].tools[0].arguments.role = "worker";
+  for (const step of inputCase.model.steps) for (const tool of step.tools ?? []) {
+    if (phase === "private-volume-control" && tool.arguments.path === ".volumes/shared/board.md")
+      tool.arguments.path = ".volumes/home/board.md";
+    if (phase === "unconditional-edit-control" && tool.id === "stale-board") delete tool.arguments.version;
+  }
+  writeFileSync(path, JSON.stringify(inputCase));
   const destination = join(output, phase);
   const result = spawnSync(process.execPath,
     [join(root, "scripts/graphcoder-e2e/run.mjs"), binary, mock, id],
@@ -45,7 +53,7 @@ for (const phase of ["generic-worker-control", "selected-role"]) {
     assert.equal(value.status, negative ? "fail" : "pass",
       `step=qualify ${value.case}; evidence=${destination}; recovery=${recovery}`);
     if (negative) assert.ok(value.evidence.requests.some(request => request.status === 409),
-      `step=observe missing role directive at original provider request; recovery=${recovery}`);
+      `step=observe ${phase} at original provider request; recovery=${recovery}`);
   }
   console.log(JSON.stringify({ phase, case: id, seconds: report.seconds,
     caseSeconds: report.results[0].seconds, status: "pass" }));
