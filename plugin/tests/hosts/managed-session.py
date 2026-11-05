@@ -15,6 +15,9 @@ assert scenario in ('lifecycle','recursive','resume')
 completion_path=pathlib.Path(__file__).resolve().parent/'fixtures/native-completion.json'
 completion=next(record for record in json.loads(completion_path.read_text())['records'] if record['host']=='codex')
 started=time.monotonic()
+
+def phase(name):
+ print('NATIVE_FIXTURE_PASS',name,time.monotonic()-started,flush=True)
 def interrupted(signum, frame):
  traceback.print_stack(frame)
  raise SystemExit('fixture interrupted')
@@ -103,6 +106,7 @@ if prompt=='resumed':
   global owner
   with (root/'owner.log').open('w+') as log:
    owner=start_workspace_owner(graphcoder,workspace,state,root,env,log)
+  phase('workspace-owner-ready')
  def client(action):
   result=subprocess.run([acyclic,'__workspace'],input=json.dumps(action),text=True,cwd=workspace,env=env,capture_output=True)
   assert result.returncode==0,(result.stdout[-1000:],result.stderr[-1000:]);return json.loads(result.stdout)
@@ -117,7 +121,7 @@ if prompt=='resumed':
  def tool(name,reference,prompt=None):return mcp.call(name,reference,prompt)
  def succeeded(reference):
   finished=tool('wait',reference)
-  print('NATIVE_FIXTURE_TURN',json.dumps({'reference':reference,'terminal':finished}),flush=True)
+  print('NATIVE_FIXTURE_TURN',json.dumps({'reference':reference,'terminal':finished,'seconds':time.monotonic()-started}),flush=True)
   assert finished['reply']['kind']=='answered' and finished['reply']['outcome'].get('Succeeded') is not None,finished
   return finished
  def native_ready(view,waiter):
@@ -148,10 +152,13 @@ if prompt=='resumed':
   if previous_bridge:
    try:previous_bridge.stdin.close()
    finally:assert previous_bridge.wait()==0,(root/'bridge.log').read_text()[-1200:]
+   phase('bridge-retired')
  def stop_owner():
   global owner
   previous,owner=owner,None
-  if previous:stop_workspace_owner(previous)
+  if previous:
+   stop_workspace_owner(previous)
+   phase('workspace-owner-retired')
  try:
   # Native global policy flags must precede exec; this is checked without a model.
   base=[real_codex,'--sandbox','workspace-write','--ask-for-approval','never','--add-dir',str(workspace),'exec','--json','--cd',str(workspace)]
@@ -162,7 +169,7 @@ if prompt=='resumed':
   launched=subprocess.run([acyclic,'host','codex','--','--sandbox','workspace-write','--ask-for-approval','never'],cwd=workspace,env=env,capture_output=True,text=True)
   assert launched.returncode==0,(launched.stdout,launched.stderr)
   parent=json.loads((workspace/'root-launch.json').read_text())['task'];start_bridge(parent)
-  print('NATIVE_FIXTURE_PASS root-launch',flush=True)
+  phase('root-launch')
   if scenario=='lifecycle':
    failed=tool('spawn','failed','failed');finished=tool('wait','failed')
    assert finished['reply']['kind']=='answered' and finished['reply']['outcome'].get('Failed'),finished
@@ -199,8 +206,9 @@ if prompt=='resumed':
    assert resumed['cwd']!=old_view,'retained view was not recreated'
    assert not (workspace/'resumed.txt').exists(),'resumed child write leaked before merge'
    client({'kind':'fs','task':parent,'command':'merge agents/retained'});assert (workspace/'resumed.txt').read_text()=='native'
-   print('NATIVE_FIXTURE_PASS resume-recreated-view-merge',flush=True)
+   phase('resume-recreated-view-merge')
    archived=tool('archive','retained');assert archived['control']=='archive',archived
+   phase('retained-archived')
   close_bridge();stop_owner()
   print(json.dumps({'suite':'managed-native-session-'+scenario,'native_agent_fixture':True,'real_codex_workspace_write_sandbox':True,'model_calls':0,'cwd_and_discovery':True,'outside_denied':True,'seconds':time.monotonic()-started}),flush=True)
  except BaseException:
