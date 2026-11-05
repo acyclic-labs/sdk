@@ -12,6 +12,8 @@ allow-panic-in-tests = true
 # other thread's relative paths and the directory each later child starts in.
 # Give a child its own directory with `Command::current_dir` instead.
 disallowed-methods = [
+    { path = "std::env::set_var", reason = "process-wide; pass an explicit environment with Command::env" },
+    { path = "std::env::remove_var", reason = "process-wide; pass an explicit environment with Command::env_remove" },
     { path = "std::env::var", reason = "use the isolated native environment seam" },
     { path = "std::env::var_os", reason = "use the isolated native environment seam" },
     { path = "std::env::vars", reason = "use the isolated native environment seam" },
