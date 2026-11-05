@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost"])
 claim = parser.parse_args().claim
 if claim == "retained-credit":
     source = "rust/crates/filesystem/src/kernel/allocation.rs"
@@ -57,6 +57,12 @@ elif claim == "ready-source-allocation":
     crate = "acyclic-stream"
     test = "runtime::sources::tests::ready_records_reuse_the_registered_source_node"
     diagnostic = "ready record scheduling allocated physical heap storage"
+    features = ["--no-default-features"]
+elif claim == "scalar-charge-cost":
+    source = "rust/crates/filesystem/src/performance.rs"
+    crate = "acyclic-fs"
+    test = "performance::tests::native::borrowed::item_only_kernel_charge_preserves_exact_errors_receipts_and_cost"
+    diagnostic = "scalar charge performed unrelated counter arithmetic"
     features = ["--no-default-features"]
 elif claim == "budget-errors":
     source = "rust/crates/filesystem/src/performance.rs"

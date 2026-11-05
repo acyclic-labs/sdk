@@ -183,50 +183,35 @@ fn completed_kernel_work_borrows_the_original_budget_without_allocating() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
     #[test]
-    fn item_only_kernel_charge_preserves_exact_errors_and_receipts(prior in 0u64..u64::MAX, count in any::<u64>(), limit in any::<u64>(), cancelled in any::<bool>()) {
-        use crate::kernel::allocation::KernelAccounting;
-        let run = |old| {
+    fn item_only_kernel_charge_preserves_exact_errors_receipts_and_cost(prior in 0u64..u64::MAX, count in any::<u64>(), limit in any::<u64>()) {
+        use crate::{kernel::allocation::KernelAccounting, performance::ADDITIVE_STEPS};
+        let run = |old, cancelled| {
             let cancellation = crate::CancellationToken::new();
             let mut accounting = KernelAccounting::standalone(WorkBudget { items_examined: limit, ..WorkBudget::UNBOUNDED }, &cancellation);
             // Completed work is retained even when it exceeds its allowance.
             let _ = accounting.record_completed(WorkCounters { items_examined: prior, ..WorkCounters::UNCHARGED });
             if cancelled { cancellation.cancel(); }
-            let result = if old { accounting.charge(WorkCounters { items_examined: count, ..WorkCounters::UNCHARGED }) }
-                else { accounting.charge_items(count) };
-            (result.map_err(|error| format!("{error:?}")), serde_json::to_vec(&accounting.spent()).unwrap())
-        };
-        let _ = acyclic_test_support::differential(|| run(true), || run(false));
-    }
-}
-
-#[test]
-fn item_only_charge_does_one_addition_and_old_path_fails_the_same_bound() {
-    use crate::{kernel::allocation::KernelAccounting, performance::ADDITIVE_STEPS};
-    for old in [true, false] {
-        let cancellation = crate::CancellationToken::new();
-        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-        ADDITIVE_STEPS.with(|count| count.set(0));
-        let allocations = acyclic_test_support::measure(|| {
-            if old {
-                accounting
-                    .charge(WorkCounters {
-                        items_examined: 7,
-                        ..WorkCounters::UNCHARGED
-                    })
-                    .unwrap();
-            } else {
-                accounting.charge_items(7).unwrap();
+            ADDITIVE_STEPS.with(|steps| steps.set(0));
+            let mut result = Ok(());
+            let allocations = acyclic_test_support::measure(|| {
+                result = if old { accounting.charge(WorkCounters { items_examined: count, ..WorkCounters::UNCHARGED }) }
+                    else { accounting.charge_items(count) };
+            });
+            if !old {
+                assert_eq!(ADDITIVE_STEPS.with(std::cell::Cell::get), usize::from(!cancelled),
+                    "scalar charge performed unrelated counter arithmetic");
             }
-        });
-        let steps = ADDITIVE_STEPS.with(std::cell::Cell::get);
-        assert_eq!(steps, if old { 46 } else { 1 });
-        assert_eq!(
-            steps == 1,
-            !old,
-            "zero-field arithmetic control escaped the exact bound"
-        );
-        assert_eq!(allocations.count_total, 0);
-        assert_eq!(allocations.bytes_total, 0);
-        assert_eq!(accounting.spent().items_examined, 7);
+            assert_eq!(allocations.count_total, 0);
+            assert_eq!(allocations.bytes_total, 0);
+            let result = result.map_err(|error| match error {
+                crate::FsError::Work(error) => Ok(error),
+                crate::FsError::Cancelled(error) => Err(error),
+                error => panic!("unexpected accounting error: {error:?}"),
+            });
+            (result, accounting.spent())
+        };
+        for cancelled in [false, true] {
+            prop_assert_eq!(run(true, cancelled), run(false, cancelled));
+        }
     }
 }
