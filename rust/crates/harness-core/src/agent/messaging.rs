@@ -53,7 +53,7 @@ mod tests {
     #[test]
     fn peer_grants_use_canonical_ancestry_and_attenuate() -> Result<(), super::super::Error> {
         let root = AgentPath::root(&super::super::AgentId::from_bytes([1; 16]));
-        let child = root.child(&super::super::AgentId::from_bytes([2; 16]))?;
+        let child = root.child(&super::super::AgentId::from_bytes([2; 16]));
         let other = AgentPath::root(&super::super::AgentId::from_bytes([3; 16]));
         let exact = crate::Capabilities::new([format!("agent.send:{root}")]);
         let subtree = crate::Capabilities::new([format!("agent.send-subtree:{root}")]);

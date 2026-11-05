@@ -133,9 +133,7 @@ mod tests {
         );
         // A child reads its original parent-home template by the same exact
         // external-file grant its turn uses, without gaining that whole volume.
-        let child = path
-            .child(&AgentId::from_bytes([93; 16]))
-            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        let child = path.child(&AgentId::from_bytes([93; 16]));
         let child_private = super::super::private_volume(home.provider().clone(), &child.id())?;
         host.create_volume(&child_private).await?;
         let child_volumes = [VolumeBinding {

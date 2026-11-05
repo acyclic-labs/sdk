@@ -62,7 +62,7 @@ fn explorer_prefetch_and_expansion_keep_original_provider_cuts() {
     futures::executor::block_on(async {
         let provider = Arc::new(MemoryStream::default());
         let root = AgentPath::root(&AgentId::from_bytes([1; 16]));
-        let child = root.child(&AgentId::from_bytes([2; 16])).unwrap();
+        let child = root.child(&AgentId::from_bytes([2; 16]));
         for agent in [&root, &child] {
             for (path, records) in [
                 (
@@ -124,11 +124,7 @@ fn explorer_prefetch_and_expansion_keep_original_provider_cuts() {
         // More logical expansion intents than the former hidden limit. Only
         // the existing visible branch has provider data or consumes credit.
         for index in 0..300u128 {
-            explorer.expand(
-                &root
-                    .child(&AgentId::from_bytes((index + 10).to_be_bytes()))
-                    .unwrap(),
-            );
+            explorer.expand(&root.child(&AgentId::from_bytes((index + 10).to_be_bytes())));
         }
         explorer.expand(&child);
         explorer.expand(&root);

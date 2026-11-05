@@ -982,7 +982,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     ));
     // A namespace fork alone is not an admitted agent publication: its
     // canonical external status is missing. Refuse the incomplete row.
-    let orphan = root.child(&AgentId::from_bytes([8; 16]))?;
+    let orphan = root.child(&AgentId::from_bytes([8; 16]));
     stream
         .fork(acyclic_stream::ForkRequest {
             source: child.inbox()?,
@@ -1171,7 +1171,7 @@ async fn a_denied_staged_head_reads_no_part() -> Result {
 fn a_children_cursor_carries_its_hierarchy_version_and_last_path() -> Result {
     let version = CommitId::from_bytes([0xa5; 32]);
     let after = AgentPath::root(&crate::agent::AgentId::from_bytes([0x5a; 16]))
-        .child(&crate::agent::AgentId::from_bytes([0x3c; 16]))?;
+        .child(&crate::agent::AgentId::from_bytes([0x3c; 16]));
     let cursor = children_cursor(&version, &after);
     assert_eq!(
         page_json_bytes(&cursor)? - 2,

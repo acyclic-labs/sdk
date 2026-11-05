@@ -34,8 +34,6 @@ pub const INADMISSIBLE_EFFECT: &str = "agent turn returns an invalid effect";
 pub enum SpawnRefusal {
     /// The agent is archived.
     Archived,
-    /// The child would exceed the current nested address depth.
-    Depth,
     /// The parent has no unreserved child slot.
     Limit,
     /// The host runs no children, so it creates none to wait forever.
@@ -249,11 +247,7 @@ impl AgentState {
     /// outcome is a function of that state, and no state records outcomes.
     #[must_use]
     pub async fn spawn_outcome(&self, intent: &IntentId) -> Result<SpawnOutcome, Error> {
-        let Ok(child) = self.spawned(intent) else {
-            return Ok(SpawnOutcome::Refused {
-                reason: SpawnRefusal::Depth,
-            });
-        };
+        let child = super::TurnEffect::child(&self.path, intent);
         Ok(if self.open_children.contains(&child).await? {
             SpawnOutcome::Spawned { child }
         } else {
@@ -269,12 +263,6 @@ impl AgentState {
 
     fn free_children(&self) -> usize {
         super::slots::client_ceiling(self.turn.is_some(), usize::from(self.reserved_children))
-    }
-
-    /// The child a spawn named `intent` creates.
-    fn spawned(&self, intent: &IntentId) -> Result<AgentPath, Error> {
-        self.path
-            .child(&super::AgentId::derive(&self.path.id(), intent.as_str()))
     }
 
     /// Whether the input window holds `input` next: always as its front, then
@@ -1172,7 +1160,7 @@ async fn cascade(state: &mut AgentState, outs: &mut Vec<Out>) -> Result<(), Erro
         let Some(id) = state.archive_pending.first().await? else {
             break;
         };
-        let child = state.path.child(&id)?;
+        let child = state.path.child(&id);
         state.archive_pending.remove(&child).await?;
         outs.push(Out::Archive {
             id: archive_id.clone(),
@@ -1205,7 +1193,7 @@ fn report(state: &AgentState, outcome: &AgentOutcome) -> Option<Out> {
 /// never collide.
 pub fn requested_child(parent: &AgentPath, sequence: u64) -> Result<(IntentId, AgentPath), Error> {
     let intent = requested_intent(sequence)?;
-    let child = parent.child(&super::AgentId::derive(&parent.id(), intent.as_str()))?;
+    let child = super::TurnEffect::child(parent, &intent);
     Ok((intent, child))
 }
 
@@ -1229,16 +1217,14 @@ async fn apply_spawns(
             index += 1;
             continue;
         };
-        let opened = match state.spawned(intent) {
-            Ok(child) if state.open_children.contains(&child).await? => true,
-            Ok(child)
-                if !state.closed
-                    && super::slots::admits(state.open_children.len(), limit, false) =>
-            {
-                state.open_children.insert(child).await?;
-                true
-            }
-            _ => false,
+        let child = super::TurnEffect::child(&state.path, intent);
+        let opened = if state.open_children.contains(&child).await? {
+            true
+        } else if !state.closed && super::slots::admits(state.open_children.len(), limit, false) {
+            state.open_children.insert(child).await?;
+            true
+        } else {
+            false
         };
         if opened {
             index += 1;

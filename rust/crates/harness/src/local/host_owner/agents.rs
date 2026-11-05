@@ -520,9 +520,7 @@ fn snapshot(agent: &AgentState, inbox: u64) -> OperationId {
 /// Spawned session `reference` of `parent`: the spawn intent names it.
 pub(super) fn child(parent: &AgentPath, reference: &str) -> Result<AgentPath> {
     let intent = IntentId::try_from(reference).map_err(storage)?;
-    parent
-        .child(&AgentId::derive(&parent.id(), intent.as_str()))
-        .map_err(storage)
+    Ok(crate::agent::TurnEffect::child(parent, &intent))
 }
 
 /// The runtime's handle on the driver the owner also reads sessions through.

@@ -669,17 +669,7 @@ pub(super) fn check_text(text: &str) -> Result<(), Error> {
 impl AgentRecord for InboxRecord {
     fn check(&self) -> Result<(), Error> {
         match self {
-            Self::ForkAdopted(adopted) => {
-                check_volumes(adopted.volumes.iter())?;
-                if adopted
-                    .parent
-                    .as_ref()
-                    .is_some_and(|parent| parent.child(&adopted.agent).is_err())
-                {
-                    return Err(Error::Record("adopted child exceeds MAX_DEPTH"));
-                }
-                Ok(())
-            }
+            Self::ForkAdopted(adopted) => check_volumes(adopted.volumes.iter()),
             Self::ChildDone(_) => Ok(()),
             Self::Notice { notice, .. } => {
                 match notice {

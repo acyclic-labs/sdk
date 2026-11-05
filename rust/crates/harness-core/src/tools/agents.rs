@@ -138,10 +138,10 @@ const SPAWN: &str = "spawn:";
 /// host resolving a child by its spawn name (`wait`, `agents/<name>`) shares.
 ///
 /// # Errors
-/// When `name` is not a valid spawn name or the child would exceed the depth.
+/// When `name` is not a valid spawn name.
 pub fn spawned_child(parent: &AgentPath, name: &str) -> Result<AgentPath> {
     let intent = IntentId::try_from(format!("{SPAWN}{name}")).map_err(agent)?;
-    TurnEffect::child(parent, &intent).map_err(agent)
+    Ok(TurnEffect::child(parent, &intent))
 }
 
 impl AgentTool {
@@ -306,7 +306,7 @@ impl AgentTool {
     fn result(&self, recorded: TurnEffect) -> Result<ToolResult> {
         let value = match recorded {
             TurnEffect::Spawn { intent, .. } => json!({
-                "agent": TurnEffect::child(&self.turn.agent, &intent).map_err(agent)?.as_str(),
+                "agent": TurnEffect::child(&self.turn.agent, &intent).as_str(),
                 "name": intent.as_str().strip_prefix(SPAWN).unwrap_or(intent.as_str()),
             }),
             TurnEffect::Send { to, .. } => json!({"sent": to.as_str(), "status": "queued"}),
@@ -320,14 +320,14 @@ impl AgentTool {
     /// already recorded (a replayed call) is within its own limit.
     async fn within(&self, intent: &IntentId, limit: usize) -> Result<bool> {
         let turn = &*self.turn;
-        let child = TurnEffect::child(&turn.agent, intent).map_err(agent)?;
+        let child = TurnEffect::child(&turn.agent, intent);
         if turn.children.contains(&child).await.map_err(agent)? {
             return Ok(true);
         }
         let mut spawned = BTreeSet::new();
         for effect in turn.effects.recorded().await? {
             if let TurnEffect::Spawn { intent, .. } = effect {
-                let path = TurnEffect::child(&turn.agent, &intent).map_err(agent)?;
+                let path = TurnEffect::child(&turn.agent, &intent);
                 if path == child {
                     return Ok(true);
                 }

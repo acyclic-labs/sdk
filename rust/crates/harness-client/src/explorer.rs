@@ -313,9 +313,7 @@ mod tests {
             // Two displayed children share their parent's original witness.
             // Admission and duplicate selection belong to the same Reader.
             for id in 1..=2u64 {
-                let child = target
-                    .child(&AgentId::try_from(format!("{id:032x}")).unwrap())
-                    .unwrap();
+                let child = target.child(&AgentId::try_from(format!("{id:032x}")).unwrap());
                 provider
                     .append(AppendRequest {
                         path: StreamPath::new(child.as_str()).unwrap(),

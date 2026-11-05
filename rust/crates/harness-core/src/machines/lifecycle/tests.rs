@@ -50,7 +50,7 @@ async fn original_provider_fences_plans_bindings_and_parent_forks() -> TestResul
         replacement.artifact = None;
         let changed = AgentMachines::new(stream.clone(), vec![replacement])?;
         let parent = AgentPath::root(&AgentId::from_bytes([12; 16]));
-        let child = parent.child(&AgentId::from_bytes([13; 16]))?;
+        let child = parent.child(&AgentId::from_bytes([13; 16]));
 
         // Persist the production plan but lose the caller before allocation.
         // A changed provider must not adopt even this unbound original plan.
@@ -309,7 +309,7 @@ async fn original_machine_ownership_survives_missing_binding_and_changed_parent(
     let provider = SimulatedMachines::default();
     let machines = manager(stream.clone(), provider.clone())?;
     let parent = AgentPath::root(&AgentId::from_bytes([1; 16]));
-    let child = parent.child(&AgentId::from_bytes([2; 16]))?;
+    let child = parent.child(&AgentId::from_bytes([2; 16]));
     let target = machines.target(TARGET)?;
 
     // Stop after the real allocation, before its binding/acknowledgement.
@@ -328,7 +328,7 @@ async fn original_machine_ownership_survives_missing_binding_and_changed_parent(
     assert_eq!(reopened.binding(&child, TARGET).await?, Some(allocated));
 
     // A chosen fork also survives parent state changes and waiter loss.
-    let fork = parent.child(&AgentId::from_bytes([3; 16]))?;
+    let fork = parent.child(&AgentId::from_bytes([3; 16]));
     let plan = machines.plan(&fork, target).await?;
     let source = plan.source.ok_or("parent was not selected")?;
     let allocated = machines.fork(target, &fork, &source).await?;

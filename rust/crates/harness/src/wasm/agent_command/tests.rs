@@ -80,9 +80,7 @@ impl CallProvider for Endpoint {
                 }
                 AgentCommand::Prompt { .. } => AgentReply::Delivered { delivery },
                 AgentCommand::Spawn { parent, .. } => AgentReply::Spawned {
-                    agent: parent
-                        .child(&acyclic_harness_core::agent::AgentId::from_bytes([2; 16]))
-                        .map_err(|_| StreamError::InvalidArgument)?,
+                    agent: parent.child(&acyclic_harness_core::agent::AgentId::from_bytes([2; 16])),
                     delivery,
                 },
                 AgentCommand::Bind { .. } => {
@@ -151,8 +149,7 @@ async fn a_browser_command_past_one_frame_executes_and_answers_as_itself() -> Re
     let delivery = acyclic_harness_core::agent::Delivered::Committed { inbox: 3 };
     let child = AgentPath::try_from(AGENT.to_owned())
         .map_err(|error| error.to_string())?
-        .child(&acyclic_harness_core::agent::AgentId::from_bytes([2; 16]))
-        .map_err(|error| error.to_string())?;
+        .child(&acyclic_harness_core::agent::AgentId::from_bytes([2; 16]));
     for (command, kind, reply, answer) in [
         (
             serde_json::json!({"kind": "prompt", "agent": AGENT, "id": "large", "body": content}),

@@ -37,9 +37,6 @@ pub const STATUSES: &str = "harness/status";
 /// Relative names a child does not inherit from its parent.
 pub const NOT_INHERITED: [&str; 5] = [CHILDREN, CLOSED, TARGETS, MACHINES, "context"];
 
-/// Deepest admitted nesting until agent addresses are flat.
-pub const MAX_DEPTH: usize = 64;
-
 const CONVERSATION: &str = "conversation";
 /// Generation-linked checkpoints, indexed like [`CONVERSATION`].
 const HISTORY: &str = "history";
@@ -184,14 +181,12 @@ impl AgentPath {
     }
 
     /// The child `id` nested under this agent.
-    pub fn child(&self, id: &AgentId) -> Result<Self, Error> {
-        if self.depth >= MAX_DEPTH {
-            return Err(Error::Path("agent nesting exceeds MAX_DEPTH"));
-        }
-        Ok(Self {
+    #[must_use]
+    pub fn child(&self, id: &AgentId) -> Self {
+        Self {
             text: format!("{}/{CHILDREN}/{id}", self.text),
             depth: self.depth + 1,
-        })
+        }
     }
 
     /// The parent agent, `None` for a root.
@@ -333,9 +328,6 @@ impl TryFrom<String> for AgentPath {
             }
             AgentId::validate(segments.next().unwrap_or_default())?;
             depth += 1;
-            if depth > MAX_DEPTH {
-                return Err(Error::Path("agent nesting exceeds MAX_DEPTH"));
-            }
         }
         Ok(Self { text, depth })
     }
@@ -380,9 +372,9 @@ mod tests {
     #[test]
     fn canonical_subtree_admission_is_unbounded_and_borrows_ancestry() -> Result<(), Error> {
         let root =
-            AgentPath::root(&AgentId::from_bytes([1; 16])).child(&AgentId::from_bytes([2; 16]))?;
+            AgentPath::root(&AgentId::from_bytes([1; 16])).child(&AgentId::from_bytes([2; 16]));
         let foreign =
-            AgentPath::root(&AgentId::from_bytes([9; 16])).child(&AgentId::from_bytes([2; 16]))?;
+            AgentPath::root(&AgentId::from_bytes([9; 16])).child(&AgentId::from_bytes([2; 16]));
         // A leaf-id-only check would admit the same id under a foreign root.
         assert_eq!(root.id(), foreign.id());
         assert!(!root.contains(&foreign));
@@ -401,7 +393,7 @@ mod tests {
             assert!(AgentPath::try_from(malformed).is_err());
         }
         // Every agent of a tree addresses the root's targets.
-        let nested = root.child(&AgentId::from_bytes([3; 16]))?;
+        let nested = root.child(&AgentId::from_bytes([3; 16]));
         assert_eq!(nested.tree_root(), root.parent().expect("nested root"));
         assert_eq!(
             nested.target("pc")?,
@@ -416,7 +408,7 @@ mod tests {
         for depth in [1, 8, 65, 129] {
             let mut descendant = root.clone();
             for _ in root.depth()..depth {
-                descendant = descendant.child(&AgentId::from_bytes(leaf))?;
+                descendant = descendant.child(&AgentId::from_bytes(leaf));
             }
             let text = descendant.as_str().to_owned();
             let original = text.as_ptr();
@@ -431,7 +423,7 @@ mod tests {
             let parent = parsed.parent().expect("nested path");
             let mut foreign_parent = foreign.tree_root();
             for _ in 0..parent.depth() {
-                foreign_parent = foreign_parent.child(&AgentId::from_bytes(leaf))?;
+                foreign_parent = foreign_parent.child(&AgentId::from_bytes(leaf));
             }
             // A descendant is not necessarily a direct child, and matching
             // leaf identities under another ancestry do not establish kinship.

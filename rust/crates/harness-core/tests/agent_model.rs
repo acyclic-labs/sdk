@@ -107,24 +107,6 @@ async fn create(provider: &MemoryStream, agent: AgentId) -> Result<AgentPath> {
     Ok(created.child)
 }
 
-#[test]
-fn layout_round_trips_and_bounds_depth() -> Result {
-    let root = AgentPath::root(&id(1));
-    let child = root.child(&id(2))?;
-    assert_eq!(child.parent().as_ref(), Some(&root));
-    assert_eq!(child.id(), id(2));
-    assert_eq!(AgentPath::try_from(child.as_str().to_owned())?, child);
-    assert!(AgentPath::try_from(format!("{}/status", root.as_str())).is_err());
-    assert!(AgentId::try_from("A".repeat(32)).is_err());
-    let mut deep = root;
-    for _ in 0..MAX_DEPTH {
-        deep = deep.child(&id(3))?;
-    }
-    assert!(deep.child(&id(3)).is_err());
-    assert!(AgentPath::try_from(format!("{deep}/children/{}", id(3))).is_err());
-    Ok(())
-}
-
 #[tokio::test]
 async fn send_is_one_conditional_commit_refused_after_archive() -> Result {
     let provider = MemoryStream::default();
@@ -308,7 +290,7 @@ async fn spawn_forks_the_pre_step_subtree_in_one_commit() -> Result {
     };
     assert_eq!(first.commit_id, replay.commit_id);
 
-    let child = parent.child(&AgentId::derive(&parent.id(), "s1"))?;
+    let child = parent.child(&AgentId::derive(&parent.id(), "s1"));
     let inbox = values(&provider, child.inbox()?).await?;
     assert_eq!(inbox.len(), 2);
     assert_eq!(inbox[0], values(&provider, parent.inbox()?).await?[0]);
@@ -351,7 +333,7 @@ async fn spawn_is_all_or_none_and_exclusion_is_load_bearing() -> Result {
         submit(&provider, request).await?,
         Submitted::Conflict(_)
     ));
-    let child = parent.child(&AgentId::derive(&parent.id(), "s1"))?;
+    let child = parent.child(&AgentId::derive(&parent.id(), "s1"));
     assert!(values(&provider, child.inbox()?).await?.is_empty());
     assert!(values(&provider, parent.status()?).await?.len() == 2);
 
@@ -367,14 +349,14 @@ async fn spawn_is_all_or_none_and_exclusion_is_load_bearing() -> Result {
     let s3 = spawn_child(&provider, &first.state, "s3", true).await?;
     let child = |name: &str| parent.child(&AgentId::derive(&parent.id(), name));
     assert!(
-        values(&provider, child("s3")?.child(&s2)?.inbox()?)
+        values(&provider, child("s3").child(&s2).inbox()?)
             .await?
             .is_empty()
     );
     // Negative control: without the exclusion s4 inherits its siblings' subtrees.
     spawn_child(&provider, &s3.state, "s4", false).await?;
     assert!(
-        !values(&provider, child("s4")?.child(&s2)?.inbox()?)
+        !values(&provider, child("s4").child(&s2).inbox()?)
             .await?
             .is_empty()
     );
@@ -385,7 +367,7 @@ async fn spawn_is_all_or_none_and_exclusion_is_load_bearing() -> Result {
 fn a_step_cannot_write_into_a_child_it_spawns() -> Result {
     let parent = AgentPath::root(&id(1));
     let state = AgentState::adopted(parent.clone(), &adopted(id(1))).expect("adopts");
-    let child = parent.child(&AgentId::derive(&parent.id(), "s1"))?;
+    let child = parent.child(&AgentId::derive(&parent.id(), "s1"));
     let step = Step {
         outs: vec![
             Out::Spawn {
@@ -428,10 +410,10 @@ fn script(steps: Vec<TurnStep>) -> Scripted {
 }
 
 fn child_of(parent: &AgentPath, byte: u8) -> Result<(AgentPath, AgentState)> {
-    let path = parent.child(&id(byte))?;
+    let path = parent.child(&id(byte));
     let mut adoption = adopted(id(byte));
     adoption.parent = Some(parent.clone());
-    let state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
+    let state = AgentState::adopted(path.clone(), &adoption)?;
     Ok((path, state))
 }
 
@@ -485,7 +467,7 @@ async fn a_checkpoint_is_indexed_with_its_append_and_inherited_at_a_spawn() -> R
     };
     assert_eq!(adopted.checkpoint, Some(101));
     assert_eq!(
-        AgentState::adopted(path.child(&id(9))?, &adopted)
+        AgentState::adopted(path.child(&id(9)), &adopted)
             .expect("adopts")
             .checkpoint,
         Some(101)
@@ -499,8 +481,8 @@ async fn awaited_children_are_scoped_to_their_parent() -> Result {
     use std::collections::BTreeSet;
 
     let path = AgentPath::root(&id(1));
-    let child = path.child(&id(2))?;
-    let foreign = AgentPath::root(&id(3)).child(&id(2))?;
+    let child = path.child(&id(2));
+    let foreign = AgentPath::root(&id(3)).child(&id(2));
     for any in [false, true] {
         for done in [false, true] {
             let mut state = AgentState::adopted(path.clone(), &adopted(id(1)))?;
@@ -695,7 +677,7 @@ async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Resul
     });
     let request = |n: u64| -> Result<InboxRecord> {
         Ok(InboxRecord::ApprovalRequested(ApprovalRequested {
-            child: path.child(&id(2))?,
+            child: path.child(&id(2)),
             id: intent(&format!("r{n}")),
         }))
     };
@@ -778,7 +760,7 @@ async fn archive_cascades_in_bounded_batches_then_reports() -> Result {
     for byte in 0..40 {
         state
             .open_children
-            .insert(path.child(&AgentId::from_bytes([byte; 16]))?)
+            .insert(path.child(&AgentId::from_bytes([byte; 16])))
             .await?;
     }
     let driver = script(Vec::new());
@@ -972,7 +954,7 @@ async fn populated_parent() -> Result<(AgentPath, AgentState)> {
         bytes[..8].copy_from_slice(&(n as u64).to_le_bytes());
         state
             .open_children
-            .insert(root.child(&AgentId::from_bytes(bytes))?)
+            .insert(root.child(&AgentId::from_bytes(bytes)))
             .await?;
     }
     Ok((root, state))
@@ -1097,9 +1079,7 @@ async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> R
 #[tokio::test]
 async fn a_quorum_wait_resumes_once_on_its_condition_or_its_deadline() -> Result {
     let root = AgentPath::root(&id(1));
-    let children: BTreeSet<AgentPath> = (2..5)
-        .map(|byte| root.child(&id(byte)))
-        .collect::<std::result::Result<_, _>>()?;
+    let children: BTreeSet<AgentPath> = (2..5).map(|byte| root.child(&id(byte))).collect();
     let mut state = AgentState::adopted(root.clone(), &adopted(id(1))).expect("adopts");
     for child in &children {
         state.open_children.insert(child.clone()).await?;

@@ -511,12 +511,12 @@ pub async fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error:
     }
     // Retain distinct membership roots for a paused turn and its checkpoint.
     // A child path also exercises reconstruction of its parent.
-    state.path = state.path.child(&AgentId::from_bytes([8; 16]))?;
+    state.path = state.path.child(&AgentId::from_bytes([8; 16]));
     state.parent = state.path.parent();
     state.conversation_tail = 23;
     state.status_tail = 29;
     for n in 0..9 {
-        let child = state.path.child(&AgentId::from_bytes([n; 16]))?;
+        let child = state.path.child(&AgentId::from_bytes([n; 16]));
         state.open_children.insert(child.clone()).await?;
         if matches!(n, 0 | 7 | 8) {
             state.awaiting.insert(child).await?;
@@ -550,7 +550,7 @@ pub async fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error:
             for n in 7..9 {
                 state
                     .archive_pending
-                    .insert(state.path.child(&AgentId::from_bytes([n; 16]))?)
+                    .insert(state.path.child(&AgentId::from_bytes([n; 16])))
                     .await?;
             }
             state.awaiting.clear();
@@ -573,6 +573,33 @@ pub async fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error:
             (names[2], crate::contract::canonical_json_bytes(&state)?),
         ]);
     }
+    let agent = AgentId::from_bytes([8; 16]);
+    let mut parent = AgentPath::root(&AgentId::from_bytes([7; 16]));
+    for _ in 0..129 {
+        parent = parent.child(&agent);
+    }
+    let path = parent.child(&agent);
+    let adopted = ForkAdopted {
+        profile: None,
+        agent,
+        parent: Some(parent),
+        forked_at: 0,
+        conversation_tail: 0,
+        checkpoint: None,
+        volumes: Vec::new(),
+        brief: None,
+        policy: None,
+    };
+    let state = AgentState::adopted(path, &adopted)?;
+    let encoded = checkpoint::encode(&state)?;
+    assert_eq!(checkpoint::decode(&encoded)?, state);
+    seeds.extend([
+        (
+            "adopted-deep",
+            written(&InboxRecord::ForkAdopted(Box::new(adopted)))?,
+        ),
+        ("checkpoint-deep", encoded),
+    ]);
     seeds.extend(history_seeds()?);
     Ok(seeds)
 }

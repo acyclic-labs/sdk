@@ -191,7 +191,7 @@ pub(super) fn spawn_at(
     history: Option<&super::HistorySelection>,
 ) -> Result<Spawn, Error> {
     let child_id = AgentId::derive(&parent.id(), intent.as_str());
-    let child = parent.child(&child_id)?;
+    let child = parent.child(&child_id);
     adopted.agent = child_id;
     adopted.parent = Some(parent.clone());
     adopted.forked_at = at_tail;

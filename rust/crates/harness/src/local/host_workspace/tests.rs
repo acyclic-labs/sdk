@@ -119,9 +119,7 @@ async fn attachment_rejects_an_arbitrary_in_checkout_mount_root() -> Result<()> 
         .workspace()
         .ok_or_else(|| Error::NotFound("fixture workspace".into()))?
         .held_task_mount_root()?;
-    let child = root()
-        .child(&crate::agent::AgentId::from_bytes([7; 16]))
-        .map_err(storage)?;
+    let child = root().child(&crate::agent::AgentId::from_bytes([7; 16]));
     assert!(fixture.attach(child, mounts.path()).await.is_err());
     assert!(fixture.harness.agent.is_none());
     Ok(())

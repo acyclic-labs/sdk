@@ -574,11 +574,11 @@ fn host_error(error: crate::Error) -> Error {
 async fn reserved(agent: &AgentState, effects: Vec<super::TurnEffect>) -> Result<usize, Error> {
     let mut children = std::collections::BTreeSet::new();
     for effect in effects {
-        if let super::TurnEffect::Spawn { intent, .. } = effect
-            && let Ok(child) = super::TurnEffect::child(&agent.path, &intent)
-            && !agent.open_children.contains(&child).await?
-        {
-            children.insert(child);
+        if let super::TurnEffect::Spawn { intent, .. } = effect {
+            let child = super::TurnEffect::child(&agent.path, &intent);
+            if !agent.open_children.contains(&child).await? {
+                children.insert(child);
+            }
         }
     }
     Ok(children.len())

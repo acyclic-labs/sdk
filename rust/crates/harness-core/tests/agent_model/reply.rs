@@ -56,7 +56,7 @@ async fn a_reply_is_answered_pending_dropped_or_a_conflict() -> Result {
     let provider = MemoryStream::default();
     let root = create(&provider, id(1)).await?;
     let approval = TurnInput::ApprovalRequested {
-        child: root.child(&id(7))?,
+        child: root.child(&id(7)),
         id: intent("q"),
     };
     // Settled m1 and m3 and an approval request at 4; m6's entry is staged

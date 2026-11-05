@@ -61,7 +61,7 @@ async fn an_invalid_host_wait_fails_before_publishing_status_or_effects() -> Res
 async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Result {
     let (root, mut state) = populated_parent().await?;
     let recorded = intent("spawn:already-open");
-    let child = TurnEffect::child(&root, &recorded)?;
+    let child = TurnEffect::child(&root, &recorded);
     state.open_children.insert(child.clone()).await?;
     state.turn = Some(Progress {
         inbox: 0,
@@ -162,7 +162,7 @@ async fn slot_schedules_preserve_all_recorded_spawns() -> Result {
                 let (root, mut state) = populated_parent().await?;
                 while state.open_children.len() > MAX_OPEN_CHILDREN - room {
                     let id = state.open_children.first().await?.ok_or("missing child")?;
-                    state.open_children.remove(&root.child(&id)?).await?;
+                    state.open_children.remove(&root.child(&id)).await?;
                 }
                 state.phase = Phase::Running;
                 state.turn = Some(Progress {

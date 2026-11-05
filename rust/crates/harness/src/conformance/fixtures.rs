@@ -53,7 +53,7 @@ pub async fn spawned<P: acyclic_harness_core::store::JournalProvider + ?Sized>(
     host.drain(&root).await?;
     host.send(&root, &sender(), &request("spawn")?).await?;
     host.drain(&root).await?;
-    Ok(root.child(&AgentId::derive(&root.id(), "child"))?)
+    Ok(root.child(&AgentId::derive(&root.id(), "child")))
 }
 
 /// Initial root used by creation, exact replay, spawn and restart scenarios.
@@ -82,8 +82,7 @@ pub fn sender() -> Sender {
 /// a real message with this same intent; [`Driver`] applies the same oracle.
 pub fn request(id: &str) -> Result<InboxRecord> {
     Ok(InboxRecord::ApprovalRequested(ApprovalRequested {
-        child: AgentPath::root(&AgentId::from_bytes([1; 16]))
-            .child(&AgentId::from_bytes([2; 16]))?,
+        child: AgentPath::root(&AgentId::from_bytes([1; 16])).child(&AgentId::from_bytes([2; 16])),
         id: IntentId::try_from(id)?,
     }))
 }

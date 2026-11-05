@@ -38,7 +38,7 @@ struct Waiter {
     done: Arc<Semaphore>,
 }
 
-fn child(parent: &AgentPath) -> std::result::Result<AgentPath, Error> {
+fn child(parent: &AgentPath) -> AgentPath {
     parent.child(&AgentId::derive(&parent.id(), "c"))
 }
 
@@ -164,7 +164,7 @@ async fn stuck(hold: bool, active: usize) -> Result<Option<String>> {
             .create(&intent(&format!("create-{n}")), adopted(id(n + 1)))
             .await?;
         let start = InboxRecord::ApprovalRequested(ApprovalRequested {
-            child: child(&root)?,
+            child: child(&root),
             id: intent(&format!("start-{n}")),
         });
         host.send(&root, &user(), &start).await?;
@@ -183,7 +183,7 @@ async fn stuck(hold: bool, active: usize) -> Result<Option<String>> {
                 child: parent.clone(),
                 id: intent(&format!("turn-{n}")),
             });
-            host.send(&child(parent)?, &user(), &turn).await?;
+            host.send(&child(parent), &user(), &turn).await?;
         }
         done.acquire_many(u32::from(PARENTS)).await?.forget();
         Ok::<_, Box<dyn std::error::Error>>(None)

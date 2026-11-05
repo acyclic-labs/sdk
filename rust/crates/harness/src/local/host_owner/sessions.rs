@@ -411,7 +411,7 @@ impl HostWorkspaceOwner {
             }
             after = children.last().cloned();
             for id in children {
-                let child = state.path.child(&id).map_err(storage)?;
+                let child = state.path.child(&id);
                 let (_, session) = self.native.session(&child).await?;
                 let reference = session.reference.ok_or_else(|| {
                     Error::Conflict("native child has no committed session reference".into())

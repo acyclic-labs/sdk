@@ -267,8 +267,7 @@ async fn verify_observation(
         Some(parent) => parent,
         None => fixture
             .agent
-            .child(&acyclic_harness::agent::AgentId::from_bytes([0x7f; 16]))
-            .map_err(|error| failure("unknown_authority", error))?,
+            .child(&acyclic_harness::agent::AgentId::from_bytes([0x7f; 16])),
     };
     match client.agent_status(&unknown) {
         Err(AgentClientError::Session(WireSessionError::NotRequested)) => {}

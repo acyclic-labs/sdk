@@ -132,7 +132,7 @@ async fn steering_keeps_followups_and_interrupts_behind_their_source_barriers() 
     // Every input that keeps its own turn is a barrier, including a child's
     // approval request. Later steering cannot overtake that conversation entry.
     let approval = InboxRecord::ApprovalRequested(ApprovalRequested {
-        child: path.child(&id(3))?,
+        child: path.child(&id(3)),
         id: intent("approval"),
     });
     let other = create(&stream, id(2)).await?;

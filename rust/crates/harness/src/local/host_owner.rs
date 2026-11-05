@@ -278,7 +278,7 @@ impl HostWorkspaceOwner {
                 break;
             }
             for id in &page {
-                let child = task.child(id).map_err(storage)?;
+                let child = task.child(id);
                 let (child_state, session) = self.native.session(&child).await?;
                 agents.push(json!({"task":child,"reference":session.reference,
                 "control":session.control,"settled":session.settled,

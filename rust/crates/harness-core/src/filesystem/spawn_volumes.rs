@@ -210,7 +210,7 @@ fn children(
         let child = parent.path.child(&crate::agent::AgentId::derive(
             &parent.path.id(),
             intent.as_str(),
-        ))?;
+        ));
         let mut volumes = Vec::with_capacity(parent.volumes.len());
         for binding in &parent.volumes {
             let (bound, mut created) = plan(&child, binding)?;
@@ -305,7 +305,7 @@ where
             (None, Some(record)) => match InboxRecord::decode(&record.value).map_err(guest)? {
                 InboxRecord::ForkAdopted(adopted) => {
                     let path = match &adopted.parent {
-                        Some(parent) => parent.child(&adopted.agent).map_err(guest)?,
+                        Some(parent) => parent.child(&adopted.agent),
                         None => AgentPath::root(&adopted.agent),
                     };
                     AgentState::adopted(path, &adopted).map_err(guest)?

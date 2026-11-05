@@ -313,7 +313,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                     ..
                 },
             ) => match &adopted.parent {
-                Some(parent) => parent.child(&adopted.agent)?,
+                Some(parent) => parent.child(&adopted.agent),
                 None => AgentPath::root(&adopted.agent),
             },
             (None, _) => return Err(Error::Record("first agent input is not ForkAdopted")),
@@ -401,7 +401,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             .collect();
         for child in spawned {
             let actor = Agents::<P>::actor(&delivery.actor, &child)?;
-            effects.extend(self.agents.create(&actor, &path.child(&child)?, cursor)?);
+            effects.extend(self.agents.create(&actor, &path.child(&child), cursor)?);
         }
         // Every inbox this commit writes wakes its agent through the one
         // activation follow; no dormant agent keeps a follow of its own.

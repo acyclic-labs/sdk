@@ -201,7 +201,7 @@ async fn first_exec_creates_the_agents_own_machine_once() -> Result {
 #[tokio::test]
 async fn a_fork_forks_its_parents_machine_when_the_target_can() -> Result {
     let parent = AgentPath::root(&id(1));
-    let child = parent.child(&id(2))?;
+    let child = parent.child(&id(2));
     for live_fork in [true, false] {
         let stream = Arc::new(MemoryStream::default());
         let provider = if live_fork {
@@ -222,7 +222,7 @@ async fn a_fork_forks_its_parents_machine_when_the_target_can() -> Result {
         // A paused (or provider-idled) parent is a checkpoint: a later
         // child forks it without waking it.
         machines.suspend(&parent).await?;
-        let late = parent.child(&id(3))?;
+        let late = parent.child(&id(3));
         machines.machine(&late, CLOUD).await?;
         let binding = machines.binding(&late, CLOUD).await?.ok_or("no binding")?;
         assert_eq!(binding.forked_from.is_some(), live_fork);
@@ -290,7 +290,7 @@ async fn archive_destroys_the_agents_machines_before_it_closes() -> Result {
     let other = host.create(&intent("other"), adopted(id(2))).await?;
     assert!(host.runtime().drain().await.is_empty());
     // The root's first turn (its first input after adoption) spawns `c`.
-    let child = root.child(&AgentId::derive(&root.id(), "c"))?;
+    let child = root.child(&AgentId::derive(&root.id(), "c"));
     let input = InboxRecord::ApprovalRequested(ApprovalRequested {
         child: child.clone(),
         id: intent("input"),

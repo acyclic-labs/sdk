@@ -339,7 +339,7 @@ fn driver(progress: Vec<ExecutionProgress<TurnOutput>>) -> (Arc<Script>, Executo
 
 /// A turn-starting input that carries no file: a child's approval request.
 fn request(id: &str) -> Result<(InboxRecord, TurnInput)> {
-    let child = AgentPath::root(&super::id(1)).child(&super::id(7))?;
+    let child = AgentPath::root(&super::id(1)).child(&super::id(7));
     Ok((
         InboxRecord::ApprovalRequested(ApprovalRequested {
             child: child.clone(),
@@ -471,7 +471,7 @@ async fn settled_turns_keep_actions_recorded_before_a_later_provider_failure() -
                 });
         }
         let path = AgentPath::root(&id(1));
-        let to = path.child(&id(2))?;
+        let to = path.child(&id(2));
         let body = Box::new(file("sent-before-failure.md")?);
         script
             .effects

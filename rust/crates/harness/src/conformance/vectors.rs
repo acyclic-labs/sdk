@@ -159,7 +159,7 @@ pub(crate) async fn spawn_cut(backend: &dyn Backend) -> Result {
     // Input beyond the saved cursor must not appear in the child's prefix.
     host.send(&root, &sender(), &request("after")?).await?;
     drain(&host).await?;
-    let child = root.child(&AgentId::derive(&root.id(), "child"))?;
+    let child = root.child(&AgentId::derive(&root.id(), "child"));
     let state = host.state(&child).await?;
     if state.parent.as_ref() != Some(&root) || state.conversation_tail != 1 {
         return Err("child adoption differs from the saved cut".into());

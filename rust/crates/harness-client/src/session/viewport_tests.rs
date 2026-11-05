@@ -68,10 +68,7 @@ impl Tree {
         let root = AgentPath::root(&AgentId::from_bytes([0; 16]));
         Self {
             children: (1..=total)
-                .map(|id| {
-                    root.child(&AgentId::from_bytes((id as u128).to_be_bytes()))
-                        .unwrap()
-                })
+                .map(|id| root.child(&AgentId::from_bytes((id as u128).to_be_bytes())))
                 .collect(),
         }
     }

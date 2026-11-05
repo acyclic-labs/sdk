@@ -102,8 +102,7 @@ where
             // A spawn names a new child: a name already taken would make the
             // step's fork conflict on every retry.
             if let TurnEffect::Spawn { intent, .. } = effect {
-                let child = TurnEffect::child(&self.agent, intent)
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                let child = TurnEffect::child(&self.agent, intent);
                 match crate::agent::inbox_tail(&*self.stream, &child).await {
                     Err(crate::agent::Error::NoSuchAgent) => {}
                     Ok(_) => return Err(Error::Conflict("an agent with this name exists".into())),

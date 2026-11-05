@@ -48,7 +48,8 @@ pub enum TurnEffect {
 
 impl TurnEffect {
     /// The child a spawn effect of `parent` names.
-    pub fn child(parent: &AgentPath, intent: &IntentId) -> Result<AgentPath, super::Error> {
+    #[must_use]
+    pub fn child(parent: &AgentPath, intent: &IntentId) -> AgentPath {
         parent.child(&AgentId::derive(&parent.id(), intent.as_str()))
     }
 }

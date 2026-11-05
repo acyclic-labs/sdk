@@ -334,7 +334,7 @@ async fn a_malformed_pinned_policy_denies_both_policy_and_human_routes() -> Resu
 async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -> Result {
     for matching_limits in [false, true] {
         let parent = AgentPath::root(&id(1));
-        let path = parent.child(&id(2))?;
+        let path = parent.child(&id(2));
         let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
             "done".into(),
         )]));
@@ -1235,7 +1235,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
         notices: second[2].clone(),
     });
     assert_ne!(rewritten, requests[1].messages[..rewritten.len()]);
-    selected.validate(&path.child(&id(218))?)?;
+    selected.validate(&path.child(&id(218)))?;
     assert!(selected.validate(&AgentPath::root(&id(219))).is_err());
     assert!(
         NoticeSelection {
@@ -1477,7 +1477,7 @@ async fn every_request_retains_the_roster_across_history_and_compaction_boundari
 async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Result {
     let parent = AgentPath::root(&id(5));
     let child_intent = intent("child");
-    let child = parent.child(&AgentId::derive(&parent.id(), child_intent.as_str()))?;
+    let child = parent.child(&AgentId::derive(&parent.id(), child_intent.as_str()));
     let stream = Arc::new(MemoryStream::default());
     let model = Arc::new(ScriptedModelProvider::new([
         ScriptedTurn::Text("parent answer".into()),
@@ -1589,7 +1589,7 @@ async fn admitted_root_after_its_child(
 ) -> std::result::Result<(Vec<ModelRequest>, FileRef, Phase), String> {
     let run = async {
         let root = AgentPath::root(&id(base));
-        let child = root.child(&id(base + 1))?;
+        let child = root.child(&id(base + 1));
         let stream = Arc::new(MemoryStream::default());
         let model = Arc::new(ScriptedModelProvider::new([
             ScriptedTurn::Text("child answer".into()),
@@ -1734,7 +1734,7 @@ async fn an_admitted_root_reads_its_childs_result_whichever_input_arrives_first(
                 .any(|message| message.content.file_refs().any(|file| *file == result)),
             "{arrival:?}: the root's context lacks its child's result"
         );
-        let child = AgentPath::root(&id(base)).child(&id(base + 1))?;
+        let child = AgentPath::root(&id(base)).child(&id(base + 1));
         let notices: Vec<_> = requests[2]
             .messages
             .iter()
@@ -1806,7 +1806,7 @@ async fn an_admission_without_the_childs_volume_cannot_read_its_result() -> Resu
 #[tokio::test]
 async fn an_admitted_turn_runs_within_its_admission_and_a_read_only_one_cannot_write() -> Result {
     let parent = AgentPath::root(&id(4));
-    let path = parent.child(&id(5))?;
+    let path = parent.child(&id(5));
     let audience = Authority {
         kind: AggregateKind::Conversation,
         id: "workload".into(),
@@ -1966,7 +1966,7 @@ enum Grant {
 #[tokio::test]
 async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
     let parent = AgentPath::root(&id(6));
-    let path = parent.child(&id(7))?;
+    let path = parent.child(&id(7));
     let audience = Authority {
         kind: AggregateKind::Conversation,
         id: "workload".into(),

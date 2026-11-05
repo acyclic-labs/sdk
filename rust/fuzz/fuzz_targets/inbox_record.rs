@@ -1,12 +1,10 @@
-//! Fuzz the bounded agent record decoders and their canonical re-encoding.
+//! Fuzz the agent record decoders and their canonical re-encoding.
 #![no_main]
 
-use acyclic_harness_core::agent::{
-    AgentPath, AgentRecord, Closed, InboxRecord, MAX_RECORD_BYTES, StatusRecord,
-};
+use acyclic_harness_core::agent::{AgentPath, AgentRecord, Closed, InboxRecord, StatusRecord};
 use libfuzzer_sys::fuzz_target;
 
-/// Any accepted record re-encodes canonically, within bounds, to a fixed point.
+/// Any accepted record re-encodes canonically to a fixed point.
 fn round_trip<R: AgentRecord + PartialEq + std::fmt::Debug>(bytes: &[u8]) {
     let Ok(record) = R::decode(bytes) else {
         return;
@@ -14,7 +12,6 @@ fn round_trip<R: AgentRecord + PartialEq + std::fmt::Debug>(bytes: &[u8]) {
     let Ok(canonical) = record.encode() else {
         panic!("accepted record does not re-encode");
     };
-    assert!(canonical.len() <= MAX_RECORD_BYTES);
     let Ok(again) = R::decode(&canonical) else {
         panic!("canonical encoding does not decode");
     };
@@ -36,7 +33,7 @@ fuzz_target!(|data: &[u8]| {
             {
                 assert_eq!(path.as_str(), text);
                 if let Some(parent) = path.parent() {
-                    assert_eq!(parent.child(&path.id()).ok().as_ref(), Some(&path));
+                    assert_eq!(parent.child(&path.id()), path);
                     assert_eq!(parent.depth() + 1, path.depth());
                 }
             }

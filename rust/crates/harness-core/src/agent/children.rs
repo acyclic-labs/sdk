@@ -380,7 +380,7 @@ mod tests {
         let mut expected = BTreeSet::new();
         for n in 0u64..513 {
             let id = AgentId::derive(&parent.id(), &n.to_string());
-            let child = parent.child(&id)?;
+            let child = parent.child(&id);
             assert!(children.insert(child.clone()).await?);
             assert!(!children.insert(child).await?);
             expected.insert(id);
@@ -388,7 +388,7 @@ mod tests {
         let snapshot = children.clone();
         for (n, id) in expected.clone().into_iter().enumerate() {
             if n % 3 == 0 {
-                let child = parent.child(&id)?;
+                let child = parent.child(&id);
                 assert!(children.remove(&child).await?);
                 assert!(!children.remove(&child).await?);
                 expected.remove(&id);
@@ -410,7 +410,7 @@ mod tests {
                 break;
             }
             for id in &page {
-                assert!(reopened.contains(&parent.child(id)?).await?);
+                assert!(reopened.contains(&parent.child(id)).await?);
             }
             actual.extend(page);
         }

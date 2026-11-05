@@ -386,7 +386,7 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
         let root = host.create(&intent("create"), adoption).await?;
         host.drain(&root).await?;
         let target = if children {
-            root.child(&AgentId::derive(&root.id(), "result"))?
+            root.child(&AgentId::derive(&root.id(), "result"))
         } else {
             root.clone()
         };
@@ -556,7 +556,7 @@ async fn large_failure_publishes_complete_diagnostic_with_original_child_settlem
         .await?;
     let failures = host.runtime().drain().await;
     assert!(failures.is_empty(), "{failures:?}");
-    let child = root.child(&AgentId::derive(&root.id(), "large-failure"))?;
+    let child = root.child(&AgentId::derive(&root.id(), "large-failure"));
     let snapshot = store(&provider)?.load(&host.actor(&child)?).await?;
     let cursor = snapshot
         .state()
@@ -853,7 +853,7 @@ async fn committed_checkpoints_carry_final_tails_after_native_reopen() -> Result
         let root = host.create(&intent("create"), adopted(id(1))).await?;
         host.drain(&root).await?;
         let input = InboxRecord::ApprovalRequested(ApprovalRequested {
-            child: root.child(&id(2))?,
+            child: root.child(&id(2)),
             id: intent("approval"),
         });
         assert!(matches!(
@@ -864,7 +864,7 @@ async fn committed_checkpoints_carry_final_tails_after_native_reopen() -> Result
         let parent_before = host.state(&root).await?;
         assert_eq!(parent_before.open_children.len(), 3);
         for id in parent_before.open_children.page(None, 3).await? {
-            host.drain(&root.child(&id)?).await?;
+            host.drain(&root.child(&id)).await?;
         }
         let child = root.child(
             &parent_before
@@ -872,7 +872,7 @@ async fn committed_checkpoints_carry_final_tails_after_native_reopen() -> Result
                 .first()
                 .await?
                 .ok_or("spawned child")?,
-        )?;
+        );
         let before = host.state(&child).await?;
         assert_eq!(before.parent.as_ref(), Some(&root));
         let Delivered::Committed { inbox } = host.send(&child, &user(), &input).await? else {
@@ -1014,7 +1014,7 @@ async fn native_reopen_preserves_and_replaces_deadlines_until_control_clears_the
         let root = host.create(&intent("create"), adopted(id(1))).await?;
         host.drain(&root).await?;
         let input = InboxRecord::ApprovalRequested(ApprovalRequested {
-            child: root.child(&id(2))?,
+            child: root.child(&id(2)),
             id: intent("start"),
         });
         host.send(&root, &user(), &input).await?;
@@ -1026,7 +1026,7 @@ async fn native_reopen_preserves_and_replaces_deadlines_until_control_clears_the
         let first = host.state(&root).await?;
         assert_eq!(first.open_children.len(), 3);
         for id in first.open_children.page(None, 3).await? {
-            host.drain(&root.child(&id)?).await?;
+            host.drain(&root.child(&id)).await?;
         }
         let snapshot = host.runtime().store().load(&host.actor(&root)?).await?;
         let first_actor = snapshot.state().ok_or("missing waiting actor")?.clone();
@@ -1148,7 +1148,7 @@ async fn native_reopen_preserves_reserved_spawns_until_the_matching_approval() -
         &root,
         &user(),
         &InboxRecord::ApprovalRequested(ApprovalRequested {
-            child: root.child(&id(2))?,
+            child: root.child(&id(2)),
             id: intent("question"),
         }),
     )
@@ -1216,7 +1216,7 @@ async fn native_reopen_preserves_reserved_spawns_until_the_matching_approval() -
             assert_eq!(state.open_children.len(), 5);
             for id in state.open_children.page(None, 5).await? {
                 assert_eq!(
-                    host.state(&root.child(&id)?).await?.parent.as_ref(),
+                    host.state(&root.child(&id)).await?.parent.as_ref(),
                     Some(&root)
                 );
             }
@@ -1267,7 +1267,7 @@ async fn a_foreign_actor_cannot_run_the_agents_committed_input() -> Result {
     let state = snapshot.state().ok_or("missing actor state")?;
     let checkpoint = state.checkpoint().ok_or("missing agent checkpoint")?;
     let input = InboxRecord::ApprovalRequested(ApprovalRequested {
-        child: root.child(&id(2))?,
+        child: root.child(&id(2)),
         id: intent("approval"),
     });
     let Delivered::Committed { inbox } = host.send(&root, &user(), &input).await? else {
@@ -1391,7 +1391,7 @@ async fn conversation_follow_waits_on_the_original_checkpoint_and_preserves_refu
         &root,
         &user(),
         &InboxRecord::ApprovalRequested(ApprovalRequested {
-            child: root.child(&id(2))?,
+            child: root.child(&id(2)),
             id: intent("publish"),
         }),
     )
@@ -1457,7 +1457,7 @@ async fn an_inbox_append_wakes_the_agent_and_its_spawn_creates_the_child_actor()
     let actors = store(&provider)?;
     let cursor = |state: &Snapshot| state.state().and_then(|s| s.cursor(INBOX));
     assert_eq!(cursor(&actors.load(&host.actor(&root)?).await?), Some(1));
-    let child = root.child(&AgentId::derive(&root.id(), "c"))?;
+    let child = root.child(&AgentId::derive(&root.id(), "c"));
     let record = InboxRecord::ApprovalRequested(ApprovalRequested {
         child: child.clone(),
         id: intent("q"),
@@ -1520,7 +1520,7 @@ async fn host_replays_exact_intents_and_rejects_changed_bytes_after_progress() -
     )?;
     let root = host.create(&intent("create"), adopted(id(1))).await?;
     let done = InboxRecord::ChildDone(ChildDone {
-        child: root.child(&id(2))?,
+        child: root.child(&id(2)),
         outcome: AgentOutcome::Succeeded { result: None },
     });
     assert!(matches!(
@@ -1540,7 +1540,7 @@ async fn host_replays_exact_intents_and_rejects_changed_bytes_after_progress() -
         Delivered::Committed { .. }
     ));
     let changed = InboxRecord::ChildDone(ChildDone {
-        child: root.child(&id(2))?,
+        child: root.child(&id(2)),
         outcome: AgentOutcome::Failed {
             message: "changed".into(),
         },
@@ -1835,7 +1835,7 @@ async fn same_phase_settlement_advances_the_actor_without_appending_status() -> 
     assert!(host.runtime().drain().await.is_empty());
     for n in 0..3 {
         let record = InboxRecord::ApprovalRequested(ApprovalRequested {
-            child: root.child(&id(2))?,
+            child: root.child(&id(2)),
             id: intent(&format!("request-{n}")),
         });
         let Delivered::Committed { inbox } = host.send(&root, &user(), &record).await? else {

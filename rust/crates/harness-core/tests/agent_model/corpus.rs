@@ -27,7 +27,7 @@ pub fn notice_file()
 pub fn seeds() -> Result<BTreeMap<&'static str, Vec<u8>>, Box<dyn std::error::Error>> {
     let root = AgentPath::root(&AgentId::from_bytes([1; 16]));
     let child_id = AgentId::from_bytes([2; 16]);
-    let child = root.child(&child_id)?;
+    let child = root.child(&child_id);
     let mut seeds = BTreeMap::new();
     for (name, record) in [
         (
