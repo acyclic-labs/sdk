@@ -145,7 +145,7 @@ impl NativeSourceWatch {
                 None => Err(error),
                 Some(shared) => {
                     let failed = Self { shared };
-                    let cleanup = failed.stop(work, true, None);
+                    let cleanup = failed.stop_driver(work, None, true);
                     if !failed.is_stopped() {
                         if !native {
                             work.release(bytes)?;

@@ -1,6 +1,13 @@
 use super::*;
 
 impl NativeSourceWatch {
+    pub(crate) fn stop_with_work<W: SourceDemandReadWork>(
+        &self,
+        work: &mut W,
+    ) -> Result<(), DemandError> {
+        self.stop_driver(work, None, false)
+    }
+
     /// Whether the original native driver has retired its physical resources.
     pub(crate) fn is_stopped(&self) -> bool {
         self.delivery().is_retired()
@@ -27,7 +34,8 @@ impl NativeSourceWatch {
             .as_ref()
             .ok_or(DemandError::NativeWorkUnavailable)?
             .clone();
-        self.cleanup_driver(&mut work, wait)
+        self.stop_driver(&mut work, wait, true)
+            .and(check_wait(wait))
     }
 
     /// Observes destruction of the original data, after its payload and keepers.

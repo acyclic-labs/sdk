@@ -1,24 +1,11 @@
 use super::*;
 
 impl NativeSourceWatch {
-    pub(crate) fn stop_with_work<W: SourceDemandReadWork>(
+    pub(in crate::source_watch) fn stop_driver<W: SourceDemandReadWork>(
         &self,
         work: &mut W,
-    ) -> Result<(), DemandError> {
-        self.stop(work, false, None)
-    }
-    pub(in crate::source_watch) fn cleanup_driver(
-        &self,
-        work: &mut crate::NativeMaterializationWork,
         wait: Option<&crate::CancellationToken>,
-    ) -> Result<(), DemandError> {
-        self.stop(work, true, wait)
-    }
-    pub(super) fn stop<W: SourceDemandReadWork>(
-        &self,
-        work: &mut W,
         retiring: bool,
-        wait: Option<&crate::CancellationToken>,
     ) -> Result<(), DemandError> {
         if !retiring {
             work.check()?;
@@ -88,7 +75,7 @@ impl NativeSourceWatch {
                 return Err(failure.unwrap_or(DemandError::NativeWorkUnavailable));
             }
             drop(reads);
-            return failure.map_or(Ok(()), Err).and(check_wait(wait));
+            return failure.map_or(Ok(()), Err);
         }
         let mut result = self.shared.cancel_pending(&mut reads, work);
         if reads.pending {
@@ -116,7 +103,7 @@ impl Drop for NativeSourceWatch {
         }
         if self.shared.delivery.original.is_none() {
             let mut work = self.shared.delivery.callback_work();
-            if let Err(error) = self.stop(&mut work, true, None) {
+            if let Err(error) = self.stop_driver(&mut work, None, true) {
                 self.shared.delivery.failed_with_work(error, &mut work);
             }
             return;
