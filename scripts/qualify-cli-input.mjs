@@ -40,6 +40,7 @@ try {
         adapter: "responses", authentication: "optional", base_url: "http://127.0.0.1:0",
         models: { tiny: { capacity: { context_tokens: 8192, output_tokens: 1024 },
           features: { tools: true, images: false } } },
+        max_event_bytes: 65536,
         token_counter: { path: "count", adapter: "responses", response_field: "input_tokens", framing_tokens: 0 },
       } }));
       const arguments_ = ["--workspace", workspace, "--settings-root", env.HOME,
