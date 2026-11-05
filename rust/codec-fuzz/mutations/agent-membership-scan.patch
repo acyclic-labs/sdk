@@ -5,6 +5,6 @@ diff --git a/rust/crates/harness-core/src/agent/children.rs b/rust/crates/harnes
      /// Inserts one child and stages only the nodes on its changed path.
      pub async fn insert(&mut self, child: AgentPath) -> Result<bool, Error> {
 +        let _ = self.page(None, self.len()).await?;
-         let id = child.id().to_bytes();
-         let (mut branches, found) = self.walk(id).await?;
-         if found.is_some_and(|(found, _)| found == id) {
+         let id = child.id_bytes();
+         let mut branches = Vec::new();
+         let found = self.walk(id, |branch| branches.push(branch)).await?;
