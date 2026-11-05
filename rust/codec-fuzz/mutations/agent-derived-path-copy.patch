@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness-core/src/agent/layout.rs b/rust/crates/harness-core/src/agent/layout.rs
+--- a/rust/crates/harness-core/src/agent/layout.rs
++++ b/rust/crates/harness-core/src/agent/layout.rs
+@@ -282,3 +282,3 @@ impl AgentPath {
+     pub fn status(&self) -> Result<StreamPath, Error> {
+-        stream(&[STATUSES, "/", self.id_text()].concat())
++        stream(&format!("{STATUSES}/{}", self.id()))
+     }
+@@ -313,3 +313,3 @@ impl AgentPath {
+     pub fn target(&self, name: &str) -> Result<StreamPath, Error> {
+-        stream(&[self.tree_root_text(), "/", TARGETS, "/", name].concat())
++        stream(&format!("{}/{TARGETS}/{name}", self.tree_root().text))
+     }

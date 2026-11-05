@@ -10,8 +10,9 @@ const membershipOnly = process.argv[2] === '--membership';
 const borrowedOnly = process.argv[2] === '--borrowed';
 const parentOnly = process.argv[2] === '--parent';
 const adoptionOnly = process.argv[2] === '--adoption';
-const bindingOnly = parentOnly || adoptionOnly;
-const testFeatures = adoptionOnly ? [] : ['--features', features];
+const pathsOnly = process.argv[2] === '--paths';
+const bindingOnly = parentOnly || adoptionOnly || pathsOnly;
+const testFeatures = adoptionOnly || pathsOnly ? [] : ['--features', features];
 
 function command(executable, args, expected, capture = false) {
   const result = spawnSync(executable, args, {encoding: 'utf8', maxBuffer: 32 * 1024 * 1024});
@@ -26,7 +27,7 @@ function command(executable, args, expected, capture = false) {
     process.stderr.write(output);
     throw new Error(`step=qualify agent admission; recovery=${recovery}; ${result.error ?? result.signal ?? result.status}`);
   }
-  if (expected) process.stdout.write(`Rejected production mutation: ${refused.join('; ')}\n`);
+  if (expected) process.stdout.write(`${output}Rejected production mutation: ${refused.join('; ')}\n`);
   else if (!capture) process.stdout.write(output);
   return capture ? result.stdout : output;
 }
@@ -51,7 +52,10 @@ try {
       'cached membership lookup allocated identity or branch storage']]);
   }
   if (!membershipOnly) {
-    mutations(adoptionOnly ? [
+    mutations(pathsOnly ? [
+      ['agent-derived-path-copy', 'rust/crates/harness-core/src/agent/layout.rs', ancestry,
+        'derived stream paths allocated discarded identity or root storage'],
+    ] : adoptionOnly ? [
       ['agent-adoption-copy', 'rust/crates/harness-core/src/agent/records.rs', ancestry,
         'adoption validation constructed a discarded child address'],
     ] : [
@@ -102,6 +106,6 @@ try {
     process.stdout.write(`Captured production agent writer output: ${destination}\n`);
   }
 } catch (error) {
-  process.stderr.write(`step=qualify agent admission; recovery=node scripts/qualify-agent-admission.mjs${membershipOnly ? ' --membership' : borrowedOnly ? ' --borrowed' : parentOnly ? ' --parent' : adoptionOnly ? ' --adoption' : ''}; ${error.message}\n`);
+  process.stderr.write(`step=qualify agent admission; recovery=node scripts/qualify-agent-admission.mjs${membershipOnly ? ' --membership' : borrowedOnly ? ' --borrowed' : parentOnly ? ' --parent' : adoptionOnly ? ' --adoption' : pathsOnly ? ' --paths' : ''}; ${error.message}\n`);
   process.exitCode = 1;
 }
