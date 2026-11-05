@@ -21,6 +21,11 @@ an oracle that rejects a population-dependent implementation.
 
 ## Current closure work
 
+The [scalar-charge cost control](scalar-charge-cost/README.md) joins exact typed
+errors, complete receipts and actual arithmetic/allocation counts in the existing
+generated kernel property. A production mutation substitutes general charging
+and must fail the scalar arithmetic bound. Native ledger costs remain separate.
+
 The [ready-source allocation control](ready-source-allocation/README.md) retains
 actual committed records and physical heap measurements while replacing a former
 scheduler comparison with a production mutation. It qualifies ready-record
