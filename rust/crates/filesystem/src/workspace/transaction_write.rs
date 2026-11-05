@@ -413,7 +413,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
     pub async fn stage_content<R: crate::kernel::AsyncBlobSource, W: crate::facade::FsWork>(
         &self,
         source: &mut R,
-        maximum_source_bytes: u64,
+        maximum_source_bytes: impl Into<Option<u64>> + Send,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<crate::StagedContent, WorkspaceError> {

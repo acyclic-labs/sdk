@@ -165,7 +165,12 @@ impl StockExecution<'_> {
                     stock_retire_text(delta, io)?;
                 }
                 ModelEvent::MessageCompleted { text: completed } => {
-                    if completed.len() as u64 > self.stock.limits.render_bytes {
+                    if self
+                        .stock
+                        .limits
+                        .render_bytes
+                        .is_some_and(|maximum| completed.len() as u64 > maximum)
+                    {
                         return Err(stock_boundary(
                             io,
                             crate::wire::ErrorCode::Invalid,
@@ -245,7 +250,7 @@ pub(super) async fn stage_summary_provenance(
         .transpose()?;
     let bytes: acyclic_stream::OwnedBytes = match io {
         #[cfg(feature = "filesystem")]
-        Some(io) => io.encode(summary, io.remaining()?.bytes_encoded, true)?,
+        Some(io) => io.encode(summary, Some(io.remaining()?.bytes_encoded), true)?,
         _ => crate::contract::canonical_json_bytes(summary)?.into(),
     };
     #[cfg(feature = "filesystem")]

@@ -259,7 +259,7 @@ impl Store {
         #[cfg(test)]
         self.reads
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        match private_file::read(&self.path, u64::MAX - 1) {
+        match private_file::read(&self.path, None) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error.into()),

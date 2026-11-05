@@ -46,11 +46,7 @@ async fn decoded_misses_keep_the_original_epoch_through_scalar_and_batch_io()
                         crate::test_support::put_tree_page(
                             &*inner,
                             &TreePage::Leaf(vec![TreeEntry {
-                                name: LogicalName::new(
-                                    NameEncoding::Utf8,
-                                    vec![b'a' + marker],
-                                    255,
-                                )?,
+                                name: LogicalName::new(NameEncoding::Utf8, vec![b'a' + marker])?,
                                 file_id: crate::FileId::from_bytes([marker; 16]),
                                 kind: FileKind::Regular,
                             }]),

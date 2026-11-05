@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import test from "node:test";
 import { mkdir, mkdtemp, open, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -53,6 +55,9 @@ test("byte fixtures use requested capacity and reject invalid specifications bef
   try {
     const count = 4 * 1024 * 1024 + 1;
     await seed(root, { large: { repeat: "x", count } }, io);
+    const actual = createHash("sha256");
+    for await (const chunk of createReadStream(join(root, "large"))) actual.update(chunk);
+    assert.equal(actual.digest("hex"), createHash("sha256").update(Buffer.alloc(count, "x")).digest("hex"));
     assert.deepEqual(calls, { mkdir: 1, writeFile: 1 });
     const file = await open(join(root, "large"));
     try {
@@ -64,7 +69,7 @@ test("byte fixtures use requested capacity and reject invalid specifications bef
       }
     } finally { await file.close(); }
     for (const value of [{ repeat: "x", count: Infinity }, { repeat: "x", count: -1 },
-      { repeat: "x", count: 0.5 }, { repeat: "λ", count: 1 }]) {
+      { repeat: "x", count: 0.5 }, { repeat: "x", count: Number.MAX_SAFE_INTEGER + 1 }, { repeat: "λ", count: 1 }]) {
       await assert.rejects(seed(root, { "rejected/file": value }, io), /fixture repetition requires/);
       assert.deepEqual(calls, { mkdir: 1, writeFile: 1 }, "invalid bytes must not enter I/O");
       await assert.rejects(stat(join(root, "rejected")), { code: "ENOENT" });

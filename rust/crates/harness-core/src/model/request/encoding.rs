@@ -138,7 +138,7 @@ impl PreparedModelRequest {
                 acyclic_differential::record(("input prefix rebuilds", 1u64));
                 crate::executor::json::canonical_json_digest(
                     &Envelope::new(&self.request, messages),
-                    u64::MAX,
+                    None,
                     &mut None,
                 )? == anchor.digest
             };
@@ -198,7 +198,7 @@ fn encode<T: Serialize>(
 ) -> Result<acyclic_stream::OwnedBytes> {
     match io {
         #[cfg(feature = "filesystem")]
-        Some(io) => io.encode(value, io.remaining()?.bytes_encoded, true),
+        Some(io) => io.encode(value, Some(io.remaining()?.bytes_encoded), true),
         _ => Ok(crate::contract::canonical_json_bytes(value)?.into()),
     }
 }

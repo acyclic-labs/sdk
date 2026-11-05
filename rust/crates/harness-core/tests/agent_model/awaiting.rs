@@ -17,7 +17,6 @@ use futures::StreamExt as _;
 use std::{
     collections::BTreeSet,
     sync::{Arc, Mutex},
-    time::Duration,
 };
 use tokio::sync::Semaphore;
 
@@ -93,6 +92,7 @@ impl TurnDriver for Waiter {
             if agent.parent.is_some() {
                 // A child's turn appends one entry, which `hold` follows.
                 return Ok(TurnStep {
+                    reserved_children: 0,
                     outs: vec![Out::Conversation(b"answer".to_vec())],
                     ..settled()
                 });
@@ -138,9 +138,8 @@ impl TurnDriver for Waiter {
 }
 
 /// Runs every parent's wait under `active` admission: `None` once all
-/// completed, else why the schedule is stuck. Time is paused, so a deadline
-/// fires only once nothing else can progress: the runtime's handler deadline
-/// failing a delivery that never returns, or the run's own.
+/// completed, else the runtime's original delivery refusal. The explicitly
+/// selected manifest deadline fails a held delivery once no work can progress.
 async fn stuck(hold: bool, active: usize) -> Result<Option<String>> {
     let provider = Arc::new(MemoryStream::default());
     let waiting = Arc::new(Semaphore::new(0));
@@ -201,7 +200,6 @@ async fn stuck(hold: bool, active: usize) -> Result<Option<String>> {
         stopped = host.run(report) => Err(format!("runtime stopped: {stopped:?}").into()),
         completed = schedule => completed,
         _ = failed.acquire() => Ok(failure.lock().map_err(|_| "failure")?.clone()),
-        () = tokio::time::sleep(Duration::from_secs(3600)) => Ok(Some("no progress".into())),
     }
 }
 

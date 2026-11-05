@@ -5,15 +5,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResolvedFi
     pub async fn plan_extents<W: FsWork>(
         &self,
         range: ByteRange,
-        maximum_spans: u32,
+        maximum_spans: impl Into<Option<u32>>,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::OwnedOutput<Option<ExtentPlan>> {
+        let maximum_spans = maximum_spans.into();
         let mut accounting = work.accounting(cancellation);
         let result = async {
             let mut accounting = accounting.allocation_scope()?;
             let result = async {
-                validate_extent_plan_request(self.reader.volume.config, range, maximum_spans)?;
+                validate_extent_plan_request(maximum_spans)?;
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(original) = accounting.native_work() {
                     self.reader.validate_native_work(original)?;
@@ -46,15 +47,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         &self,
         path: &NamespacePath,
         range: ByteRange,
-        maximum_spans: u32,
+        maximum_spans: impl Into<Option<u32>>,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::OwnedOutput<Option<ExtentPlan>> {
+        let maximum_spans = maximum_spans.into();
         let mut accounting = work.accounting(cancellation);
         let result = async {
             let mut accounting = accounting.allocation_scope()?;
             let result = async {
-                validate_extent_plan_request(self.volume.config, range, maximum_spans)?;
+                validate_extent_plan_request(maximum_spans)?;
                 let record = self
                     .resolve_file(path, &mut accounting, cancellation)
                     .await?;
@@ -80,12 +82,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 }
 
-fn validate_extent_plan_request(
-    config: VolumeConfig,
-    range: ByteRange,
-    maximum_spans: u32,
-) -> Result<(), FsError> {
-    if maximum_spans == 0 || range.length > config.limits.maximum_generation_bytes {
+fn validate_extent_plan_request(maximum_spans: Option<u32>) -> Result<(), FsError> {
+    if maximum_spans == Some(0) {
         return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
     }
     Ok(())
@@ -95,7 +93,7 @@ async fn plan_record_extents_with_accounting<A: AsyncAuthorityStore, O: AsyncObj
     volume: &Volume<A, O>,
     record: FileRecord,
     range: ByteRange,
-    maximum_spans: u32,
+    maximum_spans: Option<u32>,
     project: impl Fn(crate::kernel::ExtentSlice) -> T,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -184,10 +182,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         &mut self,
         record: FileRecord,
         range: ByteRange,
-        maximum_spans: u32,
+        maximum_spans: impl Into<Option<u32>>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(Option<ExtentPlan>, KernelOwnedAllocation), FsError> {
+        let maximum_spans = maximum_spans.into();
         self.plan_record_extents_projected(
             record,
             range,
@@ -203,7 +202,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         &mut self,
         record: FileRecord,
         range: ByteRange,
-        maximum_spans: u32,
+        maximum_spans: Option<u32>,
         project: impl Fn(crate::kernel::ExtentSlice) -> T,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -238,10 +237,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         &mut self,
         file: F,
         range: ByteRange,
-        maximum_spans: u32,
+        maximum_spans: impl Into<Option<u32>>,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::OwnedOutput<Option<ExtentPlan>> {
+        let maximum_spans = maximum_spans.into();
         let mut accounting = work.accounting(cancellation);
         let result = async {
             let mut accounting = accounting.allocation_scope()?;
@@ -268,12 +268,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         &mut self,
         file: &F,
         range: ByteRange,
-        maximum_spans: u32,
+        maximum_spans: Option<u32>,
         project: impl Fn(crate::kernel::ExtentSlice) -> T,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(Option<ExtentPlan<T>>, KernelOwnedAllocation), FsError> {
-        validate_extent_plan_request(self.volume.config, range, maximum_spans)?;
+        validate_extent_plan_request(maximum_spans)?;
         let record = self
             .lookup_content_record(file, accounting, cancellation)
             .await?;

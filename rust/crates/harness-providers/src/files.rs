@@ -1,25 +1,16 @@
 use crate::invalid;
 use acyclic_harness_core::{
     Error, Result,
-    conversation::{ContentResidencyVerifier, FileRef, Limits, verified_content_bytes},
+    conversation::{ContentResidencyVerifier, FileRef, verified_content_bytes},
     model::{FileProjectionPolicy, ModelContent, ModelRequest},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::sync::Arc;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct Files {
     pub reader: Option<Arc<dyn ContentResidencyVerifier>>,
-    pub maximum_bytes: u64,
-}
-
-impl Default for Files {
-    fn default() -> Self {
-        Self {
-            reader: None,
-            maximum_bytes: Limits::default().render_bytes,
-        }
-    }
+    pub maximum_bytes: Option<u64>,
 }
 
 #[derive(Default)]
@@ -66,14 +57,16 @@ impl FileText {
 
 // Every projection, including native media, pays through the same pre-I/O
 // subtraction. Work is admitted source bytes (framed bytes for instructions).
-fn charge(remaining: &mut u64, bytes: u64, kind: &str) -> Result<()> {
-    *remaining = remaining
-        .checked_sub(bytes)
-        .ok_or_else(|| invalid(&format!("model files exceed projection {kind} limit")))?;
+fn charge(remaining: &mut Option<u64>, bytes: u64, kind: &str) -> Result<()> {
+    if let Some(remaining) = remaining {
+        *remaining = remaining
+            .checked_sub(bytes)
+            .ok_or_else(|| invalid(&format!("model files exceed projection {kind} limit")))?;
+    }
     Ok(())
 }
 
-pub(crate) fn extra_bytes(content: &ModelContent, maximum: u64) -> Result<usize> {
+pub(crate) fn extra_bytes(content: &ModelContent, maximum: Option<u64>) -> Result<usize> {
     let mut extra = 0usize;
     for (file, policy) in content.file_parts() {
         policy.validate_projection(file, maximum)?;
@@ -120,14 +113,8 @@ pub(crate) async fn resolve(
             let reader = files.reader.as_ref().ok_or_else(|| {
                 Error::Unsupported("model file byte resolution is unavailable".into())
             })?;
-            let (bytes, hold) = verified_content_bytes(
-                reader.as_ref(),
-                file,
-                file.descriptor().byte_length(),
-                None,
-                io,
-            )
-            .await?;
+            let (bytes, hold) =
+                verified_content_bytes(reader.as_ref(), file, None, None, io).await?;
             if let FileProjectionPolicy::ProjectInstructions(source) = policy {
                 let value =
                     acyclic_harness_core::model::InstructionSource::with_identity(file, source)

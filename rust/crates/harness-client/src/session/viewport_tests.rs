@@ -22,7 +22,10 @@ impl Executor for Scheduler {
     fn spawn(&self, future: BoxProviderFuture<'static, ()>) {
         self.tasks.lock().unwrap().push(future);
     }
-    fn sleep(&self, _: u32) -> BoxProviderFuture<'static, ()> {
+    fn sleep(
+        &self,
+        _: u64,
+    ) -> BoxProviderFuture<'static, Result<(), acyclic_stream::runtime::SleepError>> {
         self.sleeps.fetch_add(1, Ordering::Relaxed);
         Box::pin(futures::future::pending())
     }
@@ -200,7 +203,7 @@ fn restricted_filter() -> Option<wire::SessionFilter> {
 #[tokio::test]
 async fn viewport_refusal_is_atomic_and_legacy_resource_retention_fails_oracle() {
     let (mut admission, admission_scheduler) = client();
-    admission.policy = DemandPolicy::new(1, 1).unwrap();
+    admission.policy = DemandPolicy::new(Some(1), Some(1)).unwrap();
     let request = follow("fs:/volume/admission".into());
     admission.begin_resource(request.clone()).unwrap();
     for (request, expected) in [
@@ -266,6 +269,7 @@ async fn viewport_refusal_is_atomic_and_legacy_resource_retention_fails_oracle()
 
     let tree = Tree::new(64);
     let (mut session, scheduler) = client();
+    session.policy = DemandPolicy::new(Some(16), Some(8)).unwrap();
     let (streams, resources) = tree.visible(0);
     session.replace_interests(streams, resources).unwrap();
     let old_path = session.views.keys().next().unwrap().clone();
@@ -337,12 +341,21 @@ async fn viewport_refusal_is_atomic_and_legacy_resource_retention_fails_oracle()
 
 #[test]
 fn agent_viewport_releases_output_panes_on_scroll_out() {
-    let tree = Tree::new(64);
+    let tree = Tree::new(513);
     let (session, scheduler) = client();
     let selection = |index: usize| crate::AgentSelection::new(tree.children[index].clone(), 0, 0);
     let mut client =
         crate::AgentClient::new(session.client().clone(), tree.children[0].clone(), 0, 0, 0)
             .unwrap();
+    client
+        .set_viewport(
+            selection(0),
+            (1..257).map(selection),
+            (0..257).map(|index| follow(format!("fs:/volume/selected{index}/output"))),
+        )
+        .unwrap();
+    assert_eq!(client.residency(), (771, 771, 0));
+    assert!(client.selected_agents().eq(tree.children[..257].iter()));
     client
         .set_viewport(selection(0), (1..4).map(selection), tree.visible(0).1)
         .unwrap();
@@ -385,9 +398,23 @@ async fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
             } else {
                 Vec::new()
             };
-            let follow = Subscription {
-                state: SubscriptionState::Open(Box::pin(futures::stream::iter(terminal))),
+            let interest = if resource {
+                Interest::Resource(name.as_str().into())
+            } else {
+                Interest::Stream(path.clone())
             };
+            let id = if resource {
+                session.resources[&name]
+            } else {
+                session.follows[&path]
+            };
+            let follow = Subscription {
+                id,
+                interest,
+                state: SubscriptionState::Open(Box::pin(futures::stream::iter(terminal))),
+                report_open: false,
+            };
+            session.register(follow);
             let mut context = Context::from_waker(std::task::Waker::noop());
             if resource {
                 fill(
@@ -395,12 +422,10 @@ async fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
                     None,
                 )
                 .await;
-                session.resources.insert(name.clone(), follow);
                 assert!(session.poll_resource(&name, &mut context).is_ready());
                 assert!(!session.is_resource_following(&name));
             } else {
                 fill(&mut session.views.get_mut(&path).unwrap().view, Some(&path)).await;
-                session.follows.insert(path.clone(), follow);
                 assert!(session.poll_stream(&path, &mut context).is_ready());
                 assert!(!session.is_following(&path));
             }

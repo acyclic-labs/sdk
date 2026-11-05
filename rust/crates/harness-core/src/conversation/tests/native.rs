@@ -152,7 +152,7 @@ fn native_append_failed_hash_and_growth_preserve_actual_state() -> Result<()> {
     advance_history_digest(
         head,
         &message(&content, 5),
-        acyclic_stream::MAX_RECORD_BYTES as u64,
+        Some(acyclic_stream::MAX_RECORD_BYTES as u64),
         &mut Some(&mut probe_io),
     )?;
     denied_budget = budget;
@@ -251,7 +251,8 @@ fn admitted_conversation_rebuild_observes_original_digests_and_negative_work() -
         budget,
         &cancellation,
     )?);
-    let rebuilt = ConversationState::from_wire(wire, bytes.len() as u64, &mut Some(&mut work));
+    let rebuilt =
+        ConversationState::from_wire(wire, Some(bytes.len() as u64), &mut Some(&mut work));
     let receipt = work.finish(rebuilt).map_err(|failure| failure.error)?;
     assert_eq!(receipt.value.0, original);
     assert!(receipt.work.bytes_encoded > 0);
@@ -263,7 +264,7 @@ fn admitted_conversation_rebuild_observes_original_digests_and_negative_work() -
     )?);
     let wire = crate::contract::json_from_slice(&bytes)
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let result = ConversationState::from_wire(wire, bytes.len() as u64, &mut Some(&mut work));
+    let result = ConversationState::from_wire(wire, Some(bytes.len() as u64), &mut Some(&mut work));
     let failed = work
         .finish(result)
         .expect_err("first original message hash must reject");
@@ -277,7 +278,7 @@ fn admitted_conversation_rebuild_observes_original_digests_and_negative_work() -
     cancellation.cancel();
     let wire = crate::contract::json_from_slice(&bytes)
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let result = ConversationState::from_wire(wire, bytes.len() as u64, &mut Some(&mut work));
+    let result = ConversationState::from_wire(wire, Some(bytes.len() as u64), &mut Some(&mut work));
     let failed = work
         .finish(result)
         .expect_err("cancelled reconstruction must not start");

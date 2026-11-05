@@ -118,6 +118,61 @@ fn configured_chords_defer_and_replay_the_prefix_action() -> Result<(), Box<dyn 
     press(&mut input, KeyCode::Char('g'), M::NONE, 1100);
     assert!(input.external_result(None, 1101).is_empty());
     assert_eq!(input.editor.text(), "ggzg");
+
+    let long_prefix = "g ".repeat(128);
+    let map = InputKeymap::parse(&format!(
+        r#"{{"bindings":{{"{long_prefix}e":"external-editor"}}}}"#
+    ))
+    .map_err(|errors| format!("{errors:?}"))?;
+    assert_eq!(InputKeymap::parse(&map.encode()), Ok(map.clone()));
+    input.set_keymap(map);
+    input.editor = Editor::default();
+    for at in 2000..2128 {
+        assert!(press(&mut input, KeyCode::Char('g'), M::NONE, at).is_empty());
+    }
+    assert_eq!(input.editor.text(), "");
+    let mut repeat = KeyEvent::new(KeyCode::Char('g'), M::NONE);
+    repeat.kind = acyclic_harness_tui::key_event::KeyEventKind::Repeat;
+    assert!(input.key(repeat, 2128, 80).is_empty());
+    assert_eq!(
+        press(&mut input, KeyCode::Char('e'), M::NONE, 2129),
+        vec![InputEffect::ExternalEditor]
+    );
+    assert_eq!(input.editor.text(), "");
+    for at in 3000..3128 {
+        press(&mut input, KeyCode::Char('g'), M::NONE, at);
+    }
+    assert!(input.tick(3876).is_empty());
+    assert_eq!(input.editor.text(), "");
+    assert!(input.tick(3877).is_empty());
+    assert_eq!(input.editor.text(), "g".repeat(128));
+    input.editor = Editor::default();
+    for at in 4000..4128 {
+        press(&mut input, KeyCode::Char('g'), M::NONE, at);
+    }
+    press(&mut input, KeyCode::Char('z'), M::NONE, 4128);
+    assert_eq!(input.editor.text(), format!("{}z", "g".repeat(128)));
+    input.editor = Editor::default();
+    for at in 5000..5128 {
+        press(&mut input, KeyCode::Char('g'), M::NONE, at);
+    }
+    input.set_keymap(
+        InputKeymap::parse(r#"{"bindings":{"g g":"cursor.line-start","g g e":"external-editor"}}"#)
+            .map_err(|errors| format!("{errors:?}"))?,
+    );
+    assert_eq!(input.editor.text(), "g".repeat(128));
+    press(&mut input, KeyCode::Char('g'), M::NONE, 6000);
+    press(&mut input, KeyCode::Char('g'), M::NONE, 6001);
+    assert_eq!(input.editor.cursor(), 128);
+    assert!(input.tick(6751).is_empty());
+    assert_eq!(input.editor.cursor(), 0);
+    press(&mut input, KeyCode::Char('g'), M::NONE, 7000);
+    press(&mut input, KeyCode::Char('g'), M::NONE, 7001);
+    assert_eq!(
+        press(&mut input, KeyCode::Char('e'), M::NONE, 7002),
+        vec![InputEffect::ExternalEditor]
+    );
+    assert_eq!(input.editor.text(), "g".repeat(128));
     Ok(())
 }
 

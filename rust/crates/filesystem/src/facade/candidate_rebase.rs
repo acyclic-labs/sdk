@@ -6,11 +6,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> candidates::NativeCandidateReb
         mut base: Checkout<A, O>,
         mut candidate: Checkout<A, O>,
         rename: Option<[&NamespacePath; 2]>,
-        maximum_changes: u32,
+        maximum_changes: impl Into<Option<u32>>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Option<(Checkout<A, O>, Checkout<A, O>)>, FsError> {
         let target = self.checkout;
+        let maximum_changes = maximum_changes.into();
         accounting.check()?;
         if let Some(paths) = rename
             && !target
@@ -33,7 +34,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> candidates::NativeCandidateReb
                 ours: &target.root,
                 theirs: &candidate.root,
                 maximum_changes,
-                maximum_conflicts: 1,
+                maximum_conflicts: Some(1),
                 content: crate::kernel::ContentMerge::Extents,
             },
             DecodeLimits::for_volume(target.volume.config),

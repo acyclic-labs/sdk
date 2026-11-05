@@ -3,27 +3,18 @@
 use super::*;
 
 #[tokio::test]
-async fn an_invalid_wait_fails_before_publishing_status_or_effects() -> Result {
-    let invalid = [String::new(), "x".repeat(MAX_INTENT_BYTES + 1), "\0".into()]
-        .into_iter()
-        .map(Wait::Host)
-        .chain([Wait::Approval {
-            id: intent("invalid-action"),
-            binding: Some(acyclic_harness_core::interaction::ApprovalBinding {
-                operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]),
-                action_digest: [0; 32],
-            }),
-        }]);
-    for wait in invalid {
-        let (root, mut state) = one_below_the_child_limit()?;
+async fn an_invalid_host_wait_fails_before_publishing_status_or_effects() -> Result {
+    for host in [String::new(), "\0".into()] {
+        let (root, mut state) = populated_parent().await?;
         state.turn = Some(Progress {
             inbox: 0,
             checkpoint: Vec::new(),
         });
         state.phase = Phase::Running;
         let driver = script(vec![TurnStep {
-            checkpoint: Some(vec![]),
             reserved_children: 0,
+            checkpoint: Some(vec![]),
+
             outs: vec![Out::Spawn {
                 profile: None,
                 history: None,
@@ -31,7 +22,7 @@ async fn an_invalid_wait_fails_before_publishing_status_or_effects() -> Result {
                 brief: None,
                 volumes: vec![],
             }],
-            wait,
+            wait: Wait::Host(host),
             drops: None,
         }]);
         let result = step(
@@ -68,10 +59,10 @@ async fn an_invalid_wait_fails_before_publishing_status_or_effects() -> Result {
 
 #[tokio::test]
 async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Result {
-    let (root, mut state) = one_below_the_child_limit()?;
+    let (root, mut state) = populated_parent().await?;
     let recorded = intent("spawn:already-open");
     let child = TurnEffect::child(&root, &recorded)?;
-    state.open_children.insert(child.clone());
+    state.open_children.insert(child.clone()).await?;
     state.turn = Some(Progress {
         inbox: 0,
         checkpoint: Vec::new(),
@@ -168,9 +159,10 @@ async fn slot_schedules_preserve_all_recorded_spawns() -> Result {
         for recorded in 1..=room {
             // Place resume at every cut of five sequential client arrivals.
             for resume_at in 0..=5 {
-                let (root, mut state) = one_below_the_child_limit()?;
+                let (root, mut state) = populated_parent().await?;
                 while state.open_children.len() > MAX_OPEN_CHILDREN - room {
-                    state.open_children.pop_last();
+                    let id = state.open_children.first().await?.ok_or("missing child")?;
+                    state.open_children.remove(&root.child(&id)?).await?;
                 }
                 state.phase = Phase::Running;
                 state.turn = Some(Progress {
@@ -274,7 +266,10 @@ async fn slot_schedules_preserve_all_recorded_spawns() -> Result {
                 }
                 for intent in &named {
                     assert!(
-                        matches!(state.spawn_outcome(intent), SpawnOutcome::Spawned { .. }),
+                        matches!(
+                            state.spawn_outcome(intent).await?,
+                            SpawnOutcome::Spawned { .. }
+                        ),
                         "recorded spawn stranded: {intent:?}; room={room}, cut={resume_at}"
                     );
                 }

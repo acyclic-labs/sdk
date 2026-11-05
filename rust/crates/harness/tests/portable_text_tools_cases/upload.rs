@@ -52,7 +52,6 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
         &scope,
         &volume,
         VolumeOperation::Read,
-        u64::MAX,
         &mut None,
     )?;
     let write = ContentGrant::verify(
@@ -60,7 +59,6 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
         &scope,
         &volume,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     let key = IdempotencyKey::new("original-content")?;

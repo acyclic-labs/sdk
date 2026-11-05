@@ -59,8 +59,8 @@ impl RecordedToolOutcome {
                 let value = json_value_copy_bounded(
                     &result.value,
                     JsonBounds {
-                        maximum_bytes: u64::MAX,
-                        maximum_items: io.remaining()?.items_examined,
+                        maximum_bytes: None,
+                        maximum_items: Some(io.remaining()?.items_examined),
                         maximum_depth: RECORD_MAXIMUM_DEPTH,
                     },
                     Some(crate::wire::ErrorCode::Storage),
@@ -1415,7 +1415,7 @@ impl ModelProvider for RecordedModel {
     fn bind_content(
         &self,
         reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Option<Arc<dyn ModelProvider>> {
         let live = self.live.bind_content(reader, maximum_bytes)?;
         Some(Arc::new(Self {

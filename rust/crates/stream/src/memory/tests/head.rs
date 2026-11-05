@@ -391,7 +391,82 @@ fn long_fork_chains_drop_without_recursion() -> Result<(), Box<dyn std::error::E
                         .await?;
                     source = destination;
                 }
+                for index in 0..4096 {
+                    provider
+                        .fork(ForkRequest {
+                            exclude: Vec::new(),
+                            source,
+                            destination: StreamPath::new(format!("d{index:05}/a"))?,
+                            at_tail: None,
+                            idempotency_key: IdempotencyKey::unique(),
+                        })
+                        .await?;
+                    source = StreamPath::new(format!("d{index:05}"))?;
+                }
+                // Each real fork adds a nested segment by sharing its source.
+                // Mutating the deepest inherited leaf exercises the same
+                // publication path as an ordinary append, on this small stack.
+                let deepest = StreamPath::new(format!("{}{}", source.as_str(), "/a".repeat(4096)))?;
+                provider
+                    .append(AppendRequest {
+                        path: deepest.clone(),
+                        records: vec![Bytes::from_static(b"deep").into()],
+                        if_tail: Some(1),
+                        idempotency_key: IdempotencyKey::unique(),
+                    })
+                    .await?;
+                assert_eq!(provider.tail(deepest.clone()).await?, 2);
+                let excluded = StreamPath::new("excluded")?;
+                provider
+                    .fork(ForkRequest {
+                        source: source.clone(),
+                        destination: excluded.clone(),
+                        at_tail: None,
+                        exclude: vec![crate::RelativePath::new(
+                            std::iter::repeat_n("a", 4096).collect::<Vec<_>>().join("/"),
+                        )?],
+                        idempotency_key: IdempotencyKey::unique(),
+                    })
+                    .await?;
+                assert_eq!(
+                    provider
+                        .tail(StreamPath::new(format!(
+                            "{}{}",
+                            excluded.as_str(),
+                            "/a".repeat(4096)
+                        ))?)
+                        .await,
+                    Err(StreamError::NotFound)
+                );
+                let (latest, previous) = {
+                    let state = provider.state.read().await;
+                    (
+                        state
+                            .paths
+                            .node(source.as_str())
+                            .cloned()
+                            .ok_or(StreamError::Unavailable)?,
+                        state
+                            .paths
+                            .node("c19998")
+                            .cloned()
+                            .ok_or(StreamError::Unavailable)?,
+                    )
+                };
                 drop(provider);
+                let start = std::sync::Barrier::new(2);
+                std::thread::scope(|scope| {
+                    let first = std::thread::Builder::new()
+                        .stack_size(256 * 1024)
+                        .spawn_scoped(scope, || {
+                            start.wait();
+                            drop(latest);
+                        })
+                        .map_err(|_| StreamError::Unavailable)?;
+                    start.wait();
+                    drop(previous);
+                    first.join().map_err(|_| StreamError::Unavailable)
+                })?;
                 Ok(())
             })
         })?

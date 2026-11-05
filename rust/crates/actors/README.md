@@ -84,6 +84,38 @@ explicitly restart after observing either refusal. The running dispatcher
 returns these failures to its owner, and unknown acknowledgements retain the
 original publication and participant custody.
 
+Explicit failed-input handling uses `local::Store::prepare_failed_input`: the
+original cursor advance, typed guest cause, input metadata and retained value
+are one conditional publication. Checkpoints and alarms remain at their
+previous committed values. Cancellation, producer loss and indeterminate
+external effects are not failed-input dispositions. The existing invocation
+failure path uses this same publication and includes its original terminal reply.
+
+Failures live in ordinary child streams at `Store::failures_path`. Page their
+current tails with `children_page` and `tail_stream = Some("status")`, decode
+`local::FailureEntry` with each child path, and follow the projected record's
+origin for changes. Values and headers remain in a separate
+co-committed input record, fetched only for inspection or replay. Forks exclude
+this host-owned failure subtree. Guest effects and publication participants
+cannot append within it or fork over it, including through an ancestor path.
+Only the host failure/disposition publisher contributes its records. An
+explicit `prepare_disposition` appends one
+terminal under the original failure head condition: purge retires the entry;
+replay also appends the retained input and original owner wake in that same
+commit. Competing choices conflict. Accepted invocation identities require a
+new invocation instead of replay. Retry an uncertain sealed publication with
+its original key. Physical retention remains owned by Streams. The persisted
+format is version one, with no migration path or separate queue service.
+
+The browser host projects this same decoder as `WasmActorFailure.decode`,
+using the selected child path and its canonical Streams `Record` bytes.
+`WasmActorHost.failuresPath` selects the ordinary page root, and
+`prepareDisposition` returns a canonical Streams `CommitRequest` without
+submitting it. The host checks that the failure belongs to its admitted Actor.
+Submit through the original authenticated Streams owner and retain the exact
+request bytes and key through an unknown outcome. No DLQ transport, second
+decoder or JavaScript failure format is introduced.
+
 Delivery also returns a lost claim, changed admission cut or refused checkpoint
 as `Conflict`, releasing this placement. It does not claim another epoch or
 invoke the handler again within that delivery. A new placement or explicit
@@ -277,7 +309,7 @@ and retains the original invocation/flush identity; guest packets carry no
 provider, actor, placement epoch or publication key. A hosted runtime must use
 this same materializer and native producer, not a private guest storage API.
 
-`transaction` runs synchronously. Its borrowed `get`, `put`, `entries`, journal
+`transaction` runs synchronously. Its borrowed `get`, `put`, `delete`, `entries`, journal
 append and alarm operations expire at callback return. Failure rolls back the
 callback, preserving any earlier pending transaction group. Values are copied
 at the JavaScript boundary so later caller mutation cannot alter admitted work.
@@ -334,7 +366,10 @@ prefix that makes older unversioned decoders refuse it. Its reader rejects
 version 1 and unversioned records rather than interpreting guest metadata as
 host funding. Invocation records likewise require version 2, which binds the
 original caller-owned call journal; version 1 is refused before decoding its
-payload. There is no migration or old-writer fallback. Adoption
+payload. Fork acceptance identities likewise use version 2: new forks exclude
+host failure records, and recovery selects only that version's original
+acceptance envelope. Version-1 acceptance identities are not reinterpreted with
+version-2 exclusion rules. There is no migration or old-writer fallback. Adoption
 requires a fresh state root/data generation. Metadata and the journal cut cannot
 be silently discarded by an older decoder. Older deployment validators also
 reject the new binding kind because its external capability/resource are empty.

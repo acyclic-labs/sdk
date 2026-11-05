@@ -38,7 +38,7 @@ fn decode_projection(
         return io.value_decode(value, crate::wire::ErrorCode::Invalid);
     }
     let _bytes_hold;
-    let bytes = io.encode(value, io.remaining()?.bytes_encoded, false)?;
+    let bytes = io.encode(value, Some(io.remaining()?.bytes_encoded), false)?;
     _bytes_hold = io.guard_bytes(&bytes)?;
     crate::filesystem::retain_decoded(io.decode(
         std::marker::PhantomData::<crate::model::ToolResultContent>,

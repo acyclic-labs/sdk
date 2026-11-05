@@ -7,10 +7,10 @@
 
 use super::view_ledger::{copy_work, scan_work};
 use super::{
-    ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE, MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES,
-    MountAttributeWriteMode, MountFilesystem, MountLookup, MountNodeKind, MountOpenFile, MountPath,
-    MountSourceError, NativeMountError, NativeMountRequest, ViewObserver, ViewOrigin, ViewStamp,
-    create_metadata, metadata_or, system_time_ns,
+    ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE, MountAttributeWriteMode, MountFilesystem,
+    MountLookup, MountNodeKind, MountOpenFile, MountPath, MountSourceError, NativeMountError,
+    NativeMountRequest, ViewObserver, ViewOrigin, ViewStamp, create_metadata, metadata_or,
+    system_time_ns,
 };
 use crate::kernel::{FileMetadata, MetadataField};
 use crate::{FileId, NativeAllocation, NativeMaterializationWork as Work, WorkCounters, WorkError};
@@ -27,7 +27,6 @@ use std::time::Instant;
 
 const ROOT_INODE: u64 = 1;
 const MAXIMUM_LOOKUP_CACHE_ENTRIES: usize = 65_536;
-const MAXIMUM_LISTING_RESTARTS: usize = 8;
 const MAXIMUM_VERIFIED_LABELS: usize = 4_096;
 const MAXIMUM_CALLBACK_BYTES: usize = i32::MAX as usize;
 mod callback_gate;

@@ -217,7 +217,6 @@ fn check_inner<const PLANTED: bool>(input: &[u8]) -> Result<(), FsError> {
         maximum_object_bytes: 4096,
         maximum_page_bytes: 4096,
         maximum_page_items: 32,
-        maximum_name_bytes: 256,
         ..DecodeLimits::default()
     };
     let prefix = usize::from(u16::from_le_bytes([controls[3], controls[4]]));
@@ -367,7 +366,6 @@ mod tests {
                     name: LogicalName::new(
                         NameEncoding::Utf8,
                         format!("n{number:016x}").into_bytes(),
-                        256,
                     )
                     .unwrap(),
                     file_id: FileId::from_bytes([2; 16]),
@@ -392,7 +390,7 @@ mod tests {
             _ => {
                 let binding = |parent: u8, name: String| bindings::Binding {
                     parent: FileId::from_bytes([parent; 16]),
-                    name: LogicalName::new(NameEncoding::Utf8, name.into_bytes(), 256).unwrap(),
+                    name: LogicalName::new(NameEncoding::Utf8, name.into_bytes()).unwrap(),
                 };
                 let first = binding(2, format!("n{number:016x}"));
                 let leaf = [first.clone(), binding(3, format!("p{}", payload.len()))];

@@ -1,4 +1,4 @@
-//! Canonical bounded generation-transfer manifests.
+//! Canonical generation-transfer manifests with optional caller allowances.
 
 use super::codec::{CanonicalDecodeError, Decoder, Encoder};
 use super::volume::{decode_config, encode_config};
@@ -47,22 +47,16 @@ pub enum GenerationExportManifestError {
     /// Closure must include the selected generation root.
     #[error("export manifest closure does not include its generation root")]
     MissingRoot,
-    /// Closure exceeds either the volume or caller item bound.
+    /// Closure exceeds an explicitly selected caller item allowance.
     #[error("export manifest object count exceeds its bound")]
     TooManyObjects,
-    /// File count exceeds the immutable volume bound.
-    #[error("export manifest file count exceeds its bound")]
-    TooManyFiles,
 }
 
 /// Encodes one complete manifest using a serializer-independent binary format.
 pub fn encode_generation_export_manifest(
     manifest: &GenerationExportManifest,
 ) -> Result<Vec<u8>, GenerationExportManifestError> {
-    validate_generation_export_manifest(
-        manifest,
-        manifest.config.limits.maximum_objects_per_generation,
-    )?;
+    validate_generation_export_manifest(manifest, None)?;
     let count = u32::try_from(manifest.objects.len())
         .map_err(|_| GenerationExportManifestError::TooManyObjects)?;
     let mut encoder = Encoder::new(DOMAIN, VERSION);
@@ -77,11 +71,11 @@ pub fn encode_generation_export_manifest(
     Ok(encoder.finish())
 }
 
-/// Decodes one bounded canonical complete manifest.
+/// Decodes one canonical complete manifest under optional caller allowances.
 pub fn decode_generation_export_manifest(
     bytes: &[u8],
-    maximum_bytes: u64,
-    maximum_objects: u64,
+    maximum_bytes: impl Into<Option<u64>>,
+    maximum_objects: impl Into<Option<u64>>,
 ) -> Result<GenerationExportManifest, GenerationExportManifestError> {
     decode_generation_export_manifest_observed(bytes, maximum_bytes, maximum_objects, &mut |_| {
         Ok::<_, GenerationExportManifestError>(())
@@ -90,13 +84,15 @@ pub fn decode_generation_export_manifest(
 
 pub(crate) fn decode_generation_export_manifest_observed<E>(
     bytes: &[u8],
-    maximum_bytes: u64,
-    maximum_objects: u64,
+    maximum_bytes: impl Into<Option<u64>>,
+    maximum_objects: impl Into<Option<u64>>,
     observe: &mut impl FnMut(super::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<GenerationExportManifest, E>
 where
     E: From<CanonicalDecodeError> + From<GenerationExportManifestError>,
 {
+    let maximum_bytes = maximum_bytes.into().unwrap_or_else(|| usize_to_u64(bytes.len()));
+    let maximum_objects = maximum_objects.into();
     let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, maximum_bytes, observe)?;
     let volume_id = VolumeId::from_bytes(decoder.fixed(observe)?);
     let config = decode_config(&mut decoder, observe)?
@@ -106,8 +102,7 @@ where
     let generation_id = GenerationId::from_root(generation_root);
     let file_count = decoder.u64(observe)?;
     let count = decoder.u32(observe)?;
-    let admitted = maximum_objects.min(config.limits.maximum_objects_per_generation);
-    if u64::from(count) > admitted {
+    if maximum_objects.is_some_and(|maximum| u64::from(count) > maximum) {
         return Err(GenerationExportManifestError::TooManyObjects.into());
     }
     let capacity =
@@ -140,7 +135,7 @@ where
 /// Validates bounded complete-manifest fields without backend work.
 pub fn validate_generation_export_manifest(
     manifest: &GenerationExportManifest,
-    maximum_objects: u64,
+    maximum_objects: impl Into<Option<u64>>,
 ) -> Result<(), GenerationExportManifestError> {
     validate_envelope(manifest, maximum_objects)?;
     if !manifest.objects.contains(&manifest.generation_root) {
@@ -152,7 +147,7 @@ pub fn validate_generation_export_manifest(
 // A page touches only its own slice. Full membership is authenticated once on restore.
 pub(super) fn validate_transfer_manifest(
     manifest: &GenerationExportManifest,
-    maximum_objects: u64,
+    maximum_objects: impl Into<Option<u64>>,
 ) -> Result<(), GenerationExportManifestError> {
     validate_envelope(manifest, maximum_objects)?;
     if manifest.objects.last() != Some(&manifest.generation_root) {
@@ -163,8 +158,9 @@ pub(super) fn validate_transfer_manifest(
 
 fn validate_envelope(
     manifest: &GenerationExportManifest,
-    maximum_objects: u64,
+    maximum_objects: impl Into<Option<u64>>,
 ) -> Result<(), GenerationExportManifestError> {
+    let maximum_objects = maximum_objects.into();
     manifest.config.validate()?;
     if manifest.generation_root.kind != ObjectKind::GenerationRoot {
         return Err(GenerationExportManifestError::WrongRootKind);
@@ -172,11 +168,8 @@ fn validate_envelope(
     if manifest.generation_id.object_id() != manifest.generation_root {
         return Err(GenerationExportManifestError::GenerationMismatch);
     }
-    if manifest.file_count > manifest.config.limits.maximum_files_per_generation {
-        return Err(GenerationExportManifestError::TooManyFiles);
-    }
     let count = usize_to_u64(manifest.objects.len());
-    if count > maximum_objects || count > manifest.config.limits.maximum_objects_per_generation {
+    if maximum_objects.is_some_and(|maximum| count > maximum) {
         return Err(GenerationExportManifestError::TooManyObjects);
     }
     Ok(())

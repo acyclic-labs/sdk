@@ -278,7 +278,7 @@ async fn project_hook_and_server_trust_are_independent() -> Result<()> {
 }
 
 #[tokio::test]
-async fn settings_reads_have_positive_finite_byte_bounds() -> Result<()> {
+async fn settings_preserve_complete_files_and_selected_byte_policies() -> Result<()> {
     let fixture = Fixture::new()?;
     write(&fixture.codex.join("config.toml"), b"[mcp_servers]\n")?;
     assert!(
@@ -293,6 +293,29 @@ async fn settings_reads_have_positive_finite_byte_bounds() -> Result<()> {
                 .is_err()
         );
     }
+    let document = format!(
+        "# {}\nmodel='complete'\n[mcp_servers.selected]\ncommand='server'\n",
+        "x".repeat(1_048_576)
+    );
+    write(&fixture.codex.join("config.toml"), document)?;
+    let snapshot = NativeSettings::load(fixture.config()).await?;
+    assert_eq!(executable(&snapshot.mcp, "selected"), Some("server"));
+    assert_eq!(
+        fixture.config().configured_model()?,
+        Some("openai/complete".into())
+    );
+    assert!(
+        NativeSettings::load(fixture.config().maximum_file_bytes(1_048_576))
+            .await
+            .is_err()
+    );
+    assert!(
+        fixture
+            .config()
+            .maximum_file_bytes(1_048_576)
+            .configured_model()
+            .is_err()
+    );
     write(&fixture.codex.join("config.toml"), [0xff])?;
     assert!(NativeSettings::load(fixture.config()).await.is_err());
     Ok(())

@@ -74,11 +74,7 @@ type CaptureResult = std::io::Result<
 /// What the spawn turn left: a finished result, or a running capture.
 enum Started<H: acyclic_native_runtime::CaptureHandler> {
     Finished(CaptureResult, H),
-    Running(
-        acyclic_native_runtime::TaskHandle<
-            std::io::Result<acyclic_native_runtime::CaptureOutcome<H>>,
-        >,
-    ),
+    Running(acyclic_native_runtime::ProcessCapture<H>),
     Streaming(acyclic_native_runtime::ProcessCaptureStream<H>),
 }
 
@@ -209,7 +205,7 @@ pub async fn start_capture<H: acyclic_native_runtime::CaptureHandler>(
             Started::Running(capture) => {
                 // Ownership stays with the spawned capture until process cleanup
                 // finishes, even if its awaiting task is cancelled.
-                let outcome = capture.await.and_then(|outcome| outcome).map_err(|error| {
+                let outcome = capture.await.map_err(|error| {
                     Error::Storage(format!("native process observer interrupted: {error}"))
                 })?;
                 (Ok(outcome.result), outcome.handler)
@@ -253,7 +249,7 @@ fn result(
                         CaptureStop::ControlStopped => NativeProcessStopKind::ControlStopped,
                         CaptureStop::Failed => NativeProcessStopKind::CaptureFailed,
                     },
-                    message: failure.error.to_string().chars().take(128).collect(),
+                    message: failure.error.to_string(),
                     cleanup_completed: failure.cleanup_completed,
                 }),
             }

@@ -16,7 +16,7 @@ proptest! {
         for _ in 0..depth { volume = volume.native_volume_work(budget).unwrap(); }
         let limits = crate::model::VolumeLimits::default();
         let names = names.into_iter().map(|name| LogicalName::new(
-            NameEncoding::Utf8, name.into_bytes(), limits.maximum_component_bytes,
+            NameEncoding::Utf8, name.into_bytes(),
         ).unwrap()).collect();
         let path = NamespacePath::new(names, limits).unwrap();
         let baseline = original.live_allocation_bytes();

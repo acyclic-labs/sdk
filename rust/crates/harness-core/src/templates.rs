@@ -121,7 +121,7 @@ pub(crate) async fn select(
         "",
         &path,
         None,
-        crate::conversation::MAX_EXACT_JS_INTEGER,
+        None,
         ContentAccess {
             ceiling: access.ceiling,
             io: access.io,
@@ -136,7 +136,7 @@ pub(crate) async fn select(
                     "",
                     &path,
                     None,
-                    crate::conversation::MAX_EXACT_JS_INTEGER,
+                    None,
                     ContentAccess {
                         ceiling: access.ceiling,
                         io: access.io,

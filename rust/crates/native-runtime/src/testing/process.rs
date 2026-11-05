@@ -11,7 +11,7 @@ pub struct ProcessCapture<'a> {
     /// Original capture lifetime, fixed before worker submission.
     pub schedule: crate::CaptureSchedule,
     /// Shared stdout and stderr bound.
-    pub maximum: usize,
+    pub maximum: Option<usize>,
     /// Borrows the original owned input mode and allowance without copying.
     pub input: Option<&'a OwnedCaptureInput>,
 }
@@ -97,7 +97,7 @@ mod tests {
             let capture = || ProcessCapture {
                 command: &command,
                 schedule: crate::CaptureSchedule::Unbounded,
-                maximum: 8,
+                maximum: Some(8),
                 input: None,
             };
             assert!(capture_process(capture(), &mut || Ok(()), &mut |_| Ok(ProcessInput::default())).is_none());

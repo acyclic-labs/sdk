@@ -32,20 +32,6 @@ impl InstallScope<'_> {
 }
 
 impl InputBuffers<'_, '_> {
-    fn find_charged<T>(
-        &mut self,
-        entries: impl IntoIterator<Item = T>,
-        mut matches: impl FnMut(&T) -> bool,
-    ) -> Result<Option<T>, MountSourceError> {
-        for entry in entries {
-            self.items(1)?;
-            if matches(&entry) {
-                return Ok(Some(entry));
-            }
-        }
-        Ok(None)
-    }
-
     pub(super) fn clone_namespace(
         &mut self,
         names: &[LogicalName],
@@ -55,13 +41,6 @@ impl InputBuffers<'_, '_> {
         for name in names {
             self.items(1)?;
             let bytes = self.copy_bytes(name.as_bytes())?;
-            if name.as_bytes().len() as u64 > u64::from(limits.maximum_component_bytes) {
-                return Err(MountSourceError::NamespacePath(
-                    crate::kernel::NamespacePathError::Name(
-                        crate::kernel::TreePageError::NameTooLarge,
-                    ),
-                ));
-            }
             owned.push(LogicalName::from_validated_bytes(name.encoding(), bytes));
         }
         NamespacePath::new(owned, limits).map_err(MountSourceError::NamespacePath)
@@ -81,12 +60,7 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
             crate::NativeTreeMaterializationError::InvalidLayout,
         ))?;
     let (diff, allocation) = base
-        .candidate_diff(
-            candidate,
-            MAXIMUM_EXACT_INSTALL_CHANGES,
-            &native,
-            cancellation,
-        )
+        .candidate_diff(candidate, None, &native, cancellation)
         .await?;
     let mut inputs = InputBuffers::new(carrier)?;
     let crate::kernel::KernelOwnedAllocation::NativeOriginal(mut allocation) = allocation else {
@@ -100,16 +74,6 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
         ))?
         .absorb(&mut allocation)
         .map_err(MountSourceError::NativeWork)?;
-    if diff.truncated {
-        drop(diff);
-        return Ok((
-            ViewEffect {
-                everything: true,
-                ..ViewEffect::default()
-            },
-            None,
-        ));
-    }
     let file_buffer_bytes =
         (diff.files.capacity() * std::mem::size_of::<crate::FileRecordChange>()) as u64;
     let binding_buffer_bytes =
@@ -145,14 +109,21 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
         )?;
     }
     inputs.release(binding_buffer_bytes)?;
-    let bytes = (directories.capacity() * std::mem::size_of::<(FileId, NamespacePath)>()) as u64
+    let bytes = (directories.paths.capacity() * std::mem::size_of::<(FileId, NamespacePath)>())
+        as u64
         + directories
+            .paths
             .iter()
             .map(|(_, path)| path.retained_bytes())
             .sum::<u64>();
     drop(directories);
     inputs.release(bytes)?;
     Ok((installed, inputs.retain()))
+}
+
+struct InstalledDirectories {
+    paths: Vec<(FileId, NamespacePath)>,
+    index: crate::kernel::allocation::fixed_index::FixedIndex<Option<usize>>,
 }
 
 async fn installed_directories<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -163,8 +134,15 @@ async fn installed_directories<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     inputs: &mut InputBuffers<'_, '_>,
     native: &crate::NativeMaterializationWork,
     cancellation: &CancellationToken,
-) -> Result<Vec<(FileId, NamespacePath)>, MountSourceError> {
+) -> Result<InstalledDirectories, MountSourceError> {
     let mut directories = inputs.vec::<(FileId, NamespacePath)>(bindings.len())?;
+    let mut index = crate::kernel::allocation::fixed_index::FixedIndex::default();
+    let mut accounting = crate::kernel::KernelAccounting::native(native, cancellation);
+    for binding in bindings {
+        index.get_or_try_insert_with(binding.directory_id.into_bytes(), &mut accounting, |_| {
+            Ok(None)
+        })?;
+    }
     for path in scope.paths() {
         for length in 0..=path.depth() {
             let prefix = inputs.clone_namespace(
@@ -186,22 +164,23 @@ async fn installed_directories<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     .await?
                     .record
                 {
-                    let relevant = inputs
-                        .find_charged(bindings, |binding| binding.directory_id == record.file_id)?
-                        .is_some();
-                    let known = inputs
-                        .find_charged(directories.iter(), |(file_id, _)| {
-                            *file_id == record.file_id
-                        })?
-                        .is_some();
-                    if relevant && !known {
-                        directories.push((
-                            record.file_id,
-                            inputs.clone_namespace(
-                                prefix.components(),
-                                base.volume_config().limits,
-                            )?,
-                        ));
+                    let key = record.file_id.into_bytes();
+                    if matches!(index.get(key, &mut accounting)?, Some(None)) {
+                        let path = inputs
+                            .clone_namespace(prefix.components(), base.volume_config().limits)?;
+                        let slot = directories.len();
+                        let copied = crate::WorkCounters {
+                            bytes_copied: (size_of::<(FileId, NamespacePath)>()
+                                + size_of::<Option<usize>>())
+                                as u64,
+                            ..crate::WorkCounters::UNCHARGED
+                        };
+                        accounting.admit(copied)?;
+                        let entry =
+                            index.get_or_try_insert_with(key, &mut accounting, |_| Ok(None))?;
+                        directories.push((record.file_id, path));
+                        *entry = Some(slot);
+                        accounting.record_completed(copied)?;
                     }
                 }
             }
@@ -210,12 +189,15 @@ async fn installed_directories<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             inputs.release(bytes)?;
         }
     }
-    Ok(directories)
+    Ok(InstalledDirectories {
+        paths: directories,
+        index,
+    })
 }
 
 fn install_binding_change(
     binding: crate::DirectoryBindingChange,
-    directories: &[(FileId, NamespacePath)],
+    directories: &InstalledDirectories,
     scope: InstallScope<'_>,
     limits: VolumeLimits,
     installed: &mut ViewEffect,
@@ -233,10 +215,19 @@ fn install_binding_change(
     drop(binding.before);
     drop(binding.after);
     inputs.release(history_bytes)?;
-    let directory = inputs
-        .find_charged(directories.iter(), |(file_id, _)| {
-            *file_id == binding.directory_id
-        })?
+    let native = inputs
+        .carrier
+        .original_native_work()
+        .ok_or(MountSourceError::NativeWork(
+            crate::NativeTreeMaterializationError::InvalidLayout,
+        ))?;
+    let mut accounting = crate::kernel::KernelAccounting::native(&native, native.cancellation());
+    let directory = directories
+        .index
+        .get(binding.directory_id.into_bytes(), &mut accounting)?
+        .copied()
+        .flatten()
+        .and_then(|slot| directories.paths.get(slot))
         .map(|(_, path)| path);
     match (directory, scope) {
         (Some(directory), _) => installed.names.push((

@@ -235,7 +235,7 @@ async fn large_tool_tables_split_without_losing_schemas_or_changing_the_prefix()
         )?,
         allowed()?,
     )?;
-    executor.limits.render_bytes = 65_536;
+    executor.limits.render_bytes = Some(65_536);
     let turn = input();
     let journal = Journal::default();
     executor.execute(turn.clone(), &journal).await?;
@@ -269,7 +269,7 @@ async fn large_tool_tables_split_without_losing_schemas_or_changing_the_prefix()
     executor.execute(turn, &journal).await?;
     assert_eq!(model.requests().len(), 2);
     // An allowance smaller than framing refuses instead of waiting or looping.
-    executor.limits.render_bytes = 1;
+    executor.limits.render_bytes = Some(1);
     let mut context = crate::context::Context::default();
     assert!(
         StockExecution::ordinary(&executor)
@@ -395,7 +395,7 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
             _,
             _,
             json::CodecOperation,
-        >(|| (), |()| io.encode(&larger, u64::MAX, false));
+        >(|| (), |()| io.encode(&larger, None, false));
         let redundant = redundant?;
         assert_ne!(
             codec.into_iter().chain(extra_codec).collect::<Vec<_>>(),
@@ -841,7 +841,7 @@ async fn intermediate_data_stays_in_js_and_results_use_the_admitted_render_budge
     let string_bytes = render_bytes - crate::tool::schema::json_envelope_bytes()? - 2;
     let code = format!("'x'.repeat({string_bytes})");
     let (mut boundary_executor, model, _) = executor(&code, allowed()?, true)?;
-    boundary_executor.limits.render_bytes = render_bytes as u64;
+    boundary_executor.limits.render_bytes = Some(render_bytes as u64);
     boundary_executor
         .execute(input(), &Journal::default())
         .await?;
@@ -854,7 +854,7 @@ async fn intermediate_data_stays_in_js_and_results_use_the_admitted_render_budge
         "throw new Error('x'.repeat(1000000))",
     ] {
         let (mut executor, model, echo) = executor(code, allowed()?, true)?;
-        executor.limits.render_bytes = 65_536;
+        executor.limits.render_bytes = Some(65_536);
         let journal = Journal::default();
         executor.execute(input(), &journal).await?;
         let value = result(&model);
@@ -924,12 +924,12 @@ async fn escaped_diagnostics_fit_the_remaining_page_and_retain_the_call_log() ->
     for (expression, expected) in [
         (r#"'\n'.repeat(2048)"#, "\n".repeat(2048)),
         (r#"'\u0001'.repeat(2048)"#, "\u{1}".repeat(2048)),
-        ("'💡'.repeat(2048)", "💡".repeat(1024)),
+        ("'ðŸ’¡'.repeat(2048)", "ðŸ’¡".repeat(1024)),
         (r#"'short "error"'"#, "short \"error\"".into()),
     ] {
         let code = format!("await tools['example.echo']({{value:42}}); throw {expression}");
         let (mut executor, model, echo) = executor(&code, allowed()?, true)?;
-        executor.limits.render_bytes = 4096;
+        executor.limits.render_bytes = Some(4096);
         let journal = Journal::default();
         executor.execute(input(), &journal).await?;
         let value = result(&model);
@@ -1070,7 +1070,7 @@ async fn multiple_results_reach_continuation_with_per_part_render_bounds() -> Re
         .with_token_counter(fixture_token_count),
     );
     executor.provider = model.clone();
-    executor.limits.render_bytes = 65_536;
+    executor.limits.render_bytes = Some(65_536);
     let mut turn = input();
     turn.input = ModelContent::Text("context".repeat(1000));
     let journal = Journal::default();

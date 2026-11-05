@@ -89,6 +89,8 @@ pub(crate) fn poison_borrowed_file_health(file: &File, health: &Arc<FileHealth>)
         file: file.try_clone().unwrap_or_else(|_| std::process::abort()),
         #[cfg(target_vendor = "apple")]
         device: Default::default(),
+        #[cfg(windows)]
+        completion_attached: std::sync::atomic::AtomicBool::new(false),
         _allocation: None,
     });
     poison_file_health(&anchor, health);

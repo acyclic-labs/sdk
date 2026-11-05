@@ -236,8 +236,8 @@ fn copy_approval_subject(
         let arguments = crate::executor::json::json_value_copy_bounded(
             &invocation.arguments,
             crate::executor::json::JsonBounds {
-                maximum_bytes: remaining.bytes_encoded,
-                maximum_items: remaining.items_examined,
+                maximum_bytes: Some(remaining.bytes_encoded),
+                maximum_items: Some(remaining.items_examined),
                 maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
             },
             Some(crate::wire::ErrorCode::Invalid),
@@ -575,7 +575,11 @@ impl ToolContext {
         for change in changes {
             crate::executor::with_history_io(io, |work| {
                 crate::conversation::validate_content_path(change.path(), work)?;
-                if change.path().len() > self.effective_scope().limits().path_bytes
+                if self
+                    .effective_scope()
+                    .limits()
+                    .path_bytes
+                    .is_some_and(|limit| change.path().len() > limit.get())
                     || crate::conversation::is_internal_path(change.path())
                 {
                     return Err(Error::tool_rejected(
@@ -603,7 +607,12 @@ impl ToolContext {
                 | ContentChange::UpdateExpected { bytes, .. } => bytes.len() as u64,
                 ContentChange::DeleteExpected { .. } => 0,
             };
-            if bytes > self.effective_scope().limits().file_bytes {
+            if self
+                .effective_scope()
+                .limits()
+                .file_bytes
+                .is_some_and(|limit| bytes > limit)
+            {
                 return Err(Error::tool_rejected(
                     "conditional file exceeds original task capacity",
                 ));
@@ -710,10 +719,9 @@ impl ToolContext {
         #[cfg(feature = "filesystem")]
         let maximum = io
             .map(|io| io.remaining().map(|work| work.bytes_encoded))
-            .transpose()?
-            .unwrap_or(u64::MAX);
+            .transpose()?;
         #[cfg(not(feature = "filesystem"))]
-        let maximum = u64::MAX;
+        let maximum = None;
         let (files, hold) = writer
             .observe_changes(
                 volume,
@@ -842,7 +850,11 @@ impl ToolContext {
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
         crate::executor::with_history_io(io, |history| {
             crate::conversation::validate_content_path(path, history).map_err(Error::tool_input)?;
-            if path.len() > self.effective_scope().limits().path_bytes
+            if self
+                .effective_scope()
+                .limits()
+                .path_bytes
+                .is_some_and(|maximum| path.len() > maximum.get())
                 || crate::conversation::is_internal_path(path)
             {
                 return Err(crate::store::guarded_boundary(

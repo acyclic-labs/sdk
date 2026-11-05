@@ -84,7 +84,7 @@ impl ProjFsSession {
         if let Some(runtime) = self.runtime.as_ref() {
             runtime.callbacks.close_admission();
             lock_recover(&projector.state).stopping = true;
-            projector.changed.notify_all();
+            projector.signal_changed();
             let owner = Self {
                 controller: None,
                 context: self.context.take(),

@@ -172,7 +172,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         input: &'a B,
         media_type: &'a str,
         display_name: &'a str,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
         idempotency_key: &'a IdempotencyKey,
         internal_class: Option<InternalContentClass>,
         expected_generation: Option<&'a GenerationRef>,
@@ -190,7 +190,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 path,
                 media_type,
                 display_name,
-                maximum_bytes,
+                maximum_bytes: maximum_bytes.into(),
                 idempotency_key,
                 internal_class,
                 expected_generation,
@@ -237,9 +237,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             ));
         }
         if volume.provider() != &self.provider
-            || input
-                .bytes()
-                .is_some_and(|bytes| bytes.len() as u64 > maximum_bytes)
+            || input.bytes().is_some_and(|bytes| {
+                maximum_bytes.is_some_and(|maximum| bytes.len() as u64 > maximum)
+            })
         {
             return Err(stock_boundary(
                 io,
@@ -378,16 +378,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     // Replay needs the request digest, never new content puts.
                     let mut chunk = [0; 8192];
                     loop {
-                        let remaining = maximum_bytes.checked_sub(source.length)
+                        let remaining = maximum_bytes.map(|maximum| maximum.checked_sub(source.length)
                             .ok_or_else(|| stock_boundary(io, crate::wire::ErrorCode::Invalid,
-                                "content source exceeds admitted size; recovery: supply content within the publisher's byte credit"))?;
-                        let read = source.read(&mut chunk, remaining.saturating_add(1), active_io.cancellation())
+                                "content source exceeds admitted size; recovery: supply content within the publisher's byte credit"))).transpose()?;
+                        let read_capacity = remaining.map_or(chunk.len() as u64, |remaining| remaining.saturating_add(1));
+                        let read = source.read(&mut chunk, read_capacity, active_io.cancellation())
                             .await.map_err(|error| {
                                 if active_io.cancellation().is_cancelled() { Error::Cancelled }
                                 else { Error::Storage(format!("content source read failed: {error}; recovery: recreate the complete original source and replay the same publication")) }
                             })?;
                         active_io.charge(acyclic_fs::WorkCounters { source_bytes_read: read as u64, ..Default::default() })?;
-                        if source.length > maximum_bytes {
+                        if maximum_bytes.is_some_and(|maximum| source.length > maximum) {
                             return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid,
                                 "content source exceeds admitted size; recovery: supply content within the publisher's byte credit"));
                         }
@@ -396,17 +397,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 } else {
                     let transaction = active_io.sdk(opened.begin_transaction(
                         operation, active_io, active_io.cancellation()).await)?;
-                    // Staging credit cannot exceed this volume's capacity;
-                    // the publisher's independent byte credit still applies.
-                    let staging_bytes = maximum_bytes.max(1)
-                        .min(opened.volume_config().limits.maximum_generation_bytes);
+                    // The shared blob builder enforces the original optional
+                    // source allowance and chunks independently of total size.
                     let content = active_io.sdk(transaction.stage_content(
-                        &mut source, staging_bytes, active_io, active_io.cancellation()).await)
+                        &mut source, maximum_bytes, active_io, active_io.cancellation()).await)
                         .map_err(|error| if active_io.cancellation().is_cancelled() { Error::Cancelled } else { error })?;
-                    if source.length > maximum_bytes {
-                        return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid,
-                            "content source exceeds admitted size; recovery: supply content within the publisher's byte credit"));
-                    }
                     staged = Some((transaction, content));
                 }
                 let provisional = provisional.with_content_identity(source.hash.finalize().into(), source.length)?;
@@ -426,7 +421,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let receipt_bytes = match io {
                 Some(io) => io.encode(
                     &(&provisional, expected_generation),
-                    io.remaining()?.bytes_encoded,
+                    Some(io.remaining()?.bytes_encoded),
                     true,
                 )?,
                 None => acyclic_stream::OwnedBytes::from(crate::contract::canonical_json_bytes(
@@ -440,12 +435,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let receipt_path = crate::executor::with_history_io(io, |work| {
                     crate::executor::preparation_format(format_args!("/{receipt_path}"), work)
                 })?;
-                const RECORD_BYTES: u64 = 6
-                    * (crate::conversation::MAX_PATH_BYTES as u64
-                        + 32 * crate::conversation::MAX_LABEL_BYTES as u64
-                        + 1024);
-                let original_receipt =
-                    read_generation(&prior, &receipt_path, RECORD_BYTES, io).await?;
+                let original_receipt = read_metadata(&prior, &receipt_path, io).await?;
                 let original_receipt = if internal_class.is_some() {
                     recover_internal_upload_receipt(&prior, receipt_identity, original_receipt, io)
                         .await?
