@@ -1,8 +1,6 @@
 //! Reproducible streaming-prefix and corpus invariants.
 #[path = "support/streaming_input.rs"]
 mod input;
-#[path = "support/syntax_data.rs"]
-mod syntax_data;
 use proptest::prelude::*;
 
 #[test]
@@ -11,7 +9,7 @@ fn syntax_data_preserves_bundled_grammars_and_rejects_invalid_envelopes() {
 
     let corpus = acyclic_test_support::crate_path!("fuzz/corpus/syntax_data");
     for entry in std::fs::read_dir(corpus).unwrap() {
-        syntax_data::check(&std::fs::read(entry.unwrap().path()).unwrap());
+        syntect::test_support::check_syntax_data(&std::fs::read(entry.unwrap().path()).unwrap());
     }
     let themes = ThemeSet::load_defaults();
     let theme = themes.themes.values().next().unwrap();
