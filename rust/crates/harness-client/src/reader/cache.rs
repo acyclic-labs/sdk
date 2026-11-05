@@ -1669,7 +1669,18 @@ mod tests {
                         cache.observe_tail(path, head.tail);
                         let last = head.last.as_ref().unwrap();
                         cache.note_commit(path, last.sequence, last.commit_id);
-                        cache.insert_record(path, last.sequence, last.value.clone(), Some(mark));
+                        cache.insert_record(
+                            path,
+                            last.sequence,
+                            last.value.clone(),
+                            Some(RecordEvidence {
+                                origin: last.origin.clone(),
+                                sequence: last.sequence,
+                                commit: last.commit_id,
+                                committed_at_micros: last.committed_at_micros,
+                            }),
+                            Some(mark),
+                        );
                     }
                     cache.touch_stream(&paths[newest]);
                     assert_eq!(cache.streams(), paths.len());

@@ -81,6 +81,12 @@ mod tests {
                 &path,
                 original.sequence,
                 original.value.clone(),
+                Some(crate::reader::RecordEvidence {
+                    origin: original.origin,
+                    sequence: original.sequence,
+                    commit: original.commit_id,
+                    committed_at_micros: original.committed_at_micros,
+                }),
                 None,
             );
             explorer.open(agent, 4);
