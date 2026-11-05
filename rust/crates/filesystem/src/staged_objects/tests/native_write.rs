@@ -60,13 +60,16 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
     assert!(store.index().objects.contains_key(&id));
     let collecting = store.collection.begin().await;
     let (sweep, _) = collecting.sweepable(Vec::new()).await;
-    for (publication, exit) in [
-        (false, 0),
-        (false, 1),
-        (false, 2),
-        (true, 0),
-        (true, 1),
-        (true, 2),
+    for (publication, exit, hold_spill) in [
+        (false, 0, true),
+        (false, 1, true),
+        (false, 2, true),
+        (true, 0, true),
+        (true, 1, true),
+        (true, 2, true),
+        (true, 0, false),
+        (true, 1, false),
+        (true, 2, false),
     ] {
         let caller = CancellationToken::new();
         let original_token = CancellationToken::new();
@@ -80,7 +83,11 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
             AuthorityWork::native(&original, &caller)
         };
         let closure = [id];
-        let spill = store.spill_io.write().await;
+        let spill = if hold_spill {
+            Some(store.spill_io.write().await)
+        } else {
+            None
+        };
         let mut publishing = Box::pin(async {
             if publication {
                 store
@@ -105,6 +112,13 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
                 .poll(&mut std::task::Context::from_waker(&waker))
                 .is_pending()
         );
+        if !hold_spill {
+            let mut admission = std::pin::pin!(store.collection.gate_waits.notified());
+            assert!(
+                futures::poll!(admission.as_mut()).is_ready(),
+                "publication must reach the original collection gate"
+            );
+        }
         let mut independent = AuthorityWork::new(native_write_budget(), &original_token);
         let mut read = std::pin::pin!(store.read(id, 1024, &mut independent));
         let std::task::Poll::Ready(result) = futures::poll!(read.as_mut()) else {
@@ -120,9 +134,9 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
             wake.0.load(Ordering::Relaxed),
             "cancellation must wake the writer"
         );
-        // Both original producers remain held: cancellation releases neither.
+        // The original blocking lease stays held through cancellation.
         let std::task::Poll::Ready(result) = futures::poll!(publishing.as_mut()) else {
-            panic!("a cancelled writer still waits for the spill lease");
+            panic!("a cancelled writer still waits for its original lease");
         };
         if exit == 2 {
             assert!(matches!(
