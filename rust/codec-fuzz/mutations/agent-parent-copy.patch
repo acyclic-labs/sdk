@@ -1,0 +1,10 @@
+diff --git a/rust/crates/harness-core/src/agent/layout.rs b/rust/crates/harness-core/src/agent/layout.rs
+--- a/rust/crates/harness-core/src/agent/layout.rs
++++ b/rust/crates/harness-core/src/agent/layout.rs
+@@ -212,5 +212,5 @@ impl AgentPath {
+     #[must_use]
+     pub fn is_child_of(&self, parent: &Self) -> bool {
+-        self.depth.checked_sub(1) == Some(parent.depth) && parent.contains(self)
++        self.parent().as_ref() == Some(parent)
+     }
+ 

@@ -771,7 +771,7 @@ async fn archive_cascades_in_bounded_batches_then_reports() -> Result {
     for byte in 0..40 {
         state
             .open_children
-            .insert(path.child(&AgentId::from_bytes([byte; 16]))?)
+            .insert(&path.child(&AgentId::from_bytes([byte; 16]))?)
             .await?;
     }
     let driver = script(Vec::new());
@@ -965,7 +965,7 @@ async fn populated_parent(count: usize) -> Result<(AgentPath, AgentState)> {
         bytes[..8].copy_from_slice(&(n as u64).to_le_bytes());
         state
             .open_children
-            .insert(root.child(&AgentId::from_bytes(bytes))?)
+            .insert(&root.child(&AgentId::from_bytes(bytes))?)
             .await?;
     }
     Ok((root, state))

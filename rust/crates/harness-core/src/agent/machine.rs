@@ -831,7 +831,7 @@ async fn admit(
         }
     }
     if let InboxRecord::ChildDone(done) = &record
-        && done.child.parent().as_ref() == Some(&state.path)
+        && done.child.is_child_of(&state.path)
     {
         state.open_children.remove(&done.child).await?;
         state.archive_pending.remove(&done.child).await?;
@@ -867,7 +867,7 @@ async fn admit(
 /// waits on in [`Phase::Waiting`], which resumes, through
 /// [`kernel::satisfy`], when the last needed one has. One set removal.
 async fn settle_awaited(state: &mut AgentState, child: &AgentPath) -> Result<(), Error> {
-    if child.parent().as_ref() != Some(&state.path) || !state.awaiting.remove(child).await? {
+    if !child.is_child_of(&state.path) || !state.awaiting.remove(child).await? {
         return Ok(());
     }
     state.need = state.need.saturating_sub(1);
@@ -1066,9 +1066,7 @@ async fn run<T: TurnDriver + ?Sized>(
             // only for its timeout, or continues at once without one.
             let mut open = Vec::new();
             for child in &until.awaited {
-                if child.parent().as_ref() == Some(&state.path)
-                    && state.open_children.contains(child).await?
-                {
+                if child.is_child_of(&state.path) && state.open_children.contains(child).await? {
                     open.push(child);
                 }
             }

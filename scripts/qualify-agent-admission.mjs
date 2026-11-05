@@ -4,6 +4,7 @@ import path from 'node:path';
 
 const features = 'filesystem-local,native-execution,test-support';
 const membership = 'agent::children::tests::persistent_pages_and_point_updates_match_membership_after_reopen';
+const ancestry = 'agent::layout::tests::canonical_subtree_admission_borrows_ancestry_without_parent_copies';
 const writer = 'agent::codec_fuzz::tests::writer_corpus_satisfies_the_shared_agent_oracle';
 const membershipOnly = process.argv[2] === '--membership';
 const borrowedOnly = process.argv[2] === '--borrowed';
@@ -12,49 +13,58 @@ function command(executable, args, expected, capture = false) {
   const result = spawnSync(executable, args, {encoding: 'utf8', maxBuffer: 32 * 1024 * 1024});
   const output = (result.stdout ?? '') + (result.stderr ?? '');
   const recovery = `${executable} ${args.map(arg => JSON.stringify(arg)).join(' ')}`;
+  const refused = expected;
   if (result.error || result.signal || (expected
-      ? result.status !== 101 || !output.includes(expected)
-        || !output.includes('test result: FAILED') || !output.includes('panicked at')
+      ? result.status !== 100 || !refused.every(assertion => output.includes(assertion))
+        || !output.includes(`${refused.length} ${refused.length === 1 ? 'test' : 'tests'} run: 0 passed, ${refused.length} failed`)
+        || !output.includes('panicked at')
       : result.status !== 0)) {
     process.stderr.write(output);
     throw new Error(`step=qualify agent admission; recovery=${recovery}; ${result.error ?? result.signal ?? result.status}`);
   }
-  if (expected) process.stdout.write(`Rejected production mutation: ${expected}\n`);
+  if (expected) process.stdout.write(`Rejected production mutation: ${refused.join('; ')}\n`);
   else if (!capture) process.stdout.write(output);
   return capture ? result.stdout : output;
 }
 
-function mutation(name, source, test, assertion, binary = ['--lib']) {
-  const original = readFileSync(source);
+function mutations(cases, binary = ['--lib']) {
+  const originals = new Map(cases.map(([, source]) => [source, readFileSync(source)]));
   try {
-    command('git', ['apply', `rust/codec-fuzz/mutations/${name}.patch`]);
-    command('cargo', ['test', '--locked', '-p', 'acyclic-harness-core', '--features', features,
-      ...binary, test, '--', '--exact'], assertion);
+    for (const [name] of cases) {
+      command('git', ['apply', `rust/codec-fuzz/mutations/${name}.patch`]);
+    }
+    command('cargo', ['nextest', 'run', '--locked', '--no-fail-fast', '-p', 'acyclic-harness-core', '--features', features,
+      ...binary, '-E', cases.map(([, , test]) => `test(=${test})`).join(' | ')],
+      cases.map(([, , , assertion]) => assertion));
   } finally {
-    writeFileSync(source, original);
+    for (const [source, original] of originals) writeFileSync(source, original);
   }
 }
 
 try {
   if (!borrowedOnly) {
-    mutation('agent-membership-allocation', 'rust/crates/harness-core/src/agent/children.rs', membership,
-      'cached membership lookup allocated identity or branch storage');
+    mutations([['agent-membership-allocation', 'rust/crates/harness-core/src/agent/children.rs', membership,
+      'cached membership lookup allocated identity or branch storage']]);
   }
   if (!membershipOnly) {
-    mutation('agent-membership-insert-copy', 'rust/crates/harness-core/src/agent/children.rs', membership,
-      'cached duplicate insertion copied its borrowed address');
+    mutations([
+      ['agent-membership-insert-copy', 'rust/crates/harness-core/src/agent/children.rs', membership,
+        'cached duplicate insertion copied its borrowed address'],
+      ['agent-parent-copy', 'rust/crates/harness-core/src/agent/layout.rs', ancestry,
+        'immediate parent admission copied its borrowed address'],
+    ]);
   }
   if (!membershipOnly && !borrowedOnly) {
-    mutation('agent-membership-scan', 'rust/crates/harness-core/src/agent/children.rs', membership,
-      'membership operation scanned beyond its fixed node credit');
-    mutation('agent-record-version', 'rust/crates/harness-core/src/agent/records.rs', writer,
-      'agent record header refusal changed');
-    mutation('agent-spawn-reply-read', 'rust/crates/harness-core/src/agent/host.rs',
+    mutations([['agent-membership-scan', 'rust/crates/harness-core/src/agent/children.rs', membership,
+      'membership operation scanned beyond its fixed node credit']]);
+    mutations([['agent-record-version', 'rust/crates/harness-core/src/agent/records.rs', writer,
+      'agent record header refusal changed']]);
+    mutations([['agent-spawn-reply-read', 'rust/crates/harness-core/src/agent/host.rs',
       'agent_model::runtime::a_spawn_retry_after_later_steps_names_the_same_child',
-      'request budget exceeded for control', ['--test', 'main']);
+      'request budget exceeded for control']], ['--test', 'main']);
   }
   const tests = membershipOnly ? [membership] : borrowedOnly ? [membership,
-    'agent::layout::tests::canonical_subtree_admission_borrows_ancestry_without_parent_copies',
+    ancestry,
     'agent_model::awaited_children_are_scoped_to_their_parent'] : [membership, writer,
     'agent_model::a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it',
     'agent_model::slot_schedules::admission_schedules_preserve_every_spawn_and_replay',

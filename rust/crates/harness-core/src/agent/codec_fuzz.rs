@@ -549,7 +549,7 @@ pub async fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error:
             for n in 7..9 {
                 state
                     .archive_pending
-                    .insert(state.path.child(&AgentId::from_bytes([n; 16]))?)
+                    .insert(&state.path.child(&AgentId::from_bytes([n; 16]))?)
                     .await?;
             }
             state.awaiting.clear();
