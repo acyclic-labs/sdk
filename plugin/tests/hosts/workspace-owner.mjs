@@ -11,7 +11,7 @@ export async function startWorkspaceOwner({scope,binary,workspace,state,env,root
    {cwd:workspace,env,scopeCapture:capture,scopeMountRoot:root,...(process.platform!=='win32'?{scopeReportSignal:'SIGTERM'}:{})});
  const events=new Spool(owner.child.stdout,owner.closed,
   {key:event=>event?.type==='workspace-owner-ready'?['ready']:[],unique:true});
- try{await events.keyed('ready');}
+ try{await Promise.all([owner.reportReady,events.keyed('ready')]);}
  catch(error){throw error instanceof SpoolEnded&&error.kind==='source'&&error.cause instanceof Error?error.cause:error;}
  return owner;
 }
