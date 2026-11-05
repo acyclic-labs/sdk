@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import test from "node:test";
@@ -316,10 +316,8 @@ test("macOS joins every background build on foreground and background failures",
     for (const [workspace, docs, napi] of [[0, 0, 0], [7, 0, 0], [0, 17, 0], [0, 0, 11], [7, 0, 11], [0, 17, 11]]) {
       const fixture = `${root}/${workspace}-${docs}-${napi}`;
       mkdirSync(fixture);
-      /** @type {Promise<{status: number | null, stdout: string, stderr: string, events: number}>} */
-      const run = new Promise((resolve, reject) => {
-        const child = spawn(bash, ["-c", `set -euo pipefail
-exec 3<&0
+      let events = 0;
+      const result = await runShellFixture(bash, `set -euo pipefail
 fixture='${fixture}'
 export SDK_TEMP_DIR="$fixture" CARGO_BUILD_JOBS=12
 target_dir="$fixture/target"
@@ -328,8 +326,7 @@ pinned_pi() { :; }
 native_host_contracts() { :; }
 native_binding() {
   [[ "$CARGO_BUILD_JOBS" == 2 ]]
-  IFS= read -r event <&3
-  [[ "$event" == workspace-started ]]
+  IFS= read -r event <&3 && [[ "$event" == workspace-started ]] || { echo 'step=await original workspace start: producer closed or invalid record; recovery command: node --test scripts/test-plan-qualification.mjs' >&2; return 98; }
   touch "$fixture/napi.done"; return ${napi}
 }
 nextest() { printf 'fixture-workspace-started\\n'; [[ "$CARGO_BUILD_JOBS" == 8 ]]; return ${workspace}; }
@@ -345,25 +342,16 @@ ${selection}
 ${helpers}
 ${commands}
 printf 'joined\\n'
-`], { stdio: "pipe" });
-        let stdout = "", stderr = "", released = false;
-        child.stdout.on("data", chunk => {
-          stdout += chunk.toString();
-          if (!released && stdout.split(/\r?\n/).includes("fixture-workspace-started")) {
-            released = true;
-            child.stdin.end("workspace-started\n");
+`, {
+        gates: 1, env: process.env, recovery: "node --test scripts/test-plan-qualification.mjs",
+        event(line, release) {
+          if (line === "fixture-workspace-started") {
+            events++;
+            release(0, "workspace-started");
           }
-        });
-        child.stderr.on("data", chunk => { stderr += chunk.toString(); });
-        child.stdin.on("error", reject);
-        child.on("error", reject);
-        child.on("exit", () => { if (!released) child.stdin.end(); });
-        child.on("close", status => {
-          resolve({ status, stdout, stderr, events: stdout.split(/\r?\n/).filter(line => line === "fixture-workspace-started").length });
-        });
+        },
       });
-      const result = await run;
-      assert.equal(result.events, 1, result.stderr);
+      assert.equal(events, 1, result.stderr);
       assert.equal(result.status, workspace || docs || napi, result.stderr);
       for (const name of ["napi", "x86_64"])
         assert.ok(readdirSync(fixture).includes(`${name}.done`), `${name} not joined`);
