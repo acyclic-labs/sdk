@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
+import { fixtureAuthorization } from "./credential-fixture";
 import { create, toBinary, toJsonString } from "@bufbuild/protobuf";
 import {
   ContextViewSchema,
@@ -465,7 +466,7 @@ test("HTTP lifecycle transport requires authorization and parses bounded run eve
     event: { case: "terminal", value: RunTerminal.COMPLETED },
   }));
   const fetcher: typeof fetch = async (input, init) => {
-    expect(new Headers(init?.headers).get("authorization")).toBe("Bearer test");
+    expect(new Headers(init?.headers).get("authorization")).toBe(fixtureAuthorization);
     expect(init?.redirect).toBe("error");
     const url = String(input);
     if (url.endsWith("/models/list")) {
@@ -492,7 +493,7 @@ test("HTTP lifecycle transport requires authorization and parses bounded run eve
     if (url.endsWith("/runs/watch")) return new Response(`${terminal}\n`);
     throw new Error(`unexpected route ${url}`);
   };
-  const transport = new HttpInferenceTransport("https://example.test", () => ({ authorization: "Bearer test" }), fetcher);
+  const transport = new HttpInferenceTransport("https://example.test", () => ({ authorization: fixtureAuthorization }), fetcher);
   await transport.listModels();
   await transport.createContext(create(CreateContextRequestSchema));
   await transport.inspectContext(create(InspectContextRequestSchema));
@@ -525,7 +526,7 @@ test("HTTP transport applies one byte ceiling per message without conflating net
   const request = create(WatchRunRequestSchema, { runId: bytes(4) });
   const transport = new HttpInferenceTransport(
     "https://example.test",
-    () => ({ authorization: "Bearer test" }),
+    () => ({ authorization: fixtureAuthorization }),
     async () => new Response(`${terminal}\n${terminal}\n`),
     maximumMessageBytes,
   );
@@ -548,7 +549,7 @@ test("HTTP transport applies one byte ceiling per message without conflating net
   });
   const oversized = new HttpInferenceTransport(
     "https://example.test",
-    () => ({ authorization: "Bearer test" }),
+    () => ({ authorization: fixtureAuthorization }),
     async () => new Response(stream),
     maximumMessageBytes,
   );
@@ -574,7 +575,7 @@ test("HTTP watch decodes a complete frame from its source bytes before another p
   }, { highWaterMark: 0 });
   const transport = new HttpInferenceTransport(
     "https://example.test",
-    () => ({ authorization: "Bearer test" }),
+    () => ({ authorization: fixtureAuthorization }),
     async () => new Response(stream),
   );
   const originalDecode = TextDecoder.prototype.decode;
@@ -618,7 +619,7 @@ test("HTTP watch frames adversarial one-byte network chunks linearly", async () 
   });
   const transport = new HttpInferenceTransport(
     "https://example.test",
-    () => ({ authorization: "Bearer test" }),
+    () => ({ authorization: fixtureAuthorization }),
     async () => new Response(stream),
   );
   const events = [];
@@ -635,7 +636,7 @@ test("HTTP watch rejects malformed UTF-8 frames as transport errors", async () =
   });
   const transport = new HttpInferenceTransport(
     "https://example.test",
-    () => ({ authorization: "Bearer test" }),
+    () => ({ authorization: fixtureAuthorization }),
     async () => new Response(stream),
   );
   await expect(async () => {
@@ -653,7 +654,7 @@ test("HTTP transport derives separate Rust wire and JSON ceilings", async () => 
   expect(new TextEncoder().encode(validEvent).byteLength).toBeGreaterThan(1024 * 1024);
   const valid = new HttpInferenceTransport(
     "https://example.test",
-    () => ({ authorization: "Bearer test" }),
+    () => ({ authorization: fixtureAuthorization }),
     async () => new Response(`${validEvent}\n`),
   );
   const events = [];
@@ -666,7 +667,7 @@ test("HTTP transport derives separate Rust wire and JSON ceilings", async () => 
   }));
   const oversized = new HttpInferenceTransport(
     "https://example.test",
-    () => ({ authorization: "Bearer test" }),
+    () => ({ authorization: fixtureAuthorization }),
     async () => new Response(`${oversizedEvent}\n`),
   );
   await expect(async () => {
@@ -686,7 +687,7 @@ test("HTTP transport derives separate Rust wire and JSON ceilings", async () => 
   expect(jsonBytes).toBeLessThan(MAXIMUM_HTTP_JSON_BYTES);
   const expanded = new HttpInferenceTransport(
     "https://example.test",
-    () => ({ authorization: "Bearer test" }),
+    () => ({ authorization: fixtureAuthorization }),
     async () => new Response(`${json}\n`),
   );
   const expandedEvents = [];
@@ -706,7 +707,7 @@ test("HTTP transport derives separate Rust wire and JSON ceilings", async () => 
   expect(controlJsonBytes).toBeGreaterThan(MAXIMUM_HTTP_JSON_BYTES);
   const escaped = new HttpInferenceTransport(
     "https://example.test",
-    () => ({ authorization: "Bearer test" }),
+    () => ({ authorization: fixtureAuthorization }),
     async () => new Response(`${controlJson}\n`),
   );
   await expect(async () => {
@@ -722,7 +723,7 @@ test("HTTP transport rejects insecure endpoints and bounded request, unary, and 
   let calls = 0;
   const requestBound = new HttpInferenceTransport(
     "https://example.test",
-    () => ({ authorization: "Bearer test" }),
+    () => ({ authorization: fixtureAuthorization }),
     async () => { calls += 1; return new Response("{}"); },
     32,
   );
@@ -733,7 +734,7 @@ test("HTTP transport rejects insecure endpoints and bounded request, unary, and 
 
   const unaryBound = new HttpInferenceTransport(
     "https://example.test",
-    () => ({ authorization: "Bearer test" }),
+    () => ({ authorization: fixtureAuthorization }),
     async () => new Response(" ".repeat(65)),
     64,
   );
@@ -741,14 +742,14 @@ test("HTTP transport rejects insecure endpoints and bounded request, unary, and 
 
   const malformedUnary = new HttpInferenceTransport(
     "https://example.test",
-    () => ({ authorization: "Bearer test" }),
+    () => ({ authorization: fixtureAuthorization }),
     async () => new Response(new Uint8Array([0xff])),
   );
   await expect(malformedUnary.listModels()).rejects.toThrow();
 
   const errorBound = new HttpInferenceTransport(
     "https://example.test",
-    () => ({ authorization: "Bearer test" }),
+    () => ({ authorization: fixtureAuthorization }),
     async () => new Response("x".repeat(65), { status: 400 }),
     64,
   );
@@ -756,14 +757,14 @@ test("HTTP transport rejects insecure endpoints and bounded request, unary, and 
 
   const malformedError = new HttpInferenceTransport(
     "https://example.test",
-    () => ({ authorization: "Bearer test" }),
+    () => ({ authorization: fixtureAuthorization }),
     async () => new Response(new Uint8Array([0xff]), { status: 400 }),
   );
   await expect(malformedError.listModels()).rejects.toThrow();
 
   const whitespaceBound = new HttpInferenceTransport(
     "https://example.test",
-    () => ({ authorization: "Bearer test" }),
+    () => ({ authorization: fixtureAuthorization }),
     async () => new Response(`${" ".repeat(65)}{}\n`),
     64,
   );
