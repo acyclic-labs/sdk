@@ -326,9 +326,17 @@ async fn publication_control(control: PublicationControl) -> TestResult {
                         // retain their order through publication admission.
                         std::fs::remove_file(&path).map_err(error)?;
                     }
+                    eprintln!(
+                        "original publisher before rename: {:?}",
+                        staged.as_file().metadata()
+                    );
                     let file = staged
                         .publish_retained(&path, RenameMode::Replace)
                         .map_err(error)?;
+                    eprintln!(
+                        "original publisher after rename: {:?}",
+                        file.as_file().metadata()
+                    );
                     match control {
                         PublicationControl::Altered => {
                             std::fs::write(&path, "foreign-in-place-value").map_err(error)?

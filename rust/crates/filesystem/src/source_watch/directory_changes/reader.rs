@@ -225,6 +225,17 @@ impl Shared {
                     reads.cursor = reads.filled;
                     break;
                 };
+                #[cfg(test)]
+                eprintln!(
+                    "native original notification: action={action} file={file:?} path={path:?} header={:?}",
+                    &bytes[reads.cursor
+                        ..reads.cursor
+                            + if self.extended.load(Ordering::Acquire) {
+                                std::mem::offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileName)
+                            } else {
+                                std::mem::offset_of!(FILE_NOTIFY_INFORMATION, FileName)
+                            }]
+                );
                 let paired = if action == 4 && next != 0 {
                     notification(
                         &bytes[reads.cursor + next..],
