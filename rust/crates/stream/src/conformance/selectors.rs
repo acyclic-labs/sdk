@@ -23,7 +23,7 @@ async fn selected<P: StreamProvider + ?Sized>(
             })
             .await?;
         let mut count = 0;
-        let mut upper = usize::MAX;
+        let mut upper = page as usize;
         loop {
             upper = upper.min(records.size_hint().1.unwrap_or(usize::MAX));
             let Some(record) = records.try_next().await? else {
