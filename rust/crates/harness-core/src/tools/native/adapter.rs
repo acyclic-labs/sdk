@@ -83,6 +83,23 @@ impl ToolExecutor for Adapter {
             .authorize(scope, context, &self.adapt(invocation)?, work)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn authorize_execution_grant<'a>(
+        &'a self,
+        invocation: &'a ToolInvocation,
+        context: &'a ToolContext,
+        grant: &'a acyclic_native_runtime::execution::ExecutionGrant,
+        work: crate::NativeWork<'a>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let adapted = self.adapt(invocation)?;
+            self.original
+                .executor
+                .authorize_execution_grant(&adapted, context, grant, work)
+                .await
+        })
+    }
+
     fn authorize_replay<'a>(
         &'a self,
         context: Option<&'a ToolContext>,

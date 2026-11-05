@@ -17,7 +17,7 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
         let selected = registry
             .get("shell", None, None)?
             .expect("the canonical shell remains directly callable");
-        if profile != NativeToolProfile::Openai {
+        {
             let offered = definitions(profile)?
                 .into_iter()
                 .find(|definition| definition.name == "shell")
@@ -34,9 +34,6 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
                 selected.definition.projection_schema,
                 original.projection_schema
             );
-        } else {
-            // The unmapped profile keeps the selected stock executor.
-            assert_eq!(selected.definition, original);
         }
         let expected = vec![selected.definition.clone()];
         assert_eq!(registry.definitions(None)?, expected);
