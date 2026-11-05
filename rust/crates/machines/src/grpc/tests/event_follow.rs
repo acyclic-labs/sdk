@@ -77,10 +77,12 @@ async fn event_follow_retains_cursor_and_original_terminal_over_authenticated_rp
         }
         drop(provider);
         if !terminate {
-            assert!(matches!(
-                events.next().await,
-                Some(Err(ProviderError::Unavailable))
-            ));
+            // The transport loss keeps its class and retains the original status.
+            let Some(Err(error)) = events.next().await else {
+                panic!("a follow whose server is gone must fail");
+            };
+            assert_eq!(error.classification(), &ProviderError::Unavailable);
+            assert!(std::error::Error::source(&error).is_some());
         }
         assert!(events.next().await.is_none());
         drop(events);

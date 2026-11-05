@@ -135,6 +135,11 @@ async fn machines_call_remote_pages_keep_original_cut_and_credit_without_inspect
         machines: Vec::new(),
         next: None,
     };
+    #[cfg(feature = "test-support")]
+    {
+        use prost::Message as _;
+        crate::grpc::codec_fuzz::check("acyclic.machines.v1.ResultPage", &page.encode_to_vec());
+    }
     assert!(
         decode_result_page(page.clone(), end, NonZeroU32::MIN)?
             .machines

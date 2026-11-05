@@ -284,8 +284,17 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
         let Op::Head { id, stream: path } = head else {
             panic!("snapshot must request its original head")
         };
-        reader.complete(id, Outcome::Head(provider.head(path).await.unwrap()), 0);
+        let head = provider.head(path).await.unwrap();
+        let original_head = head.last.as_ref().unwrap();
+        let expected_commit = original_head.commit_id;
+        let expected_time = original_head.committed_at_micros;
+        reader.complete(id, Outcome::Head(head), 0);
         let latest = source.latest(&reader).unwrap();
+        let evidence = latest.evidence().unwrap();
+        assert_eq!(evidence.origin, stream);
+        assert_eq!(evidence.sequence, 1);
+        assert_eq!(evidence.commit, expected_commit);
+        assert_eq!(evidence.committed_at_micros, expected_time);
         assert!(std::ptr::eq(
             latest,
             reader.cache().record(&stream, 1).unwrap()
@@ -336,6 +345,19 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
             })
             .await
             .unwrap();
+        let acyclic_stream::AppendOutcome::Committed(child_append) = provider
+            .append(AppendRequest {
+                path: child.clone(),
+                records: vec![serde_json::to_vec(&call).unwrap().into()],
+                if_tail: Some(2),
+                idempotency_key: IdempotencyKey::new(b"child-local-usage".to_vec()).unwrap(),
+            })
+            .await
+            .unwrap()
+        else {
+            panic!("original child append must commit");
+        };
+        assert_ne!(child_append.commit_id, expected_commit);
         let selected = Source::new(child.clone());
         let mut listed = Reader::new(ReaderPolicy::default()).unwrap();
         listed.plan([(
@@ -357,7 +379,7 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
         );
         assert!(listed.cache().origin_known(&child));
         assert_eq!(listed.cache().tail(&child), None);
-        let window = NonZeroU32::new(2).unwrap();
+        let window = NonZeroU32::new(3).unwrap();
         let want = selected.want_page(0, window).unwrap();
         assert_eq!(
             selected.page(&listed, 0, window).unwrap().next(),
@@ -372,22 +394,48 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
             panic!("original finite read");
         };
         let pointer = records[0].value.as_slice().as_ptr();
+        let origin_pointer = records[0].origin.as_str().as_ptr();
+        let expected_first = super::super::RecordEvidence {
+            origin: records[0].origin.clone(),
+            sequence: records[0].sequence,
+            commit: records[0].commit,
+            committed_at_micros: records[0].committed_at_micros,
+        };
+        let child_time = records[2].committed_at_micros;
         listed.complete(id, loaded, 0);
         assert_eq!(listed.cache().tail(&child), None);
+        assert_eq!(
+            listed.cache().anchor(&child, 2),
+            Some(child_append.commit_id)
+        );
         let issued = listed.issued();
         let mut page = selected.page(&listed, 0, window).unwrap();
-        assert_eq!(page.end, 2);
-        for sequence in 0..2 {
+        assert_eq!(page.end, 3);
+        for sequence in 0..3 {
             let (position, row) = page.next().unwrap();
             let row = row.unwrap();
-            assert_eq!(position, sequence);
             let original: ModelUsageRecord = serde_json::from_slice(row).unwrap();
             assert_eq!(
                 Usage::project(&admission, &original, Some(&price)).unwrap(),
                 first
             );
+            let evidence = row.evidence().unwrap();
+            assert_eq!((position, evidence.sequence), (sequence, sequence));
+            if sequence < 2 {
+                assert_eq!(
+                    evidence.origin, stream,
+                    "selected fork is not append origin"
+                );
+                assert_eq!(evidence.commit, expected_commit);
+                assert_eq!(evidence.committed_at_micros, expected_time);
+            } else {
+                assert_eq!(evidence.origin, child);
+                assert_eq!(evidence.commit, child_append.commit_id);
+                assert_eq!(evidence.committed_at_micros, child_time);
+            }
             if sequence == 0 {
                 assert_eq!(row.as_ptr(), pointer);
+                assert_eq!(evidence.origin.as_str().as_ptr(), origin_pointer);
             }
         }
         assert!(page.next().is_none());
@@ -395,6 +443,37 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
         listed.plan([(want.clone(), Priority::Visible)]);
         assert!(listed.poll(0).is_empty());
         assert_eq!(listed.issued(), issued);
+
+        let held = listed.cache().record(&child, 0).unwrap().clone();
+        let snapshot = listed.cache().snapshot();
+        let mut restored = super::super::RecordCache::new(8 * 1024 * 1024, 4096);
+        restored.restore(&snapshot).unwrap();
+        assert!(restored.record(&child, 0).unwrap().evidence().is_none());
+        assert_eq!(restored.record(&child, 0).unwrap().as_ref(), held.as_ref());
+        listed.cache_mut().set_budget(0);
+        assert_eq!(held.as_ptr(), pointer);
+        assert_eq!(held.evidence(), Some(&expected_first));
+        assert!(listed.cache().backing_bytes() > 0);
+        drop(held);
+        assert_eq!(listed.cache().backing_bytes(), 0);
+
+        // The same row is passed through when the caller grants no cache.
+        listed.plan([(want, Priority::Visible)]);
+        let [read]: [Op; 1] = listed.poll(0).try_into().unwrap();
+        let id = read.id();
+        listed.complete(id, super::super::driver::execute(&provider, read).await, 0);
+        assert_eq!(listed.cache().bytes(), 0);
+        assert_eq!(
+            selected
+                .page(&listed, 0, window)
+                .unwrap()
+                .next()
+                .unwrap()
+                .1
+                .unwrap()
+                .evidence(),
+            Some(&expected_first)
+        );
 
         // An original stream follow publishes a new source record. Its
         // unsupported layout must fail, rather than serve the previous value.

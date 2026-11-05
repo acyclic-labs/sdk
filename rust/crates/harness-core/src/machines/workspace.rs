@@ -126,7 +126,10 @@ impl MachinesWorkspace {
             .await
             // Dispatch already happened. Without a terminal receipt,
             // dropping capture cannot attest physical process retirement.
-            .map_err(|_| Error::Indeterminate(operation))?;
+            .map_err(|cause| Error::MachinesIndeterminate {
+                operation_id: operation,
+                cause,
+            })?;
         if output
             .stop
             .as_ref()

@@ -199,6 +199,37 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
                 assert!(decode_result_cursor(Some(&value)).is_err());
             }
         }
+        "acyclic.machines.v1.ResultPage" => {
+            let Ok(wire) = wire::ResultPage::decode(bytes) else {
+                return;
+            };
+            let Ok(cursor) = decode_result_cursor(wire.cursor.as_ref()) else {
+                return;
+            };
+            for credit in [NonZeroU32::MIN, NonZeroU32::MAX] {
+                if let Some(page) = project::<wire::ResultPage, _>(bytes, |value| {
+                    decode_result_page(value, cursor, credit)
+                }) {
+                    assert_eq!(page.cursor, cursor);
+                    assert!(page.machines.len() as u64 <= u64::from(credit.get()));
+                    let mut foreign = cursor;
+                    foreign.cut.operation =
+                        if cursor.cut.operation == OperationId::from_digest([9; 32]) {
+                            OperationId::from_digest([8; 32])
+                        } else {
+                            OperationId::from_digest([9; 32])
+                        };
+                    assert!(decode_result_page(wire.clone(), foreign, credit).is_err());
+                    let mut substituted = wire.clone();
+                    substituted.next = Some(cursor.into());
+                    assert!(decode_result_page(substituted, cursor, credit).is_err());
+                    if page.machines.len() > 1 {
+                        let short = NonZeroU32::new(page.machines.len() as u32 - 1).unwrap();
+                        assert!(decode_result_page(wire.clone(), cursor, short).is_err());
+                    }
+                }
+            }
+        }
         _ => {}
     }
 }
