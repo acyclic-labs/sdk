@@ -4,8 +4,10 @@
 //! runs one [`super::step`], lowers its effects into the one commit the runtime publishes
 //! with the checkpoint, and maps the step's alarm onto the actor's single alarm.
 //! A spawn's commit also creates the child's actor state at the fork cut, so the
-//! child's first delivery is its `ForkAdopted` record. There is no other timer,
-//! poller or per-agent task.
+//! child's first delivery is its `ForkAdopted` record. A step that posts to a
+//! scope channel reads the channel's membership once and wakes each member,
+//! whose inbox the same commit offers the post (see [`super::lower`]). There
+//! is no other timer, poller or per-agent task.
 
 use super::checkpoint::{checkpoint_state, codec};
 use super::{
@@ -21,7 +23,7 @@ use acyclic_actors::{
     },
     local::{PreparedPublish, Store, Subscription},
 };
-use acyclic_stream::{CommitRequest, ReadRequest, StreamProvider};
+use acyclic_stream::{CommitCondition, CommitRequest, ReadRequest, StreamProvider};
 use futures::TryStreamExt;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -223,6 +225,50 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         Ok((observed, cursor))
     }
 
+    /// The current membership of `agent`'s scope channel `channel`, and the
+    /// membership tail it was read at: every join not followed by a leave.
+    pub(super) async fn members(
+        &self,
+        agent: &AgentPath,
+        channel: &str,
+    ) -> Result<super::Members, Error> {
+        use acyclic_stream::StreamProviderExt as _;
+        let path = agent.channel_members(channel)?;
+        let provider = self.store.provider();
+        let tail = match (**provider).tail(path.clone()).await {
+            Ok(tail) => tail,
+            Err(acyclic_stream::StreamError::NotFound) => 0,
+            Err(error) => return Err(Error::Stream(error)),
+        };
+        let mut agents = BTreeSet::new();
+        let mut from = 0;
+        while from < tail {
+            let limit = u32::try_from((tail - from).min(acyclic_stream::MAX_ITEMS as u64))
+                .map_err(|_| Error::Record("membership page exceeds a read"))?;
+            let end = from + u64::from(limit);
+            let records = provider
+                .read(ReadRequest {
+                    key: None,
+                    path: path.clone(),
+                    from,
+                    limit,
+                    at_least: Default::default(),
+                })
+                .await
+                .map_err(Error::Stream)?;
+            let mut records = acyclic_stream::pages::ExactRange::new(records, from..end)
+                .map_err(Error::Stream)?;
+            while let Some(record) = records.try_next().await.map_err(Error::Stream)? {
+                match super::Membership::decode(&record.value)? {
+                    super::Membership::Joined(member) => agents.insert(member),
+                    super::Membership::Left(member) => agents.remove(&member),
+                };
+            }
+            from = end;
+        }
+        Ok(super::Members { tail, agents })
+    }
+
     /// Inbox records `[from, end)`, at most `limit`, in sequence order.
     async fn read_back(
         &self,
@@ -348,7 +394,37 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             participant => Some(super::lifecycle::close_participant(&path, participant)?),
         };
         let step = prepared.step();
-        let request = lower(step, cursor, delivery_key(&step.state, &trigger)?)?;
+        let mut channels = super::Channels {
+            members: BTreeMap::new(),
+            closing: was_open && step.state.closed,
+        };
+        for out in &step.outs {
+            if let Out::Post { channel, .. } = out
+                && !channels.members.contains_key(channel)
+            {
+                let members = self.agents.members(&path, channel).await?;
+                channels.members.insert(channel.clone(), members);
+            }
+        }
+        let mut request = lower(
+            step,
+            cursor,
+            delivery_key(&step.state, &trigger)?,
+            &channels,
+        )?;
+        // The membership each post read is a read guard: a join or leave
+        // racing this step redelivers it over the new membership.
+        let mut guards = Vec::new();
+        for channel in channels.members.keys() {
+            let members = path.channel_members(channel)?;
+            if let Some(index) = request
+                .conditions
+                .iter()
+                .position(|condition| matches!(condition, CommitCondition::Tail { path, .. } if *path == members))
+            {
+                guards.push(request.conditions.remove(index));
+            }
+        }
         let mut effects: Vec<_> = effects(request).collect();
         let spawned: BTreeSet<_> = step
             .outs
@@ -372,6 +448,14 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 Out::Archive { target, .. } => Some(target.id()),
                 _ => None,
             })
+            .chain(
+                channels
+                    .members
+                    .values()
+                    .flat_map(|members| &members.agents)
+                    .filter(|member| **member != path)
+                    .map(AgentPath::id),
+            )
             .collect();
         for agent in woken {
             effects.push(
@@ -382,6 +466,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         let alarm = step.alarm;
         Ok(Transition {
             response: None,
+            guards,
             participant,
             checkpoint: prepared.into_checkpoint(),
             alarm: match alarm {

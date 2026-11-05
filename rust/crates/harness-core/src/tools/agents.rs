@@ -1,6 +1,10 @@
 //! The agent tools of the native agent model: `spawn`, `send`, `archive` and
 //! `wait`.
 //!
+//! A scope channel is a stream every agent of the tree names alike. `spawn`
+//! joins the child to the channels it lists; `send` to `channel:<name>`
+//! posts a waking Notice that reaches every other member's inbox.
+//!
 //! `spawn`, `send` and `archive` each record exactly one effect through the
 //! turn's [`TurnEffects`] and return at once. The effect commits in the step
 //! that settles the turn, or earlier: before any later call of the same turn
@@ -54,14 +58,20 @@ pub struct SpawnAgentInput {
     /// Role file selecting the child's context and permissions: `worker` forks
     /// your settled conversation; `advisor` and `reviewer` see only the brief.
     pub role: String,
+    /// Channels of your scope the child joins: it may post to each with
+    /// `send` to `channel:<name>`, and receives every later post of the
+    /// others. You may grant only channels you are a member of.
+    #[serde(default)]
+    pub channels: Vec<String>,
 }
 
 /// Queue one message in a parent, open child or explicitly authorized peer inbox.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SendAgentInput {
-    /// Recipient: a child's name or agent path, as spawn returned them, or
-    /// the parent's agent path.
+    /// Recipient: a child's name or agent path, as spawn returned them, the
+    /// parent's agent path, or `channel:<name>` for a channel of your scope
+    /// you are a member of.
     pub agent: String,
     /// Message text.
     pub message: String,
@@ -104,6 +114,8 @@ struct Turn {
     /// when either is absent.
     templates: Option<(CreationConfig, Arc<dyn SpawnTemplates>)>,
     volumes: Vec<crate::agent::VolumeBinding>,
+    /// This agent's creation snapshot, which names its channels.
+    profile: Option<CreationConfig>,
     /// Held from a spawn's limit check through its record, so concurrent
     /// spawns of one turn see each other.
     spawning: futures::lock::Mutex<()>,
@@ -131,6 +143,8 @@ fn call_key(invocation: &ToolInvocation, context: Option<&ToolContext>) -> Strin
 
 /// Prefix of every tool spawn's intent; the rest is the child's name.
 const SPAWN: &str = "spawn:";
+/// Prefix of a `send` recipient naming a channel of the scope.
+const CHANNEL: &str = "channel:";
 
 /// The child `parent`'s `spawn` tool names `name`: the one derivation every
 /// host resolving a child by its spawn name (`wait`, `agents/<name>`) shares.
@@ -177,7 +191,20 @@ impl AgentTool {
                         "this agent has no creation template to spawn from".into(),
                     )));
                 };
-                let profile = match templates
+                let mut channels = std::collections::BTreeSet::new();
+                for channel in input.channels {
+                    // The whole membership path, so a recorded grant always lowers.
+                    if turn.agent.channel_members(&channel).is_err() {
+                        return Ok(rejected(format!("{channel} is not a channel name")));
+                    }
+                    if !self.member(&channel) {
+                        return Ok(rejected(format!(
+                            "spawn may grant only channels you are a member of, not {channel}"
+                        )));
+                    }
+                    channels.insert(channel);
+                }
+                let mut profile = match templates
                     .child(
                         parent,
                         &turn.agent,
@@ -192,6 +219,7 @@ impl AgentTool {
                     Ok(profile) => profile,
                     Err(error) => return Ok(super::rejected_input(error)),
                 };
+                profile.channels = channels;
                 // The agent's hard limit: a spawn the step would refuse is
                 // refused here, before the model is told it succeeded.
                 if !self.within(&intent, MAX_OPEN_CHILDREN).await? {
@@ -222,43 +250,82 @@ impl AgentTool {
                     Ok(input) => input,
                     Err(rejected) => return Ok(rejected),
                 };
-                let peer = || {
-                    AgentPath::try_from(input.agent.clone())
-                        .ok()
-                        .filter(|path| {
-                            context.as_ref().is_some_and(|context| {
-                                crate::agent::peer_send_allowed(
-                                    context.effective_scope().grants(),
-                                    path,
-                                )
+                if let Some(channel) = input.agent.strip_prefix(CHANNEL) {
+                    // The whole membership path, so a recorded post always lowers.
+                    if turn.agent.channel_members(channel).is_err() {
+                        return Ok(rejected(format!("{channel} is not a channel name")));
+                    }
+                    if !self.member(channel) {
+                        return Ok(rejected(format!(
+                            "send to channel:{channel} requires membership of that channel"
+                        )));
+                    }
+                    if input.message.len() as u64 > turn.maximum_bytes {
+                        return Ok(rejected("message is too large"));
+                    }
+                    let notice = crate::conversation::wire::Notice {
+                        source: format!("{CHANNEL}{channel}"),
+                        kind: "channel.post".into(),
+                        body: json!({"from": turn.agent.as_str(), "message": input.message}),
+                        wake: true,
+                        coalesce_key: None,
+                    };
+                    let notice = turn
+                        .writer
+                        .stage_once(
+                            invocation.operation_id,
+                            &format!("channels/{operation}.json"),
+                            &crate::contract::canonical_json_bytes(&notice)?,
+                            crate::agent::NOTICE_MEDIA_TYPE,
+                            "notice",
+                            ContentAccess::default(),
+                        )?
+                        .await?
+                        .0;
+                    TurnEffect::Post {
+                        channel: channel.to_owned(),
+                        id: IntentId::try_from(format!("post:{operation}")).map_err(agent)?,
+                        notice: Box::new(notice),
+                    }
+                } else {
+                    let peer = || {
+                        AgentPath::try_from(input.agent.clone())
+                            .ok()
+                            .filter(|path| {
+                                context.as_ref().is_some_and(|context| {
+                                    crate::agent::peer_send_allowed(
+                                        context.effective_scope().grants(),
+                                        path,
+                                    )
+                                })
                             })
-                        })
-                };
-                let Some(to) = self.recipient(&input.agent, true).or_else(peer) else {
-                    return Ok(rejected(
-                        "send requires a parent, open child or authorized peer inbox",
-                    ));
-                };
-                if input.message.len() as u64 > turn.maximum_bytes {
-                    return Ok(rejected("message is too large"));
-                }
-                let body = turn
-                    .writer
-                    .stage_once(
-                        invocation.operation_id,
-                        &format!("messages/{operation}.md"),
-                        input.message.as_bytes(),
-                        "text/markdown",
-                        "message",
-                        ContentAccess::default(),
-                    )?
-                    .await?
-                    .0;
-                TurnEffect::Send {
-                    delivery: input.delivery.unwrap_or_default(),
-                    to,
-                    id: IntentId::try_from(format!("send:{operation}")).map_err(agent)?,
-                    body: Box::new(body),
+                    };
+                    let Some(to) = self.recipient(&input.agent, true).or_else(peer) else {
+                        return Ok(rejected(
+                            "send requires a parent, open child or authorized peer inbox",
+                        ));
+                    };
+                    if input.message.len() as u64 > turn.maximum_bytes {
+                        return Ok(rejected("message is too large"));
+                    }
+                    let body = turn
+                        .writer
+                        .stage_once(
+                            invocation.operation_id,
+                            &format!("messages/{operation}.md"),
+                            input.message.as_bytes(),
+                            "text/markdown",
+                            "message",
+                            ContentAccess::default(),
+                        )?
+                        .await?
+                        .0;
+                    TurnEffect::Send {
+                        delivery: input.delivery.unwrap_or_default(),
+                        to,
+                        id: IntentId::try_from(format!("send:{operation}")).map_err(agent)?,
+                        body: Box::new(body),
+                    }
                 }
             }
             "archive" => {
@@ -292,6 +359,9 @@ impl AgentTool {
             }),
             TurnEffect::Send { to, .. } => json!({"sent": to.as_str(), "status": "queued"}),
             TurnEffect::Archive { target, .. } => json!({"archived": target.as_str()}),
+            TurnEffect::Post { channel, .. } => {
+                json!({"posted": format!("{CHANNEL}{channel}"), "status": "queued"})
+            }
         };
         Ok(ToolResult { value })
     }
@@ -309,6 +379,13 @@ impl AgentTool {
         }
         let child = TurnEffect::child(&turn.agent, intent).map_err(agent)?;
         Ok(open.contains(&child) || open.len() < limit)
+    }
+
+    /// Whether this turn's agent may post to and grant `channel`, by the
+    /// rule the step that lowers the post checks again.
+    fn member(&self, channel: &str) -> bool {
+        let turn = &*self.turn;
+        crate::agent::may_post(turn.parent.as_ref(), turn.profile.as_ref(), channel)
     }
 
     /// `agent` when this turn may reach it: an open child, or the parent too.
@@ -570,14 +647,14 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "spawn",
             definition::<SpawnAgentInput>(
                 "spawn",
-                "Spawn a named child from templates/<role>/AGENT.md in a fork of your volumes. The selected template chooses fresh or forked conversation; your creation template decides which templates you may spawn. Give it a self-contained task and file ownership. Returns its name and path. Its changes stay on branch agents/<name> until you merge them; use send for messages, wait for its report, and fs to inspect and merge its branch",
+                "Spawn a named child from templates/<role>/AGENT.md in a fork of your volumes. The selected template chooses fresh or forked conversation; your creation template decides which templates you may spawn. Give it a self-contained task and file ownership; channels names the channels of your scope it joins. Returns its name and path. Its changes stay on branch agents/<name> until you merge them; use send for messages, wait for its report, and fs to inspect and merge its branch",
             )?,
         ),
         (
             "send",
             definition::<SendAgentInput>(
                 "send",
-                "Queue a message for your parent, an open child (by name or path), or an explicitly authorized peer inbox; steering arrives at the next model boundary after in-flight tools settle, and follow-up starts a later turn",
+                "Queue a message for your parent, an open child (by name or path), an explicitly authorized peer inbox, or `channel:<name>` to post to every other member of a channel you belong to; steering arrives at the next model boundary after in-flight tools settle, and follow-up starts a later turn",
             )?,
         ),
         (
@@ -625,6 +702,7 @@ pub fn bind_agent_tools(
         maximum_bytes,
         templates: agent.profile.clone().zip(templates),
         volumes: agent.volumes.clone(),
+        profile: agent.profile.clone(),
         spawning: futures::lock::Mutex::new(()),
     });
     for (name, definition) in selected(names)? {

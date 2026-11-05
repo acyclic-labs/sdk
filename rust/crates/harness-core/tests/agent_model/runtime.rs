@@ -1057,6 +1057,7 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
         profile: acyclic_harness_core::agent::CreationConfig {
             context: acyclic_harness_core::agent::SpawnContext::Fork,
             template: None,
+            channels: Default::default(),
         },
         history: None,
         by: user(),
@@ -1119,6 +1120,7 @@ async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
             profile: acyclic_harness_core::agent::CreationConfig {
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
                 template: None,
+                channels: Default::default(),
             },
             history: None,
             by: user(),
@@ -1163,6 +1165,7 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
             profile: acyclic_harness_core::agent::CreationConfig {
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
                 template: None,
+                channels: Default::default(),
             },
             history: None,
             by: user(),

@@ -713,6 +713,7 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
             &settled,
             sequence + 1,
             delivery_key(&settled.state, &format!("goal-{sequence}"))?,
+            &Default::default(),
         )?;
         assert!(matches!(
             provider.commit(commit.clone()).await?,
@@ -728,6 +729,7 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
             &settled,
             sequence + 1,
             delivery_key(&settled.state, &format!("goal-{sequence}"))?,
+            &Default::default(),
         )?;
         broken.mutations.retain(|mutation| !matches!(mutation,
             acyclic_stream::CommitMutation::Append { path, .. } if path.as_str().contains("/goals/")));
@@ -754,6 +756,7 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
             &wrong,
             sequence + 1,
             delivery_key(&settled.state, &format!("goal-{sequence}"))?,
+            &Default::default(),
         )?;
         assert!(matches!(
             wrong_completion.commit(wrong).await?,
@@ -851,6 +854,7 @@ ship it
             &settled,
             sequence + 1,
             delivery_key(&settled.state, &format!("goal-{sequence}"))?,
+            &Default::default(),
         )?;
         assert!(matches!(
             provider.commit(commit).await?,

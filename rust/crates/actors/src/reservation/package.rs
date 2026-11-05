@@ -71,6 +71,7 @@ impl Handler for Package {
                 },
                 alarm: step.alarm,
                 effects: Vec::new(),
+                guards: Vec::new(),
                 participant: None,
             })
         })

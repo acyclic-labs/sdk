@@ -2335,7 +2335,12 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
         );
         assert_eq!(first.alarm, Alarm::At(CONTINUE_NOW));
         assert_eq!(model.requests().len(), 1);
-        let commit = lower(&first, 2, delivery_key(&first.state, "goal-changed")?)?;
+        let commit = lower(
+            &first,
+            2,
+            delivery_key(&first.state, "goal-changed")?,
+            &Default::default(),
+        )?;
         assert!(matches!(
             stream.commit(commit.clone()).await?,
             CommitOutcome::Committed(_)
@@ -2374,7 +2379,12 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
                 .count(),
             1
         );
-        let commit = lower(&second, 2, delivery_key(&second.state, "goal-settled")?)?;
+        let commit = lower(
+            &second,
+            2,
+            delivery_key(&second.state, "goal-settled")?,
+            &Default::default(),
+        )?;
         assert!(matches!(
             stream.commit(commit).await?,
             CommitOutcome::Committed(_)

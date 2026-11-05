@@ -264,7 +264,12 @@ async fn spawn_child(
     exclude: bool,
 ) -> Result<Step> {
     let step = spawning(state.clone(), name);
-    let mut request = lower(&step, 1, delivery_key(&step.state, name)?)?;
+    let mut request = lower(
+        &step,
+        1,
+        delivery_key(&step.state, name)?,
+        &Default::default(),
+    )?;
     for mutation in &mut request.mutations {
         if let CommitMutation::Fork { exclude: names, .. } = mutation
             && !exclude
@@ -311,7 +316,12 @@ async fn spawn_forks_the_pre_step_subtree_in_one_commit() -> Result {
         state,
     } = seeded().await?;
     let step = spawning(state, "s1");
-    let request = lower(&step, 1, delivery_key(&step.state, "t1")?)?;
+    let request = lower(
+        &step,
+        1,
+        delivery_key(&step.state, "t1")?,
+        &Default::default(),
+    )?;
     let Submitted::Committed(first) = submit(&provider, request.clone()).await? else {
         panic!("spawn did not commit");
     };
@@ -358,7 +368,12 @@ async fn spawn_is_all_or_none_and_exclusion_is_load_bearing() -> Result {
     } = seeded().await?;
     state.conversation_tail = 3;
     let stale = spawning(state.clone(), "s1");
-    let request = lower(&stale, 1, delivery_key(&stale.state, "t1")?)?;
+    let request = lower(
+        &stale,
+        1,
+        delivery_key(&stale.state, "t1")?,
+        &Default::default(),
+    )?;
     assert!(matches!(
         submit(&provider, request).await?,
         Submitted::Conflict(_)
@@ -370,7 +385,12 @@ async fn spawn_is_all_or_none_and_exclusion_is_load_bearing() -> Result {
     // Spawn s2 normally, then s3 from the advanced parent.
     state.conversation_tail = 2;
     let first = spawning(state, "s2");
-    let request = lower(&first, 1, delivery_key(&first.state, "t2")?)?;
+    let request = lower(
+        &first,
+        1,
+        delivery_key(&first.state, "t2")?,
+        &Default::default(),
+    )?;
     assert!(matches!(
         submit(&provider, request).await?,
         Submitted::Committed(_)
@@ -416,7 +436,15 @@ fn a_step_cannot_write_into_a_child_it_spawns() -> Result {
         state,
         alarm: Alarm::Clear,
     };
-    assert!(lower(&step, 1, delivery_key(&step.state, "t")?).is_err());
+    assert!(
+        lower(
+            &step,
+            1,
+            delivery_key(&step.state, "t")?,
+            &Default::default()
+        )
+        .is_err()
+    );
     Ok(())
 }
 
@@ -482,7 +510,12 @@ async fn a_checkpoint_is_indexed_with_its_append_and_inherited_at_a_spawn() -> R
     // Later turns keep the index, however many there are.
     assert_eq!(later.state.checkpoint, Some(101));
     let spawned = spawning(later.state.clone(), "s1");
-    let request = lower(&spawned, 3, delivery_key(&spawned.state, "s1")?)?;
+    let request = lower(
+        &spawned,
+        3,
+        delivery_key(&spawned.state, "s1")?,
+        &Default::default(),
+    )?;
     let adopted = request
         .mutations
         .iter()
@@ -971,6 +1004,7 @@ fn spawn_request(sequence: u64) -> Wake {
             profile: acyclic_harness_core::agent::CreationConfig {
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
                 template: None,
+                channels: Default::default(),
             },
             history: None,
             by: user(),
@@ -1190,47 +1224,59 @@ async fn a_driver_effect_no_record_can_carry_fails_the_turn_instead_of_wedging_i
     let parent = AgentPath::root(&id(1));
     let (path, state) = child_of(&parent, 2)?;
     let oversized = vec![b'x'; MAX_RECORD_BYTES + 1];
-    let driver = script(vec![TurnStep {
-        reserved_children: 0,
-        checkpoint: None,
-        outs: vec![
-            Out::Conversation(oversized),
-            Out::Conversation(b"fits".to_vec()),
-        ],
-        wait: Wait::Input,
-        drops: None,
-    }]);
-    let stepped = step(
-        &driver,
-        &path,
-        Some(state),
-        (2, 0),
-        Wake::Inbox {
-            sequence: 1,
-            record: InboxRecord::Approval(Approval { id: intent("q1") }),
-        },
-        acyclic_actors::guest::CancellationToken::new(),
-    )
-    .await?;
-    let failed = AgentOutcome::Failed {
-        message: INADMISSIBLE_EFFECT.into(),
+    // A conversation record, and a spawn whose grants its child's adoption
+    // cannot carry although each name is a valid channel path.
+    let spawn = Out::Spawn {
+        profile: Some(acyclic_harness_core::agent::CreationConfig {
+            context: acyclic_harness_core::agent::SpawnContext::Fork,
+            template: None,
+            channels: [String::from_utf8(oversized.clone())?].into(),
+        }),
+        history: None,
+        intent: intent("spawn:wide"),
+        brief: None,
+        volumes: Vec::new(),
     };
-    assert_eq!(
-        stepped.state.phase,
-        Phase::Done {
-            outcome: failed.clone()
-        }
-    );
-    assert!(
-        !stepped
-            .outs
-            .iter()
-            .any(|out| matches!(out, Out::Conversation(_)))
-    );
-    assert!(stepped.outs.iter().any(|out| matches!(
-        out,
-        Out::Send { to, record: InboxRecord::ChildDone(done) } if *to == parent && done.outcome == failed
-    )));
+    for inadmissible in [Out::Conversation(oversized), spawn] {
+        let driver = script(vec![TurnStep {
+            reserved_children: 0,
+            checkpoint: None,
+            outs: vec![inadmissible, Out::Conversation(b"fits".to_vec())],
+            wait: Wait::Input,
+            drops: None,
+        }]);
+        let stepped = step(
+            &driver,
+            &path,
+            Some(state.clone()),
+            (2, 0),
+            Wake::Inbox {
+                sequence: 1,
+                record: InboxRecord::Approval(Approval { id: intent("q1") }),
+            },
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        let failed = AgentOutcome::Failed {
+            message: INADMISSIBLE_EFFECT.into(),
+        };
+        assert_eq!(
+            stepped.state.phase,
+            Phase::Done {
+                outcome: failed.clone()
+            }
+        );
+        assert!(
+            !stepped
+                .outs
+                .iter()
+                .any(|out| matches!(out, Out::Conversation(_) | Out::Spawn { .. }))
+        );
+        assert!(stepped.outs.iter().any(|out| matches!(
+            out,
+            Out::Send { to, record: InboxRecord::ChildDone(done) } if *to == parent && done.outcome == failed
+        )));
+    }
     Ok(())
 }
 

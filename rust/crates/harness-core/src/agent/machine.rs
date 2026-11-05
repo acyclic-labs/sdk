@@ -393,6 +393,13 @@ pub enum Out {
         /// Record (never `ForkAdopted` or `Archive`).
         record: InboxRecord,
     },
+    /// Post to a channel of this agent's scope; its members' inboxes receive it.
+    Post {
+        /// Channel name.
+        channel: String,
+        /// The post.
+        post: super::ChannelPost,
+    },
     /// Archive another agent (a child).
     Archive {
         /// Target.
@@ -811,6 +818,7 @@ fn finalize_step(
             Out::Roster(digest) => state.roster = Some(*digest),
             Out::Notices(selection) => selection.consume(&mut state)?,
             Out::Send { .. }
+            | Out::Post { .. }
             | Out::Archive { .. }
             | Out::Spawn { .. }
             | Out::GoalCompleted { .. } => {}
@@ -952,8 +960,8 @@ fn settle_awaited(state: &mut AgentState, child: &AgentPath) {
     }
 }
 
-/// Whether a driver's effect fits the record that carries it.
-fn admissible(out: &Out) -> bool {
+/// Whether a driver's effect of `state` fits the record that carries it.
+fn admissible(state: &AgentState, out: &Out) -> bool {
     match out {
         Out::Steered(_) => true,
         Out::Conversation(record) => record.len() <= super::MAX_RECORD_BYTES,
@@ -963,12 +971,18 @@ fn admissible(out: &Out) -> bool {
                 InboxRecord::ForkAdopted(_) | InboxRecord::Archive(_)
             ) && super::AgentRecord::encode(record).is_ok()
         }
+        Out::Post { post, .. } => super::AgentRecord::encode(post).is_ok(),
         Out::Archive { .. }
         | Out::Checkpoint
         | Out::Roster(_)
         | Out::Notices(_)
         | Out::GoalCompleted { .. } => true,
-        Out::Spawn { volumes, .. } => super::records::check_volumes(volumes.iter()).is_ok(),
+        // The spawn's own commit, at the widest cut, so every grant and
+        // creation field its child's adoption carries fits.
+        Out::Spawn { volumes, .. } => {
+            super::records::check_volumes(volumes.iter()).is_ok()
+                && super::lower::spawned(state, out, u64::MAX, u64::MAX).is_ok()
+        }
     }
 }
 
@@ -1025,7 +1039,7 @@ async fn run<T: TurnDriver + ?Sized>(
     // The driver's effects are the step's one unchecked input: a turn
     // returning one no record can carry fails, applying none of them, so
     // the step's commit is always buildable.
-    if !turn.outs.iter().all(admissible)
+    if !turn.outs.iter().all(|out| admissible(state, out))
         || matches!(&turn.wait, Wait::Host(host) if super::records::check_text(host).is_err())
         || matches!(&turn.wait, Wait::Approval { binding: Some(binding), .. } if binding.validate().is_err())
     {

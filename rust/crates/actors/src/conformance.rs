@@ -172,6 +172,7 @@ impl Handler for Package {
                     checkpoint: checkpoint.clone(),
                     alarm: AlarmChange::Keep,
                     effects: Vec::new(),
+                    guards: Vec::new(),
                     participant: None,
                 });
             }
@@ -180,6 +181,7 @@ impl Handler for Package {
                 let step = book.step(&delivery)?;
                 return Ok(Transition {
                     response: step.response,
+                    guards: Vec::new(),
                     participant: None,
                     checkpoint: Checkpoint {
                         codec: codec(),
@@ -254,6 +256,7 @@ impl Handler for Package {
             }
             Ok(Transition {
                 response: invocation.map(|call| call.request().clone()),
+                guards: Vec::new(),
                 participant: None,
                 checkpoint: Checkpoint {
                     codec: codec(),

@@ -181,6 +181,13 @@ pub struct Transition {
     pub alarm: AlarmChange,
     /// Committed effects, never an independent best-effort dispatch path.
     pub effects: Vec<Effect>,
+    /// `Tail` or `Head` conditions on streams the handler read to compute
+    /// this transition, committed with it. When one has moved, the input the
+    /// handler read changed: the host commits nothing and delivers the same
+    /// trigger again, so the handler reads the new state. A guard may name a
+    /// stream an effect also writes, since conditions see the state before
+    /// the commit; it never names the actor's own state.
+    pub guards: Vec<CommitCondition>,
     /// One participant to join to the publication, as a request the host's
     /// [`Composer`] validates and composes; never guest-held custody.
     pub participant: Option<Participant>,

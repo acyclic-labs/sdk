@@ -72,9 +72,10 @@ pub use handler::{AgentHandler, INBOX};
 pub use host::{AgentHost, Delivered, actor_store};
 pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
 pub use layout::{
-    ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, STATUSES, TARGET_STATUS, VOLUMES,
+    ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, SCOPES, STATUSES, TARGET_STATUS,
+    VOLUMES, channel_name,
 };
-pub use lower::{delivery_key, lower};
+pub use lower::{Channels, Members, delivery_key, lower, may_post};
 pub use machine::{
     AgentState, Alarm, INADMISSIBLE_EFFECT, MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_QUEUED,
     MAX_QUEUED_BYTES, OVERSIZED_OUTCOME, OVERSIZED_STATE, Out, Progress, Queued, SpawnOutcome,
@@ -82,11 +83,11 @@ pub use machine::{
     requested_child, step,
 };
 pub use records::{
-    AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, ChildSettled, Closed,
-    ContextAction, ContextRequest, Control, CreationConfig, ForkAdopted, Hook, InboxRecord,
-    IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Message,
-    NoticePayload, Phase, RECORD_VERSION, Sender, SpawnContext, SpawnRequest, SpawnTemplates,
-    StatusRecord, UnsupportedRecordVersion, VolumeBinding, decode_record,
+    AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChannelPost, ChildDone, ChildSettled,
+    Closed, ContextAction, ContextRequest, Control, CreationConfig, ForkAdopted, Hook, InboxRecord,
+    IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Membership,
+    Message, NoticePayload, Phase, RECORD_VERSION, Sender, SpawnContext, SpawnRequest,
+    SpawnTemplates, StatusRecord, UnsupportedRecordVersion, VolumeBinding, decode_record,
 };
 pub use reply::{Reply, SteeringReply, reply};
 

@@ -1,0 +1,211 @@
+{
+  "id": "topology-group-chat-channel",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "CHAT_ROOT"
+        },
+        "tools": [
+          {
+            "id": "spawn-m2",
+            "name": "spawn",
+            "arguments": {
+              "name": "m2",
+              "task": "CHAT_M2",
+              "role": "advisor",
+              "channels": [
+                "chat"
+              ]
+            }
+          },
+          {
+            "id": "spawn-m3",
+            "name": "spawn",
+            "arguments": {
+              "name": "m3",
+              "task": "CHAT_M3",
+              "role": "advisor",
+              "channels": [
+                "chat"
+              ]
+            }
+          },
+          {
+            "id": "spawn-outsider",
+            "name": "spawn",
+            "arguments": {
+              "name": "outsider",
+              "task": "CHAT_OUTSIDER",
+              "role": "advisor"
+            }
+          },
+          {
+            "id": "spawn-m1",
+            "name": "spawn",
+            "arguments": {
+              "name": "m1",
+              "task": "CHAT_M1",
+              "role": "advisor",
+              "channels": [
+                "chat"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "CHAT_ROOT",
+          "tool_result": "m1"
+        },
+        "tools": [
+          {
+            "id": "wait-m1",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "m1",
+                "outsider"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "CHAT_ROOT",
+          "tool_result": "CHAT_M1_SENT"
+        },
+        "tools": [
+          {
+            "id": "wait-members",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "m2",
+                "m3"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "CHAT_ROOT",
+          "tool_result": "M3_HEARD"
+        },
+        "text": [
+          "CHAT_ROOT_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "CHAT_M1"
+        },
+        "tools": [
+          {
+            "id": "post",
+            "name": "send",
+            "arguments": {
+              "agent": "channel:chat",
+              "message": "CHAT_HELLO_ALL",
+              "delivery": "follow_up"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "CHAT_M1",
+          "tool_result": "queued"
+        },
+        "text": [
+          "CHAT_M1_SENT"
+        ]
+      },
+      {
+        "when": {
+          "user": "CHAT_OUTSIDER"
+        },
+        "tools": [
+          {
+            "id": "intrude",
+            "name": "send",
+            "arguments": {
+              "agent": "channel:chat",
+              "message": "CHAT_INTRUSION",
+              "delivery": "follow_up"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "CHAT_OUTSIDER",
+          "tool_result": "requires membership"
+        },
+        "text": [
+          "CHAT_OUTSIDER_REFUSED"
+        ]
+      },
+      {
+        "when": {
+          "user": "CHAT_M2"
+        },
+        "text": [
+          "M2_READY"
+        ]
+      },
+      {
+        "when": {
+          "user": "CHAT_M3"
+        },
+        "text": [
+          "M3_READY"
+        ]
+      },
+      {
+        "when": {
+          "user": "CHAT_M2",
+          "contains": "CHAT_HELLO_ALL"
+        },
+        "text": [
+          "M2_HEARD"
+        ]
+      },
+      {
+        "when": {
+          "user": "CHAT_M3",
+          "contains": "CHAT_HELLO_ALL"
+        },
+        "text": [
+          "M3_HEARD"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "CHAT_ROOT",
+      "answer": "CHAT_ROOT_DONE"
+    }
+  ],
+  "assert": {
+    "requests": 12,
+    "tool_contains": [
+      "CHAT_M1_SENT",
+      "CHAT_OUTSIDER_REFUSED",
+      "M2_HEARD",
+      "M3_HEARD"
+    ],
+    "tool_errors": [
+      "requires membership"
+    ]
+  }
+}

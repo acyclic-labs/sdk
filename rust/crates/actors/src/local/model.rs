@@ -136,6 +136,7 @@ fn script(state: &State) -> Result<Option<(Trigger, Transition)>, Failure> {
             record(0),
             Transition {
                 response: None,
+                guards: Vec::new(),
                 participant: None,
                 checkpoint: checkpoint(1),
                 alarm: AlarmChange::Set {
@@ -151,6 +152,7 @@ fn script(state: &State) -> Result<Option<(Trigger, Transition)>, Failure> {
             },
             Transition {
                 response: None,
+                guards: Vec::new(),
                 participant: None,
                 checkpoint: checkpoint(2),
                 alarm: AlarmChange::Keep,
@@ -161,6 +163,7 @@ fn script(state: &State) -> Result<Option<(Trigger, Transition)>, Failure> {
             record(1),
             Transition {
                 response: None,
+                guards: Vec::new(),
                 participant: None,
                 checkpoint: checkpoint(3),
                 alarm: AlarmChange::Clear,

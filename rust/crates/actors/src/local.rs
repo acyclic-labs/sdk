@@ -300,6 +300,8 @@ pub struct PreparedPublish {
     journal: Option<StreamPath>,
     request: CommitRequest,
     composition: Option<Box<dyn Composition>>,
+    /// Streams the handler read under a guard: a moved one redelivers.
+    guards: std::collections::BTreeSet<StreamPath>,
     sealed: bool,
     acknowledgement_unknown: bool,
     provenance: Option<Provenance<StreamPath, ForkCut>>,
@@ -377,6 +379,7 @@ impl PreparedPublish {
             call: None,
             journal: None,
             composition: None,
+            guards: std::collections::BTreeSet::new(),
             sealed: false,
             acknowledgement_unknown: false,
             provenance: None,
@@ -387,6 +390,14 @@ impl PreparedPublish {
                 idempotency_key: key,
             },
         }
+    }
+    /// Whether `conflict` is a moved read guard.
+    fn guarded(&self, conflict: &acyclic_stream::CommitConflict) -> bool {
+        matches!(
+            conflict,
+            acyclic_stream::CommitConflict::Head { .. }
+                | acyclic_stream::CommitConflict::Tail { .. }
+        ) && self.guards.contains(conflict_path(conflict))
     }
     /// The request, including the actor's own Head/Absent condition.
     pub const fn request(&self) -> &CommitRequest {
@@ -415,6 +426,21 @@ impl PreparedPublish {
             }
         }
         Ok(())
+    }
+    /// Condition the publication on `guards`, the `Tail` or `Head` cuts of
+    /// streams the handler read: when one has moved, the refusal redelivers
+    /// the trigger instead of failing it.
+    pub fn guard(&mut self, guards: Vec<CommitCondition>) -> Result<(), Error> {
+        for guard in &guards {
+            if !matches!(
+                guard,
+                CommitCondition::Tail { .. } | CommitCondition::Head { .. }
+            ) {
+                return Err(Error::Invalid("a read guard is a tail or head cut"));
+            }
+            self.guards.insert(condition_path(guard).clone());
+        }
+        self.require(guards)
     }
     /// Add one participant, keeping conditions canonical (one per path, sorted)
     /// and merging appends to the same path in order. The actor's own state
@@ -1000,6 +1026,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             ),
         };
         let mut prepared = self.prepare(previous, state, transition.effects, key)?;
+        prepared.guard(transition.guards)?;
         prepared.call = call.map(|call| (call, trigger.clone()));
         prepared.composition = composition;
         Ok(prepared)
@@ -1129,17 +1156,20 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     Ok(CommitOutcome::Committed(receipt)) => prepared.retained(receipt),
                     Ok(CommitOutcome::Conflict(_)) | Err(_) => Ok(None),
                 };
-                let revalidate = match (&outcome, &prepared.composition) {
-                    (Ok(CommitOutcome::Conflict(conflicts)), Some(composition)) => {
-                        conflicts.iter().all(|conflict| {
-                            let path = match conflict {
-                                acyclic_stream::CommitConflict::Missing { path }
-                                | acyclic_stream::CommitConflict::Head { path, .. }
-                                | acyclic_stream::CommitConflict::Tail { path, .. }
-                                | acyclic_stream::CommitConflict::Exists { path } => path,
-                            };
-                            prepared.own.as_ref() != Some(path)
-                        }) && composition.revalidate(conflicts)
+                // A moved read guard means an input the handler read has
+                // changed: the refusal is the wake, and the delivery runs
+                // again over the new input. Every other refusal stays a
+                // failure.
+                let revalidate = match &outcome {
+                    Ok(CommitOutcome::Conflict(conflicts)) if !conflicts.is_empty() => {
+                        conflicts
+                            .iter()
+                            .all(|conflict| prepared.own.as_ref() != Some(conflict_path(conflict)))
+                            && (conflicts.iter().all(|conflict| prepared.guarded(conflict))
+                                || prepared
+                                    .composition
+                                    .as_ref()
+                                    .is_some_and(|composition| composition.revalidate(conflicts)))
                     }
                     _ => false,
                 };
@@ -1194,6 +1224,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             call: None,
             journal: None,
             composition: None,
+            guards: std::collections::BTreeSet::new(),
             sealed: false,
             acknowledgement_unknown: false,
             provenance: previous.provenance.clone(),
@@ -1227,6 +1258,15 @@ fn mutation_targets(mutation: &CommitMutation, path: &StreamPath) -> bool {
     match mutation {
         CommitMutation::Fork { destination, .. } => covers(destination, path),
         mutation => mutation.path() == path,
+    }
+}
+
+const fn conflict_path(conflict: &acyclic_stream::CommitConflict) -> &StreamPath {
+    match conflict {
+        acyclic_stream::CommitConflict::Missing { path }
+        | acyclic_stream::CommitConflict::Head { path, .. }
+        | acyclic_stream::CommitConflict::Tail { path, .. }
+        | acyclic_stream::CommitConflict::Exists { path } => path,
     }
 }
 

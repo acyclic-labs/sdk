@@ -450,6 +450,7 @@ mod tests {
             profile: Some(crate::agent::CreationConfig {
                 context: crate::agent::SpawnContext::TopLevel,
                 template: Some(file()),
+                channels: Default::default(),
             }),
             agent: id(u64::MAX),
             parent: Some(agent(MAX_DEPTH - 1)),
@@ -510,6 +511,7 @@ mod tests {
                 profile: crate::agent::CreationConfig {
                     context: crate::agent::SpawnContext::TopLevel,
                     template: Some(file()),
+                    channels: Default::default(),
                 },
                 history: Some(crate::agent::HistorySelection {
                     conversation: u64::MAX,

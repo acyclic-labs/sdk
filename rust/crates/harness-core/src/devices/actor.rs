@@ -432,6 +432,7 @@ impl<P: StreamProvider + ?Sized + 'static> Handler for TargetActor<P> {
                 .map_err(guest)?;
             Ok(Transition {
                 response,
+                guards: Vec::new(),
                 participant: Some(Participant {
                     kind: HANDOVER.into(),
                     plan: bytes::Bytes::new(),

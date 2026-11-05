@@ -295,6 +295,7 @@ impl Handler for Package {
                 },
                 alarm: AlarmChange::Keep,
                 effects,
+                guards: Vec::new(),
                 participant: None,
             })
         })
@@ -761,6 +762,7 @@ impl Handler for Held {
                 },
                 alarm: AlarmChange::Keep,
                 effects: Vec::new(),
+                guards: Vec::new(),
                 participant: None,
             })
         })

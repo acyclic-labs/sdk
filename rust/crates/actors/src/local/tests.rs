@@ -702,6 +702,7 @@ fn key(value: &str) -> Result<IdempotencyKey, StreamError> {
 fn transition(value: u8, alarm: AlarmChange) -> Transition {
     Transition {
         response: None,
+        guards: Vec::new(),
         participant: None,
         checkpoint: Checkpoint {
             codec: CodecIdentity {
@@ -1253,5 +1254,82 @@ async fn state_transaction_flush_is_one_durable_fenced_journal_commit() -> TestR
     );
     assert!(binding.read_journal(2, 1).await?.is_empty());
     assert!(binding.read_journal(3, 1).await.is_err());
+    Ok(())
+}
+
+/// A moved read guard redelivers, committing nothing, even on a stream an
+/// effect also writes; a moved effect condition stays a conflict. A fresh
+/// guard commits.
+#[tokio::test]
+async fn moved_read_guards_revalidate_and_effect_conditions_conflict() -> TestResult {
+    let store = Store::new(Arc::new(MemoryStream::default()), state_root()?);
+    let address = actor("guards")?;
+    place(&store, &address).await?;
+    let members = StreamPath::new("scope/channels/c/members")?;
+    let channel = StreamPath::new("scope/channels/c")?;
+    let append = |path: &StreamPath| CommitMutation::Append {
+        path: path.clone(),
+        records: vec![Bytes::from_static(b"r").into()],
+    };
+    store
+        .provider()
+        .commit(CommitRequest {
+            deadline_unix_millis: None,
+            conditions: Vec::new(),
+            mutations: vec![append(&members), append(&channel)],
+            idempotency_key: key("moved")?,
+        })
+        .await?;
+    let tail = |path: &StreamPath, expected| CommitCondition::Tail {
+        path: path.clone(),
+        expected,
+    };
+    // Guard the membership it also joins, and post to the channel.
+    let guarded = |expected: u64| {
+        let mut guarded = transition(1, AlarmChange::Keep);
+        guarded.effects = vec![
+            Effect {
+                conditions: Vec::new(),
+                mutation: append(&members),
+            },
+            Effect {
+                conditions: Vec::new(),
+                mutation: append(&channel),
+            },
+        ];
+        guarded.guards = vec![tail(&members, expected)];
+        guarded
+    };
+    let before = store.load(&address).await?;
+    assert!(matches!(
+        store
+            .publish(&before, 1, &record(0), None, guarded(0), key("stale")?)
+            .await,
+        Err(Error::PreconditionChanged)
+    ));
+    let mut conditioned = transition(1, AlarmChange::Keep);
+    conditioned.effects = vec![Effect {
+        conditions: vec![tail(&channel, 0)],
+        mutation: append(&channel),
+    }];
+    assert!(matches!(
+        store
+            .publish(&before, 1, &record(0), None, conditioned, key("effect")?)
+            .await,
+        Err(Error::Conflict)
+    ));
+    let unchanged = store.load(&address).await?;
+    assert_eq!(
+        unchanged.state().and_then(|state| state.cursor("inbox")),
+        Some(0)
+    );
+    store
+        .publish(&unchanged, 1, &record(0), None, guarded(1), key("fresh")?)
+        .await?;
+    let published = store.load(&address).await?;
+    assert_eq!(
+        published.state().and_then(|state| state.cursor("inbox")),
+        Some(1)
+    );
     Ok(())
 }

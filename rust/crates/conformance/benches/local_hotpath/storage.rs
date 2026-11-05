@@ -462,6 +462,7 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>) 
             },
             alarm: AlarmChange::Keep,
             effects: Vec::new(),
+            guards: Vec::new(),
             participant: None,
         };
         if index == 0 {

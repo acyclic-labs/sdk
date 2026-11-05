@@ -73,6 +73,7 @@ pub fn root() -> Result<CreationConfig> {
     Ok(CreationConfig {
         context: root.context,
         template: None,
+        channels: Default::default(),
     })
 }
 
@@ -164,6 +165,7 @@ pub(crate) async fn select(
     Ok(CreationConfig {
         context: creation.context,
         template: Some(file),
+        channels: Default::default(),
     })
 }
 

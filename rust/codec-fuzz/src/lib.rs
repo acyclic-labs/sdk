@@ -616,6 +616,7 @@ pub fn actor_seeds()
         checkpoint,
         alarm: guest::AlarmChange::Keep,
         effects: effects.into(),
+        guards: Vec::new(),
         participant: None,
     };
     for (name, alarm) in [
@@ -1154,6 +1155,7 @@ async fn actor_alarm_seeds()
                     checkpoint: checkpoint.clone(),
                     alarm,
                     effects: Vec::new(),
+                    guards: Vec::new(),
                     participant: None,
                 },
                 IdempotencyKey::unique(),

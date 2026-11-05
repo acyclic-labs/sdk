@@ -1,8 +1,8 @@
 //! Oracles over the actual retained agent record and checkpoint codecs.
 use super::{
-    AgentId, AgentPath, AgentRecord, AgentState, Closed, ConversationEntry, ForkAdopted,
-    HistoryCheckpoint, InboxRecord, IntentId, Phase, Progress, Sender, StatusRecord, TurnEffect,
-    checkpoint, records,
+    AgentId, AgentPath, AgentRecord, AgentState, ChannelPost, Closed, ConversationEntry,
+    ForkAdopted, HistoryCheckpoint, InboxRecord, IntentId, Membership, Phase, Progress, Sender,
+    StatusRecord, TurnEffect, checkpoint, records,
 };
 
 fn record<T: AgentRecord + std::fmt::Debug + PartialEq>(bytes: &[u8]) {
@@ -187,6 +187,8 @@ pub fn check(bytes: &[u8]) {
     }
     record::<StatusRecord>(bytes);
     record::<Closed>(bytes);
+    record::<ChannelPost>(bytes);
+    record::<Membership>(bytes);
     record::<ConversationEntry>(bytes);
     if let Ok(effect) = records::open::<TurnEffect>(bytes) {
         let encoded = records::seal(&effect).expect("admitted effect encodes");
@@ -375,6 +377,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
         profile: super::CreationConfig {
             context: super::SpawnContext::Fork,
             template: Some(file.clone()),
+            channels: Default::default(),
         },
         history: Some(super::HistorySelection {
             conversation: 23,
@@ -382,6 +385,59 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
         }),
     });
     seeds.push(("spawn-history", written(&spawn)?));
+    // A channel post, its membership, and a creation that joins channels.
+    let notice = crate::conversation::FileRef::new(
+        volume.clone(),
+        "channels/post.json".into(),
+        "captured-revision".into(),
+        crate::conversation::FileDescriptor::new([23; 32], 41, super::NOTICE_MEDIA_TYPE.into())?,
+        "notice".into(),
+        &mut None,
+    )?;
+    let post_id = IntentId::try_from("post:captured")?;
+    seeds.push((
+        "channel-post",
+        written(&ChannelPost {
+            from: state.path.clone(),
+            id: post_id.clone(),
+            notice: Box::new(notice.clone()),
+        })?,
+    ));
+    seeds.push((
+        "channel-post-effect",
+        records::seal(&TurnEffect::Post {
+            channel: "chat".into(),
+            id: post_id,
+            notice: Box::new(notice),
+        })?,
+    ));
+    seeds.push((
+        "channel-joined",
+        written(&Membership::Joined(state.path.clone()))?,
+    ));
+    seeds.push((
+        "channel-left",
+        written(&Membership::Left(state.path.clone()))?,
+    ));
+    let joining = ForkAdopted {
+        profile: Some(super::CreationConfig {
+            context: super::SpawnContext::Fresh,
+            template: Some(file.clone()),
+            channels: ["chat".to_owned(), "review".to_owned()].into(),
+        }),
+        agent: AgentId::from_bytes([8; 16]),
+        parent: Some(state.path.clone()),
+        forked_at: 0,
+        conversation_tail: 0,
+        checkpoint: None,
+        volumes: Vec::new(),
+        brief: None,
+        policy: None,
+    };
+    seeds.push((
+        "adopted-channels",
+        written(&InboxRecord::ForkAdopted(Box::new(joining)))?,
+    ));
     // Capture every named/positional combination at the two struct boundaries
     // used by the independent history projection. All fields come from the
     // same typed record and every byte goes through the actual record writer.

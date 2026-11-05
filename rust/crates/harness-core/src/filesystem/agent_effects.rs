@@ -234,6 +234,7 @@ mod tests {
                 profile: crate::agent::CreationConfig {
                     context: crate::agent::SpawnContext::Fork,
                     template: None,
+                    channels: Default::default(),
                 },
             })
         };

@@ -209,6 +209,7 @@ impl Handler for SocketPackage {
             journal.published += 1;
             Ok(Transition {
                 response,
+                guards: Vec::new(),
                 participant: None,
                 checkpoint: Checkpoint {
                     codec: codec(),

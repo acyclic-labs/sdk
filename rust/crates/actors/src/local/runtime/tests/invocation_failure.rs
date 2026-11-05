@@ -326,6 +326,7 @@ impl Handler for HidesFailure {
                         .clone(),
                     alarm: AlarmChange::Keep,
                     effects: Vec::new(),
+                    guards: Vec::new(),
                     participant: None,
                 }),
             }

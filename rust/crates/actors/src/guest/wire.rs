@@ -130,6 +130,9 @@ struct TransitionWire {
     participant: Option<ParticipantWire>,
     #[prost(bytes = "bytes", optional, tag = "9")]
     response: Option<Bytes>,
+    /// Read guards: conditions only, keyed like the effects.
+    #[prost(message, optional, tag = "11")]
+    guards: Option<wire::CommitRequest>,
 }
 
 #[derive(Clone, PartialEq, prost::Oneof)]
@@ -377,6 +380,14 @@ pub fn encode_transition(transition: &Transition) -> Result<Vec<u8>, GuestError>
         effects.conditions.extend(effect.conditions.iter().cloned());
         effects.mutations.push(effect.mutation.clone());
     }
+    let guards = (!transition.guards.is_empty()).then(|| {
+        wire_codec::commit_to_wire(&CommitRequest {
+            deadline_unix_millis: None,
+            conditions: transition.guards.clone(),
+            mutations: Vec::new(),
+            idempotency_key: effects.idempotency_key.clone(),
+        })
+    });
     Ok(encode(
         &TransitionWire {
             response: transition.response.clone(),
@@ -387,6 +398,7 @@ pub fn encode_transition(transition: &Transition) -> Result<Vec<u8>, GuestError>
                 AlarmChange::Clear => AlarmWire::Clear(true),
             }),
             effects: Some(wire_codec::commit_to_wire(&effects)),
+            guards,
             participant: transition
                 .participant
                 .as_ref()
@@ -419,6 +431,20 @@ pub fn decode_transition(bytes: &[u8]) -> Result<Transition, GuestError> {
         return Err(invalid("effects"));
     }
     let effects = wire_codec::commit_from_wire(effects).map_err(|_| invalid("effects"))?;
+    let guards = match wire.guards {
+        None => Vec::new(),
+        Some(guards)
+            if guards.idempotency_key.as_ref() == EFFECTS_KEY
+                && guards.deadline_unix_millis.is_none()
+                && guards.mutations.is_empty()
+                && !guards.conditions.is_empty() =>
+        {
+            wire_codec::commit_from_wire(guards)
+                .map_err(|_| invalid("guards"))?
+                .conditions
+        }
+        Some(_) => return Err(invalid("guards")),
+    };
     let mut conditions = Some(effects.conditions);
     Ok(Transition {
         response: wire.response,
@@ -432,6 +458,7 @@ pub fn decode_transition(bytes: &[u8]) -> Result<Transition, GuestError> {
                 mutation,
             })
             .collect(),
+        guards,
         participant: wire.participant.map(|participant| Participant {
             kind: participant.kind,
             plan: participant.plan,
@@ -508,11 +535,21 @@ mod tests {
                     records: vec![Bytes::from_static(b"record").into()],
                 },
             }],
+            guards: vec![CommitCondition::Tail {
+                path: StreamPath::new("scope/channels/c/members")?,
+                expected: 2,
+            }],
             participant: Some(Participant {
                 kind: "spawn".into(),
                 plan: Bytes::from_static(b"plan"),
             }),
         })
+    }
+
+    fn admitted_effects(bytes: &[u8]) -> Result<wire::CommitRequest, GuestError> {
+        canonical::<TransitionWire>(bytes, "transition", TRANSITION_DOMAIN)?
+            .effects
+            .ok_or_else(|| invalid("effects"))
     }
 
     #[test]
@@ -543,6 +580,14 @@ mod tests {
             .clear();
         assert!(matches!(
             decode_transition(&encode(&orphaned, TRANSITION_DOMAIN)),
+            Err(GuestError::Decode(_))
+        ));
+        // Guards carry conditions only.
+        let mut mutating = canonical::<TransitionWire>(&bytes, "transition", TRANSITION_DOMAIN)?;
+        let guards = mutating.guards.as_mut().expect("actual writer guards");
+        guards.mutations = admitted_effects(&bytes)?.mutations;
+        assert!(matches!(
+            decode_transition(&encode(&mutating, TRANSITION_DOMAIN)),
             Err(GuestError::Decode(_))
         ));
         // No-effect transitions are representable; only unretained guards refuse.

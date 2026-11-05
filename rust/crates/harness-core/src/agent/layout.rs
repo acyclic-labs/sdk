@@ -11,6 +11,9 @@
 //!                                          target <name>: one MachineBinding
 //! harness/actors/<actor>                  A4 actor state (`Store` root), outside the subtree
 //! harness/status/<id>                      status records, outside the subtree
+//! harness/scopes/<root>/channels/<name>    one channel of the tree's scope
+//! harness/scopes/<root>/channels/<name>/members
+//!                                          its membership: joins and leaves
 //! ```
 //!
 //! Status lives outside the subtree so the commit that creates an agent (a spawn
@@ -34,6 +37,9 @@ pub const ACTORS: &str = "harness/actors";
 pub const VOLUMES: &str = "harness/volumes";
 /// Root of every agent's status stream, keyed by its globally unique id.
 pub const STATUSES: &str = "harness/status";
+/// Root of every scope's shared streams, keyed by the scope's root agent id.
+/// Outside every agent subtree, so an agent fork carries none of them.
+pub const SCOPES: &str = "harness/scopes";
 /// Relative names a child does not inherit from its parent.
 pub const NOT_INHERITED: [&str; 5] = [CHILDREN, CLOSED, TARGETS, MACHINES, "context"];
 /// Deepest admitted nesting; bounds every path and every lineage walk.
@@ -46,6 +52,8 @@ const CLOSED: &str = "closed";
 const CHILDREN: &str = "children";
 const TARGETS: &str = "targets";
 const MACHINES: &str = "machines";
+const CHANNELS: &str = "channels";
+const MEMBERS: &str = "members";
 /// The LATEST key of a target's status record.
 pub const TARGET_STATUS: &str = "status";
 const ID_HEX: usize = 32;
@@ -302,6 +310,37 @@ impl AgentPath {
     pub fn machines(&self) -> Result<StreamPath, Error> {
         stream(&format!("{}/{MACHINES}", self.text))
     }
+
+    /// Channel `name` of this agent's scope, its tree: every agent of the
+    /// tree names the same stream. Members' inboxes receive its posts.
+    pub fn channel(&self, name: &str) -> Result<StreamPath, Error> {
+        channel_name(name)?;
+        stream(&format!(
+            "{SCOPES}/{}/{CHANNELS}/{name}",
+            self.tree_root().id()
+        ))
+    }
+
+    /// Membership of channel `name`: its joins and leaves, in commit order.
+    pub fn channel_members(&self, name: &str) -> Result<StreamPath, Error> {
+        stream(&format!("{}/{MEMBERS}", self.channel(name)?.as_str()))
+    }
+}
+
+/// Checks a channel name: one path component of ASCII letters, digits, `_`
+/// and `-`; the stream path bounds its length.
+///
+/// # Errors
+/// [`Error::Path`] for any other name.
+pub fn channel_name(name: &str) -> Result<(), Error> {
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(Error::Path("channel name is not one path component"));
+    }
+    Ok(())
 }
 
 impl TryFrom<String> for AgentPath {

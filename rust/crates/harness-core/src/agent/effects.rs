@@ -7,7 +7,9 @@
 //! the turn when it settles and lowers them into the step's one commit. Nothing
 //! reaches another agent before that commit.
 
-use super::{AgentId, AgentPath, AgentState, InboxRecord, IntentId, Message, Out, Sender};
+use super::{
+    AgentId, AgentPath, AgentState, ChannelPost, InboxRecord, IntentId, Message, Out, Sender,
+};
 use crate::{OperationId, conversation::FileRef};
 use acyclic_stream::BoxProviderFuture;
 use serde::{Deserialize, Serialize};
@@ -43,6 +45,15 @@ pub enum TurnEffect {
         target: AgentPath,
         /// Archive intent.
         id: IntentId,
+    },
+    /// Post to a channel of the agent's scope that it is a member of.
+    Post {
+        /// Channel name.
+        channel: String,
+        /// Post identity.
+        id: IntentId,
+        /// The complete waking Notice, staged on the sender's private volume.
+        notice: Box<FileRef>,
     },
 }
 
@@ -150,6 +161,18 @@ pub fn outs(agent: &AgentState, recorded: Vec<TurnEffect>) -> Vec<Out> {
                 },
             }),
             TurnEffect::Archive { target, id } => Some(Out::Archive { target, id }),
+            TurnEffect::Post {
+                channel,
+                id,
+                notice,
+            } => Some(Out::Post {
+                channel,
+                post: ChannelPost {
+                    from: agent.path.clone(),
+                    id,
+                    notice,
+                },
+            }),
         })
         .collect()
 }

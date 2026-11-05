@@ -37,7 +37,9 @@ pub const MAX_VOLUMES: usize = 8;
 /// Version 11 adds admitted boundary steering and next-turn messages.
 /// Version 12 retains template capabilities only in their immutable source.
 /// Version 13 uses named MessagePack values after a four-byte big-endian version.
-pub const RECORD_VERSION: u32 = 13;
+/// Version 14 adds scope channels: a creation's channels, channel posts and
+/// channel memberships.
+pub const RECORD_VERSION: u32 = 14;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -224,6 +226,10 @@ pub struct CreationConfig {
     pub context: SpawnContext,
     /// The exact original template file, absent for the root default.
     pub template: Option<FileRef>,
+    /// Channels of the scope this agent is a member of: its creation joins
+    /// each, it may post to each, and each one's posts reach its inbox.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub channels: std::collections::BTreeSet<String>,
 }
 
 /// A host's original template reader, shared by direct and model spawns.
@@ -665,11 +671,62 @@ pub(super) fn check_text(text: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// One post to a scope channel: the original staged waking Notice, which
+/// each member's inbox receives by reference, never by copy of its body.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelPost {
+    /// Posting agent; it never receives its own post.
+    pub from: AgentPath,
+    /// Post identity, also the members' inbox Notice identity.
+    pub id: IntentId,
+    /// The complete waking Notice, at its immutable staged version.
+    pub notice: Box<FileRef>,
+}
+
+impl ChannelPost {
+    /// The inbox record each member receives.
+    #[must_use]
+    pub fn delivery(&self) -> InboxRecord {
+        InboxRecord::Notice {
+            id: self.id.clone(),
+            notice: NoticePayload::Waking(self.notice.clone()),
+        }
+    }
+}
+
+impl AgentRecord for ChannelPost {
+    fn check(&self) -> Result<(), Error> {
+        self.delivery().check()
+    }
+}
+
+/// One change to a channel's membership, in its membership stream.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum Membership {
+    /// The agent's creation joined the channel.
+    Joined(AgentPath),
+    /// The agent closed; it receives no later post.
+    Left(AgentPath),
+}
+
+impl AgentRecord for Membership {}
+
+fn check_channels(channels: &std::collections::BTreeSet<String>) -> Result<(), Error> {
+    channels
+        .iter()
+        .try_for_each(|name| super::channel_name(name))
+}
+
 impl AgentRecord for InboxRecord {
     fn check(&self) -> Result<(), Error> {
         match self {
             Self::ForkAdopted(adopted) => {
                 check_volumes(adopted.volumes.iter())?;
+                if let Some(profile) = &adopted.profile {
+                    check_channels(&profile.channels)?;
+                }
                 if adopted
                     .parent
                     .as_ref()
@@ -723,6 +780,11 @@ impl AgentRecord for InboxRecord {
             Self::Hook(hook) => check_text(&hook.host),
             Self::Spawn(spawn) => {
                 check_sender(&spawn.by)?;
+                // Only the parent's own `spawn` call, checked against its
+                // memberships, grants channels.
+                if !spawn.profile.channels.is_empty() {
+                    return Err(Error::Record("a requested spawn grants no channels"));
+                }
                 // Refused before the parent's inbox admits it: once queued, a
                 // request its spawn cannot apply would block the parent.
                 if spawn.profile.context == SpawnContext::Fresh && spawn.history.is_some() {

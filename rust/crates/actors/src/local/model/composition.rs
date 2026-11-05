@@ -572,6 +572,7 @@ fn transition(remove_actor_fence: bool) -> Result<Transition, StreamError> {
                 records: vec![Bytes::from_static(b"joined volume").into()],
             },
         }],
+        guards: Vec::new(),
         participant: Some(crate::guest::Participant {
             kind: "test".into(),
             plan: Bytes::from(vec![u8::from(remove_actor_fence)]),

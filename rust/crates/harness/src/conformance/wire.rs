@@ -137,6 +137,7 @@ fn strict(manifest: &Manifest) -> Result {
         },
         alarm: guest::AlarmChange::Clear,
         effects: Vec::new(),
+        guards: Vec::new(),
         participant: None,
     };
     let encoded = wire::encode_transition(&transition)?;

@@ -52,7 +52,7 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
             alarm: Alarm::Clear,
         };
         step.state.status_tail += 1;
-        let open = lower(&step, 1, intent_key("open", &[])?)?;
+        let open = lower(&step, 1, intent_key("open", &[])?, &Default::default())?;
         assert!(matches!(
             stream.commit(open).await?,
             CommitOutcome::Committed(_)
@@ -61,7 +61,7 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
 
         // Close after preparation, before submission: the same effect must skip.
         step.state.status_tail += 1;
-        let late = lower(&step, 1, intent_key("late", &[])?)?;
+        let late = lower(&step, 1, intent_key("late", &[])?, &Default::default())?;
         submit(&stream, archive(&recipient, &user(), &intent("close"))?).await?;
         let closed_tail = inbox_tail(&stream, &recipient).await?;
         assert!(matches!(
@@ -72,7 +72,7 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
 
         // The actual same append lands if its original close condition is removed.
         step.state.status_tail += 1;
-        let mut unguarded = lower(&step, 1, intent_key("unguarded", &[])?)?;
+        let mut unguarded = lower(&step, 1, intent_key("unguarded", &[])?, &Default::default())?;
         for mutation in &mut unguarded.mutations {
             if let CommitMutation::SoftAppend { closed, .. } = mutation {
                 *closed = None;
