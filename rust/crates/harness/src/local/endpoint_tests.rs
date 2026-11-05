@@ -79,7 +79,7 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
         agent: connection.root.clone(),
         session,
         paths: vec!["layout.json".into()],
-        after: Some(snapshot.generation),
+        after: Some(snapshot.generation.clone()),
     };
     let waiting_files = connection.execute(&files);
     tokio::pin!(waiting_files);
