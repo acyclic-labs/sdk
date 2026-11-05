@@ -79,24 +79,18 @@ fn operation(
             "allowance {allowance:?}: {error:?}"
         );
         let refusal = match &error {
-            NativeMountError::Work(cause)
-            | NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(
-                cause,
-            ))
-            | NativeMountError::Source(MountSourceError::Work(cause))
-            | NativeMountError::Source(MountSourceError::NativeWork(
-                crate::NativeTreeMaterializationError::Work(cause),
-            ))
-            | NativeMountError::Source(MountSourceError::Filesystem(crate::FsError::Work(cause))) => {
-                Some(cause)
+            NativeMountError::Work(cause) => Some(crate::WorkspaceError::Work(*cause)),
+            NativeMountError::Materialization(cause) => {
+                crate::workspace::workspace_bounded_error(cause)
             }
-            _ => None,
+            _ => crate::workspace::workspace_bounded_error(&error),
         };
         assert!(
-            matches!(refusal, Some(crate::WorkError::BudgetExceeded {
+            matches!(refusal, Some(crate::WorkspaceError::Work(crate::WorkError::BudgetExceeded {
                 counter: "allocation_operations", maximum, observed,
-            }) if Some(*maximum) == allowance && observed > maximum),
-            "allowance {allowance:?}: {error:?}"
+            })) if Some(maximum) == allowance && observed > maximum),
+            "allowance {allowance:?}: {error:?}; source {:?}",
+            std::error::Error::source(&error)
         );
         Ok(None)
     } else {
