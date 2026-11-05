@@ -235,7 +235,7 @@ test("matrix command binds its intended executables and retains refused receipts
       inventory: cases.map(test => test.id), selected: cases.map(test => test.id), seconds: .1,
       receipts: variants(cases, process.platform).map(test => ({ code: 1, report: {
         platform: process.platform, selected: [test.id], qualification: false, coverage,
-        seconds: .1, limit_seconds: 10,
+        seconds: .1,
         results: [{ case: test.id, platform: process.platform, status: "refused" }] } })) };
     const input = join(root, "partition.json");
     await writeFile(input, JSON.stringify(bundle));

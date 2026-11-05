@@ -38,7 +38,7 @@ export function fuzz(data) {
     inventory: cases.map(item => item.id), selected: [item.id], coverage,
     receipts: [{ code: 0, execution: { code: 0, expired: false, cancelled: false, signal: null },
       report: { platform: "linux", selected: [item.id], qualification: false,
-      coverage, seconds: 0.1, limit_seconds: 10,
+      coverage, seconds: 0.1,
       results: [{ case: item.id, platform: "linux", status: "pass" }] } }] }));
   const report = collectPartitions(cases, [...bundles].reverse(), "linux", coverage, binding);
   assert.equal(report.pass, true);
@@ -122,9 +122,15 @@ export function fuzz(data) {
     // Each filesystem variant is its own suite and so owns its own envelope.
     const receipts = ids.map(id => ({ code: 0, execution: { code: 0, signal: null },
       report: { platform, selected: [id],
-      qualification: false, coverage, seconds: 0.2, limit_seconds: 10,
+      qualification: false, coverage, seconds: 0.2,
       results: [{ case: id, platform, status: "pass" }] } }));
     assert.equal(collect(cases, receipts, platform, coverage).pass, true);
+    for (const seconds of [0.2, 10, 30, 1e6]) {
+      const changed = structuredClone(receipts);
+      for (const receipt of changed) receipt.report.seconds = seconds;
+      assert.equal(collect(cases, changed, platform, coverage).pass, true,
+        `completion is unchanged by elapsed time (${seconds}s)`);
+    }
     assert.throws(() => collect(cases, [], platform, coverage), /every case variant/);
     if (platform === "win32") {
       const shared = structuredClone(receipts[0]);
@@ -135,7 +141,7 @@ export function fuzz(data) {
     for (const edit of [report => report.results.pop(), report => report.results[0].platform = "foreign", report => report.results.push(report.results[0]),
       report => report.platform = "foreign", report => report.selected = [],
       report => report.qualification = true, report => report.coverage = { pass: false },
-      report => report.limit_seconds = 11, report => report.seconds = null]) {
+      report => report.seconds = null]) {
       const changed = structuredClone(receipts); edit(changed[0].report);
       assert.equal(collect(cases, changed, platform, coverage).pass, false);
     }
@@ -143,7 +149,7 @@ export function fuzz(data) {
       const changed = structuredClone(receipts); changed[0].report.seconds = seconds;
       assert.equal(collect(cases, changed, platform, coverage).pass, false);
     }
-    for (const edit of [receipt => receipt.code = 1, receipt => receipt.report.seconds = 10,
+    for (const edit of [receipt => receipt.code = 1,
       receipt => receipt.report.results[0].status = "fail"]) {
       const changed = structuredClone(receipts); edit(changed[0]);
       assert.equal(collect(cases, changed, platform, coverage).pass, false);

@@ -4,6 +4,8 @@ import { Worker } from "node:worker_threads";
 
 for (const group of ["serial", "decoder", "frames"]) test(`${group} fuzz oracles reject planted production defects`, async () => {
   const mutations = [
+    ["serial.mjs", 'suites.every(suite => suite.code === 0)',
+      'suites.every(suite => suite.code === 0 && suite.seconds < 10)', "serial"],
     ["serial.mjs", 'assert.match(value, /^\\d+\\/[1-9]\\d*$/, "partition must be zero-based INDEX/COUNT");',
       'void value;', "serial"],
     ["serial.mjs", 'count <= cases.length', 'true', "serial"],
@@ -31,7 +33,6 @@ for (const group of ["serial", "decoder", "frames"]) test(`${group} fuzz oracles
       'assert.equal(report.qualification, false, "selected suite is diagnostic");',
       'assert.ok(report.results.every(result => result.platform === platform), "case OS mismatch");',
       'assert.ok(Number.isFinite(report.seconds) && report.seconds > 0, "missing suite timing");',
-      'assert.equal(report.limit_seconds, 10, "suite budget changed");',
     ].map(before => ["serial.mjs", before, "void report;", "serial"]),
     ["frames.mjs", "|\u2717 ([^\\n]*)", "", "frames"],
     ["frames.mjs", "text.length > 0 && failure.reason.includes(text)", "failure.reason.includes(text)", "frames"],
