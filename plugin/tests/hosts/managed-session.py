@@ -115,6 +115,11 @@ if prompt=='resumed':
   return mcp.submit(name,reference,prompt)
  def response(identifier):return mcp.result(identifier)
  def tool(name,reference,prompt=None):return mcp.call(name,reference,prompt)
+ def succeeded(reference):
+  finished=tool('wait',reference)
+  print('NATIVE_FIXTURE_TURN',json.dumps({'reference':reference,'terminal':finished}),flush=True)
+  assert finished['reply']['kind']=='answered' and finished['reply']['outcome'].get('Succeeded') is not None,finished
+  return finished
  def native_ready(view,waiter):
   recovery='python3 plugin/tests/hosts/managed-session.py ACYCLIC GRAPHCODER CODEX '+scenario
   try:
@@ -184,17 +189,15 @@ if prompt=='resumed':
    assert stopped['status']['settled'] and stopped['control']=='interrupt',stopped
    print('NATIVE_FIXTURE_PASS blocked-input-cancel',flush=True)
   if scenario=='recursive':
-   recursive=tool('spawn','recursive','recursive');finished=tool('wait','recursive')
+   recursive=tool('spawn','recursive','recursive');succeeded('recursive')
    assert not (pathlib.Path(recursive['cwd'])/'.acyclic-sdk').exists(),'coordination metadata entered project history'
-   error=pathlib.Path(recursive['cwd'])/'.volumes/home/native-error.txt'
-   assert finished['reply']['kind']=='answered' and finished['reply']['outcome'].get('Succeeded') is not None,(finished,error.read_text() if error.exists() else 'no fixture error')
    assert (pathlib.Path(recursive['cwd'])/'first.txt').read_text()=='native'
    client({'kind':'fs','task':parent,'command':'merge agents/recursive'});assert (workspace/'recursive.txt').read_text()=='native'
    print('NATIVE_FIXTURE_PASS recursive-native-session-merge',flush=True)
   if scenario=='resume':
-   original=tool('spawn','retained','first');tool('wait','retained');old_view=original['cwd']
+   original=tool('spawn','retained','first');succeeded('retained');old_view=original['cwd']
    close_bridge();stop_owner();start_owner();start_bridge(parent)
-   resumed=tool('resume','retained','resumed');tool('wait','retained')
+   resumed=tool('resume','retained','resumed');succeeded('retained')
    assert resumed['cwd']!=old_view,'retained view was not recreated'
    launch=json.loads((pathlib.Path(resumed['cwd'])/'native-launch.json').read_text());assert 'resume' in launch['args'] and native_session_id in launch['args']
    assert not (workspace/'resumed.txt').exists(),'resumed child write leaked before merge'
