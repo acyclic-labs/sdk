@@ -41,7 +41,7 @@ impl NativeAccounting {
             1,
             accounting,
         )?;
-        let RetainedAllocation::Standalone { _lease: backing } = backing else {
+        let RetainedAllocationInner::Standalone { _lease: backing } = backing.inner else {
             return Err(crate::FsError::AccountingHandoffActive);
         };
         let (allocations, counters, budget, stop) = accounting

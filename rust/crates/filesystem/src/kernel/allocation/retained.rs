@@ -257,7 +257,14 @@ impl OwnedAccounting {
     }
 }
 
-pub(crate) enum RetainedAllocation {
+/// Original allocation credit that retires when its last owning value is dropped.
+/// Splitting or combining this credit never creates another budget or allocation.
+#[repr(transparent)]
+pub struct RetainedAllocation {
+    inner: RetainedAllocationInner,
+}
+
+enum RetainedAllocationInner {
     Standalone {
         _lease: StandaloneLease,
     },
@@ -286,10 +293,10 @@ impl Drop for StandaloneLease {
 
 impl RetainedAllocation {
     pub(crate) fn standalone_ledger(&self) -> Option<&Arc<Mutex<SharedAllocationBytes>>> {
-        match self {
-            Self::Standalone { _lease } => Some(&_lease.ledger),
+        match &self.inner {
+            RetainedAllocationInner::Standalone { _lease } => Some(&_lease.ledger),
             #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { .. } => None,
+            RetainedAllocationInner::Native { .. } => None,
         }
     }
 
@@ -303,11 +310,12 @@ impl RetainedAllocation {
     }
 
     /// Combines leases from the same original ledger without admitting work.
-    pub(crate) fn absorb(&mut self, incoming: &mut Self) -> Result<(), crate::FsError> {
-        match (self, incoming) {
-            (Self::Standalone { _lease: target }, Self::Standalone { _lease: source })
-                if Arc::ptr_eq(&target.ledger, &source.ledger) =>
-            {
+    pub fn absorb(&mut self, incoming: &mut Self) -> Result<(), crate::FsError> {
+        match (&mut self.inner, &mut incoming.inner) {
+            (
+                RetainedAllocationInner::Standalone { _lease: target },
+                RetainedAllocationInner::Standalone { _lease: source },
+            ) if Arc::ptr_eq(&target.ledger, &source.ledger) => {
                 target.bytes = target
                     .bytes
                     .checked_add(source.bytes)
@@ -317,10 +325,10 @@ impl RetainedAllocation {
             }
             #[cfg(not(target_arch = "wasm32"))]
             (
-                Self::Native {
+                RetainedAllocationInner::Native {
                     _allocation: target,
                 },
-                Self::Native {
+                RetainedAllocationInner::Native {
                     _allocation: source,
                 },
             ) => target.absorb(source).map_err(Into::into),
@@ -329,28 +337,42 @@ impl RetainedAllocation {
     }
 
     /// Splits original admitted backing without another admission or allocation.
-    pub(crate) fn split_off(&mut self, bytes: u64) -> Result<Self, crate::FsError> {
-        match self {
-            Self::Standalone { _lease } => {
+    pub fn split_off(&mut self, bytes: u64) -> Result<Self, crate::FsError> {
+        match &mut self.inner {
+            RetainedAllocationInner::Standalone { _lease } => {
                 let remaining = _lease.bytes.checked_sub(bytes).ok_or(WorkError::Overflow)?;
                 let result = Self::standalone(Arc::clone(&_lease.ledger), bytes);
                 _lease.bytes = remaining;
                 Ok(result)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { _allocation } => Ok(Self::Native {
-                _allocation: _allocation.split_off(bytes)?,
-            }),
+            RetainedAllocationInner::Native { _allocation } => {
+                Ok(Self::native(_allocation.split_off(bytes)?))
+            }
         }
     }
 
     pub(super) fn standalone(ledger: Arc<Mutex<SharedAllocationBytes>>, bytes: u64) -> Self {
-        Self::Standalone {
-            _lease: StandaloneLease { ledger, bytes },
+        Self {
+            inner: RetainedAllocationInner::Standalone {
+                _lease: StandaloneLease { ledger, bytes },
+            },
         }
     }
 
-    pub(crate) fn claim(
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn native(allocation: crate::NativeAllocation) -> Self {
+        Self {
+            inner: RetainedAllocationInner::Native {
+                _allocation: allocation,
+            },
+        }
+    }
+
+    /// Admits the requested bytes and allocation operations on the caller's
+    /// original ledger before the backing is allocated. The returned credit
+    /// remains live after the caller or request cancellation has gone away.
+    pub fn claim(
         bytes: u64,
         operations: u64,
         accounting: &mut KernelAccounting<'_>,
@@ -362,6 +384,16 @@ impl RetainedAllocation {
                 accounting.release_owned(&mut allocation, bytes)?;
                 Err(error)
             }
+        }
+    }
+
+    /// Binds an admitted value to its original credit without allocating or
+    /// copying it. The caller admits all backing before constructing the value.
+    #[must_use]
+    pub fn into_value<T>(self, value: T) -> Retained<T> {
+        Retained {
+            value,
+            allocation: self,
         }
     }
 
@@ -383,14 +415,16 @@ impl RetainedAllocation {
                 else {
                     unreachable!("matched native allocation")
                 };
-                Ok(Self::Native { _allocation: guard })
+                Ok(Self::native(guard))
             }
         }
     }
 }
 
-/// Value fields are destroyed before the lease that funds their backing.
-pub(crate) struct Retained<T> {
+/// A value kept with its original admitted allocation credit.
+/// The value is destroyed before the lease that funds its backing. Access is
+/// borrowed so moving the value cannot silently discard its credit.
+pub struct Retained<T> {
     pub(crate) value: T,
     pub(crate) allocation: RetainedAllocation,
 }
@@ -410,7 +444,7 @@ impl<T> AsRef<[u8]> for RetainedBytes<T> {
 impl Retained<Vec<u8>> {
     /// Keeps physical backing and its original lease through the last alias.
     /// The shared owner header is admitted before `Bytes` allocates it.
-    pub(crate) fn into_bytes<T: Send + 'static>(
+    pub fn into_bytes<T: Send + 'static>(
         mut self,
         custody: T,
         accounting: &mut KernelAccounting<'_>,
@@ -438,20 +472,27 @@ impl<T> Retained<Vec<T>> {
 }
 
 impl<T> Retained<T> {
-    pub(crate) fn from_owned(
+    /// Transfers an already admitted value to independently retained custody.
+    /// No payload allocation or copy is performed.
+    pub fn from_owned(
         mut owned: crate::kernel::Owned<T>,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Self, crate::FsError> {
         match RetainedAllocation::transfer(&mut owned.allocation, owned.bytes, accounting) {
-            Ok(allocation) => Ok(Self {
-                value: owned.value,
-                allocation,
-            }),
+            Ok(allocation) => Ok(allocation.into_value(owned.value)),
             Err(error) => {
                 owned.retire(accounting)?;
                 Err(error)
             }
         }
+    }
+}
+
+impl<T> std::ops::Deref for Retained<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.value
     }
 }
 
@@ -499,11 +540,7 @@ mod tests {
         let mut reader = ReadOwner::new(caller, None::<Observe>)?;
         let (state, mut accounting) = reader.borrow();
         let page = RetainedAllocation::claim(73, 1, &mut accounting)?;
-        let ledger = match &page {
-            RetainedAllocation::Standalone { _lease } => Arc::clone(&_lease.ledger),
-            #[cfg(not(target_arch = "wasm32"))]
-            RetainedAllocation::Native { .. } => unreachable!("ordinary accounting"),
-        };
+        let ledger = Arc::clone(page.standalone_ledger().expect("ordinary accounting"));
         let scratch = accounting.claim_owned(127, 1)?;
         let minimum = accounting
             .standalone_parts()
@@ -752,25 +789,18 @@ mod tests {
         let mut accounting =
             KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancel);
         let allocation = RetainedAllocation::claim(73, 1, &mut accounting)?;
-        let ledger = match &allocation {
-            RetainedAllocation::Standalone { _lease: lease } => Arc::clone(&lease.ledger),
-            #[cfg(not(target_arch = "wasm32"))]
-            RetainedAllocation::Native { .. } => unreachable!("ordinary accounting"),
-        };
+        let ledger = Arc::clone(allocation.standalone_ledger().expect("ordinary accounting"));
         let minimum = ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .allocations
             .live_bytes;
         let observed = Arc::new(AtomicBool::new(false));
-        let retained = Retained {
-            value: Observe {
-                ledger: Arc::clone(&ledger),
-                minimum,
-                observed: Arc::clone(&observed),
-            },
-            allocation,
-        };
+        let retained = allocation.into_value(Observe {
+            ledger: Arc::clone(&ledger),
+            minimum,
+            observed: Arc::clone(&observed),
+        });
         drop(accounting);
         assert_eq!(
             ledger
@@ -792,6 +822,105 @@ mod tests {
                 .allocations
                 .live_bytes,
             minimum - 73
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retained_bytes_keep_original_credit_after_caller_drop() -> Result<(), crate::FsError> {
+        let cancel = crate::CancellationToken::new();
+        let mut accounting =
+            KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancel);
+        let anchor = crate::kernel::RetainedAllocation::claim(0, 0, &mut accounting)?;
+        let ledger = Arc::clone(anchor.standalone_ledger().expect("ordinary accounting"));
+        retained_bytes_outlive_caller(accounting, &cancel, || {
+            ledger.lock().unwrap().allocations.live_bytes()
+        })?;
+        drop(anchor);
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let cancel = crate::CancellationToken::new();
+            let original =
+                crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
+                    .map_err(|(error, _)| crate::FsError::from(error))?;
+            retained_bytes_outlive_caller(
+                KernelAccounting::native(&original, &cancel),
+                &cancel,
+                || original.live_allocation_bytes(),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn retained_bytes_outlive_caller(
+        mut accounting: KernelAccounting<'_>,
+        cancel: &crate::CancellationToken,
+        live: impl Fn() -> u64,
+    ) -> Result<(), crate::FsError> {
+        let baseline = live();
+        let before = accounting.spent();
+        let mut allocation = crate::kernel::RetainedAllocation::claim(4, 1, &mut accounting)?;
+        let admitted = accounting.spent();
+        let mut tail = allocation.split_off(2)?;
+        allocation.absorb(&mut tail)?;
+        drop(tail);
+        let mut unrelated =
+            KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, cancel);
+        let mut other = crate::kernel::RetainedAllocation::claim(0, 0, &mut unrelated)?;
+        assert!(
+            matches!(
+                allocation.absorb(&mut other),
+                Err(crate::FsError::AccountingHandoffActive)
+            ),
+            "ownership transfer accepted another original ledger"
+        );
+        drop(other);
+        drop(unrelated);
+        assert_eq!(
+            accounting.spent(),
+            admitted,
+            "ownership transfer added work to the original ledger"
+        );
+        assert_eq!(live(), baseline + 4);
+
+        let value = allocation.into_value(Vec::from([1, 2, 3, 4]));
+        assert_eq!(value.as_slice(), [1, 2, 3, 4]);
+        let bytes = value.into_bytes((), &mut accounting)?;
+        let funded = live();
+        assert_eq!(
+            funded,
+            baseline
+                + 4
+                + acyclic_auth::operation::bytes_owner_allocation_bytes::<RetainedBytes<()>>()
+                    as u64,
+            "returned Bytes lost original allocation credit"
+        );
+        assert_eq!(
+            accounting.spent().allocation_operations,
+            before.allocation_operations + 2
+        );
+        let admitted = accounting.spent();
+        let alias = bytes.slice(1..3);
+        assert_eq!(
+            accounting.spent(),
+            admitted,
+            "a returned alias must reuse the original backing"
+        );
+        cancel.cancel();
+        assert!(matches!(
+            accounting.check(),
+            Err(crate::FsError::Cancelled(_))
+        ));
+        drop(accounting);
+        drop(bytes);
+        assert_eq!(alias.as_ref(), [2, 3]);
+        assert_eq!(live(), funded, "last alias lost original allocation credit");
+        drop(alias);
+        assert_eq!(
+            live(),
+            baseline,
+            "last alias did not retire original backing"
         );
         Ok(())
     }
