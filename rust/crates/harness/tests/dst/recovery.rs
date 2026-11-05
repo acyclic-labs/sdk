@@ -31,6 +31,7 @@ fn local_turn<'a>(
             ),
         );
         let config = local_harness_config(directory.join("checkout"), (model, provider))?
+            .without_user_settings()
             .state_directory(directory.join("state"));
         let harness = Arc::new(entry(LocalHarness::open(config)).await?);
         first_turn_write.set(Some(schedule.durable_write_count()));
