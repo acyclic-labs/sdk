@@ -438,13 +438,15 @@ fn physical_source_cleanup_joins_last_lease_after_caller_cancellation()
 #[test]
 fn physical_driver_packet_joins_last_lease_after_caller_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
-    physical_cleanup_joins_last_lease(PhysicalCleanupPath::DriverPacket)
+    physical_cleanup_joins_last_lease(PhysicalCleanupPath::DriverPacket)?;
+    physical_cleanup_joins_last_lease(PhysicalCleanupPath::DriverPacketRecordingRefusal)
 }
 
 #[test]
 fn physical_lazy_source_joins_last_lease_after_caller_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
-    physical_cleanup_joins_last_lease(PhysicalCleanupPath::LazySource)
+    physical_cleanup_joins_last_lease(PhysicalCleanupPath::LazySource)?;
+    physical_cleanup_joins_last_lease(PhysicalCleanupPath::LazySourceRecordingRefusal)
 }
 
 #[cfg(target_os = "linux")]
@@ -473,7 +475,9 @@ enum PhysicalCleanupPath {
     Source,
     SourceRecordingRefusal,
     DriverPacket,
+    DriverPacketRecordingRefusal,
     LazySource,
+    LazySourceRecordingRefusal,
     #[cfg(target_os = "linux")]
     FuseLoop,
     #[cfg(target_os = "macos")]
@@ -503,20 +507,37 @@ fn physical_cleanup_worker(
     path: PhysicalCleanupPath,
     mounted: Arc<dyn MountFilesystem>,
 ) -> Result<bool, NativeMountError> {
-    if matches!(path, PhysicalCleanupPath::DriverPacket) {
+    if matches!(
+        path,
+        PhysicalCleanupPath::DriverPacket | PhysicalCleanupPath::DriverPacketRecordingRefusal
+    ) {
+        let crate::native_mount::tests::retirement::Fixture {
+            root,
+            mut session,
+            work,
+            fence,
+        } = crate::native_mount::tests::retirement::Fixture::new()
+            .expect("original destination fence");
         let mut packet = crate::native_mount::NativeMountRetirement {
             retained_source: Some(mounted),
             startup_source_watch: None,
             terminal_source_failure: None,
-            destination_guard: None,
+            destination_guard: session.destination_guard.take(),
             #[cfg(windows)]
             warm_namespace: None,
         };
-        packet.retire(
+        let before = work.receipt();
+        let result = packet.retire(
             None,
             crate::native_mount::retirement::SourceRetirementWait::Physical,
-        )?;
-        return Ok(packet.is_retired());
+        );
+        assert!(
+            packet.is_retired(),
+            "recording outcome stranded physically acknowledged source or destination custody: {result:?}"
+        );
+        crate::native_mount::tests::retirement::retired(root.path(), &fence, before, &work)
+            .expect("original destination custody retires before reporting the source outcome");
+        return result.map(|_| true);
     }
     #[cfg(target_os = "linux")]
     if matches!(path, PhysicalCleanupPath::FuseLoop) {
@@ -535,7 +556,11 @@ fn physical_cleanup_worker(
         return crate::native_mount::projfs::retire_source_in_physical_stop(mounted);
     }
     let retired = mounted.shutdown_physical_cleanup();
-    if matches!(path, PhysicalCleanupPath::SourceRecordingRefusal) {
+    if matches!(
+        path,
+        PhysicalCleanupPath::SourceRecordingRefusal
+            | PhysicalCleanupPath::LazySourceRecordingRefusal
+    ) {
         assert!(
             retired.is_ok(),
             "physical acknowledgement survives the original recording refusal: {retired:?}"
@@ -556,7 +581,10 @@ fn physical_cleanup_joins_last_lease(
         ..crate::performance::BOUNDARY_BUDGET
     })?;
     let source_fixture = tempfile::tempdir()?;
-    let (source, mounted, lease) = if matches!(path, PhysicalCleanupPath::LazySource) {
+    let (source, mounted, lease) = if matches!(
+        path,
+        PhysicalCleanupPath::LazySource | PhysicalCleanupPath::LazySourceRecordingRefusal
+    ) {
         crate::native_mount::lazy::tests::fixtures::native_retirement_source(
             source_fixture.path(),
             &original,
@@ -567,8 +595,13 @@ fn physical_cleanup_joins_last_lease(
         (source.clone(), source as Arc<dyn MountFilesystem>, lease)
     };
     let weak = Arc::downgrade(&source);
-    let source_control =
-        matches!(path, PhysicalCleanupPath::SourceRecordingRefusal).then(|| Arc::clone(&source));
+    let source_control = matches!(
+        path,
+        PhysicalCleanupPath::SourceRecordingRefusal
+            | PhysicalCleanupPath::DriverPacketRecordingRefusal
+            | PhysicalCleanupPath::LazySourceRecordingRefusal
+    )
+    .then(|| Arc::clone(&source));
     let alias = lease.clone();
     root_stop.cancel();
     let wait = CancellationToken::new();
