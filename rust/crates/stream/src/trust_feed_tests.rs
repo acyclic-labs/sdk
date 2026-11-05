@@ -394,7 +394,7 @@ async fn a_slow_account_open_never_delays_another_accounts_revocations() {
 /// A feed over `fake` that follows `account`, its follower read from `anchor`.
 fn anchored(
     fake: &Arc<ControlledSource>,
-    anchor: tokio::sync::watch::Receiver<AnchorKeys>,
+    anchor: impl Into<acyclic_auth::trust::AnchorSource>,
 ) -> (Arc<Follower>, TrustFeed<Src>, Accounts) {
     let follower = Arc::new(Follower::new("test", anchor));
     let (feed, accounts) = TrustFeed::new(
