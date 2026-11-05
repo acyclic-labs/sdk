@@ -1280,10 +1280,9 @@ mod tests {
         let router = axum::Router::new().fallback(move || {
             let exchange = exchange.lock().expect("exchange entry").take();
             async move {
-                if let Some((started, release)) = exchange {
-                    let _ = started.send(());
-                    release.await.map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-                }
+                let (started, release) = exchange.ok_or(StatusCode::CONFLICT)?;
+                let _ = started.send(());
+                release.await.map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
                 Ok::<_, StatusCode>((
                     StatusCode::BAD_REQUEST,
                     axum::Json(json!({"error": "authorization_pending"})),
