@@ -7,12 +7,21 @@ of an undeclared action, including the retired Actors spelling. This qualifies
 the declaration boundary, not credential verification or live request coverage.
 
 `python3 rust/crates/auth/fuzz/negative-control.py operation-admission`, run from
-the repository root, first admits the original signed Session method credentials,
-then plants bounded Read with raw RPC Read admission instead of the Follow used
-by the public client. The unchanged conformance property must fail its Read
-assertion. The control restores the exact production bytes, checks that the
+the repository root, first admits the original signed Session method and token
+credentials, then independently plants bounded Read with raw RPC Read admission
+and token Read without Follow. The unchanged conformance property must fail
+its Read assertion for each defect. The control restores the exact production bytes, checks that the
 oracle did not change, and requires the same property to pass. Action-removal
 cases remove an emptied grant so the credential stays structurally valid.
+
+The existing `stream_persistence` fuzz target also exercises the public token
+operation decoder against the canonical vocabulary, including unknown spellings.
+Its owning `acyclic_stream::codec_fuzz::seeds` producer emits every actual token
+spelling. The same selected control calls this oracle on those spellings and
+their malformed suffixes, then plants unknown-operation acceptance in the
+production parser and requires the unchanged decoder assertion to fail. The
+token admission mutation separately checks that an admitted Read token covers
+the operations the deployed client performs.
 
 The `capability/public-certificates` and `capability/lineage-chain` captures
 retain the original v1 writer bytes as unsupported-format inputs.
