@@ -357,7 +357,7 @@ impl AgentTool {
             // only through `fs merge` of it. A spawn name names it; an agent
             // path does not.
             if AgentPath::try_from(name.clone()).is_err() {
-                entry["branch"] = json!(child_branch(name));
+                entry["branch"] = json!(super::fs_command::child_branch(name));
             }
             settled.push(entry);
         }
@@ -366,21 +366,6 @@ impl AgentTool {
         })
     }
 }
-
-/// A spawned child's fork branch, as `wait` reports it and `fs diff` and
-/// `fs merge` take it.
-pub fn child_branch(name: &str) -> String {
-    format!("{CHILD_BRANCH}{name}")
-}
-
-/// The spawn name a fork branch names.
-pub fn branch_child(branch: &str) -> Option<&str> {
-    branch
-        .strip_prefix(CHILD_BRANCH)
-        .filter(|name| !name.is_empty())
-}
-
-const CHILD_BRANCH: &str = "agents/";
 
 /// The child of `agent` that `reference` names: any name the surface shows
 /// for it (its exact spawn name or its agent path), open or

@@ -13,6 +13,11 @@ use command::parse_command;
 use fs_command::parse_fs_command;
 
 fuzz_target!(|input: &str| {
+    // A spawn name and its fork branch name each other exactly.
+    assert_eq!(
+        fs_command::branch_child(&fs_command::child_branch(input)),
+        (!input.is_empty()).then_some(input)
+    );
     if let Ok(arguments) = parse_command(input) {
         assert!(!arguments.is_empty());
         let encoded = arguments

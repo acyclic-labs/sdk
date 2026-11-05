@@ -3,8 +3,8 @@ mod agents;
 pub(crate) use agents::awaited;
 pub use agents::{
     AGENT_TOOLS, ArchiveAgentInput, REVISION as AGENT_TOOLS_REVISION, SendAgentInput,
-    SpawnAgentInput, WaitAgentInput, bind_agent_tools, branch_child, child_branch,
-    definitions as agent_tool_definitions, spawned_child,
+    SpawnAgentInput, WaitAgentInput, bind_agent_tools, definitions as agent_tool_definitions,
+    spawned_child,
 };
 pub mod shell;
 pub mod variants;
@@ -27,7 +27,7 @@ mod workspace_executor;
 pub use command::parse_command;
 #[cfg(feature = "filesystem")]
 #[doc(hidden)]
-pub use fs_command::{FsCommand, parse_fs_command};
+pub use fs_command::{FsCommand, branch_child, child_branch, parse_fs_command};
 #[cfg(feature = "filesystem")]
 pub mod git;
 
