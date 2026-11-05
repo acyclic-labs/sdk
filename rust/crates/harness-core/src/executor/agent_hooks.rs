@@ -16,95 +16,91 @@ impl StockExecutor {
     /// child's included) and every later turn reads back its recorded
     /// outcome, keeping its context. Their context precedes the turn; a block
     /// fails the turn when it runs, before any model request.
-    pub fn with_agent_hooks<'a>(
+    pub async fn with_agent_hooks(
         self,
-        context: &'a TaskContext,
+        context: &TaskContext,
         turn: OperationId,
-        prompt: &'a ModelContent,
+        prompt: &ModelContent,
         session: OperationId,
-    ) -> BoxFuture<'a, Result<Self>> {
-        // Keep hook preparation behind the same provider boundary as hook
-        // execution, so composing a turn does not embed its content-read layout.
-        Box::pin(async move {
-            let mut hooks = None::<Hooks>;
-            let mut digest = blake3::Hasher::new_derive_key("acyclic.agent.hooks/v1");
-            for source in self.context.configuration_sources() {
-                if source.descriptor().media_type() != Hooks::MEDIA_TYPE {
-                    continue;
-                }
-                let bytes = context.read_file(source, None).await?;
-                digest.update(blake3::hash(&bytes).as_bytes());
-                let next: Hooks = serde_json::from_slice(&bytes)
-                    .map_err(|error| Error::Invalid(format!("hook configuration: {error}")))?;
-                match &mut hooks {
-                    Some(hooks) => hooks.append(next),
-                    None => hooks = Some(next),
-                }
+    ) -> Result<Self> {
+        let mut hooks = None::<Hooks>;
+        let mut digest = blake3::Hasher::new_derive_key("acyclic.agent.hooks/v1");
+        for source in self.context.configuration_sources() {
+            if source.descriptor().media_type() != Hooks::MEDIA_TYPE {
+                continue;
             }
-            let Some(rules) = hooks else {
-                return Ok(self);
-            };
-            let bound = Arc::new(BoundHooks {
-                rules,
-                manifest: *digest.finalize().as_bytes(),
-            });
-            let prompt = prompt_text(context, prompt).await?;
-            let context = Arc::new(context.clone());
-            let mut executor = self;
-            let mut stages = Vec::new();
-            for event in HookEvent::at(HookSite::Prompt) {
-                let (input, operation) = match event {
-                    HookEvent::SessionStart => (
-                        serde_json::json!({"source": "startup", "session_id": session.to_string()}),
-                        session,
-                    ),
-                    HookEvent::UserPromptSubmit => (
-                        serde_json::json!({
-                            "prompt": prompt,
-                            "session_id": session.to_string(),
-                        }),
-                        turn,
-                    ),
-                    HookEvent::PreToolUse | HookEvent::PostToolUse | HookEvent::Stop => {
-                        return Err(Error::Invalid("prompt hook site fires a tool event".into()));
-                    }
-                };
-                let text = match executor
-                    .prompt_hook(&bound, event, &input, &context, operation)
-                    .await?
-                {
-                    Ok(Some(text)) => text,
-                    Ok(None) => continue,
-                    Err(reason) => {
-                        executor.prompt_block = Some(reason);
-                        return Ok(executor);
-                    }
-                };
-                stages.push(Arc::new(SourceStage::new(
-                    match event {
-                        HookEvent::SessionStart => "hooks.session-start",
-                        _ => "hooks.user-prompt-submit",
-                    },
-                    "1",
-                    Arc::new(Context {
-                        messages: text
-                            .into_iter()
-                            .map(|text| ModelMessage {
-                                role: ModelRole::System,
-                                content: ModelContent::Text(text),
-                            })
-                            .collect(),
-                        ..Default::default()
+            let bytes = context.read_file(source, None).await?;
+            digest.update(blake3::hash(&bytes).as_bytes());
+            let next: Hooks = serde_json::from_slice(&bytes)
+                .map_err(|error| Error::Invalid(format!("hook configuration: {error}")))?;
+            match &mut hooks {
+                Some(hooks) => hooks.append(next),
+                None => hooks = Some(next),
+            }
+        }
+        let Some(rules) = hooks else {
+            return Ok(self);
+        };
+        let bound = Arc::new(BoundHooks {
+            rules,
+            manifest: *digest.finalize().as_bytes(),
+        });
+        let prompt = prompt_text(context, prompt).await?;
+        let context = Arc::new(context.clone());
+        let mut executor = self;
+        let mut stages = Vec::new();
+        for event in HookEvent::at(HookSite::Prompt) {
+            let (input, operation) = match event {
+                HookEvent::SessionStart => (
+                    serde_json::json!({"source": "startup", "session_id": session.to_string()}),
+                    session,
+                ),
+                HookEvent::UserPromptSubmit => (
+                    serde_json::json!({
+                        "prompt": prompt,
+                        "session_id": session.to_string(),
                     }),
-                    ContextPlacement::Prepend,
-                )));
-            }
-            // Prepending in reverse keeps the prompt events' message order.
-            for stage in stages.into_iter().rev() {
-                executor = executor.with_context_stage(stage)?;
-            }
-            Ok(executor.with_hooks(Some(bound)))
-        })
+                    turn,
+                ),
+                HookEvent::PreToolUse | HookEvent::PostToolUse | HookEvent::Stop => {
+                    return Err(Error::Invalid("prompt hook site fires a tool event".into()));
+                }
+            };
+            let text = match executor
+                .prompt_hook(&bound, event, &input, &context, operation)
+                .await?
+            {
+                Ok(Some(text)) => text,
+                Ok(None) => continue,
+                Err(reason) => {
+                    executor.prompt_block = Some(reason);
+                    return Ok(executor);
+                }
+            };
+            stages.push(Arc::new(SourceStage::new(
+                match event {
+                    HookEvent::SessionStart => "hooks.session-start",
+                    _ => "hooks.user-prompt-submit",
+                },
+                "1",
+                Arc::new(Context {
+                    messages: text
+                        .into_iter()
+                        .map(|text| ModelMessage {
+                            role: ModelRole::System,
+                            content: ModelContent::Text(text),
+                        })
+                        .collect(),
+                    ..Default::default()
+                }),
+                ContextPlacement::Prepend,
+            )));
+        }
+        // Prepending in reverse keeps the prompt events' message order.
+        for stage in stages.into_iter().rev() {
+            executor = executor.with_context_stage(stage)?;
+        }
+        Ok(executor.with_hooks(Some(bound)))
     }
 
     /// One prompt event's added context, or `None` when no hook matches; or
