@@ -70,7 +70,6 @@ impl NativeSourceWatch {
                 reading: Reading::default(),
                 watches: Custody::new(Vec::new()),
                 stopping: AtomicBool::new(false),
-                completed: AtomicBool::new(false),
                 controller_alive: AtomicBool::new(true),
                 cleanup: Custody::new(StartupCleanup::default()),
                 ownership,
@@ -305,40 +304,7 @@ impl NativeSourceWatch {
         arc_control_bytes::<Shared>() + self.shared.retained_variable_bytes.load(Ordering::Acquire)
     }
 
-    pub(crate) fn is_stopped(&self) -> bool {
-        self.shared.completed.load(Ordering::Acquire)
-    }
-
-    pub(crate) fn stop_with_work<W: SourceDemandReadWork>(
-        &self,
-        work: &mut W,
-    ) -> Result<(), DemandError> {
-        self.stop(work, None, false)
-    }
-
-    pub(in crate::source_watch) fn cleanup(
-        &self,
-        wait: Option<&crate::CancellationToken>,
-    ) -> Result<(), DemandError> {
-        if wait.is_none() {
-            self.shared.delivery.ensure_stop_available()?;
-        }
-        let original = self
-            .shared
-            .delivery
-            .original
-            .as_ref()
-            .ok_or(DemandError::NativeWorkUnavailable)?;
-        check_wait(wait)?;
-        self.stop(
-            &mut crate::NativeMaterializationWork::clone(original),
-            wait,
-            true,
-        )?;
-        check_wait(wait)
-    }
-
-    pub(super) fn stop<W: SourceDemandReadWork>(
+    pub(in crate::source_watch) fn stop_driver<W: SourceDemandReadWork>(
         &self,
         work: &mut W,
         wait: Option<&crate::CancellationToken>,
@@ -452,13 +418,12 @@ impl NativeSourceWatch {
                 return result;
             }
         }
-        if self.shared.delivery.original.is_none() || !self.shared.completed.load(Ordering::Acquire)
-        {
+        if self.shared.delivery.original.is_none() || !self.is_stopped() {
             result = result.and(self.shared.clear_measured(work));
             self.shared.delivery.notify_lost();
-            self.shared
-                .completed
-                .store(self.shared.physically_cleared(), Ordering::Release);
+            if self.shared.physically_cleared() {
+                self.shared.delivery.finish_retirement();
+            }
         }
         if self.is_stopped() {
             self.shared.cancel_cleanup(work);
@@ -603,7 +568,7 @@ impl Shared {
             cleanup.reads = reads;
             cleanup.writes = 0;
             cleanup.records = 0;
-            self.completed.store(true, Ordering::Release);
+            self.delivery.finish_retirement();
             keep == 0
         };
         if orphaned {
