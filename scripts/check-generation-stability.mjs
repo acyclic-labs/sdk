@@ -12,22 +12,17 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const [family = "workers", mode = "generate"] = process.argv.slice(2);
 assert.ok(family && ["generate", "wasm"].includes(mode),
   "STEP_FAILED selection; recovery: node scripts/check-generation-stability.mjs harness [generate|wasm]");
-function run(command, args, env = process.env) {
+function run(command, args) {
   const started = performance.now();
-  const result = spawnSync(command, args, { cwd: root, env, encoding: "utf8", maxBuffer: Infinity });
+  const result = spawnSync(command, args, { cwd: root, encoding: "utf8", maxBuffer: Infinity });
   if (result.error || result.status !== 0) throw new Error(
     `STEP_FAILED ${command} ${args.join(" ")}; recovery: node scripts/check-generation-stability.mjs ${family} ${mode}\n${result.stdout ?? ""}${result.stderr ?? ""}`,
     { cause: result.error });
   return { output: result.stdout + result.stderr, seconds: (performance.now() - started) / 1000 };
 }
 test("selected generators preserve source mtimes and WASM Cargo freshness", () => {
-  const generateBuild = () => {
-    const generated = run(process.execPath, [join(root, "scripts/generate.mjs"), family]);
-    if (mode !== "wasm") return generated;
-    const built = run(process.execPath, [join(root, "scripts/build-wasm.mjs"), family],
-      { ...process.env, ACYCLIC_WASM_GROUPS_PREPARED: "1" });
-    return { output: built.output, seconds: generated.seconds + built.seconds };
-  };
+  const generateBuild = () => run(process.execPath,
+    [join(root, mode === "wasm" ? "scripts/build-wasm.mjs" : "scripts/generate.mjs"), family]);
   const first = generateBuild();
   const paths = new Set(run("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"]).output.split("\0").filter(Boolean));
   for (const name of packageClosure(root, family)) for (const suffix of ["generated", "src/generated", "test/generated"]) {

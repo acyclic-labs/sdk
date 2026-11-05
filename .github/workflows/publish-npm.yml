@@ -106,6 +106,7 @@ jobs:
           mkdir -p "$stage/scripts" "$stage/release"
           cp -R "$RUNNER_TEMP/qualified/typescript" "$stage/typescript"
           cp scripts/publish-npm-packages.mjs "$stage/scripts/"
+          cp scripts/registry-publication.mjs scripts/generated-bindings.mjs "$stage/scripts/"
           cp scripts/plugin-qualification.mjs "$stage/scripts/"
           cp scripts/typescript-qualification.mjs "$stage/scripts/"
           cp scripts/assemble-{actors,stream}-native-package.mjs scripts/build-{actors,stream}-native.mjs \

@@ -22,8 +22,14 @@ test("artifact trees retain nested snippets and refuse changed bytes or symlinks
     assert.deepEqual(wasmArtifactInventory(wasmArtifactFiles(output)), receipt);
     utimesSync(join(output, snippet), 1, 1);
     const unchanged = statSync(join(output, snippet), { bigint: true }).mtimeNs;
+    const producerReceipt = join(output, "producer-receipt.json");
+    const producerBytes = readFileSync(new URL("./build-wasm.mjs", import.meta.url));
+    writeFileSync(producerReceipt, producerBytes);
+    utimesSync(producerReceipt, 1, 1);
     assert.deepEqual(copyWasmArtifacts(source, output), receipt);
     assert.equal(statSync(join(output, snippet), { bigint: true }).mtimeNs, unchanged);
+    assert.equal(statSync(producerReceipt, { bigint: true }).mtimeNs, unchanged);
+    assert.deepEqual(readFileSync(producerReceipt), producerBytes);
     writeFileSync(join(output, snippet), "modified snippet");
     assert.notDeepEqual(wasmArtifactInventory(wasmArtifactFiles(output)), receipt);
     for (const present of [true, false]) {

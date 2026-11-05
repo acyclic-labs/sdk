@@ -15,7 +15,7 @@ const controls = ["rpc_route_control.erl", "compare_descriptor.erl", "installed_
 const methodCount = Number(read("../tests/fixtures/consumer/rpc_route_control.erl").toString().match(/(\d+)=lists:sum\(Counts\)/)[1]);
 const fixtures = controls.map(name => "../tests/fixtures/consumer/" + name);
 const sourceNames = [...new Set(["qualify.mjs", "package.mjs", "inventory.mjs", ...producerSources,
-  "../../../../../scripts/archive-utils.mjs", "../toolchains/qualification.json", "../toolchains/dependency-files.json", ...fixtures,
+  "../../../../../scripts/archive-utils.mjs", "../../../../../scripts/generated-bindings.mjs", "../toolchains/qualification.json", "../toolchains/dependency-files.json", ...fixtures,
   ...[...packageTemplates.values()].map(name => "../templates/package/" + name)])];
 
 export function verifyDependencies(root, bytes, pin = qualificationPins) {

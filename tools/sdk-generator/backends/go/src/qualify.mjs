@@ -97,6 +97,8 @@ export function qualify(args, command = spawnSync) {
     go_executable_sha256: sha256(readFileSync(go)), node_version: process.version,
     qualifier_sha256: sha256(readFileSync(fileURLToPath(import.meta.url))),
     authority_reader_sha256: sha256(readFileSync(join(directory, "../../../shared/authority.mjs"))),
+    archive_reader_sha256: sha256(readFileSync(join(directory, "../../../../../scripts/archive-utils.mjs"))),
+    shared_publisher_sha256: sha256(readFileSync(join(directory, "../../../../../scripts/generated-bindings.mjs"))),
     control_sha256: Object.fromEntries(controlNames.map(name => [name, sha256(readFileSync(join(controls, name)))])),
     log_sha256: Object.fromEntries(["module", "positive", "negative"].map(name => [`${name}.log`, sha256(readFileSync(join(work, `${name}.log`)))])),
     descriptor_equality: "all API fields; source comments and Buf image tag 8042 excluded",

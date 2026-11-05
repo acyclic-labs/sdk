@@ -167,6 +167,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
     installed_dependency_file_sha256: Object.fromEntries(inventory(env.PUB_CACHE).map(name => [name, sha256(readFileSync(join(env.PUB_CACHE, name)))])),
     qualifier_sha256: sha256(readFileSync(fileURLToPath(import.meta.url))), authority_reader_sha256: sha256(read("../../../shared/authority.mjs")),
     archive_reader_sha256: sha256(read("../../../../../scripts/archive-utils.mjs")), toolchain_sha256: sha256(JSON.stringify(toolchain)),
+    shared_publisher_sha256: sha256(read("../../../../../scripts/generated-bindings.mjs")),
     project_sha256: Object.fromEntries(inventory(project).map(name => [name, sha256(readFileSync(join(project, name)))])),
     log_sha256: Object.fromEntries(logs.map(name => [name, sha256(readFileSync(join(output, name)))])),
     positive_controls_passed: true, independent_negative_static_type_controls_rejected: 2, complete_file_descriptor_comparison: false,

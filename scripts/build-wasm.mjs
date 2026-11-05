@@ -105,7 +105,7 @@ const targetRoot = JSON.parse(metadata).target_directory;
 const profile = process.env.ACYCLIC_WASM_PROFILE || "wasm-release";
 const profileDirectory = profile === "dev" ? "debug" : profile;
 
-const script = Buffer.concat([readFileSync(fileURLToPath(import.meta.url)), readFileSync(new URL("./archive-utils.mjs", import.meta.url))]);
+const script = Buffer.concat([readFileSync(fileURLToPath(import.meta.url)), readFileSync(new URL("./archive-utils.mjs", import.meta.url)), readFileSync(new URL("./generated-bindings.mjs", import.meta.url))]);
 
 const grouped = process.env.ACYCLIC_WASM_GROUPS_PREPARED === "1";
 const targets = grouped ? [packageArgument] : packageArgument

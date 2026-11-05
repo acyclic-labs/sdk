@@ -72,7 +72,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   verifyTools();
   const controls = ["installed_consumer.php", "native_client.php", "archive_inventory.php", ...Object.keys(negatives).map(name => `${name}.php`)];
   const controlBytes = new Map(controls.map(name => [name, read(`../tests/fixtures/consumer/${name}`)]));
-  const code = new Map([["qualifier", readFileSync(fileURLToPath(import.meta.url))], ["authority_reader", read("../../../shared/authority.mjs")], ["archive_reader", read("../../../../../scripts/archive-utils.mjs")]]);
+  const code = new Map([["qualifier", readFileSync(fileURLToPath(import.meta.url))], ["authority_reader", read("../../../shared/authority.mjs")], ["archive_reader", read("../../../../../scripts/archive-utils.mjs")], ["shared_publisher", read("../../../../../scripts/generated-bindings.mjs")]]);
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (/^(COMPOSER|PHP|TAR_OPTIONS$|XDG_)/i.test(key)) delete env[key];
   const home = join(output, "home"), project = join(output, "project");

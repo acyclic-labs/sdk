@@ -24,7 +24,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned,
   const admitted = readPackage({ ...args, ...inputs });
   const sourceNames = ["qualify.mjs", "package.mjs", "provenance.mjs", "runtime.mjs", "generate.mjs",
     "../toolchains/qualification.json", "../toolchains/toolchain.json", "../../../shared/protoc.json",
-    "../../../shared/authority.mjs", "../../../../../scripts/archive-utils.mjs",
+    "../../../shared/authority.mjs", "../../../../../scripts/archive-utils.mjs", "../../../../../scripts/generated-bindings.mjs",
     "../templates/qualification/mix.exs", "../templates/qualification/mix.lock",
     "../tests/fixtures/consumer/Consumer.exs", "../tests/fixtures/consumer/Provenance.exs"];
   const sourceBytes = new Map(sourceNames.map(name => [name, read(name)]));

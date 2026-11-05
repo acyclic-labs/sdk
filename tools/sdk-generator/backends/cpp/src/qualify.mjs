@@ -23,7 +23,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned, onProgr
   onProgress("Verify archive and producer evidence");
   const admitted = readPackage({ ...args, ...inputs });
   const sourceNames = ["qualify.mjs", "package.mjs", "provenance.mjs", "generate.mjs", "../toolchains/qualification.json", "../toolchains/toolchain.json", "../toolchains/build-runtime.cmake",
-    "../../../shared/authority.mjs", "../../../../../scripts/archive-utils.mjs", "../templates/package/CMakeLists.txt", "../templates/package/AcyclicTransportConfig.cmake.in", ...controls.map(name => "../tests/fixtures/consumer/" + name)];
+    "../../../shared/authority.mjs", "../../../../../scripts/archive-utils.mjs", "../../../../../scripts/generated-bindings.mjs", "../templates/package/CMakeLists.txt", "../templates/package/AcyclicTransportConfig.cmake.in", ...controls.map(name => "../tests/fixtures/consumer/" + name)];
   const sourceBytes = new Map(sourceNames.map(name => [name, read(name)]));
   const hostBytes = readFileSync(inputs["host-inventory"]), runtimeBytes = readFileSync(inputs["runtime-inventory"]);
   onProgress("Verify complete admitted compiler/SDK and runtime inventories");

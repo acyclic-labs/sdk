@@ -129,7 +129,7 @@ export function copyWasmArtifacts(source, output) {
   const current = new Set(artifacts.map(item => item.path.slice("generated/wasm/".length)));
   // Admit the complete old tree before removing anything. Directory entries
   // alone suffice; stale payloads need neither reading nor hashing.
-  const previous = existsSync(output) ? [...wasmArtifactPaths(output, { receipt: true })] : [];
+  const previous = existsSync(output) ? [...wasmArtifactPaths(output)] : [];
   for (const path of previous) if (!current.has(path)) unlinkSync(join(output, path));
   mkdirSync(output, { recursive: true });
   for (const [path, bytes] of wasmArtifactFiles(source)) writeChanged(join(output, path.slice("generated/wasm/".length)), bytes);
