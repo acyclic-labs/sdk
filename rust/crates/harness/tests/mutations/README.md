@@ -46,3 +46,16 @@ settlement query`. After exact source restoration, the same scenario must pass.
 The scenario counts actual native stream head reads, checks the root observer's
 settled cursor, and retains the original parent/child volume, context and
 authority assertions. Explicit replay cursors keep their original semantics.
+
+`instruction-presence.patch` makes instruction discovery continue through the
+history after finding the instruction prefix. Apply it from the repository
+root and run:
+
+```sh
+cargo nextest run --locked -p acyclic-harness-core --features filesystem,test-support --lib -E 'test(=model::instruction_review_tests::read_projection_has_exact_linear_index_work_and_quadratic_negative)' --no-tests=fail
+```
+
+The retained property must fail at `history traversal must visit only the
+presence prefix and each message/part once`. It also compares authenticated
+projection output and checks original-ledger retirement and linear work.
+Reverse the patch afterward; restored production must pass the same property.
