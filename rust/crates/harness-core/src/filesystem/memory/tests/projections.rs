@@ -55,12 +55,8 @@ async fn native_notebook_insert_ids_follow_operations_through_publication_and_re
                 Some(&*canonical)
             );
             let context = ToolContext::new(task.clone(), operation_id, &invocation.call_id)?;
-            let result = tool
-                .executor
-                .execute(invocation.clone(), Some(context.clone()))
-                .await?;
             #[cfg(not(target_arch = "wasm32"))]
-            if ordinal == 1 {
+            let native = if ordinal == 1 {
                 let cancellation = acyclic_fs::CancellationToken::new();
                 let work = acyclic_fs::NativeMaterializationWork::new(
                     FINITE_CONTENT_BUDGET,
@@ -72,6 +68,11 @@ async fn native_notebook_insert_ids_follow_operations_through_publication_and_re
                     .executor
                     .execute_with_native_context(&context, &invocation, &work)?
                     .await?;
+                let result = tool
+                    .executor
+                    .reconcile(invocation.clone(), Some(context.clone()))
+                    .await?
+                    .ok_or_else(|| Error::NotFound("notebook publication receipt".into()))?;
                 assert_eq!(native.value, result.value);
                 drop(native);
                 drop(custody);
@@ -82,7 +83,20 @@ async fn native_notebook_insert_ids_follow_operations_through_publication_and_re
                         .execute_with_native_context(&context, &invocation, &work)
                         .is_err()
                 );
-            }
+                Some(result)
+            } else {
+                None
+            };
+            #[cfg(target_arch = "wasm32")]
+            let native = None;
+            let result = match native {
+                Some(result) => result,
+                None => {
+                    tool.executor
+                        .execute(invocation.clone(), Some(context.clone()))
+                        .await?
+                }
+            };
             let published: crate::tool::files::FileResult =
                 serde_json::from_value(result.value.clone()).unwrap();
             let bytes = task.read_file(&published.file, None).await?;
