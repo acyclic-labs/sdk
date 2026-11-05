@@ -6,6 +6,14 @@ action admission guard: the unchanged oracle must reject the planted acceptance
 of an undeclared action, including the retired Actors spelling. This qualifies
 the declaration boundary, not credential verification or live request coverage.
 
+`python3 rust/crates/auth/fuzz/negative-control.py operation-admission`, run from
+the repository root, first admits the original signed Session method credentials,
+then plants bounded Read with raw RPC Read admission instead of the Follow used
+by the public client. The unchanged conformance property must fail its Read
+assertion. The control restores the exact production bytes, checks that the
+oracle did not change, and requires the same property to pass. Action-removal
+cases remove an emptied grant so the credential stays structurally valid.
+
 The `capability/public-certificates` and `capability/lineage-chain` captures
 retain the original v1 writer bytes as unsupported-format inputs.
 

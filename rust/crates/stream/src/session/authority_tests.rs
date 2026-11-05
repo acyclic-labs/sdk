@@ -243,18 +243,26 @@ fn declared_method_credentials_match_session_admission() {
         // An exact grant passes; independently removing any declared action
         // refuses at that same boundary. The unrelated sibling always refuses.
         for removed in std::iter::once(None).chain((0..actions.len()).map(Some)) {
-            let credential = testing::credential_with_grants(vec![ResourceGrant {
-                resource: ResourcePattern {
-                    name: resource.into(),
-                    prefix: false,
-                },
-                actions: actions
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, _)| Some(*index) != removed)
-                    .map(|(_, action)| action.as_str().to_owned())
-                    .collect(),
-            }]);
+            let actions: Vec<_> = actions
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| Some(*index) != removed)
+                .map(|(_, action)| action.as_str().to_owned())
+                .collect();
+            // A grant needs at least one action. Removing the final action
+            // removes its grant so the credential stays structurally valid.
+            let grants = if actions.is_empty() {
+                vec![]
+            } else {
+                vec![ResourceGrant {
+                    resource: ResourcePattern {
+                        name: resource.into(),
+                        prefix: false,
+                    },
+                    actions,
+                }]
+            };
+            let credential = testing::credential_with_grants(grants);
             let mut slots = Slots::default();
             auth.register(&mut slots, 0, &credential, 1).unwrap();
             assert_eq!(
