@@ -32,7 +32,7 @@ binary = []
 javascript = ["binary", "acyclic-stream/js-bytes", "dep:wasm-bindgen"]
 # Request accounting over `acyclic_stream::testing::Counted`.
 conformance = ["acyclic-stream/conformance"]
-test-support = ["acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
+test-support = ["acyclic-auth/test-support", "acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
 default = ["grpc"]
 grpc = ["acyclic-auth/grpc", "dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:http-body", "tokio/time"]
 json = ["dep:acyclic-protobuf-json", "dep:prost-reflect", "dep:serde_json"]
