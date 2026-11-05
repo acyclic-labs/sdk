@@ -1,6 +1,8 @@
 //! Closed semantic action vocabulary shared by runtime admission and code generation.
 #![no_std]
 
+pub mod method;
+
 /// An action is not declared by any SDK product.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UnknownAction;

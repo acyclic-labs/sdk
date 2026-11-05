@@ -13,20 +13,7 @@ pub enum PolicyDecision {
     Deny,
 }
 
-/// Which record facts an operation can check at admission. Deferred facts must
-/// be checked by the owning provider before it exposes each record or child.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Scope {
-    /// Check every grant, filter and pin against the exact request facts.
-    Exact,
-    /// Admit only `streams/follow`, deferring record filters and pins.
-    Follow,
-    /// Admit only `streams/list`, including discovery above a granted prefix.
-    Children,
-    /// Admit only `fs/list` on `fs:/`; each full metadata path still needs an
-    /// exact check intersected with the current filesystem owner policy.
-    ResourceFollow,
-}
+pub use crate::method::Scope;
 
 /// Fail-closed authorization outcome, including malformed request facts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]

@@ -177,6 +177,108 @@ fn token(path: &str, change: impl Fn(&mut Block)) -> Vec<u8> {
 }
 
 #[test]
+fn declared_method_credentials_match_session_admission() {
+    use crate::StreamMethod;
+
+    // Dispatch through the actual Session admission each public method sends.
+    // The dispatch deliberately does not consult the table's scope or actions:
+    // a wrong declaration must fail against the deployed admission boundary.
+    let admit = |auth: &Arc<Authority>, slots: &Slots, method, path: &str| {
+        let path = StreamPath::new(path).unwrap();
+        match method {
+            StreamMethod::Read
+            | StreamMethod::Follow
+            | StreamMethod::Seek
+            | StreamMethod::Replay => auth
+                .bind(slots, 0, &path, Default::default(), 1)
+                .map(|_| ()),
+            StreamMethod::Head
+            | StreamMethod::Tail
+            | StreamMethod::Watermarks
+            | StreamMethod::DurableReceipt => auth
+                .bind_heads(
+                    slots,
+                    0,
+                    &crate::HeadsRequest {
+                        paths: [path].into(),
+                        retained: Default::default(),
+                        durable_through: None,
+                        projection: Default::default(),
+                        children: None,
+                        limit: 1,
+                        at_least: Default::default(),
+                    },
+                    1,
+                )
+                .map(|_| ()),
+            StreamMethod::Children | StreamMethod::ChildrenPage => {
+                auth.bind_list(slots, 0, Some(&path), 1).map(|_| ())
+            }
+            StreamMethod::FollowResource => auth
+                .bind_resource(slots, 0, format!("fs:/{path}"), Default::default(), 1)
+                .map(|_| ()),
+            _ => unreachable!("not a Session observation"),
+        }
+    };
+    let auth = Arc::new(authority(State::new()));
+    for method in [
+        StreamMethod::Read,
+        StreamMethod::Follow,
+        StreamMethod::Seek,
+        StreamMethod::Replay,
+        StreamMethod::Head,
+        StreamMethod::Tail,
+        StreamMethod::Watermarks,
+        StreamMethod::DurableReceipt,
+        StreamMethod::Children,
+        StreamMethod::ChildrenPage,
+        StreamMethod::FollowResource,
+    ] {
+        let actions = method.authorization().admitted;
+        let resource = if method == StreamMethod::FollowResource {
+            "fs:/allowed"
+        } else {
+            "streams:/allowed"
+        };
+        // An exact grant passes; independently removing any declared action
+        // refuses at that same boundary. The unrelated sibling always refuses.
+        for removed in std::iter::once(None).chain((0..actions.len()).map(Some)) {
+            let actions: Vec<_> = actions
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| Some(*index) != removed)
+                .map(|(_, action)| action.as_str().to_owned())
+                .collect();
+            // A grant needs at least one action. Removing the final action
+            // removes its grant so the credential stays structurally valid.
+            let grants = if actions.is_empty() {
+                vec![]
+            } else {
+                vec![ResourceGrant {
+                    resource: ResourcePattern {
+                        name: resource.into(),
+                        prefix: false,
+                    },
+                    actions,
+                }]
+            };
+            let credential = testing::credential_with_grants(grants);
+            let mut slots = Slots::default();
+            auth.register(&mut slots, 0, &credential, 1).unwrap();
+            assert_eq!(
+                admit(&auth, &slots, method, "allowed").is_ok(),
+                removed.is_none(),
+                "{method:?}, removed {removed:?}"
+            );
+            assert!(matches!(
+                admit(&auth, &slots, method, "sibling"),
+                Err(Rejection::Forbidden)
+            ));
+        }
+    }
+}
+
+#[test]
 fn product_call_targets_retain_exact_action_resource_and_live_credential() {
     let attributes = RecordAttributes::try_new(vec![]).unwrap();
     for (resource, action, other_action) in [

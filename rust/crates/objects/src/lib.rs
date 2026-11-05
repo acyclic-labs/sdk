@@ -2,6 +2,13 @@
 /// Shared canonical account-relative resource addressing.
 pub use acyclic_auth::addressing;
 
+/// Compiler-linked public method admission.
+pub mod authorization {
+    use acyclic_auth::action as auth_action;
+    include!(concat!(env!("OUT_DIR"), "/authorization.rs"));
+}
+pub use authorization::{AUTHORIZATION, ObjectsMethod};
+
 mod availability;
 mod batch;
 #[cfg(feature = "binary")]
