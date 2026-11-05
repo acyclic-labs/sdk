@@ -1,8 +1,15 @@
 diff --git a/rust/crates/filesystem/src/kernel/allocation/accounting.rs b/rust/crates/filesystem/src/kernel/allocation/accounting.rs
+index e440e87bed..2eed77437a 100644
 --- a/rust/crates/filesystem/src/kernel/allocation/accounting.rs
 +++ b/rust/crates/filesystem/src/kernel/allocation/accounting.rs
-@@ -77,3 +77,1 @@
+@@ -73,9 +73,7 @@ impl<'a> KernelAccounting<'a> {
+                 return Poll::Ready(Ok(value));
+             }
+             self.check()?;
 -            if caller_wait.is_none() {
 -                caller_wait = Some(self.cancellation_wait(cancellation)?);
 -            }
 +            caller_wait = Some(self.cancellation_wait(cancellation)?);
+             if let Some(wait) = &mut caller_wait {
+                 let _ = Pin::new(wait).poll(cx);
+             }
