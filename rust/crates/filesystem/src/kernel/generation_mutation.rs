@@ -4,6 +4,7 @@
 #[cfg(feature = "memory")]
 use super::allocation::AllocationLedger;
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
+use super::generation::clone_generation_root_with_accounting;
 use super::regular_mutation::{RegularMutation, RegularMutationError};
 use super::{
     DecodeLimits, DirectoryReadError, FileKind, FileMutation, FilePayload, FileRecord,
@@ -322,7 +323,8 @@ fn accounting_error(error: crate::FsError) -> crate::FsError {
     match error {
         crate::FsError::Work(error) => GenerationMutationError::Work(error).into(),
         crate::FsError::PendingMutationAllocationFailed
-        | crate::FsError::HandleAllocationFailed => {
+        | crate::FsError::HandleAllocationFailed
+        | crate::FsError::Decode(super::CanonicalDecodeError::AllocationFailed) => {
             GenerationMutationError::AllocationFailed.into()
         }
         error => error,
@@ -2229,7 +2231,8 @@ impl TransactionState {
         file_table: ObjectId,
     ) -> Result<GenerationRoot, crate::FsError> {
         let (mut root, mut allocation) =
-            clone_generation_root_with_accounting(generation, leaf.accounting)?;
+            clone_generation_root_with_accounting(generation, leaf.accounting)
+                .map_err(accounting_error)?;
         if let Err(error) = leaf.allocation.absorb(&mut allocation) {
             drop(root);
             return Err(error);
@@ -2238,38 +2241,6 @@ impl TransactionState {
         root.required_features = generation.continuation_features();
         Ok(root)
     }
-}
-
-pub(crate) fn clone_generation_root_with_accounting(
-    root: &GenerationRoot,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<(GenerationRoot, KernelOwnedAllocation), crate::FsError> {
-    let mut parents = reserve_owned::<GenerationId>(root.parents.len(), accounting)?;
-    let delta = WorkCounters {
-        bytes_copied: usize_to_u64(root.parents.len())
-            .checked_mul(size_of::<GenerationId>() as u64)
-            .ok_or(WorkError::Overflow)?,
-        ..WorkCounters::default()
-    };
-    accounting.admit(delta).map_err(accounting_error)?;
-    parents.value.extend_from_slice(&root.parents);
-    accounting
-        .record_completed(delta)
-        .map_err(accounting_error)?;
-    let Owned {
-        value: parents,
-        allocation,
-    } = parents;
-    Ok((
-        GenerationRoot {
-            volume_id: root.volume_id,
-            root_file_id: root.root_file_id,
-            file_table: root.file_table,
-            parents,
-            required_features: root.required_features,
-        },
-        allocation,
-    ))
 }
 
 fn operation_uses_one_path(mutation: &Mutation) -> bool {

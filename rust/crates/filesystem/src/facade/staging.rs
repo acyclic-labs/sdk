@@ -314,38 +314,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         result.map_err(FsError::from)?;
         Ok(object)
     }
-    pub(super) async fn put_generation_root(
+    pub(super) async fn put_generation_root_with_accounting(
         &self,
         root: &GenerationRoot,
-        mut work: WorkCounters,
-        budget: WorkBudget,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-        live_bytes: u64,
-    ) -> Result<(ObjectId, WorkCounters), OperationFailure<FsError>> {
-        let mut allocations = AllocationLedger::default();
-        let result = async {
-            let mut accounting = KernelAccounting::borrowed_standalone(
-                &mut allocations,
-                &mut work,
-                budget,
-                cancellation,
-            );
-            accounting.claim_owned(live_bytes, 0)?;
-            let encoded = crate::kernel::codec::encode_owned(&mut accounting, |observe, error| {
-                crate::kernel::encode_generation_root(root, observe, error)
-            })?;
-            self.put_encoded_with_accounting(
-                ObjectKind::GenerationRoot,
-                encoded,
-                &mut accounting,
-                cancellation,
-            )
-            .await
-        }
-        .await;
-        result
-            .map(|object| (object, work))
-            .map_err(|error| OperationFailure::new(error, work))
+    ) -> Result<ObjectId, FsError> {
+        let mut accounting = accounting.allocation_scope()?;
+        let encoded = crate::kernel::codec::encode_owned(&mut accounting, |observe, error| {
+            crate::kernel::encode_generation_root(root, observe, error)
+        })?;
+        self.put_encoded_with_accounting(
+            ObjectKind::GenerationRoot,
+            encoded,
+            &mut accounting,
+            cancellation,
+        )
+        .await
     }
 }
 

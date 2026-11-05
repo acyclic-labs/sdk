@@ -208,40 +208,60 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
         }
     }
 
-    /// Rebases this fork onto its current source.
-    pub async fn live_rebase(
+    /// Rebases this fork onto its current source using the supplied work source.
+    /// Admission, cancellation and conflict backing retain that original owner.
+    pub async fn live_rebase<W: crate::facade::FsWork>(
         &self,
         idempotency_key: IdempotencyKey,
         maximum_generations: u32,
         maximum_changes: u32,
         maximum_conflicts: u32,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<WorkspaceRebase<A, O>, WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = self
+            .live_rebase_with_accounting(
+                crate::facade::WorkspaceRebaseRequest {
+                    target: &self.volume,
+                    operation_id: idempotency_key.operation_id(),
+                    maximum_generations,
+                    maximum_changes,
+                    maximum_conflicts,
+                },
+                &mut accounting,
+                cancellation,
+            )
+            .await;
+        work.finish(result, &accounting)
+    }
+
+    async fn live_rebase_with_accounting(
+        &self,
+        request: crate::facade::WorkspaceRebaseRequest<'_, A, O>,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
     ) -> Result<WorkspaceRebase<A, O>, WorkspaceError> {
+        let mut scope = accounting.allocation_scope()?;
+        let accounting = &mut *scope;
         let outcome = self
             .volume
             .fs
-            .live_rebase_workspace(crate::facade::WorkspaceRebaseRequest {
-                target: &self.volume,
-                operation_id: idempotency_key.operation_id(),
-                maximum_generations,
-                maximum_changes,
-                maximum_conflicts,
-            })
+            .live_rebase_workspace(request, accounting, cancellation)
             .await?;
+        let bytes = outcome.bytes;
+        let allocation = super::paths::workspace_allocation(outcome.allocation, accounting)?;
         let generation = |id| Generation {
             workspace: self.clone(),
             id,
             publication_closure: None,
         };
-        Ok(match outcome {
-            crate::facade::WorkspaceJoinOutcome::Applied(id) => {
+        let result = match outcome.value {
+            crate::facade::WorkspaceJoinOutcome::Joined(id, _) => {
                 WorkspaceRebase::Rebased(generation(id))
             }
-            crate::facade::WorkspaceJoinOutcome::AlreadyApplied(id) => {
+            crate::facade::WorkspaceJoinOutcome::AlreadyJoined(id, _) => {
                 WorkspaceRebase::AlreadyRebased(generation(id))
-            }
-            crate::facade::WorkspaceJoinOutcome::Joined(_, _)
-            | crate::facade::WorkspaceJoinOutcome::AlreadyJoined(_, _) => {
-                return Err(WorkspaceError::IncompatibleWorkspace);
             }
             crate::facade::WorkspaceJoinOutcome::NoChanges(id) => {
                 WorkspaceRebase::Current(generation(id))
@@ -253,12 +273,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                 WorkspaceRebase::Conflicted {
                     conflicts,
                     truncated,
+                    allocation,
                 }
             }
             crate::facade::WorkspaceJoinOutcome::Fenced => WorkspaceRebase::Fenced,
             crate::facade::WorkspaceJoinOutcome::IdempotencyConflict => {
                 WorkspaceRebase::IdempotencyConflict
             }
-        })
+        };
+        scope.keep_bytes(bytes)?;
+        Ok(result)
     }
 }

@@ -360,16 +360,16 @@ impl NativeWorkspace {
         let maximum_changes = maximum_changes.into_inner();
         let maximum_conflicts = maximum_conflicts.into_inner();
 
-        self.inner
-            .live_rebase(
+        sdk_value!(unbounded_future!(
+            self.inner,
+            live_rebase(
                 native_idempotency_key(idempotency_key)?,
                 maximum_generations,
                 maximum_changes,
                 maximum_conflicts,
             )
-            .await
-            .map(native_workspace_rebase_result)
-            .map_err(napi_error)
+        ))
+        .map(native_workspace_rebase_result)
     }
 
     #[napi]
@@ -482,6 +482,7 @@ pub(in crate::bindings) fn native_workspace_rebase_result(
         WorkspaceRebase::Conflicted {
             conflicts,
             truncated,
+            allocation: _allocation,
         } => {
             return NativeWorkspaceRebaseResult {
                 status: "conflicted".to_owned(),

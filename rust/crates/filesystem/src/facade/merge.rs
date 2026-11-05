@@ -149,6 +149,39 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Owned<WorkspaceJoinOutcome>, WorkspaceError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = accounting.native_work() {
+            return self
+                .publish_workspace_join_prepared_with_accounting(
+                    target,
+                    prepared,
+                    accounting,
+                    cancellation,
+                    |request, intent, limits, _budget| async move {
+                        let output = publish_generation_async_guarded_with_native_work(
+                            self.clone(),
+                            request,
+                            intent,
+                            limits,
+                            None,
+                            original,
+                            cancellation,
+                            &mut |_| std::future::ready(Ok::<(), WorkspaceError>(())),
+                            None,
+                            None,
+                        )
+                        .await
+                        .map_err(|error| OperationFailure::new(error, original.receipt()))?;
+                        let receipt = OperationReceipt {
+                            value: checkout_commit_outcome(&output.receipt),
+                            work: output.receipt.work,
+                        };
+                        drop(output);
+                        Ok(receipt)
+                    },
+                )
+                .await;
+        }
         self.publish_workspace_join_prepared_with_accounting(
             target,
             prepared,
@@ -320,7 +353,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let base_object = base.id.object_id();
             let source_object = source.id.object_id();
             let mut base_root = self
-                .read_join_root_with_accounting(
+                .read_generation_owned_with_accounting(
                     base_object,
                     target.config,
                     accounting,
@@ -328,7 +361,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 )
                 .await?;
             let mut source_root = self
-                .read_join_root_with_accounting(
+                .read_generation_owned_with_accounting(
                     source_object,
                     target.config,
                     accounting,
@@ -336,7 +369,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 )
                 .await?;
             let target_root = self
-                .read_join_root_with_accounting(
+                .read_generation_owned_with_accounting(
                     target_object,
                     target.config,
                     accounting,
@@ -527,7 +560,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         result
     }
 
-    pub(super) async fn read_join_root_with_accounting(
+    pub(super) async fn read_generation_owned_with_accounting(
         &self,
         object: ObjectId,
         config: VolumeConfig,
