@@ -517,9 +517,9 @@ pub async fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error:
     state.status_tail = 29;
     for n in 0..9 {
         let child = state.path.child(&AgentId::from_bytes([n; 16]))?;
-        state.open_children.insert(child.clone()).await?;
+        state.open_children.insert(&child).await?;
         if matches!(n, 0 | 7 | 8) {
-            state.awaiting.insert(child).await?;
+            state.awaiting.insert(&child).await?;
         }
     }
     state.need = 2;

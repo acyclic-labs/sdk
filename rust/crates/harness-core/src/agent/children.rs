@@ -258,7 +258,7 @@ impl Children {
         Ok(root)
     }
     /// Inserts one child and stages only the nodes on its changed path.
-    pub async fn insert(&mut self, child: AgentPath) -> Result<bool, Error> {
+    pub async fn insert(&mut self, child: &AgentPath) -> Result<bool, Error> {
         let id = child.id_bytes();
         let mut branches = Vec::new();
         let found = self.walk(id, |branch| branches.push(branch)).await?;
@@ -423,9 +423,21 @@ mod tests {
         for n in 0u64..513 {
             let id = AgentId::derive(&parent.id(), &n.to_string());
             let child = parent.child(&id)?;
-            assert!(children.insert(child.clone()).await?);
+            assert!(children.insert(&child).await?);
             counted.cost(258, 130);
-            assert!(!children.insert(child).await?);
+            if n == 0 {
+                let mut result = None;
+                let allocations = acyclic_test_support::measure(|| {
+                    result = children.insert(&child).now_or_never();
+                });
+                assert_eq!(result.transpose()?, Some(false));
+                assert_eq!(
+                    allocations.count_total, 0,
+                    "cached duplicate insertion copied its borrowed address"
+                );
+            } else {
+                assert!(!children.insert(&child).await?);
+            }
             counted.cost(129, 0);
             expected.insert(id);
             if n == 2 {

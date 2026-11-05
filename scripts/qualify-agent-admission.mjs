@@ -6,6 +6,7 @@ const features = 'filesystem-local,native-execution,test-support';
 const membership = 'agent::children::tests::persistent_pages_and_point_updates_match_membership_after_reopen';
 const writer = 'agent::codec_fuzz::tests::writer_corpus_satisfies_the_shared_agent_oracle';
 const membershipOnly = process.argv[2] === '--membership';
+const borrowedOnly = process.argv[2] === '--borrowed';
 
 function command(executable, args, expected, capture = false) {
   const result = spawnSync(executable, args, {encoding: 'utf8', maxBuffer: 32 * 1024 * 1024});
@@ -35,9 +36,15 @@ function mutation(name, source, test, assertion, binary = ['--lib']) {
 }
 
 try {
-  mutation('agent-membership-allocation', 'rust/crates/harness-core/src/agent/children.rs', membership,
-    'cached membership lookup allocated identity or branch storage');
+  if (!borrowedOnly) {
+    mutation('agent-membership-allocation', 'rust/crates/harness-core/src/agent/children.rs', membership,
+      'cached membership lookup allocated identity or branch storage');
+  }
   if (!membershipOnly) {
+    mutation('agent-membership-insert-copy', 'rust/crates/harness-core/src/agent/children.rs', membership,
+      'cached duplicate insertion copied its borrowed address');
+  }
+  if (!membershipOnly && !borrowedOnly) {
     mutation('agent-membership-scan', 'rust/crates/harness-core/src/agent/children.rs', membership,
       'membership operation scanned beyond its fixed node credit');
     mutation('agent-record-version', 'rust/crates/harness-core/src/agent/records.rs', writer,
@@ -46,7 +53,9 @@ try {
       'agent_model::runtime::a_spawn_retry_after_later_steps_names_the_same_child',
       'request budget exceeded for control', ['--test', 'main']);
   }
-  const tests = membershipOnly ? [membership] : [membership, writer,
+  const tests = membershipOnly ? [membership] : borrowedOnly ? [membership,
+    'agent::layout::tests::canonical_subtree_admission_borrows_ancestry_without_parent_copies',
+    'agent_model::awaited_children_are_scoped_to_their_parent'] : [membership, writer,
     'agent_model::a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it',
     'agent_model::slot_schedules::admission_schedules_preserve_every_spawn_and_replay',
     'agent_model::slot_schedules::an_invalid_host_wait_fails_before_publishing_status_or_effects',
@@ -61,7 +70,7 @@ try {
   if (!positive.includes(`${tests.length} ${tests.length === 1 ? 'test' : 'tests'} run: ${tests.length} passed`)) {
     throw new Error('selected test inventory differs; recovery=cargo nextest list --locked -p acyclic-harness-core --lib --test main');
   }
-  if (!membershipOnly) {
+  if (!membershipOnly && !borrowedOnly) {
     command('cargo', ['check', '--locked', '-p', 'acyclic-harness', '--lib', '--features', features]);
     const output = command('cargo', ['run', '--quiet', '--locked', '-p', 'acyclic-harness-core',
       '--features', features, '--example', 'agent-record-corpus', '--', '--codecs'], undefined, true);
@@ -72,6 +81,6 @@ try {
     process.stdout.write(`Captured production agent writer output: ${destination}\n`);
   }
 } catch (error) {
-  process.stderr.write(`step=qualify agent admission; recovery=node scripts/qualify-agent-admission.mjs${membershipOnly ? ' --membership' : ''}; ${error.message}\n`);
+  process.stderr.write(`step=qualify agent admission; recovery=node scripts/qualify-agent-admission.mjs${membershipOnly ? ' --membership' : borrowedOnly ? ' --borrowed' : ''}; ${error.message}\n`);
   process.exitCode = 1;
 }

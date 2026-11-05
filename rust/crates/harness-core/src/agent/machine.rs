@@ -1069,7 +1069,7 @@ async fn run<T: TurnDriver + ?Sized>(
                 if child.parent().as_ref() == Some(&state.path)
                     && state.open_children.contains(child).await?
                 {
-                    open.push(child.clone());
+                    open.push(child);
                 }
             }
             let settled = u32::try_from(until.awaited.len() - open.len()).unwrap_or(u32::MAX);
@@ -1083,7 +1083,7 @@ async fn run<T: TurnDriver + ?Sized>(
             } else {
                 if reachable {
                     outs.extend(open.iter().map(|child| Out::Send {
-                        to: child.clone(),
+                        to: (**child).clone(),
                         record: InboxRecord::Awaited,
                     }));
                     for child in open {
@@ -1205,7 +1205,7 @@ async fn apply_spawns(
         };
         let opened = match state.spawned(intent) {
             Ok(child) if !state.closed => {
-                state.open_children.insert(child).await?;
+                state.open_children.insert(&child).await?;
                 true
             }
             Ok(child) => state.open_children.contains(&child).await?,

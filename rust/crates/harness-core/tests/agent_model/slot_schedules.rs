@@ -61,7 +61,7 @@ async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Res
     let (root, mut state) = populated_parent(2).await?;
     let recorded = intent("spawn:already-open");
     let child = TurnEffect::child(&root, &recorded)?;
-    state.open_children.insert(child.clone()).await?;
+    state.open_children.insert(&child).await?;
     state.turn = Some(Progress {
         inbox: 0,
         checkpoint: Vec::new(),

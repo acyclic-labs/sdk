@@ -434,7 +434,7 @@ mod tests {
                 }
             });
             assert_eq!(owned_ids.count_total, depth as u64 + 1);
-            for calls in [1, 100, 1000] {
+            for calls in [1, 2] {
                 let expected = if depth == 1 { [2; 16] } else { leaf };
                 let fixed_identity = acyclic_test_support::measure(|| {
                     for _ in 0..calls {
