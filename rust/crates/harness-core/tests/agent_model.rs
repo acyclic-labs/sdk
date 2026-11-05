@@ -443,14 +443,12 @@ async fn a_checkpoint_is_indexed_with_its_append_and_inherited_at_a_spawn() -> R
     let entry = |text: &str| Out::Conversation(text.as_bytes().to_vec());
     let driver = script(vec![
         TurnStep {
-            reserved_children: 0,
             checkpoint: None,
             outs: vec![entry("before"), entry("summary"), Out::Checkpoint],
             wait: Wait::Input,
             drops: None,
         },
         TurnStep {
-            reserved_children: 0,
             checkpoint: None,
             outs: vec![entry("later")],
             wait: Wait::Input,
@@ -507,7 +505,6 @@ async fn awaited_children_are_scoped_to_their_parent() -> Result {
             state.open_children.insert(child.clone()).await?;
             let driver = script(vec![
                 TurnStep {
-                    reserved_children: 0,
                     checkpoint: Some(b"waiting".to_vec()),
                     outs: Vec::new(),
                     wait: Wait::Until(if any {
@@ -518,7 +515,6 @@ async fn awaited_children_are_scoped_to_their_parent() -> Result {
                     drops: None,
                 },
                 TurnStep {
-                    reserved_children: 0,
                     checkpoint: None,
                     outs: Vec::new(),
                     wait: Wait::Input,
@@ -595,7 +591,6 @@ async fn awaited_children_are_scoped_to_their_parent() -> Result {
         let mut state = AgentState::adopted(path.clone(), &adopted(id(1)))?;
         state.open_children.insert(child.clone()).await?;
         let driver = script(vec![TurnStep {
-            reserved_children: 0,
             checkpoint: Some(b"foreign".to_vec()),
             outs: Vec::new(),
             wait: Wait::Until(if any {
@@ -637,7 +632,6 @@ async fn done_reports_to_the_parent_exactly_once() -> Result {
     let parent = AgentPath::root(&id(1));
     let (path, state) = child_of(&parent, 2)?;
     let driver = script(vec![TurnStep {
-        reserved_children: 0,
         checkpoint: None,
         outs: vec![Out::Conversation(b"answer".to_vec())],
         wait: Wait::Done(AgentOutcome::Succeeded { result: None }),
@@ -731,7 +725,6 @@ async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Resul
     assert_eq!(state.overflow, Some(33));
     // The awaited response is taken out of order, and remembered as taken.
     let resumed = script(vec![TurnStep {
-        reserved_children: 0,
         checkpoint: None,
         outs: Vec::new(),
         wait: Wait::Input,
@@ -963,11 +956,11 @@ fn fuzz_corpus_seeds_decode_as_labelled() -> Result {
     Ok(())
 }
 
-/// An idle root one slot below the current child admission ceiling.
-async fn populated_parent() -> Result<(AgentPath, AgentState)> {
+/// An idle root with the requested population, without running their turns.
+async fn populated_parent(count: usize) -> Result<(AgentPath, AgentState)> {
     let root = AgentPath::root(&id(1));
     let mut state = AgentState::adopted(root.clone(), &adopted(id(1))).expect("adopts");
-    for n in 0..MAX_OPEN_CHILDREN - 1 {
+    for n in 0..count {
         let mut bytes = [0; 16];
         bytes[..8].copy_from_slice(&(n as u64).to_le_bytes());
         state
@@ -1017,7 +1010,6 @@ impl TurnDriver for ToolSpawner {
         *self.0.lock().expect("seen lock") = Some(agent.open_children.len());
         Box::pin(async move {
             Ok(TurnStep {
-                reserved_children: 0,
                 checkpoint: None,
                 outs: vec![Out::Spawn {
                     profile: None,
@@ -1035,7 +1027,8 @@ impl TurnDriver for ToolSpawner {
 
 #[tokio::test]
 async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> Result {
-    let (root, mut state) = populated_parent().await?;
+    // Cross the former 256-child ceiling using the actual step protocol.
+    let (root, mut state) = populated_parent(255).await?;
     state.queued.push_back(Queued {
         inbox: 1,
         input: TurnInput::Approval { id: intent("q") },
@@ -1075,10 +1068,7 @@ async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> R
     .await?;
     // It runs with the client's child open and reachable. The next spawn
     // has no population ceiling and retains the same commit ordering.
-    assert_eq!(
-        *driver.0.lock().expect("seen lock"),
-        Some(MAX_OPEN_CHILDREN)
-    );
+    assert_eq!(*driver.0.lock().expect("seen lock"), Some(256));
     assert_eq!(spawns(&stepped.outs), [intent("spawn:tool")]);
     assert_eq!(
         stepped.state.spawn_outcome(&client).await?,
@@ -1090,7 +1080,7 @@ async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> R
             child: TurnEffect::child(&root, &intent("spawn:tool"))?
         }
     );
-    assert_eq!(stepped.state.open_children.len(), MAX_OPEN_CHILDREN + 1);
+    assert_eq!(stepped.state.open_children.len(), 257);
     Ok(())
 }
 
@@ -1105,14 +1095,12 @@ async fn a_quorum_wait_resumes_once_on_its_condition_or_its_deadline() -> Result
         state.open_children.insert(child.clone()).await?;
     }
     let wait = || TurnStep {
-        reserved_children: 0,
         checkpoint: Some(b"waiting".to_vec()),
         outs: Vec::new(),
         wait: Wait::Until(Until::quorum(children.clone(), 2).within(Some(1_000))),
         drops: None,
     };
     let done = || TurnStep {
-        reserved_children: 0,
         checkpoint: None,
         outs: Vec::new(),
         wait: Wait::Input,
@@ -1232,110 +1220,5 @@ async fn a_quorum_wait_resumes_once_on_its_condition_or_its_deadline() -> Result
     ));
     assert!(expired.state.awaiting.is_empty());
     assert!(driver.0.lock().expect("script lock").is_empty());
-    Ok(())
-}
-
-#[tokio::test]
-async fn concurrent_spawn_requests_at_the_limit_spawn_one_and_refuse_the_other() -> Result {
-    // Two clients' requests land at inbox 1 and 2; the parent's steps apply
-    // them in order and each records its outcome in the committed state.
-    let (root, state) = populated_parent().await?;
-    let driver = script(Vec::new());
-    let first = step(
-        &driver,
-        &root,
-        Some(state),
-        (2, 0),
-        spawn_request(1),
-        acyclic_actors::guest::CancellationToken::new(),
-    )
-    .await?;
-    let second = step(
-        &driver,
-        &root,
-        Some(first.state.clone()),
-        (3, 0),
-        spawn_request(2),
-        acyclic_actors::guest::CancellationToken::new(),
-    )
-    .await?;
-    let (one, child) = requested_child(&root, 1)?;
-    let (two, _) = requested_child(&root, 2)?;
-    assert_eq!(spawns(&first.outs), [one.clone()]);
-    assert!(spawns(&second.outs).is_empty());
-    assert_eq!(
-        first.state.spawn_outcome(&one).await?,
-        SpawnOutcome::Spawned { child }
-    );
-    assert_eq!(
-        second.state.spawn_outcome(&two).await?,
-        SpawnOutcome::Refused {
-            reason: SpawnRefusal::Limit
-        }
-    );
-    assert_eq!(second.state.open_children.len(), MAX_OPEN_CHILDREN);
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_paused_turns_recorded_spawn_keeps_its_slot_from_a_client_spawn() -> Result {
-    // The turn's tool recorded a spawn into the last slot, then paused.
-    let (root, mut state) = populated_parent().await?;
-    state.turn = Some(Progress {
-        inbox: 0,
-        checkpoint: Vec::new(),
-    });
-    state.phase = Phase::WaitingApproval {
-        id: intent("q"),
-        binding: None,
-    };
-    state.reserved_children = 1;
-    let driver = script(vec![TurnStep {
-        reserved_children: 0,
-        checkpoint: None,
-        outs: vec![Out::Spawn {
-            profile: None,
-            history: None,
-            intent: intent("spawn:tool"),
-            brief: None,
-            volumes: Vec::new(),
-        }],
-        wait: Wait::Input,
-        drops: None,
-    }]);
-    // A client's spawn meanwhile is refused rather than taking that slot.
-    let requested = step(
-        &driver,
-        &root,
-        Some(state),
-        (2, 0),
-        spawn_request(1),
-        acyclic_actors::guest::CancellationToken::new(),
-    )
-    .await?;
-    let (client, _) = requested_child(&root, 1)?;
-    assert!(spawns(&requested.outs).is_empty());
-    assert_eq!(
-        requested.state.spawn_outcome(&client).await?,
-        SpawnOutcome::Refused {
-            reason: SpawnRefusal::Limit
-        }
-    );
-    // The resumed turn's spawn opens the child its tool reported.
-    let resumed = step(
-        &driver,
-        &root,
-        Some(requested.state),
-        (3, 0),
-        Wake::Inbox {
-            sequence: 2,
-            record: InboxRecord::Approval(Approval { id: intent("q") }),
-        },
-        acyclic_actors::guest::CancellationToken::new(),
-    )
-    .await?;
-    assert_eq!(spawns(&resumed.outs), [intent("spawn:tool")]);
-    assert_eq!(resumed.state.open_children.len(), MAX_OPEN_CHILDREN);
-    assert_eq!(resumed.state.reserved_children, 0);
     Ok(())
 }

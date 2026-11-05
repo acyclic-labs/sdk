@@ -22,8 +22,8 @@
 use crate::{
     Error, Result,
     agent::{
-        AgentPath, AgentState, CreationConfig, IntentId, MAX_OPEN_CHILDREN, SpawnTemplates,
-        TurnChildren, TurnEffect, TurnEffects,
+        AgentPath, AgentState, CreationConfig, IntentId, SpawnTemplates, TurnChildren, TurnEffect,
+        TurnEffects,
     },
     conversation::{ContentAccess, ContentPublisher},
     runtime::ToolContext,
@@ -157,7 +157,7 @@ impl AgentTool {
         let key = call_key(&invocation, context.as_ref());
         let operation = crate::agent::operation_key(invocation.operation_id);
         let _spawning = match self.name {
-            "spawn" => Some(turn.spawning.lock().await),
+            "spawn" if turn.max_children.is_some() => Some(turn.spawning.lock().await),
             _ => None,
         };
         let effect = match self.name {
@@ -198,11 +198,6 @@ impl AgentTool {
                     Ok(profile) => profile,
                     Err(error) => return Ok(super::rejected_input(error)),
                 };
-                if !self.within(&intent, MAX_OPEN_CHILDREN).await? {
-                    return Ok(rejected(format!(
-                        "at most {MAX_OPEN_CHILDREN} open children; archive one or wait for one to finish"
-                    )));
-                }
                 if let Some(limit) = turn.max_children {
                     if limit == 0 {
                         return Ok(super::rejected_input(Error::Unsupported(

@@ -225,7 +225,7 @@ impl Children {
         }
         Ok((branches, None))
     }
-    /// Membership needs at most 128 small nodes, independent of agent count.
+    /// Membership needs at most 128 branches and one leaf, independent of agent count.
     pub async fn contains(&self, child: &AgentPath) -> Result<bool, Error> {
         Ok(self
             .walk(child.id().to_bytes())
@@ -369,20 +369,61 @@ impl Children {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // Count calls into the original provider adapter, which still writes and
+    // decodes the actual immutable node records on MemoryStream.
+    struct Counted {
+        provider: Provider<acyclic_stream::MemoryStream>,
+        loads: AtomicUsize,
+        saves: AtomicUsize,
+    }
+
+    impl Storage for Counted {
+        fn load(&self, digest: Digest) -> BoxProviderFuture<'_, Result<Node, Error>> {
+            self.loads.fetch_add(1, Ordering::Relaxed);
+            self.provider.load(digest)
+        }
+
+        fn save(&self, digest: Digest, bytes: Vec<u8>) -> BoxProviderFuture<'_, Result<(), Error>> {
+            self.saves.fetch_add(1, Ordering::Relaxed);
+            self.provider.save(digest, bytes)
+        }
+    }
+
+    impl Counted {
+        fn cost(&self, loads: usize, saves: usize) {
+            assert!(
+                self.loads.swap(0, Ordering::Relaxed) <= loads,
+                "membership operation scanned beyond its fixed node credit"
+            );
+            assert!(
+                self.saves.swap(0, Ordering::Relaxed) <= saves,
+                "membership operation copied beyond its fixed node credit"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn persistent_pages_and_point_updates_match_membership_after_reopen()
     -> Result<(), Box<dyn std::error::Error>> {
         let parent = AgentPath::root(&AgentId::from_bytes([1; 16]));
         let provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let counted = Arc::new(Counted {
+            provider: Provider(provider.clone()),
+            loads: AtomicUsize::new(0),
+            saves: AtomicUsize::new(0),
+        });
         let mut children = Children::new();
-        children.bind(provider.clone());
+        children.storage = Some(counted.clone());
         let mut expected = BTreeSet::new();
         for n in 0u64..513 {
             let id = AgentId::derive(&parent.id(), &n.to_string());
             let child = parent.child(&id)?;
             assert!(children.insert(child.clone()).await?);
+            counted.cost(258, 130);
             assert!(!children.insert(child).await?);
+            counted.cost(129, 0);
             expected.insert(id);
         }
         let snapshot = children.clone();
@@ -390,7 +431,9 @@ mod tests {
             if n % 3 == 0 {
                 let child = parent.child(&id)?;
                 assert!(children.remove(&child).await?);
+                counted.cost(258, 130);
                 assert!(!children.remove(&child).await?);
+                counted.cost(129, 0);
                 expected.remove(&id);
             }
         }
@@ -401,22 +444,33 @@ mod tests {
             "checkpoint holds only a root and count"
         );
         let mut reopened: Children = serde_json::from_slice(&encoded)?;
-        reopened.bind(provider);
+        reopened.storage = Some(counted.clone());
         assert_eq!(reopened.len(), expected.len());
         let mut actual = Vec::new();
         loop {
             let page = reopened.page(actual.last(), 17).await?;
+            counted.cost(2 * 128 + 2 * 17 + 1, 0);
             if page.is_empty() {
                 break;
             }
             for id in &page {
                 assert!(reopened.contains(&parent.child(id)?).await?);
+                counted.cost(129, 0);
             }
             actual.extend(page);
         }
         assert_eq!(actual, expected.into_iter().collect::<Vec<_>>());
         assert_eq!(reopened.first().await?, actual.first().cloned());
+        counted.cost(2 * 128 + 3, 0);
         assert!(reopened.page(None, 0).await?.is_empty());
+        counted.cost(0, 0);
+        // Losing the source of an immutable root is a typed error on the
+        // same lookup, with no retry or readiness wait.
+        reopened.storage = None;
+        assert!(matches!(
+            reopened.first().await,
+            Err(Error::Record("child index storage is not bound"))
+        ));
         Ok(())
     }
 }
