@@ -36,7 +36,8 @@ pub const VOLUMES: &str = "harness/volumes";
 pub const STATUSES: &str = "harness/status";
 /// Relative names a child does not inherit from its parent.
 pub const NOT_INHERITED: [&str; 5] = [CHILDREN, CLOSED, TARGETS, MACHINES, "context"];
-/// Deepest admitted nesting; bounds every path and every lineage walk.
+
+/// Deepest admitted nesting until agent addresses are flat.
 pub const MAX_DEPTH: usize = 64;
 
 const CONVERSATION: &str = "conversation";
@@ -68,7 +69,7 @@ fn id_bytes(text: &str) -> [u8; 16] {
 
 /// 128-bit agent identity, canonical lowercase hex. It is also the actor id.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
+#[serde(try_from = "String")]
 pub struct AgentId(String);
 
 impl AgentId {
@@ -157,16 +158,20 @@ impl fmt::Display for AgentId {
 }
 
 /// The canonical path of an agent's root (inbox) stream; the agent's address.
-#[derive(
-    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, crate::HeapLayout,
-)]
-#[serde(try_from = "String", into = "String")]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, crate::HeapLayout)]
+#[serde(try_from = "String")]
 #[heap_layout(as = String)]
 pub struct AgentPath {
     text: String,
     depth: usize,
 }
 crate::core::ownership::owned_struct!(AgentPath { text, depth });
+
+impl Serialize for AgentPath {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.text)
+    }
+}
 
 impl AgentPath {
     /// A top-level agent.
@@ -180,7 +185,7 @@ impl AgentPath {
 
     /// The child `id` nested under this agent.
     pub fn child(&self, id: &AgentId) -> Result<Self, Error> {
-        if self.depth + 1 > MAX_DEPTH {
+        if self.depth >= MAX_DEPTH {
             return Err(Error::Path("agent nesting exceeds MAX_DEPTH"));
         }
         Ok(Self {
@@ -403,6 +408,18 @@ mod tests {
             root.parent().expect("root").target("pc")?
         );
         assert_ne!(foreign.target("pc")?, root.target("pc")?);
+        let mut deepest = root.clone();
+        for _ in root.depth()..MAX_DEPTH {
+            deepest = deepest.child(&AgentId::from_bytes([4; 16]))?;
+        }
+        assert!(deepest.child(&AgentId::from_bytes([5; 16])).is_err());
+        assert!(
+            AgentPath::try_from(format!(
+                "{deepest}/children/{}",
+                AgentId::from_bytes([5; 16])
+            ))
+            .is_err()
+        );
         let leaf = [
             0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
             0x32, 0x10,

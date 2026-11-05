@@ -321,3 +321,71 @@ async fn prepared_accounting_recovers_with_its_projection_before_model_dispatch(
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn continued_tool_results_stop_before_aggregate_render_overflow_is_published_or_dispatched()
+-> Result<()> {
+    let limits = Limits {
+        render_bytes: Some(512),
+        ..Limits::default()
+    };
+    let provider = Arc::new(ContinuingModel {
+        turns: 10,
+        seen: AtomicUsize::new(0),
+    });
+    let executor = uncompacted_executor(
+        Model::new("test".into(), "continuation".into(), "1".into())?,
+        provider.clone(),
+        ContextPipeline::default(),
+        echo_tools(
+            Arc::new(FakeTool(AtomicUsize::new(0))),
+            json!(true),
+            json!(true),
+            json!(true),
+        )?,
+    )
+    .with_tool_authority(
+        RuntimeScope::new(
+            Capabilities::new(["model:generate", "tool:call:example.echo"]),
+            limits,
+        )?,
+        allowed()?,
+    )?
+    .with_limits(limits);
+    let storage =
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+    let journal = storage.journal();
+    let input = TurnInput {
+        max_steps: None,
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("input".into()),
+        selected_context: None,
+    };
+    let result = executor.execute(input.clone(), journal.as_ref()).await;
+    assert!(
+        result.is_err(),
+        "continued aggregate render overflow reached the provider"
+    );
+    let records = journal.replay(input.operation_id, 0, 100, None)?.await?;
+    let references: Vec<_> = records
+        .iter()
+        .filter_map(|record| match &record.event {
+            ExecutionEvent::ContextPrepared { projection, .. } => Some(projection.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(!references.is_empty());
+    assert!(references.len() < 11);
+    assert_eq!(references.len(), provider.seen.load(Ordering::SeqCst));
+    for reference in references {
+        let (projection, _) = crate::executor::transcript::load_projection(
+            journal.as_ref(),
+            &reference,
+            limits,
+            None,
+        )
+        .await?;
+        crate::context::validate_projected_context(&projection.context, limits, None)?;
+    }
+    Ok(())
+}

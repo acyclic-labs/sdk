@@ -32,8 +32,11 @@ fn decode(status: u16, bytes: &[u8], width: usize, failure: bool) -> (ErrorCode,
         request_id: None,
         retry_after: None,
     };
-    let error =
-        futures::executor::block_on(crate::http_failure(response, bytes.len().max(1), None));
+    let error = futures::executor::block_on(crate::http_failure(
+        response,
+        Some(bytes.len().max(1)),
+        None,
+    ));
     let polls = polls.load(Ordering::Relaxed);
     assert!(polls <= bytes.len().div_ceil(width) + 1);
     if !matches!(status, 400 | 408 | 413 | 429 | 500..=599) {

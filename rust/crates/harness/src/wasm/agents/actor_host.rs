@@ -10,6 +10,8 @@ use js_sys::Function;
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
+mod failures;
+
 /// One platform-admitted actor running an arbitrary strict-wire Handler.
 /// Storage, artifact and actor identity are supplied by the owning platform.
 #[wasm_bindgen]

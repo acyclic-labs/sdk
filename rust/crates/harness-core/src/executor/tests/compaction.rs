@@ -542,9 +542,9 @@ async fn oversized_summary_input_rejects_before_accounting_or_journal_publicatio
         (vec![message(128)], ModelContent::Text("summary".into()), 64),
     ] {
         let limits = Limits {
-            context_messages: 1,
-            render_bytes: 4_096,
-            file_bytes,
+            context_messages: std::num::NonZeroUsize::new(1),
+            render_bytes: Some(4_096),
+            file_bytes: Some(file_bytes),
             ..Limits::default()
         };
         let executor = base.clone().with_limits(limits);
@@ -691,7 +691,7 @@ async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<(
         .await?;
     assert_eq!(
         summary.source_digest,
-        crate::executor::json::canonical_json_digest(&source, u64::MAX, &mut None)?
+        crate::executor::json::canonical_json_digest(&source, None, &mut None)?
     );
     assert_eq!(
         journal.load(&summary.output, None)?.await?.as_ref(),
@@ -788,7 +788,7 @@ async fn summary_and_response_reconcile_inside_one_parent_execution() -> Result<
     let (_, admissions, _) = replay_execution(
         &journal,
         parent.operation_id,
-        3,
+        Some(3),
         |event| {
             matches!(
                 event,

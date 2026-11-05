@@ -57,7 +57,7 @@ fn capture_keeps_the_host_grant_and_returns_its_original_custody()
                         })
                         .transpose()?,
                     schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
-                    maximum_output_bytes: 1024,
+                    maximum_output_bytes: Some(1024),
                     standard_input: None,
                     process_custody: custody.clone(),
                 };

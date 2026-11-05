@@ -11,7 +11,7 @@ impl CheckoutTools {
             crate::OperationId,
             Option<acyclic_native_runtime::execution::ExecutionGrant>,
         ),
-        maximum_output: usize,
+        maximum_output: Option<usize>,
         state: OwnedMutexGuard<State>,
         files: output::Output,
         claims: workspace::volumes::Claims,
@@ -34,7 +34,7 @@ impl CheckoutTools {
             execution_grant,
             schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
             // Presentation is bounded below; streaming output is not a reason to stop a command.
-            maximum_output_bytes: usize::MAX,
+            maximum_output_bytes: None,
             standard_input: None,
             process_custody: workspace.processes.clone(),
         };
@@ -67,7 +67,7 @@ impl CheckoutTools {
             .native_root
             .clone()
             .unwrap_or_else(|| state.mounts.root.join(".volumes/home"));
-        let retained = tail::Tail::new(spill_root.join(&spill_name), maximum_output.min(30_000));
+        let retained = tail::Tail::new(spill_root.join(&spill_name), maximum_output);
         let (output, (state, files, claims, retained)) =
             native_process::capture::capture_with_custody(
                 invocation,
@@ -119,7 +119,7 @@ impl CheckoutTools {
                             "stop": output.stop,
                         }),
                     },
-                    maximum_output as u64,
+                    maximum_output.map(|maximum| maximum as u64),
                 )
             });
         Ok((result, state, files, claims))

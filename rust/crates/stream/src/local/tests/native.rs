@@ -15,10 +15,7 @@ async fn prepared_memory_and_local_commits_fund_settlement_and_recovery_codec_wo
             Arc::new(MemoryStream::new(MemoryLimits::default()))
         };
         let request = prepared_fixture(provider.as_ref()).await?;
-        let maximum_hash = crate::request::commit_hash_bytes(&request)
-            + 64
-            + 8 * crate::MAX_RECORD_KEYS as u64
-            + 16 * crate::MAX_RECORD_ATTRIBUTES as u64;
+        let maximum_hash = crate::request::commit_hash_bytes(&request) + 64 + 8 * 64 + 16 * 16;
         use tracing_subscriber::prelude::*;
         let metrics = acyclic_observability::Metrics::default();
         let prepare = metrics.query("acyclic.stream.prepare_commit");
@@ -29,7 +26,15 @@ async fn prepared_memory_and_local_commits_fund_settlement_and_recovery_codec_wo
         );
         let meter = Arc::new(Meter::default());
         let packet = provider
-            .native_prepare_commit(request, 64, meter.original())
+            .native_prepare_commit(
+                request,
+                crate::PreparedRecordCapacity {
+                    payload_bytes: 64,
+                    keys: 64,
+                    attributes: 16,
+                },
+                meter.original(),
+            )
             .await??;
         let (mut packet, guard) = packet.into_parts();
         assert!(
@@ -321,7 +326,15 @@ async fn prepared_denial_precedes_worker_and_canonical_edit()
     let meter = Arc::new(Meter::local());
     meter.deny_allocation.store(true, Ordering::SeqCst);
     let Err(error) = provider
-        .native_prepare_commit(request, 64, meter.original())
+        .native_prepare_commit(
+            request,
+            crate::PreparedRecordCapacity {
+                payload_bytes: 64,
+                keys: 64,
+                attributes: 16,
+            },
+            meter.original(),
+        )
         .await
     else {
         return Err("denied preparation produced an accepted packet".into());
@@ -342,7 +355,15 @@ async fn prepared_late_cancel_drains_original_frame_and_recovery_without_fresh_a
     let mut request = prepared_fixture(&provider).await?;
     let meter = Arc::new(Meter::local());
     let packet = provider
-        .native_prepare_commit(request.clone(), 64, meter.original())
+        .native_prepare_commit(
+            request.clone(),
+            crate::PreparedRecordCapacity {
+                payload_bytes: 64,
+                keys: 64,
+                attributes: 16,
+            },
+            meter.original(),
+        )
         .await??;
     let (mut packet, packet_guard) = packet.into_parts();
     let recovery = packet
@@ -438,7 +459,15 @@ async fn abandoned_prepared_packet_releases_worker_capacity_without_edit()
         let request = prepared_fixture(&provider).await?;
         let meter = Arc::new(Meter::local());
         let packet = provider
-            .native_prepare_commit(request, 64, meter.original())
+            .native_prepare_commit(
+                request,
+                crate::PreparedRecordCapacity {
+                    payload_bytes: 64,
+                    keys: 64,
+                    attributes: 16,
+                },
+                meter.original(),
+            )
             .await??;
         let (packet, guard) = packet.into_parts();
         drop(packet);
@@ -481,7 +510,15 @@ fn prepared_reply_drop_keeps_accepted_durability_and_input_custody()
             let request = prepared_fixture(&provider).await?;
             let meter = Arc::new(Meter::local());
             let packet = provider
-                .native_prepare_commit(request, 64, meter.original())
+                .native_prepare_commit(
+                    request,
+                    crate::PreparedRecordCapacity {
+                        payload_bytes: 64,
+                        keys: 64,
+                        attributes: 16,
+                    },
+                    meter.original(),
+                )
                 .await??;
             let (packet, packet_guard) = packet.into_parts();
             let (started_send, started_receive) = tokio::sync::oneshot::channel();

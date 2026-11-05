@@ -51,8 +51,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             bytes_copied: 36,
             ..WorkCounters::UNCHARGED
         })?;
-        let mut stages = [None, None, None, None];
-        let mut stage = 0;
+        let mut storage = PolicyStorage::new(accounting)?;
         let mut admission_error = None;
         let mut remaining =
             usize::try_from(accounting.remaining()?.items_examined).unwrap_or(usize::MAX);
@@ -70,15 +69,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             binding.context,
             binding.capability,
             &mut remaining,
-            |bytes| match accounting.claim_owned(bytes as u64, 1) {
-                Ok(allocation) => {
-                    *stages
-                        .get_mut(stage)
-                        .ok_or(InvalidPolicy("invalid binding stage"))? =
-                        Some((allocation, bytes as u64));
-                    stage += 1;
-                    Ok(())
-                }
+            |bytes| match storage.admit(bytes, accounting) {
+                Ok(()) => Ok(()),
                 Err(error) => {
                     admission_error = Some(error);
                     Err(InvalidPolicy("binding storage was not admitted"))
@@ -94,17 +86,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             }
             compiled.map_err(|_| FsError::InvalidAccessPolicy)
         });
-        let mut retained = result.as_ref().map_or(0, PathTrie::logical_owned_bytes);
-        let mut custody = accounting.claim_owned(0, 0)?;
-        for (mut allocation, requested) in stages.into_iter().flatten() {
-            let actual = retained.min(requested);
-            accounting.reconcile_owned(&mut allocation, requested, actual)?;
-            retained -= actual;
-            custody.absorb(&mut allocation)?;
-        }
-        if retained != 0 {
-            return Err(FsError::InvalidAccessPolicy);
-        }
+        let retained = result.as_ref().map_or(0, PathTrie::logical_owned_bytes);
+        let custody = storage.retain(retained, accounting)?;
         let view = result?.with_policy_revision(self.generation_id(), revision);
         let view = match binding.generation {
             Some(selected) => view.with_data_generation(selected),

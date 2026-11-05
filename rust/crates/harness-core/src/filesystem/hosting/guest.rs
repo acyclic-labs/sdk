@@ -255,7 +255,6 @@ where
                         scope,
                         &volume,
                         operation,
-                        self.maximum_bytes,
                         &mut Some(&mut io.history_io()),
                     )?;
                 }

@@ -14,7 +14,7 @@ fn response_collection_retires_consumed_and_ignored_deltas() -> Result<()> {
         ContextPipeline::default(),
         ToolRegistry::default(),
     );
-    stock.limits.file_bytes = 11;
+    stock.limits.file_bytes = Some(11);
     let input = TurnInput {
         max_steps: None,
         operation_id: OperationId::new(),
@@ -183,7 +183,7 @@ fn response_collection_retires_unpublished_calls_and_metadata() -> Result<()> {
         ContextPipeline::default(),
         ToolRegistry::default(),
     );
-    stock.limits.render_bytes = 64;
+    stock.limits.render_bytes = Some(64);
     let input = TurnInput {
         max_steps: None,
         operation_id: OperationId::new(),
@@ -361,7 +361,7 @@ fn assistant_part_admission_keeps_existing_history_and_retires_rejected_payload(
         ContextPipeline::default(),
         ToolRegistry::default(),
     );
-    stock.limits.render_bytes = 4;
+    stock.limits.render_bytes = Some(4);
     for native in [false, true] {
         for (text, reject_storage) in [("ok", false), ("too long", false), ("ok", true)] {
             let observed = crate::test_support::accounted::accounted(native, 65_536, false, |io| {
@@ -616,11 +616,17 @@ fn committed_completion_does_not_wait_for_transport_close() -> Result<()> {
 #[test]
 fn authoritative_messages_do_not_bypass_stream_admission() -> Result<()> {
     let limits = Limits {
-        file_bytes: 4,
+        file_bytes: Some(4),
         ..Limits::default()
     };
     let mut admission = ModelEventAdmission::default();
-    admission.observe(&ModelEvent::Content { delta: "é".into() }, limits, None)?;
+    admission.observe(
+        &ModelEvent::Content {
+            delta: "Ã©".into()
+        },
+        limits,
+        None,
+    )?;
     admission.observe(&ModelEvent::Content { delta: "ok".into() }, limits, None)?;
     assert_eq!(admission.text_bytes, 4);
     assert!(
@@ -639,7 +645,7 @@ fn authoritative_messages_do_not_bypass_stream_admission() -> Result<()> {
         admission
             .observe(
                 &ModelEvent::MessageCompleted {
-                    text: "ééx".into()
+                    text: "Ã©Ã©x".into()
                 },
                 limits,
                 None
@@ -653,10 +659,10 @@ fn authoritative_messages_do_not_bypass_stream_admission() -> Result<()> {
 #[test]
 fn completed_message_is_bounded_before_admission() -> Result<()> {
     let limits = Limits {
-        file_bytes: 4,
+        file_bytes: Some(4),
         ..Limits::default()
     };
-    for text in ["", "λ λ"] {
+    for text in ["", "Î» Î»"] {
         let mut admission = ModelEventAdmission::default();
         let event = ModelEvent::MessageCompleted { text: text.into() };
         let accepted = text.len() <= 4;
@@ -669,7 +675,7 @@ fn completed_message_is_bounded_before_admission() -> Result<()> {
 #[tokio::test]
 async fn sampling_returns_the_completed_message_instead_of_streamed_prefixes() -> Result<()> {
     use crate::mcp::callbacks::{McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks};
-    for answer in ["", "final λ\n"] {
+    for answer in ["", "final Î»\n"] {
         let scope = RuntimeScope::new(Capabilities::new(["model:generate"]), Limits::default())?;
         let context = Arc::new(admitted_context(scope.clone())?);
         let parent = OperationId::new();

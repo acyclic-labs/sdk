@@ -43,7 +43,7 @@ impl crate::runtime::Executor for Immediate {
             "terminal delivery must fit the reserved slot"
         );
     }
-    fn sleep(&self, _: u32) -> BoxProviderFuture<'static, ()> {
+    fn sleep(&self, _: u64) -> BoxProviderFuture<'static, Result<(), crate::runtime::SleepError>> {
         Box::pin(future::pending())
     }
 }
@@ -63,13 +63,13 @@ fn initialize(n: usize, kind: u8) -> State {
     let (mut pool, _) = fixture::fixture(&endpoint);
     pool.routes.clear();
     pool.executor = std::sync::Arc::new(Immediate);
-    let sender = Arc::new(Outbound::new(2 * n + 4, crate::MAX_COMMAND_BYTES));
+    let sender = Arc::new(Outbound::new());
     pool.links.get_mut("good").unwrap().sender = Arc::clone(&sender);
     // Warm this independently owned queue before measuring receive, as on an
     // established physical session; no candidate/baseline storage is shared.
     for _ in 0..n {
         sender
-            .push(frame(0, 0, Body::Window(Default::default())), 0)
+            .push(frame(0, 0, Body::Window(Default::default())))
             .unwrap();
     }
     for _ in 0..n {

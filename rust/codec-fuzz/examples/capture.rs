@@ -9,11 +9,7 @@ fn json_seed(
     payload: &[u8],
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     if let Some(name) = decoder.name.strip_prefix("acyclic.objects.v1.") {
-        return Ok(acyclic_objects::json::encode_binary(
-            name,
-            payload,
-            usize::MAX,
-        )?);
+        return Ok(acyclic_objects::json::encode_binary(name, payload, None)?);
     }
     acyclic_protobuf_json::encode(acyclic_codec_fuzz::descriptor(decoder), payload)
         .map_err(|error| format!("protobuf JSON seed {}: {error:?}", decoder.name).into())
@@ -864,7 +860,9 @@ fn full_capture_retains_original_actor_inputs_once() {
 }
 
 fn capture_agents(manifest: &mut String) -> Result<(), Box<dyn Error>> {
-    for (name, bytes) in acyclic_harness_core::agent::codec_fuzz::seeds()? {
+    for (name, bytes) in
+        futures::executor::block_on(acyclic_harness_core::agent::codec_fuzz::seeds())?
+    {
         save(
             "harness_codecs",
             &format!(

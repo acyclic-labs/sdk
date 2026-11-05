@@ -5,7 +5,7 @@ use serde_json::Value;
 
 #[path = "../harness/src/local/host_process/children/answer.rs"]
 mod answer;
-use answer::{ANSWER_LIMIT, EVENT_LIMIT, NativeAnswer};
+use answer::{ANSWER_LIMIT, NativeAnswer};
 
 fn copy(answer: &NativeAnswer) -> NativeAnswer {
     NativeAnswer {
@@ -46,7 +46,7 @@ pub fn check(bytes: &[u8]) -> usize {
 }
 
 fn fold(bytes: &[u8], chunk_size: usize) -> (NativeAnswer, usize) {
-    let mut frames = LineBuffer::new(EVENT_LIMIT);
+    let mut frames = LineBuffer::new(None);
     let mut current = NativeAnswer::default();
     let mut accepted = 0;
     for line in bytes

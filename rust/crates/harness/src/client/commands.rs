@@ -120,9 +120,12 @@ impl CommandCatalog {
         Self::from_bytes(bytes, bytes.len() as u64)
     }
 
-    /// Decode a bounded catalog file; duplicate names or aliases fail.
-    pub fn from_bytes(bytes: &[u8], maximum_bytes: u64) -> Result<Self> {
-        if maximum_bytes == 0 || bytes.len() as u64 > maximum_bytes {
+    /// Decode a catalog file under an optional byte policy; duplicate names or aliases fail.
+    pub fn from_bytes(bytes: &[u8], maximum_bytes: impl Into<Option<u64>>) -> Result<Self> {
+        if maximum_bytes
+            .into()
+            .is_some_and(|maximum| maximum == 0 || bytes.len() as u64 > maximum)
+        {
             return Err(Error::Invalid("catalog file exceeds byte bound".into()));
         }
         let specs: Vec<CommandSpec> = serde_json::from_slice(bytes)
@@ -214,8 +217,12 @@ impl CommandCatalog {
     /// Resolves `input` against the built-ins: `None` when it is not a
     /// slash command or names no built-in, so it is a prompt whose
     /// command, if any, the harness resolves from the project's files.
-    pub fn resolve(&self, input: &str, maximum_bytes: u64) -> Result<Option<CommandResolution>> {
-        let Some((name, arguments)) = syntax::split(input, maximum_bytes)? else {
+    pub fn resolve(
+        &self,
+        input: &str,
+        maximum_bytes: impl Into<Option<u64>>,
+    ) -> Result<Option<CommandResolution>> {
+        let Some((name, arguments)) = syntax::split(input, maximum_bytes.into())? else {
             return Ok(None);
         };
         let Some(spec) = self.lookup(name) else {
@@ -264,9 +271,9 @@ impl CommandCatalog {
     pub fn selected<'a>(
         &self,
         input: &'a str,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
     ) -> Result<Option<(String, &'a str)>> {
-        let Some((name, arguments)) = syntax::split(input, maximum_bytes)? else {
+        let Some((name, arguments)) = syntax::split(input, maximum_bytes.into())? else {
             return Ok(None);
         };
         if self.lookup(name).is_some() {
@@ -279,7 +286,11 @@ impl CommandCatalog {
 
     /// A prompt command or skill body with its frontmatter removed and its
     /// `$ARGUMENTS` replaced by `arguments`.
-    pub fn expand(body: &[u8], arguments: &str, maximum_bytes: u64) -> Result<String> {
+    pub fn expand(
+        body: &[u8],
+        arguments: &str,
+        maximum_bytes: impl Into<Option<u64>>,
+    ) -> Result<String> {
         let body = if has_frontmatter(body) {
             let (_, _, start) = crate::context::frontmatter_end(body)?;
             &body[start..]
@@ -350,6 +361,23 @@ mod tests {
         );
         assert_eq!(catalog.selected("/help", 64)?, None);
         assert_eq!(catalog.selected("/usr/bin/env x", 64)?, None);
+        let arguments = "x".repeat(65_537);
+        let input = format!("/marker {arguments}");
+        assert!(catalog.selected(&input, 65_536).is_err());
+        assert_eq!(
+            catalog.selected(&input, None)?,
+            Some(("marker".into(), arguments.as_str()))
+        );
+        let input = format!("/compact {arguments}");
+        assert!(catalog.resolve(&input, 65_536).is_err());
+        assert_eq!(
+            catalog.resolve(&input, None)?,
+            Some(CommandResolution::Submit {
+                request: CommandRequest::Compact {
+                    instructions: arguments
+                },
+            })
+        );
         assert!(catalog.complete("/com").any(|spec| spec.name == "compact"));
         Ok(())
     }

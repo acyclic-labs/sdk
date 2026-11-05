@@ -212,7 +212,7 @@ impl WasmStream {
         &self,
         invocation: &[u8],
         credential: u32,
-        maximum_reply_bytes: u32,
+        maximum_reply_bytes: Option<u32>,
     ) -> Result<Vec<u8>, JsValue> {
         check_command_size(invocation)?;
         self.session
@@ -221,7 +221,7 @@ impl WasmStream {
             .actor_call(
                 &bytes::Bytes::copy_from_slice(invocation),
                 credential,
-                maximum_reply_bytes as usize,
+                maximum_reply_bytes.map(|maximum| maximum as usize),
             )
             .await
             .map(|reply| reply.to_vec())

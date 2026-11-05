@@ -1,4 +1,5 @@
 use super::*;
+use crate::context::ContextMessages;
 
 /// Validates and places renderer output; shared by native stages and narrow WASM bindings.
 pub fn apply_context_projection(
@@ -62,12 +63,20 @@ fn preflight_context_composition(
         .messages
         .len()
         .checked_add(contribution.messages.len())
-        .is_none_or(|count| count > limits.context_messages)
+        .is_none_or(|count| {
+            limits
+                .context_messages
+                .is_some_and(|maximum| count > maximum.get())
+        })
         || context
             .metadata
             .len()
             .checked_add(contribution.metadata.len())
-            .is_none_or(|count| count > limits.attachments)
+            .is_none_or(|count| {
+                limits
+                    .attachments
+                    .is_some_and(|maximum| count > maximum.get())
+            })
     {
         return Err(crate::executor::stock_boundary(
             io,
@@ -134,7 +143,45 @@ fn preflight_context_composition(
             contribution.messages.as_slice(),
         ),
     };
-    let mut remaining = limits.render_bytes;
+    struct JoinedMetadata<'a>(
+        &'a std::collections::BTreeMap<String, FileRef>,
+        &'a std::collections::BTreeMap<String, FileRef>,
+    );
+    impl Serialize for JoinedMetadata<'_> {
+        fn serialize<S: serde::Serializer>(
+            &self,
+            serializer: S,
+        ) -> std::result::Result<S::Ok, S::Error> {
+            use serde::ser::SerializeMap as _;
+            let mut map = serializer.serialize_map(None)?;
+            for (key, value) in self.0.iter().chain(self.1) {
+                map.serialize_entry(key, value)?;
+            }
+            map.end()
+        }
+    }
+    #[derive(Serialize)]
+    struct JoinedContext<'a> {
+        messages: ContextMessages<'a>,
+        metadata: JoinedMetadata<'a>,
+        current_input_index: Option<u32>,
+    }
+    let bytes = crate::executor::with_history_io(io, |work| {
+        crate::executor::json::json_byte_length(
+            &JoinedContext {
+                messages: ContextMessages {
+                    first,
+                    user: None,
+                    second,
+                },
+                metadata: JoinedMetadata(&context.metadata, &contribution.metadata),
+                current_input_index,
+            },
+            limits.render_bytes,
+            work,
+        )
+    })?;
+    let mut remaining = limits.render_bytes.map(|maximum| maximum - bytes);
     crate::model::reserve_instruction_bodies(first, &mut remaining, io)?;
     crate::model::reserve_instruction_bodies(second, &mut remaining, io)?;
     Ok(current_input_index)

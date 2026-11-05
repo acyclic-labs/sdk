@@ -371,7 +371,7 @@ impl ProjFsSession {
             // waits for its running pass: nothing reaches it afterwards.
             runtime.callbacks.close_admission();
             lock_recover(&runtime.projector.state).stopping = true;
-            runtime.projector.changed.notify_all();
+            runtime.projector.signal_changed();
             view.quiesce();
         }
         runtime.callbacks.drain();
@@ -805,7 +805,7 @@ impl ProjFsSession {
             .source
             .fence_changes_with_meter(work)
             .map_err(|error| NativeMountError::Driver(error.to_string()))?;
-        runtime.projector.settle()
+        runtime.projector.settle(work)
     }
 
     pub(super) fn live(

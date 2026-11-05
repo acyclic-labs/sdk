@@ -86,7 +86,7 @@ mod tests {
             &home,
             &authority.verifier,
             &authority.scope,
-            crate::conversation::MAX_EXACT_JS_INTEGER,
+            Some(crate::conversation::MAX_EXACT_JS_INTEGER),
             None,
         )?;
         let put = |path: &'static str, bytes: &'static [u8]| {
@@ -123,7 +123,7 @@ mod tests {
             Arc::clone(&host),
             &authority.verifier,
             &authority.scope,
-            crate::conversation::MAX_EXACT_JS_INTEGER,
+            Some(crate::conversation::MAX_EXACT_JS_INTEGER),
             None,
         )?;
         let directive = crate::templates::directive(&selected, reader.as_ref()).await?;
@@ -183,7 +183,7 @@ mod tests {
         let encoded = crate::agent::InboxRecord::ForkAdopted(Box::new(adopted.clone()))
             .encode()
             .map_err(|error| crate::Error::Invalid(error.to_string()))?;
-        assert!(encoded.len() < crate::agent::MAX_RECORD_BYTES);
+        assert!(encoded.len() < acyclic_stream::MAX_RECORD_BYTES);
         // A source change cannot widen an existing parent's creation rights.
         assert!(
             templates
@@ -199,7 +199,6 @@ mod tests {
             &authority.scope,
             &home,
             VolumeOperation::Write,
-            u64::MAX,
             &mut None,
         )?;
         let files = Arc::new(super::super::agent_internal::AgentInternalFiles::new(
@@ -212,7 +211,7 @@ mod tests {
             Arc::new(acyclic_stream::MemoryStream::default()),
             path.clone(),
             (crate::OperationId::new(), 0),
-            crate::conversation::MAX_EXACT_JS_INTEGER,
+            Some(crate::conversation::MAX_EXACT_JS_INTEGER),
         ));
         let mut root_adoption = adopted;
         root_adoption.profile = Some(parent.clone());
@@ -224,8 +223,8 @@ mod tests {
             &state,
             (effects.clone(), None),
             writer.clone(),
-            crate::conversation::MAX_EXACT_JS_INTEGER,
-            (&["spawn".into()], Some(templates.clone())),
+            Some(crate::conversation::MAX_EXACT_JS_INTEGER),
+            (&["spawn".into()], None, Some(templates.clone())),
         )?;
         let tool = registry
             .get("spawn", None, None)?
@@ -242,7 +241,7 @@ mod tests {
         assert_eq!(original_effects.len(), 1);
         assert!(
             crate::agent::records::seal(&original_effects[0])?.len()
-                < crate::agent::MAX_RECORD_BYTES
+                < acyclic_stream::MAX_RECORD_BYTES
         );
         // Off, malformed, traversal, top-level, capability and authority negatives
         // all end in typed refusal; none silently falls back to the seed.
@@ -391,7 +390,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> SpawnTempl
                 Arc::clone(&self.host),
                 &authority.verifier,
                 &authority.scope,
-                crate::conversation::MAX_EXACT_JS_INTEGER,
+                Some(crate::conversation::MAX_EXACT_JS_INTEGER),
                 None,
             )?;
             crate::templates::admit_child(creation, reader.as_ref(), name, ceiling).await?;

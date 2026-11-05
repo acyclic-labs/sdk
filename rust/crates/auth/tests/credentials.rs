@@ -10,21 +10,14 @@ use std::sync::{
 mod conformance;
 
 #[test]
-fn credential_admission_matches_the_bounded_header_contract() {
+fn credential_admission_matches_the_header_contract() {
     conformance::check(include_bytes!("../fuzz/corpus/credential/v2-opaque-bearer"));
     conformance::check(include_bytes!(
         "../fuzz/corpus/capability/v2-signed-capability"
     ));
-    // Fixed corpus and byte boundaries run once, independently of generated cases.
-    for length in [MAX_CREDENTIAL_BYTES, MAX_CREDENTIAL_BYTES + 1] {
-        conformance::check("a".repeat(length).as_bytes());
-    }
-    for length in [MAX_CREDENTIAL_BYTES / 2, MAX_CREDENTIAL_BYTES / 2 + 1] {
-        conformance::check("é".repeat(length).as_bytes());
-    }
     proptest!(ProptestConfig::with_cases(64), |(value in prop_oneof![
         any::<String>(),
-        (0..=MAX_CREDENTIAL_BYTES + 2, any::<bool>()).prop_map(|(length, unicode)|
+        (0_usize..=16 * 1024, any::<bool>()).prop_map(|(length, unicode)|
             if unicode { "é".repeat(length) } else { "a".repeat(length) }),
     ])| {
         conformance::check(value.as_bytes());

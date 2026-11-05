@@ -487,8 +487,8 @@ async fn bounded_follow_at_or_past_its_end_closes_without_data() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     append(&provider, "events", 5).await?;
     let client = local(&provider)?;
-    // until <= from, and a range that starts at the tail.
-    for (from, until) in [(3, 2), (3, 3), (5, 9)] {
+    // An explicit zero bound, until <= from, and a range starting at the tail.
+    for (from, until) in [(0, 0), (3, 0), (3, 2), (3, 3), (5, 9)] {
         let mut data = Box::pin(
             client
                 .follow_data_with_ack(
@@ -626,12 +626,7 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
         });
         let authority = crate::session::testing::authority();
         let mut slots = crate::session::testing::slots();
-        authority.register(
-            &mut slots,
-            1,
-            &credential,
-            crate::session::Limits::default().channels,
-        )?;
+        authority.register(&mut slots, 1, &credential)?;
         let parent = request
             .children
             .as_ref()
@@ -745,13 +740,6 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
             }
             assert!(saved_owners.count_total > 0);
             original_owned_cost = Some(owned_cost);
-            // Each input is valid alone; the joined length still fails before a
-            // denied follow could hide it. Mutate only the captured request path.
-            let oversized = StreamPath::new("x".repeat(crate::MAX_PATH_BYTES))?;
-            assert_eq!(
-                visibility.page(original.clone(), Some(&oversized)),
-                Err(StreamError::InvalidPath)
-            );
         }
         let mut projected = None;
         costs[usize::from(follow)][usize::from(predicate)] = acyclic_test_support::measure(|| {

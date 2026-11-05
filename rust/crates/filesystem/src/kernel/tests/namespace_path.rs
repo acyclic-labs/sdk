@@ -150,11 +150,10 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
     assert_eq!(root.encoded_bytes(), 1);
     assert!(root.parent().is_none());
 
-    let posix = LogicalName::new(NameEncoding::PosixBytes, vec![0xff, b'a'], 255)?;
+    let posix = LogicalName::new(NameEncoding::PosixBytes, vec![0xff, b'a'])?;
     let windows = LogicalName::new(
         NameEncoding::WindowsUtf16Le,
         "file".encode_utf16().flat_map(u16::to_le_bytes).collect(),
-        255,
     )?;
     let native = NamespacePath::new(vec![posix.clone(), windows], limits)?;
     assert_eq!(
@@ -166,22 +165,26 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
     for (profile, name) in [
         (
             FilesystemProfile::Portable,
-            LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?,
+            LogicalName::new(NameEncoding::Utf8, b"child".to_vec())?,
+        ),
+        (
+            FilesystemProfile::Portable,
+            LogicalName::new(NameEncoding::Utf8, vec![b'x'; 1024])?,
         ),
         (
             FilesystemProfile::Posix,
-            LogicalName::new(NameEncoding::PosixBytes, vec![0xff, b'a'], 255)?,
+            LogicalName::new(NameEncoding::PosixBytes, vec![0xff, b'a'])?,
         ),
         (
             FilesystemProfile::Windows,
-            LogicalName::new(NameEncoding::WindowsUtf16Le, vec![0, 0xd8], 255)?,
+            LogicalName::new(NameEncoding::WindowsUtf16Le, vec![0, 0xd8])?,
         ),
     ] {
-        for root in ["/", "/parent"] {
+        for root in ["/".to_owned(), "/parent".to_owned(), "/parent".repeat(1024)] {
             let cancellation = CancellationToken::new();
             let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
             let (path, allocation) = NamespacePath::parse_in_profile(
-                root,
+                &root,
                 profile,
                 limits,
                 &mut accounting,
@@ -197,7 +200,6 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
             let path = NamespacePath::child_from_owned(
                 crate::kernel::Owned::new(path, allocation, bytes),
                 &name,
-                limits,
                 &mut accounting,
                 &cancellation,
             )?;
@@ -209,6 +211,7 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
                 accounting.spent().bytes_copied - before.bytes_copied,
                 name.as_bytes().len() as u64
             );
+            assert_eq!(accounting.spent().items_examined - before.items_examined, 1);
             let expected_bytes =
                 parent_encoded_bytes + u32::from(root != "/") + name.as_bytes().len() as u32;
             assert_eq!(path.value.encoded_bytes(), expected_bytes);
@@ -224,7 +227,7 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
 
             for cancel in [false, true] {
                 let (path, allocation) = NamespacePath::parse_in_profile(
-                    root,
+                    &root,
                     profile,
                     limits,
                     &mut accounting,
@@ -235,17 +238,36 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
                 if cancel {
                     cancellation.cancel();
                 }
+                let budget = if cancel {
+                    WorkBudget::UNBOUNDED
+                } else {
+                    WorkBudget {
+                        allocation_operations: before.allocation_operations,
+                        ..WorkBudget::UNBOUNDED
+                    }
+                };
+                let (ledger, spent, _, _) = accounting
+                    .standalone_parts()
+                    .ok_or("original ledger lost")?;
+                let mut admitted =
+                    KernelAccounting::borrowed_standalone(ledger, spent, budget, &cancellation);
                 let result = NamespacePath::child_from_owned(
                     crate::kernel::Owned::new(path, allocation, bytes),
                     &name,
-                    VolumeLimits {
-                        maximum_path_bytes: expected_bytes - 1,
-                        ..limits
-                    },
-                    &mut accounting,
+                    &mut admitted,
                     &cancellation,
                 );
-                assert!(result.is_err());
+                let error = result
+                    .err()
+                    .ok_or("unfunded or cancelled append succeeded")?;
+                if cancel {
+                    assert!(matches!(error, crate::FsError::Cancelled(_)));
+                } else {
+                    assert!(matches!(
+                        error,
+                        crate::FsError::Work(crate::WorkError::BudgetExceeded { .. })
+                    ));
+                }
                 assert_eq!(
                     accounting.spent().allocation_operations,
                     before.allocation_operations
@@ -307,48 +329,6 @@ fn string_paths_use_the_volume_name_encoding() -> Result<(), Box<dyn std::error:
 }
 
 #[test]
-fn bounds_are_checked_without_storage() -> Result<(), Box<dyn std::error::Error>> {
-    let limits = VolumeLimits {
-        maximum_path_bytes: 4,
-        maximum_component_bytes: 2,
-        maximum_path_depth: 1,
-        ..VolumeLimits::default()
-    };
-    let name = LogicalName::new(NameEncoding::Utf8, b"ab".to_vec(), 2)?;
-    assert!(NamespacePath::new(vec![name.clone()], limits).is_ok());
-    assert_eq!(
-        NamespacePath::new(vec![name.clone(), name], limits),
-        Err(NamespacePathError::TooDeep)
-    );
-
-    let wide_limits = VolumeLimits {
-        maximum_path_bytes: 64,
-        maximum_component_bytes: 1,
-        maximum_path_depth: 4,
-        ..VolumeLimits::default()
-    };
-    let wide = LogicalName::new(NameEncoding::Utf8, b"ab".to_vec(), 2)?;
-    assert_eq!(
-        NamespacePath::new(vec![wide], wide_limits),
-        Err(NamespacePathError::ComponentTooLong)
-    );
-
-    let short_path_limits = VolumeLimits {
-        maximum_path_bytes: 2,
-        maximum_component_bytes: 2,
-        maximum_path_depth: 4,
-        ..VolumeLimits::default()
-    };
-    let first = LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 2)?;
-    let second = LogicalName::new(NameEncoding::Utf8, b"b".to_vec(), 2)?;
-    assert_eq!(
-        NamespacePath::new(vec![first, second], short_path_limits),
-        Err(NamespacePathError::PathTooLong)
-    );
-    Ok(())
-}
-
-#[test]
 fn invalid_and_cancelled_paths_do_not_allocate() {
     let cancellation = CancellationToken::new();
     for path in ["relative", "/a//b", "/.", "/..", "/a/", "/nul\0"] {
@@ -376,47 +356,6 @@ fn invalid_and_cancelled_paths_do_not_allocate() {
     .expect_err("cancelled parser must fail");
     assert_eq!(*failure.work, WorkCounters::default());
     assert_eq!(failure.error, NamespacePathError::Cancelled);
-}
-
-#[test]
-fn native_encoded_bounds_reject_before_owned_path_allocation() {
-    let cancellation = CancellationToken::new();
-    for (path, limits) in [
-        (
-            "/ab",
-            VolumeLimits {
-                maximum_component_bytes: 3,
-                ..VolumeLimits::default()
-            },
-        ),
-        (
-            "/ab/c",
-            VolumeLimits {
-                maximum_path_bytes: 7,
-                ..VolumeLimits::default()
-            },
-        ),
-        (
-            "/a/b",
-            VolumeLimits {
-                maximum_path_depth: 1,
-                ..VolumeLimits::default()
-            },
-        ),
-    ] {
-        let failure = parse_path(
-            path,
-            FilesystemProfile::Windows,
-            limits,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-            0,
-        )
-        .expect_err("native profile bounds must fail");
-        assert_eq!(failure.work.allocation_operations, 0);
-        assert_eq!(failure.work.bytes_copied, 0);
-        assert_eq!(failure.work.bytes_encoded, 0);
-    }
 }
 
 #[test]
@@ -501,7 +440,7 @@ fn canonical_case_fold_matches_unicode_full_folding() -> Result<(), Box<dyn std:
             .fold_string(&text)
             .as_bytes()
             .to_vec();
-        let name = LogicalName::new(NameEncoding::Utf8, text.as_bytes().to_vec(), u32::MAX)?;
+        let name = LogicalName::new(NameEncoding::Utf8, text.as_bytes().to_vec())?;
         assert_eq!(name.case_fold_key(), expected, "ordinary key: {text:?}");
         let mut ledger = AllocationLedger::default();
         let mut work = WorkCounters::UNCHARGED;
@@ -578,20 +517,18 @@ fn canonical_case_fold_matches_unicode_full_folding() -> Result<(), Box<dyn std:
 fn canonical_case_keys_preserve_native_byte_grammar() -> Result<(), Box<dyn std::error::Error>> {
     for text in ["ΟΣ", "ǅΣ", "İ𝄞", "A\u{200d}Σ"] {
         let bytes: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
-        let name = LogicalName::new(NameEncoding::WindowsUtf16Le, bytes.clone(), u32::MAX)?;
+        let name = LogicalName::new(NameEncoding::WindowsUtf16Le, bytes.clone())?;
         assert_eq!(name.case_fold_key(), bytes);
     }
     for (encoding, bytes) in [
         (NameEncoding::WindowsUtf16Le, vec![0x00, 0xd8, b'A', 0x00]),
         (NameEncoding::PosixBytes, vec![0xff, b'A', b'S']),
     ] {
-        let name = LogicalName::new(encoding, bytes.clone(), u32::MAX)?;
+        let name = LogicalName::new(encoding, bytes.clone())?;
         assert_eq!(name.case_fold_key(), bytes);
     }
     for invalid in ["", ".", "..", "a/b", "a\0b"] {
-        assert!(
-            LogicalName::new(NameEncoding::Utf8, invalid.as_bytes().to_vec(), u32::MAX,).is_err()
-        );
+        assert!(LogicalName::new(NameEncoding::Utf8, invalid.as_bytes().to_vec(),).is_err());
     }
     Ok(())
 }
@@ -604,7 +541,7 @@ proptest::proptest! {
         text in "[a-zA-Z0-9é中𝄞]{1,24}",
         raw in proptest::collection::vec(1_u8..=255, 1..48),
     ) {
-        use crate::kernel::codec::{CanonicalDecodeError, CanonicalInvariant, ReadAllocationStep};
+        use crate::kernel::codec::{CanonicalDecodeError, ReadAllocationStep};
         let mut posix = vec![b'n', 0xff];
         posix.extend(raw.into_iter().map(|byte| if byte == b'/' { b'x' } else { byte }));
         let mut wide: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
@@ -615,12 +552,12 @@ proptest::proptest! {
             (NameEncoding::WindowsUtf16Le, wide),
         ] {
             let maximum = u32::try_from(bytes.len()).expect("small generated name");
-            let name = LogicalName::new(encoding, bytes, maximum)
+            let name = LogicalName::new(encoding, bytes)
                 .expect("generator produces admitted names, including opaque native names");
             let mut allocations = 0;
             let mut capacity = 0;
             let mut copied = 0;
-            let copy = name.try_clone::<CanonicalDecodeError>(maximum, &mut |step| {
+            let copy = name.try_clone::<CanonicalDecodeError>(&mut |step| {
                 match step {
                     ReadAllocationStep::Allocate { operations, .. } => allocations += operations,
                     ReadAllocationStep::Capacity { actual_bytes, .. } => capacity = actual_bytes,
@@ -628,22 +565,13 @@ proptest::proptest! {
                     _ => {}
                 }
                 Ok(())
-            }).expect("exact bound funds the canonical copy");
+            }).expect("original byte owner funds the canonical copy");
             proptest::prop_assert_eq!(&copy, &name);
             proptest::prop_assert_eq!(allocations, 1);
             proptest::prop_assert_eq!(capacity, copy.logical_owned_bytes());
             proptest::prop_assert_eq!(copied, u64::from(maximum));
 
-            // The old copy-then-validate path reaches this observer before
-            // refusing, so restoring it fails here without allocating.
-            let refused = name.try_clone::<CanonicalDecodeError>(maximum - 1, &mut |_| {
-                panic!("short name bound reached allocation admission")
-            });
-            let exact_cause = matches!(refused, Err(CanonicalDecodeError::Invariant(
-                CanonicalInvariant::Name(TreePageError::NameTooLarge)
-            )));
-            proptest::prop_assert!(exact_cause);
-            let denied = name.try_clone::<CanonicalDecodeError>(maximum, &mut |_| {
+            let denied = name.try_clone::<CanonicalDecodeError>(&mut |_| {
                 Err(CanonicalDecodeError::AllocationFailed)
             });
             let original_refusal = matches!(denied, Err(CanonicalDecodeError::AllocationFailed));

@@ -108,6 +108,8 @@ jobs:
           cp scripts/publish-npm-packages.mjs "$stage/scripts/"
           cp scripts/plugin-qualification.mjs "$stage/scripts/"
           cp scripts/typescript-qualification.mjs "$stage/scripts/"
+          cp scripts/process-capture.mjs "$stage/scripts/"
+          cp scripts/publication-receipt.mjs "$stage/scripts/"
           cp scripts/assemble-{actors,stream}-native-package.mjs scripts/build-{actors,stream}-native.mjs \
             scripts/assemble-native-family.mjs scripts/build-native-family.mjs \
             scripts/native-family.mjs scripts/archive-utils.mjs "$stage/scripts/"
@@ -234,3 +236,11 @@ jobs:
         working-directory: ${{ runner.temp }}/npm-publication
         run: >-
           node scripts/publish-npm-packages.mjs typescript "${{ needs.prepare.outputs.source_sha }}" "${{ needs.prepare.outputs.version }}"
+      - name: Retain registry visibility receipts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: npm-registry-publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/npm-publication/typescript/registry-publication/*.json
+          if-no-files-found: ignore
+          retention-days: ${{ contains(github.workflow, 'Release') && 30 || 3 }}

@@ -44,7 +44,9 @@ test("Actor bindings retain the original shared ledger and refuse a port without
     const ledger = harnessStreamLedger(binding, port);
     expect(await ledger.register("root", ["tree/root/inbox", "tree/root/control"])).toEqual({ admitted: true });
     expect(await ledger.register("child", ["tree/child/inbox", "tree/child/control"])).toEqual({ admitted: true });
-    expect(await ledger.register("other", ["tree/child/inbox", "tree/other/control"])).toEqual({ refused: "conflict" });
+    expect(await ledger.register("other", ["tree/child/inbox", "tree/other/control"])).toEqual({ admitted: true });
+    expect(await ledger.register("other", ["tree/child/control"], "0")).toEqual({ admitted: true });
+    expect(await ledger.register("other", ["tree/other/control"], "0")).toEqual({ refused: "conflict" });
     await sharedProviderTree({ ...streamLedgerPort(ledger, "root"), close: () => provider.close() });
   } finally { provider.close(); }
 });

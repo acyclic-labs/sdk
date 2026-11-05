@@ -349,6 +349,7 @@ async fn capture_progress_preserves_native_exit_and_refuses_admission_as_deliver
         };
         let outcome = tree
             .capture(
+                &crate::TaskSpawner::current(),
                 CaptureSchedule::new(Duration::from_secs(5)),
                 usize::MAX,
                 Some(OwnedCaptureInput::Literal(input.to_vec())),
@@ -454,7 +455,7 @@ fn start(
     let output = tree.stream_capture(
         &crate::TaskSpawner::current(),
         schedule,
-        usize::MAX,
+        None,
         None,
         Handler {
             wake: wake.clone(),
@@ -572,7 +573,7 @@ async fn owner_stop_and_deadline_retire_without_reader_credit() -> io::Result<()
         }
         // Await the ORIGINAL cleanup owner while retaining the unread receiver.
         // This catches an implementation that waits for credit before control.
-        let outcome = (&mut output.completion).await??;
+        let outcome = (&mut output.completion).await?;
         let failure = outcome.result.unwrap_err();
         assert_eq!(
             failure.error.kind(),

@@ -455,7 +455,7 @@ async fn calls_emit_spans_with_status_codes_and_no_content() -> Result<(), Error
 }
 
 #[tokio::test]
-async fn connection_rejects_insecure_or_unbounded_trust_configuration() {
+async fn connection_rejects_insecure_or_empty_trust_configuration() {
     let _connect_trace = CONNECT_TRACE_TEST.lock().await;
     assert!(matches!(
         Inference::connect("http://localhost", "secret", b"certificate").await,
@@ -463,11 +463,6 @@ async fn connection_rejects_insecure_or_unbounded_trust_configuration() {
     ));
     assert!(matches!(
         Inference::connect("https://localhost", "secret", b"").await,
-        Err(Error::Invalid(INVALID_CA_CERTIFICATE_LENGTH))
-    ));
-    let oversized = vec![b'x'; MAXIMUM_CA_CERTIFICATE_BYTES + 1];
-    assert!(matches!(
-        Inference::connect("https://localhost", "secret", &oversized).await,
         Err(Error::Invalid(INVALID_CA_CERTIFICATE_LENGTH))
     ));
 }
