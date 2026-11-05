@@ -155,7 +155,7 @@ mod tests {
             .await?,
         );
         let connection = harness.connect().await?;
-        let conversation = Conversation::open(connection.clone())?;
+        let conversation = Conversation::open(connection.clone());
         let mut ui = Session::open(&conversation).await?;
         assert!(ui.open_view().is_none());
         // Poll the original live query before publishing through a second call
@@ -229,7 +229,7 @@ mod tests {
         assert_eq!(ui.open_view(), Some("diff"));
         drop(ui);
         drop(conversation);
-        let resumed = Conversation::open(harness.connect().await?)?;
+        let resumed = Conversation::open(harness.connect().await?);
         let reopened = Session::open(&resumed).await?;
         assert_eq!(
             reopened.open_view(),
