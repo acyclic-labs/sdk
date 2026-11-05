@@ -165,7 +165,7 @@ pub(crate) use blocking::{
 };
 pub use task::{
     AbortHandle, OwnedTask, PersistenceKey, TaskCompletion, TaskHandle, TaskSpawner,
-    coordination_runtime, persistence_syscall, spawn, spawn_blocking, spawn_owned,
+    coordination_runtime, persistence_syscall, spawn, spawn_blocking, spawn_eager, spawn_owned,
     spawn_persistence,
 };
 mod completion;
