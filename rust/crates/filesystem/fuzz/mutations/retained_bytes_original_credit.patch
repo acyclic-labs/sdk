@@ -1,0 +1,13 @@
+--- a/rust/crates/filesystem/src/kernel/allocation/retained.rs
++++ b/rust/crates/filesystem/src/kernel/allocation/retained.rs
+@@ -453,8 +453,9 @@
+         let mut allocation = RetainedAllocation::claim(control, 1, accounting)?;
+         self.allocation.absorb(&mut allocation)?;
++        drop(self.allocation);
+         Ok(bytes::Bytes::from_owner(RetainedBytes {
+             bytes: self.value,
+             _custody: custody,
+-            _allocation: self.allocation,
++            _allocation: allocation,
+         }))
+     }
