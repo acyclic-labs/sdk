@@ -40,7 +40,18 @@ pub const fn declarations(profile: NativeToolProfile) -> &'static str {
 /// pinned revision; output and projection schemas belong to the capability
 /// executor that binds each declaration, so they are left empty here.
 pub fn definitions(profile: NativeToolProfile) -> Result<Vec<ToolDefinition>> {
-    let mut source: Vec<Value> = serde_json::from_str(declarations(profile))
+    decoded(profile)?
+        .map(|entry| entry.map(|(_, definition)| definition))
+        .collect()
+}
+
+/// Decode the mapping and public declaration together. Binding consumes this
+/// iterator directly, so it neither reparses the mapping nor collects a second
+/// vector of definitions before constructing the executable declarations.
+fn decoded(
+    profile: NativeToolProfile,
+) -> Result<impl Iterator<Item = Result<(crate::profile::ToolRevision, ToolDefinition)>>> {
+    let source: Vec<Value> = serde_json::from_str(declarations(profile))
         .map_err(|error| Error::Invalid(error.to_string()))?;
     let revisions = profile.tools()?;
     if revisions.len() != source.len() {
@@ -48,29 +59,29 @@ pub fn definitions(profile: NativeToolProfile) -> Result<Vec<ToolDefinition>> {
             "native profile layer and public declarations differ".into(),
         ));
     }
-    revisions
-        .iter()
-        .zip(source.iter_mut())
-        .map(|(revision, entry)| {
-            let name = take_string(entry, "name")?;
+    Ok(revisions
+        .into_iter()
+        .zip(source)
+        .map(|(revision, mut entry)| {
+            let name = take_string(&mut entry, "name")?;
             if name != revision.variant {
                 return Err(Error::Invalid(
                     "native declaration order differs from its profile layer".into(),
                 ));
             }
-            Ok(ToolDefinition {
+            let definition = ToolDefinition {
                 name,
                 revision: revision.revision.clone(),
-                description: take_string(entry, "description")?,
+                description: take_string(&mut entry, "description")?,
                 input_schema: entry
                     .get_mut("parametersJsonSchema")
                     .map(Value::take)
                     .ok_or_else(|| Error::Invalid("native input contract is absent".into()))?,
                 output_schema: Value::Bool(true),
                 projection_schema: Value::Bool(true),
-            })
-        })
-        .collect()
+            };
+            Ok((revision, definition))
+        }))
 }
 
 /// One mapped declaration: its capability, the variant that runs it when
@@ -92,30 +103,27 @@ impl NativeTools {
     /// # Errors
     /// [`Error::Invalid`] when the layer, its declarations or a template is malformed.
     pub fn new(profile: NativeToolProfile) -> Result<Self> {
-        profile
-            .tools()?
-            .into_iter()
-            .zip(definitions(profile)?)
-            .filter_map(|(revision, definition)| {
-                let template = revision.arguments?;
-                Some((|| {
-                    let implementation = revision
-                        .implementation
-                        .as_deref()
-                        .map(crate::tools::variants::tool)
-                        .transpose()?
-                        .map(Arc::new);
-                    let arguments = arguments::Arguments::new(template, revision.refuse)?;
-                    Ok((
-                        revision.capability,
-                        implementation,
-                        definition,
-                        Arc::new(arguments),
-                    ))
-                })())
-            })
-            .collect::<Result<_>>()
-            .map(Self)
+        let mut mapped = Vec::new();
+        for entry in decoded(profile)? {
+            let (revision, definition) = entry?;
+            let Some(template) = revision.arguments else {
+                continue;
+            };
+            let implementation = revision
+                .implementation
+                .as_deref()
+                .map(crate::tools::variants::tool)
+                .transpose()?
+                .map(Arc::new);
+            let arguments = arguments::Arguments::new(template, revision.refuse)?;
+            mapped.push((
+                revision.capability,
+                implementation,
+                definition,
+                Arc::new(arguments),
+            ));
+        }
+        Ok(Self(mapped))
     }
 
     /// Offers each capability `tools` selects as these declarations. Each runs
