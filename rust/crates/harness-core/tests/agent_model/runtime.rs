@@ -326,13 +326,14 @@ async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed
     #[cfg(feature = "test-support")]
     return super::control_trace::checkpoint(checkpoint_tails()).await;
     #[cfg(not(feature = "test-support"))]
-    checkpoint_tails().await
+    checkpoint_tails().await.map(|_| ())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-async fn checkpoint_tails() -> Result {
+async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
     use acyclic_stream::LocalStream;
 
+    let mut agents = Vec::new();
     for oversized in [false, true] {
         let directory = tempfile::tempdir()?;
         let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
@@ -396,6 +397,8 @@ async fn checkpoint_tails() -> Result {
         host.drain(&root).await?;
         let parent_before = host.state(&root).await?;
         assert_eq!(parent_before.open_children.len(), 3);
+        agents.push(root.clone());
+        agents.extend(parent_before.open_children.iter().cloned());
         for child in &parent_before.open_children {
             host.drain(child).await?;
         }
@@ -547,7 +550,7 @@ async fn checkpoint_tails() -> Result {
             assert!(archived.alarm().pending().is_none());
         }
     }
-    Ok(())
+    Ok(agents)
 }
 
 #[cfg(not(target_arch = "wasm32"))]

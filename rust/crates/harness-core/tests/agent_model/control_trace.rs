@@ -148,12 +148,13 @@ pub(super) async fn quorum(future: impl std::future::Future<Output = Result>) ->
     )
 }
 
-pub(super) async fn checkpoint(future: impl std::future::Future<Output = Result>) -> Result {
-    let (result, events) = observe_async::<_, Event>(future).await;
-    result?;
+pub(super) async fn checkpoint(
+    future: impl std::future::Future<Output = Result<Vec<AgentPath>>>,
+) -> Result {
+    let (agents, events) = observe_async::<_, Event>(future).await;
     check(
         &events,
-        &[AgentPath::root(&id(1))],
+        &agents?,
         &["admit", "pick", "settle", "report", "alarm"],
     )
 }
