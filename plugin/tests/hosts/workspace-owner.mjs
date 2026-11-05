@@ -1,29 +1,18 @@
 import assert from 'node:assert/strict';
-import {existsSync,watch} from 'node:fs';
-import {join,resolve} from 'node:path';
+import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {Processes} from '../../../scripts/graphcoder-e2e/process.mjs';
+import {Processes,Spool} from '../../../scripts/graphcoder-e2e/process.mjs';
 import {withOwnedCase} from '../../../scripts/graphcoder-e2e/suite.mjs';
 
-// Subscribe before the snapshot. Both native model and command acceptance use
-// this one readiness barrier and the caller's existing process/tree custody.
+// Serving readiness belongs to this process lifetime. Persistent descriptors
+// cannot announce a replacement owner; its original stdout and terminal can.
 export async function startWorkspaceOwner({scope,binary,workspace,state,env,root,args=[],capture=()=>{}}) {
- const descriptor=join(workspace,'.acyclic-sdk/host-files/owner.json');
- let ready,failed;
- const notified=new Promise((yes,no)=>{ready=yes;failed=no;});
- const watcher=watch(workspace,{recursive:true});
- watcher.on('change',()=>{if(existsSync(descriptor))ready();});watcher.on('error',failed);
- try {
-  const reported=scope.startReportedOwned(binary,['--workspace',workspace,'--host-workspace','--host-state-directory',state,...args],
-   {cwd:workspace,env,scopeCapture:capture,scopeMountRoot:root,...(process.platform!=='win32'?{scopeReportSignal:'SIGTERM'}:{})}).then(async owner=>{
-    // The diagnostic observer remains owned by the same process terminal.
-    owner.closed.then(()=>failed(new Error('step=observe workspace owner readiness: workspace owner exited before descriptor; recovery=node --test plugin/tests/hosts/workspace-owner.test.mjs')),failed);
-    if(existsSync(descriptor))ready();
-    await owner.reportReady;
-    return owner;
-   });
-  const [owner]=await Promise.all([reported,notified]);return owner;
- } finally {watcher.close();}
+ const owner=await scope.startReportedOwned(binary,['--workspace',workspace,'--host-workspace','--host-state-directory',state,...args],
+  {cwd:workspace,env,scopeCapture:capture,scopeMountRoot:root,...(process.platform!=='win32'?{scopeReportSignal:'SIGTERM'}:{})});
+ const events=new Spool(owner.child.stdout,owner.closed,
+  {key:event=>event.type==='workspace-owner-ready'?['ready']:[],unique:true});
+ await Promise.all([owner.reportReady,events.keyed('ready')]);
+ return owner;
 }
 
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
