@@ -746,7 +746,8 @@ fn genesis() -> e::Snapshot {
         key: e::SummaryKey {
             source: source(),
             through: 0,
-            renderer: acyclic_model_render::RENDERER_VERSION,
+            // Retain the renderer input recorded in resource-epoch-genesis.
+            renderer: 3,
             model: [3; 32],
         },
         summary: None,
