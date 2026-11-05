@@ -1,4 +1,4 @@
-use super::*;
+use super::{Arc, HELD_RETRY, NativeMountError, ProjFsSession, Projector, Runtime, lock_recover};
 
 impl Projector {
     pub(super) fn run_lifecycle(&self, runtime: Arc<Runtime>) {

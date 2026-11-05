@@ -1,4 +1,20 @@
-use super::*;
+use super::{
+    Arc, CallbackGate, FileLocks, HR_ACCESS_DENIED, HR_ALREADY_EXISTS, HR_DIRECTORY,
+    HR_DIRECTORY_NOT_EMPTY, HR_FILE_INVALID, HR_FILE_NOT_FOUND, HR_INVALID_DATA, HR_IO_DEVICE,
+    HR_NOT_SUPPORTED, HRESULT, HSTRING, HashMap, HostRoot, MetadataProbeGuard, MountFilesystem,
+    MountNodeKind, MountPath, MountSourceError, Mutex, NOTIFICATION_ROOT, NativeHostWork,
+    NativeMountError, NativeMountRequest, NativeMountWorkScope, PCWSTR,
+    PRJ_FLAG_USE_NEGATIVE_PATH_CACHE, PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
+    PRJ_NOTIFICATION_MAPPING, PRJ_STARTVIRTUALIZING_OPTIONS, PRJ_UPDATE_ALLOW_READ_ONLY, PathBuf,
+    PostOperationFailures, PrjDeleteFile, PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing,
+    PrjStopVirtualizing, ProjFsNamespaceOutcome, ProjFsNamespaceQualification, Projector,
+    ProjectorState, ReadOperations, Runtime, RwLock, SendContext, ViewObserver, WriteOperations,
+    c_void, callbacks, capture_missing_host_ancestors, delete_through, driver_error,
+    flush_callback_gate, guid_from_key, host_relative_path, lock_recover, open_notifications,
+    path_from, projfs_path_suffix, reject_nested_projection, reject_stale_projection, size_of,
+    staging_path,
+};
+use super::{HR_PATH_NOT_FOUND, HR_VIRTUALIZATION_INVALID_OPERATION};
 use crate::native_mount::retirement::SourceRetirementWait;
 use crate::native_mount::shared::outcome::{CallbackFailure, callback_failure, source_failure};
 

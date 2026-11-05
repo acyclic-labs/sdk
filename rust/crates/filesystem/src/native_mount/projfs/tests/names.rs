@@ -1,4 +1,9 @@
-use super::*;
+use super::MountFilesystem;
+use super::{
+    Arc, FileId, FileMetadata, HR_ACCESS_DENIED, HR_FILE_NOT_FOUND, HR_OK, HRESULT, HSTRING, Mutex,
+    PCWSTR, PRJ_CALLBACK_DATA, ReadBasis, Runtime, callback_runtime, query_name, setup_work,
+    windows_checkout_source, windows_path, with_creating_name,
+};
 
 fn cached_name_query(runtime: &Runtime, file_id: FileId, basis: ReadBasis) -> HRESULT {
     let mut path = windows_path("leaf");

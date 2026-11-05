@@ -1,4 +1,4 @@
-use super::*;
+use super::{NativeExchangeError, Path, PathBuf};
 use crate::demand::{DemandError, SourceDemandReadWork};
 use crate::native_host::{self as host};
 use crate::{NativeRootIdentity, WorkCounters, WorkError};

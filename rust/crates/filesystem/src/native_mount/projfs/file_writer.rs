@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, NativeMountError, ProjectedEntry,
+    staging_path,
+};
 
 pub(super) fn ordinary_basic_information(
     entry: &ProjectedEntry,

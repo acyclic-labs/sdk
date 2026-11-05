@@ -1,4 +1,14 @@
-use super::*;
+#[cfg(all(test, feature = "native-watch"))]
+use super::{
+    DemandError, DemandWork, NativeMaterializationWork, WorkBudget, ordinary_work, test_root,
+};
+
+use super::{
+    Dir, File, HostStat, ITEM, NativeHostWork, NativeRootIdentity, OsStr, Path, READ, WRITE,
+    WorkCounters, buffer, copy_work, directory_identity, file_identity_and_length, fs, io, nt, win,
+    windows_name_packet,
+};
+
 use std::os::windows::{
     ffi::OsStrExt as _,
     io::{AsRawHandle as _, FromRawHandle as _},

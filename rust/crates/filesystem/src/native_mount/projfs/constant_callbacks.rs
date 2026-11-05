@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    GUID, HR_FILE_NOT_FOUND, HR_OK, HR_UNEXPECTED, HRESULT, PCWSTR, PRJ_CALLBACK_DATA,
+    PRJ_DIR_ENTRY_BUFFER_HANDLE,
+};
 
 pub(super) const unsafe fn end_directory(
     _callback_data: *const PRJ_CALLBACK_DATA,

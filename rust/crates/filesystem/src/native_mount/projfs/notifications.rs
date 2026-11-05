@@ -1,4 +1,23 @@
-use super::*;
+use super::{
+    Carried, DeleteBinding, FILE_NOTIFICATIONS, FileId, GUID, HR_FILE_INVALID, HR_FILE_NOT_FOUND,
+    HR_INVALID_DATA, HR_NOT_SAME_DEVICE, HR_NOT_SUPPORTED, HR_OK, HR_UNEXPECTED, HRESULT,
+    HostWindowsMetadata, MAXIMUM_CACHED_BINDINGS, MetadataClose, MetadataProbeGuard,
+    MountFilesystem, MountPath, MountSourceError, Mutex, OpenMetadataState, Owned, PCWSTR,
+    PRJ_CALLBACK_DATA, PRJ_CALLBACKS, PRJ_DIR_ENTRY_BUFFER_HANDLE, PRJ_NOTIFICATION,
+    PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED,
+    PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED,
+    PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION, PRJ_NOTIFICATION_FILE_OPENED,
+    PRJ_NOTIFICATION_FILE_OVERWRITTEN, PRJ_NOTIFICATION_FILE_RENAMED,
+    PRJ_NOTIFICATION_HARDLINK_CREATED, PRJ_NOTIFICATION_NEW_FILE_CREATED,
+    PRJ_NOTIFICATION_PARAMETERS, PRJ_NOTIFICATION_PRE_DELETE, PRJ_NOTIFICATION_PRE_RENAME,
+    PRJ_NOTIFICATION_PRE_SET_HARDLINK, PRJ_NOTIFY_FILE_OPENED, PRJ_NOTIFY_TYPES,
+    PostOperationFailures, ReadBasis, ReadOnlyBinding, Runtime, callback_name_matches,
+    capture_changed_windows_metadata, close_metadata_handle, defer_host_capture, empty_destination,
+    end_directory, file_data, file_id, get_directory, has_pending_capture, lock_recover,
+    metadata_changed_since_open, native_hresult, path_from, placeholder,
+    probe_host_windows_metadata, projfs_path_suffix, provider_stack, record_metadata_open,
+    refresh_metadata_baseline, runtime, size_of, source_hresult, start_directory,
+};
 
 pub(super) unsafe fn query_name(callback_data: *const PRJ_CALLBACK_DATA) -> HRESULT {
     let Some((data, runtime)) = runtime(callback_data) else {

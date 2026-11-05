@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    Arc, Delivery, DemandError, DemandWork, Duration, HANDLE, HostChange, HostChangeWide,
+    INITIAL_BUFFER_BYTES, NativeSourceWatch, Ordering, PoisonError, Shared, SourceDemandReadWork,
+    WorkCounters, hub, io, is_open, notification,
+};
 use crate::native_host::NativeHostWork;
 use crate::source_watch::HostChangeSink;
 use crate::{CancellationToken, WorkBudget};
@@ -238,8 +242,13 @@ fn stop_denial_and_cancellation_retain_the_same_native_owner() -> TestResult {
 
 #[cfg(feature = "native-mount")]
 mod original {
-    use super::*;
+    use super::{
+        Arc, CancellationToken, Delivery, DemandError, DemandWork, HANDLE, INITIAL_BUFFER_BYTES,
+        NativeSourceWatch, Ordering, PoisonError, Quiet, Shared, TestResult, WorkBudget,
+        WorkCounters, assert_retired, driver, held, io, is_open,
+    };
     use crate::demand::NativeDemandReadMeter;
+    use std::os::windows::io::AsHandle;
     fn wait_retired(shared: &Shared) {
         assert!(
             shared
@@ -256,6 +265,7 @@ mod original {
         );
         assert_retired(shared);
     }
+
     fn budget() -> WorkBudget {
         WorkBudget {
             backend_read_operations: 64,

@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Arc, MemorySource, MountFilesystem, NativeMountError, powershell, setup_work, sorted_names,
+    succeeded, windows_checkout_source_with_files, windows_path,
+};
 
 /// A shared instance whose start fails returns the failure: the failed
 /// instance is dropped under the registry lock that serializes starts, so

@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    CancellationToken, CaptureError, CaptureOptions, CapturePolicy, CaptureReceipt, NamespacePath,
+    NativeMaterializationWork, OperationFailure, OperationReceipt, Path, WorkBudget, WorkCounters,
+    capture_root_identity, capture_subtrees_with_native_work, dense_attributes,
+};
 use proptest::prelude::*;
 
 #[derive(Default)]

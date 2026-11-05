@@ -1,4 +1,4 @@
-use super::*;
+use super::{MountDestinationGuard, NativeMountError};
 use crate::materializer::NativeResourceCredit::WriteOperations;
 use crate::native_host::NativeHostWork as _;
 use crate::native_ownership::{HASHED_BYTES, NativeOwnershipReceipt, RECEIPT_BYTES};

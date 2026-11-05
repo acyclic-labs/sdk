@@ -1,4 +1,13 @@
-use super::*;
+use super::MountFilesystem;
+use super::{
+    Arc, Bytes, CallbackGate, FILE_ATTRIBUTE_NORMAL, FileMetadata, Fs, HSTRING, HashSet, Lifecycle,
+    LocalOptions, MaterializeQueue, MetadataField, MountPath, MountSourceError, Mutex,
+    PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, PostOperationFailures, Projection, VolumeConfig,
+    callback_runtime, decode_utf16_name, flush_callback_gate, local_workspace, lock_recover,
+    manual_mount_options, mount_source, owned_component, projected_entry, setup_chunk, setup_work,
+    sorted_names, source_hresult, windows_checkout_source, windows_demand_source, windows_name,
+    windows_path, writes_only_promised_content,
+};
 
 #[test]
 fn materialization_queue_retains_original_errors_and_retires_panicking_items() {

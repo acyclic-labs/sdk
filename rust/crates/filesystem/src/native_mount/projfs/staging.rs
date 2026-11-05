@@ -1,4 +1,12 @@
-use super::*;
+use super::{
+    HR_DIRECTORY_NOT_EMPTY, HR_FILE_NOT_FOUND, HR_PATH_NOT_FOUND, HR_SHARING_VIOLATION,
+    HR_VIRTUALIZATION_INVALID_OPERATION,
+};
+use super::{
+    HostWindowsMetadata, MountPath, MountSourceError, PRJ_UPDATE_ALLOW_READ_ONLY, PathBuf,
+    ProjectedEntry, Projection, Release, WRITE_CHUNK_BYTES, driver_error, handle_state,
+    host_relative_path, link_digest, prj_delete, reparse_data, size_of,
+};
 
 pub(in crate::native_mount) fn staging_path(root: &std::path::Path) -> PathBuf {
     let name = root

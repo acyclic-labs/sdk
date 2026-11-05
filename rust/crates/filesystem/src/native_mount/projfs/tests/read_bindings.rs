@@ -1,4 +1,12 @@
-use super::*;
+use super::MountFilesystem;
+use super::{
+    Arc, Bytes, FileMetadata, GUID, HR_ACCESS_DENIED, HR_OK, HRESULT, HSTRING, Mutex, PCWSTR,
+    PRJ_CALLBACK_DATA, PRJ_CALLBACKS, PRJ_NOTIFICATION,
+    PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION, PRJ_NOTIFICATION_FILE_OPENED,
+    PRJ_NOTIFICATION_PARAMETERS, ReadBasis, Runtime, authorize_open, callback_runtime,
+    has_pending_capture, host_windows_metadata, lock_recover, mount_source, notification,
+    probe_host_windows_metadata, setup_work, windows_checkout_source, windows_name, windows_path,
+};
 use windows::Win32::Storage::ProjectedFileSystem::PRJ_NOTIFICATION_CB;
 
 fn notify(runtime: &Runtime, kind: PRJ_NOTIFICATION) -> HRESULT {

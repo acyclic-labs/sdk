@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    DemandError, File, HostRoot, READ, SourceDemandReadWork, WorkCounters, fs, io, nt,
+    open_windows_at, wide_parent_leaf,
+};
 use std::os::windows::io::AsRawHandle as _;
 use std::sync::{Arc, Mutex};
 use windows::Win32::{

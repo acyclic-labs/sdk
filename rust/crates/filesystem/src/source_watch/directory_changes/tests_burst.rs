@@ -1,6 +1,9 @@
 //! A burst of changes past a watch's buffer loses none of them, and the watch
 //! grows its buffer until a burst of the same size arrives whole.
-use super::*;
+use super::{
+    Arc, Delivery, DemandError, DemandWork, HostChange, HostChangeWide, INITIAL_BUFFER_BYTES,
+    MAXIMUM_BUFFER_BYTES, Mutex, NativeSourceWatch, Ordering, PoisonError,
+};
 use crate::source_watch::HostChangeSink;
 use std::collections::BTreeSet;
 use std::os::windows::io::AsHandle;

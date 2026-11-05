@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    CancellationToken, GenerationReceipt, HostRoot, LogicalName, MaterializeError, NameEncoding,
+    NamespacePath, NativeMaterializationActionPhase, Path, create_file, mark_sparse,
+    materialize_host_path, sync_generation_file, write_generation_bytes,
+};
 
 #[tokio::test]
 async fn overlapped_sparse_control_finishes_before_native_writes()

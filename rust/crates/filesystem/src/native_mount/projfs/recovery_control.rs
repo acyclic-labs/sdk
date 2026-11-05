@@ -1,4 +1,4 @@
-use super::*;
+use super::{NativeMountError, reparse_data};
 use crate::native_host::{self, NativeHostWork};
 
 pub(in crate::native_mount) fn open_recovery_leaf(

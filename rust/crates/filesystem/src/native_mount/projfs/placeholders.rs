@@ -1,4 +1,19 @@
-use super::*;
+#[cfg(test)]
+use super::HostRoot;
+use super::{
+    FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, HSTRING,
+    HostWindowsMetadata, MountPath, NativeHostWork, NativeMountError, Owned, PCWSTR,
+    PRJ_EXT_INFO_TYPE_SYMLINK, PRJ_EXTENDED_INFO, PRJ_EXTENDED_INFO_0, PRJ_EXTENDED_INFO_0_0,
+    PRJ_PLACEHOLDER_INFO, PRJ_UPDATE_ALLOW_READ_ONLY, PRJ_UPDATE_ALLOW_TOMBSTONE, PRJ_UPDATE_TYPES,
+    Placed, PrjDeleteFile, PrjWritePlaceholderInfo2, ProjectedEntry, Projection, ReadOperations,
+    Release, WriteOperations, decode_utf16_name, delete_file_while, delete_link, delete_unowned,
+    driver_error, has_pending_capture, held_while, host_relative_path, link_placeholder,
+    lock_recover, ordinary_basic_information, size_of, staging_directory, write_listed_content,
+};
+use super::{
+    HR_ALREADY_EXISTS, HR_DIRECTORY, HR_FILE_EXISTS, HR_FILE_NOT_FOUND, HR_NOT_SUPPORTED,
+    HR_PATH_NOT_FOUND, HR_SHARING_VIOLATION, HR_VIRTUALIZATION_INVALID_OPERATION,
+};
 use windows::Wdk::Storage::FileSystem::{
     FILE_RENAME_IGNORE_READONLY_ATTRIBUTE, FILE_RENAME_POSIX_SEMANTICS,
     FILE_RENAME_REPLACE_IF_EXISTS,

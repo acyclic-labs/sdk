@@ -1,6 +1,6 @@
 //! Metered process recovery delegates identity and OS queries to native-runtime.
 use super::super::custody::{ProcessObservation, require_dead_incarnation};
-use super::*;
+use super::{NativeHostWork, NativeMountError, ReadOperations, WriteOperations};
 use acyclic_native_runtime::process_identity::{ProcessProbe, current_process_started};
 
 struct ProcessHandle {

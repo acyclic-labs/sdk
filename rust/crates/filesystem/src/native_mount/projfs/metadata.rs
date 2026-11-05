@@ -1,5 +1,12 @@
 use super::probe_guard::{ProbeGuard, with_guard};
-use super::*;
+use super::{
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FileId,
+    FileMetadata, GUID, HR_OK, HRESULT, HashMap, HostRoot, MetadataField, MountFilesystem,
+    MountNode, MountNodeKind, MountPath, MountSourceError, Mutex, NativeHostWork, OsStringExt,
+    PCWSTR, PRJ_CALLBACK_DATA, PRJ_FILE_BASIC_INFO, PathBuf, ReadBasis, Runtime, lock_recover,
+};
+#[cfg(test)]
+use super::{HSTRING, PrjMarkDirectoryAsPlaceholder};
 
 pub(super) fn path_from(pointer: PCWSTR) -> Option<MountPath> {
     if pointer.is_null() {

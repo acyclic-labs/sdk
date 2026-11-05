@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    DemandError, NativeMaterializationWork, NativeOpenOptions, Path, WorkBudget, io, open_leaf,
+    ordinary_work, stat_probe, sync_directory_held, sync_file_held, test_root,
+};
 
 #[test]
 fn file_opens_check_kind_and_reparse_during_the_open_for_every_disposition()
