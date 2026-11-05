@@ -52,7 +52,7 @@ impl Shared {
                     self.delivery.failed_with_work(error, &mut work);
                 }
                 if self.retired(&reads) {
-                    self.publish_retirement(true);
+                    reads.retired = true;
                 }
             }
             return;

@@ -169,6 +169,8 @@ impl Drop for Shared {
 struct ReadsGuard<'a> {
     shared: &'a Shared,
     reads: Option<tokio::sync::MutexGuard<'a, Reads>>,
+    /// Publish only after releasing the cursor used by the physical suffix.
+    retired: bool,
 }
 impl std::ops::Deref for ReadsGuard<'_> {
     type Target = Reads;
@@ -188,6 +190,9 @@ impl std::ops::DerefMut for ReadsGuard<'_> {
 impl Drop for ReadsGuard<'_> {
     fn drop(&mut self) {
         drop(self.reads.take());
+        if self.retired {
+            self.shared.publish_retirement(true);
+        }
         // After the release: a hub that found the reads held set this first.
         if self.shared.missed.swap(false, Ordering::AcqRel) && hub::wake(self.shared).is_err() {
             self.shared.delivery.abandon();
@@ -199,6 +204,7 @@ impl Shared {
         ReadsGuard {
             shared: self,
             reads: Some(self.reads.lock()),
+            retired: false,
         }
     }
     /// The reads, unless another thread holds them.
@@ -207,6 +213,7 @@ impl Shared {
         Some(ReadsGuard {
             shared: self,
             reads: Some(reads),
+            retired: false,
         })
     }
     /// Publishes a packet or terminal state to the original waiters.

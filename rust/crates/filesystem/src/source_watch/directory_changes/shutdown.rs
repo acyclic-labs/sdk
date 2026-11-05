@@ -77,7 +77,7 @@ impl NativeSourceWatch {
                 Some(birth) => birth.with_original_leaf(DemandWork::take_native_io_failure),
                 None => work.with_original_leaf(DemandWork::take_native_io_failure),
             };
-            if !self.is_stopped() {
+            if !self.shared.retired(&reads) {
                 return Err(failure.unwrap_or(DemandError::NativeWorkUnavailable));
             }
             drop(reads);
@@ -96,7 +96,7 @@ impl NativeSourceWatch {
         self.shared.stopping.store(true, Ordering::Release);
         result = result.and(self.shared.retire(&mut reads, work));
         if self.shared.retired(&reads) {
-            self.shared.publish_retirement(true);
+            reads.retired = true;
         }
         result
     }
@@ -249,7 +249,7 @@ impl Shared {
     /// Retires a native owner on its credits: the active one first, then,
     /// once its owner has dropped, the terminal one. An owner whose terminal
     /// attempt fails stays parked with its resources.
-    pub(super) fn retire_native(&self, reads: &mut Reads) {
+    pub(super) fn retire_native(&self, reads: &mut ReadsGuard<'_>) {
         if self.delivery.is_retired() || self.parked.load(Ordering::Acquire) {
             return;
         }
@@ -281,8 +281,13 @@ impl Shared {
                 }
             };
             drop(credit);
-            if retired || terminal {
-                self.publish_retirement(retired);
+            if retired {
+                reads.retired = true;
+                return;
+            }
+            if terminal {
+                // Park under the reads so another packet cannot spend the exhausted credit.
+                self.publish_retirement(false);
                 return;
             }
         }
@@ -311,6 +316,7 @@ impl Shared {
         let mut reads = ReadsGuard {
             shared: self,
             reads: None,
+            retired: false,
         };
         reads.reads = Some(self.reads.lock_with_wait(wait)?);
         Ok(reads)
