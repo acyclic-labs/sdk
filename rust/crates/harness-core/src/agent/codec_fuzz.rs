@@ -527,7 +527,6 @@ pub async fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error:
         inbox: 17,
         checkpoint: vec![0, 1, 255],
     });
-    state.reserved_children = 3;
     state.phase = Phase::Waiting {
         deadline_unix_ms: Some(1_700_000_000_000),
     };
@@ -556,7 +555,6 @@ pub async fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error:
             state.awaiting.clear();
             state.need = 0;
             state.turn = None;
-            state.reserved_children = 0;
             state.phase = Phase::Idle;
         }
         let encoded = checkpoint::encode(&state)?;
