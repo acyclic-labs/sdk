@@ -117,7 +117,7 @@ impl NativeWorkReservation {
         state: &mut Reservation,
         actual: WorkCounters,
     ) -> Result<(), DemandError> {
-        if io_work(actual) != actual {
+        if actual.native_io_operations() != actual {
             return Err(DemandError::InvalidRequest);
         }
         let remaining = actual.remaining(state.remaining)?;
@@ -140,7 +140,7 @@ impl NativeWorkReservation {
     pub(super) fn begin_drop(&self, state: &mut Reservation, actual: WorkCounters) {
         if let Err(error) = self.begin(state, actual) {
             self.meter.poison(native_materialization_work_error(error));
-            let actual = io_work(actual);
+            let actual = actual.native_io_operations();
             if let Err(error) = self.finish(state, actual.intersect_budget(state.remaining), actual)
             {
                 self.failure(error);
@@ -302,13 +302,5 @@ impl Drop for NativeWorkReservation {
         }) {
             self.meter.poison(native_materialization_work_error(error));
         }
-    }
-}
-pub(super) fn io_work(actual: WorkCounters) -> WorkCounters {
-    WorkCounters {
-        backend_read_operations: actual.backend_read_operations,
-        backend_write_operations: actual.backend_write_operations,
-        durability_operations: actual.durability_operations,
-        ..WorkCounters::UNCHARGED
     }
 }

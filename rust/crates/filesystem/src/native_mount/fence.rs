@@ -128,12 +128,7 @@ impl crate::native_host::NativeHostWork for NativeFenceReleaseWork<'_> {
             .record_completed(delta)
     }
     fn started_io(&mut self, delta: crate::WorkCounters) -> Result<(), Self::Error> {
-        let io = crate::WorkCounters {
-            backend_read_operations: delta.backend_read_operations,
-            backend_write_operations: delta.backend_write_operations,
-            durability_operations: delta.durability_operations,
-            ..crate::WorkCounters::UNCHARGED
-        };
+        let io = delta.native_io_operations();
         let validation = io.remaining(delta)?;
         let credit = self.credit.partition_work(delta, self.wait)?;
         credit.record_completed(validation)?;

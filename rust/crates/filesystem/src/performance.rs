@@ -184,6 +184,17 @@ macro_rules! additive_counters {
 }
 
 impl WorkCounters {
+    /// Native I/O operations charged when physical work starts.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) const fn native_io_operations(self) -> Self {
+        Self {
+            backend_read_operations: self.backend_read_operations,
+            backend_write_operations: self.backend_write_operations,
+            durability_operations: self.durability_operations,
+            ..Self::UNCHARGED
+        }
+    }
+
     /// Whether every allowance is finite, for bounded operation admission.
     #[must_use]
     pub const fn has_finite_allowances(&self) -> bool {
