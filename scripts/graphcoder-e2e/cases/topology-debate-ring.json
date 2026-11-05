@@ -1,0 +1,21 @@
+{
+  "id": "topology-debate-ring",
+  "workspace": {"kind":"plain","files":{}},
+  "model": { "steps": [
+    {"when":{"user":"TOPOLOGY_DEBATE_RING_ROOT"},"tools":[{"id":"spawn-coordinator","name":"spawn","arguments":{"name":"coordinator","task":"TOPOLOGY_DEBATE_RING_COORDINATE","role":"debate-ring"}}]},
+    {"when":{"user":"TOPOLOGY_DEBATE_RING_ROOT","tool_result":"agent"},"tools":[{"id":"wait-coordinator","name":"wait","arguments":{"agents":["coordinator"]}}]},
+    {"when":{"user":"TOPOLOGY_DEBATE_RING_COORDINATE","contains":"Coordinate a debate ring"},"tools":[{"id":"spawn-proposer","name":"spawn","arguments":{"name":"proposer","task":"DEBATE_PROPOSE: propose an argument for one round.","role":"worker"}}]},
+    {"when":{"user":"DEBATE_PROPOSE"},"text":["DEBATE_ORIGINAL_PROPOSAL"]},
+    {"when":{"user":"TOPOLOGY_DEBATE_RING_COORDINATE","tool_result":"agent"},"tools":[{"id":"wait-proposer","name":"wait","arguments":{"agents":["proposer"]}}]},
+    {"when":{"user":"TOPOLOGY_DEBATE_RING_COORDINATE","tool_result":"DEBATE_ORIGINAL_PROPOSAL"},"tools":[{"id":"spawn-challenger","name":"spawn","arguments":{"name":"challenger","task":"DEBATE_CHALLENGE: challenge proposer, whose original argument is {{tool_result:/settled/0/answer}}","role":"reviewer"}}]},
+    {"when":{"user":"DEBATE_CHALLENGE","contains":"DEBATE_ORIGINAL_PROPOSAL"},"text":["DEBATE_ORIGINAL_CHALLENGE"]},
+    {"when":{"user":"TOPOLOGY_DEBATE_RING_COORDINATE","tool_result":"agent"},"tools":[{"id":"wait-challenger","name":"wait","arguments":{"agents":["challenger"]}}]},
+    {"when":{"user":"TOPOLOGY_DEBATE_RING_COORDINATE","tool_result":"DEBATE_ORIGINAL_CHALLENGE"},"tools":[{"id":"send-proposer","name":"send","arguments":{"agent":"proposer","message":"DEBATE_REVISE: coordinator quotes challenger: {{tool_result:/settled/0/answer}}","delivery":"follow_up"}}]},
+    {"when":{"user":"DEBATE_REVISE","contains":"DEBATE_ORIGINAL_CHALLENGE"},"text":["DEBATE_REVISED_ARGUMENT"]},
+    {"when":{"user":"TOPOLOGY_DEBATE_RING_COORDINATE","tool_result":"queued"},"tools":[{"id":"wait-proposer","name":"wait","arguments":{"agents":["proposer"]}}]},
+    {"when":{"user":"TOPOLOGY_DEBATE_RING_COORDINATE","tool_result":"DEBATE_REVISED_ARGUMENT"},"text":["TOPOLOGY_DEBATE_RING_DONE"]},
+    {"when":{"user":"TOPOLOGY_DEBATE_RING_ROOT","tool_result":"TOPOLOGY_DEBATE_RING_DONE"},"text":["{{tool_result:/settled/0/answer}}"]}
+  ] },
+  "inputs": [{"mode":"headless","text":"TOPOLOGY_DEBATE_RING_ROOT","answer":"TOPOLOGY_DEBATE_RING_DONE"}],
+  "assert": {"requests":13,"model_contains":["Coordinate a debate ring"],"tool_contains":["DEBATE_ORIGINAL_PROPOSAL","DEBATE_ORIGINAL_CHALLENGE","DEBATE_REVISED_ARGUMENT"],"tool_results":[{"settled":[{"phase":"idle","answer":"TOPOLOGY_DEBATE_RING_DONE"}],"running":[]}]}
+}

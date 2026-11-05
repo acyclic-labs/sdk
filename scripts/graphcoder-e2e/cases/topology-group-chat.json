@@ -1,0 +1,20 @@
+{
+  "id": "topology-group-chat",
+  "workspace": {"kind":"plain","files":{}},
+  "model": { "steps": [
+    {"when":{"user":"TOPOLOGY_GROUP_CHAT_ROOT"},"tools":[{"id":"spawn-coordinator","name":"spawn","arguments":{"name":"coordinator","task":"TOPOLOGY_GROUP_CHAT_COORDINATE","role":"group-chat"}}]},
+    {"when":{"user":"TOPOLOGY_GROUP_CHAT_ROOT","tool_result":"agent"},"tools":[{"id":"wait-coordinator","name":"wait","arguments":{"agents":["coordinator"]}}]},
+    {"when":{"user":"TOPOLOGY_GROUP_CHAT_COORDINATE","contains":"Coordinate a group chat"},"tools":[{"id":"spawn-left","name":"spawn","arguments":{"name":"left","task":"CHAT_LEFT: contribute one observation.","role":"worker"}},{"id":"spawn-right","name":"spawn","arguments":{"name":"right","task":"CHAT_RIGHT: contribute another observation.","role":"worker"}}]},
+    {"when":{"user":"CHAT_LEFT"},"text":["CHAT_ORIGINAL_LEFT"]},
+    {"when":{"user":"CHAT_RIGHT"},"text":["CHAT_ORIGINAL_RIGHT"]},
+    {"when":{"user":"TOPOLOGY_GROUP_CHAT_COORDINATE","tool_result":"agent"},"tools":[{"id":"wait-left-right","name":"wait","arguments":{"agents":["left","right"]}}]},
+    {"when":{"user":"TOPOLOGY_GROUP_CHAT_COORDINATE","tool_result":"CHAT_ORIGINAL_RIGHT"},"tools":[{"id":"send-left","name":"send","arguments":{"agent":"left","message":"CHAT_REVIEW_RIGHT: coordinator quotes right: {{tool_result:/settled/1/answer}}","delivery":"follow_up"}},{"id":"send-right","name":"send","arguments":{"agent":"right","message":"CHAT_REVIEW_LEFT: coordinator quotes left: {{tool_result:/settled/0/answer}}","delivery":"follow_up"}}]},
+    {"when":{"user":"CHAT_REVIEW_RIGHT","contains":"CHAT_ORIGINAL_RIGHT"},"text":["CHAT_LEFT_REVIEWED_RIGHT"]},
+    {"when":{"user":"CHAT_REVIEW_LEFT","contains":"CHAT_ORIGINAL_LEFT"},"text":["CHAT_RIGHT_REVIEWED_LEFT"]},
+    {"when":{"user":"TOPOLOGY_GROUP_CHAT_COORDINATE","tool_result":"queued"},"tools":[{"id":"wait-left-right","name":"wait","arguments":{"agents":["left","right"]}}]},
+    {"when":{"user":"TOPOLOGY_GROUP_CHAT_COORDINATE","tool_result":"CHAT_RIGHT_REVIEWED_LEFT"},"text":["TOPOLOGY_GROUP_CHAT_DONE"]},
+    {"when":{"user":"TOPOLOGY_GROUP_CHAT_ROOT","tool_result":"TOPOLOGY_GROUP_CHAT_DONE"},"text":["{{tool_result:/settled/0/answer}}"]}
+  ] },
+  "inputs": [{"mode":"headless","text":"TOPOLOGY_GROUP_CHAT_ROOT","answer":"TOPOLOGY_GROUP_CHAT_DONE"}],
+  "assert": {"requests":12,"model_contains":["Coordinate a group chat"],"tool_contains":["CHAT_ORIGINAL_LEFT","CHAT_ORIGINAL_RIGHT","CHAT_LEFT_REVIEWED_RIGHT","CHAT_RIGHT_REVIEWED_LEFT"],"tool_results":[{"settled":[{"phase":"idle","answer":"TOPOLOGY_GROUP_CHAT_DONE"}],"running":[]}]}
+}

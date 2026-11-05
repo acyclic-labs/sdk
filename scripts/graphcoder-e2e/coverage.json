@@ -28,7 +28,11 @@
         "child-fork-message-merge",
         "child-result",
         "child-discard",
-        "nested-children"
+        "nested-children",
+        "topology-pipeline",
+        "topology-group-chat",
+        "topology-debate-ring",
+        "topology-blackboard"
       ]
     },
     "A4": {
