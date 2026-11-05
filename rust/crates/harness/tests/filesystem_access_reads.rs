@@ -297,7 +297,7 @@ async fn legacy_task_volume_grant_cannot_bypass_persisted_denial() -> Result<(),
     fixture.policy(true, 2).await?;
     assert!(matches!(
         context.read_file(&fixture.file, None).await,
-        Err(acyclic_harness::Error::Unauthorized(_))
+        Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Unauthorized
     ));
     fixture.policy(false, 3).await?;
     assert_eq!(
@@ -420,7 +420,7 @@ async fn content_reads_fail_closed_without_a_persisted_policy() -> Result<(), Bo
             .reader(&fixture.scope)?
             .read(&fixture.file, 4096, None, None)?
             .await,
-        Err(acyclic_harness::Error::Unauthorized(_))
+        Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Unauthorized
     ));
     Ok(())
 }
@@ -496,7 +496,7 @@ async fn reference_metadata_needs_list_but_known_content_does_not() -> Result<()
                     acyclic_harness::conversation::ContentAccess::default()
                 )
                 .await,
-            Err(acyclic_harness::Error::Unauthorized(_))
+            Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Unauthorized
         ));
     }
     Ok(())
@@ -633,7 +633,7 @@ async fn structured_only_reads_and_ambiguous_payloads_use_the_same_gate()
             .reader(&ambiguous)?
             .read(&fixture.file, 4096, None, None)?
             .await,
-        Err(acyclic_harness::Error::Unauthorized(_))
+        Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Unauthorized
     ));
     Ok(())
 }
