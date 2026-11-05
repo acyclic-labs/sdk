@@ -90,12 +90,16 @@ fn standard_config_then_quiet_cancel_or_unexpected_eof_keeps_actual_outcome()
             crate::WorkCounters::UNCHARGED
         );
         if cancel {
-            assert!(matches!(
-                retired.transport,
-                Err(NativeMountError::Materialization(
-                    crate::NativeTreeMaterializationError::Cancelled
-                ))
-            ));
+            assert!(
+                matches!(
+                    &retired.transport,
+                    Err(NativeMountError::Materialization(
+                        crate::NativeTreeMaterializationError::Cancelled
+                    ))
+                ),
+                "original cancellation retirement: {:?}",
+                retired.transport
+            );
         } else {
             assert!(matches!(
                 retired.transport,
