@@ -412,7 +412,11 @@ pub fn decode_transition(bytes: &[u8]) -> Result<Transition, GuestError> {
         return Err(invalid("effects"));
     }
     let effects = wire_codec::commit_from_wire(effects).map_err(|_| invalid("effects"))?;
-    if !effects.effects.iter().all(acyclic_stream::CommitEffect::admissible) {
+    if !effects
+        .effects
+        .iter()
+        .all(acyclic_stream::CommitEffect::admissible)
+    {
         return Err(invalid("effects"));
     }
     Ok(Transition {
