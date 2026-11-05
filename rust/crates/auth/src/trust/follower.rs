@@ -100,6 +100,8 @@ pub struct EnvironmentFrontier {
 
 #[derive(Clone, Default)]
 struct EnvironmentRevision {
+    // Every applied revision owns new backing; retained identity covers proof
+    // changes even when the wire sequence and digest stay the same.
     keys: Arc<[BlockId]>,
     sequence: u64,
     digest: BlockId,

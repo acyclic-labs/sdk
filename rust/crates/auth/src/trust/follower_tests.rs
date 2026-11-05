@@ -1607,17 +1607,11 @@ fn one_authentication_reads_exactly_one_anchor_snapshot() {
         Box::new(move || owner.send_modify(|keys| *keys = alternate(keys, a, b)))
             as Box<dyn FnOnce()>
     };
-    // A rotation published mid-authentication cannot reach that record.
-    let mut revision = EnvironmentRevision::default();
-    let snapshot = anchor.borrow().clone();
+    // Authentication uses its captured snapshot; a changed publication
+    // prevents that proof from installing obsolete trust.
+    let trust = Follower::new("test", anchor.clone());
     VERIFYING_ENVIRONMENT.with(|slot| *slot.borrow_mut() = Some(rotate(&owner)));
-    let TrustRecordKind::Environment(record) = decode(&record).unwrap().record else {
-        unreachable!()
-    };
-    assert_eq!(
-        revision.apply(&record, &snapshot, NOW),
-        Ok((Applied::Changed, NOW))
-    );
+    assert_eq!(trust.apply(&record, NOW), Err(VerifyError::Unavailable));
     VERIFYING_ENVIRONMENT.with(|slot| assert!(slot.borrow().is_none()));
 
     // Negative control: the same interleaving against a reader that borrows
@@ -1648,12 +1642,11 @@ fn one_authentication_reads_exactly_one_anchor_snapshot() {
         })
     };
     for _ in 0..1_000 {
-        let mut revision = EnvironmentRevision::default();
-        let snapshot = anchor.borrow().clone();
-        assert_eq!(
-            revision.apply(&record, &snapshot, NOW),
-            Ok((Applied::Changed, NOW))
-        );
+        let trust = Follower::new("test", anchor.clone());
+        assert!(matches!(
+            trust.apply(&record, NOW),
+            Ok(Applied::Changed) | Err(VerifyError::Unavailable)
+        ));
     }
     publisher.join().unwrap();
 }
@@ -1661,9 +1654,9 @@ fn one_authentication_reads_exactly_one_anchor_snapshot() {
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
 
-    /// Authentication equals the specification evaluated on the snapshot
-    /// published when it began, whatever rotation lands mid-authentication:
-    /// accepted iff the signer, or every named key, is valid at `now`.
+    /// A valid proof against its starting snapshot loses publication when
+    /// that owner changes; an invalid proof retains its signature refusal.
+    /// The public follower must never admit a mixture of both snapshots.
     #[test]
     fn authentication_matches_its_snapshot(
         rotations in proptest::collection::vec((1u8..8, 0u64..60), 0..6),
@@ -1692,18 +1685,16 @@ proptest::proptest! {
             || valid.contains(&pool[signer].verifying_key().to_bytes());
 
         let (owner, anchor) = tokio::sync::watch::channel(snapshot);
-        let snapshot = anchor.borrow().clone();
-        let mut revision = EnvironmentRevision::default();
+        let trust = Follower::new("test", anchor);
         let replacement = subset(during.0);
         VERIFYING_ENVIRONMENT.with(|slot| {
             *slot.borrow_mut() = Some(Box::new(move || {
                 owner.send_modify(|keys| *keys = keys.rotate(replacement, NOW + 60, during.1));
             }));
         });
-        let TrustRecordKind::Environment(record) = decode(&record).unwrap().record else { unreachable!() };
-        let accepted = revision.apply(&record, &snapshot, now).is_ok();
+        let result = trust.apply(&record, now);
         VERIFYING_ENVIRONMENT.with(|slot| slot.borrow_mut().take());
-        proptest::prop_assert_eq!(accepted, expected);
+        proptest::prop_assert_eq!(result, if expected { Err(VerifyError::Unavailable) } else { Err(VerifyError::Signature) });
     }
 }
 

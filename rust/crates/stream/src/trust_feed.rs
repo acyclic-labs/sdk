@@ -166,6 +166,8 @@ pub struct TrustFeed<S> {
     /// Absent once every [`Accounts`] handle is dropped.
     added: Option<mpsc::UnboundedReceiver<String>>,
     anchor: Option<tokio::sync::watch::Receiver<AnchorKeys>>,
+    // One cold record may become authentic under the next anchor publication.
+    pending: Option<Record>,
 }
 
 impl<S: Source> TrustFeed<S> {
@@ -188,6 +190,7 @@ impl<S: Source> TrustFeed<S> {
                 next,
                 added: Some(added),
                 anchor,
+                pending: None,
             },
             Accounts(sender),
         )
@@ -240,6 +243,7 @@ impl<S: Source> TrustFeed<S> {
             next,
             added,
             anchor,
+            pending,
         } = self;
         let environment = follower.environment().to_owned();
         let mut follows = FuturesUnordered::new();
@@ -305,9 +309,16 @@ impl<S: Source> TrustFeed<S> {
                     Either::Left((keys, _)) => {
                         keys?;
                         follower.anchor_changed();
+                        let now = follower.protected_now(clock.now_unix_millis() / 1000);
+                        if let Some(record) = pending.take() {
+                            if follower.apply_environment(&record.value, now).is_ok() {
+                                advance(follower, next, &mut tails, None, record.sequence);
+                            } else {
+                                *pending = Some(record);
+                            }
+                        }
                         if !blocked.is_empty() {
-                            retry_blocked =
-                                Some(follower.protected_now(clock.now_unix_millis() / 1000));
+                            retry_blocked = Some(now);
                         }
                         continue;
                     }
@@ -317,7 +328,7 @@ impl<S: Source> TrustFeed<S> {
             match event {
                 Either::Left(Some(((key, Event::Opened { tail, position }), records))) => {
                     next.insert(key.clone(), position);
-                    if position >= tail {
+                    if position >= tail && (key.is_some() || pending.is_none()) {
                         serve(follower, key.as_deref());
                     } else {
                         tails.insert(key.clone(), tail);
@@ -325,8 +336,31 @@ impl<S: Source> TrustFeed<S> {
                     follows.push(read(key, records));
                 }
                 Either::Left(Some(((None, Event::Record(record)), records))) => {
-                    let (applied, now) =
-                        apply_environment(follower, &**clock, anchor, &record).await?;
+                    let now = follower.protected_now(clock.now_unix_millis() / 1000);
+                    let applied = match follower.apply_environment(&record.value, now) {
+                        Ok(applied) => {
+                            *pending = None;
+                            applied
+                        }
+                        Err(_)
+                            if !follower
+                                .environment_initialized()
+                                .map_err(|_| StreamError::Unavailable)? =>
+                        {
+                            next.insert(None, record.sequence.saturating_add(1));
+                            tails
+                                .entry(None)
+                                .or_insert(record.sequence.saturating_add(1));
+                            *pending = Some(record);
+                            follows.push(read(None, records));
+                            continue;
+                        }
+                        Err(_) => {
+                            apply_environment(follower, &**clock, anchor, &record)
+                                .await?
+                                .0
+                        }
+                    };
                     if !tails.contains_key(&None)
                         && matches!(
                             *follower.state().borrow(),
