@@ -252,8 +252,11 @@ pub(super) async fn fetch(
                     || modulus
                         .first()
                         .is_none_or(|byte| *byte == 0 || (modulus.len() == 256 && byte & 0x80 == 0))
+                    || modulus.last().is_none_or(|byte| byte & 1 == 0)
                 {
-                    return Err(refused("OIDC RSA key must have 2048..=8192 bits"));
+                    return Err(refused(
+                        "OIDC RSA modulus must be odd and have 2048..=8192 bits",
+                    ));
                 }
                 let exponent = URL_SAFE_NO_PAD
                     .decode(component(&raw.e)?)

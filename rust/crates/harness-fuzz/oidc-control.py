@@ -8,10 +8,10 @@ import sys
 import tomllib
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("control", nargs="?", choices=("signature", "weak-issuer"), default="signature")
+parser.add_argument("control", nargs="?", choices=("signature", "weak-issuer", "rsa-key"), default="signature")
 control = parser.parse_args().control
 root = Path(__file__).resolve().parents[3]
-source = root / "rust/crates/harness-core/src/oidc" / ("keys.rs" if control == "weak-issuer" else "claims.rs")
+source = root / "rust/crates/harness-core/src/oidc" / ("claims.rs" if control == "signature" else "keys.rs")
 oracle = root / "rust/crates/harness-fuzz/fuzz_targets/oidc.rs"
 original = source.read_bytes()
 digest = hashlib.sha256(oracle.read_bytes()).digest()
@@ -19,19 +19,26 @@ command = ["cargo", "+nightly", "fuzz", "run", "--dev", "--fuzz-dir",
            "rust/crates/harness-fuzz", "--no-default-features", "--features", "oidc",
            "--target-dir", os.environ.get("CARGO_TARGET_DIR", str(root / "target")), "oidc", "--"]
 coverage = command + ["-runs=1000", "-seed=1", "-max_len=4096"]
-probe = command + ["-runs=1", "-seed=1"] if control == "weak-issuer" else coverage
-assertion = "OIDC weak issuer forged an authenticated identity" if control == "weak-issuer" else "OIDC signature binding lost"
+probe = coverage if control == "signature" else command + ["-runs=1", "-seed=1"]
+assertion = {
+    "signature": "OIDC signature binding lost",
+    "weak-issuer": "OIDC weak issuer forged an authenticated identity",
+    "rsa-key": "OIDC invalid RSA modulus replaced last-good keys",
+}[control]
 step = "require the resolved graph to omit vulnerable RSA private-key support"
 try:
     packages = tomllib.loads((root / "Cargo.lock").read_text())["package"]
     if any(package["name"] in {"rsa", "jsonwebtoken"} for package in packages):
         raise RuntimeError("the resolved graph retains the retired JWT provider")
-    step = "qualify original captured signatures and the public OIDC decoders"
-    subprocess.run(probe, cwd=root, check=True)
+    if control != "rsa-key":
+        step = "qualify original captured signatures and the public OIDC decoders"
+        subprocess.run(probe, cwd=root, check=True)
     step = f"detect the production {control} mutation"
     try:
         if control == "weak-issuer":
             subprocess.run(["git", "apply", "rust/crates/harness-fuzz/weak-issuer.patch"], cwd=root, check=True)
+        elif control == "rsa-key":
+            subprocess.run(["git", "apply", "rust/crates/harness-fuzz/rsa-key.patch"], cwd=root, check=True)
         else:
             before = b"    key.verify("
             end = b"        &signature,\n    )?;"

@@ -50,3 +50,13 @@ the source byte for byte, then runs 1,000 decoder inputs:
 ```sh
 python3 rust/crates/harness-fuzz/oidc-control.py weak-issuer
 ```
+
+The RSA refresh control clears the low bit of the captured modulus, preserving
+its original encoded size. Refresh must refuse the replacement and keep the
+original signed token verifiable. The retained mutation removes the production
+parity check, requires this same oracle to fail, then restores the source and
+runs 1,000 decoder inputs:
+
+```sh
+python3 rust/crates/harness-fuzz/oidc-control.py rsa-key
+```

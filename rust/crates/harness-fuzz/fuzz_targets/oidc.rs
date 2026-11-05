@@ -54,6 +54,25 @@ fuzz_target!(|data: &[u8]| {
         assert_eq!(identity.issuer(), manifest["issuer"].as_str().unwrap());
         assert_eq!(identity.expires_at(), claims["exp"].as_u64().unwrap());
         assert!(verifier.verify(token, identity.expires_at()).is_err());
+        // Corrupt the captured RSA modulus without changing its size. Ring
+        // rejects even moduli; refresh must do so before replacing good keys.
+        let mut invalid_rsa: Value = serde_json::from_slice(JWKS).unwrap();
+        let modulus = &mut invalid_rsa["keys"][0]["n"];
+        let mut bytes = URL_SAFE_NO_PAD.decode(modulus.as_str().unwrap()).unwrap();
+        *bytes.last_mut().unwrap() &= !1;
+        *modulus = URL_SAFE_NO_PAD.encode(bytes).into();
+        let invalid_rsa = serde_json::to_vec(&invalid_rsa).unwrap();
+        assert!(
+            verifier
+                .refresh(&Source(&invalid_rsa), now + 30)
+                .await
+                .is_err(),
+            "OIDC invalid RSA modulus replaced last-good keys"
+        );
+        assert_eq!(
+            verifier.verify(token, now + 30).unwrap().subject(),
+            identity.subject()
+        );
         // Change the actual signed bytes without producing another signature.
         // A missing verification call cannot satisfy this same oracle.
         let (message, signature) = token.rsplit_once('.').unwrap();
@@ -164,9 +183,9 @@ fuzz_target!(|data: &[u8]| {
                 let _ = candidate.verify(token, now);
             }
         }
-        if verifier.refresh(&Source(data), now + 30).await.is_err() {
+        if verifier.refresh(&Source(data), now + 60).await.is_err() {
             assert_eq!(
-                verifier.verify(token, now + 30).unwrap().subject(),
+                verifier.verify(token, now + 60).unwrap().subject(),
                 identity.subject()
             );
         }
