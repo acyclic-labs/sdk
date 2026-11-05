@@ -7,7 +7,11 @@ import sys
 
 root = Path(__file__).resolve().parent
 choice = sys.argv[1] if len(sys.argv) == 2 else "delimiter"
-if choice.startswith("filesystem-"):
+if choice == "authorization-action":
+    target = "authorization"
+    source = root.parent.parent / "contract-derive/src/authorization.rs"
+    oracle = root / "fuzz_targets/authorization.rs"
+elif choice.startswith("filesystem-"):
     root = root.parent.parent / "harness-fuzz"
     target = "filesystem_access"
     source = root.parent / "harness-core/src/core/authority/workload/admission.rs"
@@ -59,6 +63,11 @@ try:
     oracle_hashes = {path: hashlib.sha256(path.read_bytes()).digest() for path in oracles}
     newline = b"\r\n" if b"\r\n" in original else b"\n"
     mutations = {
+        "authorization-action": (
+            b'if key == "action" && value.parse::<acyclic_auth_action::Action>().is_err() {',
+            b'if false && key == "action" && value.parse::<acyclic_auth_action::Action>().is_err() {',
+            "undeclared authorization action must refuse", "static",
+        ),
         "addressing-resource-framing": (
             b"            output.extend_from_slice(&(field.len() as u64).to_be_bytes());", b"",
             "resource writer output must admit", "resource",
@@ -227,7 +236,7 @@ try:
     if any(hashlib.sha256(path.read_bytes()).digest() != digest
            for path, digest in oracle_hashes.items()):
         raise RuntimeError("Auth oracle changed during the negative control")
-    if choice in ("trust-target", "trust-reanchor"):
+    if choice in ("authorization-action", "trust-target", "trust-reanchor"):
         step = "admit the original " + choice + " input after restoring the production guard"
         restored = subprocess.run(
             command, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,

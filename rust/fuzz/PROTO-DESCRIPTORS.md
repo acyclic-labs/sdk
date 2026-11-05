@@ -23,4 +23,29 @@ cargo +nightly fuzz run --fuzz-dir . proto_descriptors --no-default-features --f
 
 `mutations/proto-descriptors-reject-all.patch` changes the actual production canonicalizer to reject nonempty inputs. The old conditional oracle admits this defect; the repaired oracle must fail with `canonical production writer descriptor refused`. Restore production source before running the healthy corpus. A compiler failure is not defect detection.
 
+The oracle also changes one action byte in each selected compiler output that
+carries the shared authorization catalog, retaining protobuf framing and every
+other captured byte. `mutations/proto-descriptors-undeclared-action.patch`
+removes production vocabulary admission; the unchanged oracle must fail with
+`descriptor must refuse an undeclared action`. The property
+`descriptor_authorization_rejects_undeclared_actions` separately compiles real
+method options through protoc and the public canonicalizer.
+
 The generated source-location/field-number property remains: its generated domain is not subsumed by retained compiler outputs. Finite execution and feedback counters do not establish complete source branches, unknown-option preservation, malformed-input refusal, compiler version independence or deployed service behavior. Source branch coverage and additional semantic mutations remain open.
+
+The production writer descriptors in `compatibility/descriptors` were recaptured
+with the same command at revision `7348becf9747a84c9fdacd8877a2f360fac550da`
+after removing the retired `execution/actor-*` catalog aliases. The oracle embeds
+these actual compiler outputs directly; the older corpus entries above retain
+their original provenance and remain arbitrary decoder inputs.
+
+| Production writer | Bytes | SHA256 |
+| --- | ---: | --- |
+| `actors-v1.bin` | 115957 | `5bf22096b15aa057ac7d32774173a4494a5b300bac7f8ce26391455dad6de566` |
+| `auth-v1.bin` | 33585 | `7b6d18e3983e3d7cd5c9aa014e1a9880606bb3976038c513281e8c7d9e8e053c` |
+| `filesystem-v2.bin` | 147614 | `30f7727c8fbcdd3eafa51df9ed165b85db13a885f4972f298386ec062948fe98` |
+| `harness-v2.bin` | 54608 | `b487ddb9d705dfd0ecba8834492cfb63897f1f27560c59969acc0804771beccb` |
+| `inference-v1.bin` | 129027 | `005f84c46fb427fa453279b44606faf79709cb93d53e4629dd88f284615ea610` |
+| `machines-v1.bin` | 144790 | `5e31ccac341587c767d6c63fce55176e22a756e490742e9e4fc86e53960e82c6` |
+| `objects-v1.bin` | 106942 | `fe8af48a27b5d305679afca4bf4272a7c8f1c6f7d468d570194c17108a178f28` |
+| `stream-v1.bin` | 143452 | `915d61853b61ee2a32caf09544fa78ca11577fb0a5c94bd3afc8771e3d759a39` |

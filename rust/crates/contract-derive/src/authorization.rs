@@ -11,6 +11,9 @@ pub fn fields(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<String> {
             return Err(field.error("unknown authorization field"));
         }
         let value = field.value()?.parse::<syn::LitStr>()?.value();
+        if key == "action" && value.parse::<acyclic_auth_action::Action>().is_err() {
+            return Err(field.error(format!("undeclared capability action {value:?}")));
+        }
         if value.is_empty() || (key != "action" && fields.iter().any(|(k, _)| k == &key)) {
             return Err(field.error("empty or duplicate authorization field"));
         }

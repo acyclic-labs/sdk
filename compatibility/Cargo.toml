@@ -10,6 +10,7 @@ description = "Shared build-time protobuf configuration for Acyclic SDK crates"
 include = ["Cargo.toml", "src/**", "proto/**", "descriptors/*.bin", "frames/*.hex"]
 
 [dependencies]
+acyclic-auth-action = { version = "=0.2.0", path = "../rust/crates/auth-action" }
 prost.workspace = true
 prost-reflect.workspace = true
 protoc-bin-vendored.workspace = true

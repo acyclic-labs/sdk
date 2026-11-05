@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+mod authorization;
 mod descriptor;
 pub use descriptor::canonicalize;
 

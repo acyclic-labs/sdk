@@ -1,3 +1,11 @@
+The `authorization` target compiles the actual contract attribute parser and
+checks the canonical typed action decoder. Its existing corpus retains static,
+dynamic, multi-action, escaped and malformed declarations. Run
+`python3 negative-control.py authorization-action` to remove the production
+action admission guard: the unchanged oracle must reject the planted acceptance
+of an undeclared action, including the retired Actors spelling. This qualifies
+the declaration boundary, not credential verification or live request coverage.
+
 The `capability/public-certificates` and `capability/lineage-chain` captures
 retain the original v1 writer bytes as unsupported-format inputs.
 

@@ -112,6 +112,7 @@ dependencies = [
 name = "acyclic-auth"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth-action",
  "acyclic-contract-derive",
  "acyclic-differential",
  "acyclic-observability",
@@ -154,10 +155,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-auth-action"
+version = "0.2.0"
+
+[[package]]
 name = "acyclic-auth-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-auth-action",
  "acyclic-auth-wasm",
  "ed25519-dalek 3.0.0",
  "libfuzzer-sys",
@@ -257,6 +263,7 @@ dependencies = [
 name = "acyclic-contract-derive"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth-action",
  "async-trait",
  "heck",
  "proc-macro2",
@@ -1200,6 +1207,7 @@ dependencies = [
 name = "acyclic-proto-build"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth-action",
  "proptest",
  "prost",
  "prost-reflect",

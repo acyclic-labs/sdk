@@ -1,0 +1,12 @@
+[package]
+name = "acyclic-auth-action"
+description = "Canonical typed capability actions shared by SDK contracts and their compilers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

@@ -61,6 +61,7 @@ fn location_key(value: &Value) -> Option<(bool, [i32; 4], Vec<i32>)> {
 /// # Errors
 /// Returns malformed protobuf descriptor errors.
 pub fn canonicalize(bytes: &[u8], roots: &[&str]) -> Result<Vec<u8>, Error> {
+    crate::authorization::validate(bytes)?;
     let mut set = decode(bytes)?;
     let mut pinned = decode(include_bytes!("../descriptors/objects-v1.bin"))?;
     let pinned = list(&mut pinned, "file")?;
