@@ -4,13 +4,14 @@
 // asset, and agent-deploy.json. The artifact is admitted, then loaded from only
 // the files that manifest declares, before the build succeeds.
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { wasmAssetClosure } from "./artifact-assets.mjs";
+import { writeChanged } from "./generated-bindings.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const { values } = parseArgs({ options: { config: { type: "string" }, out: { type: "string" } } });
@@ -42,8 +43,7 @@ const entrySha256 = sha256(entry);
 const manifest = `${JSON.stringify(harnessManifest(deployment, config.model.spec, config.options.filesystem_provider, entrySha256, [...assets.values()]), null, 2)}\n`;
 files.set(HARNESS_MODULE.file, entry).set("agent-deploy.json", manifest);
 const write = (directory, paths) => {
-  mkdirSync(directory, { recursive: true });
-  for (const path of paths) writeFileSync(join(directory, path), files.get(path));
+  for (const path of paths) writeChanged(join(directory, path), files.get(path));
 };
 
 const validator = join(packages, "workers/generated/wasm");

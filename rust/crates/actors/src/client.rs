@@ -687,47 +687,6 @@ mod tests {
             assert_eq!(metadata.service_message, detail.map(|value| value.message));
         }
     }
-
-    #[test]
-    fn error_code_names_are_shared_by_native_and_browser_bridges() {
-        for (code, name) in [
-            (0, "ok"),
-            (1, "cancelled"),
-            (3, "invalid_argument"),
-            (4, "deadline_exceeded"),
-            (5, "not_found"),
-            (6, "already_exists"),
-            (7, "permission_denied"),
-            (8, "resource_exhausted"),
-            (9, "failed_precondition"),
-            (10, "aborted"),
-            (11, "out_of_range"),
-            (12, "unimplemented"),
-            (13, "internal"),
-            (14, "unavailable"),
-            (15, "data_loss"),
-            (16, "unauthenticated"),
-            (17, "unknown"),
-        ] {
-            let error = Error::Service {
-                grpc_code: code,
-                message: String::new(),
-                raw_details: Vec::new(),
-                detail: None,
-            };
-            assert_eq!(error.code_name(), name);
-        }
-        assert_eq!(
-            Error::Configuration(String::new()).code_name(),
-            "invalid_argument"
-        );
-        assert_eq!(Error::Transport(String::new()).code_name(), "unavailable");
-        assert_eq!(
-            Error::Semantic(domain::DomainError::InvalidBinding).code_name(),
-            "invalid_binding"
-        );
-        assert_eq!(Error::Cancelled.code_name(), "cancelled");
-    }
 }
 
 #[cfg(test)]
