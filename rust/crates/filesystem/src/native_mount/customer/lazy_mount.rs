@@ -233,8 +233,7 @@ where
                 work.admit(crate::WorkCounters::default())
                     .map_err(MountLifecycleError::from)
                     .map_err(E::from)?;
-                if !allocation.work().shares_ledger(work)
-                    || !allocation.work().shares_resource_allowance(work)
+                if !allocation.work().shares_allocation_context(work)
                     || allocation.bytes() < plan.logical_owned_bytes()
                 {
                     return Err(E::from(MountLifecycleError::Materialization(

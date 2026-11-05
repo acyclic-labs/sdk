@@ -363,8 +363,7 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
     assert_eq!(std::fs::read_dir(rejected_root.path())?.count(), 0);
     let ordinary_job =
         job.with_source_io_lease(ordinary_source.native_source_io_lease(ordinary_source.clone())?)?;
-    assert!(ordinary_job.shares_ledger(&job));
-    assert!(ordinary_job.shares_resource_allowance(&job));
+    assert!(ordinary_job.shares_allocation_context(&job));
     assert!(!ordinary_job.shares_ledger(&work));
     drop(ordinary_job);
     ordinary_source.cancel_cleanup(Some(&crate::CancellationToken::new()))?;
@@ -382,8 +381,7 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
     assert_eq!(job.receipt(), before_foreign_job);
     let native_job =
         work.with_source_io_lease(native_source.native_source_io_lease(native_source.clone())?)?;
-    assert!(native_job.shares_ledger(&work));
-    assert!(native_job.shares_resource_allowance(&work));
+    assert!(native_job.shares_allocation_context(&work));
     drop(native_job);
     native_source.cancel_cleanup(Some(&crate::CancellationToken::new()))?;
     assert!(ordinary_source.capture_retired());
@@ -787,8 +785,7 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
             PublicationPermit::Unrestricted,
             &publication,
             move |actual: &crate::NativeMaterializationWork| {
-                assert!(actual.shares_ledger(&guard_original));
-                assert!(actual.shares_resource_allowance(&guard_original));
+                assert!(actual.shares_allocation_context(&guard_original));
                 std::future::ready(Ok::<(), MountLifecycleError>(()))
             },
         )

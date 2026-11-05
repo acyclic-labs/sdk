@@ -360,10 +360,8 @@ fn validate_startup_allocations(
 ) -> Result<(), NativeMountError> {
     let valid = match (original, allocations) {
         (Some(original), Some((root, source))) => {
-            root.work().shares_ledger(original)
-                && source.work().shares_ledger(original)
-                && root.work().shares_resource_allowance(original)
-                && source.work().shares_resource_allowance(original)
+            root.work().shares_allocation_context(original)
+                && source.work().shares_allocation_context(original)
                 && root.bytes().checked_add(source.bytes()).is_some()
         }
         (None, None) => true,

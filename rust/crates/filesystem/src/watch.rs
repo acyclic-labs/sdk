@@ -1693,9 +1693,7 @@ impl NativeWatch {
             .original_work
             .as_ref()
             .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
-        if !original.shares_ledger(incoming.work())
-            || !original.shares_resource_allowance(incoming.work())
-        {
+        if !original.shares_allocation_context(incoming.work()) {
             return Err(crate::NativeTreeMaterializationError::InvalidLayout);
         }
         if let Some(owner) = &mut self.owner_allocation {

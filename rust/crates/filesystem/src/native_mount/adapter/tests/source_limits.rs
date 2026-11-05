@@ -43,8 +43,7 @@ fn native_namespace_guard_cases() -> Result<(), Box<dyn std::error::Error>> {
         let bound = source
             .native_original_work()?
             .ok_or("missing source work")?;
-        assert!(bound.shares_ledger(&original));
-        assert!(bound.shares_resource_allowance(&original));
+        assert!(bound.shares_allocation_context(&original));
         drop(bound);
         let stop = source.cancellation().clone();
         stop.cancel();
