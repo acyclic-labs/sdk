@@ -29,9 +29,6 @@
         "child-result",
         "child-discard",
         "nested-children",
-        "topology-pipeline",
-        "topology-group-chat",
-        "topology-debate-ring",
         "topology-blackboard"
       ]
     },

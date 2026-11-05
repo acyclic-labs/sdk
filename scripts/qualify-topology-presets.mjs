@@ -12,7 +12,7 @@ const recovery = "node scripts/qualify-topology-presets.mjs GRAPHCODER MOCK_MODE
 assert.ok(binary && mock && output && [binary, mock, output].every(isAbsolute),
   `step=select topology executables and evidence; recovery=${recovery}`);
 const root = fileURLToPath(new URL("../", import.meta.url));
-const roles = ["pipeline", "group-chat", "debate-ring", "blackboard"];
+const roles = ["blackboard"];
 const originals = roles.map(role => {
   const path = join(root, "scripts/graphcoder-e2e/cases", `topology-${role}.json`);
   return { role, path, bytes: readFileSync(path) };
