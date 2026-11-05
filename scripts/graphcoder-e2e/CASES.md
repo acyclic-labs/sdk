@@ -8,6 +8,9 @@ publication. Shared-volume grants and concurrent writers need separate cases.
 first selects a generic worker instead: the unchanged conversation must fail at
 the actual provider request missing its role directive. It then restores the
 role selection and runs the same shipping case.
+The qualifier retains its modified `cases/` and `coverage.json` input under
+the fresh output directory. `E2E_CASES_ROOT` selects that tree in the ordinary
+runner; checked-in inputs are read only, including if qualification is killed.
 
 Search seeds `.codex/search.json` under the selected settings root (`CODEX_HOME/search.json` otherwise). Fields are `provider` (`exa` or `tinyfish`), `api_keys` (provider id to key), and optional `endpoint`. The case points the ordinary HTTP adapter at the shared mock namespace; there is no search CLI flag or alternate executor.
 
