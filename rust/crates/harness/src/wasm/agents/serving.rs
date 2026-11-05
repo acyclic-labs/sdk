@@ -482,7 +482,8 @@ impl WasmAgentServer {
     ) -> std::result::Result<T, JsValue> {
         let mut lifetime = self.lifetime()?;
         let closed = lifetime.changed();
-        futures::pin_mut!(closed, operation);
+        let closed = core::pin::pin!(closed);
+        let operation = core::pin::pin!(operation);
         match futures::future::select(closed, operation).await {
             futures::future::Either::Left(_) => Err(stream_error(StreamError::Unavailable)),
             futures::future::Either::Right((result, _)) => result,

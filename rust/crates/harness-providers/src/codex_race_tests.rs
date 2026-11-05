@@ -541,7 +541,9 @@ async fn account_binding_errors_are_not_shared_with_a_newly_resolved_model() -> 
     };
     let old_request = old.bearer(&transport, None, None);
     let new_request = fresh.bearer(&transport, None, None);
-    futures::pin_mut!(holder, old_request, new_request);
+    let mut holder = core::pin::pin!(holder);
+    let mut old_request = core::pin::pin!(old_request);
+    let mut new_request = core::pin::pin!(new_request);
     assert!(futures::poll!(&mut holder).is_pending());
     assert!(futures::poll!(&mut old_request).is_pending());
     assert!(futures::poll!(&mut new_request).is_pending());

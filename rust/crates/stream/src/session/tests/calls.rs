@@ -148,7 +148,7 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
     client.register_credential(1, testing::credential())?;
     let invocation = Bytes::from_static(b"canonical product header");
     let (mut upload, replies) = client.actor_call_input(&invocation, 0, 128).await?;
-    futures::pin_mut!(replies);
+    let mut replies = core::pin::pin!(replies);
     // Dispatch happens with NO input or EOF. The old whole-request collector
     // cannot produce this original handler event.
     let (mut input, answer) = dispatches.recv().await.ok_or("handler was not admitted")?;
@@ -278,7 +278,7 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
         Err(StreamError::Unavailable),
         "consumer loss must wake without escaped credit returning"
     );
-    futures::pin_mut!(abandoned_reply);
+    let mut abandoned_reply = core::pin::pin!(abandoned_reply);
     assert!(matches!(
         abandoned_reply.next().await,
         Some(Err(StreamError::Unavailable))
@@ -308,7 +308,7 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
         .ok_or("no blocked terminal before host loss")?;
     drop(host);
     assert_eq!(finish.await, Err(StreamError::Unavailable));
-    futures::pin_mut!(lost);
+    let mut lost = core::pin::pin!(lost);
     assert!(matches!(
         lost.next().await,
         Some(Err(StreamError::Unavailable))
@@ -464,7 +464,7 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
     let chunks = client
         .actor_call_chunks(&Bytes::from_static(b"invocation"), 0, body.len())
         .await?;
-    futures::pin_mut!(chunks);
+    let mut chunks = core::pin::pin!(chunks);
     let mut received = 0;
     while let Some(chunk) = chunks.next().await {
         let (total, chunk) = chunk?;
@@ -481,7 +481,7 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
     let refused = client
         .actor_call_chunks(&Bytes::from_static(b"invocation"), 0, body.len() - 1)
         .await?;
-    futures::pin_mut!(refused);
+    let mut refused = core::pin::pin!(refused);
     assert!(matches!(
         refused.next().await,
         Some(Err(StreamError::InvalidResponse))
@@ -490,7 +490,7 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
     let stopped = client
         .actor_call_chunks(&Bytes::from_static(b"invocation"), 0, body.len())
         .await?;
-    futures::pin_mut!(stopped);
+    let mut stopped = core::pin::pin!(stopped);
     let first = stopped
         .next()
         .await

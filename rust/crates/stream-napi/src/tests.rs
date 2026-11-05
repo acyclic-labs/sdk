@@ -69,7 +69,7 @@ async fn pending_operation_is_interrupted_by_cancellation() {
         Poll::Pending::<std::result::Result<(), NativeStreamErrorMetadata>>
     });
     let pending = run_with_cancellation(operation, Some(cancellation.clone()));
-    futures::pin_mut!(pending);
+    let mut pending = core::pin::pin!(pending);
     assert!(futures::poll!(&mut pending).is_pending());
     assert!(polled.load(Ordering::SeqCst));
     cancellation.cancel();
@@ -126,15 +126,15 @@ async fn concurrent_follow_reads_are_serialized_instead_of_false_end() {
     });
 
     let first = follow.next_result();
-    futures::pin_mut!(first);
+    let mut first = core::pin::pin!(first);
     assert!(futures::poll!(&mut first).is_pending());
     assert!(polled.load(Ordering::SeqCst));
     let second = follow.next_result();
-    futures::pin_mut!(second);
+    let mut second = core::pin::pin!(second);
     assert!(futures::poll!(&mut second).is_pending());
 
     let close = follow.close();
-    futures::pin_mut!(close);
+    let mut close = core::pin::pin!(close);
     assert!(futures::poll!(&mut close).is_pending());
     let (first, second, ()) = futures::join!(first, second, close);
     assert!(dropped.load(Ordering::SeqCst));

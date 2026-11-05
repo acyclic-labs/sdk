@@ -147,7 +147,7 @@ async fn run_swarm<P: StreamProvider>(
             )
         })
         .buffer_unordered(64);
-    futures::pin_mut!(opens);
+    let mut opens = core::pin::pin!(opens);
     let mut followers = SelectAll::new();
     while let Some(records) = opens.next().await {
         followers.push(records?);

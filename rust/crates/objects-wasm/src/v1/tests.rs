@@ -152,7 +152,7 @@ async fn original_javascript_account_preserves_results_and_cancellation() {
     let cancelled_digest = Digest::of(&cancelled);
     {
         let operation = client.put(cancelled, Vec::new());
-        futures::pin_mut!(operation);
+        let mut operation = core::pin::pin!(operation);
         assert!(futures::poll!(operation.as_mut()).is_pending());
     }
     wasm_bindgen_futures::JsFuture::from(settled(&port))
@@ -164,7 +164,7 @@ async fn original_javascript_account_preserves_results_and_cancellation() {
     );
 
     let operation = transport.invoke("blobs/usage", Vec::new().into());
-    futures::pin_mut!(operation);
+    let mut operation = core::pin::pin!(operation);
     assert!(futures::poll!(operation.as_mut()).is_pending());
     close_last(&port);
     assert_eq!(

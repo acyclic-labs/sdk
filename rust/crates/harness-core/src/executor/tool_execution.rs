@@ -777,7 +777,8 @@ async fn cancel_call<T>(
     cancellation: impl std::future::Future<Output = Result<()>>,
     publication: Option<BoxFuture<'static, Result<()>>>,
 ) -> Result<Option<T>> {
-    futures::pin_mut!(execution, cancellation);
+    let execution = core::pin::pin!(execution);
+    let cancellation = core::pin::pin!(cancellation);
     match futures::future::select(cancellation, execution).await {
         futures::future::Either::Left((cancelled, execution)) => {
             cancelled?;

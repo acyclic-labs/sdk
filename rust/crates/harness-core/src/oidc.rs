@@ -100,7 +100,8 @@ impl Verifier {
         use futures::future::{Either, select};
         let fetch = keys::fetch(source, &self.config);
         let timeout = PlatformExecutor.sleep(10_000);
-        futures::pin_mut!(fetch, timeout);
+        let fetch = core::pin::pin!(fetch);
+        let timeout = core::pin::pin!(timeout);
         let replacement = match select(fetch, timeout).await {
             Either::Left((result, _)) => result?,
             Either::Right(_) => return Err(refused("OIDC key refresh timed out")),

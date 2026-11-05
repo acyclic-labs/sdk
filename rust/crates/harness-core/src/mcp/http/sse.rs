@@ -37,7 +37,7 @@ pub(super) async fn response(
         maximum_bytes as usize,
         crate::sse::Decoder::default(),
     );
-    futures::pin_mut!(events);
+    let mut events = core::pin::pin!(events);
     let mut pending = VecDeque::new();
     let mut requests = 0_u32;
     let mut stream_open = true;
@@ -77,7 +77,7 @@ pub(super) async fn response(
             message: value,
         };
         let admitted = admission.admit(context.clone(), &callback).fuse();
-        futures::pin_mut!(admitted);
+        let mut admitted = core::pin::pin!(admitted);
         let (callback_operation, reply) = loop {
             if !stream_open {
                 break admitted.await?;

@@ -493,7 +493,8 @@ impl CredentialSource for NativeCredentialSource {
         Box::pin(async move {
             let stop = self.0.watch.original.cancellation_wait().map_err(error)?;
             let resolution = self.0.cache.resolve();
-            futures::pin_mut!(stop, resolution);
+            let stop = core::pin::pin!(stop);
+            let resolution = core::pin::pin!(resolution);
             let lease = match futures::future::select(stop, resolution).await {
                 futures::future::Either::Left(_) => {
                     return Err(error(CredentialSourceError::Unavailable));
@@ -519,7 +520,8 @@ impl CredentialSource for NativeCredentialSource {
             Ok(Some(CredentialWatch::from_custodian(
                 validity,
                 async move {
-                    futures::pin_mut!(watch, stop);
+                    let watch = core::pin::pin!(watch);
+                    let stop = core::pin::pin!(stop);
                     match futures::future::select(stop, watch).await {
                         futures::future::Either::Right((result, _)) => {
                             if cancelled.is_cancelled() || state.revision().is_none() {

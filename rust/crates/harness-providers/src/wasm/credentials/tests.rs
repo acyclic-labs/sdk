@@ -153,7 +153,8 @@ async fn protected_fetch_retains_authority_and_settles_when_its_producer_closes(
             continue;
         }
         let ready = JsFuture::from(Promise::resolve(&field(&owner, "ready")));
-        futures::pin_mut!(operation, ready);
+        let operation = core::pin::pin!(operation);
+        let ready = core::pin::pin!(ready);
         match futures::future::select(operation, ready).await {
             futures::future::Either::Left(_) => panic!("exchange completed before producer loss"),
             futures::future::Either::Right((ready, operation)) => {

@@ -349,7 +349,7 @@ mod reporting_tests {
         let reported = RefCell::new(Vec::new());
         send.send("completed failure").unwrap();
         let pending = collect_results(&mut receive, |record| reported.borrow_mut().push(*record));
-        futures::pin_mut!(pending);
+        let mut pending = core::pin::pin!(pending);
         assert!(pending.as_mut().now_or_never().is_none());
         assert_eq!(
             *reported.borrow(),

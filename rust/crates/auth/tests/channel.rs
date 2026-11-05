@@ -341,7 +341,7 @@ async fn successful_reply_requires_the_original_credential_to_remain_current() {
                 Ok(Response::new(()))
             },
         );
-        futures::pin_mut!(call);
+        let mut call = core::pin::pin!(call);
         futures::select! {
             result = call.as_mut().fuse() => panic!("held reply completed: {result:?}"),
             _ = started.fuse() => {},
