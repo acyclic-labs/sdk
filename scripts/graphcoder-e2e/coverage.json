@@ -38,7 +38,8 @@
         "child-conflict",
         "child-disjoint",
         "fs-branch-merge-git",
-        "fs-branch-merge-plain"
+        "fs-branch-merge-plain",
+        "study-paired-arms"
       ]
     },
     "A5": {
