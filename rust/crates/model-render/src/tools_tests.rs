@@ -167,7 +167,7 @@ proptest! {
                 }
                 // Dropping and replacing tools must also drop the alternate header.
                 fields.retain(|field| field != "tools");
-                prop_assert_eq!(fields, Fields::default());
+                prop_assert_eq!(&fields, &Fields::default());
                 fields.set_tools(family, &build(None).unwrap()).unwrap();
                 let mut kept = Fields::default();
                 kept.set_tools(family, &build(None).unwrap()).unwrap();
