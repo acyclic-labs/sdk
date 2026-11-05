@@ -549,10 +549,12 @@ impl super::WasmStream {
                                 .sequence
                                 .checked_add(1)
                                 .ok_or(StreamError::OutOfRange)?;
-                            let after = if indexed { next } else { record.sequence }
-                                .checked_add(1)
-                                .ok_or(StreamError::OutOfRange)?;
-                            next = after;
+                            let after = if indexed {
+                                next = next.checked_add(1).ok_or(StreamError::OutOfRange)?;
+                                next
+                            } else {
+                                accepted
+                            };
                             wire::session_frame::Body::Data(wire::SessionData {
                                 after: Some(wire::SessionCursor {
                                     next: after,
