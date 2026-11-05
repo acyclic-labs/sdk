@@ -243,6 +243,7 @@ pub enum Command {
     /// Execute through the same conversation driver used by prompt mode.
     Exec {
         /// One task; omitted reads JSONL requests from stdin.
+        #[arg(id = "task")]
         prompt: Option<String>,
     },
     /// Read one lazy page of the selected session's direct children.

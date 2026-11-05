@@ -106,6 +106,13 @@ additional_controls = {
             "mixed-input",
             b"text prompt and JSONL stdin require distinct input owners",
         ),
+        (
+            "plugin/src/runner/args.rs",
+            b'        #[arg(id = "task")]\n        prompt: Option<String>,',
+            b'        prompt: Option<String>,',
+            "accepted-family-0",
+            b"exec input: task supplied twice",
+        ),
     ],
     "native_marketplace": [
         (

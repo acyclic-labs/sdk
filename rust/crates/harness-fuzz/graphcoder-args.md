@@ -26,8 +26,12 @@ execution, native workspace ownership, loopback serving, TLS serving, prompt,
 JSONL input, run or attach. Rejecting one of these supported families fails the
 same oracle used for arbitrary accepted input.
 
+The exec positional task has its own clap identifier, separate from the global
+prompt option. The empty input and `accepted-family-0` exercise that supported
+execution; sharing their identifiers would falsely report two supplied tasks.
+
 The existing control driver removes actual production operation, host storage,
-TLS key and prompt/input admission guards in turn. Each selected defect must fail
+TLS key, prompt/input and distinct task-identifier guards in turn. Each selected defect must fail
 its unchanged semantic assertion; the driver restores the original bytes before
 replaying the retained corpus. Run from the repository root:
 
