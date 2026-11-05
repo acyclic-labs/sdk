@@ -126,8 +126,46 @@ fn delivery_does_not_retain_a_dropped_later_waiters_allocation() {
     let work = crate::NativeMaterializationWork::new(budget(64), &token)
         .map_err(|(error, _)| error)
         .unwrap();
+    let backing = |layout| crate::arc_layout::allocation_bytes(layout).unwrap() as u64;
+    let state_bytes = backing(std::alloc::Layout::new::<CancellationState>());
+    let waiter_bytes = backing(std::alloc::Layout::new::<CancellationWaiter>());
+    let baseline = work.live_allocation_bytes();
+    for linked in [false, true] {
+        let child = if linked {
+            CancellationToken::linked_child_with_native_work(&token, &work)
+        } else {
+            CancellationToken::new_with_native_work(&work)
+        }
+        .unwrap();
+        let extra = if linked {
+            waiter_bytes + backing(std::alloc::Layout::new::<ChildCancellationWake>())
+        } else {
+            0
+        };
+        assert_eq!(
+            work.live_allocation_bytes(),
+            baseline + state_bytes + extra,
+            "cancellation owners must retain their complete Arc backing"
+        );
+        drop(child);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+    }
+    let notify: fn() = || {};
+    let registration = token.on_cancel(Some(&work), notify).unwrap();
+    assert_eq!(
+        work.live_allocation_bytes(),
+        baseline
+            + waiter_bytes
+            + backing(std::alloc::Layout::new::<
+                notification::CancellationNotification<fn()>,
+            >()),
+        "cancellation notification must retain its complete Arc backing"
+    );
+    drop(registration);
+    assert_eq!(work.live_allocation_bytes(), baseline);
     let later = token.prepare_cancelled_with_native_work(&work).unwrap();
     let mut first = token.prepare_cancelled_with_native_work(&work).unwrap();
+    assert_eq!(work.live_allocation_bytes(), baseline + 2 * waiter_bytes);
     let retired = Arc::new(AtomicBool::new(false));
     let waker = Waker::from(Arc::new(DropWaiterOnWake {
         waiter: Mutex::new(Some(later)),
@@ -147,4 +185,22 @@ fn delivery_does_not_retain_a_dropped_later_waiters_allocation() {
         crate::NativeMaterializationWork::accounting_state_bytes()
     );
     work.receipt().verify(budget(64)).unwrap();
+
+    let token = CancellationToken::new();
+    let mut caller = crate::kernel::KernelAccounting::standalone(budget(64), &token);
+    let anchor =
+        crate::kernel::allocation::retained::RetainedAllocation::claim(0, 0, &mut caller).unwrap();
+    let (allocations, counters, budget, _) = caller.standalone_parts().unwrap();
+    let before = allocations.live_bytes();
+    let registered = token
+        .prepare_cancelled_measured(allocations, counters, budget)
+        .unwrap();
+    assert_eq!(
+        caller.standalone_parts().unwrap().0.live_bytes(),
+        before + waiter_bytes,
+        "standalone cancellation waiter must retain its complete Arc backing"
+    );
+    drop(registered);
+    assert_eq!(caller.standalone_parts().unwrap().0.live_bytes(), before);
+    drop(anchor);
 }

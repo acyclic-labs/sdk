@@ -1,0 +1,59 @@
+--- a/rust/crates/filesystem/src/cancellation/mod.rs
++++ b/rust/crates/filesystem/src/cancellation/mod.rs
+@@ -144,8 +144,7 @@
+         original: &crate::NativeMaterializationWork,
+     ) -> Result<Self, crate::NativeTreeMaterializationError> {
+         let allocation = original.claim(
+-            crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<CancellationState>())
+-                .map_err(|_| crate::WorkError::Overflow)? as u64,
++            std::mem::size_of::<CancellationState>() as u64,
+             1,
+             crate::WorkCounters::UNCHARGED,
+         )?;
+@@ -176,8 +175,7 @@
+             .prepare_cancelled_with_native_work(original)
+             .map_err(CancellationWaitError::into_native)?;
+         let allocation = original.claim(
+-            crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<CancellationState>())
+-                .map_err(|_| crate::WorkError::Overflow)? as u64,
++            std::mem::size_of::<CancellationState>() as u64,
+             1,
+             crate::WorkCounters::UNCHARGED,
+         )?;
+@@ -189,8 +187,7 @@
+             }),
+         };
+         let allocation = original.claim(
+-            crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<ChildCancellationWake>())
+-                .map_err(|_| crate::WorkError::Overflow)? as u64,
++            std::mem::size_of::<ChildCancellationWake>() as u64,
+             1,
+             crate::WorkCounters::UNCHARGED,
+         )?;
+--- a/rust/crates/filesystem/src/cancellation/wait/mod.rs
++++ b/rust/crates/filesystem/src/cancellation/wait/mod.rs
+@@ -64,9 +64,7 @@
+         if self.token.is_cancelled() {
+             return Ok(());
+         }
+-        let bytes =
+-            crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<CancellationWaiter>())
+-                .map_err(|_| crate::WorkError::Overflow)? as u64;
++        let bytes = std::mem::size_of::<CancellationWaiter>() as u64;
+         #[cfg(not(target_arch = "wasm32"))]
+         let (native_allocation, cleanup) = if let Some(original) = original {
+             original.admit(crate::WorkCounters {
+--- a/rust/crates/filesystem/src/cancellation/notification.rs
++++ b/rust/crates/filesystem/src/cancellation/notification.rs
+@@ -30,10 +30,7 @@
+         let allocation = original
+             .map(|original| {
+                 original.claim(
+-                    crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<
+-                        CancellationNotification<F>,
+-                    >())
+-                    .map_err(|_| crate::WorkError::Overflow)? as u64,
++                    std::mem::size_of::<CancellationNotification<F>>() as u64,
+                     1,
+                     crate::WorkCounters::UNCHARGED,
+                 )

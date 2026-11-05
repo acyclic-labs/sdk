@@ -1,6 +1,6 @@
 use super::*;
 
-struct CancellationNotification<F> {
+pub(super) struct CancellationNotification<F> {
     notify: F,
     _allocation: Option<crate::NativeAllocation>,
 }
@@ -30,7 +30,10 @@ impl CancellationToken {
         let allocation = original
             .map(|original| {
                 original.claim(
-                    std::mem::size_of::<CancellationNotification<F>>() as u64,
+                    crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<
+                        CancellationNotification<F>,
+                    >())
+                    .map_err(|_| crate::WorkError::Overflow)? as u64,
                     1,
                     crate::WorkCounters::UNCHARGED,
                 )
