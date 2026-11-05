@@ -149,7 +149,7 @@ fn dispatch_retains_only_the_selected_driver_frame() -> TestResult {
         "../../../harness-fuzz/corpus/client_diff/local-read"
     ))?;
     let direct = super::local_execution::run(serde_json::from_value(baseline.clone())?);
-    let dispatched = run(baseline);
+    let dispatched = super::dispatch(baseline.into());
     let bytes = std::mem::size_of_val(&dispatched);
     let inline = std::mem::size_of_val(&direct);
     println!("dispatch future: {bytes} bytes; inline native driver: {inline} bytes");
