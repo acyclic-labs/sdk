@@ -436,11 +436,11 @@ mod original {
         birth.with_original_leaf(DemandWork::poison_native_original_work);
         drop(reads);
         drop(watch);
-        wait_retired(&completion);
         assert!(
             retired.recv()?,
             "physical publication releases original reads"
         );
+        wait_retired(&completion);
         no_growth(&birth, before, budget);
         birth.with_original_leaf(|work| {
             assert!(work.live_allocation_bytes() > 0);
