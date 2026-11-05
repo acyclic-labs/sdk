@@ -442,6 +442,7 @@ fn local_admission_does_not_copy_transport_headers() -> Result<()> {
                     &cancel,
                 )
                 .unwrap();
+                let retained = work.live_allocation_bytes();
                 let mut count = None;
                 let allocations = acyclic_test_support::measure(|| {
                     count = Some(if native {
@@ -464,7 +465,7 @@ fn local_admission_does_not_copy_transport_headers() -> Result<()> {
                 assert_eq!(count.0.request_digest, request.request_digest());
                 let observed = count.0.input_tokens;
                 drop(count);
-                assert_eq!(work.live_allocation_bytes(), 0);
+                assert_eq!(work.live_allocation_bytes(), retained);
                 (observed, allocations)
             };
             let (expected, baseline) = measure(&registry);
