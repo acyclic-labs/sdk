@@ -179,6 +179,43 @@ fn token(path: &str, change: impl Fn(&mut Block)) -> Vec<u8> {
 #[test]
 fn declared_method_credentials_match_session_admission() {
     use crate::StreamMethod;
+    use acyclic_auth::action::Action;
+
+    #[cfg(feature = "test-support")]
+    for operation in crate::TokenOperation::ALL {
+        for spelling in [
+            operation.as_str().to_owned(),
+            format!("{}?", operation.as_str()),
+        ] {
+            assert!(
+                crate::codec_fuzz::check(spelling.as_bytes()),
+                "token operation decoding: {spelling:?}"
+            );
+        }
+    }
+
+    let credential = |resource: &str, actions: &[Action], removed: Option<usize>| {
+        let actions: Vec<_> = actions
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| Some(*index) != removed)
+            .map(|(_, action)| action.as_str().to_owned())
+            .collect();
+        // A grant requires an action. Removing its last action removes the
+        // grant, preserving a valid signed credential with no such permission.
+        let grants = if actions.is_empty() {
+            vec![]
+        } else {
+            vec![ResourceGrant {
+                resource: ResourcePattern {
+                    name: resource.into(),
+                    prefix: false,
+                },
+                actions,
+            }]
+        };
+        testing::credential_with_grants(grants)
+    };
 
     // Dispatch through the actual Session admission each public method sends.
     // The dispatch deliberately does not consult the table's scope or actions:
@@ -243,26 +280,7 @@ fn declared_method_credentials_match_session_admission() {
         // An exact grant passes; independently removing any declared action
         // refuses at that same boundary. The unrelated sibling always refuses.
         for removed in std::iter::once(None).chain((0..actions.len()).map(Some)) {
-            let actions: Vec<_> = actions
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| Some(*index) != removed)
-                .map(|(_, action)| action.as_str().to_owned())
-                .collect();
-            // A grant needs at least one action. Removing the final action
-            // removes its grant so the credential stays structurally valid.
-            let grants = if actions.is_empty() {
-                vec![]
-            } else {
-                vec![ResourceGrant {
-                    resource: ResourcePattern {
-                        name: resource.into(),
-                        prefix: false,
-                    },
-                    actions,
-                }]
-            };
-            let credential = testing::credential_with_grants(grants);
+            let credential = credential(resource, actions, removed);
             let mut slots = Slots::default();
             auth.register(&mut slots, 0, &credential, 1).unwrap();
             assert_eq!(
@@ -270,27 +288,17 @@ fn declared_method_credentials_match_session_admission() {
                 removed.is_none(),
                 "{method:?}, removed {removed:?}"
             );
-            assert!(matches!(
+            assert_eq!(
                 admit(&auth, &slots, method, "sibling"),
-                Err(Rejection::Forbidden)
-            ));
+                Err(Rejection::Forbidden),
+                "{method:?}, removed {removed:?}"
+            );
         }
     }
     for operation in [crate::TokenOperation::Read, crate::TokenOperation::Follow] {
         let actions: Vec<_> = operation.actions().collect();
         for removed in std::iter::once(None).chain((0..actions.len()).map(Some)) {
-            let credential = testing::credential_with_grants(vec![ResourceGrant {
-                resource: ResourcePattern {
-                    name: "streams:/allowed".into(),
-                    prefix: false,
-                },
-                actions: actions
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, _)| Some(*index) != removed)
-                    .map(|(_, action)| action.as_str().to_owned())
-                    .collect(),
-            }]);
+            let credential = credential("streams:/allowed", &actions, removed);
             let mut slots = Slots::default();
             auth.register(&mut slots, 0, &credential, 1).unwrap();
             let complete = admit(&auth, &slots, StreamMethod::Read, "allowed").is_ok()
