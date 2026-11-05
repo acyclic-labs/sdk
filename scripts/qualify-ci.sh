@@ -368,6 +368,8 @@ case "$lane" in
     ;;
   policy)
     source scripts/ensure-bun.sh
+    node --test scripts/check-cargo-lock.test.mjs
+    node scripts/check-cargo-lock.mjs
     node --test scripts/check-feature-matrix.test.mjs scripts/run-command.test.mjs
     node --test scripts/graphcoder-e2e/spool.test.mjs scripts/graphcoder-e2e/transcript.test.mjs
     node --test scripts/check-test-support.test.mjs
