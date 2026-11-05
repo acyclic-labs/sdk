@@ -21,6 +21,11 @@ an oracle that rejects a population-dependent implementation.
 
 ## Current closure work
 
+The [original-budget control](borrowed-budget/README.md) replaces a hand-written
+former completion body with a mutation of the actual kernel accounting method.
+The existing address, verification-count, allocation and receipt observations
+remain on that production entry point; no machine-level copy count is inferred.
+
 The [work arithmetic control](work-arithmetic/README.md) compares actual receipt
 addition with independent wider arithmetic across every declared field, including
 peak/max semantics and unchanged receipts on refused addition or charge. Its

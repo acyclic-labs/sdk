@@ -140,58 +140,33 @@ fn completed_kernel_work_borrows_the_original_budget_without_allocating() {
         kernel::allocation::KernelAccounting,
         performance::{VERIFICATION_BUDGET, VERIFICATION_PASSES},
     };
-    for by_value in [false, true] {
-        let cancellation = crate::CancellationToken::new();
-        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-        let KernelAccounting::Standalone { budget, .. } = &accounting else {
-            unreachable!()
-        };
-        let original = std::ptr::from_ref(budget) as usize;
-        VERIFICATION_PASSES.with(|count| count.set(0));
-        VERIFICATION_BUDGET.with(|address| address.set(0));
-        let allocations = acyclic_test_support::measure(|| {
-            let delta = WorkCounters {
+    let cancellation = crate::CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let KernelAccounting::Standalone { budget, .. } = &accounting else {
+        unreachable!()
+    };
+    let original = std::ptr::from_ref(budget) as usize;
+    VERIFICATION_PASSES.with(|count| count.set(0));
+    VERIFICATION_BUDGET.with(|address| address.set(0));
+    let allocations = acyclic_test_support::measure(|| {
+        accounting
+            .record_completed(WorkCounters {
                 items_examined: 7,
                 bytes_copied: 11,
                 ..WorkCounters::UNCHARGED
-            };
-            if by_value {
-                // The original production body: same work, verification count,
-                // output and allocations, but a copied 192-byte budget.
-                let KernelAccounting::Standalone {
-                    work,
-                    budget,
-                    cancellation,
-                    ..
-                } = &mut accounting
-                else {
-                    unreachable!()
-                };
-                work.try_add_assign(&delta).unwrap();
-                work.verify(*budget).unwrap();
-                cancellation.check().unwrap();
-            } else {
-                accounting.record_completed(delta).unwrap();
-            }
-        });
-        assert_eq!(VERIFICATION_PASSES.with(std::cell::Cell::get), 1);
-        let bound = || {
-            assert_eq!(
-                VERIFICATION_BUDGET.with(std::cell::Cell::get),
-                original,
-                "verification copied the original budget"
-            );
-        };
-        assert_eq!(
-            std::panic::catch_unwind(bound).is_ok(),
-            !by_value,
-            "original by-value verification escaped the borrowing invariant"
-        );
-        assert_eq!(allocations.count_total, 0);
-        assert_eq!(allocations.bytes_total, 0);
-        assert_eq!(accounting.spent().items_examined, 7);
-        assert_eq!(accounting.spent().bytes_copied, 11);
-    }
+            })
+            .unwrap();
+    });
+    assert_eq!(VERIFICATION_PASSES.with(std::cell::Cell::get), 1);
+    assert_eq!(
+        VERIFICATION_BUDGET.with(std::cell::Cell::get),
+        original,
+        "verification copied the original budget"
+    );
+    assert_eq!(allocations.count_total, 0);
+    assert_eq!(allocations.bytes_total, 0);
+    assert_eq!(accounting.spent().items_examined, 7);
+    assert_eq!(accounting.spent().bytes_copied, 11);
 }
 
 proptest! {
