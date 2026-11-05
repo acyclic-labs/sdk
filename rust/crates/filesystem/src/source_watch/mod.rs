@@ -231,7 +231,7 @@ pub(crate) struct Delivery {
     events: Option<Arc<dyn NativeEventSink>>,
     ownership: SourcePayloadOwnership,
     original: Option<crate::NativeMaterializationWork>,
-    #[cfg(all(test, any(windows, target_os = "linux")))]
+    #[cfg(test)]
     after_retirement: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 

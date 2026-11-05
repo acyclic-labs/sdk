@@ -174,7 +174,7 @@ impl NativeSourceWatch {
         let Some(stream) = custody.as_mut() else {
             return Ok(());
         };
-        let result = if prepaid {
+        let retirement = if prepaid {
             stream.ensure_cleanup_wait_available(work)?;
             stream.cleanup_admitted(work)
         } else {
@@ -183,6 +183,8 @@ impl NativeSourceWatch {
         if stream.is_stopped() {
             *custody = None;
         }
+        drop(custody);
+        let result = retirement.complete();
         if prepaid && !self.is_stopped() {
             return result.and(Err(DemandError::WorkerUnavailable));
         }
@@ -222,7 +224,9 @@ impl Drop for NativeSourceWatch {
             let mut work = self.shared.delivery.callback_work();
             if let Some(stream) = self.stream.get_mut().take() {
                 let mut stream = stream;
-                let _ = stream.cleanup_admitted(&mut work);
+                let retirement = stream.cleanup_admitted(&mut work);
+                drop(stream);
+                let _ = retirement.complete();
             }
         }
     }
