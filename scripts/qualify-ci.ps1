@@ -191,9 +191,7 @@ foreach ($family in @('actors')) {
 }
 cargo build --offline --locked -p acyclic-actors --example conformance-certificate
 
-# Bun's Windows isolated test worker crashed while loading the Pi native bridge.
-bun test --isolate --reporter=junit `
-    --reporter-outfile="$env:SDK_TEMP_DIR/observability/bun-test.xml" typescript/packages
+node scripts/node-tests.mjs --only typescript/packages
 bun run --filter '@acyclic-labs/fs' test:composition
 
 # The installed host creates the real local provider scenario; pipes here are
@@ -202,7 +200,7 @@ $GraphcoderInstall = Join-Path $env:SDK_TEMP_DIR 'graphcoder-installed'
 cargo install --path rust/crates/harness/src/bin/graphcoder --locked --debug `
     --root $GraphcoderInstall --target-dir $CargoTargetDir
 bun install --cwd scripts/graphcoder-pty --frozen-lockfile --ignore-scripts
-node --test scripts/graphcoder-pty/screen.test.mjs
+node scripts/node-tests.mjs --only scripts/graphcoder-pty/screen.test.mjs
 node scripts/test-graphcoder.mjs (Join-Path $GraphcoderInstall 'bin/graphcoder.exe')
 node scripts/test-graphcoder-pty.mjs (Join-Path $GraphcoderInstall 'bin/graphcoder.exe')
 # Native hosts own tools and providers; the shared harness owns their lifecycle.

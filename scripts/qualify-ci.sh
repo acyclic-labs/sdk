@@ -368,6 +368,7 @@ case "$lane" in
     ;;
   policy)
     source scripts/ensure-bun.sh
+    bun install --frozen-lockfile
     node scripts/check-cargo-lock.mjs
     node scripts/node-tests.mjs --only scripts
     node scripts/check-test-support.mjs

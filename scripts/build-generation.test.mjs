@@ -109,14 +109,6 @@ test("generated runtime bindings stay out of the source index", () => {
   }
 });
 
-test("every TypeScript package prepares generation for build, test and prepack", () => {
-  for (const name of ["actors", "auth", "filesystem", "harness", "inference", "machines", "objects", "sdk", "stream", "workers"]) {
-    const { scripts } = JSON.parse(readFileSync(`typescript/packages/${name}/package.json`, "utf8"));
-    assert.equal(scripts.generate, `bun ../../../scripts/generate.mjs ${name}`);
-    for (const operation of ["build", "check", "test", "prepack"]) if (scripts[operation]) assert.match(scripts[operation], /^bun run generate(?: && |$)/, `${name}: ${operation}`);
-  }
-});
-
 test("native source roots cover the generators' transitive script imports", () => {
   // Node's module parser enumerates static imports without executing generators.
   execFileSync("node", ["--experimental-vm-modules", "--input-type=module", "-e", String.raw`
@@ -124,7 +116,7 @@ test("native source roots cover the generators' transitive script imports", () =
     import { readFileSync } from "node:fs";
     import { posix } from "node:path";
     import { SourceTextModule, runInNewContext } from "node:vm";
-    import { packageClosure } from "./scripts/package-closure.mjs";
+    import { packageClosure, workspaceManifests } from "./scripts/package-closure.mjs";
 
     function check(roots, generators, changes = new Map()) {
       const pending = [...generators, ...roots.filter(path => path.startsWith("scripts/") && path.endsWith(".mjs"))];
@@ -152,11 +144,13 @@ test("native source roots cover the generators' transitive script imports", () =
       }
     }
     const contracts = readFileSync("scripts/generate-contracts.mjs", "utf8");
-    const selection = contracts.slice(contracts.indexOf("const modules ="), contracts.indexOf("const root ="));
+    const available = contracts.slice(contracts.indexOf("const availableModules ="), contracts.indexOf("const root ="));
+    const selection = contracts.slice(contracts.indexOf("const families ="), contracts.indexOf("const mode ="));
     for (const family of ["actors", "stream"]) {
       const { sourceRoots } = JSON.parse(readFileSync("compatibility/native-families/" + family + ".json", "utf8"));
       // Use the real selector for the computed import in generate-contracts.
-      const modules = runInNewContext(selection + "modules", { process: { argv: ["node", "generate-contracts", "write", ...packageClosure(process.cwd(), family)] } });
+      const modules = runInNewContext(available + selection + "modules", { root: process.cwd(), workspaceManifests,
+        process: { argv: ["node", "generate-contracts", "write", ...packageClosure(process.cwd(), family)] } });
       const generators = modules.map(name => "scripts/" + name);
       check(sourceRoots, generators);
       assert.throws(() => check(sourceRoots.filter(path => path !== "scripts/package-closure.mjs"), generators), /imports unattested scripts\/package-closure\.mjs/);

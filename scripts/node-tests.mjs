@@ -1,4 +1,4 @@
-import {existsSync, globSync, readFileSync, rmSync} from 'node:fs';
+import {copyFileSync, existsSync, globSync, mkdirSync, readFileSync, rmSync} from 'node:fs';
 import {dirname, join, relative, resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {fileURLToPath} from 'node:url';
@@ -9,9 +9,10 @@ import {environment, scratchDirectory} from './graphcoder-e2e/scratch.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const ordinaryTest = file => /(?:^|\/)(?:test-[^/]+|[^/]+\.(?:test|spec))\.[cm]?[jt]sx?$/.test(file);
+const suffixedTest = file => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file);
 const sourceFile = file => /\.[cm]?[jt]sx?$/.test(file);
 const excluded = file => file.replaceAll('\\', '/').split('/').some(part =>
- ['node_modules', '.git', 'target', 'dist', 'coverage', 'output', '.sdk'].includes(part));
+ part.startsWith('.') || ['node_modules', 'target', 'dist', 'coverage', 'output'].includes(part));
 const stable = value => String(value).replaceAll('\r', '\\r').replaceAll('\n', '\\n');
 const fail = (file, name) => console.log(`NODE_TEST_FAIL ${stable(file)}::${stable(name)}`);
 
@@ -22,7 +23,10 @@ export function discoverTests(root = ROOT) {
  return files.filter(file => ordinaryTest(file)).map(file => {
   const imports = ts.preProcessFile(readFileSync(join(root, file), 'utf8'), true, true).importedFiles.map(input => input.fileName);
   return {file, runtime: imports.includes('bun:test') || (/\.[cm]?tsx?$/.test(file) && !imports.includes('node:test')) ? 'bun' : 'node', imports};
- });
+ // Prefix-named CLI scenarios have their own executable arguments and owners.
+ // Suffix-named test modules remain selected even if import failure prevents
+ // registration; native engine failure must never disappear from inventory.
+ }).filter(test => suffixedTest(test.file) || test.imports.some(input => input === 'node:test' || input === 'bun:test'));
 }
 
 // Like the Cloud entry point, only test-only changes can narrow qualification.
@@ -31,25 +35,37 @@ export function affectedTests(tests, changed, root = ROOT) {
  if (!changed.length) return [];
  const paths = changed.map(file => relative(root, resolve(root, file)).replaceAll('\\', '/'));
  if (paths.some(file => !ordinaryTest(file) || !existsSync(join(root, file)))) return tests;
- const touched = new Set(paths), programs = new Map();
- return tests.filter(test => {
-  const pending = [test.file], seen = new Set();
+ const programs = new Map(tests.map(test => [test.file, test.imports]));
+ const options = {moduleResolution: ts.ModuleResolutionKind.Bundler, allowJs: true};
+ const cache = ts.createModuleResolutionCache(root, file => ts.sys.useCaseSensitiveFileNames ? file : file.toLowerCase(), options);
+ const consumers = new Map(), pending = tests.map(test => test.file), seen = new Set();
   while (pending.length) {
    const file = pending.pop();
    if (seen.has(file)) continue;
    seen.add(file);
-   if (touched.has(file)) return true;
    if (!existsSync(join(root, file)) || !sourceFile(file)) continue;
-   if (!programs.has(file)) programs.set(file, ts.preProcessFile(readFileSync(join(root, file), 'utf8'), true, true).importedFiles);
-   for (const input of programs.get(file)) if (input.fileName.startsWith('.'))
-    pending.push(relative(root, resolve(root, dirname(file), input.fileName)).replaceAll('\\', '/'));
+   if (!programs.get(file)) programs.set(file, ts.preProcessFile(readFileSync(join(root, file), 'utf8'), true, true).importedFiles.map(input => input.fileName));
+   for (const input of programs.get(file)) if (input.startsWith('.')) {
+    // Runtime paths and TypeScript's .js-to-.ts aliases both contribute.
+    const dependencies = [relative(root, resolve(root, dirname(file), input)).replaceAll('\\', '/')];
+    const resolved = ts.resolveModuleName(input, join(root, file), options, ts.sys, cache).resolvedModule;
+    if (resolved) dependencies.push(relative(root, resolved.resolvedFileName).replaceAll('\\', '/'));
+    for (const dependency of dependencies) {
+     if (!consumers.has(dependency)) consumers.set(dependency, new Set());
+     consumers.get(dependency).add(file);
+     pending.push(dependency);
+    }
+   }
   }
-  return false;
- });
+ const affected = new Set(paths);
+ pending.push(...paths);
+ while (pending.length) for (const file of consumers.get(pending.pop()) ?? []) if (!affected.has(file)) {
+  affected.add(file); pending.push(file);
+ }
+ return tests.filter(test => affected.has(test.file));
 }
 
-/** Consume Bun's original JUnit report using an XML parser, never console text.
- * Failed imports and worker crashes are test cases in the native report too. */
+/** Decode native Bun JUnit and reconcile files omitted after import failures. */
 export function bunResults(xml, reportFailure = fail, expectedFiles = []) {
  const parser = new SaxesParser(), result = {tests: 0, passed: 0, failed: 0, skipped: 0};
  const suites = [], observed = new Set();
@@ -91,6 +107,8 @@ export function bunResults(xml, reportFailure = fail, expectedFiles = []) {
 // Cargo's original artifact messages own executable locations, including a
 // relocated target directory. Never derive a binary path from this checkout.
 async function nativeInputs(tests, processes, env, publish) {
+ env.E2E_PROCESS_HOST ??= env.ACYCLIC_PROCESS_HOST;
+ env.ACYCLIC_PROCESS_HOST ??= env.E2E_PROCESS_HOST;
  const report = tests.some(test => test.file.endsWith('/termination.test.mjs')) && !env.E2E_REPORT_TEST_BINARY;
  const host = (process.platform === 'win32' || tests.some(test => test.file.endsWith('/sdk/test/process.test.mjs')))
   && !env.E2E_PROCESS_HOST && !env.ACYCLIC_PROCESS_HOST;
@@ -98,7 +116,7 @@ async function nativeInputs(tests, processes, env, publish) {
   const args = kind === 'host'
    ? ['build', '--bin', 'acyclic-process-host'] : ['test', '--no-run', '--lib'];
   args.push('--locked', '-p', 'acyclic-native-runtime', '--message-format=json');
-  const outcome = await processes.run('cargo', args, {cwd: ROOT, env});
+  const outcome = await processes.runOwned('cargo', args, {cwd: ROOT, env});
   publish(outcome);
   if (outcome.code !== 0) throw new Error(`step=prepare ${kind}; recovery command: cargo ${args.join(' ')}`);
   const artifacts = outcome.stdout.split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line))
@@ -108,8 +126,6 @@ async function nativeInputs(tests, processes, env, publish) {
   if (kind === 'host') env.E2E_PROCESS_HOST = env.ACYCLIC_PROCESS_HOST = artifacts[0].executable;
   else env.E2E_REPORT_TEST_BINARY = artifacts[0].executable;
  }
- env.E2E_PROCESS_HOST ??= env.ACYCLIC_PROCESS_HOST;
- env.ACYCLIC_PROCESS_HOST ??= env.E2E_PROCESS_HOST;
 }
 
 /** @param {Array<{file: string, runtime: string}>} tests
@@ -142,6 +158,11 @@ export async function runTests(tests, {root = ROOT, selected = 'all', signal,
    publish(outcome);
    signal?.throwIfAborted();
    try {
+    if (runtime === 'bun' && existsSync(report)) {
+     const retained = process.env.SDK_TEMP_DIR ? join(process.env.SDK_TEMP_DIR, 'observability') : join(root, 'target');
+     mkdirSync(retained, {recursive: true});
+     copyFileSync(report, join(retained, 'bun-test.xml'));
+    }
     const counts = runtime === 'bun' ? bunResults(readFileSync(report, 'utf8'), fail, files) : JSON.parse(readFileSync(report, 'utf8'));
     for (const key of ['tests', 'passed', 'failed', 'skipped']) totals[key] += counts[key];
     if ((outcome.code !== 0 && counts.failed === 0) || counts.tests === 0)

@@ -48,7 +48,10 @@ test("the actual generated-copy guard rejects a mutation of every packaged sourc
   const end = source.indexOf("const harnessSuite", start);
   assert.ok(start >= 0 && end > start, "the maintained copy guard must remain identifiable");
   const guard = source.slice(start, end);
-  const files = new Map(packagedSourceCopies.flat().map(path => [path, readFileSync(path)]));
+  const files = new Map(packagedSourceCopies.flatMap(([source, packaged]) => {
+    const bytes = readFileSync(source);
+    return [[source, bytes], [packaged, bytes]];
+  }));
   const check = () => runInNewContext(guard, { packagedSourceCopies, readFileSync: path => files.get(path), join: posix.join, root: "." });
   assert.doesNotThrow(check);
   for (const [, packaged] of packagedSourceCopies) {
@@ -326,6 +329,7 @@ export SDK_TEMP_DIR="$fixture" CARGO_BUILD_JOBS=12
 target_dir="$fixture/target"
 installed_graphcoder() { :; }
 pinned_pi() { :; }
+native_host_contracts() { :; }
 native_binding() {
   [[ "$CARGO_BUILD_JOBS" == 2 ]]
   IFS= read -r event <&3
@@ -508,7 +512,7 @@ test("browser profile cleanup is bounded without changing qualification results"
     });
     assert.equal(attempts, 1);
     assert.equal(exitCode, failed ? 1 : 0);
-    if (busy) assert.match(warning, /could not remove browser profile private-browser-profile: ENOTEMPTY/);
+    if (busy) assert.match(warning, /ENOTEMPTY.*recovery:.*private-browser-profile/);
     else assert.equal(warning, "");
   }
 });
