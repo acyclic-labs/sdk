@@ -237,8 +237,24 @@ async fn scoped_blocking_work_keeps_clock_without_runtime_entry() -> io::Result<
                     tokio::runtime::Handle::try_current().is_err(),
                     "clock read leaked its runtime entry"
                 );
+                // The child is explicitly submitted by this physical worker,
+                // before its returned future enters the callback's async wait.
+                let async_child = spawn(async move {
+                    assert!(Context::current().is_some());
+                    assert_eq!(CapturedClock::capture().is_some(), seeded);
+                    42
+                });
+                let child = spawn_blocking(move || {
+                    assert!(Context::current().is_none());
+                    assert!(tokio::runtime::Handle::try_current().is_err());
+                    assert_eq!(CapturedClock::capture().is_some(), seeded);
+                });
+                blocking_on(async move {
+                    assert_eq!(async_child.await?, 42);
+                    child.await
+                })
             })
-            .await
+            .await?
         });
         tokio::select! {
             result = work => result?,
