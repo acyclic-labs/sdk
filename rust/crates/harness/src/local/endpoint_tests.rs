@@ -84,6 +84,18 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
     let waiting_files = connection.execute(&files);
     tokio::pin!(waiting_files);
     assert!(futures::poll!(&mut waiting_files).is_pending());
+    // Retain the same host query independently of the carrier's close. Its
+    // original refusal must preserve the cause even when it wins that race.
+    let hosted = harness.agents.get().unwrap();
+    let paths = ["layout.json".to_owned()];
+    let host_files = hosted.server().bound().client_files(
+        &connection.root,
+        session,
+        &paths,
+        Some(&snapshot.generation),
+    );
+    tokio::pin!(host_files);
+    assert!(futures::poll!(&mut host_files).is_pending());
     // The same real session without an in-process owner has no local cause to add.
     let mut remote = connection.clone();
     remote._host = None;
@@ -117,6 +129,31 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
         .failure()
         .ok_or_else(|| Error::Invalid("original failure was lost".into()))?
         .to_string();
+    // Use the serving codec on the real provider failure, then the exact
+    // command projection used by execute; neither delivery order is guessed.
+    let host_result = host_files
+        .await
+        .map(|snapshot| AgentReply::ClientFiles { snapshot });
+    let encoded =
+        acyclic_harness_client::encode_agent_reply(&host_result, &files).map_err(exchange)?;
+    let refusal = acyclic_harness_client::decode_agent_reply(&encoded, &files)
+        .map_err(exchange)?
+        .expect_err("failed host query returned client files");
+    let refusal = AgentExchangeError::Control(refusal);
+    assert_eq!(refusal.code(), "unavailable");
+    let refused = message(connection.command_failure(&files, refusal));
+    assert!(
+        refused.contains(&cause),
+        "host refusal lost original provider cause: {refused}"
+    );
+    let closed = message(connection.command_failure(
+        &files,
+        AgentExchangeError::Session(StreamError::Unavailable),
+    ));
+    assert!(
+        closed.contains(&cause),
+        "session close lost cause: {closed}"
+    );
     let files_error = message(
         waiting_files
             .await
