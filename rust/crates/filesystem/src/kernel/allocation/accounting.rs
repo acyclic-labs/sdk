@@ -413,7 +413,7 @@ impl<'a> KernelAccounting<'a> {
                 work.state(|state| {
                     // Preserve ledger failure, caller cancellation, proposed
                     // work failure priority while keeping the leaf held.
-                    let native = crate::materializer::native_materialization_work_error;
+                    let native = crate::NativeTreeMaterializationError::from;
                     state.admit(WorkCounters::UNCHARGED).map_err(native)?;
                     cancellation.check()?;
                     state.charge(delta).map_err(native).map_err(Into::into)
@@ -502,7 +502,7 @@ impl<'a> KernelAccounting<'a> {
             Self::NativeOriginal { work, cancellation } => work.state(|state| {
                 // Keep existing ledger failures before caller cancellation,
                 // and caller cancellation before the proposed work's limit.
-                let native = crate::materializer::native_materialization_work_error;
+                let native = crate::NativeTreeMaterializationError::from;
                 state.admit(WorkCounters::UNCHARGED).map_err(native)?;
                 cancellation.check()?;
                 state.admit(delta).map_err(native).map_err(Into::into)
@@ -544,7 +544,7 @@ impl<'a> KernelAccounting<'a> {
             }
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeOriginal { work, cancellation } => work.state(|state| {
-                let native = crate::materializer::native_materialization_work_error;
+                let native = crate::NativeTreeMaterializationError::from;
                 state.admit(WorkCounters::UNCHARGED).map_err(native)?;
                 cancellation.check()?;
                 state.remaining().map_err(native).map_err(Into::into)

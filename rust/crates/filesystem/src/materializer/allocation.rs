@@ -95,7 +95,7 @@ impl NativeAllocation {
             .ok_or(crate::WorkError::Overflow)?;
         self.meter
             .state(|state| state.release(bytes))
-            .map_err(native_materialization_work_error)
+            .map_err(NativeTreeMaterializationError::from)
     }
     pub(crate) fn release_deferred(&mut self, bytes: u64) {
         if let Err(error) = self.release(bytes) {
@@ -108,8 +108,7 @@ impl NativeAllocation {
             return self.release(self.bytes - bytes);
         }
         self.meter
-            .state(|state| state.retain_native_owned(bytes - self.bytes, &None))
-            .map_err(native_materialization_work_error)?;
+            .state(|state| state.retain_native_owned(bytes - self.bytes, &None))?;
         self.bytes = bytes;
         Ok(())
     }

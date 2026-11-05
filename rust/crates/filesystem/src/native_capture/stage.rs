@@ -322,7 +322,7 @@ fn native_source_read_error(
 ) -> crate::FsError {
     original
         .take_native_io_failure()
-        .map(crate::materializer::native_materialization_work_error)
+        .map(crate::NativeTreeMaterializationError::from)
         .map_or_else(
             || {
                 if error.kind() == std::io::ErrorKind::UnexpectedEof {

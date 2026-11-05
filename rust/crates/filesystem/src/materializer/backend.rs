@@ -356,7 +356,7 @@ pub(super) fn held_child(
     work: &NativeMaterializationWork,
 ) -> Result<HostRoot, NativeTreeMaterializationError> {
     work.state(|state| host_path(path, state, |path, work| root.open_child(path, work)))
-        .map_err(native_materialization_work_error)
+        .map_err(NativeTreeMaterializationError::from)
 }
 fn create_parent(
     entry: &(&HostRoot, &Path),
@@ -372,7 +372,7 @@ fn create_parent(
         })
     })
     .map(|_| ())
-    .map_err(native_materialization_work_error)
+    .map_err(NativeTreeMaterializationError::from)
 }
 pub(super) fn durable_native_rename(
     from: &(&HostRoot, &Path),
@@ -437,8 +437,7 @@ pub(super) fn remove_native_entry_durable(
     );
     work.with_original_leaf(|state| {
         host_path(leaf, state, |path, work| parent.remove(path, None, work))
-    })
-    .map_err(native_materialization_work_error)?;
+    })?;
     parent.sync_directory(&mut &*work)
 }
 pub(super) fn host_stat(
