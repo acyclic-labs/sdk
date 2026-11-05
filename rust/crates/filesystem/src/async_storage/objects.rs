@@ -148,7 +148,8 @@ pub trait AsyncObjectStore: ProviderPlatform {
         }
     }
 
-    /// Reads bounded evidence for one historical generation.
+    /// Reads bounded evidence for one historical generation. The default has
+    /// no archive; it checks the original frame without performing provider I/O.
     fn historical_generation_evidence(
         &self,
         _authority_id: crate::AuthorityId,
@@ -163,11 +164,7 @@ pub trait AsyncObjectStore: ProviderPlatform {
         >,
     > + acyclic_stream::ProviderTask {
         async move {
-            context.object_fallback()?;
-            context
-                .cancellation
-                .check()
-                .map_err(|_| crate::ObjectStoreError::Cancelled)?;
+            context.check()?;
             Ok(None)
         }
     }

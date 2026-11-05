@@ -46,34 +46,17 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         authority_id: AuthorityId,
         cursor: crate::accounting::AccountingCursor,
         maximum_records: u32,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
+        work: &mut AuthorityWork<'_>,
     ) -> Result<crate::accounting::AccountingPage, crate::accounting::AccountingError> {
-        let historical = AccountingAuthority(self);
-        let mut work = AuthorityWork::new(budget, cancellation);
-        let head = historical
-            .head(authority_id, &mut work)
-            .await
-            .map_err(|error| crate::accounting::AccountingError::Authority(error.to_string()))?;
-        let remaining = work
-            .spent()
-            .remaining(budget)
-            .map_err(crate::accounting::AccountingError::Work)?;
-        let mut page = crate::accounting::accounting_page_at_head(
-            (&historical, authority_id),
+        crate::accounting::accounting_page(
+            &AccountingAuthority(self),
             objects,
+            authority_id,
             cursor,
             maximum_records,
-            head,
-            remaining,
-            cancellation,
+            work,
         )
-        .await?;
-        page.work = work
-            .spent()
-            .checked_add(page.work)
-            .map_err(crate::accounting::AccountingError::Work)?;
-        Ok(page)
+        .await
     }
 }
 

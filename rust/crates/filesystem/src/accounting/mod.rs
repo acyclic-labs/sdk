@@ -6,17 +6,17 @@
 //! this projection establishes no archival custody or permission to collect.
 
 use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore};
-use crate::cancellation::CancellationToken;
 use crate::foundation::{
     AuthorityId, Digest, DurableCommit, OperationId, Sequence, VolumeId, authority_commit_digest,
 };
+use crate::kernel::allocation::retained::Retained;
 use crate::kernel::{
     ClosureLimits, DecodeLimits, RetentionKind, decode_published_generation,
     decode_retention_created, decode_volume_created, decode_workspace_deleted,
-    prove_generation_closure, retention_authority_id, volume_authority_id,
+    retention_authority_id, volume_authority_id,
 };
 use crate::model::VolumeConfig;
-use crate::performance::{WorkBudget, WorkCounters, WorkError};
+use crate::performance::{WorkCounters, WorkError};
 use crate::storage::{ObjectId, ReplayLimit};
 use thiserror::Error;
 
@@ -118,10 +118,8 @@ pub struct AccountingFact {
 }
 
 /// One contiguous page ending at a pinned authority head.
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AccountingPage {
-    /// Proven facts after the supplied cursor, bounded by count and proof credit.
-    pub facts: Vec<AccountingFact>,
+    pub(crate) facts: Retained<Vec<AccountingFact>>,
     /// Exact cursor after the last fact.
     pub next: AccountingCursor,
     /// Last sequence at the pinned read head.
@@ -132,8 +130,34 @@ pub struct AccountingPage {
     pub watermark_settled_at_micros: u64,
     /// True only if the cursor reached the pinned head; no earlier records remain.
     pub complete: bool,
-    /// Measured authority and immutable-proof work performed by this read.
+    /// Original request's completed work through this read, including its prefix.
     pub work: WorkCounters,
+}
+
+impl AccountingPage {
+    /// Proven facts borrowed from the page that retains their original funding.
+    #[must_use]
+    pub fn facts(&self) -> &[AccountingFact] {
+        &self.facts.value
+    }
+}
+
+impl std::fmt::Debug for AccountingPage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AccountingPage")
+            .field("facts", &self.facts())
+            .field("next", &self.next)
+            .field("watermark_sequence", &self.watermark_sequence)
+            .field("watermark_digest", &self.watermark_digest)
+            .field(
+                "watermark_settled_at_micros",
+                &self.watermark_settled_at_micros,
+            )
+            .field("complete", &self.complete)
+            .field("work", &self.work)
+            .finish()
+    }
 }
 
 /// Fail-closed projection error.
@@ -141,10 +165,16 @@ pub struct AccountingPage {
 pub enum AccountingError {
     /// Authority backend failed.
     #[error("authority read failed: {0}")]
-    Authority(String),
-    /// Generation closure was absent, corrupt, or outside admitted bounds.
+    Authority(#[source] crate::AuthorityStoreError),
+    /// Protected original generation evidence was malformed or mismatched.
     #[error("generation proof failed: {0}")]
-    Proof(String),
+    Proof(#[source] crate::kernel::PublicationEvidenceError),
+    /// The original object operation failed before a proof was decoded.
+    #[error(transparent)]
+    Object(crate::ObjectStoreError),
+    /// Original allocation or closure work failed.
+    #[error(transparent)]
+    Filesystem(crate::FsError),
     /// Dense chain, cursor, payload, or authority identity is invalid.
     #[error("accounting authority is malformed or has a replay gap")]
     InvalidHistory,
@@ -162,8 +192,50 @@ pub enum AccountingError {
 mod proof;
 mod read;
 
-use proof::{prove_bytes, verify_record};
-use read::AccountingReadWork;
+use proof::{prove_bytes, record_digest, verify_record};
 pub use read::accounting_page;
-#[cfg(any(test, feature = "distributed"))]
-pub(crate) use read::accounting_page_at_head;
+
+impl From<crate::AuthorityStoreError> for AccountingError {
+    fn from(error: crate::AuthorityStoreError) -> Self {
+        match error {
+            crate::AuthorityStoreError::Work(error) => Self::Work(error),
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::AuthorityStoreError::NativeOriginal(
+                crate::NativeTreeMaterializationError::Work(error),
+            ) => Self::Work(error),
+            error => Self::Authority(error),
+        }
+    }
+}
+
+impl From<crate::ObjectStoreError> for AccountingError {
+    fn from(error: crate::ObjectStoreError) -> Self {
+        match error {
+            crate::ObjectStoreError::Work(error) => Self::Work(error),
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::ObjectStoreError::Native(crate::NativeTreeMaterializationError::Work(error)) => {
+                Self::Work(error)
+            }
+            error => Self::Object(error),
+        }
+    }
+}
+
+impl From<crate::FsError> for AccountingError {
+    fn from(error: crate::FsError) -> Self {
+        match error {
+            crate::FsError::Work(error)
+            | crate::FsError::Object(crate::ObjectStoreError::Work(error))
+            | crate::FsError::Closure(crate::kernel::ClosureError::Work(error))
+            | crate::FsError::Closure(crate::kernel::ClosureError::Storage(
+                crate::ObjectStoreError::Work(error),
+            )) => Self::Work(error),
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(error))
+            | crate::FsError::Closure(crate::kernel::ClosureError::Native(
+                crate::NativeTreeMaterializationError::Work(error),
+            )) => Self::Work(error),
+            error => Self::Filesystem(error),
+        }
+    }
+}

@@ -132,8 +132,7 @@ async fn cursor_history_time_and_admission_fail_closed() -> Result<(), Box<dyn E
             id,
             AccountingCursor::genesis(),
             1,
-            B,
-            &cancel
+            &mut AuthorityWork::new(B, &cancel)
         )
         .await,
         Err(AccountingError::InvalidBounds)
@@ -200,7 +199,7 @@ async fn current_objects_and_offline_authority_cannot_substitute_for_original_pr
             2
         )
         .await,
-        Err(AccountingError::Proof(_))
+        Err(AccountingError::Filesystem(_))
     ));
     let latest = root(workspace.head(B, &cancel).await?.value.id());
     let config = workspace.volume_config();
@@ -217,7 +216,7 @@ async fn current_objects_and_offline_authority_cannot_substitute_for_original_pr
     let present = page(&authority, &current_only, id, cursor(&durable[1])?, 1).await?;
     assert!(present.complete);
     assert_eq!(
-        present.facts[0].transition,
+        present.facts()[0].transition,
         AccountingTransition::Published {
             volume_id: workspace.id().volume_id(),
             generation_root: latest,
@@ -226,7 +225,7 @@ async fn current_objects_and_offline_authority_cannot_substitute_for_original_pr
     );
     assert!(matches!(
         page(&authority, &current_only, id, cursor(&durable[0])?, 1).await,
-        Err(AccountingError::Proof(_))
+        Err(AccountingError::Filesystem(_))
     ));
     let initial_only =
         crate::LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory()));
@@ -248,7 +247,7 @@ async fn current_objects_and_offline_authority_cannot_substitute_for_original_pr
             1
         )
         .await?
-        .facts
+        .facts()
         .len(),
         1
     );
@@ -261,7 +260,7 @@ async fn current_objects_and_offline_authority_cannot_substitute_for_original_pr
             2
         )
         .await,
-        Err(AccountingError::Proof(_))
+        Err(AccountingError::Filesystem(_))
     ));
     let initial = &durable[0];
     let offline = crate::memory::MemoryAuthorityStore::default();
