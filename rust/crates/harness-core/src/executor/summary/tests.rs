@@ -23,9 +23,7 @@ proptest! {
         let expected = crate::contract::canonical_json_bytes(&source).unwrap();
         let mut stock = StockExecutor::new(
             Model::new("test".into(), "summary-source".into(), "1".into()).unwrap(),
-            Arc::new(crate::test_support::ScriptedModelProvider::new([
-                crate::test_support::ScriptedTurn::Text("summary".into()),
-            ])),
+            Arc::new(crate::test_support::ScriptedModelProvider::new([])),
             ContextPipeline::default(),
             ToolRegistry::default(),
         ).with_compaction_policy(crate::context::CompactionPolicy::Disabled)
@@ -48,12 +46,7 @@ proptest! {
                     io: Some(io),
                     ..StockExecution::ordinary(&stock)
                 };
-                // Encoding accepts either ledger; model admission requires
-                // the original native owner retained by the deployed path.
-                if !native {
-                    check(&execution);
-                    return;
-                }
+                check(&execution);
                 let material = (source.clone(), ModelContent::Text("Summarize".into()));
                 let (result, trace) = acyclic_test_support::differential::observe::<_, _, super::super::json::SerializedType>(
                     || (),
@@ -62,11 +55,16 @@ proptest! {
                         &mut DispatchPhase::new(),
                     )),
                 );
-                let (summary, text) = result.unwrap();
-                assert_eq!(text, "summary");
-                assert_eq!(summary.source_digest, *blake3::hash(&expected).as_bytes());
-                assert_eq!(summary.source_messages as usize, source.messages.len());
-                assert_eq!(runtime.block_on(journal.load(&summary.output, None).unwrap()).unwrap().as_ref(), b"summary");
+                // The original entry point encodes before model admission.
+                // This provider has no native producer: require its typed
+                // refusal, without inventing an unaccounted model fallback.
+                match result {
+                    Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                        reason: "model provider has no original native-ledger producer" }) if native => (),
+                    Err(Error::Unsupported(reason)) if !native =>
+                        assert_eq!(reason, "stock model capacity requires original native work"),
+                    other => panic!("unexpected original summary admission: {other:?}"),
+                }
                 assert_eq!(
                     trace.iter().filter(|event| event.0 == std::any::type_name::<crate::context::Context>()).count(),
                     2, "summarize must encode its source without a separate count pass",
