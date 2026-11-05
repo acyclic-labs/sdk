@@ -2,7 +2,8 @@ use super::ERROR_NOT_FOUND;
 use super::{
     CancelIoEx, DemandError, DemandWork, ERROR_NOTIFY_ENUM_DIR, ERROR_OPERATION_ABORTED,
     GetOverlappedResult, HANDLE, NativeSourceWatch, Ordering, PoisonError, READ, Reads, ReadsGuard,
-    Shared, SourceDemandReadWork, WRITE, WorkCounters, close, hub, io, io_work, is_open,
+    Shared, SourceDemandReadWork, WRITE, WorkCounters, check_wait, close, hub, io, io_work,
+    is_open,
 };
 
 impl NativeSourceWatch {
