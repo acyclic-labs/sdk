@@ -121,5 +121,10 @@ mod tests {
             assert!(body.next().await.is_none());
         });
         assert_eq!(polls.get(), 1);
+
+        #[cfg(feature = "test-support")]
+        super::super::codec_fuzz::check(include_bytes!(
+            "../../../../../codec-fuzz/corpus/harness_codecs/mcp-http-invalid-utf8-frontier"
+        ));
     }
 }
