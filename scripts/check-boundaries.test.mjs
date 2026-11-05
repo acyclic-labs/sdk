@@ -3,15 +3,10 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { credentialFixturePaths as fixtures } from "./check-boundaries.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const checker = readFileSync(join(root, "scripts/check-boundaries.mjs"));
-const fixtures = [
-  "typescript/packages/machines/test/fixtures/server-key.pem",
-  "typescript/packages/harness/test/client.test.ts",
-  "typescript/packages/inference/test/client.test.ts",
-  "typescript/packages/inference/test/idle-kv.test.ts",
-];
 
 test("Cargo executable consumers use the runtime-aware locator", t => {
   const path = "rust/crates/harness-mock-model/tests/http.rs";
