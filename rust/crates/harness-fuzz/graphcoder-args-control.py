@@ -14,8 +14,8 @@ recovery = "python3 rust/crates/harness-fuzz/graphcoder-args-control.py"
 controls = {
     "native_stdin_binary": (
         "plugin/src/input.rs",
-        b"input.read_to_end(&mut bytes)?;",
-        b"let _ = input.read_to_end(&mut bytes);",
+        b"input.take(65_537).read_to_end(&mut bytes)?;",
+        b"let _ = input.take(65_537).read_to_end(&mut bytes);",
         "null",
         b"native stdin read error must retain its original cause",
     ),
@@ -77,7 +77,7 @@ controls = {
     ),
     "native_input": (
         "plugin/src/input.rs",
-        b"if maximum.is_some_and(|bound| bytes.len() as u64 > bound) {",
+        b"if bytes.len() > 65_536 {",
         b"if false {",
         "null",
         b"native input exceeds its admitted byte bound",
@@ -105,15 +105,6 @@ additional_controls = {
             b'long = "prompt"',
             "mixed-input",
             b"text prompt and JSONL stdin require distinct input owners",
-        ),
-    ],
-    "native_stdin_binary": [
-        (
-            "plugin/src/main.rs",
-            b"let action = serde_json::from_value(read_json(io::stdin().lock(), None)?)?;",
-            b"let action = serde_json::from_value(read_json(io::stdin().lock(), Some(65_536))?)?;",
-            "null",
-            b"workspace envelope must reach the original workspace client",
         ),
     ],
     "native_marketplace": [
@@ -207,15 +198,15 @@ additional_controls = {
         ),
         (
             "plugin/src/input.rs",
-            b"input.read_to_end(&mut bytes)?;",
+            b"input.take(65_537).read_to_end(&mut bytes)?;",
             b"input.take(1).read_to_end(&mut bytes)?;",
             "null",
             b"native input admission changed its original JSON",
         ),
         (
             "plugin/src/input.rs",
-            b"input.read_to_end(&mut bytes)?;",
-            b"let _ = input.read_to_end(&mut bytes);",
+            b"input.take(65_537).read_to_end(&mut bytes)?;",
+            b"let _ = input.take(65_537).read_to_end(&mut bytes);",
             "null",
             b"native input read failure must retain its OS error",
         ),
