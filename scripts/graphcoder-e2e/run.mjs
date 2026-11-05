@@ -7,6 +7,7 @@
 // to its EXE. Use serial.mjs for the full matrix. E2E_SCRATCH_ROOT selects
 // all temporary directories and is mandatory on Windows.
 // E2E_OUTPUT selects the matrix/capture directory; roots are retained on failure.
+// E2E_CASES_ROOT selects an isolated cases/ and coverage.json input tree.
 // Unix requires python3 and a controlling PTY; no alternate GraphCoder runtime.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -35,8 +36,9 @@ const directory = dirname(fileURLToPath(import.meta.url));
 const scratch = scratchDirectory("graphcoder-e2e-");
 const output = resolve(process.env.E2E_OUTPUT ?? join(scratch, "results"));
 mkdirSync(output, { recursive: true });
-const scripts = inventory();
-const coverage = readCoverage(scripts);
+const caseRoot = resolve(process.env.E2E_CASES_ROOT ?? directory);
+const scripts = inventory(caseRoot);
+const coverage = readCoverage(scripts, caseRoot);
 const suites = variants(scripts, process.platform);
 const identities = new Set(suites.map(test => test.id));
 for (const id of selected) assert.ok(identities.has(id), `unknown case ${id}`);
