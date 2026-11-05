@@ -7,10 +7,13 @@ import { chmodSync, copyFileSync, cpSync, mkdirSync, readFileSync, writeFileSync
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const [binary, mock, output] = process.argv.slice(2);
-const recovery = "node scripts/qualify-topology-presets.mjs GRAPHCODER MOCK_MODEL FRESH_ABSOLUTE_OUTPUT";
+const [binary, mock, output, selection, ...extra] = process.argv.slice(2);
+const nestedOnly = selection === "--nested";
+const recovery = "node scripts/qualify-topology-presets.mjs GRAPHCODER MOCK_MODEL FRESH_ABSOLUTE_OUTPUT [--nested]";
 assert.ok(binary && mock && output && [binary, mock, output].every(isAbsolute),
   `step=select topology executables and evidence; recovery=${recovery}`);
+assert.ok((selection === undefined || nestedOnly) && extra.length === 0,
+  `step=select topology qualification; recovery=${recovery}`);
 const root = fileURLToPath(new URL("../", import.meta.url));
 mkdirSync(output);
 const input = join(output, "input");
@@ -18,18 +21,21 @@ mkdirSync(input);
 cpSync(join(root, "scripts/graphcoder-e2e/cases"), join(input, "cases"), { recursive: true });
 copyFileSync(join(root, "scripts/graphcoder-e2e/coverage.json"), join(input, "coverage.json"));
 // A killed qualification can leave only its own input tree modified.
-for (const role of ["blackboard", "hierarchy"]) {
-  const id = `topology-${role}`, path = join(input, "cases", `${id}.json`);
+for (const role of nestedOnly ? ["nested"] : ["blackboard", "hierarchy", "nested"]) {
+  const nested = role === "nested";
+  const id = nested ? "nested-children" : `topology-${role}`;
+  const path = join(input, "cases", `${id}.json`);
   chmodSync(path, 0o600);
   const original = JSON.parse(readFileSync(path));
-  assert.equal(original.model.steps[0].tools[0].arguments.role, role,
+  if (!nested) assert.equal(original.model.steps[0].tools[0].arguments.role, role,
     `step=locate original ${role} admission; recovery=${recovery}`);
   mkdirSync(join(output, id));
-  const controls = role === "blackboard"
+  const controls = nested ? ["obsolete-wait-control"] : role === "blackboard"
     ? ["private-volume-control", "unconditional-edit-control"]
     : ["leaf-result-control", "review-result-control"];
-  for (const phase of ["generic-worker-control", ...controls, "selected-role"]) {
-    const negative = phase !== "selected-role", inputCase = structuredClone(original);
+  const positive = nested ? "selected-contract" : "selected-role";
+  for (const phase of [...(nested ? [] : ["generic-worker-control"]), ...controls, positive]) {
+    const negative = phase !== positive, inputCase = structuredClone(original);
     let changed = 0;
     if (phase === "generic-worker-control") {
       inputCase.model.steps[0].tools[0].arguments.role = "worker";
@@ -43,6 +49,12 @@ for (const role of ["blackboard", "hierarchy"]) {
         changed++;
       }
       for (const tool of step.tools ?? []) {
+        if (phase === "obsolete-wait-control" && tool.name === "wait") {
+          assert.equal(tool.arguments.mode, undefined,
+            `step=locate canonical recursive wait; recovery=${recovery}`);
+          tool.arguments.mode = "all";
+          changed++;
+        }
         if (phase === "private-volume-control" && tool.arguments.path === ".volumes/shared/board.md") {
           tool.arguments.path = ".volumes/home/board.md";
           changed++;
@@ -55,6 +67,8 @@ for (const role of ["blackboard", "hierarchy"]) {
       }
     }
     assert.equal(changed > 0, negative, `step=plant ${phase}; recovery=${recovery}`);
+    if (phase === "obsolete-wait-control") assert.equal(changed, 2,
+      `step=restore both original recursive waits; recovery=${recovery}`);
     writeFileSync(path, JSON.stringify(inputCase));
     const destination = join(output, id, phase);
     const result = spawnSync(process.execPath,
@@ -74,8 +88,12 @@ for (const role of ["blackboard", "hierarchy"]) {
     for (const value of report.results) {
       assert.equal(value.status, negative ? "fail" : "pass",
         `step=qualify ${value.case}; evidence=${destination}; recovery=${recovery}`);
-      if (negative) assert.ok(value.evidence.requests.some(request => request.status === 409),
-        `step=observe ${phase} at original provider request; recovery=${recovery}`);
+      if (negative) {
+        const rejected = nested
+          ? value.error.includes("generation count") && value.error.includes("3 !== 7")
+          : value.evidence.requests.some(request => request.status === 409);
+        assert.ok(rejected, `step=observe ${phase} at original provider request; recovery=${recovery}`);
+      }
     }
     console.log(JSON.stringify({ phase, case: id, seconds: report.seconds,
       caseSeconds: report.results[0].seconds, status: "pass" }));
