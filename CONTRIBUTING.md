@@ -43,6 +43,11 @@ node scripts/node-tests.mjs scripts/archive-utils.mjs  # affected tests
 cargo test --all-features --locked
 ```
 
+The Node/Bun entry point runs the root `test:prepare` command once before the
+selected tests. It uses the normal SDK build and the real host conformance
+fixture producer, so generated bindings, WASM and package exports are available
+on a fresh checkout. Preparation failure stops execution and fails the run.
+
 On Windows, supply `E2E_PROCESS_HOST` as the absolute path to the
 `acyclic-process-host` executable produced by the native build. The test command
 requires this process owner before it can launch compilers or test engines.

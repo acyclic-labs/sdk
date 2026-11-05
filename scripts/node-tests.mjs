@@ -1,6 +1,6 @@
 import {copyFileSync, existsSync, globSync, mkdirSync, readFileSync, rmSync} from 'node:fs';
-import {dirname, join, relative, resolve} from 'node:path';
-import {tmpdir} from 'node:os';
+import {dirname, isAbsolute, join, relative, resolve} from 'node:path';
+import {homedir, tmpdir} from 'node:os';
 import {fileURLToPath} from 'node:url';
 import ts from 'typescript-parser';
 import {SaxesParser} from 'saxes';
@@ -114,7 +114,7 @@ async function nativeInputs(tests, processes, env, publish) {
  // A custodian cannot compile itself under its own custody. Windows callers
  // must admit the canonical host produced by their native build before any
  // compiler or engine starts; an unsafe parent-only bootstrap is forbidden.
- if (process.platform === 'win32' && !env.E2E_PROCESS_HOST) throw new Error(
+ if (process.platform === 'win32' && (!env.E2E_PROCESS_HOST || !isAbsolute(env.E2E_PROCESS_HOST))) throw new Error(
   "step=admit native process owner; recovery command: $env:E2E_PROCESS_HOST='ABSOLUTE_INSTALLED_ACYCLIC_PROCESS_HOST'; node scripts/node-tests.mjs --all");
  const report = tests.some(test => test.file.endsWith('/termination.test.mjs')) && !env.E2E_REPORT_TEST_BINARY;
  const host = tests.some(test => test.file.endsWith('/sdk/test/process.test.mjs')) && !env.E2E_PROCESS_HOST;
@@ -144,6 +144,9 @@ export async function runTests(tests, {root = ROOT, selected = 'all', signal,
  const totals = {files: tests.length, tests: 0, passed: 0, failed: 0, skipped: 0, selected, seconds: 0};
  const temporary = scratchDirectory('node-tests-', {...process.env, E2E_SCRATCH_ROOT: process.env.E2E_SCRATCH_ROOT ?? tmpdir()});
  const env = /** @type {NodeJS.ProcessEnv} */ ({...environment(join(temporary, 'profile')), E2E_SCRATCH_ROOT: temporary, FORCE_COLOR: '0', NO_COLOR: '1'});
+ // Isolate test profiles without losing the installed compiler/tool caches.
+ env.CARGO_HOME ??= join(homedir(), '.cargo');
+ env.RUSTUP_HOME ??= join(homedir(), '.rustup');
  delete env.NODE_TEST_CONTEXT;
  let draining;
  const cancel = () => { draining ??= processes.close(); draining.catch(() => {}); };
@@ -152,6 +155,13 @@ export async function runTests(tests, {root = ROOT, selected = 'all', signal,
   signal?.throwIfAborted();
   await nativeInputs(tests, processes, env, publish);
   signal?.throwIfAborted();
+  const manifest = join(root, 'package.json');
+  if (tests.length && existsSync(manifest) && JSON.parse(readFileSync(manifest, 'utf8')).scripts?.['test:prepare']) {
+   const outcome = await processes.runOwned('bun', ['run', 'test:prepare'], {cwd: root, env});
+   publish(outcome);
+   signal?.throwIfAborted();
+   if (outcome.code !== 0) throw new Error('step=prepare test inputs; recovery command: bun run test:prepare');
+  }
   for (const runtime of ['node', 'bun']) {
    const files = tests.filter(test => test.runtime === runtime).map(test => test.file);
    if (!files.length) continue;

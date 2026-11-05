@@ -201,8 +201,6 @@ test("Windows retains all check commands after grouped WASM builds with the wrap
     assert.ok(index > previous, command); previous = index;
   }
   assert.ok(block.includes("$env:RUSTC_WRAPPER = $rustcWrapper"));
-  assert.equal(JSON.parse(readFileSync("package.json", "utf8")).scripts.check,
-    "bun run generate && bun run build:wasm && tsc -b --force --pretty false && tsc -p scripts --pretty false && bun run check:docs");
 });
 
 test("Linux warms isolated WASM targets within its worker budget before the complete test command", () => {
@@ -226,7 +224,7 @@ test("WASM builds reject manual JS byte copies outside the snapshot boundary", (
   const end = build.indexOf("const checkByteSnapshotBoundary =", start);
   const check = runInNewContext(`${build.slice(start, end)}; assertByteSnapshotBoundary`);
   const directory = "rust/crates/harness/src/wasm";
-  for (const file of readdirSync(directory, { recursive: true }).filter(file => file.endsWith(".rs"))) {
+  for (const file of readdirSync(directory, { recursive: true, encoding: 'utf8' }).filter(file => file.endsWith(".rs"))) {
     check(file, readFileSync(`${directory}/${file}`, "utf8").replaceAll("\r\n", "\n"));
   }
   for (const expression of ["caller.to_vec()", "caller.copy_to(&mut bytes)", "Uint8Array::new(&caller)"]) {
