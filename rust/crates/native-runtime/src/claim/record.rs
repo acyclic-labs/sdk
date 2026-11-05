@@ -6,6 +6,7 @@
 
 pub(super) const MAGIC: &[u8] = b"acyclic-claim-v2\0";
 pub(super) const CHECKSUM_BYTES: usize = 8;
+pub(super) const CHECKSUM_INITIAL: u64 = 0xcbf2_9ce4_8422_2325;
 
 /// The process that owns a claim, as other processes find it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -55,12 +56,15 @@ pub(super) enum Contents<'a> {
 /// FNV-1a: stable across builds, which a record must be, and enough to tell a
 /// torn record from a whole one.
 pub(super) fn checksum(bytes: &[u8]) -> [u8; CHECKSUM_BYTES] {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    checksum_chunk(CHECKSUM_INITIAL, bytes).to_le_bytes()
+}
+
+pub(super) fn checksum_chunk(mut hash: u64, bytes: &[u8]) -> u64 {
     for byte in bytes {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    hash.to_le_bytes()
+    hash
 }
 
 fn field(out: &mut Vec<u8>, bytes: &[u8]) {

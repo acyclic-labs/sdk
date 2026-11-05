@@ -1,6 +1,6 @@
 //! Metered reads of the shared persisted claim format.
 
-use super::record::{CHECKSUM_BYTES, Contents, MAGIC, checksum};
+use super::record::{CHECKSUM_BYTES, CHECKSUM_INITIAL, Contents, MAGIC, checksum, checksum_chunk};
 
 /// Complete record storage; its buffer is destroyed before its original credit.
 pub(super) struct ReadRecord {
@@ -106,7 +106,7 @@ impl ReadRecord {
         native_operation(meter, || file.seek(SeekFrom::Start(0)))?;
         let mut remaining = length - CHECKSUM_BYTES as u64;
         let mut scratch = [0_u8; 16 * 1024];
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut hash = CHECKSUM_INITIAL;
         while remaining != 0 {
             let count = usize::try_from(remaining.min(scratch.len() as u64))
                 .map_err(|_| io::ErrorKind::InvalidData)?;
@@ -114,9 +114,7 @@ impl ReadRecord {
             if let Some(meter) = meter {
                 meter.admit_codec(0, 0, count as u64)?;
             }
-            for byte in &scratch[..count] {
-                hash = (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
-            }
+            hash = checksum_chunk(hash, &scratch[..count]);
             if let Some(meter) = meter {
                 meter.record_codec(0, 0, count as u64)?;
             }
