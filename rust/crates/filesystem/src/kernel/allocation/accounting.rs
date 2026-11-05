@@ -554,8 +554,12 @@ impl<'a> KernelAccounting<'a> {
 
     pub(crate) fn spent(&self) -> WorkCounters {
         match self {
-            Self::Standalone { work, .. } => *work,
-            Self::BorrowedStandalone { work, .. } => **work,
+            Self::Standalone {
+                allocations, work, ..
+            } => allocations.spent(*work),
+            Self::BorrowedStandalone {
+                allocations, work, ..
+            } => allocations.spent(**work),
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeOriginal { work, .. } => work.receipt(),
         }

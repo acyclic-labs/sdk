@@ -35,8 +35,13 @@ impl NativeAccounting {
         *owned_counters = *counters;
         let baseline = *counters;
         let meter = crate::demand::NativeDemandReadMeter::with_backing(state, backing);
+        let meter = Arc::new(meter);
+        let super::super::LedgerState::Suspended(_, observer) = &mut allocations.state else {
+            unreachable!("the original branch was suspended by handoff")
+        };
+        *observer = Some(Arc::clone(&meter));
         Ok(Self {
-            work: crate::NativeMaterializationWork::from_meter(Arc::new(meter)),
+            work: crate::NativeMaterializationWork::from_meter(meter),
             baseline: Some(baseline),
         })
     }

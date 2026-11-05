@@ -216,7 +216,7 @@ impl<'a> AuthorityWork<'a> {
         if let Some(original) = self.original {
             return original.receipt();
         }
-        self.work
+        self.allocations.spent(self.work)
     }
 
     /// Admits the remaining operation budget against its original custody and stop state.

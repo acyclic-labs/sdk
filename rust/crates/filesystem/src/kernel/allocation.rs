@@ -19,7 +19,13 @@ enum LedgerState {
     Empty,
     Inline(AllocationBytes),
     Shared(std::sync::Arc<std::sync::Mutex<SharedAllocationBytes>>),
-    Suspended(std::sync::Arc<std::sync::Mutex<SharedAllocationBytes>>),
+    Suspended(
+        std::sync::Arc<std::sync::Mutex<SharedAllocationBytes>>,
+        // Observes the same original producer after reply withdrawal. The
+        // producer owns a Shared ledger, so this cannot form an Arc cycle.
+        #[cfg(not(target_arch = "wasm32"))]
+        Option<std::sync::Arc<crate::demand::NativeDemandReadMeter>>,
+    ),
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -376,7 +382,7 @@ impl AllocationLedger {
         }
         match &mut self.state {
             LedgerState::Inline(state) => operation(state),
-            LedgerState::Shared(state) | LedgerState::Suspended(state) => operation(
+            LedgerState::Shared(state) | LedgerState::Suspended(state, ..) => operation(
                 &mut state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -418,7 +424,7 @@ impl AllocationLedger {
         match &self.state {
             LedgerState::Empty => AllocationBytes::default(),
             LedgerState::Inline(state) => *state,
-            LedgerState::Shared(state) | LedgerState::Suspended(state) => {
+            LedgerState::Shared(state) | LedgerState::Suspended(state, ..) => {
                 state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -433,7 +439,7 @@ impl AllocationLedger {
         work: &mut WorkCounters,
         budget: WorkBudget,
     ) -> Result<u64, AllocationError> {
-        if matches!(self.state, LedgerState::Suspended(_)) {
+        if matches!(self.state, LedgerState::Suspended(..)) {
             return Err(AllocationError::ReleaseInvariant);
         }
         self.with_state(|state| state.claim_elements::<T>(count, work, budget))
@@ -445,7 +451,7 @@ impl AllocationLedger {
         work: &mut WorkCounters,
         budget: WorkBudget,
     ) -> Result<(), AllocationError> {
-        if matches!(self.state, LedgerState::Suspended(_)) {
+        if matches!(self.state, LedgerState::Suspended(..)) {
             return Err(AllocationError::ReleaseInvariant);
         }
         self.with_state(|state| state.claim_bytes(bytes, operations, work, budget))
@@ -457,7 +463,7 @@ impl AllocationLedger {
         work: &WorkCounters,
         budget: WorkBudget,
     ) -> Result<(), AllocationError> {
-        if matches!(self.state, LedgerState::Suspended(_)) {
+        if matches!(self.state, LedgerState::Suspended(..)) {
             return Err(AllocationError::ReleaseInvariant);
         }
         self.with_state(|state| state.reserve_allocation(bytes, work, budget))
@@ -472,7 +478,7 @@ impl AllocationLedger {
         bytes: u64,
         work: &mut WorkCounters,
     ) -> Result<(), AllocationError> {
-        if matches!(self.state, LedgerState::Suspended(_)) {
+        if matches!(self.state, LedgerState::Suspended(..)) {
             return Err(AllocationError::ReleaseInvariant);
         }
         self.with_state(|state| state.record_reserved_allocation(bytes, work))
@@ -486,14 +492,14 @@ impl AllocationLedger {
         bytes: u64,
         work: &mut WorkCounters,
     ) -> Result<(), AllocationError> {
-        if matches!(self.state, LedgerState::Suspended(_)) {
+        if matches!(self.state, LedgerState::Suspended(..)) {
             return Err(AllocationError::ReleaseInvariant);
         }
         self.with_state(|state| state.record_owned_bytes(bytes, work))
     }
     pub(crate) fn release(&mut self, bytes: u64) -> Result<(), AllocationError> {
         match &mut self.state {
-            LedgerState::Shared(state) | LedgerState::Suspended(state) => state
+            LedgerState::Shared(state) | LedgerState::Suspended(state, ..) => state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .release_scratch_bytes(bytes),
@@ -502,7 +508,7 @@ impl AllocationLedger {
     }
     pub(crate) fn scratch_bytes(&self) -> u64 {
         match &self.state {
-            LedgerState::Shared(state) | LedgerState::Suspended(state) => {
+            LedgerState::Shared(state) | LedgerState::Suspended(state, ..) => {
                 let state = state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -569,15 +575,26 @@ impl AllocationLedger {
         ledger: *const std::sync::Mutex<SharedAllocationBytes>,
     ) -> bool {
         match &self.state {
-            LedgerState::Shared(state) | LedgerState::Suspended(state) => {
+            LedgerState::Shared(state) | LedgerState::Suspended(state, ..) => {
                 std::ptr::eq(ledger, std::sync::Arc::as_ptr(state))
             }
             LedgerState::Empty | LedgerState::Inline(_) => false,
         }
     }
 
+    /// Returns the original producer's prefix while this branch has handed off
+    /// admission. Retaining its existing meter keeps late completion observable
+    /// even after the producer and its output owners have retired.
+    pub(crate) fn spent(&self, local: WorkCounters) -> WorkCounters {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let LedgerState::Suspended(_, Some(original)) = &self.state {
+            return original.with_original_leaf(|state| state.receipt());
+        }
+        local
+    }
+
     pub(crate) fn ensure_active(&self) -> Result<(), crate::FsError> {
-        if matches!(self.state, LedgerState::Suspended(_)) {
+        if matches!(self.state, LedgerState::Suspended(..)) {
             return Err(crate::FsError::AccountingHandoffActive);
         }
         Ok(())
@@ -596,14 +613,18 @@ impl AllocationLedger {
             state: LedgerState::Shared(std::sync::Arc::clone(state)),
         };
         self.state = match std::mem::take(&mut self.state) {
-            LedgerState::Shared(state) => LedgerState::Suspended(state),
+            LedgerState::Shared(state) => LedgerState::Suspended(
+                state,
+                #[cfg(not(target_arch = "wasm32"))]
+                None,
+            ),
             _ => unreachable!("only an active shared ledger can hand off"),
         };
         Ok(owned)
     }
 
     pub(crate) fn resume(&mut self, owned: Self) -> Result<(), crate::FsError> {
-        let (LedgerState::Suspended(expected), LedgerState::Shared(actual)) =
+        let (LedgerState::Suspended(expected, ..), LedgerState::Shared(actual)) =
             (&self.state, &owned.state)
         else {
             return Err(crate::FsError::AccountingHandoffActive);

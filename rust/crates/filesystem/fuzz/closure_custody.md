@@ -214,3 +214,28 @@ The `filesystem_pages` fuzz target shares the production parser and checks
 accepted original bytes against their writer, exact caller binding and immediate
 propagation of selected observer refusals. Its retained historical corpus comes
 from the same SDK writers, with provenance in `codec-fuzz/corpus/SOURCES.tsv`.
+
+A native read handed off by an ordinary authority frame keeps receipt observation
+on the same admitted producer. The suspended caller retains the existing meter,
+without another allocation or a second counter copy; the producer owns the shared
+allocation ledger, so the reference cannot form a cycle. Restoring a completed
+result consumes that observation handle. Cancellation fences admission while the
+caller can still observe work completed after reply withdrawal.
+
+`remote_held_read_cancellation_does_not_wait_for_the_native_producer` exercises
+ordinary and native callers against a real held remote file. Each keeps its
+original budget and a nonzero prior prefix through success, cancellation, lost
+producer release and finite source-byte refusal. Both kernel and authority-frame
+receipts are compared with the actual original leaf before and after the native
+schedule's physical drain. A successful byte alias survives that drain, and the
+last caller/alias drop must retire the original meter. The only waits are the
+native terminal and owned channel events; producer loss returns its typed cause.
+Receipt observation enters the original leaf exactly once, independent of work
+history, and introduces no syscall, copy, durability barrier or round trip.
+
+The kept production mutations `mutations/native_read_receipt_observer.patch`,
+`mutations/native_read_terminal_cause.patch` and
+`mutations/native_read_receipt_duplicate_lock.patch` respectively remove original
+receipt observation, erase the producer's terminal cause and duplicate the leaf
+lock. Each must fail this same relation; restore each patch before testing the
+next mutation or the passing implementation.

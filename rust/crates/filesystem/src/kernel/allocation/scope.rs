@@ -67,7 +67,7 @@ impl Drop for AllocationScope<'_, '_> {
                 .accounting
                 .standalone_parts()
                 .unwrap_or_else(|| unreachable!("ordinary scratch keeps its original ledger"));
-            if matches!(allocations.state, super::LedgerState::Suspended(_)) {
+            if matches!(allocations.state, super::LedgerState::Suspended(..)) {
                 return;
             }
             allocations

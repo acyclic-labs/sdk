@@ -410,15 +410,13 @@ impl NativeDemandSource {
 
 #[cfg(test)]
 pub(crate) struct ReadGate {
-    pub(crate) entered: std::sync::mpsc::Sender<Option<std::thread::ThreadId>>,
+    pub(crate) entered: tokio::sync::mpsc::UnboundedSender<
+        Option<(
+            std::thread::ThreadId,
+            Arc<crate::demand::NativeDemandReadMeter>,
+        )>,
+    >,
     pub(crate) release: std::sync::mpsc::Receiver<()>,
-    pub(crate) retired: std::sync::mpsc::Sender<()>,
-}
-#[cfg(test)]
-impl Drop for ReadGate {
-    fn drop(&mut self) {
-        let _ = self.retired.send(());
-    }
 }
 #[cfg(test)]
 impl NativeDemandSource {

@@ -950,20 +950,24 @@ async fn negative_control_binding_by_path_attaches_the_replacement() {
     assert!(replaced || cfg!(windows));
 }
 
-/// The actual shared native worker may remain blocked after reply cancellation.
-/// Both the original callback and standalone accounting must release their wait;
-/// only the native terminal may return standalone admission to its caller.
+/// Reply withdrawal keeps both receipt entry points on the original producer;
+/// only a completed result restores admission. The caller remains alive through
+/// the actual native drain, including while a successful byte alias survives.
 #[tokio::test]
 async fn remote_held_read_cancellation_does_not_wait_for_the_native_producer()
 -> Result<(), Box<dyn Error>> {
-    struct CallbackRetired(std::sync::mpsc::Sender<Option<std::thread::ThreadId>>);
+    struct CallbackRetired(
+        tokio::sync::mpsc::UnboundedSender<
+            Option<(std::thread::ThreadId, Arc<NativeDemandReadMeter>)>,
+        >,
+    );
     impl Drop for CallbackRetired {
         fn drop(&mut self) {
             let _ = self.0.send(None);
         }
     }
     for native in [false, true] {
-        for outcome in ["complete", "cancel", "lost"] {
+        for outcome in ["complete", "cancel", "lost", "deny"] {
             let temporary = tempfile::tempdir()?;
             std::fs::write(temporary.path().join("file"), b"remote")?;
             let source = native_source(temporary.path()).await?.remote();
@@ -975,21 +979,36 @@ async fn remote_held_read_cancellation_does_not_wait_for_the_native_producer()
                 .open_file(reference, &name, node.version, WorkBudget::UNBOUNDED, &stop)
                 .await?
                 .value;
-            let (entered, started) = std::sync::mpsc::channel();
+            let (entered, mut started) = tokio::sync::mpsc::unbounded_channel();
             let (release, held) = std::sync::mpsc::channel();
-            let (retired, ended) = std::sync::mpsc::channel();
             let retired_callback = CallbackRetired(entered.clone());
             source.hold_next_read(native::ReadGate {
                 entered,
                 release: held,
-                retired,
             });
-            let (finished, result) = std::sync::mpsc::channel();
+            let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
+            let driver = tokio::spawn(async move {
+                while let Some(boundary) = boundaries.recv().await {
+                    boundary.release();
+                }
+            });
+            let (finished, result) = tokio::sync::oneshot::channel();
+            let (inspect, inspect_after_drain) = std::sync::mpsc::channel();
+            let (observed, observation) = tokio::sync::oneshot::channel();
+            let (retire, retire_caller) = std::sync::mpsc::channel();
+            let (retired, caller_retired) = tokio::sync::oneshot::channel();
             let caller_stop = stop.clone();
+            let caller_schedule = schedule.clone();
+            let runtime = tokio::runtime::Handle::current();
             let caller = std::thread::spawn(move || {
                 let _retired = retired_callback;
+                let _runtime = runtime.enter();
+                let mut budget = crate::performance::work_budget(10_000, 1024 * 1024);
+                if outcome == "deny" {
+                    budget.source_bytes_read = 0;
+                }
                 let original = native.then(|| {
-                    crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &caller_stop)
+                    crate::NativeMaterializationWork::new(budget, &caller_stop)
                         .map_err(|(error, _)| error)
                         .unwrap()
                 });
@@ -997,24 +1016,64 @@ async fn remote_held_read_cancellation_does_not_wait_for_the_native_producer()
                     Some(original) => {
                         crate::kernel::KernelAccounting::native(original, &caller_stop)
                     }
-                    None => crate::kernel::KernelAccounting::standalone(
-                        WorkBudget::UNBOUNDED,
-                        &caller_stop,
-                    ),
+                    None => crate::kernel::KernelAccounting::standalone(budget, &caller_stop),
                 };
-                // The callback normally permits local inline operations. A
-                // remote held read must still enter the original shared worker.
+                accounting
+                    .charge(WorkCounters {
+                        authority_records_appended: 2,
+                        page_writes: 3,
+                        bytes_hashed: 11,
+                        ..WorkCounters::UNCHARGED
+                    })
+                    .unwrap();
+                let mut frame =
+                    crate::async_storage::AuthorityFrame::borrow(&mut accounting).unwrap();
+                // The remote read must offload even when its callback permits
+                // local inline I/O. Its scope follows the actual native job.
                 let _inline = acyclic_native_runtime::InlineBlocking::enter();
-                let answer = file.read_range(0, 6, &mut accounting);
+                let answer = futures::executor::block_on(
+                    caller_schedule.scope(async { file.read_range(0, 6, &mut frame.accounting()) }),
+                );
+                let authority_prefix = frame.spent();
+                drop(frame);
+                let prefix = accounting.spent();
                 let fenced = matches!(
                     accounting.remaining(),
                     Err(crate::FsError::AccountingHandoffActive)
                 );
-                let _ = finished.send((answer, fenced, std::thread::current().id()));
+                let _ = finished.send((
+                    answer,
+                    fenced,
+                    std::thread::current().id(),
+                    authority_prefix,
+                    prefix,
+                ));
+                let meter: Arc<NativeDemandReadMeter> = inspect_after_drain.recv().unwrap();
+                #[cfg(not(loom))]
+                let receipt = {
+                    let (receipt, locks) = meter.count_locks(|| accounting.spent());
+                    assert_eq!(
+                        locks,
+                        usize::from(native || outcome == "cancel"),
+                        "receipt must observe its original leaf exactly once"
+                    );
+                    receipt
+                };
+                #[cfg(loom)]
+                let receipt = accounting.spent();
+                drop(meter);
+                let _ = observed.send(receipt);
+                retire_caller.recv().unwrap();
+                drop(accounting);
+                drop(original);
+                let _ = retired.send(());
             });
-            let worker = started
-                .recv()?
+            let (worker, meter) = started
+                .recv()
+                .await
+                .flatten()
                 .ok_or("original callback retired before its read submission")?;
+            let weak = Arc::downgrade(&meter);
             let mut release = Some(release);
             if outcome == "cancel" {
                 stop.cancel();
@@ -1026,28 +1085,71 @@ async fn remote_held_read_cancellation_does_not_wait_for_the_native_producer()
                     .ok_or("missing native release owner")?
                     .send(())?;
             }
-            let (answer, fenced, callback) = result.recv()?;
+            let (answer, fenced, callback, authority_prefix, prefix) = result.await?;
             assert_ne!(worker, callback, "remote I/O ran on the callback thread");
-            match outcome {
+            assert_eq!(
+                authority_prefix, prefix,
+                "authority frame lost the original prefix"
+            );
+            let alias = match outcome {
                 "cancel" => {
                     assert!(matches!(answer, Err(DemandError::Cancelled)));
                     assert_eq!(
                         fenced, !native,
-                        "cancellation returned standalone admission before the producer"
+                        "cancellation returned admission before the producer"
                     );
+                    assert_eq!(
+                        prefix,
+                        meter.with_original_leaf(|state| state.receipt()),
+                        "cancelled caller reported a stale original prefix"
+                    );
+                    assert!(futures::poll!(std::pin::pin!(schedule.drained())).is_pending());
                     release
                         .take()
                         .ok_or("native producer lost its release")?
                         .send(())?;
+                    None
                 }
-                "lost" => assert!(matches!(answer, Err(DemandError::WorkerUnavailable))),
+                "lost" => {
+                    assert!(matches!(answer, Err(DemandError::WorkerUnavailable)));
+                    None
+                }
+                "deny" => {
+                    assert!(matches!(answer, Err(DemandError::Work(_))));
+                    assert_eq!(prefix.source_bytes_read, 0, "denied read performed I/O");
+                    None
+                }
                 _ => {
-                    assert_eq!(answer?.bytes.as_ref(), b"remote");
+                    let answer = answer?;
+                    assert_eq!(answer.bytes.as_ref(), b"remote");
                     assert!(!fenced);
+                    Some(answer.bytes.clone())
                 }
+            };
+            schedule.drained().await;
+            let terminal = meter.with_original_leaf(|state| state.receipt());
+            inspect.send(meter)?;
+            assert_eq!(
+                observation.await?,
+                terminal,
+                "physical terminal lost completed work"
+            );
+            if outcome == "cancel" || alias.is_some() {
+                assert!(
+                    weak.upgrade().is_some(),
+                    "original owner retired before its caller or alias"
+                );
             }
-            ended.recv()?;
+            drop(alias);
+            retire.send(())?;
+            caller_retired.await?;
             caller.join().map_err(|_| "remote callback panicked")?;
+            assert!(
+                weak.upgrade().is_none(),
+                "original meter formed an ownership cycle"
+            );
+            driver.abort();
+            let _ = driver.await;
         }
     }
     Ok(())

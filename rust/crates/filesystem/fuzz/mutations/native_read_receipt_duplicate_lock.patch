@@ -1,0 +1,10 @@
+--- a/rust/crates/filesystem/src/kernel/allocation.rs
++++ b/rust/crates/filesystem/src/kernel/allocation.rs
+@@ -588,6 +588,7 @@
+     pub(crate) fn spent(&self, local: WorkCounters) -> WorkCounters {
+         #[cfg(not(target_arch = "wasm32"))]
+         if let LedgerState::Suspended(_, Some(original)) = &self.state {
++            let _ = original.with_original_leaf(|state| state.receipt());
+             return original.with_original_leaf(|state| state.receipt());
+         }
+         local
