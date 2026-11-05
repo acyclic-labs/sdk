@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "work-arithmetic", "borrowed-budget", "native-charge"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge"])
 claim = parser.parse_args().claim
 if claim == "retained-credit":
     source = "rust/crates/filesystem/src/kernel/allocation.rs"
@@ -46,7 +46,7 @@ elif claim == "auth-producer-loss":
     test = "trust::follower::tests::account_events_preserve_exact_dependencies_without_unrelated_wakes"
     diagnostic = "account wait retained its lost global producer"
     features = ["--no-default-features"]
-elif claim == "work-arithmetic":
+elif claim in ("work-arithmetic", "work-mixed"):
     source = "rust/crates/filesystem/src/performance.rs"
     crate = "acyclic-fs"
     test = "performance::tests::full_width_work_arithmetic_preserves_exact_sums_and_refusals"
@@ -93,7 +93,8 @@ def run(label):
 
 def main():
     original = SOURCE.read_bytes()
-    patch = str(ROOT / "rust/proofs" / claim / "mutation.patch")
+    mutation = ("work-arithmetic", "mixed-mutation.patch") if claim == "work-mixed" else (claim, "mutation.patch")
+    patch = str(ROOT / "rust/proofs" / mutation[0] / mutation[1])
     require(subprocess.run(["git", "apply", "--check", patch], cwd=ROOT).returncode == 0,
             "check mutation anchors")
     try:

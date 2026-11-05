@@ -166,14 +166,19 @@ proptest::proptest! {
             }
             work
         };
-        // Test every field alone, then mixed fields. The wider arithmetic is
-        // independent of the production overflow flags and additive macro.
-        for selected in 0..=24 {
+        // Test every field alone, full-width mixed fields, then nonzero mixed
+        // fields whose sums cannot overflow. The wider arithmetic is independent
+        // of the production overflow flags and additive macro.
+        for selected in 0..26 {
             let values = |input: [u64; 24]| {
-                if selected == 24 { input } else {
-                    let mut only = [0; 24];
-                    only[selected] = input[selected];
-                    only
+                match selected {
+                    24 => input,
+                    25 => input.map(|value| (value / 2).max(1)),
+                    _ => {
+                        let mut only = [0; 24];
+                        only[selected] = input[selected];
+                        only
+                    }
                 }
             };
             let a = values(left);

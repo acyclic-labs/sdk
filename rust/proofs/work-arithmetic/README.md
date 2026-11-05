@@ -8,6 +8,10 @@ uses maximum; additive counters must refuse overflow without returning a wrapped
 receipt. In-place addition must agree and leave its original receipt unchanged
 on refusal.
 
+Every generated invocation also exercises positive mixed fields bounded to half
+the integer range, so every sum succeeds without overflow. This keeps successful
+mixed additions and charges covered even when the full-width mixture overflows.
+
 The same generated cases call actual admission and charging with unbounded,
 arbitrary, exact and just-below budgets. A refused charge cannot partially change
 any field. The separate existing borrowed-verification property independently
@@ -18,12 +22,16 @@ From the repository root:
 
 ```sh
 python3 rust/proofs/qualify.py work-arithmetic
+python3 rust/proofs/qualify.py work-mixed
 ```
 
 The kept mutation removes the real `checked_add` overflow rejection. The original
 property must fail at `full-width work sum disagreed with wider arithmetic`.
 Compilation failure, empty selection and timeout do not qualify. The shared
 driver restores exact source bytes and requires that selected property to pass.
+The second mutation corrupts a completed sum only when both receipts contain
+nonzero page reads and writes. Overflow still refuses correctly; the guaranteed
+successful mixture must detect that corruption through the same wider oracle.
 
 This establishes arithmetic and refusal behavior for these production methods,
 not conservation of external reservations, native concurrency, complete physical

@@ -35,7 +35,9 @@ The [work arithmetic control](work-arithmetic/README.md) compares actual receipt
 addition with independent wider arithmetic across every declared field, including
 peak/max semantics and unchanged receipts on refused addition or charge. Its
 production mutation removes the overflow fence; the original property must
-reject a wrapped sum. Reservation ownership and native concurrency remain
+reject a wrapped sum. A second production mutation corrupts a successful mixed
+sum; every generated invocation includes a positive mixture that cannot overflow.
+Reservation ownership and native concurrency remain
 separate obligations.
 
 The [Auth producer-loss control](auth-producer-loss/README.md) retains a

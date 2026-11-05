@@ -1,0 +1,15 @@
+diff --git a/rust/crates/filesystem/src/performance.rs b/rust/crates/filesystem/src/performance.rs
+--- a/rust/crates/filesystem/src/performance.rs
++++ b/rust/crates/filesystem/src/performance.rs
+@@ -349,6 +349,11 @@ impl WorkCounters {
+         if overflow {
+             return Err(WorkError::Overflow);
+         }
++        let mut combined = combined;
++        if self.page_reads != 0 && other.page_reads != 0
++            && self.page_writes != 0 && other.page_writes != 0 {
++            combined.page_reads = 0;
++        }
+         Ok(combined)
+     }
+ 
