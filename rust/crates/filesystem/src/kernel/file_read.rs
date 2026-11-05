@@ -653,7 +653,7 @@ pub(crate) fn decode_owned<T>(
     match create(&mut |step| observed.observe(step)) {
         Ok(value) => Ok((value, observed.into_allocation())),
         Err(error) => {
-            observed.release_failed()?;
+            observed.retire()?;
             Err(error)
         }
     }

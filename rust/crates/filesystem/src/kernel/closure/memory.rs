@@ -215,7 +215,7 @@ impl<'a> ProofMeter<'a> {
                     Ok((value, allocation, bytes))
                 }
                 Err(error) => {
-                    collector.release_failed()?;
+                    collector.retire()?;
                     Err(error)
                 }
             }
