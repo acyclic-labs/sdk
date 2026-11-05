@@ -178,13 +178,14 @@ fn check_aliases(profile: NativeToolProfile, registry: &ToolRegistry) -> Result<
         }
         let mut selected = registry.clone();
         NativeTools::from_definitions(declarations)?.bind(&mut selected)?;
-        let visible = selected
+        let mut visible = selected
             .definitions_for_grants(&crate::Capabilities::new(["tool:call:shell"]), None)?;
         assert_eq!(
             visible.len(),
             2,
             "canonical declaration was hidden by aliases"
         );
+        visible.sort_by(|left, right| left.name.cmp(&right.name));
         assert_eq!(selected.definitions(None)?, visible);
         for definition in &visible {
             let tool = selected.get(&definition.name, None, None)?.unwrap();
