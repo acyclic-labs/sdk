@@ -1,0 +1,18 @@
+--- a/rust/crates/filesystem/src/core_state/native_records/mod.rs
++++ b/rust/crates/filesystem/src/core_state/native_records/mod.rs
+@@ -98,13 +98,14 @@
+     bytes: impl FnOnce(&T) -> Result<u64, Error>,
+ ) -> Result<Owned<T>, Error> {
+     // Keep the value-first tuple intact through every rejecting branch.
+-    let parts = owned;
++    let mut parts = owned;
+     if !parts.1.work().shares_allocation_context(work) {
+         return Err(crate::LazyWorkspaceError::NativeLedgerMismatch.into());
+     }
+     if parts.1.bytes() != bytes(&parts.0)? {
+         return Err(Error::Integrity);
+     }
++    parts.1.release(parts.1.bytes())?;
+     Ok((parts.0, parts.1))
+ }
+ 

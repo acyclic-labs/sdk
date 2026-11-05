@@ -69,6 +69,7 @@ fn context(
 
 #[tokio::test]
 async fn stock_native_lineage_preserves_original_resource_and_durable_restart() {
+    native_lineage_cancellation_owns_physical_completion().await;
     let directory = tempfile::tempdir().unwrap();
     let id = WorkspaceId::from_bytes([0xd2; 16]);
     let cxl = crate::CancellationToken::new();
@@ -98,11 +99,120 @@ async fn stock_native_lineage_preserves_original_resource_and_durable_restart() 
         .unwrap()
         .unwrap();
     assert_eq!(loaded.0, value);
-    assert_eq!(
-        WorkspaceLineageStore::load(&reopened, id).await.unwrap(),
-        Some(value)
-    );
     work.receipt().verify(finite_budget()).unwrap();
+}
+
+async fn native_lineage_cancellation_owns_physical_completion() {
+    use std::task::Poll;
+
+    // Each cancellation source, before execution and after durable completion.
+    let mut shared_allocations = None;
+    for token in ["shared", "request", "original"] {
+        for completed in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let id = WorkspaceId::from_bytes([0xe2; 16]);
+            let original_cxl = crate::CancellationToken::new();
+            let request_cxl = if token == "shared" {
+                original_cxl.clone()
+            } else {
+                crate::CancellationToken::new()
+            };
+            let original = NativeMaterializationWork::new(finite_budget(), &original_cxl).unwrap();
+            let work = original.native_volume_work(finite_budget()).unwrap();
+            work.charge(crate::WorkCounters {
+                items_examined: 17,
+                bytes_copied: 23,
+                ..crate::WorkCounters::UNCHARGED
+            })
+            .unwrap();
+            let mut value = lineage(id);
+            value.workspace_name = "native-owned-input".repeat(4096);
+            let replacement = paid_lineage(&value, &work, &request_cxl);
+            let funded = work.live_allocation_bytes();
+            let store = LocalCoreStateStore::open_owned(directory.path()).unwrap();
+            let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
+            let before = work.receipt().allocation_operations;
+            let mut publish = Box::pin(schedule.scope(store.compare_lineage(
+                id,
+                0,
+                replacement,
+                &work,
+                &request_cxl,
+            )));
+            assert!(futures::poll!(publish.as_mut()).is_pending());
+            let allocations = work.receipt().allocation_operations - before;
+            let baseline = *shared_allocations.get_or_insert(allocations);
+            let mut boundary = boundaries.recv().await.expect("accepted native producer");
+            assert_eq!(boundary.name, "native:submitted");
+            if completed {
+                boundary.release();
+                boundary = boundaries
+                    .recv()
+                    .await
+                    .expect("physical completion producer");
+                assert_eq!(boundary.name, "native:completed");
+            }
+            if token == "original" {
+                original_cxl.cancel();
+            } else {
+                request_cxl.cancel();
+            }
+            let cancelled = matches!(
+                futures::poll!(publish.as_mut()),
+                Poll::Ready(Err((
+                    crate::lineage::WorkspaceLineageError::Store(
+                        LocalCoreStateStoreError::LazyWork(crate::LazyWorkspaceError::Cancelled)
+                    ),
+                    None
+                )))
+            );
+            drop(publish);
+            let retained = completed || work.live_allocation_bytes() >= funded;
+            let mut drained = std::pin::pin!(schedule.drained());
+            let pending = futures::poll!(drained.as_mut()).is_pending();
+            // Drain even a planted failure before asserting; the negative
+            // control must report the broken guarantee without stranding work.
+            let driver = tokio::spawn(async move {
+                while let Some(boundary) = boundaries.recv().await {
+                    boundary.release();
+                }
+            });
+            boundary.release();
+            drained.await;
+            driver.abort();
+            let _ = driver.await;
+            assert!(
+                cancelled,
+                "native cancellation must wake {token} reply, completed={completed}"
+            );
+            assert!(
+                retained,
+                "native cancellation retired accepted producer input"
+            );
+            assert!(
+                pending,
+                "native cancellation lost physical completion ownership"
+            );
+            assert_eq!(
+                allocations,
+                baseline + u64::from(token != "shared"),
+                "native cancellation must register once per distinct token"
+            );
+            assert!(work.receipt().items_examined >= 17);
+            assert!(work.receipt().bytes_copied >= 23);
+            work.receipt().verify(finite_budget()).unwrap();
+            drop(store);
+            let cxl = crate::CancellationToken::new();
+            let fresh = NativeMaterializationWork::new(finite_budget(), &cxl).unwrap();
+            let fresh = fresh.native_volume_work(finite_budget()).unwrap();
+            let reopened = LocalCoreStateStore::new(directory.path());
+            let loaded = reopened.load_lineage(id, &fresh, &cxl).await.unwrap();
+            assert_eq!(
+                loaded.as_ref().map(|owned| &owned.0),
+                completed.then_some(&value)
+            );
+        }
+    }
 }
 
 #[tokio::test]
