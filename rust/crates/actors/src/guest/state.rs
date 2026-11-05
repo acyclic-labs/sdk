@@ -119,8 +119,16 @@ mod tests {
             assert!(
                 first
                     .with(|_| {
-                        assert_eq!(first.with(|_| {}), Err(GuestError::NestedMutation));
-                        assert_eq!(second.with(|_| {}), Err(GuestError::NestedMutation));
+                        assert_eq!(
+                            first.with(|_| {}),
+                            Err(GuestError::NestedMutation),
+                            "nested mutation lost its typed refusal"
+                        );
+                        assert_eq!(
+                            second.with(|_| {}),
+                            Err(GuestError::NestedMutation),
+                            "nested mutation lost its typed refusal"
+                        );
                     })
                     .is_ok()
             );
@@ -152,28 +160,6 @@ mod tests {
             assert!(
                 state
                     .with(|value| assert_eq!(*value, 2, "lost update"))
-                    .is_ok()
-            );
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "lock order violation")]
-    fn model_detects_disabled_lock_order_checker() {
-        loom::model(|| {
-            let first = GuestState::new(0u8);
-            let second = GuestState::new(0u8);
-            assert!(
-                first
-                    .with(|_| {
-                        // Negative control: deliberately erase the held-lock marker.
-                        IN_MUTATION.with(|held| held.set(false));
-                        assert_eq!(
-                            second.with(|_| {}),
-                            Err(GuestError::NestedMutation),
-                            "lock order violation"
-                        );
-                    })
                     .is_ok()
             );
         });

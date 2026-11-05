@@ -14,8 +14,9 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost", "guest-refusal"])
 claim = parser.parse_args().claim
+target = ["--lib"]
 if claim == "retained-credit":
     source = "rust/crates/filesystem/src/kernel/allocation.rs"
     crate = "acyclic-fs"
@@ -58,6 +59,13 @@ elif claim == "ready-source-allocation":
     test = "runtime::sources::tests::ready_records_reuse_the_registered_source_node"
     diagnostic = "ready record scheduling allocated physical heap storage"
     features = ["--no-default-features"]
+elif claim == "guest-refusal":
+    source = "rust/crates/actors/src/guest/state.rs"
+    crate = "acyclic-actors"
+    test = "guest_loom::state::tests::lock_order_checker_rejects_same_and_different_state_nesting"
+    diagnostic = "nested mutation lost its typed refusal"
+    features = ["--features", "model-checking"]
+    target = ["--test", "main"]
 elif claim == "scalar-charge-cost":
     source = "rust/crates/filesystem/src/performance.rs"
     crate = "acyclic-fs"
@@ -83,7 +91,7 @@ else:
     diagnostic = "kernel charge allocated physical heap storage"
     features = []
 SOURCE = ROOT / source
-COMMAND = ["cargo", "test", "--locked", "-p", crate, *features, "--lib", test,
+COMMAND = ["cargo", "test", "--locked", "-p", crate, *features, *target, test,
            "--", "--exact", "--nocapture"]
 RECOVERY = f"git diff -- {source}; inspect target/{claim}/*.log; correct source or command, then python3 rust/proofs/qualify.py {claim}"
 
@@ -96,6 +104,8 @@ def require(condition, step):
 def run(label):
     environment = os.environ.copy()
     environment.setdefault("PROPTEST_RNG_SEED", "1697")
+    if claim == "guest-refusal":
+        environment["RUSTC_WORKSPACE_WRAPPER"] = str(ROOT / "scripts/loom-rustc.sh")
     result = subprocess.run(COMMAND, cwd=ROOT, capture_output=True, text=True, env=environment)
     output = result.stdout + result.stderr
     directory = ROOT / "target" / claim
