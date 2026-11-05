@@ -275,7 +275,7 @@ for (const mutation of ["none", "archive-dist", "output", "source-digest", "comm
       mkdirSync(join(stage, "scripts"));
       mkdirSync(join(stage, "release"));
       mkdirSync(join(stage, "target"));
-      for (const name of ["typescript-qualification.mjs", "validate-npm-package.mjs", "archive-utils.mjs"]) cpSync(join(root, "scripts", name), join(stage, "scripts", name));
+      for (const name of ["typescript-qualification.mjs", "validate-npm-package.mjs", "archive-utils.mjs", "generated-bindings.mjs"]) cpSync(join(root, "scripts", name), join(stage, "scripts", name));
       cpSync(join(root, "release/npm-packages.json"), join(stage, "release/npm-packages.json"));
       writeFileSync(join(stage, ".gitignore"), "/target/\n/archives/\n/archive-inputs/\n/typescript/packages/*/dist/\n/typescript/packages/*/generated/wasm/\n");
       for (const item of entries) writeArchiveFixture(stage, item);
