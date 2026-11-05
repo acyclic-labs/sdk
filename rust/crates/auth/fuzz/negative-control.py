@@ -18,16 +18,19 @@ if choice == "operation-admission":
                "--profile", "ci", "--no-fail-fast", "--retries", "0"]
     mutations = [
         ("authorization.rs", b"Read => FOLLOW, Follow;",
-         b"Read => rpc::StreamRpc::Read.authorization(), Exact;", "Read, removed None"),
+         b"Read => rpc::StreamRpc::Read.authorization(), Exact;", "Read, removed None", False),
         ("lib/token.rs", b'Read => "read", StreamMethod::Read.authorization().admitted,',
-         b'Read => "read", &[],', "Read, removed None"),
+         b'Read => "read", &[],', "Read, removed None", False),
         ("lib/token.rs", b"_ => Err(crate::StreamError::InvalidArgument),",
-         b"_ => Ok(Self::Read),", "token operation decoding"),
+         b"_ => Ok(Self::Read),", "token operation decoding", False),
+        ("authorization.rs", b"Head => rpc::StreamRpc::Head.authorization(), Exact;",
+         b"Head => MethodAuth { admitted: &[FOLLOW_ACTION, Action::Streams(StreamsAction::Read)], ..rpc::StreamRpc::Head.authorization() }, Exact;",
+         "Session observations require exactly one declared action", True),
     ]
     step = "admit the original signed method and token credentials"
     try:
         subprocess.run(command, cwd=repository, check=True)
-        for name, check, replacement, assertion in mutations:
+        for name, check, replacement, assertion, compile_refusal in mutations:
             source = repository / "rust/crates/stream/src" / name
             original = source.read_bytes()
             step = "detect planted token or method defect in " + name
@@ -38,9 +41,10 @@ if choice == "operation-admission":
                 result = subprocess.run(command, cwd=repository, stdout=subprocess.PIPE,
                                         stderr=subprocess.STDOUT, text=True)
                 print(result.stdout, end="")
-                if (result.returncode == 0 or "panicked at " not in result.stdout
+                diagnostic = "error[E0080]" if compile_refusal else "panicked at "
+                if (result.returncode == 0 or diagnostic not in result.stdout
                         or assertion not in result.stdout):
-                    raise RuntimeError("the original admission or decoder assertion did not detect the defect")
+                    raise RuntimeError("the original admission, decoder or compile-time assertion did not detect the defect")
             finally:
                 source.write_bytes(original)
         step = "preserve the signed credential oracle and pass after restoring production admission"
