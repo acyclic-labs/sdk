@@ -218,15 +218,19 @@ Agent capture names include the shared record version. Previous captures and
 their provenance stay unchanged; waiting-status and checkpoint seeds retain
 both a retained action binding and an explicit absent binding for external hosts.
 
-The roster seed uses `Roster::new` and its retained canonical announcement. The
-same `harness_codecs` oracle compares original wire records, exact target
+The roster seeds use `Roster::new`, its retained canonical announcement and the
+tuple writer over its original home and targets. Both named and positional JSON
+must reach the same `harness_codecs` oracle, which compares original wire records, exact target
 positions and each owner's first attached device, including an offline first
 device and complete maximum-width name and owner bytes. Cached positions cannot
 be supplied through JSON. The retained `roster-owner-position.patch` publishes
 the wrong owner position; the writer-corpus check below must refuse it. The
 `roster-deep-clone.patch` restores the original value storage; the retained
 `agent::targets::tests::admitted_roster_retains_exact_announcement_across_decode_and_changes`
-control must detect its clone allocations.
+control must detect its clone allocations. The retained
+`roster-positional-projection.patch` restores object-only input projection; the
+same writer-corpus check must fail on the accepted positional roster. Unknown
+map fields and extra sequence elements must both be refused.
 
 The shared agent oracle checks record version and checkpoint codec refusals
 before payload decoding. Record checks alter original writer output, including

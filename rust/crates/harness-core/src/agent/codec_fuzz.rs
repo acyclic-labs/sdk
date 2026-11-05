@@ -174,9 +174,7 @@ pub fn check(bytes: &[u8]) {
         // reading its fifth field in either representation.
         let spawn_input = input.get("spawn").expect("admitted spawn variant");
         let selected: Option<super::HistorySelection> = serde_json::from_value(
-            spawn_input
-                .get("history")
-                .or_else(|| spawn_input.get(4))
+            field(spawn_input, "history", 4)
                 .cloned()
                 .unwrap_or(serde_json::Value::Null),
         )
@@ -202,6 +200,15 @@ pub fn check(bytes: &[u8]) {
     }
 }
 
+// Serde struct readers accept both named maps and positional sequences.
+fn field<'a>(
+    input: &'a serde_json::Value,
+    name: &str,
+    position: usize,
+) -> Option<&'a serde_json::Value> {
+    input.get(name).or_else(|| input.get(position))
+}
+
 fn roster(bytes: &[u8]) {
     let Ok(value) = serde_json::from_slice::<super::Roster>(bytes) else {
         return;
@@ -209,8 +216,11 @@ fn roster(bytes: &[u8]) {
     // Read original wire fields independently of Roster's admitted indexes.
     let input: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let targets: Vec<super::TargetRecord> =
-        serde_json::from_value(input["targets"].clone()).unwrap();
-    assert_eq!(value.home_name(), input["home"].as_str().unwrap());
+        serde_json::from_value(field(&input, "targets", 1).unwrap().clone()).unwrap();
+    assert_eq!(
+        value.home_name(),
+        field(&input, "home", 0).unwrap().as_str().unwrap()
+    );
     assert_eq!(value.targets(), targets);
     assert_eq!(
         value.canonical().0,
@@ -239,7 +249,13 @@ fn roster(bytes: &[u8]) {
         }
     }
     let mut extended = input;
-    extended["positions"] = true.into();
+    match &mut extended {
+        serde_json::Value::Object(fields) => {
+            fields.insert("positions".into(), true.into());
+        }
+        serde_json::Value::Array(fields) => fields.push(true.into()),
+        _ => unreachable!("admitted roster is a map or sequence"),
+    }
     assert!(serde_json::from_value::<super::Roster>(extended).is_err());
 }
 
