@@ -78,13 +78,7 @@ fn operation(
             preserved(source.as_ref(), &path)?,
             "allowance {allowance:?}: {error:?}"
         );
-        let refusal = match &error {
-            NativeMountError::Work(cause) => Some(crate::WorkspaceError::Work(*cause)),
-            NativeMountError::Materialization(cause) => {
-                crate::workspace::workspace_bounded_error(cause)
-            }
-            _ => crate::workspace::workspace_bounded_error(&error),
-        };
+        let refusal = crate::workspace::workspace_bounded_error(&error);
         assert!(
             matches!(refusal, Some(crate::WorkspaceError::Work(crate::WorkError::BudgetExceeded {
                 counter: "allocation_operations", maximum, observed,

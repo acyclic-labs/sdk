@@ -228,6 +228,18 @@ pub(crate) fn workspace_bounded_error(
     {
         return workspace_bounded_error(cause);
     }
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    if let Some(cause) = error.downcast_ref::<crate::native_mount::NativeMountError>() {
+        match cause {
+            crate::native_mount::NativeMountError::Work(cause) => {
+                return Some(WorkspaceError::Work(*cause));
+            }
+            crate::native_mount::NativeMountError::Materialization(cause) => {
+                return workspace_bounded_error(cause);
+            }
+            _ => {}
+        }
+    }
     #[cfg(not(target_arch = "wasm32"))]
     bounded!(crate::NativeTreeMaterializationError; [Io]; [Cancelled]);
     bounded!(FsError;
