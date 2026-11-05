@@ -34,7 +34,7 @@
  }
  
  /// Undelivered records routed to one watch.
-@@ -125,12 +122,11 @@
+@@ -130,12 +127,11 @@
              routes: Mutex::new(Routes {
                  buffer: vec![0; READ_BUFFER_BYTES],
                  descriptors: HashMap::new(),
@@ -48,7 +48,7 @@
          })
      }
  
-@@ -167,21 +163,12 @@
+@@ -178,21 +174,12 @@
      /// Subscribes a new watch to queue overflow records.
      pub(super) fn subscribe(&'static self, watch: &Arc<Shared>) -> Result<(), DemandError> {
          self.start_threads()?;
@@ -73,7 +73,7 @@
      }
  
      /// Stops routing queue overflow records to `subscriber`.
-@@ -190,7 +177,7 @@
+@@ -201,7 +188,7 @@
              .lock()
              .unwrap_or_else(PoisonError::into_inner)
              .subscribers
@@ -82,7 +82,7 @@
      }
  
      pub(super) fn next_subscriber(&self) -> u64 {
-@@ -212,7 +199,7 @@
+@@ -223,7 +210,7 @@
              .map_or((0, 0), |route| {
                  (
                      route.all.len(),
@@ -91,7 +91,7 @@
                  )
              })
      }
-@@ -269,7 +256,7 @@
+@@ -280,7 +267,7 @@
                          .try_reserve_exact(name.len())
                          .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
                      owned.push(name);
@@ -100,7 +100,7 @@
                  }
                  route
                      .named
-@@ -304,13 +291,13 @@
+@@ -315,13 +302,13 @@
          };
          match interest {
              Interest::All => {
@@ -117,7 +117,7 @@
                      }
                  }
              }
-@@ -337,7 +324,7 @@
+@@ -348,7 +335,7 @@
          ancestors: &[(i32, OsString)],
      ) -> io::Result<()> {
          let mut routes = self.routes.lock().unwrap_or_else(PoisonError::into_inner);
@@ -126,7 +126,7 @@
          let mut result = Ok(());
          for (_, descriptor) in watches {
              let removed = self.remove_locked(&mut routes, subscriber, *descriptor, Interest::All);
-@@ -353,7 +340,6 @@
+@@ -364,7 +351,6 @@
  
      /// Bytes the kernel has queued.
      fn queued(&self) -> io::Result<usize> {
@@ -134,7 +134,7 @@
          let mut queued: libc::c_int = 0;
          // SAFETY: FIONREAD writes one int, the queued byte count.
          if unsafe { libc::ioctl(self.descriptor.as_raw_fd(), libc::FIONREAD, &raw mut queued) } < 0
-@@ -419,7 +405,6 @@
+@@ -430,7 +416,6 @@
      }
  
      fn route_batch(&self, routes: &mut Routes, ready: &mut Ready) -> io::Result<usize> {
@@ -142,7 +142,7 @@
          let filled = loop {
              let length = routes.buffer.len();
              // SAFETY: the routing lock owns this buffer for the read.
-@@ -484,7 +469,7 @@
+@@ -495,7 +480,7 @@
                      route
                          .named
                          .values()
@@ -151,7 +151,7 @@
                          .collect::<Vec<_>>()
                  } else {
                      route.named.get(name).into_iter().flatten().collect()
-@@ -515,9 +500,6 @@
+@@ -526,9 +511,6 @@
      }
  
      fn route_forever(&'static self) {
@@ -161,7 +161,7 @@
          let mut descriptor = libc::pollfd {
              fd: self.descriptor.as_raw_fd(),
              events: libc::POLLIN,
-@@ -527,11 +509,10 @@
+@@ -538,11 +520,10 @@
              // SAFETY: one initialized pollfd record.
              let ready = unsafe { libc::poll(&raw mut descriptor, 1, -1) };
              if ready < 0 {
@@ -175,7 +175,7 @@
                  return;
              }
              #[cfg(test)]
-@@ -540,8 +521,8 @@
+@@ -556,8 +537,8 @@
              let routed = self.drain_batch();
              #[cfg(test)]
              drop(paused);
@@ -186,7 +186,7 @@
                  return;
              }
          }
-@@ -549,29 +530,14 @@
+@@ -565,29 +546,14 @@
  
      /// The shared queue failed: no watch can observe changes exactly again.
      fn fail_all(&self) {
@@ -223,34 +223,18 @@
      }
  
      fn serve_forever(&'static self) {
-@@ -593,20 +559,6 @@
-     }
- }
- 
+@@ -606,14 +572,6 @@
+             };
+             watch.service();
+         }
+-    }
+-}
+-
 -struct RouterEnded<'a>(&'a Hub);
 -
 -impl Drop for RouterEnded<'_> {
 -    fn drop(&mut self) {
 -        self.0.fail_all();
--    }
--}
--
--#[cfg(test)]
--pub(super) fn end_for_test() -> Result<(), DemandError> {
--    hub()?.fail_all();
--    Ok(())
--}
--
- /// Watches that received records, and whether each needs a service pass.
- type Ready = Vec<(Arc<Shared>, bool)>;
- 
-@@ -706,3 +658,9 @@
-         due
      }
  }
-+
-+#[cfg(test)]
-+pub(super) fn end_for_test() -> Result<(), DemandError> {
-+    hub()?.fail_all();
-+    Ok(())
-+}
+ 

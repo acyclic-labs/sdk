@@ -89,6 +89,11 @@ static HUB: OnceLock<Hub> = OnceLock::new();
 #[cfg(test)]
 pub(super) static ROUTER_PAUSED: Mutex<()> = Mutex::new(());
 
+#[cfg(test)]
+static ROUTER_THREAD: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+#[cfg(test)]
+static UNWIND_ROUTER: AtomicBool = AtomicBool::new(false);
+
 pub(super) fn hub() -> Result<&'static Hub, DemandError> {
     if let Some(hub) = HUB.get() {
         return Ok(hub);
@@ -150,13 +155,19 @@ impl Hub {
             // that pool visible to their first subscription.
             #[cfg(test)]
             let (ready, entered) = std::sync::mpsc::channel();
-            std::thread::Builder::new()
+            let worker = std::thread::Builder::new()
                 .name(name.into())
                 .spawn(move || {
                     #[cfg(test)]
                     let _ = ready.send(());
                     body(self);
                 })?;
+            #[cfg(test)]
+            if *started == 0 {
+                *ROUTER_THREAD.lock().unwrap_or_else(PoisonError::into_inner) = Some(worker);
+            }
+            #[cfg(not(test))]
+            drop(worker);
             *started += 1;
             #[cfg(test)]
             entered.recv().map_err(io::Error::other)?;
@@ -536,6 +547,11 @@ impl Hub {
             }
             #[cfg(test)]
             let paused = ROUTER_PAUSED.lock().unwrap_or_else(PoisonError::into_inner);
+            #[cfg(test)]
+            if UNWIND_ROUTER.load(Ordering::Acquire) {
+                drop(paused);
+                panic!("injected source collector unwind");
+            }
             // One buffer per wakeup: delivery is scheduled between batches.
             let routed = self.drain_batch();
             #[cfg(test)]
@@ -602,8 +618,17 @@ impl Drop for RouterEnded<'_> {
 }
 
 #[cfg(test)]
-pub(super) fn end_for_test() -> Result<(), DemandError> {
-    hub()?.fail_all();
+pub(super) fn end_for_test(wake: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+    UNWIND_ROUTER.store(true, Ordering::Release);
+    // The real filesystem operation wakes the original poll. Joining that
+    // producer observes its exit guard even when the guard is mutated away.
+    wake()?;
+    let worker = ROUTER_THREAD
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+        .ok_or_else(|| io::Error::other("source collector thread was not retained"))?;
+    assert!(worker.join().is_err(), "source collector did not unwind");
     Ok(())
 }
 

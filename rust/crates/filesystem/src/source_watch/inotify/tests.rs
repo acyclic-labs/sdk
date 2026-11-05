@@ -94,9 +94,9 @@ fn collector_loss_rejects_subscriptions_and_preserves_owned_cleanup()
             .load(Ordering::Acquire),
     ];
 
-    // Exercise the original collector's terminal transition, without closing
-    // a borrowed descriptor or depending on another service pass to notify.
-    hub::end_for_test()?;
+    // A real notification wakes the original collector; its exit guard must
+    // publish loss without another service pass acquiring either cursor.
+    hub::end_for_test(|| std::fs::write(root.join("collector-wake"), b""))?;
     let late = match watcher(&root) {
         Err(error) => error,
         Ok(_) => panic!("collector loss admitted a subscription without a producer"),
