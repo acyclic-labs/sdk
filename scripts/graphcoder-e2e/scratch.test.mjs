@@ -93,7 +93,7 @@ test("the cross-language profile bridge returns only the shared owned environmen
     assert.equal(result.code, 0, result.stderr);
     assert.ok(result.stdout.trim(), "shared profile bridge must publish its owned environment");
     const actual = JSON.parse(result.stdout);
-    assert.deepEqual(actual, environment(settings, {}));
+    assert.deepEqual(actual, environment(settings, nativeEnvironment()));
     assert.equal(actual.PROFILE_BRIDGE_SENTINEL, undefined);
     for (const args of [["profile", "relative-settings"], ["unknown", settings], ["profile", settings, "extra"]]) {
       const refused = await processes.run(process.execPath, [program, ...args], { cwd: root });

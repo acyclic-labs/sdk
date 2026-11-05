@@ -55,14 +55,14 @@ export function environment(settings, inherited = process.env) {
   return env;
 }
 
-// Cross-language callers receive only the shared profile values, never this
-// process's inherited environment or credentials. They retain process custody.
+// Cross-language callers use the same native owner, OS launcher and isolated
+// profile as JavaScript fixtures. Unrelated inherited values stay outside it.
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [mode, settings, ...extra] = process.argv.slice(2);
   try {
     assert.ok(mode === "profile" && settings && isAbsolute(settings) && !extra.length,
       "profile requires exactly one absolute settings directory");
-    console.log(JSON.stringify(environment(settings, {})));
+    console.log(JSON.stringify(environment(settings, nativeEnvironment())));
   } catch (error) {
     console.error(`scratch-profile step=admit-or-create failed: ${error.message}; `
       + "recovery command: node scripts/graphcoder-e2e/scratch.mjs profile ABSOLUTE_SETTINGS");
