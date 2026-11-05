@@ -47,6 +47,7 @@ impl acyclic_stream::PersistenceCut for PhysicalCut {
 #[tokio::test]
 async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
     escrow_debit_histories()?;
+    call_hold_publication().await?;
     resident_work().await?;
     borrowed_read_guards().await?;
     observation_work().await?;
@@ -58,6 +59,133 @@ async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
         physical_loss(1),
         physical_loss(2)
     )?;
+    Ok(())
+}
+
+async fn call_hold_publication() -> TestResult {
+    let provider = Arc::new(Counted::new(MemoryStream::default()));
+    let store = Store::new(provider.clone(), state_root()?);
+    let address = actor("call-hold")?;
+    place(&store, &address).await?;
+    let call = crate::call::CallPath::new(&store.path(&address)?, "original")?;
+    let mut binding = store.bind_state(store.load(&address).await?, 1)?;
+    binding.transaction(|state| state.fund_escrow(crate::escrow::Escrow::new(Some(5))))?;
+    assert!(matches!(
+        binding.transaction(|state| {
+            state.hold_escrow(Some(2))?;
+            Err::<(), _>(Error::Invalid("discard original hold"))
+        }),
+        Err(Error::Invalid("discard original hold"))
+    ));
+    let mut held = None;
+    let before = provider.requests();
+    let work = acyclic_test_support::measure(|| {
+        held = Some(
+            binding
+                .transaction(|state| {
+                    assert_eq!(state.escrow()?.remaining(), Some(5));
+                    state.hold_escrow(Some(2))
+                })
+                .unwrap(),
+        );
+    });
+    assert_eq!((work.count_total, work.bytes_total), (0, 0));
+    let mut prepared = binding.prepare_publish(
+        &record(0),
+        None,
+        transition(7, AlarmChange::Keep),
+        key("hold/request")?,
+    )?;
+    let request = call.request(
+        acyclic_stream::OwnedBytes::from("run"),
+        held.ok_or("missing original hold")?,
+    )?;
+    let mut conditions = Some(request.conditions);
+    for mutation in request.mutations {
+        prepared.join(Effect {
+            conditions: conditions.take().unwrap_or_default(),
+            mutation,
+        })?;
+    }
+    let snapshot = store
+        .submit_retained(prepared)
+        .await?
+        .ok_or("missing original publication")?;
+    assert_eq!(provider.requests().since(before).data(), 1);
+    assert_eq!(provider.requests().since(before).control(), 0);
+    let remaining = snapshot
+        .state()
+        .ok_or("missing caller state")?
+        .escrow
+        .ok_or("missing caller escrow")?
+        .remaining();
+    assert_eq!(remaining, Some(3));
+    let mut records = provider
+        .read(ReadRequest {
+            path: call.log().clone(),
+            from: 0,
+            limit: 2,
+            key: None,
+            at_least: Default::default(),
+        })
+        .await?;
+    let mut journal = crate::call::Journal::new(call.log());
+    while let Some(record) = records.try_next().await? {
+        assert_eq!(Some(record.commit_id), snapshot.anchor);
+        journal.apply(&record)?;
+    }
+    assert_eq!(journal.next(), 2);
+    let hold = journal.hold().ok_or("missing durable hold")?;
+    assert_eq!(hold.remaining(), Some(2));
+    assert_eq!(
+        remaining.unwrap() + hold.remaining().unwrap(),
+        5,
+        "request created or refunded funding"
+    );
+    // A hold from a separate commit is not the request's admitted funding.
+    let mut reader = crate::call::Journal::new(call.log());
+    let mut records = provider
+        .read(ReadRequest {
+            path: call.log().clone(),
+            from: 0,
+            limit: 2,
+            key: None,
+            at_least: Default::default(),
+        })
+        .await?;
+    reader.apply(&records.try_next().await?.ok_or("missing request")?)?;
+    let original = reader.clone();
+    let mut detached = records.try_next().await?.ok_or("missing hold")?;
+    detached.commit_id = acyclic_stream::CommitId::from_bytes([99; 32]);
+    assert!(reader.apply(&detached).is_err());
+    assert_eq!(reader, original);
+    provider
+        .commit(call.cancel("caller stopped")?.request(key("hold/cancel")?))
+        .await?;
+    let mut records = provider
+        .read(ReadRequest {
+            path: call.log().clone(),
+            from: 2,
+            limit: 1,
+            key: None,
+            at_least: Default::default(),
+        })
+        .await?;
+    journal.apply(&records.try_next().await?.ok_or("missing cancellation")?)?;
+    assert_eq!(
+        journal.hold(),
+        Some(hold),
+        "cancellation must retain spend custody"
+    );
+    assert_eq!(
+        store
+            .load(&address)
+            .await?
+            .state()
+            .and_then(|state| state.escrow)
+            .map(crate::escrow::Escrow::remaining),
+        Some(Some(3))
+    );
     Ok(())
 }
 
@@ -146,6 +274,39 @@ async fn publication_and_reopen() -> TestResult {
         update.checkpoint.bytes = Bytes::from(vec![7; 128]);
         let journal_path = StreamPath::new(format!("{}/journal", store.path(&address)?))?;
         let mut prepared = binding.prepare_publish(&record(0), None, update, key("hot/joined")?)?;
+        let retained = prepared.journal.as_ref().ok_or("missing journal fence")?;
+        let appended = prepared
+            .request()
+            .mutations
+            .iter()
+            .find_map(|mutation| match mutation {
+                CommitMutation::Append { path, .. } if path == retained => Some(path),
+                _ => None,
+            })
+            .ok_or("missing journal append")?;
+        assert_eq!(
+            appended.as_str().as_ptr(),
+            retained.as_str().as_ptr(),
+            "the journal append must retain the already validated fence path"
+        );
+        let shared = acyclic_test_support::measure(|| {
+            std::hint::black_box(retained.clone());
+        });
+        // Negative control reconstructs the same path as the former append
+        // preparation did, including its temporary formatting buffer.
+        let duplicated = acyclic_test_support::measure(|| {
+            std::hint::black_box(
+                StreamPath::new(format!("{}/journal", prepared.own.as_ref().unwrap())).unwrap(),
+            );
+        });
+        assert_eq!(shared.count_total, 0);
+        assert_eq!(shared.bytes_total, 0);
+        assert!(duplicated.count_total >= 2);
+        assert!(duplicated.bytes_total >= u64::try_from(2 * retained.as_str().len())?);
+        println!(
+            "journal_path_reuse_allocations={} reconstructed_allocations={} reconstructed_bytes={}",
+            shared.count_total, duplicated.count_total, duplicated.bytes_total
+        );
         assert!(matches!(
             prepared.join(Effect {
                 conditions: Vec::new(),
@@ -303,6 +464,31 @@ fn escrow_debit_histories() -> TestResult {
     // Generated spend histories exercise conservation and atomic refusal,
     // including the former zero-capacity refusal and genuinely unbounded use.
     for initial in [None, Some(0), Some(1), Some(u64::MAX)] {
+        for units in [None, Some(0), Some(1), Some(u64::MAX)] {
+            let mut candidate = Escrow::new(initial);
+            let before = candidate;
+            match candidate.hold(units) {
+                Ok(hold) => {
+                    assert_eq!(hold.remaining(), units);
+                    if let Some(initial) = initial {
+                        assert_eq!(
+                            u128::from(candidate.remaining().unwrap())
+                                + u128::from(hold.remaining().unwrap()),
+                            u128::from(initial)
+                        );
+                    } else {
+                        assert_eq!(candidate.remaining(), None);
+                    }
+                }
+                Err(error) => {
+                    assert_eq!(error, EscrowError::Exhausted);
+                    assert_eq!(candidate, before);
+                    assert!(
+                        initial.is_some_and(|initial| units.is_none_or(|units| units > initial))
+                    );
+                }
+            }
+        }
         let mut escrow = Escrow::new(initial);
         let mut spent = 0_u128;
         for index in 0_u64..64 {
@@ -422,19 +608,28 @@ async fn physical_loss(fail_at: usize) -> TestResult {
         place(&store, &address).await?;
         provider.cut_persistence(physical.clone());
         let mut binding = store.bind_state(store.load(&address).await?, 1)?;
-        binding.transaction(|state| {
+        let hold = binding.transaction(|state| {
             state.fund_escrow(crate::escrow::Escrow::new(Some(5)))?;
-            state.debit_escrow(2)?;
             state.put("value".into(), Bytes::from_static(b"durable"));
             state.append_journal(0, vec![Bytes::from_static(b"durable")])?;
-            state.alarm(Some(42))
+            state.alarm(Some(42))?;
+            state.hold_escrow(Some(2))
         })?;
-        let prepared = binding.prepare_publish(
+        let mut prepared = binding.prepare_publish(
             &record(0),
             None,
             transition(7, AlarmChange::Keep),
             key("loss/publication")?,
         )?;
+        let call = crate::call::CallPath::new(&store.path(&address)?, "power-loss")?;
+        let request = call.request(acyclic_stream::OwnedBytes::from("run"), hold)?;
+        let mut conditions = Some(request.conditions);
+        for mutation in request.mutations {
+            prepared.join(Effect {
+                conditions: conditions.take().unwrap_or_default(),
+                mutation,
+            })?;
+        }
         assert!(matches!(
             store.submit(prepared).await,
             Err(Error::Unknown { .. })
@@ -458,11 +653,203 @@ async fn physical_loss(fail_at: usize) -> TestResult {
     );
     assert_eq!(state.checkpoint().is_some(), applied != 0);
     assert_eq!(state.alarm().pending(), (applied != 0).then_some(42));
+    let call = crate::call::CallPath::new(&store.path(&address)?, "power-loss")?;
+    if applied != 0 {
+        let mut records = store
+            .provider
+            .read(ReadRequest {
+                path: call.log().clone(),
+                from: 0,
+                limit: 2,
+                key: None,
+                at_least: Default::default(),
+            })
+            .await?;
+        let mut journal = crate::call::Journal::new(call.log());
+        while let Some(record) = records.try_next().await? {
+            assert_eq!(Some(record.commit_id), snapshot.anchor);
+            journal.apply(&record)?;
+        }
+        assert_eq!(journal.next(), 2);
+        assert_eq!(
+            journal.hold().map(crate::escrow::Escrow::remaining),
+            Some(Some(2))
+        );
+    } else {
+        assert!(matches!(
+            store.provider.head(call.log().clone()).await,
+            Err(StreamError::NotFound)
+        ));
+    }
     let binding = store.bind_state(snapshot, 1)?;
     assert_eq!(
         binding.read_journal(0, 1).await?.len(),
         usize::try_from(applied)?
     );
+    Ok(())
+}
+
+/// Lose the real durable acceptance reply, then cut the original recovery at
+/// each physical boundary. Retrying retains those publications, never a Run.
+#[tokio::test]
+async fn accepted_call_recovery_survives_physical_loss() -> TestResult {
+    use crate::call::{Accepted, CallPath, Journal, Outcome};
+    use acyclic_stream::{AppendRecord, AppendRequest, CommitOutcome, OwnedBytes};
+
+    async fn read_call(
+        provider: &LocalStream,
+        call: &CallPath,
+        tail: u32,
+    ) -> Result<Journal, Box<dyn std::error::Error>> {
+        let mut journal = Journal::new(call.log());
+        let mut records = provider
+            .read(ReadRequest {
+                path: call.log().clone(),
+                from: 0,
+                limit: tail,
+                key: None,
+                at_least: Default::default(),
+            })
+            .await?;
+        while let Some(record) = records.try_next().await? {
+            crate::call::codec_fuzz::check_record(&record, &journal);
+            journal.apply(&record)?;
+        }
+        assert_eq!(journal.next(), u64::from(tail));
+        Ok(journal)
+    }
+
+    for fail_at in 0..3 {
+        let directory = tempfile::tempdir()?;
+        let call = CallPath::new(&StreamPath::new("caller")?, "original")?;
+        let fence = StreamPath::new("executor/session/ended")?;
+        let hold = crate::escrow::Escrow::new(Some(2));
+        let acceptance = call
+            .accept(
+                &Accepted {
+                    executor: OwnedBytes::from("executor"),
+                    fence: Some(fence.clone()),
+                },
+                true,
+            )?
+            .request(key("physical-call/accept")?);
+        let cut = Arc::new(PhysicalCut::new(Some(2)));
+        {
+            let provider = LocalStream::open(directory.path(), Default::default()).await?;
+            assert!(matches!(
+                provider
+                    .commit(
+                        call.request(OwnedBytes::from("run"), hold)?
+                            .request(key("physical-call/request")?),
+                    )
+                    .await?,
+                CommitOutcome::Committed(_)
+            ));
+            provider.cut_persistence(cut.clone());
+            assert!(matches!(
+                provider.commit(acceptance.clone()).await,
+                Err(StreamError::Unavailable)
+            ));
+            assert_eq!(cut.crashes.load(Ordering::SeqCst), 1);
+        }
+        let recovery;
+        let original_acceptance;
+        {
+            let provider = LocalStream::open(directory.path(), Default::default()).await?;
+            let accepted = provider.head(call.accepted().clone()).await?;
+            assert_eq!(accepted.tail, 1);
+            let accepted_commit = accepted
+                .last
+                .ok_or("missing original acceptance marker")?
+                .commit_id;
+            original_acceptance = provider.commit(acceptance.clone()).await?;
+            assert!(matches!(
+                &original_acceptance,
+                CommitOutcome::Committed(receipt) if receipt.commit_id == accepted_commit
+            ));
+            // Negative control: changing the retry identity cannot borrow the
+            // accepted receipt, while the session and call are still open.
+            let mut rival = acceptance.clone();
+            rival.idempotency_key = key("physical-call/rival")?;
+            assert!(matches!(
+                provider.commit(rival).await?,
+                CommitOutcome::Conflict(_)
+            ));
+            assert_eq!(provider.head(call.log().clone()).await?.tail, 3);
+            let journal = read_call(&provider, &call, 3).await?;
+            assert_eq!(journal.hold(), Some(hold));
+            assert!(journal.receipt(call.log()).is_none());
+            recovery = journal
+                .recover(&call, "executor lost")?
+                .ok_or("missing original recovery")?
+                .request(key("physical-call/recovery")?);
+            provider
+                .append(AppendRequest {
+                    path: fence.clone(),
+                    records: vec![AppendRecord::from("ended")],
+                    if_tail: Some(0),
+                    idempotency_key: key("physical-call/session-end")?,
+                })
+                .await?;
+            let cut = Arc::new(PhysicalCut::new(Some(fail_at)));
+            provider.cut_persistence(cut.clone());
+            assert!(matches!(
+                provider.commit(recovery.clone()).await,
+                Err(StreamError::Unavailable)
+            ));
+            assert_eq!(cut.crashes.load(Ordering::SeqCst), 1);
+        }
+        let provider = LocalStream::open(directory.path(), Default::default()).await?;
+        let retained_terminal = match provider.head(call.settled().clone()).await {
+            Ok(head) => Some(
+                head.last
+                    .ok_or("missing original terminal marker")?
+                    .commit_id,
+            ),
+            Err(StreamError::NotFound) => None,
+            Err(error) => return Err(error.into()),
+        };
+        assert_eq!(retained_terminal.is_some(), fail_at == 2);
+        let settled = provider.commit(recovery.clone()).await?;
+        let CommitOutcome::Committed(receipt) = &settled else {
+            return Err("original recovery did not commit".into());
+        };
+        if let Some(original) = retained_terminal {
+            assert_eq!(
+                receipt.commit_id, original,
+                "lost reply changed the terminal"
+            );
+        }
+        assert_eq!(provider.commit(recovery).await?, settled);
+        assert_eq!(
+            provider.commit(acceptance.clone()).await?,
+            original_acceptance
+        );
+        assert!(matches!(
+            provider
+                .commit(
+                    call.chunk(Some(&fence), OwnedBytes::from("late"))?
+                        .request(key("physical-call/late")?),
+                )
+                .await?,
+            CommitOutcome::Conflict(_)
+        ));
+        let journal = read_call(&provider, &call, 4).await?;
+        let terminal = journal
+            .receipt(call.log())
+            .ok_or("missing durable terminal")?;
+        assert_eq!(terminal.terminal.commit_id, receipt.commit_id);
+        assert!(matches!(terminal.outcome, Outcome::Indeterminate(_)));
+        assert_eq!(
+            journal.hold(),
+            Some(hold),
+            "recovery refunded its original hold"
+        );
+        assert!(journal.recover(&call, "again")?.is_none());
+        assert_eq!(provider.head(call.log().clone()).await?.tail, 4);
+        assert_eq!(provider.head(call.accepted().clone()).await?.tail, 1);
+        assert_eq!(provider.head(call.settled().clone()).await?.tail, 1);
+    }
     Ok(())
 }
 
@@ -540,11 +927,17 @@ async fn resident_work() -> TestResult {
                 "an existing key needs only undo storage, never a key clone"
             );
             let debit = acyclic_test_support::measure(|| {
-                binding.transaction(|state| state.debit_escrow(1)).unwrap();
+                assert_eq!(
+                    binding
+                        .transaction(|state| state.hold_escrow(Some(1)))
+                        .unwrap()
+                        .remaining(),
+                    Some(1)
+                );
             });
             assert_eq!(
                 debit.count_total, 0,
-                "debit must change only the fixed field"
+                "holding funding must change only the fixed field"
             );
             assert_eq!(debit.bytes_total, 0);
             println!(

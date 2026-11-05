@@ -170,11 +170,28 @@ There is no fallback to environment inheritance or plaintext bindings.
 With the `conformance` feature, downstream hosts implement
 `acyclic_actors::conformance::Backend` and register their async setup function
 with `conformance::suite!(MyBackend::fresh)`. The backend retains disposable
-storage, a running host loaded with the shared `Package`, its clock, pause/restart
-controls, and a `RequestLedger` instrumenting the actual provider dispatch.
+storage, a running host loaded with the shared `Package`, its clock, completion
+and pause/restart controls, and a `RequestLedger` instrumenting the actual provider dispatch.
 `verify(&backend)` drives the same ordered delivery, alarm, pause and restart
 vectors for every implementation. Existing `Target` implementations use the
 same trait through its compatibility alias.
+
+`Backend::complete` joins the original actor's activation and delivery work at
+the current host time. The verifier reads one finite output prefix, including
+one extra record to reject duplicates. It advances the same host clock explicitly
+for alarm, cancellation and expiry checks. Local hosts inject `ControlledClock`
+into the actual `Runtime`; wall-clock backends await the original alarm deadline.
+
+`Runtime::complete` is acknowledged by its continuous `run` owner after active
+and ready deliveries finish and discovery consumes the observed activation tail.
+Every changed tail is joined through the existing activation follow. This adds
+one tail observation at an idle cut and one per newly consumed activation prefix,
+without scanning residents or taking over their execution. Future alarms stay
+pending. Concurrent producers can append after that cut. A cancelled host returns
+`CompletionStopped`; the first failed delivery refuses completion with its
+original cause until restart.
+The completion channel is allocated lazily; event-driven hosts that never run
+the continuous dispatcher or request completion retain no channel allocation.
 
 `conformance::bench(&backend)` is an on-demand workload over a fresh backend.
 It excludes setup and warmup, verifies all 256 deliveries, and returns elapsed
@@ -344,3 +361,22 @@ retain a cancelled registration, drop a due wake, omit alarm rearming
 or admit an obsolete alarm generation. Pass control names printed by the
 command to select individual defects. The wake/park model covers the queue
 handoff itself; it does not model Stream publication or runtime activation.
+
+`python3 scripts/qualify-actors-ready.py --completion` checks the real continuous
+dispatcher against premature acknowledgements and redundant tail observations,
+then runs the memory/durable conformance and retained alarm/lifetime controls.
+It also checks the Actors tests for `x86_64-pc-windows-gnu`. The command restores
+the original source after each mutation; cross-compilation does not execute the
+Windows runtime.
+
+Pass `premature-ack`, `extra-tail` or `unpolled-host` after `--completion` to
+select only those mutations plus the restored controls and cross-target checks.
+The last control drops the original host future before its first poll: pending
+and late completion observers must receive `CompletionStopped` immediately.
+
+`python3 scripts/qualify-actors-ready.py --restart-completion` advances that same
+host clock after the restarted input commits and before output observation. It
+checks that an intermediate absence assertion rejects this valid interleaving,
+then verifies the unchanged exact final output with and without the interleaving.
+The restored completion controls and cross-target checks run once; unchanged
+dispatcher and socket mutations are not repeated.

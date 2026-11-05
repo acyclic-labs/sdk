@@ -81,13 +81,13 @@ def observation():
         raise RuntimeError("shared observation source changed; recovery: " + RECOVERY + " --observation")
     # End the original provider cursor early; keep its real opening and records.
     truncated = observer.replace(cursor, b".map_ok(|follow| acyclic_stream::records_only(follow).take(0))")
-    name = "local::runtime::tests::conformance_suite_passes_on_memory_runtime"
+    name = "local::sockets::tests::socket_conformance_passes_on_local_runtime"
     print("Shared observation source sha256=" + hashlib.sha256(original).hexdigest(), flush=True)
     try:
         source.write_bytes(normalized[:begin] + truncated.replace(closed, b"None => break,")
                            + normalized[end:])
         run([name], "original closed-follow misclassification",
-            'Error: Violation { case: "ordered"', model=False, recovery="--observation")
+            'Error: Violation { case: "echo"', model=False, recovery="--observation")
         source.write_bytes(normalized[:begin] + truncated + normalized[end:])
         run([name], "typed closed-follow refusal", "Error: Target(Stream(Unavailable))",
             model=False, recovery="--observation")
@@ -97,7 +97,111 @@ def observation():
         source.write_bytes(original)
 
 
+def completion(selected=None):
+    """Qualify the real dispatcher cut, its output oracle and operation cost."""
+    source = ROOT / "rust/crates/actors/src/local/runtime.rs"
+    original = source.read_bytes()
+    normalized = original.replace(b"\r\n", b"\n")
+    name = "local::runtime::tests::completion::completion_joins_discovery_delivery_and_producer_lifetime"
+    custody = (b"        let completions = self\n"
+               b"            .completions()\n            .receive\n            .lock()\n"
+               b"            .unwrap_or_else(std::sync::PoisonError::into_inner)\n"
+               b"            .take()\n            .ok_or(Error::CompletionStopped);\n")
+    controls = {
+        "premature-ack": (b"receive\n            .await\n            .map_err(|_| Error::CompletionStopped)?\n            .map_err(Error::CompletionFailed)",
+         b"let _ = receive;\n        Ok(())",
+         "completion escaped"),
+        "extra-tail": (b"completion_tail = match provider.tail(self.store.root().clone()).await {",
+         b"let _ = provider.tail(self.store.root().clone()).await;\n"
+         b"completion_tail = match provider.tail(self.store.root().clone()).await {",
+         "assertion `left == right` failed"),
+        "unpolled-host": (custody + b"        self.run_owned(report, completions)\n",
+         b"        async move {\n" + custody
+         + b"        self.run_owned(report, completions).await\n        }\n",
+         "completion producer survived its unpolled host"),
+    }
+    chosen = list(controls) if selected is None else list(selected)
+    if len(chosen) != len(set(chosen)) or any(control not in controls for control in chosen):
+        raise RuntimeError("select distinct completion controls from " + ", ".join(controls)
+                           + "; recovery: " + RECOVERY + " --completion")
+    print("Completion producer sha256=" + hashlib.sha256(original).hexdigest(), flush=True)
+    try:
+        for control in chosen:
+            anchor, plant, diagnostic = controls[control]
+            if normalized.count(anchor) != 1:
+                raise RuntimeError("completion producer anchor changed; recovery: " + RECOVERY + " --completion")
+            source.write_bytes(normalized.replace(anchor, plant))
+            run([name], "unchanged-oracle rejection", diagnostic,
+                model=False, recovery="--completion")
+        source.write_bytes(original)
+        restored_tests = [
+            name,
+            "local::runtime::tests::conformance_suite_passes_on_memory_runtime",
+            "local::runtime::tests::conformance_suite_passes_on_durable_local_runtime",
+            "local::runtime::tests::negative_control_conformance_rejects_a_host_that_loses_alarm_changes",
+            "local::runtime::tests::clock::controlled_clock_drives_original_alarms_and_reports_producer_loss",
+        ]
+        command = ["cargo", "nextest", "run", "--locked", "-p", "acyclic-actors",
+                   "--all-features", "--lib", "-E", " | ".join(f"test(={test})" for test in restored_tests),
+                   "--no-capture", "--no-tests=fail"]
+        print("STEP restored Actor completion controls: " + repr(command), flush=True)
+        if subprocess.run(command, cwd=ROOT).returncode:
+            raise RuntimeError("restored Actor completion controls failed; recovery: " + RECOVERY + " --completion")
+        if selected is None:
+            observation()
+        command = ["cargo", "check", "--locked", "-p", "acyclic-actors", "--tests",
+                   "--all-features", "--target", "x86_64-pc-windows-gnu"]
+        print("STEP Windows Actor cross-check: " + repr(command), flush=True)
+        if subprocess.run(command, cwd=ROOT).returncode:
+            raise RuntimeError("Windows Actor cross-check failed; recovery: " + RECOVERY + " --completion")
+        command = ["cargo", "check", "--locked", "-p", "acyclic-cloudflare-conformance",
+                   "--target", "wasm32-unknown-unknown"]
+        print("STEP hosted completion adapter cross-check: " + repr(command), flush=True)
+        if subprocess.run(command, cwd=ROOT).returncode:
+            raise RuntimeError("hosted completion adapter cross-check failed; recovery: " + RECOVERY + " --completion")
+    finally:
+        source.write_bytes(original)
+
+
+def restart_completion():
+    """Cross the real alarm deadline between restarted delivery and observation."""
+    source = ROOT / "rust/crates/actors/src/conformance.rs"
+    original = source.read_bytes()
+    normalized = original.replace(b"\r\n", b"\n")
+    anchor = (b'    restarted.send("emit").await?;\n'
+              b'    target.complete(&restarted.actor).await?;\n')
+    if normalized.count(anchor) != 1:
+        raise RuntimeError("restart completion anchor changed; recovery: "
+                           + RECOVERY + " --restart-completion")
+    # Run the original dispatcher and SAME clock, with r2 already committed.
+    # This is a valid wall-clock interleaving, not a fabricated output fixture.
+    crossed = anchor + (b'    target.advance_to(target.clock().now_unix_ms()'
+                        b'.saturating_add(2 * ALARM_MS)).await?;\n'
+                        b'    target.complete(&restarted.actor).await?;\n')
+    name = "local::runtime::tests::conformance_suite_passes_on_memory_runtime"
+    print("Restart completion source sha256=" + hashlib.sha256(original).hexdigest(), flush=True)
+    try:
+        probe = normalized.replace(anchor, crossed)
+        source.write_bytes(probe.replace(crossed, crossed
+                           + b'    restarted.expect(&["r0", "r2"]).await?;\n'))
+        run([name], "original deadline-crossing rejection",
+            'Error: Violation { case: "restarted"', model=False,
+            recovery="--restart-completion")
+        source.write_bytes(probe)
+        run([name], "positive", model=False, recovery="--restart-completion")
+        source.write_bytes(original)
+        completion(())
+    finally:
+        source.write_bytes(original)
+
+
 def main():
+    if sys.argv[1:] == ["--restart-completion"]:
+        restart_completion()
+        return
+    if sys.argv[1:2] == ["--completion"]:
+        completion(None if len(sys.argv) == 2 else sys.argv[2:])
+        return
     if sys.argv[1:] == ["--observation"]:
         observation()
         return

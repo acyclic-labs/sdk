@@ -181,6 +181,29 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
     assert_eq!(registered.data(), 1);
     assert_eq!(registered.control(), 0);
     let before = store.load(&address).await?;
+    // A host guard refusal cannot become a guest terminal or consume this
+    // accepted input. The same pending waiter completes on the valid retry.
+    let failure_key = key("invoked/precondition")?;
+    let trigger = record(0);
+    let before_refusal = provider.requests();
+    let refusal = acyclic_test_support::measure(|| {
+        assert!(matches!(
+            store.prepare_invocation_failure(
+                &before,
+                1,
+                &trigger,
+                Some(ticket.record()),
+                &crate::guest::GuestError::PreconditionChanged,
+                failure_key,
+            ),
+            Err(Error::PreconditionChanged)
+        ));
+    });
+    assert_eq!(refusal.count_total, 0);
+    assert_eq!(refusal.bytes_total, 0);
+    let requests = provider.requests().since(before_refusal);
+    assert_eq!(requests.data(), 0);
+    assert_eq!(requests.control(), 0);
     assert!(matches!(
         store.prepare_publish(
             &before,
@@ -361,7 +384,7 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
         committed.receipt().call().log,
         *invocation.call(before.path())?.log()
     );
-    for name in ["acyclic.call.v1", "acyclic.call.v1.fence"] {
+    for name in ["acyclic.call.v2", "acyclic.call.v2.fence"] {
         assert!(matches!(
             invocation.call(before.path())?.settle_with_attributes(
                 None,

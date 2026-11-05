@@ -112,6 +112,7 @@ pub fn exercise(target: &str, bytes: &[u8]) -> Result<(), String> {
         "identities" => identities(bytes),
         "actor_codecs" => actor_codecs(bytes),
         "call_record" => {
+            acyclic_actors::call::codec_fuzz::check(bytes);
             futures::executor::block_on(acyclic_actors::call::model::check(bytes))?;
         }
         "filesystem_codecs" => filesystem_codecs(bytes),
@@ -1268,7 +1269,8 @@ pub fn actor_codecs(bytes: &[u8]) {
         // Both readers consume this same committed Stream wire envelope.
         let _ = acyclic_actors::call::Entry::decode(&record);
         let _ = acyclic_actors::call::fence(&record);
-        let mut journal = acyclic_actors::call::Journal::default();
+        let call_log = acyclic_stream::StreamPath::new("caller/calls/c1").unwrap();
+        let mut journal = acyclic_actors::call::Journal::new(&call_log);
         let before = journal.clone();
         if journal.apply(&record).is_err() {
             assert_eq!(journal, before, "refusal must preserve the call reader");

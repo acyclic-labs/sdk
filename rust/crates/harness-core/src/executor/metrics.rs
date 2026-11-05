@@ -21,8 +21,8 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use std::{collections::HashMap, io::Write, sync::Arc};
 
 /// Arrow/Parquet layout identity, independent of usage/cache producer versions.
-/// Version 3 records creation context and immutable template references.
-pub const VERSION: u32 = 3;
+/// Version 4 retains creation provenance and requires original call terminals.
+pub const VERSION: u32 = 4;
 
 /// Streaming W3C PROV-O projection over these same original observations.
 #[cfg(feature = "provenance-export")]
@@ -215,7 +215,6 @@ impl Table {
                 ("request_sequence", UInt64),
                 ("request_commit_id", Utf8),
                 ("terminal_sequence", UInt64),
-                ("fence", Utf8),
                 ("logical_value_bytes", UInt64),
                 ("coverage", Utf8),
             ],
@@ -325,7 +324,7 @@ columns! {
         profile_prefix_digest, cache_ttl, cache_prefix_digest, cache_parent_digest,
         source_account, source_origin, source_commit_id, coverage,
         machine, forked_from, physical_host, region, scope_path,
-        caller, call_log, outcome, request_commit_id, fence]
+        caller, call_log, outcome, request_commit_id]
 }
 
 impl<'a> Row<'a> {
@@ -869,6 +868,100 @@ mod tests {
     use arrow_array::{Array, StringArray, UInt64Array};
 
     #[test]
+    fn adoption_preserves_the_original_template_reference() -> Result<()> {
+        use crate::conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef};
+
+        let owner = crate::AgentId::from_bytes([5; 16]);
+        let agent = agent::AgentId::from_bytes([5; 16]);
+        let path = agent::AgentPath::root(&agent);
+        for version in [None, Some("first-cut"), Some("later-cut")] {
+            let template = version
+                .map(|version| {
+                    FileRef::new(
+                        VolumeRef::new(
+                            crate::resources::ProviderRef::new(
+                                "acyclic".into(),
+                                "filesystem".into(),
+                                "2".into(),
+                                &mut None,
+                            )?,
+                            "templates".into(),
+                            VolumeClass::AgentPrivate,
+                            VolumeOwner::Agent(owner),
+                            &mut None,
+                        )?,
+                        "worker.md".into(),
+                        version.into(),
+                        FileDescriptor::from_bytes(
+                            b"original template",
+                            "text/markdown",
+                            &mut None,
+                        )?,
+                        "worker.md".into(),
+                        &mut None,
+                    )
+                })
+                .transpose()?;
+            let record = agent::InboxRecord::ForkAdopted(Box::new(agent::ForkAdopted {
+                agent: agent.clone(),
+                parent: None,
+                profile: Some(agent::CreationConfig {
+                    context: agent::SpawnContext::TopLevel,
+                    template: template.clone(),
+                }),
+                forked_at: 0,
+                conversation_tail: 0,
+                checkpoint: None,
+                volumes: Vec::new(),
+                brief: None,
+                policy: None,
+            }));
+            let projected = inbox(path.as_str(), 0, &record)?;
+            let column = projected[0]
+                .data
+                .column_by_name("artifact")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            if let Some(template) = &template {
+                assert_eq!(
+                    serde_json::from_str::<FileRef>(column.value(0)).map_err(export_error)?,
+                    *template
+                );
+            } else {
+                assert!(
+                    column.is_null(0),
+                    "absent templates cannot acquire an inferred reference"
+                );
+            }
+            #[cfg(feature = "provenance-export")]
+            {
+                let mut bytes = Vec::new();
+                provenance::write(&projected[0], &mut bytes)?;
+                let triples = oxttl::NTriplesParser::new()
+                    .for_reader(bytes.as_slice())
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(export_error)?;
+                let references: Vec<_> = triples
+                    .iter()
+                    .filter(|triple| {
+                        triple.predicate.as_str() == "urn:acyclic:research:fileReference"
+                    })
+                    .collect();
+                if let Some(template) = &template {
+                    assert_eq!(references.len(), 1);
+                    assert!(matches!(&references[0].object, oxrdf::Term::Literal(value)
+                        if value.value() == artifact(template)?));
+                } else {
+                    assert!(references.is_empty());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn shards_roundtrip_known_and_unknown_values_and_refuse_foreign_schemas() -> Result<()> {
         // Generated column values exercise the encoding, not a provider fixture.
         let mut row = Row::new(
@@ -895,26 +988,42 @@ mod tests {
             for format in [Format::Arrow, Format::Parquet] {
                 let mut bytes = Vec::new();
                 write(&original, &mut bytes, format)?;
-                let decoded = match format {
+                let (schema, decoded) = match format {
                     Format::Arrow => {
-                        arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
-                            .map_err(export_error)?
-                            .collect::<std::result::Result<Vec<_>, _>>()
-                            .map_err(export_error)?
+                        let reader = arrow_ipc::reader::StreamReader::try_new(
+                            std::io::Cursor::new(bytes),
+                            None,
+                        )
+                        .map_err(export_error)?;
+                        (
+                            reader.schema(),
+                            reader
+                                .collect::<std::result::Result<Vec<_>, _>>()
+                                .map_err(export_error)?,
+                        )
                     }
                     Format::Parquet => {
-                        parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
-                            bytes::Bytes::from(bytes),
+                        let builder =
+                            parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+                                bytes::Bytes::from(bytes),
+                            )
+                            .map_err(export_error)?;
+                        // Parquet exposes file metadata on the builder; its
+                        // record batches carry only the projected fields.
+                        (
+                            builder.schema().clone(),
+                            builder
+                                .build()
+                                .map_err(export_error)?
+                                .collect::<std::result::Result<Vec<_>, _>>()
+                                .map_err(export_error)?,
                         )
-                        .map_err(export_error)?
-                        .build()
-                        .map_err(export_error)?
-                        .collect::<std::result::Result<Vec<_>, _>>()
-                        .map_err(export_error)?
                     }
                 };
+                assert_eq!(schema, original.data.schema());
                 assert_eq!(decoded.len(), 1);
-                assert_eq!(decoded[0], original.data);
+                assert_eq!(decoded[0].schema().fields(), schema.fields());
+                assert_eq!(decoded[0].columns(), original.data.columns());
                 if table == Table::ModelCalls {
                     let column = |name| decoded[0].column_by_name(name).expect("projected column");
                     assert_eq!(
@@ -953,7 +1062,7 @@ mod tests {
                 }
                 // A saved earlier layout cannot acquire the new ownership
                 // contract by copying its columns or erasing its version.
-                for saved_version in [None, Some("1"), Some("2")] {
+                for saved_version in [None, Some("1"), Some("2"), Some("3")] {
                     let mut metadata = original.data.schema().metadata().clone();
                     match saved_version {
                         Some(version) => {

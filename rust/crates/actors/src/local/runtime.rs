@@ -35,7 +35,7 @@ use std::{
     future::poll_fn,
     hash::BuildHasher,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     task::{Context, Poll, Waker},
@@ -110,6 +110,13 @@ struct Inner {
     pending: Option<(Arc<Snapshot>, PreparedPublish)>,
 }
 
+type Completion = tokio::sync::oneshot::Sender<Result<(), Arc<Error>>>;
+
+struct Completions {
+    send: tokio::sync::mpsc::UnboundedSender<Completion>,
+    receive: SyncMutex<Option<tokio::sync::mpsc::UnboundedReceiver<Completion>>>,
+}
+
 enum Event {
     Created(Record),
     Dispatched(Result<Snapshot, Error>),
@@ -118,6 +125,8 @@ enum Event {
     Rearm(Option<u64>),
     Due(Result<(), ClockError>),
     Failed(StreamError),
+    Completion(Completion),
+    Idle,
 }
 
 /// Executes one handler package for every actor whose state lives under the
@@ -138,6 +147,7 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
     instance: uuid::Uuid,
     limits: RuntimeLimits,
     admission: tokio::sync::Semaphore,
+    completions: OnceLock<Completions>,
 }
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
@@ -154,6 +164,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             instance: crate::identity::fresh_uuid(),
             limits: RuntimeLimits::default(),
             admission: tokio::sync::Semaphore::new(RuntimeLimits::default().active),
+            completions: OnceLock::new(),
         }
     }
 
@@ -415,11 +426,69 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         )
     }
 
+    /// Complete activation and due-alarm work through the original [`Self::run`]
+    /// dispatcher. Future alarms are not advanced. This neither executes a
+    /// second scheduler nor places actors on the caller's behalf.
+    ///
+    /// At an idle boundary the dispatcher captures the activation tail, consumes
+    /// that prefix and its deliveries, then confirms the resulting tail. Each
+    /// changed cut waits on the original activation follow; there is no polling.
+    /// Concurrent producers may append after the final observation. Cancellation
+    /// or loss of the running host returns [`Error::CompletionStopped`]. A failed
+    /// delivery refuses completion until the host is restarted.
+    pub async fn complete(&self) -> Result<(), Error> {
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.completions()
+            .send
+            .send(send)
+            .map_err(|_| Error::CompletionStopped)?;
+        receive
+            .await
+            .map_err(|_| Error::CompletionStopped)?
+            .map_err(Error::CompletionFailed)
+    }
+
+    fn completions(&self) -> &Completions {
+        self.completions.get_or_init(|| {
+            let (send, receive) = tokio::sync::mpsc::unbounded_channel();
+            Completions {
+                send,
+                receive: SyncMutex::new(Some(receive)),
+            }
+        })
+    }
+
     /// Host forever: follow the root's activation log to discover actors
     /// created by any commit, deliver concurrently across actors, and fire
     /// alarms from one timer. Per-actor failures go to `report`; the input
-    /// stays queued.
-    pub async fn run(&self, report: impl Fn(&ActorReference, &Error)) -> Result<Infallible, Error> {
+    /// stays queued. Creating this future claims its completion producer;
+    /// dropping it, including before the first poll, refuses pending and late
+    /// completion requests with [`Error::CompletionStopped`].
+    pub fn run(
+        &self,
+        report: impl Fn(&ActorReference, &Error),
+    ) -> impl std::future::Future<Output = Result<Infallible, Error>> {
+        // Transfer acknowledgement custody when the future is CREATED: dropping
+        // it must refuse observers even if the executor never polls it.
+        let completions = self
+            .completions()
+            .receive
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .ok_or(Error::CompletionStopped);
+        self.run_owned(report, completions)
+    }
+
+    async fn run_owned(
+        &self,
+        report: impl Fn(&ActorReference, &Error),
+        completions: Result<tokio::sync::mpsc::UnboundedReceiver<Completion>, Error>,
+    ) -> Result<Infallible, Error> {
+        let mut completions = completions?;
+        let mut completing: Vec<Completion> = Vec::new();
+        let mut completion_tail = 0;
+        let mut failure = None;
         let root = self.store.root().clone();
         let provider = self.store.provider();
         let (dispatch_store, dispatch_actor) = self.dispatcher_store()?;
@@ -510,6 +579,16 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         }
                     }
                 }
+                if let Poll::Ready(Some(completion)) = completions.poll_recv(context) {
+                    return Poll::Ready(Event::Completion(completion));
+                }
+                if !completing.is_empty()
+                    && running.is_empty()
+                    && dispatching.is_none()
+                    && seen >= completion_tail
+                {
+                    return Poll::Ready(Event::Idle);
+                }
                 Poll::Pending
             })
             .await;
@@ -536,7 +615,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     let execution: BoxProviderFuture<'_, _> = Box::pin(self.execute(work));
                     running.push(execution);
                 }
-                Event::Done(Err((actor, error))) => report(&actor, &error),
+                Event::Done(Err((actor, error))) => {
+                    report(&actor, &error);
+                    failure.get_or_insert_with(|| Arc::new(error));
+                }
                 Event::Done(Ok(())) => {}
                 Event::Rearm(next) => {
                     timer = next.map(|deadline| (deadline, self.clock.sleep_until(deadline)));
@@ -548,6 +630,30 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         .wake_due(self.clock.now_unix_ms(), self.limits.work);
                 }
                 Event::Failed(error) => return Err(error.into()),
+                Event::Completion(completion) => completing.push(completion),
+                Event::Idle => {
+                    // No delivery can publish while this owner captures the cut.
+                    // A newly observed prefix resumes the SAME activation follow.
+                    completion_tail = match provider.tail(self.store.root().clone()).await {
+                        Ok(tail) => tail,
+                        Err(StreamError::NotFound) => 0,
+                        Err(error) => return Err(error.into()),
+                    };
+                    if seen >= completion_tail
+                        && self.ready.counts().1 == 0
+                        && timer
+                            .as_ref()
+                            .map(|(deadline, _)| *deadline)
+                            .is_none_or(|deadline| deadline > self.clock.now_unix_ms())
+                    {
+                        for completion in completing.drain(..) {
+                            let result = failure
+                                .as_ref()
+                                .map_or(Ok(()), |error| Err(Arc::clone(error)));
+                            let _cancelled = completion.send(result);
+                        }
+                    }
+                }
             }
             if dispatching.is_none()
                 && let Some(previous) = dispatcher.take_if(|previous| {

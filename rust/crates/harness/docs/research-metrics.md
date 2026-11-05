@@ -27,12 +27,13 @@ cursor. Model rows reconstruct one original admitted request for its replay key;
 the page does not load conversation history or tool payloads.
 `inbox`, `conversation` and `status` project one original agent record each.
 
-Schema v2 has six tables. `metrics::VERSION`, the row `version` and Arrow
+Schema v4 has six tables. `metrics::VERSION`, the row `version` and Arrow
 `acyclic.metrics.version` metadata identify this layout independently of the
-usage JSONL and cache-observation formats. Version 2 includes scope ownership
-and nullable agent ownership. Union shards only when their version and table
+usage JSONL and cache-observation formats. Version 4 retains scope ownership,
+nullable agent ownership and creation provenance, and requires original call
+terminals. Union shards only when their version and table
 match. Earlier saved layouts must be reprojected from original sources before
-combining them with v2; the library does not migrate shards or fill missing
+combining them with v4; the library does not migrate shards or fill missing
 ownership fields with null. Arrow, Parquet and PROV writers refuse a foreign
 layout before emitting bytes.
 
@@ -200,7 +201,7 @@ remain separate from this offline codec:
 | `agents` / `placement` | `metrics::placement::project` consumes the original settled `MachineBinding` v2 and stream envelope. Coverage is logical provider placement; physical location and resource measurements stay unknown. Requires `machines`. |
 | `edges` / `stream_record_shared` | `metrics::stream_records::project` preserves an authorized original record's account, origin, sequence and commit ID, separately from the selected destination. Coverage is logical record-value bytes; union original identities before summing. |
 | `turns` / `operation_interval` | Original operation binding, parent and collector clock domain with checked relative start/end coordinates. Unknown Unix placement stays unknown. Actual producer edges must establish causality. |
-| `outcomes` / `call_receipt` | `metrics::calls::project` borrows an original Actors `call::Journal` receipt and its authorized original terminal or fence record. Scope-owned calls need no agent. |
+| `outcomes` / `call_receipt` | `metrics::calls::project` borrows an original Actors `call::Journal` receipt and its authorized original terminal record. Scope-owned calls need no agent. |
 
 Interval integration remains reserved. The stream projection
 accepts the original `Record`, selected `StreamPath` and authenticated
@@ -256,12 +257,11 @@ bytes rather than history or agent count. It adds no execution reads, provider
 requests, publication commits, durability barriers, flushes or waits.
 
 Call outcomes reuse that same original-envelope encoder. Supply the existing
-Actors call reader and `CallPath`, plus its original terminal record, or the
-first session-fence record (sequence zero) when no terminal exists. The projection
-checks the selected caller/path, terminal sequence/commit binding, and first
-fence position. A later append to the same fence path cannot supply a new
-settlement commit or timestamp. It does
-not replay the protocol or read its journal again. `Journal::receipt_ref` is the
+Actors call reader and `CallPath`, plus its original terminal record. The projection
+checks the selected caller/path and terminal origin, sequence and commit binding.
+Executor loss requires recovery to commit that call's sole terminal; the shared
+session fence alone supplies no receipt. The projection does not replay the
+protocol or read its journal again. `Journal::receipt_ref` is the
 shared borrowed assembly boundary, also used by the owned receipt API; projection
 does not copy outcome text or result bytes. The caller remains responsible
 for source authorization and the original scope identity. Caller labels alone
@@ -272,13 +272,10 @@ no fabricated SoftwareAgent in RDF. `caller`, `call_log` and `outcome` retain
 the original caller and folded disposition. A cancellation after acceptance is
 `indeterminate`, even when the raw terminal says `cancelled`. Missing request
 receipt remains null; request sequence/commit are known without claiming its
-unknown original origin. A settling `fence` has no `terminal_sequence`, distinct
-from a genuine terminal at sequence zero. Coverage is `original_call_terminal`
-or `original_call_fence`; `logical_value_bytes` measures that source record,
-including a fence marker when selected, rather than inferred callee output.
-RDF observation identity also includes the original call log: one session-fence
-record can settle many different calls, which remain distinct observations of
-that shared source.
+unknown original origin. `terminal_sequence` identifies the original terminal,
+including a terminal at sequence zero. Coverage is `original_call_terminal`;
+`logical_value_bytes` measures that terminal record rather than inferred callee
+output. RDF observation identity also retains the original call log.
 
 No model operation, content type, complete read set, physical work or clock is
 inferred from opaque call IDs or result bytes. Projection retains one row,

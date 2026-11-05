@@ -55,6 +55,12 @@ pub enum Error {
     /// The original scheduling clock could not produce a deadline event.
     #[error(transparent)]
     Clock(#[from] ClockError),
+    /// The host driving a requested completion cut stopped or was cancelled.
+    #[error("actor runtime completion producer stopped")]
+    CompletionStopped,
+    /// A delivery failed before the host could establish its completion cut.
+    #[error("actor runtime completion failed: {0}")]
+    CompletionFailed(Arc<Error>),
     /// The original per-agent spend balance refused the candidate.
     #[error(transparent)]
     Escrow(#[from] crate::escrow::Error),
@@ -113,6 +119,8 @@ impl Error {
             Self::InvocationTerminated { .. } => "invocation_terminated",
             Self::CallSettled { .. } => "call_settled",
             Self::Clock(_) => "clock",
+            Self::CompletionStopped => "completion_stopped",
+            Self::CompletionFailed(_) => "completion_failed",
             Self::Escrow(_) => "escrow",
             Self::Stream(error) => error.code(),
             Self::Unknown { .. } => "unknown",

@@ -1936,3 +1936,14 @@ protobuf/acyclic.objects.v1.PutBlobsRequest-batch-refusal	178	b1c7c62d3268b87433
 protobuf_json/acyclic.objects.v1.PutBlobsRequest-batch-refusal	321	3ddd9ff750e394be745c8b57236658b9fe6f48f788c75c1bf6000f35c4591493	Objects json::encode_binary or shared acyclic_protobuf_json::encode from SDK semantic_seeds writer output (first 8 bytes select type)
 protobuf/acyclic.objects.v1.PutBlobsResponse-batch-refusal	58	90b32fd0ae7a245af2663e979129c70056d90a01ee87b83d1e6c9e801ab62f91	SDK semantic_seeds production wire writers (first 8 bytes select type)
 protobuf_json/acyclic.objects.v1.PutBlobsResponse-batch-refusal	180	f747f335e9002e83bcd1b94748feba1ca48d83cf33077556990bcd5c79ecc4eb	Objects json::encode_binary or shared acyclic_protobuf_json::encode from SDK semantic_seeds writer output (first 8 bytes select type)
+actor_codecs/call-request-v2	92	e875a44a60106ab4a3978592b4dc0f372e274f11143b06315504f8a88b90a454	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
+actor_codecs/call-hold-v2	99	ac2a4221e976b4ed2a615b3999b645f2a45ec470886bccaa196ddb9253a47d2a	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
+actor_codecs/call-accepted-v2	96	a04474b603c92077342a2a256417f58e229ab9e1cd0f1a30694c7a238afe5504	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
+actor_codecs/call-chunk-v2	92	5640b5ad2c43f833678a0717ec64a14c48568ae397cef73d7c23ed4cd2a35224	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
+actor_codecs/call-ok-v2	86	8800d727979fec569bdd9f1ef51afa779b92c19f927b4bbb1b360859683651cb	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
+actor_codecs/call-accepted-fenced-v2	141	f140ff59cf37975ca7bad71d034837539a7608f77c7d54a5336bd52f270d46ae	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
+actor_codecs/call-chunk-fenced-v2	139	5b704c688d24de8f8e4d1cb2ff426a5441deb9168c624fef2a90c5507ece9222	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
+actor_codecs/call-error-v2	143	60b0abac44ff00b27fd6a8b76afb12923462e0e2666c15fce6b0cebe2f8f97b4	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
+actor_codecs/call-cancelled-accepted-v2	140	abd44aff76f6df5be7587895bf6e3fbc851929de985257337e4cf8106bb244fa	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
+actor_codecs/call-cancelled-v2	93	bd7b5327f2078fa26059b9405f6679507ee3d29b70014b627e61f8423e0a64b7	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
+actor_codecs/call-indeterminate-v2	98	7b124a5c11ff1be2bd2b441967c5d219da6e1eaefac08b305b118698d01a3e8c	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
