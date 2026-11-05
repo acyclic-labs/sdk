@@ -26,6 +26,8 @@ path = "src/graphcoder.rs"
 acyclic-fs = { path = "../rust/crates/filesystem", version = "=0.2.0", default-features = false, features = ["local"] }
 acyclic-plugin-identity = { path = "identity", version = "=0.2.0" }
 acyclic-harness = { path = "../rust/crates/harness", version = "=0.2.0", default-features = false, features = ["filesystem-local", "native-execution", "serve", "terminal", "tui", "search-http"] }
+acyclic-harness-core = { path = "../rust/crates/harness-core", version = "=0.2.0", default-features = false }
+acyclic-harness-client = { path = "../rust/crates/harness-client", version = "=0.2.0", default-features = false, features = ["agents"] }
 acyclic-harness-providers = { path = "../rust/crates/harness-providers", version = "=0.2.0", features = ["local"] }
 acyclic-native-runtime = { path = "../rust/crates/native-runtime", version = "=0.2.0" }
 acyclic-observability = { path = "../rust/crates/observability", version = "=0.2.0" }

@@ -1,4 +1,4 @@
-use acyclic_harness::client::AgentPageRequest;
+use acyclic_harness_client::AgentPageRequest;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 

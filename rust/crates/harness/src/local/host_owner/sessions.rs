@@ -1,7 +1,7 @@
 //! Native session lifecycle: each request is one inbox record of the session's
 //! agent, and every reply observes that agent's session after it. A prompt is
 //! a message; its sender awaits it through the shared committed reply.
-use super::agents::{Control, Event, Running, TurnClaim};
+use super::agents::{Event, Running};
 use super::*;
 use crate::{
     Outcome,
@@ -11,53 +11,6 @@ use crate::{
 
 /// Bound of one native prompt.
 const MAXIMUM_PROMPT: usize = 32_768;
-
-/// Coordination only. Native session processes are owned by the plugin.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum SessionAction {
-    /// Spawn the child with its initial input; the reply names the prompt.
-    Spawn {
-        /// Initial prompt.
-        prompt: String,
-    },
-    /// Queue a follow-up input; the reply names the prompt.
-    Send {
-        /// Message body.
-        prompt: String,
-    },
-    /// Claim the next input, after the preceding process is quiescent. The
-    /// accepting request may replay its claim; another request requires a
-    /// fenced handoff. A reply always names the current physical view.
-    Next,
-    /// Capture and settle a process that has exited, including failed writes.
-    /// The native resume id is derived from the turn's own custodied event
-    /// log, so a running turn never spends an exchange recording it.
-    Complete {
-        /// Exact original execution claim, returned by Next.
-        claim: TurnClaim,
-        /// Native outcome.
-        outcome: Outcome<TurnOutput>,
-    },
-    /// Request a native-session lifecycle state.
-    Control {
-        /// Requested lifecycle state.
-        control: Control,
-    },
-    /// Read the session and its native resume reference.
-    Observe,
-    /// Where prompt `id`, accepted at inbox sequence `inbox`, stands: the
-    /// shared committed reply, with the outcome its settled turn recorded.
-    /// The response carries that outcome once in `reply`, without `results`.
-    Reply {
-        /// The prompt's message identity, returned by Spawn or Send.
-        id: IntentId,
-        /// The prompt's inbox sequence, returned by Spawn or Send.
-        inbox: u64,
-    },
-    /// After fencing the old process custody, settle an orphaned turn.
-    Recover,
-}
 
 fn prompt_bound(prompt: &str) -> Result<()> {
     if prompt.is_empty() || prompt.len() > MAXIMUM_PROMPT {

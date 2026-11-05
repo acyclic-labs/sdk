@@ -358,6 +358,7 @@ def require(condition, step):
 
 def run(target, seed, witness, *, capture=False, runs=0):
     options = {
+        "cli_args": ["--no-default-features", "--features", "cli-args"],
         "native_input": ["--no-default-features", "--features", "native-input"],
         "command_result": ["--no-default-features", "--features", "core"],
         "native_workspace": ["--no-default-features"],

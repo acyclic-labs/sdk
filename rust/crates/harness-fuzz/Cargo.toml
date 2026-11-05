@@ -84,11 +84,12 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(fuzzing)", 'c
 
 [features]
 default = ["runtime"]
-core = ["dep:acyclic-harness-core", "dep:futures"]
+core = ["dep:acyclic-harness-core", "acyclic-harness-core/hooks", "acyclic-harness-core/test-support", "dep:futures"]
+cli-args = ["dep:acyclic-harness-core", "dep:acyclic-harness-client"]
 native-answer = ["core", "dep:acyclic-native-runtime"]
 code-mode = ["core", "acyclic-harness-core/filesystem", "dep:tokio"]
 native-skill-records = ["core", "acyclic-harness-core/filesystem-local", "acyclic-harness-core/native-execution"]
-runtime = ["core", "filesystem-local", "native-execution", "dep:acyclic-harness", "dep:acyclic-native-runtime", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:tempfile", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
+runtime = ["core", "cli-args", "filesystem-local", "native-execution", "dep:acyclic-harness", "dep:acyclic-native-runtime", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:tempfile", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
 # Harness sources included by `#[path]` gate native helpers on these features;
 # the fuzz runtime compiles them as the native harness it depends on does.
 filesystem-access = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem"]
@@ -97,7 +98,8 @@ native-execution = []
 
 
 [dependencies]
-acyclic-harness-core = { path = "../harness-core", default-features = false, features = ["hooks", "test-support"], optional = true }
+acyclic-harness-core = { path = "../harness-core", default-features = false, optional = true }
+acyclic-harness-client = { path = "../harness-client", default-features = false, features = ["agents"], optional = true }
 acyclic-native-runtime = { path = "../native-runtime", optional = true }
 harness-mock-model = { path = "../harness-mock-model" }
 blake3.workspace = true
@@ -132,7 +134,7 @@ bench = false
 [[bin]]
 name = "cli_args"
 path = "fuzz_targets/cli_args.rs"
-required-features = ["runtime"]
+required-features = ["cli-args"]
 test = false
 doc = false
 bench = false

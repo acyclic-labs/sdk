@@ -184,18 +184,19 @@ fuzz_target!(|bytes: &[u8]| {
     // A generated canonical path goes through the shipping admission boundary.
     // Explicit selection must preserve that path and cannot consult ambient
     // state, even when ordinary argument mutations rarely spell a valid ID.
-    let root =
-        acyclic_harness::agent::AgentPath::root(&acyclic_harness::agent::AgentId::from_bytes(id));
+    let root = acyclic_harness_core::agent::AgentPath::root(
+        &acyclic_harness_core::agent::AgentId::from_bytes(id),
+    );
     for expected in [
         root.clone(),
-        root.child(&acyclic_harness::agent::AgentId::from_bytes(id))
+        root.child(&acyclic_harness_core::agent::AgentId::from_bytes(id))
             .unwrap(),
     ] {
         let action = ingress::workspace_action(&["reopen".into(), expected.to_string()], || {
             panic!("explicit reopen consulted ambient selection")
         })
         .unwrap();
-        let acyclic_harness::local::host_owner::HostAction::Reopen { task } = action else {
+        let acyclic_harness_core::native_host::HostAction::Reopen { task } = action else {
             panic!("explicit reopen changed its operation")
         };
         assert_eq!(task, expected);
@@ -243,8 +244,8 @@ fuzz_target!(|bytes: &[u8]| {
                 if refuse {
                     Err("no selected agent in argument fuzzing".into())
                 } else {
-                    Ok(acyclic_harness::agent::AgentPath::root(
-                        &acyclic_harness::agent::AgentId::from_bytes([0; 16]),
+                    Ok(acyclic_harness_core::agent::AgentPath::root(
+                        &acyclic_harness_core::agent::AgentId::from_bytes([0; 16]),
                     ))
                 }
             });

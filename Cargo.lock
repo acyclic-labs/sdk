@@ -708,6 +708,7 @@ version = "0.0.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-harness",
+ "acyclic-harness-client",
  "acyclic-harness-core",
  "acyclic-native-runtime",
  "acyclic-stream",
@@ -1176,6 +1177,8 @@ version = "0.2.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-harness",
+ "acyclic-harness-client",
+ "acyclic-harness-core",
  "acyclic-harness-providers",
  "acyclic-native-runtime",
  "acyclic-observability",

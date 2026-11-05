@@ -1,14 +1,14 @@
 //! Process argument admission shared by the executable and its fuzz target.
 use std::ffi::OsString;
 
-use acyclic_harness::{agent::AgentPath, local::host_owner::HostAction};
+use acyclic_harness_core::{agent::AgentPath, native_host::HostAction};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[derive(Debug)]
 enum InvalidWorkspaceCommand {
     Usage,
-    Agent(acyclic_harness::agent::Error),
+    Agent(acyclic_harness_core::agent::Error),
 }
 
 impl std::fmt::Display for InvalidWorkspaceCommand {

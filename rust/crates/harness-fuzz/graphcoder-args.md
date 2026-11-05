@@ -14,8 +14,9 @@ selectors for the run and attach families.
 
 The existing `cli_args` target invokes the shipping ingress, clap parser and
 `prepare_input` in `plugin/src`. It opens no runtime, config, provider or output
-file. Accepted results retain an input producer and operation identity, one
-prompt owner, compatible output mode, distinct output destinations and the
+file. Its `cli-args` feature selects the shared core and client contracts without
+the local workspace runtime. Accepted results retain an input producer and
+operation identity, one prompt owner, compatible output mode, distinct output destinations and the
 explicit attach selection. Native workspace ownership requires explicit storage
 and excludes agent inputs. Serving requires either no TLS identity or its complete
 certificate, key and URL. Generated canonical reopen paths must survive admission

@@ -45,21 +45,6 @@ pub(super) fn claim_id(request: &IntentId) -> OperationId {
     )
 }
 
-/// Requested lifecycle of a native session.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Control {
-    /// Run inputs as they arrive.
-    #[default]
-    Resume,
-    /// Stop the running input; later inputs may resume the session.
-    Interrupt,
-    /// Stop the running input and drop queued inputs.
-    Cancel,
-    /// Stop and close the session.
-    Archive,
-}
-
 /// The input a session's open turn runs: its brief or a message, held in the
 /// turn's checkpoint until the native process that claimed it settles it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,19 +56,6 @@ pub(super) struct Running {
     pub(super) input: TurnInput,
     /// The claim a native process runs it under.
     pub(super) claimed: Option<OperationId>,
-}
-
-/// The exact claim a native process executes under; returned by `Next` and
-/// presented again to settle it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TurnClaim {
-    /// The session's agent.
-    pub agent: AgentPath,
-    /// Claim operation.
-    pub operation: OperationId,
-    /// One-based turn number.
-    pub turn: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]

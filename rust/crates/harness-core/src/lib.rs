@@ -85,6 +85,7 @@ pub mod model;
 pub mod native_environment;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native_future;
+pub mod native_host;
 #[cfg(all(
     not(target_arch = "wasm32"),
     any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
