@@ -159,43 +159,34 @@ impl NativeSourceWatch {
             .map_err(crate::demand::native_demand_read_error)
     }
 
-    pub(crate) fn stop_with_work<W: SourceDemandReadWork>(
+    pub(super) fn stop_driver<W: SourceDemandReadWork>(
         &self,
         work: &mut W,
-    ) -> Result<(), DemandError> {
-        work.check()?;
-        self.delivery().ensure_stop_available()?;
-        let mut custody = self.stream.lock();
-        let Some(stream) = custody.as_mut() else {
-            return Ok(());
-        };
-        let result = stream.stop_with_work(work);
-        if stream.is_stopped() {
-            *custody = None;
-        }
-        result
-    }
-
-    pub(super) fn cleanup_driver(
-        &self,
-        work: &mut crate::NativeMaterializationWork,
         wait: Option<&crate::CancellationToken>,
+        prepaid: bool,
     ) -> Result<(), DemandError> {
+        if !prepaid {
+            work.check()?;
+        }
         self.delivery().ensure_stop_available()?;
         let mut custody = self.stream.lock_with_wait(wait)?;
         check_wait(wait)?;
         let Some(stream) = custody.as_mut() else {
             return Ok(());
         };
-        stream.ensure_cleanup_wait_available(work)?;
-        let result = stream.cleanup_admitted(work);
+        let result = if prepaid {
+            stream.ensure_cleanup_wait_available(work)?;
+            stream.cleanup_admitted(work)
+        } else {
+            stream.stop_with_work(work)
+        };
         if stream.is_stopped() {
             *custody = None;
         }
-        if !self.is_stopped() {
+        if prepaid && !self.is_stopped() {
             return result.and(Err(DemandError::WorkerUnavailable));
         }
-        result.and(check_wait(wait))
+        result
     }
 
     pub(crate) fn delivery(&self) -> &Delivery {

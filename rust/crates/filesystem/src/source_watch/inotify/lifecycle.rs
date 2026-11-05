@@ -304,23 +304,7 @@ impl NativeSourceWatch {
         arc_control_bytes::<Shared>() + self.shared.retained_variable_bytes.load(Ordering::Acquire)
     }
 
-    pub(crate) fn stop_with_work<W: SourceDemandReadWork>(
-        &self,
-        work: &mut W,
-    ) -> Result<(), DemandError> {
-        self.stop(work, None, false)
-    }
-
-    pub(in crate::source_watch) fn cleanup_driver(
-        &self,
-        work: &mut crate::NativeMaterializationWork,
-        wait: Option<&crate::CancellationToken>,
-    ) -> Result<(), DemandError> {
-        self.stop(work, wait, true)?;
-        check_wait(wait)
-    }
-
-    pub(super) fn stop<W: SourceDemandReadWork>(
+    pub(in crate::source_watch) fn stop_driver<W: SourceDemandReadWork>(
         &self,
         work: &mut W,
         wait: Option<&crate::CancellationToken>,
