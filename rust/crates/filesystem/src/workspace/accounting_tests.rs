@@ -663,6 +663,7 @@ pub(super) struct Observation {
 pub(super) struct ObservedAuthority {
     inner: crate::MemoryAuthorityStore,
     pub(super) observation: Mutex<Option<Observation>>,
+    pub(super) replay_minimum: Mutex<Option<u64>>,
 }
 
 impl AsyncAuthorityStore for ObservedAuthority {
@@ -764,6 +765,22 @@ impl AsyncAuthorityStore for ObservedAuthority {
         limit: crate::ReplayLimit,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(Vec<crate::DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
+        let minimum = self.replay_minimum.lock().unwrap().take();
+        if let Some(minimum) = minimum {
+            let live = work
+                .accounting()
+                .standalone_parts()
+                .map(|parts| parts.0.live_bytes());
+            #[cfg(not(target_arch = "wasm32"))]
+            let live = work
+                .original
+                .map(|work| work.live_allocation_bytes())
+                .or(live);
+            assert!(
+                live.is_some_and(|live| live >= minimum),
+                "creation lost original workspace-name backing: {live:?} < {minimum}"
+            );
+        }
         self.inner.replay(authority, after, limit, work).await
     }
 

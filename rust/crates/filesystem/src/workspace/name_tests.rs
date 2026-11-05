@@ -4,6 +4,95 @@ use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use std::cell::Cell;
 
+#[tokio::test]
+async fn creation_retains_complete_name_backing_on_original_accounting()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::workspace::accounting_tests::ObservedAuthority;
+
+    crate::initialize_test_native_io();
+    let authority = Arc::new(ObservedAuthority::default());
+    let fs = crate::Fs::new(
+        authority.clone(),
+        Arc::new(crate::MemoryObjectStore::default()),
+        crate::EmbeddedCapabilities::MEMORY,
+    );
+    let budget = crate::performance::BOUNDARY_BUDGET;
+    let header = crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<(
+        String,
+        KernelOwnedAllocation,
+    )>())? as u64;
+    for (input, canonical) in [
+        ("original-name", "original-name"),
+        ("cafe\u{301}", "caf\u{e9}"),
+    ] {
+        let cancellation = CancellationToken::new();
+        *authority.replay_minimum.lock().unwrap() = Some(canonical.len() as u64 + header);
+        let created = fs.create_workspace(input, budget, &cancellation).await?;
+        assert_eq!(created.value.name().as_str(), canonical);
+        created.work.verify(budget)?;
+        assert!(authority.replay_minimum.lock().unwrap().is_none());
+    }
+
+    let cancellation = CancellationToken::new();
+    let original =
+        crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
+    let name = "native-original-name";
+    *authority.replay_minimum.lock().unwrap() =
+        Some(original.live_allocation_bytes() + name.len() as u64 + header);
+    let created = fs
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            name,
+            crate::VolumeInitialization::new(
+                crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+                None,
+            ),
+            crate::OperationId::new(),
+            &original,
+            &cancellation,
+            None,
+        )
+        .await?;
+    assert_eq!(created.workspace().name().as_str(), name);
+    assert!(authority.replay_minimum.lock().unwrap().is_none());
+    original.receipt().verify(budget)?;
+
+    // The String may be admitted, but its shared header must be admitted too
+    // before any durable observation or publication is dispatched.
+    *authority.replay_minimum.lock().unwrap() = Some(0);
+    let failure = fs
+        .create_workspace(
+            "refused-name",
+            WorkBudget {
+                allocation_operations: 1,
+                ..budget
+            },
+            &cancellation,
+        )
+        .await
+        .err()
+        .ok_or("name header escaped its allocation allowance")?;
+    assert!(matches!(
+        failure.error,
+        WorkspaceError::Work(crate::WorkError::BudgetExceeded {
+            counter: "allocation_operations",
+            ..
+        })
+    ));
+    assert_eq!(failure.work.backend_read_operations, 0);
+    assert!(authority.replay_minimum.lock().unwrap().is_some());
+
+    cancellation.cancel();
+    let failure = fs
+        .create_workspace("cancelled-name", budget, &cancellation)
+        .await
+        .err()
+        .ok_or("cancelled identity reached authority storage")?;
+    assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
+    assert_eq!(*failure.work, crate::WorkCounters::UNCHARGED);
+    assert!(authority.replay_minimum.lock().unwrap().is_some());
+    Ok(())
+}
+
 #[test]
 fn cancellation_after_encoding_precedes_length_errors_and_retention() {
     for (count, skip) in [(127, false), (128, false), (128, true)] {

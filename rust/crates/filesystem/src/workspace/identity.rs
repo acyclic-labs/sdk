@@ -161,7 +161,7 @@ impl WorkspaceId {
         work.finish(result, &accounting)
     }
 
-    fn with_accounting(
+    pub(crate) fn with_accounting(
         namespace: [u8; 16],
         name: &WorkspaceName,
         accounting: &mut KernelAccounting<'_>,
