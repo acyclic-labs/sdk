@@ -1,4 +1,5 @@
 use super::*;
+use crate::storage::ObjectWriteSource;
 use acyclic_stream::SealedBytes;
 impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
     /// One admission boundary for raw, authenticated and transferred writes.
@@ -90,7 +91,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
         record_write(work, written)?;
         work.check()
     }
-    pub(super) async fn publish_batch<T: Write>(
+    pub(super) async fn publish_batch<T: ObjectWriteSource>(
         &self,
         writes: &[T],
         work: &mut KernelAccounting<'_>,
@@ -242,7 +243,7 @@ fn settle(id: ObjectId, length: u64, put: Put) -> Result<u64, ObjectStoreError> 
     }
 }
 
-fn finish_writes<T: Write>(
+fn finish_writes<T: ObjectWriteSource>(
     results: impl ExactSizeIterator<Item = Result<Put, ObjectStoreError>>,
     writes: &[T],
     work: &mut KernelAccounting<'_>,
@@ -264,28 +265,6 @@ fn finish_writes<T: Write>(
     match failure {
         Some(error) => Err(error.into()),
         None => Ok(()),
-    }
-}
-
-/// A single canonical reference with its authenticated immutable bytes.
-pub(super) trait Write {
-    fn parts(&self) -> (ObjectId, &OwnedBytes, &OwnedBytes);
-    fn sealed(&self) -> Option<&SealedBytes>;
-}
-impl Write for ObjectWrite {
-    fn parts(&self) -> (ObjectId, &OwnedBytes, &OwnedBytes) {
-        (self.object_id, &self.bytes, &self.bytes)
-    }
-    fn sealed(&self) -> Option<&SealedBytes> {
-        None
-    }
-}
-impl Write for crate::HashedObject {
-    fn parts(&self) -> (ObjectId, &OwnedBytes, &OwnedBytes) {
-        (self.object_id(), self.stored_bytes(), self.bytes())
-    }
-    fn sealed(&self) -> Option<&SealedBytes> {
-        Some(self.sealed())
     }
 }
 

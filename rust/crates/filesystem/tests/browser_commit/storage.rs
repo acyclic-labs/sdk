@@ -215,10 +215,13 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
     let first = blob_write(b"first batch object");
     let second = blob_write(b"second batch object");
     let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let initial = [first.clone(), second.clone()]
+        .map(|write| acyclic_fs::HashedObject::new(write.object_id.kind, write.bytes));
     store
-        .put_many(&[first.clone(), second.clone()], &mut work)
+        .put_many_hashed(&initial, &mut work)
         .await
         .map_err(js_error)?;
+    assert_eq!(work.spent().bytes_hashed, 0);
     assert_eq!(
         work.spent().object_bytes_written,
         (first.bytes.len() + second.bytes.len()) as u64
@@ -231,6 +234,50 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
         .map_err(js_error)?;
     assert_eq!(work.spent().object_bytes_written, third.bytes.len() as u64);
     assert_eq!(work.spent().object_bytes_read, first.bytes.len() as u64);
+    // Raw and authenticated submissions share the transaction and byte checks;
+    // authenticated bytes only discard their redundant input hash.
+    let originals = [first.clone(), second.clone(), third.clone(), first.clone()];
+    let authenticated = originals
+        .clone()
+        .map(|write| acyclic_fs::HashedObject::new(write.object_id.kind, write.bytes));
+    let mut raw_work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    store
+        .put_many(&originals, &mut raw_work)
+        .await
+        .map_err(js_error)?;
+    let mut authenticated_work = acyclic_fs::AuthorityWork::new(
+        WorkBudget {
+            bytes_hashed: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    );
+    store
+        .put_many_hashed(&authenticated, &mut authenticated_work)
+        .await
+        .map_err(js_error)?;
+    let mut expected = raw_work.spent();
+    assert_eq!(
+        expected.bytes_hashed,
+        originals
+            .iter()
+            .map(|write| write.bytes.len() as u64)
+            .sum::<u64>()
+    );
+    expected.bytes_hashed = 0;
+    assert_eq!(authenticated_work.spent(), expected);
+    let mut scalar_work = acyclic_fs::AuthorityWork::new(
+        WorkBudget {
+            bytes_hashed: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    );
+    store
+        .put_hashed(authenticated[0].clone(), &mut scalar_work)
+        .await
+        .map_err(js_error)?;
+    assert_eq!(scalar_work.spent().bytes_hashed, 0);
     let requests =
         [first.clone(), second.clone(), third.clone()].map(|write| acyclic_fs::ObjectReadRequest {
             object_id: write.object_id,
