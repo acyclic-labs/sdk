@@ -75,14 +75,6 @@ impl AsyncObjectStore for IndexedDbObjectStore {
                 if work::blob_length(&stored).map_err(object_error)? != length {
                     return Err(ObjectStoreError::Corrupt);
                 }
-                work::charge(
-                    io,
-                    WorkCounters {
-                        object_bytes_read: length,
-                        ..copy
-                    },
-                )
-                .map_err(object_error)?;
                 existing.push((stored, &write.bytes));
             } else {
                 work::charge(
@@ -110,13 +102,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
             io.commit(tx).await.map_err(object_error)?;
         }
         for (blob, bytes) in existing {
-            if io
-                .blob_bytes(&blob, bytes.len() as u64)
-                .await
-                .map_err(object_error)?
-                .as_slice()
-                != bytes.as_ref()
-            {
+            if io.blob_bytes(&blob, bytes.len() as u64).await?.as_ref() != bytes.as_ref() {
                 return Err(ObjectStoreError::Corrupt);
             }
         }
@@ -152,11 +138,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
         work::charge(
             io,
             WorkCounters {
-                object_bytes_read: length,
                 bytes_hashed: length,
-                bytes_copied: length * 2,
-                allocation_operations: 2 * u64::from(length != 0),
-                peak_allocation_bytes: object_key_bytes(id) + length * 2,
                 ..Default::default()
             },
         )
@@ -178,7 +160,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
             ));
         }
         let count = requests.len() as u64;
-        let mut retained =
+        let retained =
             count * (size_of::<ObjectRead>() + size_of::<(ObjectId, Blob, u64)>()) as u64;
         work::admit(
             io,
@@ -236,17 +218,12 @@ impl AsyncObjectStore for IndexedDbObjectStore {
             work::charge(
                 io,
                 WorkCounters {
-                    object_bytes_read: length,
                     bytes_hashed: length,
-                    bytes_copied: length * 2,
-                    allocation_operations: 2 * u64::from(length != 0),
-                    peak_allocation_bytes: retained + length * 2,
                     ..Default::default()
                 },
             )
             .map_err(object_error)?;
             output.push(Self::read_blob(io, id, &blob, length).await?);
-            retained += length;
         }
         work::charge(
             io,

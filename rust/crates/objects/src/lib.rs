@@ -10,7 +10,7 @@ pub mod authorization {
 pub use authorization::{AUTHORIZATION, ObjectsMethod};
 
 mod availability;
-mod batch;
+pub mod batch;
 #[cfg(feature = "binary")]
 pub mod binary;
 mod blob;

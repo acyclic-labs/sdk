@@ -242,7 +242,7 @@ async fn opfs_batches_preserve_order() {
 }
 
 #[wasm_bindgen_test]
-async fn opfs_batch_admits_retained_carriers_before_materializing_next_window() {
+async fn opfs_batch_retains_live_aliases_and_denies_unfunded_payloads() {
     let name = unique_namespace("acyclic-fs-opfs-retained-carriers-v1");
     let store = OpfsAcceleratedObjectStore::open(&name, 1_024)
         .await
@@ -275,34 +275,42 @@ async fn opfs_batch_admits_retained_carriers_before_materializing_next_window() 
         __object_work.receipt(__object_result)
     }
     .unwrap_or_else(|failure| unreachable!("OPFS setup failed: {}", failure.error));
-    let read = {
-        let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancellation);
-        let mut __object_work = acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
-        let __object_result = store
-            .read_many(__object_args.0, &mut __object_work)
-            .await
-            .map(|(values, _allocation)| values);
-        __object_work.receipt(__object_result)
+    let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let (reads, allocation) = store
+        .read_many(&requests, &mut work)
+        .await
+        .unwrap_or_else(|error| unreachable!("OPFS read failed: {error}"));
+    let live = |work: &mut acyclic_fs::AuthorityWork<'_>| {
+        work.accounting()
+            .standalone_parts()
+            .unwrap_or_else(|| unreachable!("ordinary browser accounting"))
+            .0
+            .live_bytes()
+    };
+    let payloads = requests.len() as u64 * 1_024;
+    let required = payloads
+        + allocation_bytes::<ObjectRead>(requests.len())
+            .unwrap_or_else(|error| unreachable!("vector size failed: {error}"));
+    assert!(live(&mut work) >= required);
+    assert_eq!(work.work.items_returned, requests.len() as u64);
+    for (read, write) in reads.iter().zip(&writes) {
+        assert_eq!(read.bytes, write.bytes);
     }
-    .unwrap_or_else(|failure| unreachable!("OPFS read failed: {}", failure.error));
-    let required = allocation_bytes::<ObjectRead>(requests.len())
-        .unwrap_or_else(|error| unreachable!("vector size failed: {error}"))
-        + allocation_bytes::<(ObjectId, Blob, u64)>(16)
-            .unwrap_or_else(|error| unreachable!("handle size failed: {error}"))
-        + allocation_bytes::<ObjectResult<ObjectRead>>(16)
-            .unwrap_or_else(|error| unreachable!("result size failed: {error}"))
-        + 16 * 1_024
-        + 16 * 2 * 1_024;
-    assert!(read.work.peak_allocation_bytes >= required);
-    let required = read.work.peak_allocation_bytes;
-    let cloned = read.value[0].bytes.clone();
-    drop(read);
+    let cloned = reads[0].bytes.clone();
+    drop(reads);
+    drop(allocation);
+    assert!(live(&mut work) >= 1_024);
     assert_eq!(cloned.as_ref(), writes[0].bytes.as_ref());
+    let held = live(&mut work);
+    drop(cloned);
+    assert!(live(&mut work) <= held - 1_024);
     let denied = {
         let __object_args = (
             &requests,
             WorkBudget {
-                peak_allocation_bytes: required - 1,
+                // Every successful result must retain all payloads together.
+                // This bound is independent of browser completion ordering.
+                peak_allocation_bytes: payloads - 1,
                 ..WorkBudget::UNBOUNDED
             },
             &cancellation,
@@ -316,7 +324,7 @@ async fn opfs_batch_admits_retained_carriers_before_materializing_next_window() 
     }
     .err()
     .unwrap_or_else(|| unreachable!("retained carriers escaped admission"));
-    assert_eq!(denied.work.object_bytes_read, 16 * 1_024);
+    assert!(denied.work.object_bytes_read <= payloads);
     assert!(matches!(denied.error, ObjectStoreError::Work(_)));
 
     // Complete sibling reads after failure to retain their work and allocation peak.
@@ -341,5 +349,5 @@ async fn opfs_batch_admits_retained_carriers_before_materializing_next_window() 
     .unwrap_or_else(|| unreachable!("corrupt OPFS body was accepted"));
     assert!(matches!(corrupt.error, ObjectStoreError::Corrupt));
     assert_eq!(corrupt.work.object_bytes_read, 32 * 1_024);
-    assert!(corrupt.work.peak_allocation_bytes >= required);
+    assert!(corrupt.work.peak_allocation_bytes >= payloads - 1_024);
 }
