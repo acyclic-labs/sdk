@@ -29,7 +29,7 @@ impl<H: CaptureHandler> Capture<H> {
     fn start(
         tree: ProcessTree,
         schedule: CaptureSchedule,
-        max_bytes: usize,
+        max_bytes: Option<usize>,
         input: Option<OwnedCaptureInput>,
         handler: H,
         streaming: bool,

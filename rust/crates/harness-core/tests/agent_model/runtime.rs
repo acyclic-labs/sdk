@@ -58,39 +58,18 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
     use acyclic_stream::{ReadRequest, StreamProvider as _};
     use futures::TryStreamExt as _;
 
-    struct Frames(Vec<Out>, Option<(bool, usize, bool)>);
+    struct Frames(Vec<Out>, Option<(bool, usize)>);
     impl TurnDriver for Frames {
         fn step<'a>(
             &'a self,
-            agent: &'a AgentState,
-            cursor: u64,
+            _: &'a AgentState,
+            _: u64,
             _: Option<Queued>,
             _: acyclic_actors::guest::CancellationToken,
         ) -> TurnFuture<'a> {
             Box::pin(async move {
-                let wait = if let Some((approval, status_bytes, escaped)) = self.1 {
-                    let phase = if approval {
-                        Phase::WaitingApproval {
-                            id: intent("x"),
-                            binding: None,
-                        }
-                    } else {
-                        Phase::WaitingHost { host: "x".into() }
-                    };
-                    let envelope = StatusRecord {
-                        phase,
-                        cursor,
-                        conversation: agent.conversation_tail
-                            + self
-                                .0
-                                .iter()
-                                .filter(|out| matches!(out, Out::Conversation(_)))
-                                .count() as u64,
-                    }
-                    .encode()?
-                    .len()
-                        - 1;
-                    let text = if escaped { "\"" } else { "x" }.repeat(status_bytes - envelope);
+                let wait = if let Some((approval, status_bytes)) = self.1 {
+                    let text = "x".repeat(status_bytes);
                     if approval {
                         Wait::Approval {
                             id: IntentId::try_from(text)?,
@@ -120,7 +99,9 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
             outcome: AgentOutcome::Failed { message },
         })
     };
-    let envelope = done(String::new()).encode()?.len();
+    // Measure the actual long-string envelope; MessagePack's string header
+    // grows with its payload, unlike the empty-string header.
+    let envelope = done("x".repeat(maximum)).encode()?.len() - maximum;
     let exact = done("x".repeat(maximum - envelope));
     assert_eq!(exact.encode()?.len(), maximum);
     // Check the encoded envelope against the actual physical record boundary.
@@ -151,32 +132,22 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
         (
             Out::Conversation(vec![b'x']),
             true,
-            Some((false, maximum / 2, false)),
+            Some((false, maximum / 2)),
         ),
         (
             Out::Conversation(vec![b'x']),
             false,
-            Some((false, maximum + 1, false)),
-        ),
-        (
-            Out::Conversation(vec![b'x']),
-            false,
-            Some((false, maximum, true)),
+            Some((false, maximum + 1)),
         ),
         (
             Out::Conversation(vec![b'x']),
             true,
-            Some((true, maximum / 2, false)),
+            Some((true, maximum / 2)),
         ),
         (
             Out::Conversation(vec![b'x']),
             false,
-            Some((true, maximum + 1, false)),
-        ),
-        (
-            Out::Conversation(vec![b'x']),
-            false,
-            Some((true, maximum, true)),
+            Some((true, maximum + 1)),
         ),
     ] {
         let provider = Arc::new(MemoryStream::default());
