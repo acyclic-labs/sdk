@@ -15,137 +15,148 @@ async fn native_notebook_insert_ids_follow_operations_through_publication_and_re
             "cells.ipynb",
         )
         .await?;
-    run_admitted_file_case(&storage, Limits::default(), |task| async move {
-        let task = Arc::new(task);
-        let mut tools = crate::tools::defaults()?;
-        crate::tools::native::bind(&mut tools, crate::model::NativeToolProfile::Anthropic)?;
-        let tool = tools
-            .get("NotebookEdit", None, None)?
-            .ok_or_else(|| Error::NotFound("NotebookEdit".into()))?;
-        let mut expected = Vec::new();
-        let mut original = None;
-        for (ordinal, call_id, anchor) in [
-            (1, "wire:🦀".to_owned(), None),
-            (2, "reused".to_owned(), Some(1)),
-            (3, "reused".to_owned(), None),
-            (4, "long".repeat(40), Some(2)),
-        ] {
-            ToolInvocation::validate_identity(&call_id, Some("NotebookEdit"), &mut None)?;
-            let operation_id = OperationId::from_bytes([ordinal; 16]);
-            let id = operation_id.to_string();
-            let mut arguments = json!({
-                "notebook_path":"cells.ipynb", "edit_mode":"insert",
-                "cell_type":"code", "new_source":format!("value = {ordinal}"),
-            });
-            if let Some(anchor) = anchor {
-                arguments["cell_id"] = json!(OperationId::from_bytes([anchor; 16]).to_string());
-            }
-            let invocation = ToolInvocation {
-                operation_id,
-                call_id,
-                name: "NotebookEdit".into(),
-                arguments,
-            };
-            let canonical = tool.executor.canonical(&invocation, None)?.unwrap();
-            assert_eq!(canonical.operation_id, operation_id);
-            assert_eq!(canonical.call_id, invocation.call_id);
-            assert_eq!(canonical.arguments["notebook"]["id"], id);
-            assert_eq!(
-                tool.executor.canonical(&invocation, None)?.as_deref(),
-                Some(&*canonical)
-            );
-            let context = ToolContext::new(task.clone(), operation_id, &invocation.call_id)?;
-            #[cfg(not(target_arch = "wasm32"))]
-            let native = if ordinal == 1 {
-                let cancellation = acyclic_fs::CancellationToken::new();
-                let work = acyclic_fs::NativeMaterializationWork::new(
-                    FINITE_CONTENT_BUDGET,
-                    &cancellation,
-                )
-                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-                let baseline = work.live_allocation_bytes();
-                let (native, custody) = tool
-                    .executor
-                    .execute_with_native_context(&context, &invocation, &work)?
-                    .await?;
-                let result = tool
-                    .executor
-                    .reconcile(invocation.clone(), Some(context.clone()))
-                    .await?
-                    .ok_or_else(|| Error::NotFound("notebook publication receipt".into()))?;
-                assert_eq!(native.value, result.value);
-                drop(native);
-                drop(custody);
-                assert_eq!(work.live_allocation_bytes(), baseline);
-                cancellation.cancel();
-                assert!(
-                    tool.executor
-                        .execute_with_native_context(&context, &invocation, &work)
-                        .is_err()
-                );
-                Some(result)
-            } else {
-                None
-            };
-            #[cfg(target_arch = "wasm32")]
-            let native = None;
-            let result = match native {
-                Some(result) => result,
-                None => {
-                    tool.executor
-                        .execute(invocation.clone(), Some(context.clone()))
-                        .await?
+    #[cfg(not(target_arch = "wasm32"))]
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        FINITE_CONTENT_BUDGET,
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let baseline = work.live_allocation_bytes();
+    #[cfg(not(target_arch = "wasm32"))]
+    let native_work = work.clone();
+    run_admitted_file_case(&storage, Limits::default(), move |task| {
+        #[cfg(not(target_arch = "wasm32"))]
+        let work = native_work.clone();
+        async move {
+            let task = Arc::new(task);
+            let mut tools = crate::tools::defaults()?;
+            crate::tools::native::bind(&mut tools, crate::model::NativeToolProfile::Anthropic)?;
+            let tool = tools
+                .get("NotebookEdit", None, None)?
+                .ok_or_else(|| Error::NotFound("NotebookEdit".into()))?;
+            let mut expected = Vec::new();
+            let mut original = None;
+            for (ordinal, call_id, anchor) in [
+                (1, "wire:🦀".to_owned(), None),
+                (2, "reused".to_owned(), Some(1)),
+                (3, "reused".to_owned(), None),
+                (4, "long".repeat(40), Some(2)),
+            ] {
+                ToolInvocation::validate_identity(&call_id, Some("NotebookEdit"), &mut None)?;
+                let operation_id = OperationId::from_bytes([ordinal; 16]);
+                let id = operation_id.to_string();
+                let mut arguments = json!({
+                    "notebook_path":"cells.ipynb", "edit_mode":"insert",
+                    "cell_type":"code", "new_source":format!("value = {ordinal}"),
+                });
+                if let Some(anchor) = anchor {
+                    arguments["cell_id"] = json!(OperationId::from_bytes([anchor; 16]).to_string());
                 }
-            };
-            let published: crate::tool::files::FileResult =
-                serde_json::from_value(result.value.clone()).unwrap();
-            let bytes = task.read_file(&published.file, None).await?;
-            let notebook: Value = serde_json::from_slice(bytes.as_ref()).unwrap();
-            let position = anchor.map_or(0, |anchor| {
-                let anchor = OperationId::from_bytes([anchor; 16]).to_string();
-                expected.iter().position(|id| id == &anchor).unwrap() + 1
-            });
-            expected.insert(position, id);
-            assert_eq!(
-                notebook["cells"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|cell| cell["id"].as_str().unwrap())
-                    .collect::<Vec<_>>(),
-                expected,
-            );
-            if original.is_none() {
-                original = Some((invocation, (*canonical).clone(), context, result));
+                let invocation = ToolInvocation {
+                    operation_id,
+                    call_id,
+                    name: "NotebookEdit".into(),
+                    arguments,
+                };
+                let canonical = tool.executor.canonical(&invocation, None)?.unwrap();
+                assert_eq!(canonical.operation_id, operation_id);
+                assert_eq!(canonical.call_id, invocation.call_id);
+                assert_eq!(canonical.arguments["notebook"]["id"], id);
+                assert_eq!(
+                    tool.executor.canonical(&invocation, None)?.as_deref(),
+                    Some(&*canonical)
+                );
+                let context = ToolContext::new(task.clone(), operation_id, &invocation.call_id)?;
+                #[cfg(not(target_arch = "wasm32"))]
+                let native = if ordinal == 1 {
+                    let (native, custody) = tool
+                        .executor
+                        .execute_with_native_context(&context, &invocation, &work)?
+                        .await?;
+                    let result = tool
+                        .executor
+                        .reconcile(invocation.clone(), Some(context.clone()))
+                        .await?
+                        .ok_or_else(|| Error::NotFound("notebook publication receipt".into()))?;
+                    assert_eq!(native.value, result.value);
+                    let held = work.live_allocation_bytes();
+                    drop(native);
+                    drop(custody);
+                    assert!(work.live_allocation_bytes() < held);
+                    Some(result)
+                } else {
+                    None
+                };
+                #[cfg(target_arch = "wasm32")]
+                let native = None;
+                let result = match native {
+                    Some(result) => result,
+                    None => {
+                        tool.executor
+                            .execute(invocation.clone(), Some(context.clone()))
+                            .await?
+                    }
+                };
+                let published: crate::tool::files::FileResult =
+                    serde_json::from_value(result.value.clone()).unwrap();
+                let bytes = task.read_file(&published.file, None).await?;
+                let notebook: Value = serde_json::from_slice(bytes.as_ref()).unwrap();
+                let position = anchor.map_or(0, |anchor| {
+                    let anchor = OperationId::from_bytes([anchor; 16]).to_string();
+                    expected.iter().position(|id| id == &anchor).unwrap() + 1
+                });
+                expected.insert(position, id);
+                assert_eq!(
+                    notebook["cells"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|cell| cell["id"].as_str().unwrap())
+                        .collect::<Vec<_>>(),
+                    expected,
+                );
+                if original.is_none() {
+                    original = Some((invocation, (*canonical).clone(), context, result));
+                }
             }
-        }
-        // The original receipt survives later insertions. Reconciliation must
-        // not select the current head or try to insert the same cell again.
-        let (invocation, mut canonical, context, result) = original.unwrap();
-        assert_eq!(
-            tool.executor
-                .reconcile(invocation, Some(context))
-                .await?
+            // The original receipt survives later insertions. Reconciliation must
+            // not select the current head or try to insert the same cell again.
+            let (invocation, mut canonical, context, result) = original.unwrap();
+            assert_eq!(
+                tool.executor
+                    .reconcile(invocation, Some(context))
+                    .await?
+                    .unwrap()
+                    .value,
+                result.value,
+            );
+            // A new operation cannot bypass the canonical duplicate-ID refusal by
+            // presenting the first operation's already-published cell ID.
+            canonical.operation_id = OperationId::from_bytes([5; 16]);
+            let context =
+                ToolContext::new(task.clone(), canonical.operation_id, &canonical.call_id)?;
+            let error = tool
+                .executor
+                .capability()
                 .unwrap()
-                .value,
-            result.value,
-        );
-        // A new operation cannot bypass the canonical duplicate-ID refusal by
-        // presenting the first operation's already-published cell ID.
-        canonical.operation_id = OperationId::from_bytes([5; 16]);
-        let context = ToolContext::new(task.clone(), canonical.operation_id, &canonical.call_id)?;
-        let error = tool
-            .executor
-            .capability()
-            .unwrap()
-            .executor
-            .execute(canonical, Some(context))
-            .await
-            .unwrap_err();
-        assert!(matches!(error, Error::Invalid(_)), "{error:?}");
-        Ok(())
+                .executor
+                .execute(canonical, Some(context))
+                .await
+                .unwrap_err();
+            assert!(matches!(error, Error::Invalid(_)), "{error:?}");
+            Ok(())
+        }
     })
-    .await
+    .await?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // Published immutable pages keep their original custody in the shared
+        // object cache until its final owner is released.
+        drop(storage);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+    }
+    Ok(())
 }
 
 #[test]
