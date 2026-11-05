@@ -12,9 +12,9 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostAction {
-    /// Test-only snapshot of the view owner, using the shared OS sampler and
-    /// N/2N oracle. It never samples or executes a native child process.
-    #[cfg(feature = "native-host-validation")]
+    /// Validation snapshot of the view owner, using the shared OS sampler and
+    /// N/2N oracle. Requires runtime validation support; otherwise refused.
+    /// It never samples or executes a native child process.
     ResourceProbe {
         /// Agent authorizing the query.
         task: AgentPath,

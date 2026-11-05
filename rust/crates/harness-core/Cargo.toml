@@ -32,8 +32,6 @@ name = "main"
 path = "tests/main.rs"
 
 [features]
-# Native owner resource queries are selected by that owner's validation feature.
-native-host-validation = []
 research = ["acyclic-observability/research"]
 provenance-export = ["metrics-export", "dep:oxrdf", "dep:oxttl"]
 metrics-export = ["dep:arrow-array", "dep:arrow-schema", "dep:arrow-ipc", "dep:parquet"]

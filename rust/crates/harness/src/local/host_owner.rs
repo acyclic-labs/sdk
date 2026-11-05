@@ -121,6 +121,10 @@ impl HostWorkspaceOwner {
                 agents,
                 previous,
             } => self.resource_probe(&task, agents, previous).await,
+            #[cfg(not(feature = "test-support"))]
+            HostAction::ResourceProbe { .. } => Err(Error::Unsupported(
+                "native resource validation is disabled".into(),
+            )),
             HostAction::Sessions { parent } => {
                 self.attach(&parent).await?;
                 let sessions = self.sessions(&parent).await;
