@@ -182,7 +182,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
             self.checkout
                 .publish(
                     crate::PublicationPermit::Unrestricted,
-                    crate::kernel::KernelAccounting::native(&work, cancellation),
+                    crate::kernel::KernelAccounting::native(work, cancellation),
                     Some(&self.cancellation),
                     &mut source_publication_guard(
                         self.native_callback_guard.clone(),

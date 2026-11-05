@@ -26,8 +26,8 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
     }
 
     pub(super) fn vec<T>(&mut self, count: usize) -> Result<Vec<T>, MountSourceError> {
-        if let Some(work) = self.carrier.original_native_work() {
-            let (values, mut allocation) = crate::native_host::buffer(count, &mut &work)
+        if let Some(mut work) = self.carrier.original_native_work() {
+            let (values, mut allocation) = crate::native_host::buffer(count, &mut work)
                 .map_err(MountSourceError::NativeWork)?;
             self.allocation
                 .as_mut()
@@ -193,13 +193,13 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
         &mut self,
         path: &Path,
     ) -> Result<std::path::PathBuf, MountSourceError> {
-        let original = self
-            .carrier
-            .original_native_work()
-            .ok_or(MountSourceError::NativeWork(
-                crate::NativeTreeMaterializationError::InvalidLayout,
-            ))?;
-        let (path, mut allocation) = crate::native_host::clone_path(path, &mut &original)
+        let mut original =
+            self.carrier
+                .original_native_work()
+                .ok_or(MountSourceError::NativeWork(
+                    crate::NativeTreeMaterializationError::InvalidLayout,
+                ))?;
+        let (path, mut allocation) = crate::native_host::clone_path(path, &mut original)
             .map_err(MountSourceError::NativeWork)?;
         self.allocation
             .as_mut()

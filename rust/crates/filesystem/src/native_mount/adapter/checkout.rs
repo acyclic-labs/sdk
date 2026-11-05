@@ -210,14 +210,14 @@ impl<A: 'static, O: 'static> SharedCheckout<A, O> {
         let mut checkout = state
             .checkout
             .private_candidate(
-                &mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation),
+                &mut crate::kernel::allocation::KernelAccounting::native(work, cancellation),
                 cancellation,
             )
             .map_err(MountSourceError::from)?;
         let base = state
             .checkout
             .private_candidate(
-                &mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation),
+                &mut crate::kernel::allocation::KernelAccounting::native(work, cancellation),
                 cancellation,
             )
             .map_err(MountSourceError::from)?;
@@ -225,7 +225,7 @@ impl<A: 'static, O: 'static> SharedCheckout<A, O> {
         // Every native mutation retains its pinned policy metadata in the
         // proof that authorizes publication. Only the private candidate needs
         // this I/O; neither the checkout nor its callback gate stays locked.
-        checkout.access_policy_revision(&work, cancellation).await?;
+        checkout.access_policy_revision(work, cancellation).await?;
         Ok(CheckoutCandidate {
             _publication: publication,
             deadline: None,

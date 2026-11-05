@@ -16,12 +16,12 @@ where
         allocations: Option<(crate::NativeAllocation, &mut crate::NativeAllocation)>,
     ) -> Result<Self, NativeMountError> {
         let original = carrier.original_native_work();
-        if let Some(original) = &original {
+        if let Some(original) = original {
             original
                 .admit(crate::WorkCounters::UNCHARGED)
                 .map_err(MountSourceError::NativeWork)?;
         }
-        validate_startup_allocations(original.as_ref(), allocations.as_ref())?;
+        validate_startup_allocations(original, allocations.as_ref())?;
         let (root_allocation, source_allocation) =
             allocations.map_or((None, None), |(root, source)| (Some(root), Some(source)));
         carrier
@@ -62,7 +62,7 @@ where
                 &lazy,
                 &sink,
                 &mut carrier,
-                original.as_ref(),
+                original,
                 &cancellation,
                 owner,
             )?;

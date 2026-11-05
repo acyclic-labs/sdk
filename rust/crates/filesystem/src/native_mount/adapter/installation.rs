@@ -104,7 +104,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             let target = state.checkout.pin_native_candidate_rebase(
                 &base,
                 &checkout,
-                &mut crate::kernel::allocation::KernelAccounting::native(&original, cancellation),
+                &mut crate::kernel::allocation::KernelAccounting::native(original, cancellation),
                 cancellation,
             )?;
             let mut state = Some(state);
@@ -122,7 +122,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                             rename,
                             MAXIMUM_EXACT_INSTALL_CHANGES,
                             &mut crate::kernel::allocation::KernelAccounting::native(
-                                &original,
+                                original,
                                 cancellation,
                             ),
                             cancellation,
@@ -150,11 +150,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 drop(state.take());
                 let record = candidate
                     .checkout
-                    .read_file_record_by_id(file_id, &original, cancellation)
+                    .read_file_record_by_id(file_id, original, cancellation)
                     .await?;
                 let metadata = candidate
                     .checkout
-                    .read_metadata(file_id, &original, cancellation)
+                    .read_metadata(file_id, original, cancellation)
                     .await?;
                 Some(super::MountWriteFacts {
                     lookup: MountLookup {
@@ -184,7 +184,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             let prepared = state.checkout.prepare_candidate_adoption(
                 &candidate.base,
                 &candidate.checkout,
-                &mut crate::kernel::allocation::KernelAccounting::native(&original, cancellation),
+                &mut crate::kernel::allocation::KernelAccounting::native(original, cancellation),
             )?;
             let Some(prepared) = prepared else {
                 return Ok(None);
