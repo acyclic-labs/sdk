@@ -77,12 +77,13 @@ async fn event_follow_retains_cursor_and_original_terminal_over_authenticated_rp
         }
         drop(provider);
         if !terminate {
-            // The transport loss keeps its class and retains the original status.
-            let Some(Err(error)) = events.next().await else {
-                panic!("a follow whose server is gone must fail");
-            };
+            let error = events.next().await.unwrap().unwrap_err();
             assert_eq!(error.classification(), &ProviderError::Unavailable);
-            assert!(std::error::Error::source(&error).is_some());
+            let original = std::error::Error::source(&error)
+                .and_then(|source| source.downcast_ref::<tonic::Status>())
+                .expect("event follow erased the original transport status");
+            assert_eq!(original.code(), tonic::Code::Unavailable);
+            assert_eq!(original.message(), "original event producer lost");
         }
         assert!(events.next().await.is_none());
         drop(events);

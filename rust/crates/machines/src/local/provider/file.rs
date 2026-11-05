@@ -56,8 +56,8 @@ impl LocalBackend {
                 // worker completion can release its original cleanup guard.
                 let result = tokio::select! {
                     biased;
-                    _ = observed.wait_for(|state| *state != PhysicalState::Live) => None,
                     result = std::panic::AssertUnwindSafe(submitted).catch_unwind() => Some(result),
+                    _ = observed.wait_for(|state| state.stopping) => None,
                 };
                 match result {
                     Some(Ok(Ok(value))) => {
