@@ -1,0 +1,15 @@
+diff --git a/rust/crates/harness-core/src/agent/children.rs b/rust/crates/harness-core/src/agent/children.rs
+--- a/rust/crates/harness-core/src/agent/children.rs
++++ b/rust/crates/harness-core/src/agent/children.rs
+@@ -229,7 +229,8 @@ impl Children {
+     pub async fn contains(&self, child: &AgentPath) -> Result<bool, Error> {
+-        let id = child.id_bytes();
++        let id = child.id().to_bytes();
++        let mut branches = Vec::new();
+         Ok(self
+-            .walk(id, |_| {})
++            .walk(id, |branch| branches.push(branch))
+             .await?
+-            .is_some_and(|(found, _)| found == id))
++            .is_some_and(|(found, _)| found == child.id().to_bytes()))
+     }

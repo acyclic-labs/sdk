@@ -34,6 +34,7 @@ struct Storage {
     volume_stream: Arc<LocalStream>,
     scratch: VolumeRef,
     journal: VolumeRef,
+    shared: VolumeRef,
     #[cfg(any(test, feature = "native-execution"))]
     workspace: Option<Arc<workspace::LocalWorkspace>>,
 }
@@ -254,10 +255,21 @@ impl Opening {
                 id: owner.task.to_string(),
             },
         )?;
-        let PrivateVolumes { scratch, journal } = PrivateVolumes::open(&files, &owner).await?;
+        let SessionVolumes {
+            scratch,
+            journal,
+            shared,
+        } = SessionVolumes::open(&files, &owner).await?;
         #[cfg(any(test, feature = "native-execution"))]
         let workspace = self
-            .workspace(&filesystem, &directory, &owner, &issuer, &scratch, checkout)
+            .workspace(
+                &filesystem,
+                &directory,
+                &owner,
+                &issuer,
+                (&scratch, &shared),
+                checkout,
+            )
             .await?;
         #[cfg(any(test, feature = "native-execution"))]
         let files = match &workspace {
@@ -292,6 +304,7 @@ impl Opening {
             volume_stream,
             scratch,
             journal,
+            shared,
             #[cfg(any(test, feature = "native-execution"))]
             workspace,
         })
@@ -304,7 +317,7 @@ impl Opening {
         directory: &Path,
         owner: &owner::Owner,
         issuer: &AuthorityRoot,
-        scratch: &VolumeRef,
+        volumes: (&VolumeRef, &VolumeRef),
         checkout: Option<owner::Checkout>,
     ) -> Result<Option<Arc<workspace::LocalWorkspace>>> {
         // This standalone composition owns its private companion namespace.
@@ -326,7 +339,8 @@ impl Opening {
         };
         let attach = workspace::Attach {
             volume: &owner.project,
-            scratch,
+            scratch: volumes.0,
+            shared: Some(volumes.1),
             directory,
             operation: workspace::attach_operation(owner.task),
             native_mounts: self.native_mounts,
@@ -370,12 +384,13 @@ impl Opening {
             volume_stream,
             scratch,
             journal,
+            shared,
             #[cfg(any(test, feature = "native-execution"))]
             workspace,
         } = opened;
         let verifier = issuer.verifier(&mut None)?;
         let seed = files.seed_layer().await?;
-        let volumes = (&owner.project, &scratch, &journal, &seed.0);
+        let volumes = (&owner.project, &scratch, &journal, &seed.0, &shared);
         let (scope, signed) = scopes(&self, &issuer, owner.agent, volumes)?;
         let reader = crate::filesystem::FilesystemContentVerifier::new(
             files.clone(),
@@ -485,6 +500,7 @@ impl Opening {
             project: owner.project.clone(),
             scratch,
             journal,
+            shared,
             seed,
             verifier,
             signed,
@@ -526,15 +542,15 @@ impl Opening {
 }
 
 /// The agent turns' runtime scope, and the owner's signed scope over it and
-/// its private journal: the project, home, journal and seed volumes, in
+/// its private journal: the project, home, journal, seed and shared volumes, in
 /// order. The seed is read-only: no scope grants writing it.
 fn scopes(
     opening: &Opening,
     issuer: &AuthorityRoot,
     agent: AgentId,
-    volumes: (&VolumeRef, &VolumeRef, &VolumeRef, &VolumeRef),
+    volumes: (&VolumeRef, &VolumeRef, &VolumeRef, &VolumeRef, &VolumeRef),
 ) -> Result<(RuntimeScope, Scope)> {
-    let (project, scratch, journal, seed) = volumes;
+    let (project, scratch, journal, seed, shared) = volumes;
     let mut grants = Vec::new();
     if opening.config.model.is_some() {
         grants.extend([
@@ -543,7 +559,7 @@ fn scopes(
             "interaction:open".to_owned(),
         ]);
     }
-    for volume in [project, scratch] {
+    for volume in [project, scratch, shared] {
         for operation in [
             VolumeOperation::Read,
             VolumeOperation::Write,
@@ -614,11 +630,12 @@ pub(super) fn retain_skills(
     )?)
 }
 
-struct PrivateVolumes {
+struct SessionVolumes {
     scratch: VolumeRef,
     journal: VolumeRef,
+    shared: VolumeRef,
 }
-impl PrivateVolumes {
+impl SessionVolumes {
     async fn open(files: &LocalFilesystem, owner: &owner::Owner) -> Result<Self> {
         let scratch = VolumeRef::new(
             owner.project.provider().clone(),
@@ -634,9 +651,21 @@ impl PrivateVolumes {
             VolumeOwner::Agent(owner.agent),
             &mut None,
         )?;
+        let shared = VolumeRef::new(
+            owner.project.provider().clone(),
+            format!("shared-{}", owner.task),
+            VolumeClass::SessionShared,
+            VolumeOwner::Session(owner.task.to_string()),
+            &mut None,
+        )?;
         files.create_volume(&scratch).await?;
         files.create_volume(&journal).await?;
-        Ok(Self { scratch, journal })
+        files.create_volume(&shared).await?;
+        Ok(Self {
+            scratch,
+            journal,
+            shared,
+        })
     }
 }
 

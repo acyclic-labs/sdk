@@ -27,7 +27,8 @@ use serde::{Deserialize, Serialize};
 /// Version 12 retains template capabilities only in their immutable source.
 /// Version 13 uses named MessagePack values after a four-byte big-endian version.
 /// Version 14 retains persistent child membership roots and staged diagnostic references.
-pub const RECORD_VERSION: u32 = 14;
+/// Version 15 removes the population ceiling and paused-turn child reservations.
+pub const RECORD_VERSION: u32 = 15;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]

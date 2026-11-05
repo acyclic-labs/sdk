@@ -198,40 +198,41 @@ impl Children {
         }
         Ok(digest)
     }
-    async fn walk(&self, id: [u8; 16]) -> Result<(Vec<Branch>, Option<([u8; 16], Digest)>), Error> {
-        let mut branches = Vec::new();
+    async fn walk(
+        &self,
+        id: [u8; 16],
+        mut descend: impl FnMut(Branch),
+    ) -> Result<Option<([u8; 16], Digest)>, Error> {
+        let mut previous = None;
         let mut next = self.root;
         while let Some(digest) = next {
             match self.node(digest).await? {
-                Node::Leaf(found) => return Ok((branches, Some((found, digest)))),
+                Node::Leaf(found) => return Ok(Some((found, digest))),
                 Node::Branch {
                     bit,
                     left,
                     right: other,
                     ..
                 } => {
-                    if bit >= 128
-                        || branches
-                            .last()
-                            .is_some_and(|(_, previous, _, _)| *previous >= bit)
-                    {
+                    if bit >= 128 || previous.is_some_and(|previous| previous >= bit) {
                         return Err(Error::Record("child index branch order is invalid"));
                     }
+                    previous = Some(bit);
                     let direction = right(id, bit);
-                    branches.push((digest, bit, if direction { left } else { other }, direction));
+                    descend((digest, bit, if direction { left } else { other }, direction));
                     next = Some(if direction { other } else { left });
                 }
             }
         }
-        Ok((branches, None))
+        Ok(None)
     }
-    /// Membership needs at most 128 small nodes, independent of agent count.
+    /// Membership needs at most 128 branches and one leaf, independent of agent count.
     pub async fn contains(&self, child: &AgentPath) -> Result<bool, Error> {
+        let id = child.id_bytes();
         Ok(self
-            .walk(child.id().to_bytes())
+            .walk(id, |_| {})
             .await?
-            .1
-            .is_some_and(|(id, _)| id == child.id().to_bytes()))
+            .is_some_and(|(found, _)| found == id))
     }
     async fn branch(&self, bit: u8, left: Digest, right: Digest) -> Result<Digest, Error> {
         let max = match self.node(right).await? {
@@ -257,9 +258,10 @@ impl Children {
         Ok(root)
     }
     /// Inserts one child and stages only the nodes on its changed path.
-    pub async fn insert(&mut self, child: AgentPath) -> Result<bool, Error> {
-        let id = child.id().to_bytes();
-        let (mut branches, found) = self.walk(id).await?;
+    pub async fn insert(&mut self, child: &AgentPath) -> Result<bool, Error> {
+        let id = child.id_bytes();
+        let mut branches = Vec::new();
+        let found = self.walk(id, |branch| branches.push(branch)).await?;
         if found.is_some_and(|(found, _)| found == id) {
             return Ok(false);
         }
@@ -291,8 +293,9 @@ impl Children {
     }
     /// Removes one child; duplicate completion leaves membership unchanged.
     pub async fn remove(&mut self, child: &AgentPath) -> Result<bool, Error> {
-        let id = child.id().to_bytes();
-        let (mut branches, found) = self.walk(id).await?;
+        let id = child.id_bytes();
+        let mut branches = Vec::new();
+        let found = self.walk(id, |branch| branches.push(branch)).await?;
         if !found.is_some_and(|(found, _)| found == id) {
             return Ok(false);
         }
@@ -368,29 +371,104 @@ impl Children {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::FutureExt as _;
     use std::collections::BTreeSet;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // Count calls into the original provider adapter, which still writes and
+    // decodes the actual immutable node records on MemoryStream.
+    struct Counted {
+        provider: Provider<acyclic_stream::MemoryStream>,
+        loads: AtomicUsize,
+        saves: AtomicUsize,
+    }
+
+    impl Storage for Counted {
+        fn load(&self, digest: Digest) -> BoxProviderFuture<'_, Result<Node, Error>> {
+            self.loads.fetch_add(1, Ordering::Relaxed);
+            self.provider.load(digest)
+        }
+
+        fn save(&self, digest: Digest, bytes: Vec<u8>) -> BoxProviderFuture<'_, Result<(), Error>> {
+            self.saves.fetch_add(1, Ordering::Relaxed);
+            self.provider.save(digest, bytes)
+        }
+    }
+
+    impl Counted {
+        fn cost(&self, loads: usize, saves: usize) {
+            assert!(
+                self.loads.swap(0, Ordering::Relaxed) <= loads,
+                "membership operation scanned beyond its fixed node credit"
+            );
+            assert!(
+                self.saves.swap(0, Ordering::Relaxed) <= saves,
+                "membership operation copied beyond its fixed node credit"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn persistent_pages_and_point_updates_match_membership_after_reopen()
     -> Result<(), Box<dyn std::error::Error>> {
         let parent = AgentPath::root(&AgentId::from_bytes([1; 16]));
         let provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let counted = Arc::new(Counted {
+            provider: Provider(provider.clone()),
+            loads: AtomicUsize::new(0),
+            saves: AtomicUsize::new(0),
+        });
         let mut children = Children::new();
-        children.bind(provider.clone());
         let mut expected = BTreeSet::new();
         for n in 0u64..513 {
             let id = AgentId::derive(&parent.id(), &n.to_string());
             let child = parent.child(&id)?;
-            assert!(children.insert(child.clone()).await?);
-            assert!(!children.insert(child).await?);
+            assert!(children.insert(&child).await?);
+            counted.cost(258, 130);
+            if n == 0 {
+                let mut result = None;
+                let allocations = acyclic_test_support::measure(|| {
+                    result = children.insert(&child).now_or_never();
+                });
+                assert_eq!(result.transpose()?, Some(false));
+                assert_eq!(
+                    allocations.count_total, 0,
+                    "cached duplicate insertion copied its borrowed address"
+                );
+            } else {
+                assert!(!children.insert(&child).await?);
+            }
+            counted.cost(129, 0);
             expected.insert(id);
+            if n == 2 {
+                // Adoption stages real nodes before binding their provider.
+                // Cached point reads must not allocate an identity or trail.
+                for requested in 0..=3 {
+                    let probe =
+                        parent.child(&AgentId::derive(&parent.id(), &requested.to_string()))?;
+                    let mut result = None;
+                    let allocations = acyclic_test_support::measure(|| {
+                        result = children.contains(&probe).now_or_never();
+                    });
+                    assert_eq!(result.transpose()?, Some(requested < 3));
+                    assert_eq!(
+                        allocations.count_total, 0,
+                        "cached membership lookup allocated identity or branch storage"
+                    );
+                }
+                children.storage = Some(counted.clone());
+                children.persist().await?;
+                counted.cost(0, 130);
+            }
         }
         let snapshot = children.clone();
         for (n, id) in expected.clone().into_iter().enumerate() {
             if n % 3 == 0 {
                 let child = parent.child(&id)?;
                 assert!(children.remove(&child).await?);
+                counted.cost(258, 130);
                 assert!(!children.remove(&child).await?);
+                counted.cost(129, 0);
                 expected.remove(&id);
             }
         }
@@ -401,22 +479,33 @@ mod tests {
             "checkpoint holds only a root and count"
         );
         let mut reopened: Children = serde_json::from_slice(&encoded)?;
-        reopened.bind(provider);
+        reopened.storage = Some(counted.clone());
         assert_eq!(reopened.len(), expected.len());
         let mut actual = Vec::new();
         loop {
             let page = reopened.page(actual.last(), 17).await?;
+            counted.cost(2 * 128 + 2 * 17 + 1, 0);
             if page.is_empty() {
                 break;
             }
             for id in &page {
                 assert!(reopened.contains(&parent.child(id)?).await?);
+                counted.cost(129, 0);
             }
             actual.extend(page);
         }
         assert_eq!(actual, expected.into_iter().collect::<Vec<_>>());
         assert_eq!(reopened.first().await?, actual.first().cloned());
+        counted.cost(2 * 128 + 3, 0);
         assert!(reopened.page(None, 0).await?.is_empty());
+        counted.cost(0, 0);
+        // Losing the source of an immutable root is a typed error on the
+        // same lookup, with no retry or readiness wait.
+        reopened.storage = None;
+        assert!(matches!(
+            reopened.first().await,
+            Err(Error::Record("child index storage is not bound"))
+        ));
         Ok(())
     }
 }

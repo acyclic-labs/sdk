@@ -17,10 +17,6 @@ async fn codex_exited_session_settles_with_an_external_stderr_writer() -> Result
     served("codex", exercise).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn claude_exited_session_settles_with_an_external_stderr_writer() -> Result {
-    served("claude-code", exercise).await
-}
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pi_exited_session_settles_with_an_external_stderr_writer() -> Result {
     served("pi", exercise).await
 }

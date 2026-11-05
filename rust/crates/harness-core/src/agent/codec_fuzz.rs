@@ -517,9 +517,9 @@ pub async fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error:
     state.status_tail = 29;
     for n in 0..9 {
         let child = state.path.child(&AgentId::from_bytes([n; 16]))?;
-        state.open_children.insert(child.clone()).await?;
+        state.open_children.insert(&child).await?;
         if matches!(n, 0 | 7 | 8) {
-            state.awaiting.insert(child).await?;
+            state.awaiting.insert(&child).await?;
         }
     }
     state.need = 2;
@@ -527,7 +527,6 @@ pub async fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error:
         inbox: 17,
         checkpoint: vec![0, 1, 255],
     });
-    state.reserved_children = 3;
     state.phase = Phase::Waiting {
         deadline_unix_ms: Some(1_700_000_000_000),
     };
@@ -556,7 +555,6 @@ pub async fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error:
             state.awaiting.clear();
             state.need = 0;
             state.turn = None;
-            state.reserved_children = 0;
             state.phase = Phase::Idle;
         }
         let encoded = checkpoint::encode(&state)?;

@@ -46,7 +46,6 @@ impl TurnDriver for Waiting {
                 },
             };
             Ok(TurnStep {
-                reserved_children: 0,
                 checkpoint: None,
 
                 drops: None,

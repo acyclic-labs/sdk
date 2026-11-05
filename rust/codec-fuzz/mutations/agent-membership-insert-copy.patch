@@ -1,0 +1,10 @@
+diff --git a/rust/crates/harness-core/src/agent/children.rs b/rust/crates/harness-core/src/agent/children.rs
+--- a/rust/crates/harness-core/src/agent/children.rs
++++ b/rust/crates/harness-core/src/agent/children.rs
+@@ -260,5 +260,6 @@ impl Children {
+     /// Inserts one child and stages only the nodes on its changed path.
+     pub async fn insert(&mut self, child: &AgentPath) -> Result<bool, Error> {
++        let child = AgentPath::clone(child);
+         let id = child.id_bytes();
+         let mut branches = Vec::new();
+         let found = self.walk(id, |branch| branches.push(branch)).await?;

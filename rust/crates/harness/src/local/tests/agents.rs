@@ -1553,6 +1553,17 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         else {
             return Err(Error::Invalid("settlement returned another reply".into()));
         };
+        if owner == &root {
+            harness.require_shared_binding(&state)?;
+            let mut unadmitted = state.clone();
+            unadmitted
+                .volumes
+                .retain(|binding| binding.name != crate::local::SHARED_VOLUME);
+            assert!(matches!(
+                harness.require_shared_binding(&unadmitted),
+                Err(Error::Unsupported(reason)) if reason.contains("start a new session")
+            ));
+        }
         assert_eq!(
             (settled, statuses, phase),
             (state.conversation_tail, state.status_tail, state.phase),

@@ -135,6 +135,16 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
     }
     drop(cancelled);
     let before_cleanup = schedule.trace().len();
+    let require_blocked = |pending: bool| {
+        assert!(pending, "publication entered before physical cleanup");
+    };
+    // The former direct slot acquisition fails this same assertion while the
+    // original physical worker still owns its execution claim.
+    let former = futures::poll!(Box::pin(scratch.native())).is_pending();
+    assert!(std::panic::catch_unwind(|| require_blocked(former)).is_err());
+    let mut publication = Box::pin(scratch.publication());
+    require_blocked(futures::poll!(&mut publication).is_pending());
+    drop(publication);
     let mut preflight = Box::pin(sync(mounts));
     assert!(
         futures::poll!(&mut preflight).is_pending(),
@@ -264,7 +274,7 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
         [(
             "home".into(),
             workspace.mounts.named(Some("home"))?.1.view.volume.clone(),
-            Some(Arc::clone(original)),
+            None,
         )],
     )?;
     attach(

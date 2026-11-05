@@ -5,14 +5,13 @@ use super::*;
 #[tokio::test]
 async fn an_invalid_host_wait_fails_before_publishing_status_or_effects() -> Result {
     for host in [String::new(), "\0".into()] {
-        let (root, mut state) = populated_parent().await?;
+        let (root, mut state) = populated_parent(0).await?;
         state.turn = Some(Progress {
             inbox: 0,
             checkpoint: Vec::new(),
         });
         state.phase = Phase::Running;
         let driver = script(vec![TurnStep {
-            reserved_children: 0,
             checkpoint: Some(vec![]),
 
             outs: vec![Out::Spawn {
@@ -59,10 +58,10 @@ async fn an_invalid_host_wait_fails_before_publishing_status_or_effects() -> Res
 
 #[tokio::test]
 async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Result {
-    let (root, mut state) = populated_parent().await?;
+    let (root, mut state) = populated_parent(2).await?;
     let recorded = intent("spawn:already-open");
     let child = TurnEffect::child(&root, &recorded)?;
-    state.open_children.insert(child.clone()).await?;
+    state.open_children.insert(&child).await?;
     state.turn = Some(Progress {
         inbox: 0,
         checkpoint: Vec::new(),
@@ -71,10 +70,8 @@ async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Res
         id: intent("approval"),
         binding: None,
     };
-    state.reserved_children = 0; // Recorded spawn initially names an open child.
     let driver = script(vec![TurnStep {
         checkpoint: None,
-        reserved_children: 0,
         outs: vec![Out::Spawn {
             profile: None,
             history: None,
@@ -102,10 +99,7 @@ async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Res
     )
     .await?
     .state;
-    assert_eq!(
-        state.reserved_children, 1,
-        "vacated slot still belongs to the paused turn"
-    );
+    assert!(!state.open_children.contains(&child).await?);
     state = step(
         &driver,
         &root,
@@ -116,10 +110,7 @@ async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Res
     )
     .await?
     .state;
-    assert_eq!(
-        state.reserved_children, 1,
-        "duplicate completion reserves no second slot"
-    );
+    assert_eq!(state.open_children.len(), 2);
     let client = step(
         &driver,
         &root,
@@ -129,10 +120,7 @@ async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Res
         acyclic_actors::guest::CancellationToken::new(),
     )
     .await?;
-    assert!(
-        spawns(&client.outs).is_empty(),
-        "client took a recorded replay's vacated slot"
-    );
+    assert_eq!(spawns(&client.outs), [requested_child(&root, 3)?.0]);
     let resumed = step(
         &driver,
         &root,
@@ -148,22 +136,24 @@ async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Res
     )
     .await?;
     assert_eq!(spawns(&resumed.outs), [recorded]);
-    assert_eq!(resumed.state.reserved_children, 0);
-    assert_eq!(resumed.state.open_children.len(), MAX_OPEN_CHILDREN);
+    assert!(resumed.state.open_children.contains(&child).await?);
+    assert_eq!(resumed.state.open_children.len(), 4);
     Ok(())
 }
 
 #[tokio::test]
-async fn slot_schedules_preserve_all_recorded_spawns() -> Result {
-    for room in 1..=4 {
-        for recorded in 1..=room {
+async fn admission_schedules_preserve_every_spawn_and_replay() -> Result {
+    for population in [0, 2] {
+        for recorded in 1..=3 {
             // Place resume at every cut of five sequential client arrivals.
             for resume_at in 0..=5 {
-                let (root, mut state) = populated_parent().await?;
-                while state.open_children.len() > MAX_OPEN_CHILDREN - room {
-                    let id = state.open_children.first().await?.ok_or("missing child")?;
-                    state.open_children.remove(&root.child(&id)?).await?;
-                }
+                let (root, mut state) = populated_parent(population).await?;
+                let mut expected: BTreeSet<_> = state
+                    .open_children
+                    .page(None, population)
+                    .await?
+                    .into_iter()
+                    .collect();
                 state.phase = Phase::Running;
                 state.turn = Some(Progress {
                     inbox: 0,
@@ -175,7 +165,6 @@ async fn slot_schedules_preserve_all_recorded_spawns() -> Result {
                 let driver = script(vec![
                     TurnStep {
                         checkpoint: Some(vec![1]),
-                        reserved_children: recorded,
                         outs: vec![],
                         wait: Wait::Approval {
                             id: intent("approval"),
@@ -185,7 +174,6 @@ async fn slot_schedules_preserve_all_recorded_spawns() -> Result {
                     },
                     TurnStep {
                         checkpoint: None,
-                        reserved_children: 0,
                         outs: named
                             .iter()
                             .map(|intent| Out::Spawn {
@@ -210,7 +198,6 @@ async fn slot_schedules_preserve_all_recorded_spawns() -> Result {
                 )
                 .await?
                 .state;
-                assert_eq!(usize::from(state.reserved_children), recorded);
                 for cut in 0..=5 {
                     if cut == resume_at {
                         let resumed = step(
@@ -227,9 +214,15 @@ async fn slot_schedules_preserve_all_recorded_spawns() -> Result {
                             acyclic_actors::guest::CancellationToken::new(),
                         )
                         .await?;
-                        assert_eq!(spawns(&resumed.outs), named, "room={room}, cut={cut}");
+                        assert_eq!(
+                            spawns(&resumed.outs),
+                            named,
+                            "population={population}, cut={cut}"
+                        );
+                        for intent in &named {
+                            expected.insert(TurnEffect::child(&root, intent)?.id());
+                        }
                         state = resumed.state;
-                        assert_eq!(state.reserved_children, 0);
                     }
                     if cut < 5 {
                         let before = state.clone();
@@ -256,12 +249,15 @@ async fn slot_schedules_preserve_all_recorded_spawns() -> Result {
                         .await?;
                         assert_eq!(first.state, replay.state);
                         assert_eq!(spawns(&first.outs), spawns(&replay.outs));
+                        let (intent, child) = requested_child(&root, sequence)?;
+                        assert_eq!(spawns(&first.outs), [intent]);
+                        assert!(expected.insert(child.id()));
                         state = first.state;
                     }
-                    assert!(state.open_children.len() <= MAX_OPEN_CHILDREN);
-                    assert!(
-                        state.open_children.len() + usize::from(state.reserved_children)
-                            <= MAX_OPEN_CHILDREN
+                    assert_eq!(state.open_children.len(), expected.len());
+                    assert_eq!(
+                        state.open_children.page(None, expected.len()).await?,
+                        expected.iter().cloned().collect::<Vec<_>>()
                     );
                 }
                 for intent in &named {
@@ -270,7 +266,7 @@ async fn slot_schedules_preserve_all_recorded_spawns() -> Result {
                             state.spawn_outcome(intent).await?,
                             SpawnOutcome::Spawned { .. }
                         ),
-                        "recorded spawn stranded: {intent:?}; room={room}, cut={resume_at}"
+                        "recorded spawn stranded: {intent:?}; population={population}, cut={resume_at}"
                     );
                 }
             }
