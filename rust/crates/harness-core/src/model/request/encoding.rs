@@ -36,15 +36,12 @@ impl InputStats {
             }
             for (file, policy) in message.content.file_parts() {
                 charge_items(io, 1)?;
-                policy.validate_projection(file, u64::MAX)?;
+                let bytes = policy.projected_bytes(file, None)?;
                 self.native |= matches!(policy, FileProjectionPolicy::Native(_));
-                if !matches!(policy, FileProjectionPolicy::Reference) {
-                    self.extra = policy
-                        .projected_bytes(file)?
-                        .checked_mul(6)
-                        .and_then(|bytes| self.extra.checked_add(bytes))
-                        .ok_or_else(|| invalid(io, "input footprint size overflows"))?;
-                }
+                self.extra = bytes
+                    .checked_mul(6)
+                    .and_then(|bytes| self.extra.checked_add(bytes))
+                    .ok_or_else(|| invalid(io, "input footprint size overflows"))?;
             }
         }
         Ok(())
