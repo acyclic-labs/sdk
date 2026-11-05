@@ -341,9 +341,13 @@ fn trace_call_sites(source: &str, inventory: &Inventory) -> Result<(), String> {
                 self.found |= pattern.ident == self.name;
                 syn::visit::visit_pat_ident(self, pattern);
             }
-            fn visit_pat_macro(&mut self, _: &'ast syn::PatMacro) {
-                // An unexpanded binding cannot establish source correspondence.
-                self.found = true;
+            fn visit_pat(&mut self, pattern: &'ast syn::Pat) {
+                if matches!(pattern, syn::Pat::Macro(_)) {
+                    // An unexpanded binding cannot establish source correspondence.
+                    self.found = true;
+                } else {
+                    syn::visit::visit_pat(self, pattern);
+                }
             }
         }
         let mut binding = Binding { name, found: false };
