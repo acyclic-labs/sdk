@@ -329,6 +329,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 cancellation,
             )
             .await;
+        let certificate = match &outcome {
+            Ok(Some(_)) => certificate,
+            _ => {
+                if let Some(certificate) = certificate {
+                    certificate.retire(accounting)?;
+                }
+                None
+            }
+        };
         let merged = match (outcome, settled) {
             (Ok(Some(merged)), settled) => (merged, settled),
             // A merge that did not merge what a replacement settled reports
@@ -379,6 +388,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         let settled = match cancellation.check() {
             Ok(()) => settled,
             Err(error) => {
+                if let Some(certificate) = certificate {
+                    certificate.retire(accounting)?;
+                }
                 if let Some(settled) = settled {
                     settled.retire(accounting)?;
                 }
@@ -478,18 +490,23 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         )>,
         FsError,
     > {
-        let (candidate_root, allocation) = crate::kernel::read_generation_root_with_accounting(
-            &self.volume.fs.inner.objects,
-            candidate_object,
-            self.volume.config,
-            accounting,
-            cancellation,
-        )
-        .await?;
-        let candidate_bytes = root_parent_bytes(&candidate_root)?;
-        let candidate = Owned::new(candidate_root, allocation, candidate_bytes);
+        let mut loaded = None;
+        let candidate = if let Some(certificate) = certificate {
+            &certificate.root.value
+        } else {
+            let (root, allocation) = crate::kernel::read_generation_root_with_accounting(
+                &self.volume.fs.inner.objects,
+                candidate_object,
+                self.volume.config,
+                accounting,
+                cancellation,
+            )
+            .await?;
+            let bytes = root_parent_bytes(&root)?;
+            &loaded.insert(Owned::new(root, allocation, bytes)).value
+        };
         let outcome = async {
-            if candidate.value.volume_id != self.volume.id {
+            if candidate.volume_id != self.volume.id {
                 return Err(FsError::VolumeMismatch);
             }
             let rebased = if let Some(certificate) = certificate {
@@ -498,7 +515,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                         .compose(
                             &self.volume.fs.inner.objects,
                             candidate_object,
-                            &candidate.value,
                             DecodeLimits::for_volume(self.volume.config),
                             accounting,
                             cancellation,
@@ -508,7 +524,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             } else {
                 self.rebase_private_candidate_with_accounting(
                     candidate_object,
-                    &candidate.value,
+                    candidate,
                     maximum_conflicts,
                     accounting,
                     cancellation,
@@ -523,7 +539,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             #[cfg(not(target_arch = "wasm32"))]
             let mut rebased = rebased;
             let staged = self.prepare_root_replacement(
-                &candidate.value,
+                candidate,
                 &rebased.value,
                 accounting,
                 cancellation,
@@ -559,7 +575,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             Ok::<_, FsError>(Some((rebased, prepared)))
         }
         .await;
-        candidate.retire(accounting).and(outcome)
+        if let Some(loaded) = loaded {
+            loaded.retire(accounting).and(outcome)
+        } else {
+            outcome
+        }
     }
 
     pub(super) async fn probe_rebase_head<'d>(

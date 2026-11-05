@@ -1,9 +1,10 @@
 use super::*;
 
-/// Retains the authenticated frontier until the proof ledger's adoption lock.
+/// Retains the authenticated frontier and candidate until the adoption lock.
 pub(super) struct DisjointChanges {
     remote: crate::kernel::GenerationFrontier,
     local: Owned<GenerationDiff>,
+    pub(super) root: Owned<GenerationRoot>,
 }
 
 impl DisjointChanges {
@@ -27,19 +28,20 @@ impl DisjointChanges {
     }
 
     pub(super) fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+        let root = self.root.retire(accounting);
         let local = self.local.retire(accounting);
-        self.remote.retire(accounting).and(local)
+        self.remote.retire(accounting).and(local).and(root)
     }
 
     pub(super) async fn compose<O: AsyncObjectStore>(
         &self,
         objects: &O,
         candidate: ObjectId,
-        root: &GenerationRoot,
         limits: DecodeLimits,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(GenerationRoot, KernelOwnedAllocation), FsError> {
+        let root = &self.root.value;
         let table = crate::kernel::apply_generation_delta(
             objects,
             root.file_table,
@@ -139,10 +141,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                         accounting,
                     );
                     if matches!(result, Ok(true)) {
-                        return Ok(Some(DisjointChanges {
-                            remote: changes,
-                            local,
-                        }));
+                        return Ok(Some((changes, local)));
                     }
                     local.retire(accounting).and(result)
                 }
@@ -152,6 +151,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             result.map(|_| None)
         }
         .await;
-        root.retire(accounting).and(result)
+        match result {
+            Ok(Some((remote, local))) => Ok(Some(DisjointChanges {
+                remote,
+                local,
+                root,
+            })),
+            result => root.retire(accounting).and(result.map(|_| None)),
+        }
     }
 }
