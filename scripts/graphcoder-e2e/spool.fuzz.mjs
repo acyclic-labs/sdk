@@ -249,7 +249,7 @@ async function persisted(bytes, path) {
   assert.equal(terminal.kind, "eof");
   await written;
   const ranges = [[event.id, 0, original.length], [event.id + "\0", original.length, distinct.length]];
-  for (const mutation of [Buffer.alloc(0), bytes, Buffer.concat([bytes, baseline])]) {
+  for (const mutation of [Buffer.alloc(0), bytes, Buffer.concat([bytes, baseline]), Buffer.concat([baseline, bytes])]) {
     writeFileSync(path, mutation);
     for (const [id, at, length] of ranges) {
       if (mutation.length < at + length) {
