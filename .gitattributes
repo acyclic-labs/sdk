@@ -30,8 +30,6 @@ typescript/packages/actors/src/generated/**/*.ts whitespace=-blank-at-eol
 rust/crates/harness-fuzz/corpus/** binary
 rust/fuzz/corpus/** binary
 
-# Mutation controls must apply to the same LF source on every platform.
-rust/fuzz/**/*.patch text eol=lf
 rust/crates/harness-fuzz/corpus/reader_snapshot-*.tsv text eol=lf diff
 rust/crates/stream/fuzz/corpus/status/** binary
 
