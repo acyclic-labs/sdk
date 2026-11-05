@@ -349,6 +349,20 @@ where
     spawn_in_context(Context::simulation(), future)
 }
 
+/// Submits to the retained simulation scope or current native executor,
+/// returning the unpolled future when neither can own it.
+pub fn try_spawn<F>(future: F) -> Result<TaskHandle<F::Output>, F>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let context = Context::simulation();
+    if context.is_none() && tokio::runtime::Handle::try_current().is_err() {
+        return Err(future);
+    }
+    Ok(spawn_in_context(context, future))
+}
+
 // An explicitly submitted async operation starts before the pending-task
 // handoff when it is polled eagerly. Synchronous physical work stays outside
 // CURRENT; only this original future's poll enters its retained scope.
