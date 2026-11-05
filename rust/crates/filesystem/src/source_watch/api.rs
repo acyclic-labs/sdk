@@ -5,7 +5,7 @@ impl NativeSourceWatch {
         &self,
         work: &mut W,
     ) -> Result<(), DemandError> {
-        self.stop_driver(work, None, false)
+        self.stop_and_observe(work, None, false)
     }
 
     /// Whether the original native driver has retired its physical resources.
@@ -34,8 +34,20 @@ impl NativeSourceWatch {
             .as_ref()
             .ok_or(DemandError::NativeWorkUnavailable)?
             .clone();
-        self.stop_driver(&mut work, wait, true)
-            .and(check_wait(wait))
+        self.stop_and_observe(&mut work, wait, true)
+    }
+
+    fn stop_and_observe<W: SourceDemandReadWork>(
+        &self,
+        work: &mut W,
+        wait: Option<&crate::CancellationToken>,
+        prepaid: bool,
+    ) -> Result<(), DemandError> {
+        self.stop_driver(work, wait, prepaid)?;
+        // Physical retirement does not erase a failed callback's original
+        // cause. All controller entry points consume the same saved outcome.
+        self.delivery().take_failure(work)?;
+        check_wait(wait)
     }
 
     /// Observes destruction of the original data, after its payload and keepers.
