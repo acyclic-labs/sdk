@@ -15,8 +15,9 @@ wakes each writer and returns its original typed error without publishing,
 writing, or releasing private objects.
 
 Both properties exercise ordinary accounting and distinct caller/native
-cancellation. The original uncontended alias and batch-read properties retain
-their checks that a ready lease adds no cancellation allocation.
+cancellation. The original alias and batch-read properties retain their
+physical ownership and I/O checks. The ready branch of the shared wait returns
+before constructing either cancellation waiter.
 
 Run the two controls with:
 
@@ -36,8 +37,14 @@ that patch with `git apply -R` before requiring the unchanged property to pass:
 
 The shared `KernelAccounting::wait_for` uses the existing cancellation nodes.
 A ready event needs zero waiter allocations. A blocked event retains one
-original node per distinct cancellation source, at most two. Registration and
-unlink operate on those nodes directly; no scan, task, timer or polling loop is
-added. Each wait has the original lease owner and cancellation token as its
-producers. Cancellation drops only the queued lease acquisition; physical I/O
-already submitted keeps its original completion and retirement path.
+original node per distinct cancellation source, at most two. Waiter nodes link
+and unlink directly, independently of the number of other waiters. Each wait
+has the original lease owner and cancellation token as its producers.
+Cancellation drops only the queued lease acquisition; physical I/O already
+submitted keeps its original completion and retirement path. No task, timer
+or polling loop is added.
+
+The unchanged-counter control establishes bounded waiter registration, not a
+bound on the existing cancellation token's ancestry traversal. The underlying
+`CancellationToken::is_cancelled` still checks its parent chain; this property
+does not establish constant cost in that separate dimension.
