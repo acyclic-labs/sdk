@@ -276,7 +276,7 @@ async fn opfs_batch_retains_live_aliases_and_denies_unfunded_payloads() {
     }
     .unwrap_or_else(|failure| unreachable!("OPFS setup failed: {}", failure.error));
     let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-    let (reads, allocation) = store
+    let (reads, _allocation) = store
         .read_many(&requests, &mut work)
         .await
         .unwrap_or_else(|error| unreachable!("OPFS read failed: {error}"));
@@ -298,7 +298,6 @@ async fn opfs_batch_retains_live_aliases_and_denies_unfunded_payloads() {
     }
     let cloned = reads[0].bytes.clone();
     drop(reads);
-    drop(allocation);
     assert!(live(&mut work) >= 1_024);
     assert_eq!(cloned.as_ref(), writes[0].bytes.as_ref());
     let held = live(&mut work);
