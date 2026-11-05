@@ -73,6 +73,12 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     let pending = client.pending_approval(&id).await?.ok_or_else(|| {
         Error::Invalid("original approval binding is absent from the pending query".into())
     })?;
+    let (_opening, phase) = client.observe_current().await?;
+    assert!(matches!(
+        phase,
+        crate::agent::Phase::WaitingApproval { id: opening_id, binding }
+            if opening_id == id && binding.as_ref() == Some(&pending.binding)
+    ));
     assert_eq!(pending.status, sequence);
     assert_eq!(Some(&pending.binding), published_binding.as_ref());
     assert!(serde_json::to_vec(&pending).map_err(agent)?.len() < 1024);

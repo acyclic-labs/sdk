@@ -517,6 +517,20 @@ impl Conversation {
         Ok(self.settlement().await?.0)
     }
 
+    /// Observes new turns and the latest status, returning the current phase
+    /// from the same settlement that selected both opening positions. A
+    /// reconnecting client can admit input before consuming its first event.
+    ///
+    /// # Errors
+    /// Session, host, decoding or follow admission failures.
+    pub async fn observe_current(&self) -> Result<(super::Observer, Phase)> {
+        let (settled, statuses, phase) = self.settlement().await?;
+        Ok((
+            super::Observer::open(&self.connection, settled, statuses.saturating_sub(1))?,
+            phase,
+        ))
+    }
+
     /// Every settled turn from conversation sequence `from`, or from the current
     /// settled tail when `None`, together with the agent's latest phase and its
     /// newest tool call's output. The default turn cursor and status cursor come

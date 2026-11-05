@@ -406,18 +406,31 @@ async fn execution_text_stdin_retires_at_eof_or_refuses_an_unbound_task() {
             .unwrap(),
         )
         .unwrap();
-        for input in ["", " \n\n", "unbound task\n"] {
-            let output = run_binary(executable, &fixture, &catalog, args.clone(), input).await;
-            assert!(output.stdout.is_empty(), "{output:?}");
+        for input in ["unbound task\n", "", " \n\n"] {
+            let mut args = args.clone();
+            if input == "unbound task\n" {
+                // Returned failures use the existing event channel. The shared
+                // completion deliberately performs no terminal stderr write.
+                args.extend(["--output-format", "jsonl"]);
+            }
+            let output = run_binary(executable, &fixture, &catalog, args, input).await;
             if input == "unbound task\n" {
                 assert!(!output.status.success(), "{output:?}");
-                let error = String::from_utf8_lossy(&output.stderr);
+                let records = String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                    .collect::<Vec<_>>();
+                let failure = records.last().expect("terminal refusal frame");
+                assert_eq!(failure["kind"], "error", "{failure}");
+                assert_eq!(failure["code"], "execution_failed", "{failure}");
+                let error = failure["error"].as_str().expect("original refusal cause");
                 assert!(
                     error.contains("text input: no task or pending approval"),
                     "{error}"
                 );
                 assert!(error.contains("recovery: use acyclic run"), "{error}");
             } else {
+                assert!(output.stdout.is_empty(), "{output:?}");
                 succeeded(&output);
             }
         }
