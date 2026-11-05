@@ -119,10 +119,9 @@ pub(crate) async fn count(
         let generation =
             projection::body_named(provider, request.request(), &names, &origin, &mut files)?;
         let bytes = wire::body(generation, &provider.model.name, spec.adapter)?;
-        let headers = dispatch::headers(provider, auth.0.as_deref(), auth.1.as_deref(), false);
         let url = wire::endpoint(&provider.config.base_url, &provider.model.name, spec)?;
         let plan = projection::plan(provider, request, 0)?;
-        Ok::<_, Error>((url, headers, bytes, plan))
+        Ok::<_, Error>((url, bytes, plan))
     }
     .await;
     #[cfg(not(target_arch = "wasm32"))]
@@ -135,10 +134,7 @@ pub(crate) async fn count(
     let count_custody;
     #[cfg(target_arch = "wasm32")]
     let count_custody = None;
-    let (url, headers, bytes, mut count) = prepared?;
-    drop(auth);
-    #[cfg(not(target_arch = "wasm32"))]
-    drop(auth_custody);
+    let (url, bytes, mut count) = prepared?;
     #[cfg(not(target_arch = "wasm32"))]
     {
         count_custody = admission
@@ -161,6 +157,10 @@ pub(crate) async fn count(
         count.input_tokens = bound;
         return Ok((count, count_custody));
     }
+    let headers = dispatch::headers(provider, auth.0.as_deref(), auth.1.as_deref(), false);
+    drop(auth);
+    #[cfg(not(target_arch = "wasm32"))]
+    drop(auth_custody);
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(hold) = admission.as_mut() {
         let retained = std::mem::size_of::<HttpRequest>()
