@@ -3,6 +3,15 @@
   "imports": [
     {
       "sourceRepository": "https://github.com/acyclic-labs/cloud",
+      "sourceCommit": "257430172d1fbbfb195dea697057675f7983a979",
+      "sourcePath": "ops/ci/node-test-reporter.mjs",
+      "destinationPath": "scripts/node-test-reporter.mjs",
+      "license": "Apache-2.0",
+      "auditResult": "approved",
+      "reviewer": "Acyclic Labs owner-directed shared test reporting contract"
+    },
+    {
+      "sourceRepository": "https://github.com/acyclic-labs/cloud",
       "sourceCommit": "63747d834c6af687ac1f4a555c1b0bd2b8fbc914",
       "sourcePath": "lib/authority/src/task.rs",
       "destinationPath": "rust/crates/native-runtime/src/task/custody.rs",

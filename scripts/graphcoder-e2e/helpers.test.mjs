@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { runHelperSuite } from "./helpers.mjs";
+import { runTests } from "../node-tests.mjs";
 import { Processes } from "./process.mjs";
 import { alive } from "./orphan-check.mjs";
 
@@ -21,14 +21,14 @@ test("Node test flags always use Node independently of the parent interpreter", 
     // Program input; the original Node executable produces the qualified TAP.
     await writeFile(fixture, `import test from 'node:test'; import assert from 'node:assert/strict';
       test('original interpreter',()=>assert.equal(process.versions.bun,undefined));`);
-    await runHelperSuite([fixture], { processes: new ObservedProcesses(), publish() {} });
+    await runTests([{file:fixture,runtime:"node"}], { processes: new ObservedProcesses(), publish() {} });
     assert.equal(observed.command, "node");
     assert.equal(observed.args[0], "--test");
 
     // The original child has exited successfully, but cancellation at its
     // publication cut must still prevent that actual summary from qualifying.
     const late = new AbortController();
-    await assert.rejects(runHelperSuite([fixture], {
+    await assert.rejects(runTests([{file:fixture,runtime:"node"}], {
       signal: late.signal,
       publish() { late.abort(new Error("late helper cancellation")); },
     }), /late helper cancellation/);
@@ -65,7 +65,7 @@ test("helper cancellation drains every process and cannot qualify a blocked suit
         await once(child,'spawn'); console.log('BLOCKED_HELPER '+JSON.stringify([process.pid,child.pid]));
         await new Promise(()=>{});
       });`);
-    await assert.rejects(runHelperSuite([fixture], { signal: controller.signal,
+    await assert.rejects(runTests([{file:fixture,runtime:"node"}], { signal: controller.signal,
       processes: new ObservedProcesses(), publish() {} }), /deliberate helper cancellation/);
     assert.equal(pids.length, 2);
     for (const pid of pids) assert.equal(alive(pid), false, `helper process ${pid} survived cancellation`);

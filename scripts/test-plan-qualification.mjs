@@ -68,29 +68,6 @@ test("generator registry rejects empty, duplicate and unsafe backend coordinates
     [{ ...entry, unexpected: true }]]) assert.throws(() => parseGeneratorBackends(value));
 });
 
-test("release generator staging runs every registered backend without affected-file selection", () => {
-  const workflow = YAML.parse(readFileSync(".github/workflows/sdk-generator.yml", "utf8"));
-  const steps = workflow.jobs.go.steps;
-  assert.ok(languageGeneratorBackends.includes("go"));
-  const setupGo = steps.find(step => step.uses?.startsWith("actions/setup-go@")) ?? assert.fail("missing Go setup");
-  const goStaging = steps.find(step => step.name === "Check Go formatting and staging") ?? assert.fail("missing Go staging");
-  assert.equal(setupGo.if, undefined);
-  assert.equal(goStaging.if, undefined);
-  const staging = steps.find(step => step.name === "Check backend staging") ?? assert.fail("missing backend staging");
-  assert.equal(staging.if, undefined);
-  const code = staging.run.split("<<'JS'\n")[1]?.split("\nJS")[0] ?? assert.fail("missing staging script");
-  let invocation;
-  runInNewContext(code.replace(/^import .*;\n/gm, ""), {
-    languageGeneratorBackends, readdirSync, process: { execPath: process.execPath },
-    execFileSync: (command, args) => { assert.equal(command, process.execPath); invocation = Array.from(args); },
-  });
-  const expected = languageGeneratorBackends.filter(name => name !== "go").flatMap(name => {
-    const root = `tools/sdk-generator/backends/${name}/tests`;
-    return readdirSync(root).filter(file => file.endsWith(".test.mjs")).sort().map(file => `${root}/${file}`);
-  });
-  assert.deepEqual(invocation, ["--test", "--test-concurrency=1", "tools/sdk-generator/shared/tests/authority.test.mjs", ...expected]);
-});
-
 test("registered backend targets match the maintained transport contracts", () => {
   const expected = ["actors", "stream"].map(name =>
     compatibilityArtifacts[name].schemaDigest.split("proto/").at(-1)).sort();

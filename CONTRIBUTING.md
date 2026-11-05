@@ -38,6 +38,8 @@ the protocol descriptor and message tests. Qualification also covers consumers.
 bun install --frozen-lockfile
 bun run check   # tsc -b --force, project-wide type-check (also emits build output)
 bun run test    # type-check, then TypeScript and filesystem package tests
+node scripts/node-tests.mjs --all  # complete Node and Bun inventory
+node scripts/node-tests.mjs scripts/archive-utils.mjs  # affected tests
 cargo test --all-features --locked
 ```
 

@@ -39,19 +39,10 @@ jobs:
           set -euo pipefail
           test -z "$(gofmt -l .)"
           go test -p=1 -parallel=1 -count=1 -v ./...
-          node --test tests/qualify.test.mjs
       - name: Check backend staging
+        env:
+          TOOLS_DIR: ${{ runner.temp }}/tools
         run: |
-          node --input-type=module <<'JS'
-          import { execFileSync } from 'node:child_process';
-          import { readdirSync } from 'node:fs';
-          import { languageGeneratorBackends } from './scripts/plan-qualification.mjs';
-          const paths = ['tools/sdk-generator/shared/tests/authority.test.mjs'];
-          for (const backend of languageGeneratorBackends.filter(name => name !== 'go')) {
-            const root = `tools/sdk-generator/backends/${backend}/tests`;
-            const tests = readdirSync(root).filter(name => name.endsWith('.test.mjs')).sort();
-            if (!tests.length) throw new Error(`no focused controls for ${backend}`);
-            paths.push(...tests.map(name => `${root}/${name}`));
-          }
-          execFileSync(process.execPath, ['--test', '--test-concurrency=1', ...paths], { stdio: 'inherit' });
-          JS
+          source scripts/ensure-bun.sh
+          bun install --frozen-lockfile
+          node scripts/node-tests.mjs --only tools/sdk-generator

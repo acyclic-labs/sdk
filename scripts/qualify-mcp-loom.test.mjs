@@ -208,7 +208,6 @@ test("qualification opts into the crate cfg only for the model build and execute
   assertGateStep(["--guest"]);
   const policy = qualification.match(/  policy\)\n([\s\S]*?);;/)?.[1];
   assert.ok(policy, "the original qualification must retain its policy branch");
-  assert.match(policy, /node --test[^\n]*scripts\/qualify-mcp-loom\.test\.mjs/);
 });
 
 test("guest qualification selects every guest model in the instrumented main target", () => {

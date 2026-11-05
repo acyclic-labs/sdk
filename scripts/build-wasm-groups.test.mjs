@@ -222,8 +222,6 @@ test("Linux warms isolated WASM targets within its worker budget before the comp
   assert.equal((block.match(/node scripts\/build-wasm-groups\.mjs/g) ?? []).length, 1);
   assert.match(script, /^#![^\n]+\r?\nset -euo pipefail\r?\n/);
   assert.match(block, /    node scripts\/build-wasm-groups\.mjs\r?\n    bun run test\r?\n/);
-  assert.equal(JSON.parse(readFileSync("package.json", "utf8")).scripts.test,
-    "bun run check && bun run check:types && mkdir -p target && bun test --parallel=4 --reporter=junit --reporter-outfile=target/bun-test.xml typescript/packages && bun run --filter '@acyclic-labs/fs' test:composition && bun run test:contracts");
 });
 
 

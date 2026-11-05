@@ -368,39 +368,21 @@ case "$lane" in
     ;;
   policy)
     source scripts/ensure-bun.sh
-    node --test scripts/check-cargo-lock.test.mjs
     node scripts/check-cargo-lock.mjs
-    node --test scripts/check-feature-matrix.test.mjs scripts/run-command.test.mjs
-    node --test scripts/graphcoder-e2e/spool.test.mjs scripts/graphcoder-e2e/transcript.test.mjs
-    node --test scripts/check-test-support.test.mjs
+    node scripts/node-tests.mjs --only scripts
     node scripts/check-test-support.mjs
     node --experimental-vm-modules scripts/static-ci.mjs
     node scripts/check-compatibility-digests.mjs
     bash scripts/test-qualify-ci-preflight.sh
-    node --test scripts/wasm-size-report.test.mjs
     bash scripts/test-ensure-rust-target.sh
     node scripts/check-workflow-runners.mjs
-    node --test scripts/harness-provider-evidence.test.mjs
-    node --test scripts/qualify-main-green-debts.test.mjs
-    node --test scripts/check-harness-package.test.mjs scripts/check-machines-package.test.mjs scripts/ci-background-log.test.mjs
     install_tool actionlint_1.7.7_linux_amd64.tar.gz \
       https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz \
       023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757 \
       "$TOOLS_DIR/actionlint-1.7.7" actionlint
-    node --test scripts/check-workflows.test.mjs
     bash scripts/check-workflows.sh "$TOOLS_DIR/actionlint-1.7.7/actionlint"
     node scripts/publish-cargo-crates.mjs check
-    node --test scripts/test-publish-cargo-crates.mjs
-    node --test scripts/test-publish-npm-packages.mjs
-    node --experimental-vm-modules --test scripts/static-policy.test.mjs scripts/static-ci.test.mjs scripts/javascript-syntax.test.mjs scripts/check-boundaries.test.mjs
-    node --test scripts/tiny-ci.test.mjs scripts/publish-release-assets.test.mjs scripts/release-qualification-artifacts.test.mjs scripts/release-source.test.mjs
-    node --test scripts/native-cache-evidence.test.mjs scripts/cache-save-decision.test.mjs scripts/cache-limits.test.mjs scripts/cargo-timings-summary.test.mjs scripts/bench-client-requests.test.mjs
-    node --test scripts/test-typescript-qualification.mjs
-    node --test scripts/test-plan-qualification.mjs scripts/test-plan-qualification-gate.mjs scripts/test-plan-qualification-windows-rust.mjs scripts/build-wasm-groups.test.mjs scripts/test-qualify-linux-package-overlap.mjs scripts/qualify-mcp-loom.test.mjs scripts/qualify-ci-preflight-fixtures.test.mjs
-    node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
-    node --test scripts/npm-publication-staging.test.mjs scripts/stage-npm-package.test.mjs
     node scripts/test-verify-release-binary.mjs
-    bun test scripts/qualify-rustfmt.test.mjs
     bash scripts/qualify-rustfmt.sh
     sdk_workspace cargo clippy --all-targets --all-features --locked -- -D warnings
     # Production-only reduced sets must not inherit test/dev features. Keep
