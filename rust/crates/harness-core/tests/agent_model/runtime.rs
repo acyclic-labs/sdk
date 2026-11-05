@@ -1862,9 +1862,7 @@ async fn same_phase_settlement_advances_the_actor_without_appending_status() -> 
 }
 
 #[tokio::test]
-async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
-    // Every open child is in the root's checkpoint, so a root at the limit
-    // is the largest the child set makes it; that state must commit.
+async fn a_root_commits_children_beyond_the_former_admission_boundary() -> Result {
     let provider = Arc::new(MemoryStream::default());
     let host = AgentHost::new(
         provider,
@@ -1887,7 +1885,7 @@ async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
         })
     };
     let mut last = 0;
-    for n in 0..=MAX_OPEN_CHILDREN {
+    for n in 0..257 {
         let Delivered::Committed { inbox } = host.send(&root, &user(), &request(n)).await? else {
             return Err("spawn request was not committed".into());
         };
@@ -1896,13 +1894,11 @@ async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
     let failures = host.runtime().drain().await;
     assert!(failures.is_empty(), "{failures:?}");
     let state = host.state(&root).await?;
-    assert_eq!(state.open_children.len(), MAX_OPEN_CHILDREN);
-    let (spawn, _) = requested_child(&root, last)?;
+    assert_eq!(state.open_children.len(), 257);
+    let (spawn, child) = requested_child(&root, last)?;
     assert_eq!(
         host.spawned(&root, last, &spawn).await?,
-        SpawnOutcome::Refused {
-            reason: SpawnRefusal::Limit
-        }
+        SpawnOutcome::Spawned { child }
     );
     Ok(())
 }
