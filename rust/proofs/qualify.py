@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors"])
 claim = parser.parse_args().claim
 if claim == "retained-credit":
     source = "rust/crates/filesystem/src/kernel/allocation.rs"
@@ -51,6 +51,12 @@ elif claim in ("work-arithmetic", "work-mixed"):
     crate = "acyclic-fs"
     test = "performance::tests::full_width_work_arithmetic_preserves_exact_sums_and_refusals"
     diagnostic = "full-width work sum disagreed with wider arithmetic"
+    features = []
+elif claim == "budget-errors":
+    source = "rust/crates/filesystem/src/performance.rs"
+    crate = "acyclic-fs"
+    test = "performance::tests::native::borrowed::borrowed_verification_preserves_exact_errors_and_priority"
+    diagnostic = "budget refusal lost the exact counter or priority"
     features = []
 elif claim == "borrowed-budget":
     source = "rust/crates/filesystem/src/kernel/allocation/accounting.rs"

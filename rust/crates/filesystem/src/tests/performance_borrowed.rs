@@ -119,18 +119,29 @@ fn baseline(observed: WorkCounters, budget: WorkBudget) -> Result<(), WorkError>
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
     #[test]
-    fn borrowed_verification_preserves_all_bytes_errors_and_priority(values in prop::array::uniform24(any::<u64>()), maxima in prop::array::uniform24(any::<u64>()), unbounded in any::<bool>()) {
+    fn borrowed_verification_preserves_exact_errors_and_priority(values in prop::array::uniform24(any::<u64>()), maxima in prop::array::uniform24(any::<u64>()), unbounded in any::<bool>()) {
         let make = |values: [u64; 24]| {
             let mut counters = WorkCounters::UNCHARGED;
             for (field, value) in counter_fields(&mut counters).into_iter().zip(values) { *field = value; }
             counters
         };
         let maxima = if unbounded { [u64::MAX; 24] } else { maxima };
-        // Every invocation gets separately constructed counter and budget values.
-        let _ = acyclic_test_support::differential(
-            || { let (work, budget) = (make(values), make(maxima)); (baseline(work, budget), serde_json::to_vec(&work).unwrap()) },
-            || { let (work, budget) = (make(values), make(maxima)); (work.verify_within(&budget), serde_json::to_vec(&work).unwrap()) },
-        );
+        for selected in 0..25 {
+            let (work, budget) = if selected == 24 {
+                // Retain the full-width mixed inputs and their error priority.
+                (make(values), make(maxima))
+            } else {
+                // A refusal on every field cannot be hidden by an earlier one.
+                let mut work = WorkCounters::UNCHARGED;
+                let mut budget = WorkBudget::UNBOUNDED;
+                let observed = values[selected].max(1);
+                *counter_fields(&mut work)[selected] = observed;
+                *counter_fields(&mut budget)[selected] = observed - 1;
+                (work, budget)
+            };
+            prop_assert_eq!(work.verify_within(&budget), baseline(work, budget),
+                "budget refusal lost the exact counter or priority");
+        }
     }
 }
 

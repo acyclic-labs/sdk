@@ -21,6 +21,13 @@ an oracle that rejects a population-dependent implementation.
 
 ## Current closure work
 
+The [exact budget-refusal control](budget-errors/README.md) extends the existing
+generated verifier oracle with an isolated refusal for every declared counter.
+It retains full-width mixed inputs and first-error priority; a production
+mutation mislabels the final field and must fail the unchanged oracle. This
+subsumes two fixed counter examples without relying on random early errors to
+exercise later fields.
+
 The [original-budget control](borrowed-budget/README.md) replaces a hand-written
 former completion body with a mutation of the actual kernel accounting method.
 The existing address, verification-count, allocation and receipt observations

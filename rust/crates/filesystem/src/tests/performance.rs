@@ -64,42 +64,6 @@ enum OuterError {
 }
 
 #[test]
-fn budgets_fail_on_the_exact_counter() {
-    let observed = WorkCounters {
-        page_reads: 2,
-        ..WorkCounters::default()
-    };
-    let budget = WorkBudget {
-        page_reads: 1,
-        ..WorkBudget::default()
-    };
-    assert_eq!(
-        observed.verify(budget),
-        Err(WorkError::BudgetExceeded {
-            counter: "page_reads",
-            observed: 2,
-            maximum: 1,
-        })
-    );
-    let observed = WorkCounters {
-        source_entries_visited: 3,
-        ..WorkCounters::default()
-    };
-    let budget = WorkBudget {
-        source_entries_visited: 2,
-        ..WorkBudget::default()
-    };
-    assert_eq!(
-        observed.verify(budget),
-        Err(WorkError::BudgetExceeded {
-            counter: "source_entries_visited",
-            observed: 3,
-            maximum: 2,
-        })
-    );
-}
-
-#[test]
 fn nested_failure_accounting_never_substitutes_a_sentinel_receipt() {
     let failure = OperationFailure::new(
         (),
