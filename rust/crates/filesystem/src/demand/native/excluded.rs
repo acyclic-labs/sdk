@@ -15,7 +15,7 @@ impl ExcludedPaths {
     }
     fn visible(&self, change: &SourceChange) -> bool {
         match change {
-            SourceChange::Name(path) | SourceChange::Removed(path) | SourceChange::Entry(path) => {
+            SourceChange::Departed(path) | SourceChange::Name(path) | SourceChange::Entry(path) => {
                 !self.excludes(path)
             }
             _ => true,

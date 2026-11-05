@@ -131,16 +131,17 @@ impl From<crate::FsError> for DemandError {
 /// Demand result with source-work counters on both success and failure.
 pub type DemandResult<T> = Result<OperationReceipt<T>, OperationFailure<DemandError>>;
 
-/// One invalidation a source reports outside its views, in delivery order.
+/// One change a source reports outside every view of that source.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SourceChange {
+    /// The reported entry departed from this name. A following `Node` in the
+    /// same batch identifies that departed entry, not a replacement binding.
+    /// Invalidate the name and every subtree reached through it; this is not
+    /// evidence that a later binding or its contents have been observed.
+    Departed(NamespacePath),
     /// This name may bind another entry, or none. Invalidate the name and
     /// every subtree reached through it.
     Name(NamespacePath),
-    /// The reported entry departed from this name. A following `Node` in the
-    /// same batch identifies that departed entry, not a replacement binding.
-    /// The name and every subtree reached through it are invalidated.
-    Removed(NamespacePath),
     /// The entry this name binds may have changed in place: content or metadata.
     Entry(NamespacePath),
     /// The node with this [`SourceNode::file_identity`] may have changed.

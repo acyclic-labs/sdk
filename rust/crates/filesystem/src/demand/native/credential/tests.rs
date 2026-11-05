@@ -263,6 +263,7 @@ async fn bind(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PublicationControl {
     Current,
+    RetiredOriginal,
     Altered,
     Rebound,
     AlteredThenRebound,
@@ -272,7 +273,6 @@ enum PublicationControl {
 }
 
 async fn publication_control(control: PublicationControl) -> TestResult {
-    eprintln!("credential publication: {control:?}");
     use acyclic_native_runtime::{RenameMode, private_file::StagedFile};
     use std::io::Write;
     let directory = tempfile::tempdir()?;
@@ -319,12 +319,26 @@ async fn publication_control(control: PublicationControl) -> TestResult {
                         .as_file_mut()
                         .write_all(token.as_bytes())
                         .map_err(error)?;
+                    if control == PublicationControl::RetiredOriginal {
+                        // A selected-name departure precedes the original
+                        // publisher's arrival. Both native notifications must
+                        // retain their order through publication admission.
+                        std::fs::remove_file(&path).map_err(error)?;
+                    }
                     let file = staged
                         .publish_retained(&path, RenameMode::Replace)
                         .map_err(error)?;
                     match control {
-                        PublicationControl::Altered | PublicationControl::AlteredThenRebound => {
-                            std::fs::write(&path, "foreign-in-place-value").map_err(error)?;
+                        PublicationControl::Altered => {
+                            std::fs::write(&path, "foreign-in-place-value").map_err(error)?
+                        }
+                        PublicationControl::Rebound | PublicationControl::AlteredThenRebound => {
+                            let moved = path.with_extension("moved");
+                            std::fs::rename(&path, &moved).map_err(error)?;
+                            if control == PublicationControl::AlteredThenRebound {
+                                std::fs::write(&moved, "foreign-in-place-value").map_err(error)?;
+                            }
+                            std::fs::rename(&moved, &path).map_err(error)?;
                         }
                         PublicationControl::Replaced => {
                             let mut foreign =
@@ -337,14 +351,6 @@ async fn publication_control(control: PublicationControl) -> TestResult {
                             foreign.publish(&path, RenameMode::Replace).map_err(error)?;
                         }
                         _ => {}
-                    }
-                    if matches!(
-                        control,
-                        PublicationControl::Rebound | PublicationControl::AlteredThenRebound
-                    ) {
-                        let moved = path.with_extension("moved");
-                        std::fs::rename(&path, &moved).map_err(error)?;
-                        std::fs::rename(&moved, &path).map_err(error)?;
                     }
                     let revision = if control == PublicationControl::ForeignRevision {
                         CredentialRevision::Bytes([42; 32])
@@ -368,7 +374,10 @@ async fn publication_control(control: PublicationControl) -> TestResult {
     let first = source.resolve().await?;
     assert!(first.reject().await?);
     let (replacement, follower) = tokio::join!(source.resolve(), source.resolve());
-    if control == PublicationControl::Current {
+    if matches!(
+        control,
+        PublicationControl::Current | PublicationControl::RetiredOriginal
+    ) {
         let replacement = replacement?;
         assert_eq!(replacement.as_str(), follower?.as_str());
         assert_eq!(publications.load(Ordering::Relaxed), 1);
@@ -462,7 +471,6 @@ async fn native_source_fences_rotation_and_owner_loss_without_warm_reads() -> Te
     let root = native_source(directory.path(), &original).await?;
     let source = bind(root.clone(), "credential", &original, &reads).await?;
     let other = bind(root, "independent", &original, &other_reads).await?;
-    eprintln!("credential phase: cold");
     let (first, follower) = tokio::join!(source.resolve(), source.resolve());
     let first = first?;
     let follower = follower?;
@@ -495,7 +503,6 @@ async fn native_source_fences_rotation_and_owner_loss_without_warm_reads() -> Te
         "a physical fence is asynchronous"
     );
 
-    eprintln!("credential phase: independent");
     let independent_request = other.resolve().await?;
     assert_ne!(
         independent_request.binding(),
@@ -516,7 +523,6 @@ async fn native_source_fences_rotation_and_owner_loss_without_warm_reads() -> Te
         first.check().await.is_err(),
         "old source cannot retain effects"
     );
-    eprintln!("credential phase: rotation");
     let current = source.resolve().await?;
     assert_ne!(current.binding(), first.binding());
     assert_eq!(current.as_str(), "rotated-source-snapshot");
@@ -530,7 +536,6 @@ async fn native_source_fences_rotation_and_owner_loss_without_warm_reads() -> Te
     assert!(independent_change.now_or_never().is_none());
     assert_eq!(other_reads.load(Ordering::Relaxed), 1);
 
-    eprintln!("credential phase: owner loss");
     let lost = source.watch().await?.ok_or("missing owner-loss watch")?;
     let physical = source.0.watch.clone();
     drop(source);
@@ -553,6 +558,7 @@ async fn native_source_fences_rotation_and_owner_loss_without_warm_reads() -> Te
     assert!(other.0.watch.physical.is_stopped());
     for control in [
         PublicationControl::Current,
+        PublicationControl::RetiredOriginal,
         PublicationControl::Altered,
         PublicationControl::Rebound,
         PublicationControl::AlteredThenRebound,
@@ -560,7 +566,9 @@ async fn native_source_fences_rotation_and_owner_loss_without_warm_reads() -> Te
         PublicationControl::Observed,
         PublicationControl::ForeignRevision,
     ] {
-        publication_control(control).await?;
+        publication_control(control)
+            .await
+            .map_err(|error| format!("native publication {control:?}: {error}"))?;
     }
     eprintln!(
         "protected source reads: cold=1 warm=0 rotation=1 independent=1; original cleanup joined"

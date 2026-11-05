@@ -96,8 +96,8 @@ where
             work.charge(crate::materializer::NativeResourceCredit::Items.delta(1))
                 .map_err(MountSourceError::NativeWork)?;
             match change {
-                SourceChange::Name(path)
-                | SourceChange::Removed(path)
+                SourceChange::Departed(path)
+                | SourceChange::Name(path)
                 | SourceChange::Entry(path) => {
                     let mut append = |depth, output: &mut Vec<crate::kernel::NamespacePath>| {
                         let (path, allocation) = path
@@ -115,7 +115,7 @@ where
                         output.push(path);
                         Ok::<_, MountSourceError>(())
                     };
-                    if matches!(change, SourceChange::Name(_) | SourceChange::Removed(_)) {
+                    if matches!(change, SourceChange::Departed(_) | SourceChange::Name(_)) {
                         append(path.depth(), &mut effect.subtrees)?;
                     } else {
                         if !path.is_root() {
@@ -176,7 +176,7 @@ fn change_counts(
                 n.checked_add(usize::from(matches!(change, SourceChange::Node(_)))),
                 s.checked_add(usize::from(matches!(
                     change,
-                    SourceChange::Name(_) | SourceChange::Removed(_)
+                    SourceChange::Departed(_) | SourceChange::Name(_)
                 ))),
                 l.checked_add(extra),
             ))

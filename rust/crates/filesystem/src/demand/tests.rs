@@ -223,7 +223,8 @@ async fn a_filtered_source_reports_nothing_beneath_its_exclusions() -> Result<()
     assert!(
         !changes.iter().any(|change| matches!(
             change,
-            SourceChange::Name(name) | SourceChange::Removed(name) | SourceChange::Entry(name) if name.is_within(&excluded)
+            SourceChange::Departed(name) | SourceChange::Name(name) | SourceChange::Entry(name)
+                if name.is_within(&excluded)
         )),
         "{changes:?}"
     );

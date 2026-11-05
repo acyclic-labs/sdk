@@ -101,6 +101,8 @@ pub(super) fn record_cleanup_credits(
 /// One change the host reported beneath a watched root.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum HostChange {
+    /// The host reported removal or departure of this root-relative name.
+    Departed(PathBuf),
     /// This root-relative path (empty: the root itself) may bind another entry, or none, and so may everything reached through it.
     Rebound(PathBuf),
     /// The entry at this root-relative path may have changed in place: its content or attributes.
