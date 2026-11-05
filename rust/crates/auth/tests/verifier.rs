@@ -592,18 +592,18 @@ fn signed_parser_seed_corpus() {
         ("attenuated", child.encode()),
         ("sealed", child.seal().unwrap().encode()),
     ];
+    let directory = std::env::var_os("AUTH_CORPUS_OUTPUT").map(|relative| {
+        let mut directory = acyclic_test_support::source_path("");
+        directory.push(relative);
+        std::fs::create_dir_all(&directory).unwrap();
+        directory
+    });
     for (name, bytes) in cases {
         let parsed = verify(&bytes, &trust, NOW).unwrap();
         assert_eq!(parsed.encode().as_slice(), bytes.as_slice());
         // Explicit corpus regeneration shares the same fully signed fixtures.
-        if let Some(directory) = std::env::var_os("AUTH_CORPUS_OUTPUT") {
-            let directory = acyclic_test_support::source_path("").join(directory);
-            std::fs::create_dir_all(&directory).unwrap();
-            std::fs::write(
-                std::path::Path::new(&directory).join(name),
-                bytes.as_slice(),
-            )
-            .unwrap();
+        if let Some(directory) = &directory {
+            std::fs::write(directory.join(name), bytes.as_slice()).unwrap();
         }
     }
 }
