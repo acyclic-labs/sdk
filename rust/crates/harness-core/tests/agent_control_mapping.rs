@@ -331,6 +331,25 @@ fn trace_call_sites(source: &str, inventory: &Inventory) -> Result<(), String> {
             expr => name(expr),
         }
     }
+    fn binds(pattern: &syn::Pat, name: &str) -> bool {
+        struct Binding<'a> {
+            name: &'a str,
+            found: bool,
+        }
+        impl<'ast> Visit<'ast> for Binding<'_> {
+            fn visit_pat_ident(&mut self, pattern: &'ast syn::PatIdent) {
+                self.found |= pattern.ident == self.name;
+                syn::visit::visit_pat_ident(self, pattern);
+            }
+            fn visit_pat_macro(&mut self, _: &'ast syn::PatMacro) {
+                // An unexpanded binding cannot establish source correspondence.
+                self.found = true;
+            }
+        }
+        let mut binding = Binding { name, found: false };
+        binding.visit_pat(pattern);
+        binding.found
+    }
     #[derive(Default)]
     struct Sites {
         calls: usize,
@@ -374,19 +393,27 @@ fn trace_call_sites(source: &str, inventory: &Inventory) -> Result<(), String> {
                         return None;
                     }
                     let control = name(call.args.first()?)?;
-                    let snapshot = block.stmts[..index].iter().rev().find_map(|statement| {
-                        let syn::Stmt::Local(local) = statement else {
-                            return None;
-                        };
-                        (bound(&local.pat) == Some(vec![control.clone()])).then_some(local)
-                    })?;
+                    let (snapshot_index, snapshot) =
+                        block.stmts[..index].iter().enumerate().rev().find_map(
+                            |(index, statement)| {
+                                let syn::Stmt::Local(local) = statement else {
+                                    return None;
+                                };
+                                binds(&local.pat, &control).then_some((index, local))
+                            },
+                        )?;
                     let Expr::Call(snapshot) = &*snapshot.init.as_ref()?.expr else {
                         return None;
                     };
+                    let recorded_owner = owner(record.args.first()?)?;
                     if call_path(snapshot) != ["control"]
                         || snapshot.args.len() != 1
-                        || owner(snapshot.args.first()?) != owner(record.args.first()?)
-                        || owner(record.args.first()?).is_none()
+                        || owner(snapshot.args.first()?).as_deref() != Some(recorded_owner.as_str())
+                        || block.stmts[snapshot_index + 1..=index]
+                            .iter()
+                            .any(|statement| {
+                                matches!(statement, syn::Stmt::Local(local) if binds(&local.pat, &recorded_owner))
+                            })
                     {
                         return None;
                     }
@@ -529,6 +556,26 @@ fn agent_control_mapping_is_bidirectional() -> Result<(), String> {
         (
             "let before = control(&state);",
             "let before = control(&foreign);",
+            "alarm",
+        ),
+        (
+            "let before = control(&state);",
+            "let before = control(&state); let mut state = foreign;",
+            "alarm",
+        ),
+        (
+            "let before = control(&state);",
+            "let before = control(&state); let (mut state, _) = (foreign, ());",
+            "alarm",
+        ),
+        (
+            "let before = control(&state);",
+            "let before = control(&state); let state: AgentState = foreign;",
+            "alarm",
+        ),
+        (
+            "let before = control(&state);",
+            "let before = control(&state); let before: Control = foreign;",
             "alarm",
         ),
     ] {
