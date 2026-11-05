@@ -42,6 +42,7 @@ use acyclic_stream::{
     CommitRequest, IdempotencyKey, OwnedBytes, Record, RecordHeaders, StreamError, StreamPath,
     StreamProvider, StreamProviderExt as _,
 };
+use sha2::Digest as _;
 
 /// Subtree segment under which a caller keeps its call journals.
 pub const CALLS: &str = "calls";
@@ -269,13 +270,9 @@ impl CallPath {
         self.settle(None, &Outcome::Cancelled(reason.to_owned()))
     }
 
-    /// Settles a fork's copy of this call as `indeterminate` when the call was
-    /// open as copied. `forked_at` is the copy's inherited prefix end, the
-    /// log's `PathHead::origin` cut. Its executor serves the source and never
-    /// writes to the copy, and the source may still run, so the copy ends here
-    /// and is never dispatched again. The commit holds only while the copy is
-    /// exactly its inherited prefix with no terminal: a terminal inherited
-    /// from the source, or anything written to the copy since, refuses it.
+    /// Settles an open fork copy as `indeterminate` at its inherited
+    /// `PathHead::origin` cut. The source executor never writes to the copy.
+    /// The guards refuse inherited terminals and any subsequent copy writes.
     /// O(1) in the fork's size and in the caller's other calls.
     ///
     /// # Errors
@@ -312,7 +309,7 @@ impl CallPath {
         else {
             return Ok(false);
         };
-        let key = IdempotencyKey::new(format!("{}/copy", self.log).into_bytes())
+        let key = IdempotencyKey::new(sha2::Sha256::digest(format!("{}/copy", self.log)).to_vec())
             .map_err(Error::Stream)?;
         let outcome = provider
             .commit(self.settle_copy(forked_at)?.request(key))

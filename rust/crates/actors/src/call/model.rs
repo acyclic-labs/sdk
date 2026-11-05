@@ -17,10 +17,7 @@
 //! `indeterminate` when it was open, and never changes as the source goes on.
 //! The control removes the copy settlement's guards.
 use super::*;
-use acyclic_stream::{
-    CommitOutcome, FollowRequest, FollowUpdate, MemoryStream, StreamProvider,
-    StreamProviderExt as _,
-};
+use acyclic_stream::{CommitOutcome, FollowRequest, FollowUpdate, MemoryStream, StreamProvider};
 use futures::StreamExt as _;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -219,7 +216,8 @@ impl Model {
                 // A caller's root exists, as an agent's inbox does; the fork
                 // takes it at its tail with the whole subtree beneath.
                 let source = StreamPath::new("caller").map_err(|error| error.to_string())?;
-                let root = StreamPath::new("branch").map_err(|error| error.to_string())?;
+                let root = StreamPath::new("branch/".repeat(40) + "leaf")
+                    .map_err(|error| error.to_string())?;
                 let at_tail = match self.provider.head(source.clone()).await {
                     Ok(head) => head.tail,
                     Err(StreamError::NotFound) => {
@@ -704,8 +702,8 @@ async fn terminal_sessions() -> Result<(), String> {
 
 #[tokio::test]
 async fn every_interleaving_settles_once_and_cancel_never_waits() -> Result<(), String> {
-    assert_eq!(explore(Fault::None).await?, 0);
     assert_eq!(explore_copies(Fault::None).await?, 0);
+    assert_eq!(explore(Fault::None).await?, 0);
     // Without its guards a copy's settlement adds a second terminal to a
     // copy that inherited one.
     assert!(explore_copies(Fault::Copy).await? > 0);
