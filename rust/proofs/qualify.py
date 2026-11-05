@@ -63,7 +63,7 @@ elif claim == "scalar-charge-cost":
     crate = "acyclic-fs"
     test = "performance::tests::native::borrowed::item_only_kernel_charge_preserves_exact_errors_receipts_and_cost"
     diagnostic = "scalar charge performed unrelated counter arithmetic"
-    features = ["--no-default-features"]
+    features = ["--no-default-features", "--features", "distributed"]
 elif claim == "budget-errors":
     source = "rust/crates/filesystem/src/performance.rs"
     crate = "acyclic-fs"
