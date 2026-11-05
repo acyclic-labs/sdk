@@ -288,6 +288,17 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
                 .is_pending()
         );
         let prefix = work.receipt();
+        assert!(
+            future
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(&waker))
+                .is_pending()
+        );
+        assert_eq!(
+            work.receipt(),
+            prefix,
+            "a pending lease must reuse its waiters"
+        );
         assert_eq!(prefix.object_probes, if mixed { 2 } else { 0 });
         if !mixed {
             assert_eq!(prefix.backend_read_operations, 0);
