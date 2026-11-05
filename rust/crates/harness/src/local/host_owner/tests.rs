@@ -652,7 +652,9 @@ async fn idle_native_views_retire_and_reattach_lazily() -> Result<()> {
         1,
         "a missing native reference must not reattach a retired child view"
     );
-    let observed = fixture.session("settled", SessionAction::Observe {}).await?;
+    let observed = fixture
+        .session("settled", SessionAction::Observe {})
+        .await?;
     assert_eq!(
         fixture.owner.views().unwrap().len(),
         2,
@@ -811,7 +813,10 @@ async fn native_handoff_carries_next_work_under_the_settlement_fence() -> Result
         (&accepted["task"], &accepted["cwd"])
     );
     assert!(
-        fixture.session("child", SessionAction::Next {}).await.is_err(),
+        fixture
+            .session("child", SessionAction::Next {})
+            .await
+            .is_err(),
         "a competitor's plain claim is refused"
     );
     // A replayed acceptance re-hands the identical claim under the fence.
