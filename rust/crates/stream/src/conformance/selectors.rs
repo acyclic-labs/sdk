@@ -1,6 +1,7 @@
 //! `read` selectors: latest-first keys, key ranges, a follow from beyond the
 //! tail, and `children` paging, each with a negative control.
 use super::*;
+use futures::Stream;
 
 /// Every record of one indexed read, paged `page` at a time through the
 /// shared continuation rule, [`crate::ReadKeySeek::advance`].
