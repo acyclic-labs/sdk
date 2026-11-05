@@ -22,6 +22,10 @@ their malformed suffixes, then plants unknown-operation acceptance in the
 production parser and requires the unchanged decoder assertion to fail. The
 token admission mutation separately checks that an admitted Read token covers
 the operations the deployed client performs.
+The same control adds a second required action to Head's actual method row:
+the retained Session single-action projection must reject that source during
+constant evaluation. Head and child discovery cannot silently keep the first
+action if their contract gains another requirement.
 
 The `capability/public-certificates` and `capability/lineage-chain` captures
 retain the original v1 writer bytes as unsupported-format inputs.
