@@ -124,7 +124,7 @@ export function toolResults(records) {
 export function modelInputs(expected, generations) {
   const contains = expected.default_conventions
     ? [...(expected.model_contains ?? []), ...JSON.parse(readFileSync(
-      new URL("../../rust/crates/harness-core/src/context/instructions.json", import.meta.url), "utf8"))]
+      new URL("../../rust/crates/harness-core/src/context/instructions.json", import.meta.url), "utf8")).map(text => JSON.stringify(text).slice(1, -1))]
     : expected.model_contains;
   const all = contains?.length || expected.model_absent?.length
     || expected.each_model_contains?.length || expected.each_model_absent?.length;
