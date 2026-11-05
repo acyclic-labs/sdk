@@ -13,6 +13,9 @@ fn demand_causes_keep_their_type_without_a_diagnostic_allocation() {
     use std::error::Error;
     for lazy in [false, true] {
         for cause in [
+            DemandError::StaleSource,
+            DemandError::StaleVersion,
+            DemandError::StaleCursor,
             DemandError::NativeWorkUnavailable,
             DemandError::OriginalWorkPoisoned,
             DemandError::WorkerUnavailable,
@@ -58,27 +61,40 @@ fn observation_causes_keep_their_original_box_without_allocating() {
 
 #[test]
 fn lazy_and_direct_demand_conversion_use_the_same_callback_semantics() {
-    use crate::native_mount::shared::outcome::{CallbackFailure, source_failure};
-    for lazy in [false, true] {
-        for (cause, expected) in [
-            (DemandError::Cancelled, CallbackFailure::Cancelled),
-            (DemandError::StaleSource, CallbackFailure::Stale),
-            (DemandError::StaleVersion, CallbackFailure::Stale),
-            (DemandError::StaleCursor, CallbackFailure::Stale),
-            (DemandError::Absent, CallbackFailure::NotFound),
-            (DemandError::NotDirectory, CallbackFailure::NotDirectory),
+    use crate::native_mount::shared::outcome::{CallbackFailure, callback_failure, stops_mount};
+    for transport in 0..3 {
+        for (cause, expected, terminal) in [
+            (DemandError::Cancelled, CallbackFailure::Cancelled, true),
+            (DemandError::StaleSource, CallbackFailure::Stale, false),
+            (DemandError::StaleVersion, CallbackFailure::Stale, false),
+            (DemandError::StaleCursor, CallbackFailure::Stale, false),
+            (DemandError::Absent, CallbackFailure::NotFound, false),
+            (
+                DemandError::NotDirectory,
+                CallbackFailure::NotDirectory,
+                false,
+            ),
             (
                 DemandError::Work(crate::WorkError::Overflow),
                 CallbackFailure::Io,
+                true,
             ),
             (
                 DemandError::Mount(Box::new(MountSourceError::AccessDenied)),
                 CallbackFailure::Denied,
+                false,
             ),
         ] {
-            let converted = convert(cause, lazy);
-            assert_eq!(source_failure(&converted), expected, "{converted:?}");
-            let callback = NativeMountError::Source(converted);
+            let callback = if transport < 2 {
+                NativeMountError::Source(convert(cause, transport == 1))
+            } else {
+                NativeMountError::Demand(cause)
+            };
+            let allocations = acyclic_test_support::measure(|| {
+                assert_eq!(callback_failure(&callback), expected, "{callback:?}");
+                assert_eq!(stops_mount(&callback), terminal, "{callback:?}");
+            });
+            assert_eq!(allocations.count_total, 0);
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             assert_eq!(
                 crate::native_mount::callback_errno(&callback),
@@ -119,18 +135,28 @@ fn real_demand_io_keeps_its_host_code_through_both_conversions()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let absent = root.path().join("not-created");
-    for lazy in [false, true] {
+    for transport in 0..3 {
         // Capture the actual host failure; no fabricated OS-tool fixture.
         let error = std::fs::File::open(&absent).expect_err("fixture path is absent");
         let code = error.raw_os_error().ok_or("host open has no native code")?;
-        let converted = convert(DemandError::Io(error), lazy);
+        let callback = if transport < 2 {
+            NativeMountError::Source(convert(DemandError::Io(error), transport == 1))
+        } else {
+            NativeMountError::Demand(DemandError::Io(error))
+        };
         assert_eq!(
-            crate::native_mount::shared::outcome::source_failure(&converted),
+            crate::native_mount::shared::outcome::callback_failure(&callback),
             crate::native_mount::shared::outcome::CallbackFailure::Os(code)
         );
-        assert!(
-            matches!(converted, MountSourceError::Io(error, None) if error.raw_os_error() == Some(code))
-        );
+        let retained = match &callback {
+            NativeMountError::Source(MountSourceError::Io(error, None))
+            | NativeMountError::Demand(DemandError::Io(error)) => error,
+            _ => panic!("original OS cause was replaced: {callback:?}"),
+        };
+        assert_eq!(retained.raw_os_error(), Some(code));
+        assert!(!crate::native_mount::shared::outcome::stops_mount(
+            &callback
+        ));
     }
     Ok(())
 }
@@ -138,6 +164,9 @@ fn real_demand_io_keeps_its_host_code_through_both_conversions()
 #[test]
 fn demand_round_trips_do_not_nest_transports_or_allocate() {
     for cause in [
+        DemandError::StaleSource,
+        DemandError::StaleVersion,
+        DemandError::StaleCursor,
         DemandError::NativeWorkUnavailable,
         DemandError::OriginalWorkPoisoned,
         DemandError::WorkerUnavailable,
