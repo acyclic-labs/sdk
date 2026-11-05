@@ -59,18 +59,7 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
             .clone();
         // A module can change the declaration without replacing authority or
         // making the declaration's result schemas authoritative.
-        let entries = || -> Result<Vec<_>> {
-            decoded(profile)?
-                .filter_map(|entry| match entry {
-                    Ok((mapping, definition)) if mapping.capability == "shell" => {
-                        Some(Ok((mapping, definition)))
-                    }
-                    Ok(_) => None,
-                    Err(error) => Some(Err(error)),
-                })
-                .collect()
-        };
-        let mut admitted = entries()?;
+        let mut admitted = shell_entries(profile)?;
         assert!(!admitted.is_empty());
         for (_, definition) in &mut admitted {
             definition
@@ -100,7 +89,7 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
         );
         assert_eq!(selected.executor.capability().unwrap().definition, original);
         for alter_name in [false, true] {
-            let mut mismatched = entries()?;
+            let mut mismatched = shell_entries(profile)?;
             for (_, definition) in &mut mismatched {
                 if alter_name {
                     definition.name.push_str("_mismatched");
@@ -118,8 +107,9 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
             );
         }
         let mut missing = ToolRegistry::default();
-        NativeTools::from_definitions(entries()?)?.bind(&mut missing)?;
+        NativeTools::from_definitions(shell_entries(profile)?)?.bind(&mut missing)?;
         assert!(missing.definitions(None)?.is_empty());
+        check_aliases(profile, &registry)?;
         retained.bind(&mut registry)?;
         let selected = registry
             .get("shell", None, None)?
@@ -171,4 +161,70 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
         Err(Error::NotFound(_)),
     ));
     Ok(())
+}
+
+fn check_aliases(profile: NativeToolProfile, registry: &ToolRegistry) -> Result<()> {
+    let original = registry.get("shell", None, None)?.unwrap();
+    for reverse in [false, true] {
+        // Derive a module edit from each family's retained real declaration;
+        // the alias changes spelling while retaining its argument template.
+        let mut declarations = shell_entries(profile)?;
+        let (mut mapping, mut definition) = shell_entries(profile)?.pop().unwrap();
+        mapping.variant = "native_shell_alias".into();
+        definition.name.clone_from(&mapping.variant);
+        declarations.push((mapping, definition));
+        if reverse {
+            declarations.reverse();
+        }
+        let mut selected = registry.clone();
+        NativeTools::from_definitions(declarations)?.bind(&mut selected)?;
+        let visible = selected
+            .definitions_for_grants(&crate::Capabilities::new(["tool:call:shell"]), None)?;
+        assert_eq!(
+            visible.len(),
+            2,
+            "canonical declaration was hidden by aliases"
+        );
+        assert_eq!(selected.definitions(None)?, visible);
+        for definition in &visible {
+            let tool = selected.get(&definition.name, None, None)?.unwrap();
+            assert_eq!(tool.definition, *definition);
+            assert!(
+                std::ptr::eq(tool.executor.capability().unwrap(), original),
+                "native alias replaced the original capability owner"
+            );
+        }
+        assert!(
+            selected
+                .definitions_for_grants(&crate::Capabilities::new(["tool:call:read"]), None)?
+                .is_empty()
+        );
+        #[cfg(feature = "filesystem")]
+        {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .unwrap();
+            let (copied, custody) = selected.clone_with_native_work(&work)?;
+            assert_eq!(copied.definitions(None)?, visible);
+            assert!(custody.bytes() > 0);
+        }
+    }
+    Ok(())
+}
+
+fn shell_entries(
+    profile: NativeToolProfile,
+) -> Result<Vec<(crate::profile::ToolRevision, ToolDefinition)>> {
+    decoded(profile)?
+        .filter_map(|entry| match entry {
+            Ok((mapping, definition)) if mapping.capability == "shell" => {
+                Some(Ok((mapping, definition)))
+            }
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect()
 }

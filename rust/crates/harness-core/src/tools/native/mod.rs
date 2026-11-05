@@ -178,12 +178,20 @@ impl NativeTools {
     /// # Errors
     /// A registry refusal of a declaration.
     pub fn bind(&self, tools: &mut ToolRegistry) -> Result<()> {
-        let mut presented: Vec<(&str, Vec<String>)> = Vec::new();
-        for (name, implementation, definition, arguments) in &self.0 {
-            let Some(capability) = tools.get(name, None, None)? else {
+        // Resolve every original selection before registering a declaration can
+        // replace it, including one offered under the capability's own name.
+        let capabilities = self
+            .0
+            .iter()
+            .map(|(name, ..)| tools.get_shared(name, None, None).map(|tool| tool.cloned()))
+            .collect::<Result<Vec<_>>>()?;
+        let mut presented = std::collections::BTreeMap::<&str, Vec<String>>::new();
+        for ((name, implementation, definition, arguments), capability) in
+            self.0.iter().zip(capabilities)
+        {
+            let Some(capability) = capability else {
                 continue;
             };
-            let capability = Arc::new(capability.clone());
             let original = implementation
                 .clone()
                 .unwrap_or_else(|| Arc::clone(&capability));
@@ -216,10 +224,7 @@ impl NativeTools {
                 None,
             )?;
             tools.select_model_version(&native, &revision)?;
-            match presented.iter_mut().find(|(offered, _)| offered == name) {
-                Some((_, natives)) => natives.push(native),
-                None => presented.push((name, vec![native])),
-            }
+            presented.entry(name).or_default().push(native);
         }
         presented
             .into_iter()

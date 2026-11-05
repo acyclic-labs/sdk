@@ -18,3 +18,19 @@ This is a concrete concurrency control, not an exhaustive scheduling model.
 The production reservation and wakeup are the existing `once_cell` primitive;
 no separate synchronization algorithm or provider response fixture is added.
 Undo the patch before retaining a candidate.
+
+The same control covers replaceable declarations with a canonical name and an
+alias, in both orders. Each alias is an edit of the original embedded family
+declaration and retains its real argument template. Both names must stay
+visible under the original capability grant and retain the original executor
+owner; unrelated grants expose neither. A funded registry copy retains both
+selections.
+
+- `aliases-before-admission.patch` restores the production binding and selection
+  code from commit `6766b845a2c0565fb143c7998849df6dedbbbc0d`. The new alias
+  assertions detect the canonical declaration becoming hidden.
+- `aliases-reselect-capability.patch` restores lookup during registration. The
+  owner-identity assertion detects an alias capturing an earlier adapter.
+
+Apply each patch separately, run the command above, and undo it before running
+the fixed control. Neither mutation changes a decoder or adds a provider fixture.
