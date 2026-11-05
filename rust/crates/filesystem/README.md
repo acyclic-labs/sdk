@@ -309,6 +309,23 @@ bash scripts/run-browser-tests.sh cargo test --locked -p acyclic-fs \
 The runner uses installed Chrome/Chromedriver. Set `CHROME_BINARY_DIR` and
 `CHROMEDRIVER` when selecting another installed distribution.
 
+The shared Blob materializer has a separate Node/WASM property over real
+`Blob.arrayBuffer()` results. It holds delivery after materialization to check
+original funding through cancellation, caller withdrawal and final byte aliases:
+
+```sh
+bindgen=$(bash scripts/ensure-wasm-bindgen.sh)
+export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER="$(dirname "$(command -v "$bindgen")")/wasm-bindgen-test-runner"
+unset WASM_BINDGEN_USE_BROWSER
+cargo test --locked -p acyclic-fs --no-default-features --features browser \
+  --target wasm32-unknown-unknown --test browser_blob_custody
+```
+
+This checks the shared byte materialization path; the browser provider suite
+above checks IndexedDB persistence. The kept
+`fuzz/mutations/browser_blob_payload_custody.patch` removes physical payload
+funding and must fail the withdrawal property's live-byte assertion.
+
 `Counted<P>` also forwards `AsyncObjectStore` directly. Cache and collection
 visits preserve the original owner; async storage calls retain the original
 `AuthorityWork`, buffers and publication holds. Counts describe the wrapped
