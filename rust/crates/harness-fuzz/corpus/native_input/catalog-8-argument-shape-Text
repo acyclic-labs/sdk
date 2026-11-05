@@ -1,0 +1,1 @@
+[{"name":"quit","aliases":["exit","q"],"description":"Quit","arguments":"text","action":{"kind":"request","request":{"kind":"quit"},"confirmation":false}}]

@@ -105,7 +105,7 @@ pub enum SessionAction {
     /// Claim the next input, after the preceding process is quiescent. The
     /// accepting request may replay its claim; another request requires a
     /// fenced handoff. A reply always names the current physical view.
-    Next,
+    Next {},
     /// Capture and settle a process that has exited, including failed writes.
     /// The native resume id is derived from the turn's own custodied event
     /// log, so a running turn never spends an exchange recording it.
@@ -121,7 +121,7 @@ pub enum SessionAction {
         control: Control,
     },
     /// Read the session and its native resume reference.
-    Observe,
+    Observe {},
     /// Where prompt `id`, accepted at inbox sequence `inbox`, stands: the
     /// shared committed reply, with the outcome its settled turn recorded.
     /// The response carries that outcome once in `reply`, without `results`.
@@ -132,7 +132,7 @@ pub enum SessionAction {
         inbox: u64,
     },
     /// After fencing the old process custody, settle an orphaned turn.
-    Recover,
+    Recover {},
 }
 
 /// Requested lifecycle of a native session.

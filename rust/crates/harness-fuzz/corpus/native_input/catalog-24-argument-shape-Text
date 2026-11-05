@@ -1,0 +1,1 @@
+[{"name":"attention","aliases":["att","next"],"description":"Next agent needing attention","arguments":"text","action":{"kind":"select","query":"attention"}}]

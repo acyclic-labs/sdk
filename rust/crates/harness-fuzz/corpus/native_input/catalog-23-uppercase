@@ -1,0 +1,1 @@
+[{"name":"CLEARALL","description":"Clear all conversations after confirmation","arguments":"none","action":{"kind":"request","request":{"kind":"clear_all"},"confirmation":true}}]

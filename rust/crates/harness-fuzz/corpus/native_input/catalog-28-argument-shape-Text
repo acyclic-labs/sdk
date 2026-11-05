@@ -1,0 +1,1 @@
+[{"name":"shell","aliases":["run","sh"],"description":"Run a shell command","arguments":"text","action":{"kind":"tool","tool":"shell"}}]

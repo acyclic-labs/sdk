@@ -1,0 +1,1 @@
+[{"name":"model","description":"Select or inspect the model","arguments":"required_text","action":{"kind":"builtin","command":"model"}}]

@@ -98,7 +98,7 @@ impl HostWorkspaceOwner {
         let include_result = !matches!(&action, SessionAction::Reply { .. });
         let (mut accepted, mut fence) = (None, None);
         match action {
-            SessionAction::Observe => {}
+            SessionAction::Observe {} => {}
             // The first prompt is a message with the spawn's own identity, so
             // a replayed spawn names the same prompt at the same sequence.
             SessionAction::Spawn { prompt } => {
@@ -115,7 +115,7 @@ impl HostWorkspaceOwner {
             SessionAction::Reply { id, inbox } => {
                 accepted = Some(json!({"reply": self.native.reply(&child, &id, inbox).await?}));
             }
-            SessionAction::Next => return self.claim(operation, &child, false).await,
+            SessionAction::Next {} => return self.claim(operation, &child, false).await,
             SessionAction::Complete { claim, outcome } => {
                 fence = Some(
                     self.complete_session(operation, &child, &claim, outcome)
@@ -132,7 +132,7 @@ impl HostWorkspaceOwner {
                     .request(&child, operation, &Event::Control { control })
                     .await?;
             }
-            SessionAction::Recover => {
+            SessionAction::Recover {} => {
                 let (state, session) = self.native.session(&child).await?;
                 if let Some(claimed) = session.claimed() {
                     let claim = TurnClaim {

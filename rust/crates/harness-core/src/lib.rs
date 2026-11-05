@@ -36,6 +36,7 @@ pub use heap_layout::HeapLayout;
 pub mod agent;
 #[doc(hidden)]
 pub mod command_request;
+pub mod commands;
 #[doc(hidden)]
 pub mod config;
 pub mod context;

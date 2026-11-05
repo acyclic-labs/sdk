@@ -14,8 +14,8 @@ recovery = "python3 rust/crates/harness-fuzz/graphcoder-args-control.py"
 controls = {
     "native_stdin_binary": (
         "plugin/src/input.rs",
-        b"input.take(65_537).read_to_end(&mut bytes)?;",
-        b"let _ = input.take(65_537).read_to_end(&mut bytes);",
+        b"input.read_to_end(&mut bytes)?;",
+        b"let _ = input.read_to_end(&mut bytes);",
         "null",
         b"native stdin read error must retain its original cause",
     ),
@@ -77,13 +77,22 @@ controls = {
     ),
     "native_input": (
         "plugin/src/input.rs",
-        b"if bytes.len() > 65_536 {",
+        b"if maximum.is_some_and(|bound| bytes.len() as u64 > bound) {",
         b"if false {",
         "null",
         b"native input exceeds its admitted byte bound",
     ),
 }
 additional_controls = {
+    "native_stdin_binary": [
+        (
+            "plugin/src/main.rs",
+            b"let action = serde_json::from_value(read_json(io::stdin().lock(), None)?)?;",
+            b"let action = serde_json::from_value(read_json(io::stdin().lock(), Some(65_536))?)?;",
+            "null",
+            b"workspace envelope must reach the original workspace client",
+        ),
+    ],
     "cli_args": [
         (
             "plugin/src/runner/args.rs",
@@ -176,21 +185,21 @@ additional_controls = {
     ],
     "native_input": [
         (
-            "rust/crates/harness/src/local/host_owner.rs",
-            b'#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]',
-            b'#[serde(tag = "kind", rename_all = "snake_case")]',
+            "rust/crates/harness-core/src/native_host.rs",
+            b'#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]\npub enum HostAction {',
+            b'#[serde(tag = "kind", rename_all = "snake_case")]\npub enum HostAction {',
             "null",
             b"native action unknown fields must be refused",
         ),
         (
-            "rust/crates/harness/src/local/host_owner/sessions.rs",
+            "rust/crates/harness-core/src/native_host.rs",
             b"    Next {},",
             b"    Next,",
             "null",
             b"native session action unknown fields must be refused",
         ),
         (
-            "rust/crates/harness/src/client/commands.rs",
+            "rust/crates/harness-core/src/commands.rs",
             b"    Theme {},",
             b"    Theme,",
             "null",
@@ -205,20 +214,20 @@ additional_controls = {
         ),
         (
             "plugin/src/input.rs",
-            b"input.take(65_537).read_to_end(&mut bytes)?;",
+            b"input.read_to_end(&mut bytes)?;",
             b"input.take(1).read_to_end(&mut bytes)?;",
             "null",
             b"native input admission changed its original JSON",
         ),
         (
             "plugin/src/input.rs",
-            b"input.take(65_537).read_to_end(&mut bytes)?;",
-            b"let _ = input.take(65_537).read_to_end(&mut bytes);",
+            b"input.read_to_end(&mut bytes)?;",
+            b"let _ = input.read_to_end(&mut bytes);",
             "null",
             b"native input read failure must retain its OS error",
         ),
         (
-            "rust/crates/harness/src/client/commands.rs",
+            "rust/crates/harness-core/src/commands.rs",
             b"if spec.arguments != expected {",
             b"if false {",
             "catalog-installed",

@@ -1,4 +1,5 @@
 //! Product entry point over the shared agent frontend and native-host adapters.
+mod input;
 mod install;
 #[cfg(test)]
 mod tests;
@@ -7,13 +8,12 @@ use acyclic_harness::{
     agent::AgentPath,
     local::{host_files, host_owner::HostAction},
 };
+use input::{Result, parse_task, read_json};
 use serde_json::{Value, json};
 use std::{
-    env,
-    io::{self, Read as _},
+    env, io,
     path::{Path, PathBuf},
 };
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 fn main() -> std::process::ExitCode {
     let arguments = match acyclic_plugin::ingress::parse(env::args_os().collect()) {
@@ -116,14 +116,14 @@ fn internal(args: &[String]) -> Result<bool> {
             let [_, host, event] = args else {
                 return Err("__hook requires HOST EVENT".into());
             };
-            let answer = match read_json(io::stdin().lock()) {
+            let answer = match read_json(io::stdin().lock(), Some(65_536)) {
                 Ok(input) => hook(host, event, input),
                 Err(error) => hook_failure(event, &error.to_string()),
             };
             println!("{answer}");
         }
         "__workspace" => {
-            let action = serde_json::from_value(read_json(io::stdin().lock())?)?;
+            let action = serde_json::from_value(read_json(io::stdin().lock(), None)?)?;
             println!("{}", host_files::request(&env::current_dir()?, action)?);
         }
         "install" | "uninstall" | "doctor" => {
@@ -163,7 +163,7 @@ fn internal(args: &[String]) -> Result<bool> {
 
 fn install_package() -> Result<()> {
     let request: acyclic_fs::package_install::Request =
-        serde_json::from_value(read_json(io::stdin().lock())?)?;
+        serde_json::from_value(read_json(io::stdin().lock(), None)?)?;
     let recovery = serde_json::to_string(&json!(["node", request.directory.join("install.js")]))?;
     let test = env::var("NODE_ENV").as_deref() == Ok("test");
     use acyclic_fs::package_install::Stage;
@@ -230,19 +230,6 @@ fn help() -> Result<()> {
         "\nNative hosts own their tools, permissions and agent loops.\nStart acyclic run --host-workspace --host-state-directory PATH outside the host sandbox.\nacyclic install|uninstall|doctor HOST [--plugin-root PATH] [--settings PATH]\nacyclic host HOST -- POLICY_ARGS\nacyclic [--task ID] fs COMMAND... | discard REF | agents | log | capture | reopen ID"
     );
     Ok(())
-}
-
-fn parse_task(value: &str) -> Result<AgentPath> {
-    Ok(serde_json::from_value(json!(value))?)
-}
-
-fn read_json(input: impl io::Read) -> Result<Value> {
-    let mut bytes = Vec::new();
-    input.take(65_537).read_to_end(&mut bytes)?;
-    if bytes.len() > 65_536 {
-        return Err("native hook exceeds shared command file bound".into());
-    }
-    Ok(serde_json::from_slice(&bytes)?)
 }
 
 fn hook(host: &str, event: &str, input: Value) -> Value {

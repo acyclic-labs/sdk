@@ -1,0 +1,1 @@
+[{"name":"DETAILS","aliases":["DETAIL"],"description":"Toggle tool details","arguments":"none","action":{"kind":"select","query":"details"}}]
