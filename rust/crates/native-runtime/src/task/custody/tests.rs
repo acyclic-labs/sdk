@@ -26,6 +26,17 @@ async fn scoped_custody() {
             let error = task.await.unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::Interrupted);
             assert_eq!(error.to_string(), "TaskCancelled");
+            let cause = error
+                .get_ref()
+                .and_then(|cause| cause.downcast_ref::<JoinFailure>())
+                .expect("task cancellation lost its original typed cause");
+            match cause {
+                JoinFailure::Native(error) => assert!(error.is_cancelled()),
+                #[cfg(feature = "test-support")]
+                JoinFailure::Cancelled(_) => {}
+                #[cfg(feature = "test-support")]
+                JoinFailure::Panicked { .. } => panic!("cancellation became a panic"),
+            }
         } else {
             drop(task);
         }

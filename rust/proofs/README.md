@@ -110,6 +110,13 @@ release producer; both surviving observers must retain the same original error.
 This challenges cause identity without adding a second task implementation.
 Complete scheduler, population cost and platform obligations remain open.
 
+The [task cancellation cause control](task-cancellation-cause/README.md) retains
+a cancellation-only mutation of the shared join-error mapping. The same native
+task custody test must reject replacement of the original typed cause even when
+the error kind, diagnostic and completion are preserved. The shared assertion
+also accepts the deterministic executor's original channel cause; the retained
+command qualifies the native entry point only.
+
 The open whole-operation and topology obligations in the table must remain
 explicit until their checked refinement, original counters and independent
 negative controls exist. In particular, a single-member memory fixture cannot
