@@ -31,6 +31,18 @@ where
     fn model_profile(&self, model: &Model) -> Result<Option<ModelProfileBinding>> {
         self.inner().model_profile(model)
     }
+    #[cfg(feature = "filesystem")]
+    fn admit_profile(
+        &self,
+        model: &Model,
+        profile: &crate::profile::AgentProfile<'_>,
+    ) -> Result<(Model, Arc<dyn ModelProvider>)> {
+        let (model, provider) = self.inner().admit_profile(model, profile)?;
+        Ok((
+            model,
+            Arc::new(Counted::with_ledger(provider, self.ledger())),
+        ))
+    }
     fn native_tool_profile(&self, model: &Model) -> Result<Option<NativeToolProfile>> {
         self.inner().native_tool_profile(model)
     }

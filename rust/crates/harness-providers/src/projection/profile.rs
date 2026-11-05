@@ -105,6 +105,69 @@ mod tests {
         profile::{AgentOverride, ModelProfile, ProjectLayer, RoleFile, resolve},
     };
 
+    fn wrapped_admission(
+        live: std::sync::Arc<dyn ModelProvider>,
+        model: &acyclic_harness_core::model::Model,
+        profile: &acyclic_harness_core::profile::AgentProfile<'_>,
+    ) -> Result<()> {
+        use acyclic_harness_core::model::{Divergence, DivergenceSink, RecordedModel, Recording};
+        use acyclic_stream::testing::{Counted, RequestLedger};
+        use std::sync::Arc;
+
+        struct UnexpectedDivergence;
+        impl DivergenceSink for UnexpectedDivergence {
+            fn diverged(&self, _: Divergence) {
+                panic!("profile admission dispatched a model request");
+            }
+        }
+
+        let (expected_model, expected) = live.admit_profile(model, profile)?;
+        let expected_binding = expected.model_profile(&expected_model)?;
+        // Both wrapper orders must retain their original state after erasure.
+        for order in 0..4 {
+            let ledger = RequestLedger::new();
+            let recording = Arc::new(Recording::default());
+            let sink: Arc<dyn DivergenceSink> = Arc::new(UnexpectedDivergence);
+            let recorded = |provider| -> Arc<dyn ModelProvider> {
+                Arc::new(RecordedModel::new(
+                    provider,
+                    recording.clone(),
+                    sink.clone(),
+                ))
+            };
+            let counted = |provider: Arc<dyn ModelProvider>| -> Arc<dyn ModelProvider> {
+                Arc::new(Counted::with_ledger(provider, ledger.clone()))
+            };
+            let provider = match order {
+                0 => counted(live.clone()),
+                1 => recorded(live.clone()),
+                2 => counted(recorded(live.clone())),
+                _ => recorded(counted(live.clone())),
+            };
+            let source_owners = Arc::strong_count(&recording);
+            let sink_owners = Arc::strong_count(&sink);
+            let mut admitted = None;
+            let cost = acyclic_test_support::measure(|| {
+                admitted = Some(provider.admit_profile(model, profile));
+            });
+            let (model, admitted) = admitted.unwrap()?;
+            assert_eq!(cost.count_total, if order < 2 { 8 } else { 9 });
+            assert_eq!(ledger.requests(), Default::default());
+            let has_recording = usize::from(order != 0);
+            assert_eq!(Arc::strong_count(&recording), source_owners + has_recording);
+            assert_eq!(Arc::strong_count(&sink), sink_owners + has_recording);
+            assert_eq!(model, expected_model);
+            let binding = admitted.model_profile(&model)?.unwrap();
+            let expected_binding = expected_binding.unwrap();
+            assert_eq!(binding.prefix_digest(), expected_binding.prefix_digest());
+            assert_eq!(binding.reasoning(), expected_binding.reasoning());
+            assert_eq!(binding.cache(), expected_binding.cache());
+            admitted.context_capacity(&model)?;
+            assert_eq!(ledger.requests().control(), u64::from(order != 1));
+        }
+        Ok(())
+    }
+
     // Exercise the same protocol projection and encoding as dispatch, without a
     // transport or a second Value projection inside the measured region.
     fn measured_projection(
@@ -265,6 +328,7 @@ mod tests {
                         .as_ref()
                 );
                 if name == "opaque-alias" && effort == Some("high") {
+                    wrapped_admission(std::sync::Arc::new(selected), &original, &profile)?;
                     // Changing future admission cannot rewrite a retained member.
                     catalog.models.get_mut(name).unwrap().thinking_levels = false;
                     registry.register("gemini".into(), catalog.clone())?;

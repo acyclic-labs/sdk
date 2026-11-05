@@ -1,0 +1,12 @@
+--- a/rust/crates/harness-core/src/model/recorded.rs
++++ b/rust/crates/harness-core/src/model/recorded.rs
+@@ -1463,9 +1463,0 @@
+-    #[cfg(feature = "filesystem")]
+-    fn admit_profile(
+-        &self,
+-        model: &Model,
+-        profile: &crate::profile::AgentProfile<'_>,
+-    ) -> Result<(Model, Arc<dyn ModelProvider>)> {
+-        let (model, live) = self.live.admit_profile(model, profile)?;
+-        Ok((model, Arc::new(self.with_live(live))))
+-    }
