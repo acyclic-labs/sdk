@@ -202,7 +202,7 @@ impl CaptureRequest {
         owner: O,
     ) -> Result<O::Output, LaunchFailure<H>> {
         let refused = |error: io::Error, mut handler: H| {
-            handler.retired(true);
+            pump::retire(&mut handler, true, Some(&error));
             Err(LaunchFailure::Refused {
                 failure: ProcessCaptureFailure {
                     error,
@@ -224,7 +224,7 @@ impl CaptureRequest {
             return refused(io::ErrorKind::InvalidInput.into(), handler);
         }
         if let Err(error) = handler.check() {
-            handler.retired(true);
+            pump::retire(&mut handler, true, Some(&error));
             return Err(LaunchFailure::Control { error, handler });
         }
         match self.schedule {
@@ -273,7 +273,7 @@ impl CaptureRequest {
         let tree = match tree {
             Ok(tree) => tree,
             Err(error) => {
-                handler.retired(false);
+                pump::retire(&mut handler, false, Some(&error));
                 return Err(LaunchFailure::Indeterminate {
                     error,
                     handler: Some(handler),
