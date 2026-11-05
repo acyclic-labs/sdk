@@ -42,10 +42,19 @@ try {
           features: { tools: true, images: false } } },
         token_counter: { path: "count", adapter: "responses", response_field: "input_tokens", framing_tokens: 0 },
       } }));
+      const arguments_ = ["--workspace", workspace, "--settings-root", env.HOME,
+        "--catalog", catalog, "--model", "graphcoder-qual/tiny", ...args];
+      // Prove setup through the shipping event output before attributing an
+      // absent report to text input. Empty JSONL admits no model work.
+      const setup = await processes.startReported(binary, [...arguments_,
+        "--operation", "00000000-0000-0000-0000-000000000001", "--input-format", "jsonl", "--output-format", "jsonl"],
+      { cwd: workspace, env });
+      setup.input.end();
+      const prepared = await setup.closed;
+      assert.equal(prepared.code, 0, `step=cli-input-setup ${JSON.stringify(prepared)}`);
+      assert.equal(prepared.signal, null, JSON.stringify(prepared));
       for (const input of ["unbound task\n", "", " \n\n"]) {
-        const running = await processes.startReported(binary, ["--workspace", workspace,
-          "--settings-root", env.HOME, "--catalog", catalog, "--model", "graphcoder-qual/tiny", ...args],
-        { cwd: workspace, env });
+        const running = await processes.startReported(binary, arguments_, { cwd: workspace, env });
         // The refusal oracle requires the selected launch's admitted channel.
         // EOF/owner loss rejects this same wait; no readiness probe is added.
         await running.reportReady;
@@ -64,7 +73,7 @@ try {
       }
     }
   } });
-  console.log(JSON.stringify({ status: "pass", launches: 6, seconds: result.seconds,
+  console.log(JSON.stringify({ status: "pass", launches: 8, seconds: result.seconds,
     preparation_seconds: result.preparation_seconds, root }));
 } catch (error) {
   console.error(`step=cli-input failed: ${error.stack ?? error}; recovery=${recovery}`);
