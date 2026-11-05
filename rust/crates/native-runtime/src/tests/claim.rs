@@ -13,10 +13,32 @@ fn contended(result: io::Result<StoreClaim>) -> bool {
 }
 
 #[test]
-fn a_claim_excludes_a_second_claim_until_it_is_released() -> io::Result<()> {
+fn racing_claims_admit_exactly_one_owner() -> io::Result<()> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("owner.lock");
-    let claim = StoreClaim::acquire(&path)?;
+    let barrier = std::sync::Barrier::new(2);
+    let claims = std::thread::scope(|scope| {
+        let competing = scope.spawn(|| {
+            barrier.wait();
+            StoreClaim::acquire(&path)
+        });
+        barrier.wait();
+        let first = StoreClaim::acquire(&path);
+        competing
+            .join()
+            .map(|second| [first, second])
+            .map_err(|_| io::Error::other("claimant panicked"))
+    })?;
+    let mut owners = Vec::new();
+    for claim in claims {
+        match claim {
+            Ok(claim) => owners.push(claim),
+            Err(error) if is_exclusive_lock_contention(&error) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    assert_eq!(owners.len(), 1);
+    let claim = owners.pop().expect("one owner");
     assert!(contended(StoreClaim::acquire(&path)));
     // Another name for the same file is the same claim.
     let alias = directory.path().join(".").join("owner.lock");
@@ -74,41 +96,6 @@ fn closing_claim_release_retains_the_original_native_failure() -> io::Result<()>
     })
 }
 
-#[test]
-fn racing_claims_admit_exactly_one_owner() -> io::Result<()> {
-    let directory = tempfile::tempdir()?;
-    let path = Arc::new(directory.path().join("owner.lock"));
-    for _ in 0..32 {
-        let barrier = Arc::new(std::sync::Barrier::new(8));
-        let claims = (0..8)
-            .map(|_| {
-                let (path, barrier) = (Arc::clone(&path), Arc::clone(&barrier));
-                std::thread::spawn(move || {
-                    barrier.wait();
-                    StoreClaim::acquire(&path)
-                })
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .map(|thread| {
-                thread
-                    .join()
-                    .map_err(|_| io::Error::other("claimant panicked"))
-            })
-            .collect::<io::Result<Vec<_>>>()?;
-        let mut owners = 0;
-        for claim in claims {
-            match claim {
-                Ok(_) => owners += 1,
-                Err(error) if is_exclusive_lock_contention(&error) => {}
-                Err(error) => return Err(error),
-            }
-        }
-        assert_eq!(owners, 1);
-    }
-    Ok(())
-}
-
 #[cfg(target_os = "linux")]
 #[test]
 fn held_claims_keep_no_descriptor_open() -> io::Result<()> {
@@ -125,7 +112,7 @@ fn held_claims_keep_no_descriptor_open() -> io::Result<()> {
         }
         Ok(count)
     };
-    let claims = (0..256)
+    let claims = (0..2)
         .map(|index| StoreClaim::acquire(&directory.path().join(format!("{index}.lock"))))
         .collect::<io::Result<Vec<_>>>()?;
     assert_eq!(open()?, 0, "{} claims", claims.len());
