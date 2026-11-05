@@ -39,7 +39,7 @@ impl crate::filesystem::UploadRecord for PatchResult {
     }
 }
 
-fn input(arguments: &Value) -> Result<&str> {
+pub(super) fn input(arguments: &Value) -> Result<&str> {
     let object = arguments
         .as_object()
         .filter(|object| object.len() == 1)

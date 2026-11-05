@@ -25,6 +25,9 @@ pub use chain::model as chain_model;
 mod input;
 mod request;
 pub use input::HookInput;
+#[cfg(all(feature = "test-support", feature = "filesystem"))]
+#[doc(hidden)]
+pub use request::check_native_patch_paths;
 
 #[cfg(feature = "filesystem")]
 pub(crate) struct BoundHooks {
@@ -74,7 +77,18 @@ impl Requests {
         (self.actions.is_empty()
             || field("action").is_some_and(|action| self.actions.iter().any(|a| a == action)))
             && selects(&self.command, "command")
-            && selects(&self.path, "path")
+            && self.path.as_ref().is_none_or(|pattern| {
+                field("path").is_some_and(|path| pattern.is_match(path))
+                    || request
+                        .get("paths")
+                        .and_then(Value::as_array)
+                        .is_some_and(|paths| {
+                            paths
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .any(|path| pattern.is_match(path))
+                        })
+            })
     }
 }
 

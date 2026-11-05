@@ -1,0 +1,4 @@
+*** Begin Patch
+*** Add File: public/new
++*** Move to: private/content-is-not-a-path
+*** End Patch

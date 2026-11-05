@@ -1,6 +1,7 @@
 //! Native shapes implemented over the shared execution primitives.
 mod patch;
 pub use patch::apply_patch;
+pub(crate) use patch::input as patch_input;
 
 /// The canonical variant a native profile layer names as a declaration's
 /// implementation.

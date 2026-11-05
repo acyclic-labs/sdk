@@ -1,7 +1,8 @@
 //! The plugin hook protocol's stdin: `{request, config}` (`BeforeHook` in
 //! `sys/types`). A tool call becomes a normalized `Request` (its action, and
 //! the command or path the action names) so one hook judges every provider's
-//! tools alike.
+//! tools alike. Atomic edits expose `paths`, including both ends of each move;
+//! single-file operations expose `path`.
 use super::*;
 use crate::tool::Tool;
 
@@ -104,11 +105,26 @@ pub(super) fn normalized(
         }
         _ => None,
     };
-    let mut request = request(
-        subject,
-        capability(subject, tool),
-        canonical.as_ref().map_or(judged, |call| &call.arguments),
-    );
+    let arguments = canonical.as_ref().map_or(judged, |call| &call.arguments);
+    let implementation = canonical.as_ref().map_or(subject, |call| &call.name);
+    let mut request = if implementation == "apply_patch" {
+        // Use the publication parser, never a second interpretation of headers
+        // or a model-supplied decoy path. Rewrites traverse this same boundary.
+        let patch = crate::tools::variants::patch_input(arguments)?;
+        let changes = crate::tool::patch::parse_document(patch, &mut None)?;
+        let paths = changes
+            .iter()
+            .flat_map(|change| std::iter::once(change.path()).chain(change.move_to()))
+            .map(|path| Value::String(path.to_owned()))
+            .collect();
+        let mut request = serde_json::json!({
+            "event": "tool", "from": "self", "tool": subject, "action": "edit",
+        });
+        request["paths"] = Value::Array(paths);
+        request
+    } else {
+        request(subject, capability(subject, tool), arguments)
+    };
     // Hooks may rewrite the model's input, so their input field retains it;
     // only normalized action/command/path come from the effective executor.
     request["input"] = judged.clone();
@@ -134,9 +150,240 @@ pub(super) fn encode(
     Ok(bytes)
 }
 
+/// Exercises the original patch decoder, native adapter and file-hook boundary.
+/// Inputs are operator-authored V4A bytes, including malformed documents.
+#[cfg(all(feature = "test-support", feature = "filesystem"))]
+pub fn check_native_patch_paths(input: &[u8]) {
+    let Ok(patch) = std::str::from_utf8(input) else {
+        return;
+    };
+    static REGISTRY: std::sync::OnceLock<ToolRegistry> = std::sync::OnceLock::new();
+    let registry = REGISTRY.get_or_init(|| {
+        let mut registry = crate::tools::defaults().unwrap();
+        crate::tools::native::NativeTools::new(crate::model::NativeToolProfile::Openai)
+            .unwrap()
+            .bind(&mut registry)
+            .unwrap();
+        registry
+    });
+    let call = crate::tool::ToolInvocation {
+        operation_id: crate::OperationId::from_bytes([7; 16]),
+        call_id: "original-patch".into(),
+        name: "apply_patch".into(),
+        arguments: serde_json::json!({"input":patch, "path":"public/decoy"}),
+    };
+    let actual = normalized(
+        HookInput::Tool {
+            invocation: &call,
+            response: None,
+            session_id: None,
+        },
+        HookEvent::PreToolUse,
+        None,
+        registry,
+    );
+    match (crate::tool::patch::parse_document(patch, &mut None), actual) {
+        (Ok(changes), Ok(actual)) => {
+            let expected: Vec<_> = changes
+                .iter()
+                .flat_map(|change| std::iter::once(change.path()).chain(change.move_to()))
+                .collect();
+            assert_eq!(actual["action"], "edit", "patch lost its file guard action");
+            assert_eq!(
+                actual["paths"],
+                serde_json::json!(expected),
+                "patch lost an affected guard path"
+            );
+            assert!(
+                actual.get("path").is_none(),
+                "model path competed with patch paths"
+            );
+            let guard = Requests::compile(&RequestMatch {
+                action: vec!["edit".into()],
+                path: Some("^private/".into()),
+                command: None,
+            })
+            .unwrap();
+            assert_eq!(
+                guard.matches(&actual),
+                expected.iter().any(|path| path.starts_with("private/")),
+                "affected paths bypassed or spuriously selected their guard"
+            );
+        }
+        (Err(_), Err(_)) => {}
+        (expected, actual) => {
+            panic!("patch decoder/hook admission differ: {expected:?} / {actual:?}")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "filesystem")]
+    #[tokio::test]
+    async fn atomic_edit_guards_cover_every_path_and_rewritten_move_destination() -> Result<()> {
+        let root = tempfile::tempdir().map_err(Error::process_io)?;
+        let captured = root.path().join("request.json");
+        let literal = |text: &str| format!("'{}'", text.replace('\'', "'\\''"));
+        let powershell = |text: &str| format!("'{}'", text.replace('\'', "''"));
+        let output = captured.to_string_lossy();
+        // These are the actual plugin programs. Capture their real stdin and
+        // exit through the public blocking protocol, on either target OS.
+        let guard = HookSpec {
+            run: HookRun::Plugin {
+                instance: "private-edits".into(),
+                sh: Some(format!(
+                    "cat > {}; echo 'patch guard denied' >&2; exit 2",
+                    literal(&output)
+                )),
+                ps1: Some(format!(
+                    "[IO.File]::WriteAllText({}, [Console]::In.ReadToEnd()); [Console]::Error.WriteLine('patch guard denied'); exit 2",
+                    powershell(&output)
+                )),
+                config: "{}".into(),
+                matcher: Some(RequestMatch {
+                    action: vec!["edit".into()],
+                    path: Some("^private/".into()),
+                    command: None,
+                }),
+            },
+            timeout_ms: 5_000,
+            failure: HookFailure::Block,
+        };
+        let mut registry = crate::tools::defaults()?;
+        crate::tools::native::NativeTools::new(crate::model::NativeToolProfile::Openai)?
+            .bind(&mut registry)?;
+        let invocation = |patch: &str| crate::tool::ToolInvocation {
+            operation_id: crate::OperationId::new(),
+            call_id: "original-patch".into(),
+            name: "apply_patch".into(),
+            arguments: serde_json::json!({"input":patch, "path":"public/decoy"}),
+        };
+        let hooks = |rules: Vec<HookSpec>| -> Result<Hooks> {
+            let mut hooks = Hooks::default();
+            hooks.add_rules([HookRule {
+                on: HookEvent::PreToolUse,
+                matcher: String::new(),
+                hooks: rules,
+            }])?;
+            Ok(hooks)
+        };
+        let preamble = "*** Begin Patch\n*** Add File: public/first\n+first\n";
+        for (operation, expected) in [
+            (
+                "*** Add File: private/added\n+new\n",
+                vec!["public/first", "private/added"],
+            ),
+            (
+                "*** Update File: private/edited\n-old\n+new\n",
+                vec!["public/first", "private/edited"],
+            ),
+            (
+                "*** Delete File: private/deleted\n",
+                vec!["public/first", "private/deleted"],
+            ),
+            (
+                "*** Update File: private/source\n*** Move to: public/destination\n",
+                vec!["public/first", "private/source", "public/destination"],
+            ),
+            (
+                "*** Update File: public/source\n*** Move to: private/destination\n",
+                vec!["public/first", "public/source", "private/destination"],
+            ),
+        ] {
+            let patch = format!("{preamble}{operation}*** End Patch\n");
+            let call = invocation(&patch);
+            let input = HookInput::Tool {
+                invocation: &call,
+                response: None,
+                session_id: None,
+            };
+            let result = hooks(vec![guard.clone()])?
+                .run(
+                    HookEvent::PreToolUse,
+                    root.path(),
+                    root.path(),
+                    input,
+                    &registry,
+                )
+                .await?;
+            assert!(
+                result.blocks(),
+                "atomic edit bypassed its file guard: {operation}"
+            );
+            assert!(result.diagnostics.is_empty(), "{result:?}");
+            let bytes = std::fs::read(&captured).map_err(Error::process_io)?;
+            let received: Value = serde_json::from_slice(&bytes)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            assert_eq!(received["request"]["action"], "edit");
+            assert_eq!(received["request"]["paths"], serde_json::json!(expected));
+            assert!(received["request"].get("path").is_none());
+            assert_eq!(received["request"]["input"], call.arguments);
+        }
+        let public = "*** Begin Patch\n*** Update File: public/source\n*** Move to: public/destination\n*** End Patch\n";
+        let call = invocation(public);
+        let input = HookInput::Tool {
+            invocation: &call,
+            response: None,
+            session_id: None,
+        };
+        assert!(
+            !hooks(vec![guard.clone()])?
+                .run(
+                    HookEvent::PreToolUse,
+                    root.path(),
+                    root.path(),
+                    input,
+                    &registry
+                )
+                .await?
+                .blocks()
+        );
+        // An initially skipped guard must judge the final rewritten patch too.
+        let private = public.replace("public/destination", "private/rewritten");
+        let decision = serde_json::json!({"allow":true,"input":{"input":private}}).to_string();
+        let rewrite = HookSpec {
+            run: HookRun::Plugin {
+                instance: "rewrite".into(),
+                sh: Some(format!(
+                    "cat >/dev/null; printf '%s' {}",
+                    literal(&decision)
+                )),
+                ps1: Some(format!(
+                    "$null = [Console]::In.ReadToEnd(); [Console]::Out.Write({})",
+                    powershell(&decision)
+                )),
+                config: "{}".into(),
+                matcher: None,
+            },
+            timeout_ms: 5_000,
+            failure: HookFailure::Block,
+        };
+        let result = hooks(vec![guard, rewrite])?
+            .run(
+                HookEvent::PreToolUse,
+                root.path(),
+                root.path(),
+                input,
+                &registry,
+            )
+            .await?;
+        assert!(
+            result.blocks(),
+            "rewritten move bypassed its destination guard"
+        );
+        assert!(result.diagnostics.is_empty(), "{result:?}");
+        let received: Value =
+            serde_json::from_slice(&std::fs::read(&captured).map_err(Error::process_io)?)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(
+            received["request"]["paths"],
+            serde_json::json!(["public/source", "private/rewritten"])
+        );
+        Ok(())
+    }
+
     #[cfg(feature = "filesystem")]
     #[test]
     fn native_file_guards_match_the_executed_path_after_each_rewrite() -> Result<()> {

@@ -138,6 +138,14 @@ doc = false
 bench = false
 
 [[bin]]
+name = "native_patch_hooks"
+path = "fuzz_targets/native_patch_hooks.rs"
+required-features = ["native-arguments"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "mock_model_script"
 path = "fuzz_targets/mock_model_script.rs"
 test = false
