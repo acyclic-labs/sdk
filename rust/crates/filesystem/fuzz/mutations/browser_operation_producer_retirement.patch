@@ -1,0 +1,15 @@
+diff --git a/rust/crates/filesystem/src/browser/blob.rs b/rust/crates/filesystem/src/browser/blob.rs
+--- a/rust/crates/filesystem/src/browser/blob.rs
++++ b/rust/crates/filesystem/src/browser/blob.rs
+@@ -28,7 +28,10 @@ impl<F: Future> Future for Physical<F> {
+     type Output = ();
+ 
+     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+-        let value = std::task::ready!(self.future.as_mut().poll(cx));
++        let Poll::Ready(value) = self.future.as_mut().poll(cx) else {
++            self.producer.take();
++            return Poll::Ready(());
++        };
+         if let Some(producer) = self.producer.take() {
+             producer.publish(value);
+         }

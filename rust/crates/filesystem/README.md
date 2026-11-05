@@ -318,7 +318,10 @@ The runner uses installed Chrome/Chromedriver. Set `CHROME_BINARY_DIR` and
 
 The shared Blob materializer has a separate Node/WASM property over real
 `Blob.arrayBuffer()` results. It holds delivery after materialization to check
-original funding through cancellation, caller withdrawal and final byte aliases:
+original funding through cancellation, caller withdrawal and final byte aliases.
+The same completion owner also runs two successive physical reads after delivery
+is withdrawn during the first Promise, keeping their buffers funded until both
+steps settle:
 
 ```sh
 bindgen=$(bash scripts/ensure-wasm-bindgen.sh)
@@ -332,6 +335,9 @@ This checks the shared byte materialization path; the browser provider suite
 above checks IndexedDB persistence. The kept
 `fuzz/mutations/browser_blob_payload_custody.patch` removes physical payload
 funding and must fail the withdrawal property's live-byte assertion.
+`fuzz/mutations/browser_operation_producer_retirement.patch` retires a pending
+producer and must fail with `physical producer retired before settlement`.
+Both mutations run against the same property and shipping completion path.
 
 `Counted<P>` also forwards `AsyncObjectStore` directly. Cache and collection
 visits preserve the original owner; async storage calls retain the original

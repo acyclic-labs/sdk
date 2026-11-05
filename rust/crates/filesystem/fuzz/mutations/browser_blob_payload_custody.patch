@@ -1,14 +1,14 @@
 diff --git a/rust/crates/filesystem/src/browser/blob.rs b/rust/crates/filesystem/src/browser/blob.rs
 --- a/rust/crates/filesystem/src/browser/blob.rs
 +++ b/rust/crates/filesystem/src/browser/blob.rs
-@@ -133,8 +133,7 @@ async fn retained_promise(
-     })
-     .map_err(object_error)?;
+@@ -130,8 +130,7 @@ async fn retained_promise(
+     cancellation: &CancellationToken,
+ ) -> Result<RawBuffer, ObjectStoreError> {
 -    let payload =
 -        RetainedAllocation::claim(length, u64::from(length != 0), &mut accounting.borrow_mut())
 -            .map_err(object_error)?;
 +    let payload = RetainedAllocation::claim(0, 0, &mut accounting.borrow_mut())
 +        .map_err(object_error)?;
-     let storage = RetainedAllocation::claim(
-         std::mem::size_of::<Read>() as u64,
-         1,
+     complete(
+         || {
+             let promise = start()?;
