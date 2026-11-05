@@ -45,6 +45,7 @@ for (const phase of ["generic-worker-control", "private-volume-control", "uncond
   assert.ok(!result.error && result.signal === null,
     `step=run ${phase}; cause=${result.error ?? result.signal}; recovery=${recovery}`);
   const report = JSON.parse(readFileSync(join(destination, "matrix.json")));
+  for (const value of report.results) if (value.error) console.error(`${phase}: ${value.error}`);
   assert.deepEqual(report.results.map(value => value.case), [id],
     `step=retain every topology result; recovery=${recovery}`);
   assert.equal(result.status, negative ? 1 : 0,

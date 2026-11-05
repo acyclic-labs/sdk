@@ -18,9 +18,12 @@
     {"when":{"user":"TOPOLOGY_BLACKBOARD_COORDINATE","tool_result":"BOARD_ORIGINAL_RISK"},"tools":[{"id":"read-board","name":"read","arguments":{"path":".volumes/shared/board.md"}}]},
     {"when":{"user":"TOPOLOGY_BLACKBOARD_COORDINATE","tool_result":"status: reviewed"},"text":["TOPOLOGY_BLACKBOARD_DONE"]},
     {"when":{"user":"TOPOLOGY_BLACKBOARD_ROOT","tool_result":"TOPOLOGY_BLACKBOARD_DONE"},"text":["{{tool_result:/settled/0/answer}}"]},
-    {"when":{"user":"TOPOLOGY_BLACKBOARD_REOPEN"},"tools":[{"id":"read-retained-board","name":"read","arguments":{"path":".volumes/shared/board.md"}}]},
-    {"when":{"user":"TOPOLOGY_BLACKBOARD_REOPEN","tool_result":"status: reviewed"},"text":["TOPOLOGY_BLACKBOARD_REOPEN_DONE"]}
+    {"when":{"user":"TOPOLOGY_BLACKBOARD_REOPEN"},"tools":[{"id":"spawn-reader","name":"spawn","arguments":{"name":"reader","task":"BOARD_REOPEN_READER: read the retained shared board.","role":"blackboard"}}]},
+    {"when":{"user":"TOPOLOGY_BLACKBOARD_REOPEN","tool_result":"agent"},"tools":[{"id":"wait-reader","name":"wait","arguments":{"agents":["reader"]}}]},
+    {"when":{"user":"BOARD_REOPEN_READER","contains":"Coordinate a blackboard"},"tools":[{"id":"read-retained-board","name":"read","arguments":{"path":".volumes/shared/board.md"}}]},
+    {"when":{"user":"BOARD_REOPEN_READER","tool_result":"status: reviewed"},"text":["TOPOLOGY_BLACKBOARD_REOPEN_DONE"]},
+    {"when":{"user":"TOPOLOGY_BLACKBOARD_REOPEN","tool_result":"TOPOLOGY_BLACKBOARD_REOPEN_DONE"},"text":["{{tool_result:/settled/0/answer}}"]}
   ] },
   "inputs": [{"mode":"headless","text":"TOPOLOGY_BLACKBOARD_ROOT","answer":"TOPOLOGY_BLACKBOARD_DONE"},{"mode":"headless","operation":"00000000-0000-0000-0000-000000000002","text":"TOPOLOGY_BLACKBOARD_REOPEN","answer":"TOPOLOGY_BLACKBOARD_REOPEN_DONE"}],
-  "assert": {"requests":18,"model_contains":["Coordinate a blackboard"],"tool_contains":["BOARD_ORIGINAL_FACT","BOARD_ORIGINAL_RISK","status: reviewed","conflict","session_shared"],"tool_errors":["conflict"],"tool_results":[{"path":".volumes/shared/board.md","text":"facts: BOARD_ORIGINAL_FACT\nrisks: BOARD_ORIGINAL_RISK\nstatus: reviewed\n"}]}
+  "assert": {"requests":21,"model_contains":["Coordinate a blackboard"],"tool_contains":["BOARD_ORIGINAL_FACT","BOARD_ORIGINAL_RISK","status: reviewed","conflict","session_shared"],"tool_errors":["conflict"],"tool_results":[{"path":".volumes/shared/board.md","text":"facts: BOARD_ORIGINAL_FACT\nrisks: BOARD_ORIGINAL_RISK\nstatus: reviewed\n"}]}
 }
