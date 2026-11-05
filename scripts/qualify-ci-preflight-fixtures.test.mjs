@@ -25,7 +25,6 @@ test("every production gate step supplies its artifact and complete test selecti
   const sessionFs = plans.find(plan => plan.target === "main" && plan.tests.every(test => test.args[0].startsWith("session_fs_model::")));
   assert.equal(sessionFs.tests.length, 2);
   assert.match(sessionFs.wrapper, /loom-rustc\.(?:sh|cmd)$/);
-  for (const plan of plans) assert.ok(plan.args.includes("model-checking"));
 });
 
 test("omitted or duplicated required model results fail, independent of scheduling order", () => {

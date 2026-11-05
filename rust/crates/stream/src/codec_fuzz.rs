@@ -261,9 +261,9 @@ fn persisted_fact_admitted<T: PartialEq>(
             Err(StreamError::InvalidArgument)
         )
         // A valid domain with no version or only its first byte must refuse
-        // before payload interpretation or capacity accounting.
+        // as malformed before payload interpretation or capacity accounting.
         || [magic.len() - 2, magic.len() - 1].into_iter().any(|end| {
-            !matches!(decode(&bytes[..end], 0), Err(StreamError::Unsupported))
+            !matches!(decode(&bytes[..end], 0), Err(StreamError::InvalidArgument))
         })
     {
         return false;

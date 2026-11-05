@@ -10,7 +10,7 @@
 +        && ((fault.as_deref() == Ok("absent-version") && encoded.len() == domain.len())
 +            || (fault.as_deref() == Ok("partial-version") && encoded.len() == domain.len() + 1))
 +    {
-+        return Err(StreamError::InvalidArgument);
++        return Err(StreamError::Unsupported);
 +    }
      acyclic_auth::format::header(
          encoded,
