@@ -5,6 +5,14 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
+const nativeHarness = ["--features", "filesystem-local,native-execution,test-support,grpc,search-http"];
+const cleanupTests = [
+  "local::workspace::volumes::publication_tests::cancelled_command_retires_before_next_entrant_and_preserves_acknowledged_head",
+  "local::tests::agents::a_shell_call_stages_its_output_on_the_private_volume",
+  "local::owner::publication_tests::private_legacy_owner_migrates_once_without_changing_its_original_identity",
+  "local::owner::publication_tests::concurrent_owner_migration_cannot_publish_another_callers_provisional_key",
+  "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
+];
 const claims = {
   "retained-credit": [
     "rust/crates/filesystem/src/kernel/allocation.rs", "acyclic-fs",
@@ -15,7 +23,7 @@ const claims = {
     "rust/crates/harness/src/local/tests/agents.rs", "acyclic-harness",
     "local::tests::agents::lost_model_producer_closes_local_session_without_settling_input",
     "settlement bypassed the original runtime terminal event",
-    ["--features", "filesystem-local,native-execution,test-support,grpc,search-http"],
+    nativeHarness,
   ],
   "admission-rebind": [
     "rust/crates/stream/src/session/client/admissions.rs", "acyclic-stream",
@@ -62,6 +70,11 @@ const claims = {
     "kernel::allocation::accounting::charge_tests::native_charge_matches_the_old_path_at_every_completed_prefix",
     "kernel charge allocated physical heap storage", [],
   ],
+  "controlled-cleanup": [
+    "rust/crates/harness/src/local/workspace/volumes.rs", "acyclic-harness", cleanupTests[0],
+    "physical cleanup escaped its original task scope", nativeHarness,
+    { patch: "unscoped-claims.patch", positive: cleanupTests },
+  ],
 };
 const [claim, ...extra] = process.argv.slice(2);
 const help = `node rust/proofs/qualify.mjs <${Object.keys(claims).join("|")}>`;
@@ -71,12 +84,16 @@ if (claim === "--help" && extra.length === 0) {
   console.error(`step=select claim; cause=expected exactly one supported claim; recovery: ${help}`);
   process.exitCode = 2;
 } else {
-  const [source, crate, test, diagnostic, features] = claims[claim];
+  const [source, crate, test, diagnostic, features, options = {}] = claims[claim];
   const sourcePath = new URL(source, new URL("../../", import.meta.url));
   const patch = claim === "work-mixed"
     ? "rust/proofs/work-arithmetic/mixed-mutation.patch"
-    : `rust/proofs/${claim}/mutation.patch`;
+    : `rust/proofs/${claim}/${options.patch ?? "mutation.patch"}`;
   const command = ["test", "--locked", "-p", crate, ...features, "--lib", test, "--", "--exact", "--nocapture"];
+  const positive = options.positive
+    ? ["nextest", "run", "--locked", "-p", crate, ...features, "--lib", "-E",
+      options.positive.map(name => `test(=${name})`).join(" | "), "--no-tests=fail"]
+    : command;
   const recovery = `git diff -- ${source}; inspect target/${claim}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}`;
   let step = "read original production source";
   function require(condition) {
@@ -90,12 +107,12 @@ if (claim === "--help" && extra.length === 0) {
     if (result.error) throw result.error;
     return { ...result, output: `${result.stdout ?? ""}${result.stderr ?? ""}` };
   }
-  function check(label) {
-    const result = run("cargo", command);
+  function check(label, selected = command) {
+    const result = run("cargo", selected);
     const directory = new URL(`target/${claim}/`, new URL("../../", import.meta.url));
     mkdirSync(directory, { recursive: true });
     writeFileSync(new URL(`${label}.log`, directory), result.output);
-    console.log(`step=${label}; command=${JSON.stringify(["cargo", ...command])}; exit=${result.status}; signal=${result.signal}`);
+    console.log(`step=${label}; command=${JSON.stringify(["cargo", ...selected])}; exit=${result.status}; signal=${result.signal}`);
     console.log(result.output.trimEnd().split(/\r?\n/).slice(-35).join("\n"));
     return result;
   }
@@ -118,8 +135,9 @@ if (claim === "--help" && extra.length === 0) {
     step = "restore exact original source";
     require(readFileSync(sourcePath).equals(original));
     step = "restored original oracle completes";
-    const restored = check("restored");
-    require(restored.status === 0 && !restored.signal && restored.output.includes("1 passed; 0 failed"));
+    const restored = check("restored", positive);
+    const completed = options.positive ? `${options.positive.length} tests run: ${options.positive.length} passed` : "1 passed; 0 failed";
+    require(restored.status === 0 && !restored.signal && restored.output.includes(completed));
   } catch (error) {
     console.error(`step=${step}; cause=${error.message}; recovery: ${recovery}`);
     process.exitCode = 1;
