@@ -16,7 +16,7 @@ try {
   const [first, second, ...extra] = process.argv.slice(2);
   assert.ok(first && second && !extra.length && isAbsolute(second)
     && (first === "--build" || isAbsolute(first)), "select the compiler or both shipping executables by absolute path");
-  const result = await withOwnedCase({ processes, signal: cancellation.signal, run: async () => {
+  const result = await withOwnedCase({ processes, signal: cancellation.signal, prepare: async () => {
     let acyclic = first, graphcoder = second;
     if (first === "--build") {
       const built = await processes.run(second, ["build", "--locked", "-p", "acyclic-plugin",
@@ -28,6 +28,8 @@ try {
       acyclic = artifacts.acyclic.path;
       graphcoder = artifacts.graphcoder.path;
     }
+    return { acyclic, graphcoder };
+  }, run: async ({ acyclic, graphcoder }) => {
     for (const [index, binary, args] of [[0, graphcoder, []], [1, acyclic, ["run", "--template", "graphcoder"]]]) {
       const workspace = join(root, `workspace-${index}`);
       mkdirSync(workspace);
@@ -44,6 +46,9 @@ try {
         const running = await processes.startReported(binary, ["--workspace", workspace,
           "--settings-root", env.HOME, "--catalog", catalog, "--model", "graphcoder-qual/tiny", ...args],
         { cwd: workspace, env });
+        // The refusal oracle requires the selected launch's admitted channel.
+        // EOF/owner loss rejects this same wait; no readiness probe is added.
+        await running.reportReady;
         running.input.end(input);
         const actual = await running.closed;
         assert.equal(actual.stdout, "", JSON.stringify(actual));
@@ -59,7 +64,8 @@ try {
       }
     }
   } });
-  console.log(JSON.stringify({ status: "pass", launches: 6, seconds: result.seconds, root }));
+  console.log(JSON.stringify({ status: "pass", launches: 6, seconds: result.seconds,
+    preparation_seconds: result.preparation_seconds, root }));
 } catch (error) {
   console.error(`step=cli-input failed: ${error.stack ?? error}; recovery=${recovery}`);
   process.exitCode = 1;
