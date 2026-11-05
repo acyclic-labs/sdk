@@ -1,4 +1,7 @@
-use crate::{Family, ToolDeclaration, ToolDeclarations};
+use crate::{
+    Family, Fields, Header, Provenance, RENDERER_VERSION, SummaryHeader, Tail, ToolDeclaration,
+    ToolDeclarations, WireItem, render, render_summary,
+};
 use proptest::prelude::*;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -9,12 +12,12 @@ use std::cell::Cell;
 struct Schema<'a> {
     value: &'a Value,
     visited: &'a Cell<usize>,
-    refuse: bool,
+    refuse: Option<usize>,
 }
 impl Serialize for Schema<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         self.visited.set(self.visited.get() + 1);
-        if self.refuse {
+        if self.refuse.is_some_and(|visit| self.visited.get() >= visit) {
             return Err(serde::ser::Error::custom("schema boundary refused"));
         }
         self.value.serialize(serializer)
@@ -77,11 +80,11 @@ proptest! {
                 ToolDeclarations::new(family, declarations)
             };
             if family == Family::Chat && search_at.is_some() {
-                prop_assert!(build(false).is_err());
+                prop_assert!(build(None).is_err());
                 prop_assert_eq!(visits.get(), 0);
                 continue;
             }
-            let declarations = build(false).unwrap();
+            let declarations = build(None).unwrap();
             let wire = serde_json::to_value(&declarations).unwrap();
             prop_assert_eq!(visits.get(), schemas.len());
             let mut expected = names.clone();
@@ -109,8 +112,69 @@ proptest! {
                 }
             }).collect();
             prop_assert_eq!(actual_schemas, schemas.iter().collect::<Vec<_>>());
+            // The same admitted declarations fund both headers. Leaf visits
+            // occur at admission only, independent of the number of renders.
+            let mut ordinary_prefix: Option<Vec<u8>> = None;
+            for choice in [SummaryHeader::Keep, SummaryHeader::StripExecutableBuiltins] {
+                visits.set(0);
+                let mut fields = Fields::default();
+                fields.set_tools(family, &build(None).unwrap().with_summary_header(choice)).unwrap();
+                let stripped = choice == SummaryHeader::StripExecutableBuiltins && search_at.is_some();
+                prop_assert_eq!(visits.get(), schemas.len() * if stripped { 2 } else { 1 });
+                let header = Header::new(Provenance {
+                    family, provider:"provider".into(), model:"model".into(),
+                    endpoint:"https://example.invalid".into(), credential_scope:None,
+                }, RENDERER_VERSION, &fields, None).unwrap();
+                if let Some(prefix) = &ordinary_prefix {
+                    prop_assert_eq!(header.bytes(), prefix.as_slice(), "summary choice changed frozen ordinary bytes");
+                } else {
+                    ordinary_prefix = Some(header.bytes().to_vec());
+                }
+                for _ in 0..2 {
+                    let mut ordinary = Vec::new();
+                    render(&header, std::iter::empty::<&WireItem>(), &Tail::new(&fields).unwrap(), &mut ordinary).unwrap();
+                    let ordinary: Value = serde_json::from_slice(&ordinary).unwrap();
+                    prop_assert_eq!(&ordinary["tools"], &wire, "summary choice changed ordinary declarations");
+                    let mut summary = Vec::new();
+                    let result = render_summary(&header, std::iter::empty::<&WireItem>(), "summarize", &Tail::summary(&fields, family).unwrap(), &mut summary);
+                    if family == Family::Gemini && search_at.is_some() && !stripped {
+                        prop_assert!(result.is_err());
+                        prop_assert!(summary.is_empty());
+                    } else {
+                        result.unwrap();
+                        let summary: Value = serde_json::from_slice(&summary).unwrap();
+                        let mut expected = wire.clone();
+                        if stripped {
+                            expected.as_array_mut().unwrap().retain(|tool| {
+                                tool.get("googleSearch").is_none()
+                                    && tool["type"] != "web_search"
+                                    && tool["type"] != "web_search_20250305"
+                            });
+                        }
+                        prop_assert_eq!(&summary["tools"], &expected, "summary retained executable builtins or changed client declarations");
+                        let input = match family { Family::Gemini => "contents", Family::Responses => "input", _ => "messages" };
+                        prop_assert_eq!(summary[input].as_array().unwrap().len(), 1);
+                    }
+                }
+                prop_assert_eq!(visits.get(), schemas.len() * if stripped { 2 } else { 1 }, "rendering repeated schema work");
+                if stripped && !schemas.is_empty() {
+                    let admitted = fields.clone();
+                    visits.set(0);
+                    let refusing = build(Some(schemas.len() + 1)).unwrap().with_summary_header(choice);
+                    prop_assert!(fields.set_tools(family, &refusing).is_err());
+                    prop_assert_eq!(visits.get(), schemas.len() + 1, "summary admission must stop at the first refusing leaf");
+                    prop_assert_eq!(&fields, &admitted, "summary refusal partially replaced the admitted fields");
+                }
+                // Dropping and replacing tools must also drop the alternate header.
+                fields.retain(|field| field != "tools");
+                prop_assert_eq!(fields, Fields::default());
+                fields.set_tools(family, &build(None).unwrap()).unwrap();
+                let mut kept = Fields::default();
+                kept.set_tools(family, &build(None).unwrap()).unwrap();
+                prop_assert_eq!(fields, kept);
+            }
             visits.set(0);
-            let refusing = build(true).unwrap();
+            let refusing = build(Some(1)).unwrap();
             if schemas.is_empty() {
                 prop_assert!(serde_json::to_value(&refusing).is_ok());
             } else {
@@ -128,7 +192,7 @@ proptest! {
             for refuse in [false, true] {
                 let declaration = ToolDeclaration::Freeform {
                     name:"apply_patch".into(), description:"native guidance",
-                    format:Schema {value:&format, visited:&visits, refuse},
+                    format:Schema {value:&format, visited:&visits, refuse:refuse.then_some(1)},
                 };
                 let result = ToolDeclarations::new(family, vec![declaration]);
                 if family != Family::Responses {
@@ -145,6 +209,24 @@ proptest! {
                     prop_assert_eq!(&wire[0]["format"], &format);
                     prop_assert_eq!(&wire[0]["type"], &json!("custom"));
                     prop_assert!(wire[0].get("parameters").is_none());
+                    let tools = ToolDeclarations::new(family, vec![
+                        ToolDeclaration::WebSearch,
+                        ToolDeclaration::Freeform {
+                            name:"apply_patch".into(), description:"native guidance",
+                            format:Schema {value:&format, visited:&visits, refuse:None},
+                        },
+                    ]).unwrap().with_summary_header(SummaryHeader::StripExecutableBuiltins);
+                    let mut fields = Fields::default();
+                    fields.set_tools(family, &tools).unwrap();
+                    let header = Header::new(Provenance {
+                        family, provider:"provider".into(), model:"model".into(),
+                        endpoint:"https://example.invalid".into(), credential_scope:None,
+                    }, RENDERER_VERSION, &fields, None).unwrap();
+                    let mut summary = Vec::new();
+                    render_summary(&header, std::iter::empty::<&WireItem>(), "summarize", &Tail::summary(&fields, family).unwrap(), &mut summary).unwrap();
+                    let summary: Value = serde_json::from_slice(&summary).unwrap();
+                    prop_assert_eq!(&summary["tools"], &wire, "summary changed the freeform executor declaration");
+                    prop_assert_eq!(visits.replace(0), 2, "both admitted headers visit the borrowed format exactly once");
                 }
             }
         }
@@ -168,7 +250,7 @@ fn duplicate_server_declarations_refuse_without_schema_visits() {
                 parameters: Schema {
                     value: &value,
                     visited: &visits,
-                    refuse: false,
+                    refuse: None,
                 },
             },
             ToolDeclaration::WebSearch,
@@ -184,7 +266,7 @@ fn duplicate_server_declarations_refuse_without_schema_visits() {
             parameters: Schema {
                 value: &value,
                 visited: &visits,
-                refuse: false,
+                refuse: None,
             },
         };
         let mut declarations = vec![function(), ToolDeclaration::WebSearch];

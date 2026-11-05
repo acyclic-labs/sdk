@@ -68,6 +68,7 @@ impl Field {
 pub struct Fields {
     values: [Option<Value>; NAMES.len()],
     tools: Option<Box<RawValue>>,
+    summary_tools: Option<Box<RawValue>>,
     server_tools: bool,
 }
 
@@ -75,6 +76,8 @@ impl PartialEq for Fields {
     fn eq(&self, other: &Self) -> bool {
         self.values == other.values
             && self.tools.as_deref().map(RawValue::get) == other.tools.as_deref().map(RawValue::get)
+            && self.summary_tools.as_deref().map(RawValue::get)
+                == other.summary_tools.as_deref().map(RawValue::get)
     }
 }
 
@@ -83,6 +86,7 @@ impl Default for Fields {
         Self {
             values: std::array::from_fn(|_| None),
             tools: None,
+            summary_tools: None,
             server_tools: false,
         }
     }
@@ -123,11 +127,13 @@ impl Fields {
         }
         if !keep("tools") {
             self.tools = None;
+            self.summary_tools = None;
             self.server_tools = false;
         }
     }
 
-    /// Encodes the ordered declaration list once, without a staging tree.
+    /// Encodes each selected declaration list once, without a staging tree.
+    /// An explicit summary choice encodes a second list only when it differs.
     ///
     /// # Errors
     /// The declarations' family must match `family`, and encoding must succeed.
@@ -142,7 +148,15 @@ impl Fields {
             ));
         }
         let encoded = serde_json::to_string(tools).map_err(RenderError::Json)?;
+        let summary = tools
+            .summary_tools()
+            .map(|tools| {
+                let encoded = serde_json::to_string(&tools).map_err(RenderError::Json)?;
+                RawValue::from_string(encoded).map_err(RenderError::Json)
+            })
+            .transpose()?;
         self.tools = Some(RawValue::from_string(encoded).map_err(RenderError::Json)?);
+        self.summary_tools = summary;
         self.server_tools = tools.has_server_tools();
         Ok(())
     }
@@ -155,6 +169,11 @@ impl Fields {
     /// The encoded tool declarations, if any.
     pub fn tools(&self) -> Option<&RawValue> {
         self.tools.as_deref()
+    }
+
+    /// A separately admitted summary declaration list, only when tools differ.
+    pub(crate) fn summary_tools(&self) -> Option<&RawValue> {
+        self.summary_tools.as_deref()
     }
 
     fn entries(&self, start: usize, end: usize) -> impl Iterator<Item = (&'static str, &Value)> {
