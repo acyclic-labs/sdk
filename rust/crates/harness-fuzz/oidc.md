@@ -14,6 +14,10 @@ and README retain issuer, source, original response hashes and subject. These
 expired disposable tokens are replayed against the injected original clock,
 without contacting an issuer or changing signed bytes.
 
+An internal ES256 vector uses the maintained P-256 signer and the captured
+claim bytes; invalid curve-point replacement must retain its last-good key.
+This generated cryptographic vector is not an external-server response.
+
 Every invocation requires original signature/identity/expiry acceptance and
 refusal of an actual corrupted signature. Arbitrary input reaches the compact
 header, signature and claims decoders and all three pinned JWKS families.

@@ -68,7 +68,7 @@ arrow-schema = { version = "=57.0.0", optional = true }
 arrow-ipc = { version = "=57.0.0", default-features = false, optional = true }
 parquet = { version = "=57.0.0", default-features = false, features = ["arrow"], optional = true }
 ring = { version = "=0.17.14", features = ["wasm32_unknown_unknown_js"], optional = true }
-p256 = { version = "=0.13.2", default-features = false, features = ["ecdsa"], optional = true }
+p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"], optional = true }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 acyclic-model-render = { version = "=0.2.0", path = "../model-render" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }

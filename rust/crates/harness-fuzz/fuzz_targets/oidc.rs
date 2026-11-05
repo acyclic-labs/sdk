@@ -6,7 +6,7 @@ use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use bytes::Bytes;
 use libfuzzer_sys::fuzz_target;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 const CAPTURE: &str = "../../harness/fixtures/conformance/identity/dex/";
 const JWKS: &[u8] = include_bytes!("../../harness/fixtures/conformance/identity/dex/jwks.body");
@@ -68,6 +68,39 @@ fuzz_target!(|data: &[u8]| {
         if let Ok(token) = std::str::from_utf8(data) {
             let _ = verifier.verify(token, now);
         }
+        // Internal ES256 vector uses the actual maintained signer and the
+        // capture's original claim bytes; no external response is fabricated.
+        use p256::ecdsa::{Signature, SigningKey, signature::Signer as _};
+        let signing = SigningKey::from_slice(&[1; 32]).unwrap();
+        let point = signing.verifying_key().to_sec1_point(false);
+        let ec_keys = serde_json::to_vec(&json!({"keys":[{
+            "kty":"EC", "crv":"P-256", "alg":"ES256", "kid":"ec",
+            "x":URL_SAFE_NO_PAD.encode(point.x().unwrap()),
+            "y":URL_SAFE_NO_PAD.encode(point.y().unwrap())
+        }]}))
+        .unwrap();
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"ES256","kid":"ec"}"#);
+        let message = format!("{header}.{payload}");
+        let signature: Signature = signing.sign(message.as_bytes());
+        let ec_token = format!("{message}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()));
+        let mut ec = oidc::Verifier::new(config(oidc::SigningAlgorithm::Es256));
+        ec.refresh(&Source(&ec_keys), now).await.unwrap();
+        assert_eq!(
+            ec.verify(&ec_token, now).unwrap().subject(),
+            identity.subject()
+        );
+        let invalid_point = serde_json::to_vec(&json!({"keys":[{
+            "kty":"EC", "crv":"P-256", "alg":"ES256", "kid":"ec",
+            "x":URL_SAFE_NO_PAD.encode([0; 32]),
+            "y":URL_SAFE_NO_PAD.encode([0; 32])
+        }]}))
+        .unwrap();
+        assert!(ec.refresh(&Source(&invalid_point), now + 30).await.is_err());
+        assert_eq!(
+            ec.verify(&ec_token, now + 30).unwrap().subject(),
+            identity.subject()
+        );
+
         // All pinned key families reach their real JWKS decoder. A rejected
         // replacement must preserve the original authenticated snapshot.
         for algorithm in [
