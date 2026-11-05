@@ -176,25 +176,19 @@ impl NativeSourceWatch {
         result
     }
 
-    pub(super) fn cleanup(
+    pub(super) fn cleanup_driver(
         &self,
+        work: &mut crate::NativeMaterializationWork,
         wait: Option<&crate::CancellationToken>,
     ) -> Result<(), DemandError> {
-        check_wait(wait)?;
-        let mut work = self
-            .delivery()
-            .original
-            .as_ref()
-            .ok_or(DemandError::NativeWorkUnavailable)?
-            .clone();
         self.delivery().ensure_stop_available()?;
         let mut custody = self.stream.lock_with_wait(wait)?;
         check_wait(wait)?;
         let Some(stream) = custody.as_mut() else {
             return Ok(());
         };
-        stream.ensure_cleanup_wait_available(&work)?;
-        let result = stream.cleanup_admitted(&mut work);
+        stream.ensure_cleanup_wait_available(work)?;
+        let result = stream.cleanup_admitted(work);
         if stream.is_stopped() {
             *custody = None;
         }

@@ -19,6 +19,17 @@ impl NativeSourceWatch {
         self.cleanup(Some(wait))
     }
 
+    fn cleanup(&self, wait: Option<&crate::CancellationToken>) -> Result<(), DemandError> {
+        check_wait(wait)?;
+        let mut work = self
+            .delivery()
+            .original
+            .as_ref()
+            .ok_or(DemandError::NativeWorkUnavailable)?
+            .clone();
+        self.cleanup_driver(&mut work, wait)
+    }
+
     /// Observes destruction of the original data, after its payload and keepers.
     #[cfg(test)]
     pub(super) fn observe_data_drop(
