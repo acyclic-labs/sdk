@@ -418,7 +418,13 @@ impl LocalHarness {
             .0)
     }
 
-    async fn host_agents(self: &Arc<Self>) -> Result<Hosted> {
+    // Hosting is initialized once by the original cell. Erase its future here
+    // so every connection holds a pointer instead of the entire startup chain.
+    fn host_agents(self: &Arc<Self>) -> BoxProviderFuture<'_, Result<Hosted>> {
+        Box::pin(self.initialize_agents())
+    }
+
+    async fn initialize_agents(self: &Arc<Self>) -> Result<Hosted> {
         use crate::hosting::{Bound, RootRequest, Serving, Turns};
         let authority = self.root_authority.clone().ok_or_else(|| {
             Error::Unsupported("an embedded harness has no agent signing custody".into())
