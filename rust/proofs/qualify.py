@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "work-arithmetic", "borrowed-budget"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "work-arithmetic", "borrowed-budget", "native-charge"])
 claim = parser.parse_args().claim
 if claim == "retained-credit":
     source = "rust/crates/filesystem/src/kernel/allocation.rs"
@@ -52,11 +52,17 @@ elif claim == "work-arithmetic":
     test = "performance::tests::full_width_work_arithmetic_preserves_exact_sums_and_refusals"
     diagnostic = "full-width work sum disagreed with wider arithmetic"
     features = []
-else:
+elif claim == "borrowed-budget":
     source = "rust/crates/filesystem/src/kernel/allocation/accounting.rs"
     crate = "acyclic-fs"
     test = "performance::tests::native::borrowed::completed_kernel_work_borrows_the_original_budget_without_allocating"
     diagnostic = "verification copied the original budget"
+    features = []
+else:
+    source = "rust/crates/filesystem/src/kernel/allocation/accounting.rs"
+    crate = "acyclic-fs"
+    test = "kernel::allocation::accounting::charge_tests::native_charge_matches_the_old_path_at_every_completed_prefix"
+    diagnostic = "kernel charge allocated physical heap storage"
     features = []
 SOURCE = ROOT / source
 COMMAND = ["cargo", "test", "--locked", "-p", crate, *features, "--lib", test,

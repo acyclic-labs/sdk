@@ -26,6 +26,11 @@ former completion body with a mutation of the actual kernel accounting method.
 The existing address, verification-count, allocation and receipt observations
 remain on that production entry point; no machine-level copy count is inferred.
 
+The [native-charge control](native-charge/README.md) inserts a physical allocation
+in the actual charge method. The existing completed-prefix property must reject
+it through the real allocator. It replaces a test-only hook, thread-local
+injection flag and redundant fixed example; the separate mutex oracle remains.
+
 The [work arithmetic control](work-arithmetic/README.md) compares actual receipt
 addition with independent wider arithmetic across every declared field, including
 peak/max semantics and unchanged receipts on refused addition or charge. Its

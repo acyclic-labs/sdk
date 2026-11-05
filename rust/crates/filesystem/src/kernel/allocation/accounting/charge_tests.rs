@@ -2,30 +2,11 @@ use super::tests::{amount, counters, status};
 use super::*;
 use acyclic_test_support::{AllocationInfo, measure};
 use proptest::prelude::*;
-use std::cell::Cell;
-
-std::thread_local! {
-    static EXTRA_ALLOCATION: Cell<bool> = const { Cell::new(false) };
-}
-
-pub(super) fn redundant_allocation() {
-    if EXTRA_ALLOCATION.with(Cell::get) {
-        drop(std::hint::black_box(Box::new([0_u8; 17])));
-    }
-}
 
 fn measured<T>(run: impl FnOnce() -> T) -> (T, AllocationInfo) {
     let mut result = None;
     let heap = measure(|| result = Some(run()));
     (result.unwrap(), heap)
-}
-
-fn no_heap_work(heap: AllocationInfo) -> Result<(), AllocationInfo> {
-    if heap == AllocationInfo::default() {
-        Ok(())
-    } else {
-        Err(heap)
-    }
 }
 
 fn scope(
@@ -113,55 +94,11 @@ proptest! {
                 let mut accounting = KernelAccounting::native(&work[1], &caller_cancel[1]);
                 if scalar { accounting.charge_items(delta.items_examined) } else { accounting.charge(delta) }
             });
-            prop_assert_eq!(no_heap_work(old_heap), Ok(()));
-            prop_assert_eq!(no_heap_work(new_heap), Ok(()));
+            prop_assert_eq!(old_heap, AllocationInfo::default());
+            prop_assert_eq!(new_heap, AllocationInfo::default(), "kernel charge allocated physical heap storage");
             prop_assert_eq!(status(new), status(old));
             prop_assert_eq!(roots[1].receipt(), roots[0].receipt());
             prop_assert_eq!(roots[1].live_allocation_bytes(), roots[0].live_allocation_bytes());
-        }
-    }
-}
-
-#[test]
-fn a_temporary_allocation_in_charge_fails_the_same_physical_heap_assertion() {
-    let cancellation = crate::CancellationToken::new();
-    let root = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
-    for depth in 0..3 {
-        for invocation in [false, true] {
-            for recheck in [false, true] {
-                let work = scope(&root, &vec![WorkBudget::UNBOUNDED; depth], invocation);
-                let work = if recheck {
-                    work.recheck_admitted()
-                } else {
-                    work
-                };
-                let mut accounting = KernelAccounting::native(&work, &cancellation);
-                // Warm the lock checker TLS outside either heap measurement.
-                accounting.check().unwrap();
-                let (_, clean) = measured(|| accounting.charge(WorkCounters::UNCHARGED).unwrap());
-                no_heap_work(clean).unwrap();
-                struct Restore(bool);
-                impl Drop for Restore {
-                    fn drop(&mut self) {
-                        EXTRA_ALLOCATION.with(|flag| flag.set(self.0));
-                    }
-                }
-                let restore = Restore(EXTRA_ALLOCATION.with(|flag| flag.replace(true)));
-                let (_, broken) = measured(|| accounting.charge(WorkCounters::UNCHARGED).unwrap());
-                drop(restore);
-                assert_eq!(
-                    broken,
-                    AllocationInfo {
-                        count_total: 1,
-                        count_current: 0,
-                        count_max: 1,
-                        bytes_total: 17,
-                        bytes_current: 0,
-                        bytes_max: 17,
-                    }
-                );
-                assert_eq!(no_heap_work(broken), Err(broken));
-            }
         }
     }
 }
@@ -216,7 +153,7 @@ fn kernel_admission_visits_the_original_leaf_once() {
                     .count_locks(|| measured(|| accounting.remaining()));
                 result.unwrap();
                 exactly_one(locks).unwrap();
-                no_heap_work(heap).unwrap();
+                assert_eq!(heap, AllocationInfo::default());
                 let (result, locks) = root.state.count_locks(|| {
                     accounting.check()?;
                     accounting.remaining()
@@ -229,7 +166,7 @@ fn kernel_admission_visits_the_original_leaf_once() {
                 let operation = result.unwrap();
                 assert!(std::ptr::eq(operation.original.unwrap(), &work));
                 exactly_one(locks).unwrap();
-                no_heap_work(heap).unwrap();
+                assert_eq!(heap, AllocationInfo::default());
             }
         }
     }
