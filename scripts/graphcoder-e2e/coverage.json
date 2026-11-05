@@ -29,7 +29,8 @@
         "child-result",
         "child-discard",
         "nested-children",
-        "topology-blackboard"
+        "topology-blackboard",
+        "topology-hierarchy"
       ]
     },
     "A4": {

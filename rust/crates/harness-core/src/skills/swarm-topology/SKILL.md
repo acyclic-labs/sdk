@@ -10,7 +10,7 @@ only real dependencies, and name the artifact that joins each branch. Choose a
 pattern below, then give each participant its inputs, output and ownership.
 
 For native `spawn {name, task, role}`, the `pipeline`, `group-chat`,
-`debate-ring` and `blackboard` roles select fresh coordinators through the
+`debate-ring`, `blackboard` and `hierarchy` roles select fresh coordinators through the
 ordinary template loader. Give the coordinator a self-contained task with its
 participants, artifacts and completion condition. Each delegates through the
 existing worker, advisor and reviewer roles. These role files guide behavior;

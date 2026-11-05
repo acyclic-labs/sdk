@@ -94,6 +94,7 @@ const FILES: &[(&str, &[u8])] = &[
     seed_file!("templates/blackboard/AGENT.md"),
     seed_file!("templates/debate-ring/AGENT.md"),
     seed_file!("templates/group-chat/AGENT.md"),
+    seed_file!("templates/hierarchy/AGENT.md"),
     seed_file!("templates/orchestrator/AGENT.md"),
     seed_file!("templates/orchestrator/agent.ts"),
     seed_file!("templates/pipeline/AGENT.md"),

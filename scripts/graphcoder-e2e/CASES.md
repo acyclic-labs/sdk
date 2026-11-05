@@ -5,11 +5,16 @@ Its authored SDK conversation waits for one child to publish a session-shared
 board, then a sibling reads and extends that original publication. Two edits
 use the same original version: the second must report a conflict. The
 coordinator reads the unchanged contributions after both producers finish.
-A second GraphCoder process reopens the same session and reads the retained board.
+A second GraphCoder process reopens the same session and delegates a reader
+that reads the retained board through its own admitted role.
 `node scripts/qualify-topology-presets.mjs GRAPHCODER MOCK_MODEL FRESH_ABSOLUTE_OUTPUT`
 checks the same conversation with a generic worker, private sibling volumes,
 and an omitted edit version. Each must fail the unchanged assertions before
 the original role, sharing and version condition pass together.
+`topology-hierarchy` joins an original grandchild result into an independent
+reviewer's task and returns that reviewer's actual terminal answer. The same
+qualifier rejects a generic lead, a substituted leaf and a substituted review
+before the original contributions pass together.
 The qualifier retains its modified `cases/` and `coverage.json` input under
 the fresh output directory. `E2E_CASES_ROOT` selects that tree in the ordinary
 runner; checked-in inputs are read only, including if qualification is killed.

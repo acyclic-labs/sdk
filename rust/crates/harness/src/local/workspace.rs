@@ -201,15 +201,16 @@ impl LocalWorkspace {
             project,
             None,
             std::iter::once((crate::filesystem::HOME_VOLUME.into(), scratch, None)).chain(
-                self.mounts.mounts().filter_map(|(_, mount)| {
-                    (mount.view.volume.class() == VolumeClass::SessionShared).then(|| {
+                self.mounts
+                    .mounts()
+                    .filter(|(_, mount)| mount.view.volume.class() == VolumeClass::SessionShared)
+                    .map(|(_, mount)| {
                         (
                             mount.view.name.clone(),
                             mount.view.volume.clone(),
                             mount.view.source.clone(),
                         )
-                    })
-                }),
+                    }),
             ),
         )?;
         volumes::attach(

@@ -1,0 +1,21 @@
+{
+  "id": "topology-hierarchy",
+  "workspace": {"kind":"plain","files":{}},
+  "model": {"steps":[
+    {"when":{"user":"HIERARCHY_ROOT"},"tools":[{"id":"spawn-lead","name":"spawn","arguments":{"name":"lead","task":"HIERARCHY_LEAD","role":"hierarchy"}}]},
+    {"when":{"user":"HIERARCHY_ROOT","tool_result":"agent"},"tools":[{"id":"wait-lead","name":"wait","arguments":{"agents":["lead"]}}]},
+    {"when":{"user":"HIERARCHY_LEAD","contains":"Coordinate a hierarchy"},"tools":[{"id":"spawn-branch","name":"spawn","arguments":{"name":"branch","task":"HIERARCHY_BRANCH","role":"worker"}}]},
+    {"when":{"user":"HIERARCHY_LEAD","tool_result":"agent"},"tools":[{"id":"wait-branch","name":"wait","arguments":{"agents":["branch"]}}]},
+    {"when":{"user":"HIERARCHY_BRANCH"},"tools":[{"id":"spawn-leaf","name":"spawn","arguments":{"name":"leaf","task":"HIERARCHY_LEAF","role":"worker"}}]},
+    {"when":{"user":"HIERARCHY_BRANCH","tool_result":"agent"},"tools":[{"id":"wait-leaf","name":"wait","arguments":{"agents":["leaf"]}}]},
+    {"when":{"user":"HIERARCHY_LEAF"},"text":["LEAF_ORIGINAL_EVIDENCE"]},
+    {"when":{"user":"HIERARCHY_BRANCH","tool_result":"LEAF_ORIGINAL_EVIDENCE"},"text":["{{tool_result:/settled/0/answer}}"]},
+    {"when":{"user":"HIERARCHY_LEAD","tool_result":"LEAF_ORIGINAL_EVIDENCE"},"tools":[{"id":"spawn-reviewer","name":"spawn","arguments":{"name":"reviewer","task":"HIERARCHY_REVIEW {{tool_result:/settled/0/answer}}","role":"reviewer"}}]},
+    {"when":{"user":"HIERARCHY_LEAD","tool_result":"agent"},"tools":[{"id":"wait-reviewer","name":"wait","arguments":{"agents":["reviewer"]}}]},
+    {"when":{"user":"HIERARCHY_REVIEW LEAF_ORIGINAL_EVIDENCE"},"text":["REVIEW_ORIGINAL_EVIDENCE"]},
+    {"when":{"user":"HIERARCHY_LEAD","tool_result":"REVIEW_ORIGINAL_EVIDENCE"},"text":["{{tool_result:/settled/0/answer}}"]},
+    {"when":{"user":"HIERARCHY_ROOT","tool_result":"REVIEW_ORIGINAL_EVIDENCE"},"text":["{{tool_result:/settled/0/answer}}"]}
+  ]},
+  "inputs":[{"mode":"headless","text":"HIERARCHY_ROOT","answer":"REVIEW_ORIGINAL_EVIDENCE"}],
+  "assert":{"requests":13,"model_contains":["Coordinate a hierarchy","HIERARCHY_REVIEW LEAF_ORIGINAL_EVIDENCE"],"tool_contains":["LEAF_ORIGINAL_EVIDENCE","REVIEW_ORIGINAL_EVIDENCE"]}
+}
