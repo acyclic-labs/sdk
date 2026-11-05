@@ -241,10 +241,14 @@ fn stopped_watch_outcome_releases_the_driver_and_session_fences()
     } else {
         &[0, 1, 2]
     };
-    for (driver_owned, mode) in [false, true]
-        .into_iter()
-        .flat_map(|owned| modes.iter().map(move |mode| (owned, *mode)))
-    {
+    for (driver_owned, mode, cancelled) in [false, true].into_iter().flat_map(|owned| {
+        modes.iter().flat_map(move |mode| {
+            [false, true]
+                .into_iter()
+                .filter(|cancelled| !cfg!(target_os = "macos") || !cancelled)
+                .map(move |cancelled| (owned, *mode, cancelled))
+        })
+    }) {
         let Fixture {
             root,
             mut session,
@@ -258,9 +262,13 @@ fn stopped_watch_outcome_releases_the_driver_and_session_fences()
         let watch = crate::source_watch::terminal_cancellation_watch(&watched, &mut work, &wait)?;
         #[cfg(target_os = "linux")]
         let watch = crate::source_watch::terminal_failure_watch(&watched, &mut work)?;
-        session.retained_source = Some(retirement::RetainedSource::Watch(
+        session.retained_source = Some(crate::native_mount::retirement::RetainedSource::Watch(
             lazy::NativeMountSourceWatchOwner::from_native_watch_fixture(watch),
         ));
+        if cancelled {
+            wait.cancel();
+            work.cancellation().cancel();
+        }
         let before = work.receipt();
         let stop = match mode {
             0 => NativeSessionStopWork::Meter(&work),
@@ -273,7 +281,7 @@ fn stopped_watch_outcome_releases_the_driver_and_session_fences()
                 terminal_source_failure: None,
                 destination_guard: session.destination_guard.take(),
             };
-            let result = retirement::retire_sources(
+            let result = crate::native_mount::retirement::retire_sources(
                 &mut packet.retained_source,
                 &mut packet.terminal_source_failure,
                 &stop,
@@ -318,9 +326,7 @@ fn stopped_watch_outcome_releases_the_driver_and_session_fences()
             ),
             "saved native callback refusal disappeared: {result:?}"
         );
-        assert!(!fence.exists(), "stopped producer kept its physical fence");
-        assert!(!root.path().join("retired-mount").exists());
-        assert_eq!(std::fs::read(root.path().join("authored"))?, b"keep");
+        retired(root.path(), &fence, before, &work)?;
         assert_eq!(
             work.receipt().allocation_operations,
             before.allocation_operations

@@ -69,6 +69,14 @@ pub(super) fn retire_sources(
                 result?;
                 return Err(NativeMountError::ControlPending);
             }
+            // A refused caller wait may not have observed the saved callback
+            // outcome. Physical retirement permits its final birth-paid
+            // observation before custody is released, without restarting it.
+            let result = if result.is_err() {
+                owner.stop_accepted_cleanup().and(result)
+            } else {
+                result
+            };
             result.err().map(NativeMountError::from)
         }
     };
