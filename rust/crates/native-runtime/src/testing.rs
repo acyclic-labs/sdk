@@ -122,6 +122,7 @@ impl Drop for Controller {
 #[derive(Clone)]
 pub(crate) struct Context {
     schedule: Schedule,
+    runtime: Option<tokio::runtime::Handle>,
     owned: bool,
     // Never nested with the schedule-state lock; cloned before sends/callbacks.
     detail: Arc<Mutex<Arc<str>>>,
@@ -203,6 +204,11 @@ impl Schedule {
         let future = CURRENT.scope(
             Some(Context {
                 schedule: Self(self.0.clone(), None),
+                runtime: if self.is_seeded() {
+                    None
+                } else {
+                    tokio::runtime::Handle::try_current().ok()
+                },
                 owned: false,
                 detail: Arc::new(Mutex::new(Arc::from(""))),
                 host: None,
@@ -293,6 +299,7 @@ impl Context {
         Active(
             Self {
                 schedule: self.schedule.clone(),
+                runtime: self.runtime.clone(),
                 owned: true,
                 detail: Arc::new(Mutex::new(lock(&self.detail).clone())),
                 host: self.host.clone(),
@@ -342,7 +349,17 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    let Some(context) = Context::current() else {
+    // Explicit async submission transfers the retained physical owner's scope;
+    // synchronous host work itself still runs with CURRENT unset.
+    spawn_in_context(Context::simulation(), future)
+}
+
+pub(crate) fn spawn_in_context<F>(context: Option<Context>, future: F) -> TaskHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let Some(context) = context else {
         return TaskHandle::native(None, future);
     };
     let active = context.accept("task");
@@ -359,21 +376,13 @@ where
     )
 }
 
-pub(crate) fn spawn_in_context<F>(context: Option<Context>, future: F) -> TaskHandle<F::Output>
-where
-    F: Future + Send + 'static,
-    F::Output: Send + 'static,
-{
-    CURRENT.sync_scope(context, || spawn(future))
-}
-
 /// Executes the real blocking closure, retaining ownership after caller drop.
 pub fn spawn_blocking<F, T>(work: F) -> impl Future<Output = std::io::Result<T>> + Send
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    let owner = if let Some(context) = Context::current() {
+    let owner = if let Some(context) = Context::simulation() {
         BlockingOwner::Controlled(controlled_blocking(&context, work))
     } else if crate::inline_blocking_allowed() {
         // These closures may use Tokio blocking locks, so they need a real

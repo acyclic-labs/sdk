@@ -19,6 +19,7 @@ impl Wake for WakeFlag {
 fn context(schedule: &Schedule) -> Context {
     Context {
         schedule: schedule.clone(),
+        runtime: None,
         owned: false,
         detail: Arc::new(Mutex::new(Arc::from(""))),
         host: None,
