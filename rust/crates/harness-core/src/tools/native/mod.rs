@@ -126,8 +126,36 @@ impl NativeTools {
     /// # Errors
     /// [`Error::Invalid`] when the layer, its declarations or a template is malformed.
     pub fn new(profile: NativeToolProfile) -> Result<Self> {
+        Self::from_entries(decoded(profile)?)
+    }
+
+    /// Binds admitted declarations to their canonical capability mappings.
+    /// Names and revisions must match each mapping. Descriptions and input
+    /// schemas may change; result contracts, grants and approval remain the
+    /// original executor's when [`Self::bind`] selects the capability.
+    /// No capability is created by a declaration.
+    ///
+    /// # Errors
+    /// [`Error::Invalid`] for mismatched identities or malformed templates;
+    /// the original variant refusal for an unavailable implementation.
+    pub fn from_definitions(
+        definitions: impl IntoIterator<Item = (crate::profile::ToolRevision, ToolDefinition)>,
+    ) -> Result<Self> {
+        Self::from_entries(definitions.into_iter().map(|(revision, definition)| {
+            if revision.variant != definition.name || revision.revision != definition.revision {
+                return Err(Error::Invalid(
+                    "native declaration identity differs from its mapping".into(),
+                ));
+            }
+            Ok((revision, definition))
+        }))
+    }
+
+    fn from_entries(
+        entries: impl IntoIterator<Item = Result<(crate::profile::ToolRevision, ToolDefinition)>>,
+    ) -> Result<Self> {
         let mut mapped = Vec::new();
-        for entry in decoded(profile)? {
+        for entry in entries {
             let (revision, definition) = entry?;
             let Some(template) = revision.arguments else {
                 continue;

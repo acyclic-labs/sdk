@@ -57,6 +57,64 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
             .unwrap()
             .definition
             .clone();
+        // A module can change the declaration without replacing authority or
+        // making the declaration's result schemas authoritative.
+        let entries = || -> Result<Vec<_>> {
+            decoded(profile)?
+                .filter_map(|entry| match entry {
+                    Ok((mapping, definition)) if mapping.capability == "shell" => {
+                        Some(Ok((mapping, definition)))
+                    }
+                    Ok(_) => None,
+                    Err(error) => Some(Err(error)),
+                })
+                .collect()
+        };
+        let mut admitted = entries()?;
+        assert!(!admitted.is_empty());
+        for (_, definition) in &mut admitted {
+            definition
+                .description
+                .push_str(" Admitted module description.");
+            definition.output_schema = Value::Bool(false);
+            definition.projection_schema = Value::Bool(false);
+        }
+        let mut changed = registry.clone();
+        NativeTools::from_definitions(admitted)?.bind(&mut changed)?;
+        let selected = changed.get("shell", None, None)?.unwrap();
+        assert!(
+            selected
+                .definition
+                .description
+                .ends_with("Admitted module description.")
+        );
+        assert_eq!(selected.definition.output_schema, original.output_schema);
+        assert_eq!(
+            selected.definition.projection_schema,
+            original.projection_schema
+        );
+        assert_eq!(selected.executor.capability().unwrap().definition, original);
+        for alter_name in [false, true] {
+            let mut mismatched = entries()?;
+            for (_, definition) in &mut mismatched {
+                if alter_name {
+                    definition.name.push_str("_mismatched");
+                } else {
+                    definition.revision.push_str("_mismatched");
+                }
+            }
+            assert!(
+                matches!(
+                    NativeTools::from_definitions(mismatched),
+                    Err(Error::Invalid(reason))
+                        if reason == "native declaration identity differs from its mapping"
+                ),
+                "mismatched native identity was admitted"
+            );
+        }
+        let mut missing = ToolRegistry::default();
+        NativeTools::from_definitions(entries()?)?.bind(&mut missing)?;
+        assert!(missing.definitions(None)?.is_empty());
         retained.bind(&mut registry)?;
         let selected = registry
             .get("shell", None, None)?
