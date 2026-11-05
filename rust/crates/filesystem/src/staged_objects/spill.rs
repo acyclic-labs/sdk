@@ -200,7 +200,11 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             }
             targets
         };
-        let unswept = self.collection.unswept().await;
+        let unswept = self
+            .collection
+            .unswept(&mut work.accounting())
+            .await
+            .map_err(crate::async_storage::object_error)?;
         self.drain_locked(&mut spill, &unswept, &targets.value, work)
             .await?;
         Ok(())
