@@ -23,5 +23,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         acyclic_proto_build::services(grpc),
         &["proto/objects/v1/objects.proto"],
         "acyclic-objects-v1.bin",
+    )?;
+    let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").ok_or("OUT_DIR is unset")?);
+    acyclic_proto_build::write_authorization(
+        &std::fs::read(output.join("acyclic-objects-v1.bin"))?,
+        "acyclic.objects.v1.BlobsService",
+        "ObjectsMethod",
+        &output,
     )
 }

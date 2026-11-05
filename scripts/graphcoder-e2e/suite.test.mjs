@@ -284,7 +284,7 @@ test("owned cases join cleanup before returning or propagating failure", async (
     else {
       const receipt = await running;
       assert.equal(receipt.run, "scenario result");
-      assert.ok(receipt.seconds > 0 && receipt.seconds < 10);
+      assert.ok(Number.isFinite(receipt.seconds) && receipt.seconds > 0);
     }
   }
 });

@@ -1,5 +1,5 @@
 name: SDK Static
-# Reject a lockfile that disagrees with the manifests.
+# Reject a lockfile Cargo would change, including its serialization.
 on:
   pull_request: null
   push:
@@ -23,4 +23,4 @@ jobs:
         with:
           persist-credentials: false
       - name: Check lockfile and manifests without compiling
-        run: cargo update --workspace --locked
+        run: node scripts/check-cargo-lock.mjs

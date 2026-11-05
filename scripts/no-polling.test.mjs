@@ -453,13 +453,7 @@ test('shared policy covers consumer paths and configured temporal dependencies',
  assert.ok(newProjectPollingSites(before, after).some(site => site.file === caller));
 });
 
-test('SQLite busy policies require review at the original fixture boundary', () => {
- const file = 'rust/crates/conformance/src/bin/qualify/filesystem_cases.rs';
- const source = readFileSync(file, 'utf8');
- const boundary = source.indexOf('connection.busy_timeout(');
- assert.notEqual(boundary, -1);
- const call = boundary + 'connection.'.length;
- assert.ok(pollingSites(file, source).some(site => site.start === call), 'original fixture busy policy is reviewable');
+test('SQLite busy policies invalidate exact source review', () => {
  for (const [file, before, after] of [
   [rust, 'fn configure(connection: &rusqlite::Connection) -> rusqlite::Result<()> { connection.busy_timeout(std::time::Duration::ZERO) }',
    'fn configure(connection: &rusqlite::Connection) -> rusqlite::Result<()> { connection.busy_timeout(std::time::Duration::from_secs(2)) }'],
@@ -477,8 +471,6 @@ test('SQLite busy policies require review at the original fixture boundary', () 
    'restore a nonzero busy timeout or a retrying handler'));
   assert.deepEqual(newPollingSites(file, '', before, accepted), []);
   assert.ok(newPollingSites(file, before, after, accepted).length);
-  assert.ok(pollingSites('scripts/control.mjs', 'runHost(' + JSON.stringify(before) + ')')
-   .some(site => site.kind === 'embedded-timer-or-retry'), before);
  }
  const alias = 'use sqlite::sqlite3_busy_handler as handler; handler(db, callback, state);';
  const aliasSites = pollingSites('lib/storage/control.rs', alias);

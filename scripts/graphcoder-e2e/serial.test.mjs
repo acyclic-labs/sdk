@@ -192,15 +192,21 @@ test("Windows starts the next case only after the previous case has exited", asy
   }
 });
 
-test("serial qualification requires every OS case, volume variant, exit and bounded suite", () => {
+test("serial qualification requires every OS case, volume variant, exit and completed suite", () => {
   const cases = [{ id: "case", ntfs: true }], coverage = { pass: true };
   assert.deepEqual(variants(cases, "win32").map(test => test.id), ["case", "case-ntfs"]);
   assert.deepEqual(variants(cases, "linux").map(test => test.id), ["case"]);
   // Each filesystem variant is its own suite and so owns its own envelope.
   const receipts = ["case", "case-ntfs"].map(id => ({ code: 0, report: { platform: "win32", selected: [id],
-    qualification: false, coverage, seconds: 0.2, limit_seconds: 10,
+    qualification: false, coverage, seconds: 0.2,
     results: [{ case: id, platform: "win32", status: "pass" }] } }));
   assert.equal(collect(cases, receipts, "win32", coverage).pass, true);
+  for (const seconds of [0.2, 10, 30, 1e6]) {
+    const elapsed = structuredClone(receipts);
+    for (const receipt of elapsed) receipt.report.seconds = seconds;
+    assert.equal(collect(cases, elapsed, "win32", coverage).pass, true,
+      `completion is unchanged by elapsed time (${seconds}s)`);
+  }
   assert.throws(() => collect(cases, [], "win32", coverage), /every case variant/);
   const shared = structuredClone(receipts[0]);
   shared.report.results.push({ case: "case-ntfs", platform: "win32", status: "pass" });
@@ -209,11 +215,11 @@ test("serial qualification requires every OS case, volume variant, exit and boun
   for (const edit of [report => report.results.pop(), report => report.results.push(report.results[0]),
     report => report.platform = "linux", report => report.selected = [],
     report => report.qualification = true, report => report.coverage = { pass: false },
-    report => report.limit_seconds = 11, report => report.seconds = null]) {
+    report => report.seconds = null]) {
     const changed = structuredClone(receipts); edit(changed[0].report);
     assert.equal(collect(cases, changed, "win32", coverage).pass, false);
   }
-  for (const edit of [receipt => receipt.code = 1, receipt => receipt.report.seconds = 10,
+  for (const edit of [receipt => receipt.code = 1,
     receipt => receipt.report.results[0].status = "fail"]) {
     const changed = structuredClone(receipts); edit(changed[0]);
     assert.equal(collect(cases, changed, "win32", coverage).pass, false);
@@ -234,7 +240,7 @@ test("a missing or malformed suite receipt cannot stop later cases or erase the 
     if (test.id === "missing") throw new Error("ENOENT: missing matrix.json");
     if (test.id === "malformed") return JSON.parse("{");
     return { platform: "linux", selected: [test.id], qualification: false,
-      coverage: { pass: true }, seconds: 0.1, limit_seconds: 10,
+      coverage: { pass: true }, seconds: 0.1,
       results: [{ case: test.id, platform: "linux", status: "pass" }] };
   });
   assert.deepEqual(launched, ["missing", "malformed", "later"]);
@@ -269,7 +275,7 @@ test("partition collection fences runtime, source, definitions and exact case re
   const bundles = cases.map((item, index) => ({ index, count: 2, platform: "linux", binding,
     inventory: cases.map(item => item.id), selected: [item.id], coverage,
     receipts: [{ code: 0, report: { platform: "linux", selected: [item.id], qualification: false,
-      coverage, seconds: 0.1, limit_seconds: 10,
+      coverage, seconds: 0.1,
       results: [{ case: item.id, platform: "linux", status: "pass" }] } }] }));
   assert.equal(collectPartitions(cases, [...bundles].reverse(), "linux", coverage).pass, true);
   assert.throws(() => collectPartitions(cases, [bundles[0]], "linux", coverage), /every partition/);

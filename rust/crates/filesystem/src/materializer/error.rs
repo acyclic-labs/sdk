@@ -59,11 +59,6 @@ pub enum NativeTreeMaterializationError {
         actual: u64,
     },
 }
-pub(crate) fn native_materialization_work_error(
-    error: crate::DemandError,
-) -> NativeTreeMaterializationError {
-    error.into()
-}
 impl From<crate::DemandError> for NativeTreeMaterializationError {
     fn from(error: crate::DemandError) -> Self {
         use crate::DemandError as D;
@@ -80,6 +75,6 @@ impl From<crate::DemandError> for NativeTreeMaterializationError {
 impl NativeTreeMaterializationError {
     /// Recovers the original typed runtime failure.
     pub fn from_runtime_error(error: std::io::Error) -> Self {
-        native_materialization_work_error(crate::demand::native_demand_error(error))
+        Self::from(crate::demand::native_demand_error(error))
     }
 }

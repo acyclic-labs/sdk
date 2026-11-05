@@ -227,7 +227,7 @@ fn with_source_name_work<W: SourceDemandReadWork>(
 fn name_native_error(error: DemandError) -> crate::NativeTreeMaterializationError {
     match error {
         DemandError::InvalidRequest => crate::NativeTreeMaterializationError::InvalidLayout,
-        error => crate::materializer::native_materialization_work_error(error),
+        error => crate::NativeTreeMaterializationError::from(error),
     }
 }
 

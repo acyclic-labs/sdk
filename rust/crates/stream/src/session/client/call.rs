@@ -153,7 +153,7 @@ impl Client {
         let source = self
             .reply_chunks(kind, credential, maximum_reply_bytes)
             .await?;
-        futures::pin_mut!(source);
+        let mut source = core::pin::pin!(source);
         let mut reply = Vec::new();
         let mut total = None;
         while let Some(item) = source.next().await {

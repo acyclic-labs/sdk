@@ -33,6 +33,11 @@ fn descriptor_authorization_rejects_undeclared_actions() -> Result<(), Box<dyn s
             admitted,
             "{action}"
         );
+        assert_eq!(
+            authorization(&bytes, "test.Test", "TestMethod").is_ok(),
+            admitted,
+            "{action} method admission"
+        );
     }
     Ok(())
 }

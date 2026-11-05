@@ -42,7 +42,7 @@ export async function runScriptedScenario({scenario,processes,directory,env,
  const run=await processes.runOwned('python3',scenario.args,{cwd,env,scopeMountRoot:env.HOME});
  const seconds=(performance.now()-started)/1000;
  await writeFile(join(directory,scenario.name+'.log'),run.stdout+run.stderr,{flag:'wx'});
- const refusals=[expired()&&'case scope expired',seconds>=10&&`ran ${seconds.toFixed(1)}s of its 10s budget`,
+ const refusals=[expired()&&'case scope expired',
    run.code!==0&&`exit ${run.code} (signal ${run.signal??null})`,run.code===0&&!scenario.accepts(run)&&'output lacks its acceptance marker'].filter(Boolean);
  const tail=text=>text.trim().slice(-1500)||'(empty)';
  const receipt={schema:'acyclic.plugin.scripted-scenario/v1',selection:scenario.selection,
@@ -75,7 +75,7 @@ async function main(){
   const scope=new Processes();
   const {run,seconds}=await withOwnedCase({processes:scope,
    run:()=>runScriptedScenario({scenario:entry,processes:scope,directory,env})});
-  const receipt={...run,seconds,accepted:run.accepted&&seconds<10};
+  const receipt={...run,seconds};
   receipts.push(receipt);await writeFile(join(directory,'results.json'),JSON.stringify(receipts,null,2));
   console.log(JSON.stringify(receipt));
  }

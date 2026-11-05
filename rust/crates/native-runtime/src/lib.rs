@@ -167,10 +167,10 @@ pub use task::{
     spawn_persistence,
 };
 mod completion;
-pub use completion::NativeCompletion;
 #[cfg(any(windows, target_os = "linux"))]
 pub(crate) use completion::submit_file_io;
 pub(crate) use completion::{CompletionState, FileCompletion, OperationFence, TaskTerminal};
+pub use completion::{NativeCompletion, NativeCompletionProducer};
 mod workers;
 pub use workers::initialize_native_io_services;
 #[cfg(test)]

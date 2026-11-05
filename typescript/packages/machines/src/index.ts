@@ -184,3 +184,5 @@ export { SimulatedMachines } from "./simulator.js";
 
 export * from "./client.js";
 export { performanceObserver, type AcyclicObserver, type OperationEvent } from "@acyclic-labs/actors/observe";
+
+export { AUTHORIZATION, type MachinesMethod } from "./generated/authorization.js";

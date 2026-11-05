@@ -133,7 +133,7 @@ proptest! {
                         Ok(())
                     }
                 };
-                futures::pin_mut!(exchange);
+                let mut exchange = core::pin::pin!(exchange);
                 if cancelled {
                     let wake = Arc::new(CancellationWake::default());
                     let waker = std::task::Waker::from(wake.clone());

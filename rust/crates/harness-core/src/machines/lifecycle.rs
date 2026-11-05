@@ -514,7 +514,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     pub async fn suspend(&self, agent: &AgentPath) -> Result<()> {
         let pause = OperationId::new();
         let targets = self.held_targets(agent)?;
-        futures::pin_mut!(targets);
+        let mut targets = core::pin::pin!(targets);
         while let Some(target) = targets.try_next().await? {
             let Some(binding) = self.planned_binding(agent, target).await? else {
                 continue;
@@ -549,7 +549,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     /// [`Error::MachineOwnership`]; a retry replays prior releases.
     pub async fn destroy(&self, agent: &AgentPath) -> Result<()> {
         let targets = self.held_targets(agent)?;
-        futures::pin_mut!(targets);
+        let mut targets = core::pin::pin!(targets);
         while let Some(target) = targets.try_next().await? {
             let Some(mut binding) = self.planned_binding(agent, target).await? else {
                 continue;

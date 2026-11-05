@@ -36,6 +36,10 @@ fn rules(value: &Value, context: &str) -> Result<(), io::Error> {
 
 pub(crate) fn validate(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let pool = DescriptorPool::decode(bytes)?;
+    validate_pool(&pool)
+}
+
+pub(crate) fn validate_pool(pool: &DescriptorPool) -> Result<(), Box<dyn std::error::Error>> {
     let Some(auth) = pool.get_extension_by_name("acyclic.validation.v1.auth") else {
         return Ok(());
     };

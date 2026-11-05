@@ -234,11 +234,11 @@ pub(crate) async fn read_generation_root_with_limits_and_accounting<S: crate::As
             Ok((root, scope.into_allocation()))
         }
         Ok(_) => {
-            scope.release_failed()?;
+            scope.retire()?;
             Err(invariant("generation seal has the wrong root directory identity").into())
         }
         Err(error) => {
-            let _retired = scope.release_failed();
+            let _retired = scope.retire();
             Err(error)
         }
     };

@@ -342,7 +342,7 @@ mod tests {
                 }));
                 futures::executor::block_on(async {
                     let events = frames(Box::pin(body), input.len(), Decoder::native(&work).unwrap());
-                    futures::pin_mut!(events);
+                    let mut events = core::pin::pin!(events);
                     let frame = events.next().await.unwrap().unwrap();
                     assert_eq!(frame.data(), expected);
                     // The old line+event decoder retains an extra line allocation here.
@@ -366,7 +366,7 @@ mod tests {
                 futures::executor::block_on(async {
                     let body = futures::stream::iter([Ok(Bytes::from_static(input))]);
                     let events = frames(Box::pin(body), input.len(), Decoder::native(&work).unwrap());
-                    futures::pin_mut!(events);
+                    let mut events = core::pin::pin!(events);
                     assert!(matches!(events.next().await,
                         Some(Err(Error::NativeBoundary { .. } | Error::ModelUnavailable { failure: ModelTransportFailure::Interrupted, .. }))));
                     assert!(events.next().await.is_none());

@@ -560,7 +560,7 @@ fn dropped_original_owner_settles_pending_and_same_poll_completion_without_repla
                 &grants,
                 None,
             );
-            futures::pin_mut!(request);
+            let mut request = core::pin::pin!(request);
             let wake = Arc::new(Wake::default());
             let waker = futures::task::waker_ref(&wake);
             let mut task = std::task::Context::from_waker(&waker);

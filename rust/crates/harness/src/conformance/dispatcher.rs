@@ -51,7 +51,9 @@ pub(super) async fn until(
             let _ = report.send(format!("discovery delivery for {actor:?} failed: {error}").into());
         }
     });
-    futures::pin_mut!(work, failure, running);
+    let work = core::pin::pin!(work);
+    let failure = core::pin::pin!(failure);
+    let running = core::pin::pin!(running);
     match futures::future::select(running, futures::future::select(work, failure)).await {
         Either::Left((Err(error), _)) => Err(error.into()),
         Either::Left((Ok(never), _)) => match never {},

@@ -4,8 +4,6 @@
     reason = "explicit Cargo metadata only; user environment discovery is forbidden"
 )]
 
-/// Cargo manifest directory for checked-in fixtures.
-pub const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 #[cfg(all(
     not(target_arch = "wasm32"),
     any(feature = "mcp-stdio", feature = "mcp-http")

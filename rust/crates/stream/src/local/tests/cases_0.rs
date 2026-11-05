@@ -260,7 +260,7 @@ fn cancellation_keeps_accepted_visibility_and_durable_receipts_distinct()
 
         assert!(provider.durable_receipt(path.clone(), 2).await?.is_none());
         let receipt = provider.durable_receipt(path, 1);
-        futures::pin_mut!(receipt);
+        let mut receipt = core::pin::pin!(receipt);
         assert!(
             futures::poll!(receipt.as_mut()).is_pending(),
             "an accepted record has no durable receipt before the flush"

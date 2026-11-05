@@ -1108,7 +1108,8 @@ impl ChangeSource for Follower {
             }
             let global_event = global.changed();
             let account_event = account.changed();
-            futures::pin_mut!(global_event, account_event);
+            let global_event = core::pin::pin!(global_event);
+            let account_event = core::pin::pin!(account_event);
             match futures::future::select(global_event, account_event).await {
                 futures::future::Either::Left((result, _))
                 | futures::future::Either::Right((result, _)) => {

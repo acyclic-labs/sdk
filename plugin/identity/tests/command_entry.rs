@@ -136,7 +136,8 @@ async fn secrets_invocation(directory: &std::path::Path) -> Result<(), Box<dyn s
             Some(acyclic_plugin_identity::interrupt_context()),
         );
         let result = async {
-            futures::pin_mut!(request, interrupt);
+            let request = core::pin::pin!(request);
+            let interrupt = core::pin::pin!(interrupt);
             match futures::future::select(request, interrupt).await {
                 futures::future::Either::Left((result, _)) => Ok(result),
                 futures::future::Either::Right((delivered, request)) => {

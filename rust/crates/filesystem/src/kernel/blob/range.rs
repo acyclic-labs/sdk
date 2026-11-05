@@ -423,7 +423,7 @@ impl BlobRangeMachine {
         if let Err(error) = prepared {
             drop(chunks);
             drop(requests);
-            observed.release_failed()?;
+            observed.retire()?;
             return Err(read_decode_error(error));
         }
         let (custody, scratch_bytes) = observed.into_parts();
