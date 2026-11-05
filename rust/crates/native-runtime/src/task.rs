@@ -6,9 +6,9 @@
 //! is installed; every other build submits directly to Tokio. Both report a
 //! cancelled task as `ErrorKind::Interrupted`.
 #[cfg(feature = "test-support")]
-pub use crate::testing::{AbortHandle, TaskHandle, spawn, spawn_blocking};
+pub use crate::testing::{AbortHandle, TaskHandle, spawn, spawn_blocking, try_spawn};
 #[cfg(not(feature = "test-support"))]
-pub use native::{AbortHandle, TaskHandle, spawn, spawn_blocking};
+pub use native::{AbortHandle, TaskHandle, spawn, spawn_blocking, try_spawn};
 
 mod custody;
 pub use custody::{OwnedTask, TaskCompletion, spawn_owned};
@@ -339,6 +339,19 @@ mod native {
         F::Output: Send + 'static,
     {
         TaskHandle(tokio::spawn(future))
+    }
+
+    /// Submits to the current executor, returning the unpolled future when
+    /// there is none. Refusal allocates no task and preserves caller custody.
+    pub fn try_spawn<F>(future: F) -> Result<TaskHandle<F::Output>, F>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => Ok(TaskHandle(runtime.spawn(future))),
+            Err(_) => Err(future),
+        }
     }
 
     /// Runs a blocking closure on Tokio's blocking pool, retaining ownership
