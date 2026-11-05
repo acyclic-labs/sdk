@@ -257,7 +257,7 @@ impl OwnedAccounting {
     }
 }
 
-/// Original allocation credit that retires when its last owning value is dropped.
+/// Original allocation credit released when this lease is dropped.
 /// Splitting or combining this credit never creates another budget or allocation.
 #[repr(transparent)]
 pub struct RetainedAllocation {
@@ -474,9 +474,7 @@ impl<T> Retained<Vec<T>> {
 }
 
 impl<T> Retained<T> {
-    /// Transfers an already admitted value to independently retained custody.
-    /// No payload allocation or copy is performed.
-    pub fn from_owned(
+    pub(crate) fn from_owned(
         mut owned: crate::kernel::Owned<T>,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Self, crate::FsError> {
@@ -922,10 +920,18 @@ mod tests {
             "a returned alias must reuse the original backing"
         );
         cancel.cancel();
-        assert!(matches!(
-            accounting.check(),
-            Err(crate::FsError::Cancelled(_))
-        ));
+        match (&accounting, accounting.check()) {
+            (
+                KernelAccounting::Standalone { .. } | KernelAccounting::BorrowedStandalone { .. },
+                Err(crate::FsError::Cancelled(_)),
+            ) => {}
+            #[cfg(not(target_arch = "wasm32"))]
+            (
+                KernelAccounting::NativeOriginal { .. },
+                Err(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Cancelled)),
+            ) => {}
+            (_, result) => panic!("original accounting lost typed cancellation: {result:?}"),
+        }
         drop(accounting);
         drop(bytes);
         assert_eq!(alias.as_ref(), [2, 3]);
