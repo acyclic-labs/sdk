@@ -160,7 +160,11 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         &self,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
-        let mut spill = self.spill_io.write().await;
+        let mut spill = work
+            .accounting()
+            .wait_for(self.spill_io.write())
+            .await
+            .map_err(crate::async_storage::object_error)?;
         self.spill_locked(&mut spill, work).await?;
         let targets = {
             let index = self.index();
