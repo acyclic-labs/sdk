@@ -159,7 +159,8 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
             } else {
                 // The suspended frame and both distinct cancellation sources.
                 before.allocation_operations + 3
-            }
+            },
+            "every pending lease waiter must be charged to its original work"
         );
         assert_eq!(original.live_allocation_bytes(), baseline);
         assert!(matches!(store.lookup(id), Lookup::Spilled { .. }));
