@@ -61,25 +61,26 @@ impl From<OperationId> for CreationOperation<'_> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
-    /// Creates a fresh volume and its authenticated empty generation.
-    pub async fn create_volume(
+    /// Creates a fresh volume and its authenticated empty generation using
+    /// the supplied standalone budget or original native invocation.
+    pub async fn create_volume<W: FsWork>(
         &self,
         config: VolumeConfig,
-        budget: WorkBudget,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> FsResult<Volume<A, O>> {
-        self.create_volume_with_id(VolumeId::new(), config, budget, cancellation)
+    ) -> W::Output<Volume<A, O>, FsError> {
+        self.create_volume_with_id(VolumeId::new(), config, work, cancellation)
             .await
     }
     /// Idempotently creates one caller-selected volume identity.
-    pub async fn create_volume_with_id(
+    pub async fn create_volume_with_id<W: FsWork>(
         &self,
         volume_id: VolumeId,
         config: VolumeConfig,
-        budget: WorkBudget,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> FsResult<Volume<A, O>> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    ) -> W::Output<Volume<A, O>, FsError> {
+        let mut accounting = work.accounting(cancellation);
         let result = self
             .create_volume_operation(
                 volume_id,
@@ -94,31 +95,41 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             )
             .await
             .map(|(volume, _)| volume);
-        measured(result, &accounting)
+        work.finish(result, &accounting)
     }
     /// Opens one volume using its authenticated immutable configuration.
-    pub async fn open_volume(
+    /// Reads and temporary backing use the supplied work source; native work
+    /// retains its original admission and cancellation through authority replay.
+    pub async fn open_volume<W: FsWork>(
         &self,
         volume_id: VolumeId,
-        budget: WorkBudget,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> FsResult<Volume<A, O>> {
-        cancellation
-            .check()
-            .map_err(|error| OperationFailure::before_work(error.into()))?;
-        let observed = self
-            .read_creation_record(volume_id, budget, cancellation)
-            .await?;
-        let config = observed.value.0.config;
-        validate_volume_capabilities(config, self.inner.capabilities)
-            .map_err(|error| OperationFailure::new(error, observed.work))?;
-        Ok(OperationReceipt {
-            value: Volume {
-                fs: self.clone(),
-                id: volume_id,
-                config,
-            },
-            work: observed.work,
+    ) -> W::Output<Volume<A, O>, FsError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = self
+            .open_volume_with_accounting(volume_id, &mut accounting, cancellation)
+            .await;
+        work.finish(result, &accounting)
+    }
+
+    pub(super) async fn open_volume_with_accounting(
+        &self,
+        volume_id: VolumeId,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Volume<A, O>, FsError> {
+        let mut accounting = accounting.allocation_scope()?;
+        let config = self
+            .read_creation(volume_id, &mut accounting, cancellation)
+            .await?
+            .0
+            .config;
+        validate_volume_capabilities(config, self.inner.capabilities)?;
+        Ok(Volume {
+            fs: self.clone(),
+            id: volume_id,
+            config,
         })
     }
     /// Restores a volume authority from a fully imported immutable generation.

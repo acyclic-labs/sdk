@@ -19,14 +19,29 @@ struct ClassifiedRebase<'a> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one live rebase replays every candidate change against the advanced head under a single fence"
-    )]
     pub(crate) async fn live_rebase_workspace(
         &self,
         request: WorkspaceRebaseRequest<'_, A, O>,
-    ) -> Result<WorkspaceJoinOutcome, WorkspaceError> {
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Owned<WorkspaceJoinOutcome>, WorkspaceError> {
+        let target = request.target;
+        let prepared = self
+            .prepare_live_rebase(request, accounting, cancellation)
+            .await?;
+        self.publish_workspace_join_prepared(target, prepared, accounting, cancellation)
+            .await
+    }
+
+    async fn prepare_live_rebase(
+        &self,
+        request: WorkspaceRebaseRequest<'_, A, O>,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::workspace::JoinPreparation, WorkspaceError> {
+        let mut scope = accounting.allocation_scope()?;
+        let accounting = &mut *scope;
+        accounting.check()?;
         let WorkspaceRebaseRequest {
             target,
             operation_id,
@@ -37,160 +52,139 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         if maximum_generations == 0 || maximum_changes == 0 || maximum_conflicts == 0 {
             return Err(WorkspaceError::JoinLimit);
         }
-        let cancellation = CancellationToken::new();
         let RebaseLineage {
             target_object,
             target_head: expected_head,
             target_root,
             base_object,
-            base_root,
+            mut base_root,
             source,
             source_object,
         } = self
-            .rebase_lineage(target, maximum_generations, &cancellation)
+            .rebase_lineage(target, maximum_generations, accounting, cancellation)
             .await?;
-        if source_object == base_object {
-            return Ok(WorkspaceJoinOutcome::NoChanges(GenerationId::from_root(
-                target_object,
-            )));
-        }
-        let (source_root, _) = read_generation_root(
-            &self.inner.objects,
-            source_object,
-            target.config,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(WorkspaceError::engine)?;
-        if source_root.volume_id != source.id
-            || source_root.root_file_id != target_root.root_file_id
-        {
-            return Err(WorkspaceError::IncompatibleWorkspace);
-        }
-
-        let normalize = |root: &GenerationRoot| GenerationRoot {
-            volume_id: target.id,
-            root_file_id: target_root.root_file_id,
-            file_table: root.file_table,
-            parents: Vec::new(),
-            required_features: root.continuation_features(),
-        };
-        let normalized_base = normalize(&base_root);
-        let normalized_source = normalize(&source_root);
-        drop(base_root);
-        drop(source_root);
-        let retained_root_bytes =
-            root_parent_bytes(&target_root).map_err(WorkspaceError::engine)?;
-        let (normalized_base_object, _) = self
-            .put_generation_root(
-                &normalized_base,
-                WorkCounters::default(),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-                retained_root_bytes,
-            )
-            .await
-            .map_err(WorkspaceError::engine)?;
-        let (normalized_source_object, _) = self
-            .put_generation_root(
-                &normalized_source,
-                WorkCounters::default(),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-                retained_root_bytes,
-            )
-            .await
-            .map_err(WorkspaceError::engine)?;
-        let merged = merge_generation_async(
-            &self.inner.objects,
-            MergeGenerationRequest {
-                base_generation: normalized_base_object,
-                base: normalized_base,
-                ours_generation: Some(normalized_source_object),
-                ours: normalized_source,
-                theirs_generation: target_object,
-                theirs: target_root,
-                retain_theirs_parent: false,
-                maximum_changes,
-                maximum_conflicts,
-                resolutions: BTreeMap::new(),
-            },
-            DecodeLimits::for_volume(target.config),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(WorkspaceError::engine)?;
-        let merged_root = match merged.value {
-            MergeGenerationOutcome::Conflicted {
-                conflicts,
-                truncated,
-            } => return Ok(WorkspaceJoinOutcome::Conflicted(conflicts, truncated)),
-            MergeGenerationOutcome::Prepared { root, .. } => root,
-        };
-        let parent_buffer = root_parent_buffer(
-            &[GenerationId::from_root(source_object)],
-            root_parent_bytes(&merged_root).map_err(WorkspaceError::engine)?,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .map_err(WorkspaceError::engine)?;
-        let rebased_root = GenerationRoot {
-            volume_id: target.id,
-            root_file_id: merged_root.root_file_id,
-            file_table: merged_root.file_table,
-            parents: parent_buffer.value,
-            required_features: merged_root.continuation_features(),
-        };
-        drop(merged_root);
-        let (candidate, _) = self
-            .put_generation_root(
-                &rebased_root,
-                parent_buffer.work,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-                root_parent_bytes(&rebased_root).map_err(WorkspaceError::engine)?,
-            )
-            .await
-            .map_err(WorkspaceError::engine)?;
-        let publication = publish_generation(
-            self.clone(),
-            PublishGenerationRequest {
-                authority_id: volume_authority_id(target.id),
-                volume_id: target.id,
-                epoch: expected_head.epoch,
-                expected: expected_head,
-                operation_id,
-                generation_root: candidate,
-            },
-            PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
-            closure_limits(target.config),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(WorkspaceError::engine)?;
-        Ok(match publication.outcome {
-            AppendOutcome::Committed(_) => {
-                WorkspaceJoinOutcome::Applied(publication.proof.generation_id)
+        let result = async {
+            if source_object == base_object {
+                return super::join_request::workspace_join_scalar(
+                    WorkspaceJoinOutcome::NoChanges(GenerationId::from_root(target_object)),
+                    accounting,
+                )
+                .map(crate::workspace::JoinPreparation::Complete);
             }
-            AppendOutcome::AlreadyCommitted(_) => {
-                WorkspaceJoinOutcome::AlreadyApplied(publication.proof.generation_id)
-            }
-            AppendOutcome::Conflict { .. } => {
-                let (actual, _) = target
-                    .resolve_head_generation(
-                        &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
-                        &cancellation,
+            let mut source_root = self
+                .read_generation_owned_with_accounting(
+                    source_object,
+                    target.config,
+                    accounting,
+                    cancellation,
+                )
+                .await?;
+            let result = async {
+                if source_root.value.volume_id != source.id
+                    || source_root.value.root_file_id != target_root.value.root_file_id
+                {
+                    return Err(WorkspaceError::IncompatibleWorkspace);
+                }
+                // Normalize in place while each decode retains its original backing.
+                for root in [&mut base_root.value, &mut source_root.value] {
+                    root.volume_id = target.id;
+                    root.required_features = root.continuation_features();
+                    root.parents.clear();
+                }
+                let normalized_base_object = self
+                    .put_generation_root_with_accounting(&base_root.value, accounting, cancellation)
+                    .await?;
+                let normalized_source_object = self
+                    .put_generation_root_with_accounting(
+                        &source_root.value,
+                        accounting,
+                        cancellation,
                     )
-                    .await
-                    .map_err(WorkspaceError::engine)?;
-                WorkspaceJoinOutcome::Stale(GenerationId::from_root(actual))
+                    .await?;
+                let request = crate::kernel::MergeGenerationBorrowedRequest {
+                    base_generation: normalized_base_object,
+                    base: &base_root.value,
+                    ours_generation: Some(normalized_source_object),
+                    ours: &source_root.value,
+                    theirs_generation: target_object,
+                    theirs: &target_root.value,
+                    retain_theirs_parent: false,
+                    maximum_changes,
+                    maximum_conflicts,
+                    content: crate::kernel::ContentMerge::Extents,
+                };
+                let (merged, allocation) =
+                    merge_generation_with_borrowed_map_resolutions_with_accounting(
+                        &self.inner.objects,
+                        &request,
+                        &BTreeMap::new(),
+                        DecodeLimits::for_volume(target.config),
+                        accounting,
+                        cancellation,
+                    )
+                    .await?;
+                let mut root = match merged {
+                    MergeGenerationOutcome::Conflicted {
+                        conflicts,
+                        truncated,
+                    } => {
+                        let mut output = Owned::new(
+                            WorkspaceJoinOutcome::Conflicted(conflicts, truncated),
+                            allocation,
+                            0,
+                        );
+                        if let WorkspaceJoinOutcome::Conflicted(conflicts, _) = &output.value {
+                            output.bytes =
+                                super::join_request::workspace_join_conflict_bytes(conflicts)?;
+                        }
+                        return Ok(crate::workspace::JoinPreparation::Complete(output));
+                    }
+                    MergeGenerationOutcome::Prepared { root, .. } => {
+                        let bytes = root_parent_bytes(&root)?;
+                        Owned::new(root, allocation, bytes)
+                    }
+                };
+                let candidate = async {
+                    let parent = root.value.parents.first_mut().ok_or(FsError::InvalidDiff)?;
+                    let copied = WorkCounters {
+                        bytes_copied: size_of::<GenerationId>() as u64,
+                        ..WorkCounters::UNCHARGED
+                    };
+                    accounting.admit(copied)?;
+                    *parent = GenerationId::from_root(source_object);
+                    accounting.record_completed(copied)?;
+                    self.put_generation_root_with_accounting(&root.value, accounting, cancellation)
+                        .await
+                }
+                .await;
+                root.retire(accounting)?;
+                let candidate = candidate?;
+                Ok(crate::workspace::JoinPreparation::Candidate {
+                    request: PublishGenerationRequest {
+                        authority_id: volume_authority_id(target.id),
+                        volume_id: target.id,
+                        epoch: expected_head.epoch,
+                        expected: expected_head,
+                        operation_id,
+                        generation_root: candidate,
+                    },
+                    intent: PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
+                    limits: closure_limits(target.config),
+                    resolutions_digest: candidate.digest,
+                    source_hold: None,
+                })
             }
-            AppendOutcome::Fenced { .. } => WorkspaceJoinOutcome::Fenced,
-            AppendOutcome::IdempotencyConflict { .. } => WorkspaceJoinOutcome::IdempotencyConflict,
-        })
+            .await;
+            source_root.retire(accounting)?;
+            result
+        }
+        .await;
+        target_root.retire(accounting)?;
+        base_root.retire(accounting)?;
+        if let Ok(crate::workspace::JoinPreparation::Complete(output)) = &result {
+            scope.keep_bytes(output.bytes)?;
+        }
+        result
     }
 }
 
