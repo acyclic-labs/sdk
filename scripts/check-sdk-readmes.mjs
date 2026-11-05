@@ -2,9 +2,9 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { generatedReadmes, services } from "./generate-sdk-readmes.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-export const services = ["Objects", "Streams", "Actors", "Workers", "fs"];
 
 export function examples(source, language) {
   source = source.replaceAll("\r\n", "\n");
@@ -29,6 +29,9 @@ export function checkCopies(guide, llms) {
 
 function checkReadmes() {
   const read = file => readFileSync(resolve(root, file), "utf8");
+  for (const [file, { source, generated }] of generatedReadmes(read)) {
+    if (source !== generated) throw new Error(`STEP_FAILED README drift: ${file}; recovery: node scripts/generate-sdk-readmes.mjs write`);
+  }
   const guide = examples(read("typescript/packages/sdk/README.md"), "ts");
   checkCopies(guide, examples(read("llms.txt"), "ts"));
   examples(read("rust/README.md"), "rust,no_run");
@@ -63,7 +66,7 @@ function checkReadmes() {
   const result = spawnSync(process.execPath, [compiler, "-p", resolve(directory, "tsconfig.json"), "--pretty", "false"], { cwd: root, stdio: "inherit" });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`README TypeScript examples failed (${result.status})`);
-  console.log("Six TypeScript README/llms.txt examples compiled; six Rust doctests inventoried");
+  console.log(`${services.length} TypeScript README/llms.txt examples compiled; ${services.length} generated Rust doctests inventoried`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) checkReadmes();

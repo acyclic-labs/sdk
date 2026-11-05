@@ -10,7 +10,7 @@ acyclic-objects = { path = "../../rust/crates/objects", default-features = false
 acyclic-stream = { path = "../../rust/crates/stream", default-features = false, features = ["http"] }
 acyclic-actors = { path = "../../rust/crates/actors" }
 acyclic-workers = { path = "../../rust/crates/workers" }
-acyclic-fs = { path = "../../rust/crates/filesystem", default-features = false }
+acyclic-fs = { path = "../../rust/crates/filesystem", default-features = false, features = ["local"] }
 reqwest.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
