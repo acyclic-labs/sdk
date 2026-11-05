@@ -115,7 +115,7 @@ impl FuseSessionState {
                 if !retirement.is_retired() {
                     return Err(error);
                 }
-                self.failure.cleanup = Some(error);
+                self.failure.source = Some(error);
             }
         }
         Ok(())
@@ -432,15 +432,21 @@ impl FuseSession {
             state.cleanup.started_io(ReadOperations.delta(1), None)?;
         }
         drop(state);
-        if let Some(invalidator) = self.invalidator.take() {
+        let failure = self.invalidator.take().and_then(|invalidator| {
             invalidator
                 .join()
                 .map_err(|panic| NativeMountError::DriverPanicked {
                     operation: "FUSE invalidator",
                     panic: Mutex::new(panic),
-                })?;
-        }
+                })
+                .err()
+        });
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if failure.is_some() {
+            // Joining consumed the physical owner even when its terminal
+            // value panicked. Hand off every cause before releasing the driver.
+            state.failure.cleanup = failure;
+        }
         Ok(std::mem::take(&mut state.failure))
     }
 }

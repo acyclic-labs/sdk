@@ -81,7 +81,7 @@ fn terminal_worker_retires_destination(
             terminal_source_failure: Some(cleanup_error.into()),
         }),
         cleanup: work.reserve_work(crate::WorkCounters {
-            backend_read_operations: 1,
+            backend_read_operations: 2,
             ..crate::WorkCounters::UNCHARGED
         })?,
         failure: crate::native_mount::retirement::TerminalFailures::default(),
@@ -99,7 +99,9 @@ fn terminal_worker_retires_destination(
     session.driver = Some(super::super::FuseSession {
         core,
         state: Arc::clone(&state),
-        invalidator: None,
+        invalidator: Some(std::thread::spawn(|| {
+            panic!("retained FUSE invalidator panic")
+        })),
     });
     let wait = crate::CancellationToken::new();
     let stop = if metered {
@@ -138,6 +140,18 @@ fn terminal_worker_retires_destination(
         .expect_err("source error was lost during cleanup");
     assert!(
         matches!(second, NativeMountError::Io(ref cause) if cause.raw_os_error() == cleanup_code)
+    );
+    let third = session
+        .stop_with_context(&stop)
+        .expect_err("invalidator panic was lost during cleanup");
+    let NativeMountError::DriverPanicked { operation, panic } = third else {
+        panic!("invalidator panic changed to {third:?}");
+    };
+    assert_eq!(operation, "FUSE invalidator");
+    let payload = panic.into_inner().map_err(|_| "panic payload poisoned")?;
+    assert_eq!(
+        payload.downcast_ref::<&str>(),
+        Some(&"retained FUSE invalidator panic")
     );
     assert!(!session.stop_with_context(&stop)?);
     assert_eq!(
