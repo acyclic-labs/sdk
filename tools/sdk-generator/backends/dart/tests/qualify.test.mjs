@@ -20,7 +20,7 @@ function fixture(t, failure = "") {
   }) };
   put(join(authority, "shared.bin"), "descriptors");
   const manifestBytes = Buffer.from(JSON.stringify(manifest)); put(join(authority, "rust-authority.json"), manifestBytes);
-  const payload = { "pubspec.yaml": readFileSync("tools/sdk-generator/backends/dart/templates/package/pubspec.yaml"), LICENSE: "LICENSE", NOTICE: "NOTICE", "authority/rust-authority.json": manifestBytes };
+  const payload = { "pubspec.yaml": readFileSync(new URL("../templates/package/pubspec.yaml", import.meta.url)), LICENSE: "LICENSE", NOTICE: "NOTICE", "authority/rust-authority.json": manifestBytes };
   targets.forEach((source, i) => {
     const family = source.slice(0, -6);
     payload[`lib/${family}.pb.dart`] = `class Thing${i} extends $pb.GeneratedMessage {}`;

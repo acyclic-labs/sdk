@@ -28,9 +28,6 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.source_sha }}
-      - uses: ./.github/actions/rust-toolchain
-        with:
-          targets: wasm32-unknown-unknown
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.27.2'
@@ -48,4 +45,4 @@ jobs:
         run: |
           source scripts/ensure-bun.sh
           bun install --frozen-lockfile
-          node scripts/node-tests.mjs --only tools/sdk-generator
+          node scripts/node-tests.mjs --root tools/sdk-generator --all

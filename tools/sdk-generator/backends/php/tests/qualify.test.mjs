@@ -18,7 +18,7 @@ function fixture(t, failure = "") {
   }) };
   put(join(authority, "shared.bin"), "descriptors");
   const manifestBytes = Buffer.from(JSON.stringify(manifest)); put(join(authority, "rust-authority.json"), manifestBytes);
-  const payload = { "composer.json": readFileSync("tools/sdk-generator/backends/php/templates/package/composer.json"), LICENSE: "license", NOTICE: "notice", "authority/rust-authority.json": manifestBytes };
+  const payload = { "composer.json": readFileSync(new URL("../templates/package/composer.json", import.meta.url)), LICENSE: "license", NOTICE: "notice", "authority/rust-authority.json": manifestBytes };
   for (const [family, version] of [["Actors", "V1"], ["Stream", "V1"]]) {
     payload[`src/GPBMetadata/${family}/${version}/${family}.php`] = "metadata fixture";
     payload[`src/Acyclic/${family}/${version}/${family}ServiceClient.php`] = "client fixture";
