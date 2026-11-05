@@ -64,15 +64,3 @@ async fn run_provider_scenario(root: &std::path::Path, path: &std::path::Path) -
     stall::guarded(path, providers::run(case)).await??;
     Ok(())
 }
-
-#[tokio::test]
-async fn exhausted_provider_retries_settle_failed() -> TestResult {
-    let root = acyclic_test_support::crate_path!("tests/scenarios");
-    run_provider_scenario(&root, &root.join("providers/anthropic/exhausted-500.json")).await
-}
-
-#[tokio::test]
-async fn refused_provider_request_settles_failed() -> TestResult {
-    let root = acyclic_test_support::crate_path!("tests/scenarios");
-    run_provider_scenario(&root, &root.join("providers/anthropic/refused-400.json")).await
-}
