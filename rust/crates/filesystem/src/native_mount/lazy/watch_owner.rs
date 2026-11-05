@@ -10,7 +10,7 @@ pub struct NativeMountSourceWatchOwner {
 }
 
 impl NativeMountSourceWatchOwner {
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
     pub(in crate::native_mount) fn from_native_watch_fixture(watch: Box<dyn SourceWatch>) -> Self {
         Self {
             watch: Some(watch),
@@ -47,9 +47,7 @@ impl NativeMountSourceWatchOwner {
         &self,
         wait: Option<&crate::CancellationToken>,
     ) -> Result<bool, crate::DemandError> {
-        if self.is_stopped() {
-            return Ok(false);
-        }
+        let stopped = self.is_stopped();
         let result = if let Some(failure) = &self.startup_failure {
             match wait {
                 Some(wait) => failure.stop_with_cleanup_wait(wait),
@@ -63,7 +61,7 @@ impl NativeMountSourceWatchOwner {
         } else {
             return Ok(false);
         };
-        result.map(|()| true)
+        result.map(|()| !stopped)
     }
 
     /// Stops the original watch on the supplied carrier.
@@ -76,9 +74,7 @@ impl NativeMountSourceWatchOwner {
             .ok_or(MountSourceError::NativeUnsupported)?;
         let mut work = crate::NativeMaterializationWork::clone(&original);
         crate::native_host::NativeHostWork::check(&work).map_err(MountSourceError::from)?;
-        if self.is_stopped() {
-            return Ok(false);
-        }
+        let stopped = self.is_stopped();
         let result = if let Some(failure) = &self.startup_failure {
             failure.stop_with_work(&mut work)
         } else if let Some(watch) = &self.watch {
@@ -89,7 +85,7 @@ impl NativeMountSourceWatchOwner {
         } else {
             return Ok(false);
         };
-        result.map_err(MountSourceError::from).map(|()| true)
+        result.map_err(MountSourceError::from).map(|()| !stopped)
     }
 }
 

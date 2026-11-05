@@ -58,16 +58,12 @@ pub(super) fn retire_sources(
             retired.failure.map(NativeMountError::from)
         }
         Some(RetainedSource::Watch(owner)) => {
-            let result = if owner.is_stopped() {
-                Ok(false)
-            } else {
-                match work {
-                    NativeSessionStopWork::Meter(meter) => {
-                        owner.stop(&mut adapter::NativeDemandCarrier::Native(meter))
-                    }
-                    NativeSessionStopWork::AcceptedWait(wait) => owner.stop_with_cleanup_wait(wait),
-                    NativeSessionStopWork::AcceptedDrop => owner.stop_accepted_cleanup(),
+            let result = match work {
+                NativeSessionStopWork::Meter(meter) => {
+                    owner.stop(&mut adapter::NativeDemandCarrier::Native(meter))
                 }
+                NativeSessionStopWork::AcceptedWait(wait) => owner.stop_with_cleanup_wait(wait),
+                NativeSessionStopWork::AcceptedDrop => owner.stop_accepted_cleanup(),
             };
             if !owner.is_stopped() {
                 result?;

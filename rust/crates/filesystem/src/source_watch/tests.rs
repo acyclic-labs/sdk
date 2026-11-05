@@ -9,6 +9,53 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+/// Retains a real callback refusal after joining only its physical driver.
+#[cfg(all(target_os = "linux", feature = "native-mount"))]
+pub(crate) fn terminal_failure_watch(
+    root: &Path,
+    work: &mut crate::NativeMaterializationWork,
+) -> TestResult<Box<dyn crate::demand::SourceWatch>> {
+    struct Refuses(std::sync::mpsc::Sender<bool>);
+    impl HostChangeSink for Refuses {
+        fn logical_owned_bytes(&self) -> u64 {
+            0
+        }
+        fn host_changed(
+            &self,
+            _: &[HostChange],
+            _: &mut crate::demand::DemandWork,
+        ) -> Result<(), DemandError> {
+            Err(DemandError::NativeWorkUnavailable)
+        }
+        fn host_changed_with_native_work(
+            &self,
+            _: &[HostChange],
+            _: &mut crate::NativeMaterializationWork,
+        ) -> Result<(), DemandError> {
+            let _ = self.0.send(true);
+            Err(DemandError::InvalidRequest)
+        }
+        fn delivery_lost(&self) {
+            let _ = self.0.send(false);
+        }
+    }
+    let held = HostRoot::open(root, work)?;
+    let (entered, observed) = std::sync::mpsc::channel();
+    let watch = Arc::new(NativeSourceWatch::start(
+        &held,
+        Arc::new(Refuses(entered)),
+        work,
+    )?);
+    std::fs::write(root.join("reported"), b"changed")?;
+    if !observed.recv()? {
+        return Err("original watch lost delivery before its callback".into());
+    }
+    // This joins the original driver without consuming Delivery's saved error.
+    watch.stop_driver(work, None, true)?;
+    assert!(watch.is_stopped());
+    Ok(crate::demand::native::native_watch_fixture(watch, work)?)
+}
+
 /// Every change delivered, in order.
 #[derive(Default)]
 pub(super) struct Recorded {

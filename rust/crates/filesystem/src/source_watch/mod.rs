@@ -26,6 +26,8 @@ pub(crate) use fsevents::NativeSourceWatch;
 pub(crate) use fsevents::tests::terminal_cancellation_watch;
 #[cfg(target_os = "linux")]
 pub(crate) use inotify::NativeSourceWatch;
+#[cfg(all(test, target_os = "linux", feature = "native-mount"))]
+pub(crate) use tests::terminal_failure_watch;
 
 /// Known SDK control storage: Arc's two counters, alignment, and Rust payload.
 pub(super) const fn arc_control_bytes<T>() -> u64 {

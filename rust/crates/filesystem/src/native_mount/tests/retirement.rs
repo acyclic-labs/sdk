@@ -232,11 +232,19 @@ fn terminal_source_outcome_is_reported_after_its_destination_retires()
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-fn stopped_watch_cancellation_releases_the_driver_and_session_fences()
+fn stopped_watch_outcome_releases_the_driver_and_session_fences()
 -> Result<(), Box<dyn std::error::Error>> {
-    for driver_owned in [false, true] {
+    let modes: &[u8] = if cfg!(target_os = "macos") {
+        &[1]
+    } else {
+        &[0, 1, 2]
+    };
+    for (driver_owned, mode) in [false, true]
+        .into_iter()
+        .flat_map(|owned| modes.iter().map(move |mode| (owned, *mode)))
+    {
         let Fixture {
             root,
             mut session,
@@ -246,21 +254,37 @@ fn stopped_watch_cancellation_releases_the_driver_and_session_fences()
         let watched = root.path().join("source");
         std::fs::create_dir(&watched)?;
         let wait = CancellationToken::new();
+        #[cfg(target_os = "macos")]
         let watch = crate::source_watch::terminal_cancellation_watch(&watched, &mut work, &wait)?;
+        #[cfg(target_os = "linux")]
+        let watch = crate::source_watch::terminal_failure_watch(&watched, &mut work)?;
         session.retained_source = Some(retirement::RetainedSource::Watch(
             lazy::NativeMountSourceWatchOwner::from_native_watch_fixture(watch),
         ));
         let before = work.receipt();
+        let stop = match mode {
+            0 => NativeSessionStopWork::Meter(&work),
+            1 => NativeSessionStopWork::AcceptedWait(&wait),
+            _ => NativeSessionStopWork::AcceptedDrop,
+        };
         let result = if driver_owned {
             let mut packet = NativeMountRetirement {
                 retained_source: session.retained_source.take(),
                 terminal_source_failure: None,
                 destination_guard: session.destination_guard.take(),
             };
-            let result = packet.retire(
-                Some(&wait),
+            let result = retirement::retire_sources(
+                &mut packet.retained_source,
+                &mut packet.terminal_source_failure,
+                &stop,
                 crate::native_mount::retirement::SourceRetirementWait::Caller,
-            );
+            )
+            .and_then(|_| {
+                packet.retire(
+                    None,
+                    crate::native_mount::retirement::SourceRetirementWait::Physical,
+                )
+            });
             assert!(
                 packet.is_retired(),
                 "terminal watch outcome stranded its fence"
@@ -268,18 +292,31 @@ fn stopped_watch_cancellation_releases_the_driver_and_session_fences()
             assert!(packet.terminal_source_failure.is_none());
             result
         } else {
-            let result = session.stop_with_context(&NativeSessionStopWork::AcceptedWait(&wait));
+            let result = session.stop_with_context(&stop);
             assert!(session.cleanup_state().cleanup_complete());
             assert!(session.terminal_source_failure.is_none());
             result
         };
-        assert!(wait.is_cancelled(), "actual FSEvents terminal did not run");
+        #[cfg(target_os = "macos")]
+        {
+            assert!(wait.is_cancelled(), "actual FSEvents terminal did not run");
+            assert!(
+                matches!(
+                    result,
+                    Err(NativeMountError::Source(MountSourceError::Cancelled))
+                ),
+                "original post-terminal cancellation was replaced: {result:?}"
+            );
+        }
+        #[cfg(target_os = "linux")]
         assert!(
             matches!(
                 result,
-                Err(NativeMountError::Source(MountSourceError::Cancelled))
+                Err(NativeMountError::Source(MountSourceError::Demand(
+                    crate::DemandError::InvalidRequest
+                )))
             ),
-            "original post-terminal cancellation was replaced: {result:?}"
+            "saved native callback refusal disappeared: {result:?}"
         );
         assert!(!fence.exists(), "stopped producer kept its physical fence");
         assert!(!root.path().join("retired-mount").exists());

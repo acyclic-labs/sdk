@@ -3,7 +3,11 @@ struct NativeWatch {
     _ownership: SourcePayloadOwnership,
 }
 
-#[cfg(all(test, target_os = "macos", feature = "native-mount"))]
+#[cfg(all(
+    test,
+    any(target_os = "linux", target_os = "macos"),
+    feature = "native-mount"
+))]
 pub(crate) fn native_watch_fixture(
     watch: Arc<crate::source_watch::NativeSourceWatch>,
     original: &mut crate::NativeMaterializationWork,
