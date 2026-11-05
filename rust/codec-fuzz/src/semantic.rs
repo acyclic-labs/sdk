@@ -18,6 +18,11 @@ pub fn object_seeds()
     objects::seeds()
 }
 
+pub fn actor_seeds()
+-> Result<Vec<(&'static str, &'static str, Vec<u8>)>, acyclic_actors::domain::DomainError> {
+    actors::seeds()
+}
+
 pub(super) fn project<W, S, E>(
     bytes: &[u8],
     decode: impl Fn(W) -> Result<S, E>,
@@ -206,6 +211,7 @@ fn pending_run() -> acyclic_inference::wire::RunView {
 }
 
 pub(super) fn check(name: &str, bytes: &[u8]) {
+    actors::check(name, bytes);
     auth_admission::check(name, bytes);
     auth_revocation::check(name, bytes);
     filesystem::check(name, bytes);

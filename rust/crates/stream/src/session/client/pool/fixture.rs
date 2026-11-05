@@ -33,7 +33,9 @@ pub(in crate::session::client) fn fixture(
         connections: super::super::super::Connections::new(),
         executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
         identity: Bytes::from_static(b"model"),
-        connect: std::sync::Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
+        connect: std::sync::Arc::new(|_| {
+            Box::pin(future::ready(Err(StreamError::Unavailable.into())))
+        }),
         home: "good".into(),
         routes: Routes::new(),
         links: BTreeMap::new(),

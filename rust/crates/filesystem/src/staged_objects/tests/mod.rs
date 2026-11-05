@@ -81,23 +81,31 @@ async fn spill_fixture(
     store: &LocalStaged,
     token: &CancellationToken,
 ) -> Result<(ObjectId, OwnedBytes), Box<dyn std::error::Error>> {
-    let (id, bytes) = blob(OwnedBytes::from_static(b"real spill bytes"));
-    {
-        let __object_args = (id, bytes.clone(), WorkBudget::UNBOUNDED, token);
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result = store
-            .put(__object_args.0, __object_args.1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    }?;
+    spill_bytes_fixture(store, token, OwnedBytes::from_static(b"real spill bytes")).await
+}
+
+async fn spill_bytes_fixture(
+    store: &LocalStaged,
+    token: &CancellationToken,
+    bytes: OwnedBytes,
+) -> Result<(ObjectId, OwnedBytes), Box<dyn std::error::Error>> {
+    let (id, bytes) = blob(bytes);
+    store
+        .put(
+            id,
+            bytes.clone(),
+            &mut AuthorityWork::new(WorkBudget::UNBOUNDED, token),
+        )
+        .await?;
     let mut spill_file = store.spill_io.write().await;
+    let offset = store.index().spill_end;
     let spill_bytes = bytes.clone();
     store
         .spill_file(&mut spill_file, None)
         .await?
         .control_async(
             move |file, _| {
-                acyclic_native_runtime::write_all_at(file, 0, spill_bytes.as_slice(), None)
+                acyclic_native_runtime::write_all_at(file, offset, spill_bytes.as_slice(), None)
             },
             None,
         )
@@ -108,7 +116,7 @@ async fn spill_fixture(
         let order = *order;
         index.order.remove(&order);
     }
-    index.mark_spilled(&[(id, bytes.clone())], 0);
+    index.mark_spilled(&[(id, bytes.clone())], offset);
     Ok((id, bytes))
 }
 

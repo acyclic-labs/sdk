@@ -1,0 +1,28 @@
+diff --git a/rust/crates/stream/src/wasm/session_io.rs b/rust/crates/stream/src/wasm/session_io.rs
+--- a/rust/crates/stream/src/wasm/session_io.rs
++++ b/rust/crates/stream/src/wasm/session_io.rs
+@@ -73,18 +73,11 @@ fn failure(error: JsValue) -> transport::Failure {
+         .ok()
+         .and_then(|value| value.as_bool())
+         == Some(true);
+-    let error = match Reflect::get(&error, &"refusal".into()) {
+-        Ok(refusal) if refusal.is_undefined() => Reflect::get(&error, &"code".into())
+-            .ok()
+-            .and_then(|code| code.as_string())
+-            .as_deref()
+-            .and_then(StreamError::from_code)
+-            .unwrap_or(StreamError::Unavailable),
+-        Ok(refusal) => acyclic_auth::refusal::javascript::parts(&refusal, |view| {
+-            crate::javascript_bytes::snapshot(view, |_| Ok(())).map(|(bytes, ())| bytes)
+-        })
+-        .map_or(StreamError::Unavailable, wire_codec::status::status_owned),
+-        Err(_) => StreamError::Unavailable,
+-    };
++    let error = Reflect::get(&error, &"code".into())
++        .ok()
++        .and_then(|code| code.as_string())
++        .as_deref()
++        .and_then(StreamError::from_code)
++        .unwrap_or(StreamError::Unavailable);
+     transport::Failure { error, transient }
+ }

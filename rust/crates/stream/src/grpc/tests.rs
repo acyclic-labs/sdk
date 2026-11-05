@@ -395,6 +395,30 @@ pub(crate) async fn closed_transport() -> TestResult<Status> {
 
 #[tokio::test]
 async fn transport_loss_retries_the_same_request_but_peer_errors_do_not() -> TestResult {
+    // Capture the kernel refusal through the actual Tonic channel. The same
+    // source chain also classifies eager member connection failures.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let endpoint = format!("http://{}", listener.local_addr()?);
+    drop(listener);
+    let error = Endpoint::from_shared(endpoint.clone())?
+        .connect()
+        .await
+        .err()
+        .ok_or("refused endpoint connected")?;
+    let failure = crate::session::transport::Failure::from(ConnectError::Endpoint(error));
+    assert_eq!(failure.error, StreamError::Unavailable);
+    assert!(
+        !failure.transient,
+        "a refused connect must not poll for a listener"
+    );
+    let channel = Endpoint::from_shared(endpoint)?.connect_lazy();
+    let mut service = wire::stream_service_client::StreamServiceClient::new(channel);
+    let error = service
+        .append(Request::new(wire::AppendRequest::default()))
+        .await
+        .err()
+        .ok_or("refused endpoint accepted append")?;
+    assert_unary_retry(error, false).await?;
     assert_unary_retry(closed_transport().await?, true).await?;
     assert_unary_retry(Status::unknown("peer outcome unknown"), false).await?;
     assert_unary_retry(Status::unavailable("restarting"), false).await?;

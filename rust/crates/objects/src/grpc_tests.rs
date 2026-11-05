@@ -639,7 +639,7 @@ fn original(status: &tonic::Status) -> (tonic::Code, String, Vec<u8>, Vec<(Strin
         .as_ref()
         .iter()
         .filter(|(name, _)| {
-            name.as_str().starts_with("acyclic-") && !OWNED.contains(&name.as_str())
+            name.as_str().starts_with("acyclic-") && !crate::error::OWNED.contains(&name.as_str())
         })
         .map(|(name, value)| (name.as_str().to_owned(), value.as_bytes().to_vec()))
         .collect();
@@ -667,6 +667,13 @@ fn every_member_refusal_round_trips_its_original_status() -> TestResult {
                 tonic::metadata::MetadataValue::from_bytes(b"protocol-owned"),
             );
             let error = error_from_status(&stamped);
+            let owned = Error::from_status_parts(acyclic_auth::refusal::Parts {
+                code: stamped.code() as i32,
+                message: stamped.message().to_owned(),
+                details: stamped.details().to_vec().into(),
+                metadata: stamped.metadata().clone().into_headers(),
+            });
+            assert_eq!(owned, error, "owned and borrowed status admission agree");
             assert!(
                 error.refusal.is_some(),
                 "{relayed:?} decoded blind as {error:?}"

@@ -85,12 +85,15 @@ where
         let digest = request.publishes();
         let (slots, published, ready, start) = (&slots, &published, &ready, &start);
         async move {
-            loop {
-                let notified = published.notified();
-                if ready(index, digest, request.needs()) {
-                    break;
+            // Independent reads cannot depend on a publishing slot.
+            if digest.is_some() || !request.needs().is_empty() {
+                loop {
+                    let notified = published.notified();
+                    if ready(index, digest, request.needs()) {
+                        break;
+                    }
+                    notified.await;
                 }
-                notified.await;
             }
             let outcome = start(request).await;
             if digest.is_some() {

@@ -1,7 +1,7 @@
 //! Binary platform callbacks for the canonical session client, also on Node/Bun.
 use super::*;
 use crate::runtime::PlatformExecutor;
-use crate::session::{Client, transport};
+use crate::session::{Client, Frame, transport};
 use futures::{
     Stream,
     future::{AbortHandle, Abortable},
@@ -70,16 +70,28 @@ fn method(object: &JsValue, name: &str) -> Result<Function, StreamError> {
         .and_then(|value| value.dyn_into::<Function>())
         .map_err(|_| StreamError::Unavailable)
 }
-fn failure(error: JsValue) -> StreamError {
-    Reflect::get(&error, &JsValue::from_str("code"))
+fn failure(error: JsValue) -> transport::Failure {
+    let transient = Reflect::get(&error, &JsValue::from_str("transient"))
         .ok()
-        .and_then(|code| code.as_string())
-        .as_deref()
-        .and_then(StreamError::from_code)
-        .unwrap_or(StreamError::Unavailable)
+        .and_then(|value| value.as_bool())
+        == Some(true);
+    let error = match Reflect::get(&error, &"refusal".into()) {
+        Ok(refusal) if refusal.is_undefined() => Reflect::get(&error, &"code".into())
+            .ok()
+            .and_then(|code| code.as_string())
+            .as_deref()
+            .and_then(StreamError::from_code)
+            .unwrap_or(StreamError::Unavailable),
+        Ok(refusal) => acyclic_auth::refusal::javascript::parts(&refusal, |view| {
+            crate::javascript_bytes::snapshot(view, |_| Ok(())).map(|(bytes, ())| bytes)
+        })
+        .map_or(StreamError::Unavailable, wire_codec::status::status_owned),
+        Err(_) => StreamError::Unavailable,
+    };
+    transport::Failure { error, transient }
 }
 impl Connection {
-    fn call(&self, method_name: &str, value: &JsValue) -> Result<JsFuture, StreamError> {
+    fn call(&self, method_name: &str, value: &JsValue) -> Result<JsFuture, transport::Failure> {
         let value = method(&self.io, method_name)?
             .call1(&self.io, value)
             .map_err(failure)?;
@@ -99,10 +111,7 @@ struct Responses {
     ended: bool,
 }
 impl Responses {
-    fn poll(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<wire::SessionFrame, StreamError>>> {
+    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Frame, transport::Failure>>> {
         if self.ended {
             return Poll::Ready(None);
         }
@@ -159,13 +168,17 @@ impl Responses {
                     return Poll::Ready(None);
                 }
                 if !value.is_instance_of::<Uint8Array>() {
-                    return Poll::Ready(Some(Err(StreamError::InvalidResponse)));
+                    return Poll::Ready(Some(Err(StreamError::InvalidResponse.into())));
                 }
                 let bytes = Uint8Array::new(&value);
                 if bytes.length() as usize > MAX_COMMAND_BYTES {
-                    return Poll::Ready(Some(Err(StreamError::LimitExceeded)));
+                    return Poll::Ready(Some(Err(StreamError::LimitExceeded.into())));
                 }
-                Poll::Ready(Some(wire_codec::session::decode_frame(&bytes.to_vec())))
+                Poll::Ready(Some(
+                    wire_codec::session::decode_frame(&bytes.to_vec())
+                        .map(Into::into)
+                        .map_err(Into::into),
+                ))
             }
         }
     }
@@ -180,13 +193,13 @@ impl Drop for Responses {
     }
 }
 impl Stream for Responses {
-    type Item = Result<crate::session::Frame, StreamError>;
+    type Item = Result<crate::session::Frame, transport::Failure>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let result = self.poll(cx);
         if matches!(result, Poll::Ready(None | Some(Err(_)))) {
             self.ended = true;
         }
-        result.map(|item| item.map(|item| item.map(Into::into)))
+        result
     }
 }
 impl transport::Transport for Endpoint {
@@ -210,7 +223,10 @@ impl transport::Transport for Endpoint {
     fn session(
         &self,
         source: transport::Requests,
-    ) -> crate::BoxProviderFuture<'_, Result<transport::Responses, StreamError>> {
+    ) -> crate::BoxProviderFuture<
+        '_,
+        Result<transport::Responses<transport::Failure>, transport::Failure>,
+    > {
         Box::pin(async move {
             let mut connection = Connection {
                 controller: web_sys::AbortController::new().map_err(failure)?,
@@ -235,7 +251,7 @@ impl transport::Transport for Endpoint {
                 read: None,
                 write: None,
                 ended: false,
-            }) as transport::Responses)
+            }) as transport::Responses<transport::Failure>)
         })
     }
 }
@@ -259,4 +275,129 @@ pub(super) fn client(connect: Function, scope: Option<crate::RevisionScope>) -> 
         None => revisions,
     };
     Client::tracking(home, moved, Arc::new(PlatformExecutor), revisions)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::transport::Transport as _;
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn javascript_transport_failures_preserve_interruption_disposition() {
+        // Derive adversarial diagnostics from the production status writer.
+        // These are not captures of a deployed member's attribution contract.
+        let canonical = wire_codec::status::error_status(&StreamError::Unavailable);
+        let mut metadata = canonical.metadata().clone();
+        metadata.append("acyclic-original", canonical.message().parse().unwrap());
+        metadata.append("acyclic-original", canonical.message().parse().unwrap());
+        let status = tonic::Status::with_details_and_metadata(
+            tonic::Code::Unknown,
+            canonical.message(),
+            canonical.message().as_bytes().to_vec().into(),
+            metadata,
+        );
+        let reported = wire_codec::status::status(&status);
+        for write in [false, true] {
+            for (error, transient) in [
+                (StreamError::Unavailable, true),
+                (StreamError::Unavailable, false),
+                (StreamError::AccessDenied, false),
+                (StreamError::InvalidResponse, false),
+                (reported.clone(), true),
+                (reported.clone(), false),
+            ] {
+                let original = super::super::js_error(error.clone());
+                Reflect::set(&original, &"transient".into(), &transient.into()).unwrap();
+                let io = Object::new();
+                let next = Closure::<dyn Fn() -> Promise>::new({
+                    let original = original.clone();
+                    move || {
+                        if write {
+                            Promise::new(&mut |_, _| {})
+                        } else {
+                            Promise::reject(&original)
+                        }
+                    }
+                });
+                let send = Closure::<dyn Fn() -> Promise>::new(move || Promise::reject(&original));
+                let close = Closure::<dyn Fn()>::new(|| {});
+                for (name, method) in [
+                    ("next", next.as_ref()),
+                    ("send", send.as_ref()),
+                    ("close", close.as_ref()),
+                ] {
+                    Reflect::set(&io, &name.into(), method).unwrap();
+                }
+                let connect = Closure::<dyn Fn() -> JsValue>::new(move || io.clone().into());
+                let endpoint = Endpoint {
+                    connect: connect.as_ref().unchecked_ref::<Function>().clone(),
+                    node: None,
+                    writing: Rc::new(RefCell::new(Weak::new())),
+                };
+                let source: transport::Requests = if write {
+                    Box::pin(
+                        futures::stream::once(async {
+                            wire::SessionFrame {
+                                body: Some(wire::session_frame::Body::Interest(
+                                    wire::SessionInterest {
+                                        upsert: vec![wire::SessionSubscription {
+                                            channel: Some(wire::SessionChannel {
+                                                channel_id: 1,
+                                                generation: 1,
+                                            }),
+                                            ..Default::default()
+                                        }],
+                                        ..Default::default()
+                                    },
+                                )),
+                                ..Default::default()
+                            }
+                        })
+                        .chain(futures::stream::pending()),
+                    )
+                } else {
+                    Box::pin(futures::stream::pending())
+                };
+                let mut responses = endpoint.session(source).await.unwrap();
+                match responses
+                    .next()
+                    .await
+                    .expect("original callback must complete")
+                {
+                    Err(failure) => {
+                        assert_eq!(failure.error, error);
+                        assert_eq!(failure.transient, transient);
+                    }
+                    Ok(_) => panic!("a rejected callback must fail the physical connection"),
+                }
+                drop(responses);
+            }
+        }
+
+        // Exercise the shipped session pool and public ABI as well as its
+        // physical callback boundary. A peer refusal must finish this request.
+        let connect = Closure::<dyn Fn() -> Promise>::new({
+            let error = super::super::js_error(reported.clone());
+            move || Promise::reject(&error)
+        });
+        let session = super::super::WasmSession::new(
+            connect.as_ref().unchecked_ref::<Function>().clone(),
+            true,
+            None,
+        );
+        let request = wire_codec::heads_request_to_wire(crate::HeadsRequest {
+            retained: Default::default(),
+            durable_through: None,
+            projection: crate::HeadProjection::Tail,
+            paths: Default::default(),
+            children: None,
+            limit: 1,
+            at_least: Default::default(),
+        });
+        let actual = session
+            .heads(&request.encode_to_vec(), 0)
+            .await
+            .unwrap_err();
+        assert_eq!(failure(actual).error, reported, "public session refusal");
+    }
 }
