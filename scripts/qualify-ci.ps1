@@ -201,6 +201,9 @@ bun run --filter '@acyclic-labs/fs' test:composition
 $AcyclicInstall = Join-Path $env:SDK_TEMP_DIR 'acyclic-installed'
 cargo install --path plugin --locked --debug `
     --root $AcyclicInstall --target-dir $CargoTargetDir
+node scripts/qualify-cli-input.mjs `
+    (Join-Path $AcyclicInstall 'bin/acyclic.exe') `
+    (Join-Path $AcyclicInstall 'bin/graphcoder.exe')
 bun install --cwd scripts/graphcoder-pty --frozen-lockfile --ignore-scripts
 node --test scripts/graphcoder-pty/screen.test.mjs
 node scripts/test-graphcoder.mjs (Join-Path $AcyclicInstall 'bin/acyclic.exe')
