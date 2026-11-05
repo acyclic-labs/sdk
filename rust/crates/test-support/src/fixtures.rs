@@ -89,13 +89,64 @@ fn resolve(root: Option<PathBuf>, relative: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::source_path;
+    use std::{path::Path, process::Command};
 
     #[test]
-    fn explicit_source_snapshot_replaces_the_build_hosts_path() {
-        let root = std::env::temp_dir().join("cross-built-fixtures");
-        let source = resolve(Some(root.clone()), Path::new("plugin/src/main.rs"));
-        assert_eq!(source, root.join("plugin/src/main.rs"));
-        assert!(source.is_absolute());
+    fn runtime_source_snapshot_is_an_execution_input() {
+        if let Some(fixture) = std::env::var_os("ACYCLIC_FIXTURE_PROBE") {
+            assert_eq!(
+                std::fs::read(source_path(fixture)).unwrap(),
+                b"runtime source"
+            );
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let fixture = root.path().join("fixture");
+        std::fs::write(&fixture, b"runtime source").unwrap();
+        let test = concat!(
+            module_path!(),
+            "::runtime_source_snapshot_is_an_execution_input"
+        );
+        let test = test.split_once("::").unwrap().1;
+        for (supplied, relative, refusal) in [
+            (Some(root.path()), Path::new("fixture"), None),
+            (
+                None,
+                Path::new("fixture"),
+                Some("test source root is missing"),
+            ),
+            (
+                Some(Path::new("relative")),
+                Path::new("fixture"),
+                Some("test source root must be absolute"),
+            ),
+            (
+                Some(root.path()),
+                fixture.as_path(),
+                Some("fixture path must be repository-relative"),
+            ),
+        ] {
+            let mut child = Command::new(std::env::current_exe().unwrap());
+            child
+                .args(["--exact", test, "--nocapture"])
+                .env_remove("ACYCLIC_TEST_SOURCE_ROOT")
+                .env("ACYCLIC_FIXTURE_PROBE", relative);
+            if let Some(supplied) = supplied {
+                child.env("ACYCLIC_TEST_SOURCE_ROOT", supplied);
+            }
+            let output = child.output().expect("step=fixture-source-control launch; recovery command: cargo test --locked -p acyclic-test-support --lib runtime_source_snapshot_is_an_execution_input");
+            let log = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(log.contains("running 1 test"), "{log}");
+            if let Some(refusal) = refusal {
+                assert!(!output.status.success() && log.contains(refusal), "{log}");
+            } else {
+                assert!(output.status.success(), "{log}");
+            }
+        }
     }
 }
