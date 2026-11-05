@@ -27,7 +27,7 @@ mod workspace_executor;
 pub use command::parse_command;
 #[cfg(feature = "filesystem")]
 #[doc(hidden)]
-pub use fs_command::{FsCommand, parse_fs_command};
+pub use fs_command::{FsCommand, agent_diff, parse_fs_command};
 #[cfg(feature = "filesystem")]
 pub mod git;
 

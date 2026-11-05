@@ -10,7 +10,9 @@ pub struct FsCommand {
     pub volume: Option<String>,
 }
 
-pub(crate) fn agent_diff(args: &[String]) -> Option<&str> {
+/// Select the exact registered-agent diff operand.
+#[doc(hidden)]
+pub fn agent_diff(args: &[String]) -> Option<&str> {
     match args {
         [command, branch] if command == "diff" && super::agents::branch_child(branch).is_some() => {
             Some(branch)
