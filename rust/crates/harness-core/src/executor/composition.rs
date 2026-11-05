@@ -85,29 +85,25 @@ impl StockExecutor {
     }
 
     /// Binds request assembly and tool selection to one authenticated immutable manifest.
-    pub fn with_context_manifest(
+    pub async fn with_context_manifest(
         mut self,
         reference: FileRef,
         reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
-    ) -> BoxFuture<'static, Result<Self>> {
-        // Manifest binding includes selected skill reads and source verification.
-        // Keep that concrete future out of every enclosing turn's layout.
-        Box::pin(async move {
-            if self.context.contains_stage("context-manifest") {
-                return Err(Error::Conflict(
-                    "executor already has a context manifest".into(),
-                ));
-            }
-            let (tools, stage) = crate::context::ContextManifest::bind(
-                reference,
-                reader.as_ref(),
-                self.tools,
-                self.limits,
-            )
-            .await?;
-            self.tools = tools;
-            self.with_context_stage(stage)
-        })
+    ) -> Result<Self> {
+        if self.context.contains_stage("context-manifest") {
+            return Err(Error::Conflict(
+                "executor already has a context manifest".into(),
+            ));
+        }
+        let (tools, stage) = crate::context::ContextManifest::bind(
+            reference,
+            reader.as_ref(),
+            self.tools,
+            self.limits,
+        )
+        .await?;
+        self.tools = tools;
+        self.with_context_stage(stage)
     }
 
     /// Offers the selected capabilities as `native`'s declarations. Called
