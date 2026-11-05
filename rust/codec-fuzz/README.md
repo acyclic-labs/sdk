@@ -886,7 +886,7 @@ captured provider responses or evidence of a coverage-guided campaign.
 `../crates/harness-fuzz/negative-controls/typed-json-ignore-admission.patch` and
 `typed-json-ignore-release.patch` retain the original admission/release controls.
 `typed-json-ignore-syntax-admission.patch` drops the actual diagnostic admission
-error. Run `python3 rust/crates/harness-fuzz/typed-json-negative-control.py` from
+error. Run `node rust/crates/harness-fuzz/typed-json-negative-control.mjs` from
 the repository root to require that last mutation to fail the unchanged semantic
 assertion, then restore production and run the same named corpus check. Syntax
 control qualification, owned typed-layout bounds, complete branches and platform
@@ -903,7 +903,7 @@ refusal frontiers still share the same helper; the writer-derived syntax check
 retains its diagnostic-admission assertion.
 
 To check that the oracle detects accidental materialization of borrowed raw
-JSON, run `python3 rust/crates/harness-fuzz/typed-json-negative-control.py
+JSON, run `node rust/crates/harness-fuzz/typed-json-negative-control.mjs
 --raw-domain-prior <prior-oracle-revision>`. The same named corpus test runs the
 retained production mutation with the prior oracle, with the current oracle,
 and after exact restoration. A prior miss, current semantic failure and
@@ -923,7 +923,7 @@ oracle counts unquoted structural depth after RawValue validates syntax and
 requires refusal beyond the bound, preserving admitted boundary documents and
 escaped structural characters inside strings. Three authored depth operands
 extend the seven retained inputs without replacing their bytes or provenance.
-Run `python3 rust/crates/harness-fuzz/typed-json-negative-control.py --depth-prior
+Run `node rust/crates/harness-fuzz/typed-json-negative-control.mjs --depth-prior
 <prior-oracle-revision>` to require the old oracle's false failure, rejection of
 the actual depth-guard omission, and the exact restored ten-input positive.
 The existing malformed-input and valid-input paths now share one typed decode
@@ -933,12 +933,12 @@ The same property preserves a caller-owned Storage cause at all six charge
 frontiers. It also decodes an original writer's raw-member envelope as a Value,
 refuses inspection and then release, and requires the first cause plus complete
 scratch release. The existing writer buffer and shared scratch accounting are
-reused. Run `python3 rust/crates/harness-fuzz/typed-json-negative-control.py
+reused. Run `node rust/crates/harness-fuzz/typed-json-negative-control.mjs
 --first-cause-prior <prior-oracle-revision>` to check the prior oracle's miss,
 the actual stored-error omission, and the exact restored corpus. No input or
 test count is added.
 
 The retained native hidden-raw property crosses its 64-item limit with 65
-elements. Run `python3 rust/crates/harness-fuzz/typed-json-negative-control.py
+elements. Run `node rust/crates/harness-fuzz/typed-json-negative-control.mjs
 --hidden-items` to omit the actual final item guard, require the unchanged
 no-admission assertion to fail, and restore the original passing property.
