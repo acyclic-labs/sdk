@@ -47,12 +47,8 @@ pub(super) fn admission<T: Serialize + DeserializeOwned>(
 }
 
 fn action(action: &HostAction) {
-    // This measurement variant is absent from the shipping native binary.
-    #[cfg(feature = "runtime")]
-    if matches!(action, HostAction::ResourceProbe { .. }) {
-        return;
-    }
-    admission(action, "native action", &["next"]);
+    // Both the defaulted claim flag and an optional prior snapshot may be absent.
+    admission(action, "native action", &["next", "previous"]);
     if let HostAction::Session { action, .. } = action {
         admission(action, "native session action", &[]);
     }
