@@ -169,7 +169,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok(page)
     }
 
-    pub(in crate::filesystem) fn generation_ref_id(
+    /// The reference naming generation `id` of this host's provider.
+    ///
+    /// # Errors
+    /// When `io` refuses the reference's allocation.
+    pub fn generation_ref_id(
         &self,
         id: GenerationId,
         io: Option<&PreparationIo>,

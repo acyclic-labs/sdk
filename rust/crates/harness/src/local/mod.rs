@@ -58,6 +58,8 @@ pub use verifier::{Custody, KeyFileVerifier, Observation, RootCredential, Verifi
 pub mod web;
 #[cfg(any(test, feature = "native-execution"))]
 mod workspace;
+#[cfg(any(test, feature = "native-execution"))]
+mod workspace_diff;
 pub use agents::{LocalAgents, LocalTurns};
 pub use config::LocalHarnessConfig;
 use config::LocalProject;
