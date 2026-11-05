@@ -137,6 +137,13 @@ impl State {
 }
 
 impl SourceChangeSink for State {
+    fn observes_birth_time(&self) -> bool {
+        // Refresh receives only the original file's contents and byte count.
+        // A native rename can inherit birth metadata from the retired name;
+        // that metadata is not credential input or a content mutation.
+        false
+    }
+
     fn source_changed(
         &self,
         changes: &[SourceChange],
@@ -260,11 +267,13 @@ pub struct NativeCredentialSource(Arc<Owner>);
 
 impl NativeCredentialSource {
     /// Register before loading any credential. Refresh gets the exact rejected
-    /// lease, this source's revision and the selected file's original identity
-    /// and version, plus the file opened at exactly that version. Read through
-    /// that original file, retain conditional publication, and return a snapshot
-    /// as `Observed` with the same revision. Parsing stays with the provider. Other files
-    /// under this root do not invalidate this source.
+    /// lease, this source's revision, the selected regular file's byte count
+    /// and its original file opened at exactly the observed version. Read
+    /// through that original file, retain conditional publication, and return
+    /// a snapshot as `Observed` with the same revision. Parsing stays with the
+    /// provider. Scalar source metadata is not credential input: birth-time-only
+    /// changes need not invalidate a lease. Content, namespace, attributes and
+    /// security changes still invalidate it. Other files under this root do not.
     ///
     /// `Published` must retain the original completed publisher. The same watch
     /// must observe its selected-name arrival, with no later relevant mutation,
@@ -281,7 +290,7 @@ impl NativeCredentialSource {
         refresh: F,
     ) -> Result<Self, CredentialError>
     where
-        F: Fn(Option<CredentialLease>, CredentialRevision, SourceNode, Box<dyn DemandFile>) -> Fut
+        F: Fn(Option<CredentialLease>, CredentialRevision, u64, Box<dyn DemandFile>) -> Fut
             + Send
             + Sync
             + 'static,
@@ -364,6 +373,9 @@ impl NativeCredentialSource {
                         if node.kind != SourceNodeKind::RegularFile {
                             return Err(error(DemandError::NotRegularFile));
                         }
+                        let length = node
+                            .logical_bytes
+                            .ok_or_else(|| error(DemandError::NotRegularFile))?;
                         state
                             .observation
                             .lock()
@@ -379,7 +391,7 @@ impl NativeCredentialSource {
                             )
                             .await
                             .map_err(error)?;
-                        let result = refresh(rejected, revision.clone(), node, file).await?;
+                        let result = refresh(rejected, revision.clone(), length, file).await?;
                         match result {
                             NativeCredentialUpdate::Observed(snapshot) => {
                                 watch.fence().await?;

@@ -135,6 +135,12 @@ pub(crate) enum HostChangeWide<'a> {
 
 /// Receives each batch of changes, in the order the host reported them.
 pub(crate) trait HostChangeSink: Send + Sync {
+    /// Fixed subscription interest; all other change classes remain required.
+    #[cfg(windows)]
+    fn observes_birth_time(&self) -> bool {
+        true
+    }
+
     /// SDK payload owned by this watch's concrete sink wrapper, excluding borrowed caller controls and provider-private allocator metadata.
     fn logical_owned_bytes(&self) -> u64;
     /// Called with no watch lock held that a lookup could wait on.

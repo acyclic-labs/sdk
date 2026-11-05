@@ -387,6 +387,11 @@ impl NativeChanges {
     }
 }
 impl crate::source_watch::HostChangeSink for NativeChanges {
+    #[cfg(windows)]
+    fn observes_birth_time(&self) -> bool {
+        self.sink.observes_birth_time()
+    }
+
     fn delivery_lost(&self) {
         self.sink.delivery_lost();
     }

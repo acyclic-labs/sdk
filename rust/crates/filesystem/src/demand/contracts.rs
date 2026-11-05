@@ -155,6 +155,15 @@ pub enum SourceChange {
 
 /// Receives the changes one watched source reports.
 pub trait SourceChangeSink: Send + Sync {
+    /// Whether birth-time-only metadata changes are part of this subscription.
+    /// The interest is fixed when the watch starts. Namespace, content,
+    /// attributes and security changes remain subscribed in either case.
+    /// Providers may conservatively deliver additional changes. Consumers of
+    /// [`SourceNode`] birth metadata must retain the default `true`.
+    fn observes_birth_time(&self) -> bool {
+        true
+    }
+
     /// SDK payload retained by this sink, excluding caller-owned data.
     fn logical_owned_bytes(&self) -> u64 {
         0
@@ -185,7 +194,8 @@ pub enum SourceFence {
     Unconfirmed,
 }
 
-/// Live observation of every change made to one source outside every view
+/// Live observation of the sink's subscribed changes outside every source view.
+/// Birth-time-only metadata can be excluded by [`SourceChangeSink::observes_birth_time`].
 pub trait SourceWatch: Send + Sync {
     /// Delivers preceding changes within the accounting allowance, preserving
     /// whether the producer established a delivery cut. Success alone and

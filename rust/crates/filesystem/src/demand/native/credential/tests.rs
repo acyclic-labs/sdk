@@ -228,7 +228,7 @@ async fn bind(
         path,
         original.clone(),
         || 1,
-        move |_, revision, node, file| {
+        move |_, revision, length, file| {
             let original = read_work.clone();
             let reads = reads.clone();
             async move {
@@ -236,9 +236,6 @@ async fn bind(
                 // is no provider stream, HTTP request or credential substitute.
                 let bytes = spawn_blocking(move || {
                     reads.fetch_add(1, Ordering::Relaxed);
-                    let length = node
-                        .logical_bytes
-                        .ok_or_else(|| error(DemandError::NotRegularFile))?;
                     let bytes = file
                         .read_range(
                             0,
@@ -264,6 +261,7 @@ async fn bind(
 enum PublicationControl {
     Current,
     Altered,
+    Attributes,
     Rebound,
     AlteredThenRebound,
     Replaced,
@@ -277,6 +275,7 @@ async fn publication_control(control: PublicationControl, retire_original: bool)
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("credential");
     std::fs::write(&path, "original-protected-source")?;
+    let cleanup_permissions = std::fs::metadata(&path)?.permissions();
     let stop = CancellationToken::new();
     let original =
         crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &stop)
@@ -331,6 +330,12 @@ async fn publication_control(control: PublicationControl, retire_original: bool)
                         PublicationControl::Altered => {
                             std::fs::write(&path, "foreign-in-place-value").map_err(error)?
                         }
+                        PublicationControl::Attributes => {
+                            let mut permissions =
+                                std::fs::metadata(&path).map_err(error)?.permissions();
+                            permissions.set_readonly(true);
+                            std::fs::set_permissions(&path, permissions).map_err(error)?;
+                        }
                         PublicationControl::Rebound | PublicationControl::AlteredThenRebound => {
                             let moved = path.with_extension("moved");
                             std::fs::rename(&path, &moved).map_err(error)?;
@@ -373,6 +378,11 @@ async fn publication_control(control: PublicationControl, retire_original: bool)
     let first = source.resolve().await?;
     assert!(first.reject().await?);
     let (replacement, follower) = tokio::join!(source.resolve(), source.resolve());
+    if control == PublicationControl::Attributes {
+        // Restore the fixture's permissions after both admission decisions,
+        // so native cleanup does not depend on deleting a read-only file.
+        std::fs::set_permissions(&path, cleanup_permissions)?;
+    }
     if control == PublicationControl::Current {
         let replacement = replacement?;
         assert_eq!(replacement.as_str(), follower?.as_str());
@@ -432,10 +442,25 @@ async fn publication_control(control: PublicationControl, retire_original: bool)
         assert_ne!(after_rotation.binding(), next.binding());
         assert_eq!(publications.load(Ordering::Relaxed), 3);
     } else {
-        assert!(
-            replacement.is_err() && follower.is_err(),
-            "foreign, changed or omitted publication evidence must refuse"
-        );
+        for outcome in [replacement, follower] {
+            let refusal = outcome
+                .err()
+                .ok_or("foreign, changed or omitted publication evidence was admitted")?;
+            let mut cause: &(dyn std::error::Error + 'static) = &refusal;
+            let stale = loop {
+                if matches!(
+                    cause.downcast_ref::<CredentialCacheError>(),
+                    Some(CredentialCacheError::Stale)
+                ) {
+                    break true;
+                }
+                let Some(next) = cause.source() else {
+                    break false;
+                };
+                cause = next;
+            };
+            assert!(stale, "expected freshness refusal, got {refusal:?}");
+        }
         assert_eq!(
             publications.load(Ordering::Relaxed),
             1,
@@ -559,6 +584,7 @@ async fn native_source_fences_rotation_and_owner_loss_without_warm_reads() -> Te
         for control in [
             PublicationControl::Current,
             PublicationControl::Altered,
+            PublicationControl::Attributes,
             PublicationControl::Rebound,
             PublicationControl::AlteredThenRebound,
             PublicationControl::Replaced,
