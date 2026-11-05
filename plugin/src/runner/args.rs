@@ -360,6 +360,8 @@ mod tests {
     #[test]
     fn headless_modes_use_explicit_jsonl_identity_and_reject_mixed_formats() {
         assert!(Args::try_parse_from(["graphcoder", "-p", "hello"]).is_ok());
+        assert!(Args::try_parse_from(["graphcoder", "--resume"]).is_ok());
+        assert!(Args::try_parse_from(["graphcoder", "--resume", "unused"]).is_err());
         assert!(Args::try_parse_from(["graphcoder", "--search-config", "search.json"]).is_err());
         assert!(Args::try_parse_from(["graphcoder", "--input-format", "jsonl"]).is_err());
         assert!(

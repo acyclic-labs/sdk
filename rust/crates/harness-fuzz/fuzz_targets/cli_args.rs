@@ -2,11 +2,58 @@
 
 use clap::Parser as _;
 use libfuzzer_sys::fuzz_target;
+use std::ffi::OsString;
 
 #[path = "../../../../plugin/src/runner/args.rs"]
 mod args;
 #[path = "../../../../plugin/src/ingress.rs"]
 mod ingress;
+
+fn native(bytes: &[u8]) -> OsString {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.into();
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt as _;
+        OsString::from_vec(bytes.to_vec())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStringExt as _;
+        let units: Vec<_> = bytes
+            .chunks(2)
+            .map(|pair| u16::from_le_bytes([pair[0], *pair.get(1).unwrap_or(&0)]))
+            .collect();
+        OsString::from_wide(&units)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        String::from_utf8_lossy(bytes).into_owned().into()
+    }
+}
+
+fn arguments(bytes: &[u8]) -> Vec<OsString> {
+    #[cfg(windows)]
+    if let Some(wide) = bytes.strip_prefix(b"\xff\0") {
+        use std::os::windows::ffi::OsStringExt as _;
+        let units: Vec<_> = wide
+            .chunks(2)
+            .map(|pair| u16::from_le_bytes([pair[0], *pair.get(1).unwrap_or(&0)]))
+            .collect();
+        // Split native units, preserving zero bytes within D800/DC00 units.
+        return units
+            .split(|unit| *unit == 0)
+            .map(OsString::from_wide)
+            .collect();
+    }
+    (!bytes.is_empty())
+        .then(|| bytes.split(|byte| *byte == 0))
+        .into_iter()
+        .flatten()
+        .map(native)
+        .collect()
+}
 
 fn check(mut parsed: args::Args) -> Result<(), &'static str> {
     use args::{Command, InputFormat, OutputFormat};
@@ -128,8 +175,12 @@ fn check(mut parsed: args::Args) -> Result<(), &'static str> {
 
 // Exercise the production parser and cross-command validation. No runtime,
 // filesystem, provider, command execution or reconstructed parser is involved.
-fuzz_target!(|input: (Vec<String>, Vec<Vec<u8>>, bool, [u8; 16])| {
-    let (arguments, raw, refuse, id) = input;
+fuzz_target!(|bytes: &[u8]| {
+    let mut id = [0; 16];
+    for (output, input) in id.iter_mut().zip(bytes) {
+        *output = *input;
+    }
+    let refuse = bytes.first().is_some_and(|byte| byte & 1 != 0);
     // A generated canonical path goes through the shipping admission boundary.
     // Explicit selection must preserve that path and cannot consult ambient
     // state, even when ordinary argument mutations rarely spell a valid ID.
@@ -150,7 +201,7 @@ fuzz_target!(|input: (Vec<String>, Vec<Vec<u8>>, bool, [u8; 16])| {
         assert_eq!(task, expected);
     }
     // Successful admission is checked too: refusing every input cannot pass.
-    let prompt = arguments.first().map(String::as_str).unwrap_or("");
+    let prompt = String::from_utf8_lossy(bytes).replace('\0', "\\0");
     let prompt_option = format!("--prompt={prompt}");
     let path = root.to_string();
     let shape: &[&str] = match id[0] % 8 {
@@ -159,7 +210,7 @@ fuzz_target!(|input: (Vec<String>, Vec<Vec<u8>>, bool, [u8; 16])| {
             "--output-format=jsonl",
             "exec",
             "--",
-            prompt,
+            &prompt,
         ],
         1 => &["--host-workspace", "--host-state-directory=state"],
         2 => &["serve", "127.0.0.1:0"],
@@ -178,31 +229,9 @@ fuzz_target!(|input: (Vec<String>, Vec<Vec<u8>>, bool, [u8; 16])| {
     let valid = args::Args::try_parse_from(std::iter::once("acyclic").chain(shape.iter().copied()))
         .expect("supported argument family must parse");
     check(valid).expect("supported argument family must be admitted");
-    let mut arguments = std::iter::once(std::ffi::OsString::from("acyclic"))
-        .chain(arguments.into_iter().map(std::ffi::OsString::from))
-        .collect::<Vec<_>>();
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStringExt as _;
-        arguments.extend(raw.into_iter().map(std::ffi::OsString::from_vec));
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStringExt as _;
-        arguments.extend(raw.into_iter().map(|bytes| {
-            let wide = bytes
-                .chunks(2)
-                .map(|pair| u16::from(pair[0]) | (u16::from(*pair.get(1).unwrap_or(&0)) << 8))
-                .collect::<Vec<_>>();
-            std::ffi::OsString::from_wide(&wide)
-        }));
-    }
-    #[cfg(not(any(unix, windows)))]
-    arguments.extend(
-        raw.into_iter()
-            .filter_map(|bytes| String::from_utf8(bytes).ok())
-            .map(std::ffi::OsString::from),
-    );
+    let arguments = std::iter::once(OsString::from("acyclic"))
+        .chain(arguments(bytes))
+        .collect();
     match ingress::parse(arguments) {
         Ok(ingress::Input::Agent(arguments)) => {
             if let Ok(args) = args::Args::try_parse_from(arguments) {
