@@ -33,13 +33,117 @@ impl HostChangeSink for Ignored {
 }
 
 fn watcher(root: &Path) -> io::Result<NativeSourceWatch> {
+    watcher_with_sink(root, Arc::new(Ignored))
+}
+
+fn watcher_with_sink(root: &Path, sink: Arc<dyn HostChangeSink>) -> io::Result<NativeSourceWatch> {
     let mut work = crate::native_host::ordinary_work();
     let host = crate::native_host::HostRoot::open(root, &mut work)
         .map_err(crate::native_host::ordinary_error)?;
-    let delivery =
-        Delivery::new(Arc::new(Ignored), &mut work).map_err(crate::native_host::ordinary_error)?;
+    let delivery = Delivery::new(sink, &mut work).map_err(crate::native_host::ordinary_error)?;
     NativeSourceWatch::start_driver(&host, Arc::new(delivery), &mut work)
         .map_err(crate::native_host::ordinary_error)
+}
+
+#[test]
+fn collector_loss_rejects_subscriptions_and_preserves_owned_cleanup()
+-> Result<(), Box<dyn std::error::Error>> {
+    const CHILD: &str = "ACYCLIC_TEST_INOTIFY_COLLECTOR_LOSS";
+    let Some(root) = std::env::var_os(CHILD) else {
+        // Permanent loss of the process-wide hub must be isolated from other
+        // tests. The parent removes the real roots after the child exits.
+        let root = tempfile::tempdir()?;
+        std::fs::create_dir_all(root.path().join("child/grandchild"))?;
+        let status = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "source_watch::inotify::tests::collector_loss_rejects_subscriptions_and_preserves_owned_cleanup",
+                "--nocapture",
+            ])
+            .env(CHILD, root.path())
+            .status()?;
+        assert!(
+            status.success(),
+            "isolated inotify collector-loss control failed"
+        );
+        return Ok(());
+    };
+    struct Observed(std::sync::mpsc::Sender<()>);
+    impl HostChangeSink for Observed {
+        fn logical_owned_bytes(&self) -> u64 {
+            0
+        }
+        fn host_changed(&self, _: &[HostChange], work: &mut DemandWork) -> Result<(), DemandError> {
+            work.check()
+        }
+        fn delivery_lost(&self) {
+            let _ = self.0.send(());
+        }
+    }
+    let root = PathBuf::from(root);
+    let (lost, observations) = std::sync::mpsc::channel();
+    let first = watcher_with_sink(&root, Arc::new(Observed(lost.clone())))?;
+    let second = watcher_with_sink(&root.join("child/grandchild"), Arc::new(Observed(lost)))?;
+    let first_cursor = first.paused();
+    let second_cursor = second.paused();
+    let retained = [
+        first.shared.retained_variable_bytes.load(Ordering::Acquire),
+        second
+            .shared
+            .retained_variable_bytes
+            .load(Ordering::Acquire),
+    ];
+
+    // Exercise the original collector's terminal transition, without closing
+    // a borrowed descriptor or depending on another service pass to notify.
+    hub::end_for_test()?;
+    let late = match watcher(&root) {
+        Err(error) => error,
+        Ok(_) => panic!("collector loss admitted a subscription without a producer"),
+    };
+    assert_eq!(late.kind(), io::ErrorKind::BrokenPipe);
+    let cause = late
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<Arc<io::Error>>())
+        .ok_or("late subscription lost the original collector cause")?;
+    for (watch, bytes) in [&first, &second].into_iter().zip(retained) {
+        observations.try_recv()?;
+        assert!(!watch.delivery().is_exact());
+        assert!(
+            !watch.is_stopped(),
+            "delivery loss claimed physical retirement"
+        );
+        assert!(!watch.shared.physically_cleared());
+        assert_eq!(
+            watch.shared.retained_variable_bytes.load(Ordering::Acquire),
+            bytes
+        );
+    }
+    assert!(observations.try_recv().is_err());
+    let error = hub::hub()?
+        .drain()
+        .expect_err("failed collector accepted a fence");
+    assert!(
+        error
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<Arc<io::Error>>())
+            .is_some_and(|error| Arc::ptr_eq(error, cause))
+    );
+    drop(first_cursor);
+    drop(second_cursor);
+    for watch in [&first, &second] {
+        let mut work = crate::native_host::ordinary_work();
+        let error = watch
+            .stop_with_work(&mut work)
+            .expect_err("cleanup erased collector loss");
+        assert!(matches!(error, DemandError::Io(error) if error.get_ref()
+            .and_then(|error| error.downcast_ref::<Arc<io::Error>>())
+            .is_some_and(|error| Arc::ptr_eq(error, cause))));
+        assert!(watch.is_stopped());
+        assert!(watch.shared.physically_cleared());
+        watch.stop_with_work(&mut work)?;
+    }
+    Ok(())
 }
 
 #[cfg(feature = "native-mount")]
