@@ -64,8 +64,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     &mut accounting,
                     cancellation,
                 )
-                .await
-                .map_err(WorkspaceError::Filesystem)?;
+                .await?;
             let bytes = crate::foundation::usize_to_u64(
                 base_root.parents.capacity() * size_of::<GenerationId>(),
             );
@@ -78,8 +77,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     &mut accounting,
                     cancellation,
                 )
-                .await
-                .map_err(WorkspaceError::Filesystem)?;
+                .await?;
             let bytes = crate::foundation::usize_to_u64(
                 source_root.parents.capacity() * size_of::<GenerationId>(),
             );
@@ -98,8 +96,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 &mut accounting,
                 cancellation,
             )
-            .await
-            .map_err(WorkspaceError::Filesystem)?;
+            .await?;
             base_root.retire(&mut accounting)?;
             source_root.retire(&mut accounting)?;
             if output.0.truncated {
