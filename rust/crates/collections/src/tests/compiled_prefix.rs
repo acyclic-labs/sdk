@@ -71,12 +71,23 @@ fn compiled_prefix_matches_original_keys_and_refuses_original_read_credit() {
                             .filter(|key| accept(key))
                             .min_by_key(|key| key.len());
                         prop_assert_eq!(
-                            matches.exact.map(|entry| &entry.key),
+                            matches.exact.as_ref().map(|matched| &matched.entry.key),
                             keys.iter().find(|key| key.as_slice() == query)
                         );
-                        prop_assert_eq!(matches.shortest.map(|entry| &entry.key), expected);
-                        for entry in [matches.exact, matches.shortest].into_iter().flatten() {
-                            prop_assert!(std::ptr::eq(entry, &index.entries()[entry.original]));
+                        prop_assert_eq!(
+                            matches.shortest.as_ref().map(|matched| &matched.entry.key),
+                            expected
+                        );
+                        for matched in [matches.exact, matches.shortest].into_iter().flatten() {
+                            prop_assert_eq!(
+                                matched.position,
+                                matched.entry.original,
+                                "matched original position"
+                            );
+                            prop_assert!(std::ptr::eq(
+                                matched.entry,
+                                &index.entries()[matched.position]
+                            ));
                         }
                         prop_assert!(work.items - before <= 12 * query.len() as u64 + 3);
                         let used = work.items - before;
@@ -159,10 +170,9 @@ fn compiled_prefix_cost_and_backing_do_not_grow_with_unrelated_keys() {
         let claims = work.claims;
         let physical = acyclic_test_support::measure(|| {
             let matches = index.matches(query, |_| true, &mut work).unwrap();
-            assert_eq!(
-                matches.shortest.map(Vec::as_slice),
-                Some(b"root".as_slice())
-            );
+            let shortest = matches.shortest.unwrap();
+            assert_eq!(shortest.entry.as_slice(), b"root");
+            assert_eq!(shortest.position, population as usize);
             assert!(matches.exact.is_none());
         });
         let examined = work.items - before;
@@ -185,8 +195,8 @@ fn compiled_prefix_cost_and_backing_do_not_grow_with_unrelated_keys() {
     let mut work = Work::default();
     let index = CompiledPrefixIndex::from_sorted(vec![long, longer.clone()], &mut work).unwrap();
     let matches = index.matches(&longer, |_| true, &mut work).unwrap();
-    assert_eq!(matches.exact, Some(&longer));
-    assert_eq!(matches.shortest.unwrap().len(), 70_000);
+    assert_eq!(matches.exact.map(|matched| matched.entry), Some(&longer));
+    assert_eq!(matches.shortest.unwrap().entry.len(), 70_000);
     drop(index);
     assert_eq!(work.live.get(), 0);
 
