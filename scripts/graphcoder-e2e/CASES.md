@@ -1,16 +1,13 @@
 Cases launch the shipping GraphCoder binary with an ordinary provider catalog and isolated settings. Build GraphCoder and harness-mock-model and install scripts/graphcoder-pty dependencies before timing. Run `node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL [CASE ...]`.
 
-`topology-pipeline`, `topology-group-chat`, `topology-debate-ring` and
-`topology-blackboard` select the embedded role files through native `spawn`.
-Their authored SDK conversations forward actual wait results into dependent
-briefs and follow-up messages. Group chat uses an explicitly attributed
-coordinator relay; the blackboard uses that coordinator's private home and an
-edit pinned to its original publication. These cases cover those compositions,
-not direct peer-channel grants or concurrent shared-board writers.
+`topology-blackboard` selects the embedded role file through native `spawn`.
+Its authored SDK conversation forwards actual wait results into a board in
+the coordinator's private home, then edits it pinned to its original
+publication. Shared-volume grants and concurrent writers need separate cases.
 `node scripts/qualify-topology-presets.mjs GRAPHCODER MOCK_MODEL FRESH_ABSOLUTE_OUTPUT`
-first selects generic workers instead: each unchanged conversation must fail at
+first selects a generic worker instead: the unchanged conversation must fail at
 the actual provider request missing its role directive. It then restores the
-role selection and runs the same shipping cases. Windows selections run serially.
+role selection and runs the same shipping case.
 
 Search seeds `.codex/search.json` under the selected settings root (`CODEX_HOME/search.json` otherwise). Fields are `provider` (`exa` or `tinyfish`), `api_keys` (provider id to key), and optional `endpoint`. The case points the ordinary HTTP adapter at the shared mock namespace; there is no search CLI flag or alternate executor.
 
