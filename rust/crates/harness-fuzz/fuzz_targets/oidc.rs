@@ -123,6 +123,35 @@ fuzz_target!(|data: &[u8]| {
         );
         let _ = ed.verify(&signed(&URL_SAFE_NO_PAD.encode(data)), now);
 
+        // The Edwards identity has no signing secret. A permissive verifier
+        // accepts its identity R and zero scalar for any original message.
+        // This is an internal group-law vector, not an issuer response.
+        let mut identity_point = [0; 32];
+        identity_point[0] = 1;
+        let identity_key = ed25519_dalek::VerifyingKey::from_bytes(&identity_point).unwrap();
+        let weak_keys = serde_json::to_vec(&json!({"keys":[{
+            "kty":"OKP", "crv":"Ed25519", "alg":"EdDSA", "kid":"ed",
+            "x":URL_SAFE_NO_PAD.encode(identity_key.to_bytes())
+        }]}))
+        .unwrap();
+        let mut identity_signature = [0; 64];
+        identity_signature[0] = 1;
+        let forged = format!(
+            "{header}.{payload}.{}",
+            URL_SAFE_NO_PAD.encode(identity_signature)
+        );
+        if ed.refresh(&Source(&weak_keys), now + 30).await.is_ok() {
+            assert!(
+                ed.verify(&forged, now + 30).is_err(),
+                "OIDC weak issuer forged an authenticated identity"
+            );
+        } else {
+            assert_eq!(
+                ed.verify(&signed(payload), now + 30).unwrap().subject(),
+                identity.subject()
+            );
+        }
+
         // All pinned key families reach their real JWKS decoder. A rejected
         // replacement must preserve the original authenticated snapshot.
         for algorithm in [
