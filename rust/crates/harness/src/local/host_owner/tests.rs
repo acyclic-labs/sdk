@@ -457,7 +457,7 @@ async fn native_cancel_interrupts_the_claim_and_archive_settles_unstarted_inputs
     assert_eq!(intent["control"], "interrupt");
     assert_eq!(intent.pointer("/status/settled"), Some(&json!(false)));
     // Recovery settles the orphaned claim once; the original claim then replays.
-    let recovered = fixture.session("active", SessionAction::Recover).await?;
+    let recovered = fixture.session("active", SessionAction::Recover {}).await?;
     assert_eq!(recovered.pointer("/status/settled"), Some(&json!(true)));
     fixture
         .session(

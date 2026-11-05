@@ -180,6 +180,13 @@ additional_controls = {
             "null",
             b"native input read failure must retain its OS error",
         ),
+        (
+            "rust/crates/harness/src/local/host_owner/sessions.rs",
+            b"    Recover {},",
+            b"    Recover,",
+            "null",
+            b"native session action unknown fields must be refused",
+        ),
     ],
     "command_result": [
         (
