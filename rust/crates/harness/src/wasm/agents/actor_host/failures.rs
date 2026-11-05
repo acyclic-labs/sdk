@@ -97,7 +97,7 @@ impl WasmActorHost {
         failure: &WasmActorFailure,
         resolution: ActorFailureResolution,
         captured: Option<Vec<u8>>,
-        key: &[u8],
+        key: Vec<u8>,
     ) -> Result<Vec<u8>, JsValue> {
         let FailureEntry::Failed(input) = &failure.entry else {
             return Err(failed("failure already has a terminal disposition"));
@@ -121,7 +121,7 @@ impl WasmActorHost {
             .prepare_disposition(
                 input,
                 disposition,
-                IdempotencyKey::new(key.to_vec()).map_err(failed)?,
+                IdempotencyKey::new(key).map_err(failed)?,
             )
             .and_then(|prepared| prepared.into_request())
             .map_err(failed)?;
