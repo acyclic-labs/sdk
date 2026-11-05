@@ -273,7 +273,9 @@ where
         if self.physically_retired()? {
             return Ok(());
         }
-        self.authored.cancel_cleanup_with_join(wait, join)?;
+        self.authored
+            .cancel_cleanup_with_join(wait, join)?
+            .into_result()?;
         if let Some(wait) = wait {
             wait.check().map_err(|_| MountSourceError::Cancelled)?;
         }

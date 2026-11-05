@@ -150,15 +150,20 @@ impl<A, O> CheckoutMountSource<A, O> {
         wait: Option<&CancellationToken>,
     ) -> Result<(), MountSourceError> {
         self.cancel_cleanup_with_join(wait, SourceRetirementWait::Caller)
+            .and_then(MountSourceRetirement::into_result)
+            .map(|_| ())
     }
 
     pub(in crate::native_mount) fn cancel_cleanup_with_join(
         &self,
         wait: Option<&CancellationToken>,
         _join: SourceRetirementWait,
-    ) -> Result<(), MountSourceError> {
+    ) -> Result<MountSourceRetirement, MountSourceError> {
         if self.capture_retired() {
-            return Ok(());
+            return Ok(MountSourceRetirement {
+                changed: false,
+                failure: None,
+            });
         }
         if let Some(wait) = wait {
             wait.check().map_err(|_| MountSourceError::Cancelled)?;
@@ -188,10 +193,13 @@ impl<A, O> CheckoutMountSource<A, O> {
                 wait.check().map_err(|_| MountSourceError::Cancelled)?;
             }
             if gate.retired {
-                return Ok(());
+                return Ok(MountSourceRetirement {
+                    changed: false,
+                    failure: None,
+                });
             }
             if gate.producers == 0 {
-                if self.native_original.is_some() {
+                let recorded = if self.native_original.is_some() {
                     let (poll_credit, final_credit) = self
                         .cleanup_credit
                         .lock()
@@ -200,17 +208,24 @@ impl<A, O> CheckoutMountSource<A, O> {
                         .ok_or(MountSourceError::NativeWork(
                             crate::NativeTreeMaterializationError::InvalidLayout,
                         ))?;
-                    final_credit
+                    let recorded = final_credit
                         .record_completed(crate::WorkCounters {
                             items_examined: 1,
                             ..crate::WorkCounters::UNCHARGED
                         })
-                        .map_err(MountSourceError::NativeWork)?;
+                        .map_err(MountSourceError::NativeWork);
                     drop(poll_credit);
-                }
+                    recorded
+                } else {
+                    Ok(())
+                };
+                // Recording cannot undo the last physical producer's departure.
                 gate.retired = true;
                 self.capture_quiesced.notify_all();
-                return Ok(());
+                return Ok(MountSourceRetirement {
+                    changed: true,
+                    failure: recorded.err(),
+                });
             }
             if let Some(wait) = wait.filter(|_| cancellation.is_none()) {
                 // A quiescent source needs no registration or fresh allocation.

@@ -342,7 +342,17 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    let Some(context) = Context::current() else {
+    // Explicit async submission transfers the retained physical owner's scope;
+    // synchronous host work itself still runs with CURRENT unset.
+    spawn_in_context(Context::simulation(), future)
+}
+
+pub(crate) fn spawn_in_context<F>(context: Option<Context>, future: F) -> TaskHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let Some(context) = context else {
         return TaskHandle::native(None, future);
     };
     let active = context.accept("task");
@@ -357,14 +367,6 @@ where
             result
         }),
     )
-}
-
-pub(crate) fn spawn_in_context<F>(context: Option<Context>, future: F) -> TaskHandle<F::Output>
-where
-    F: Future + Send + 'static,
-    F::Output: Send + 'static,
-{
-    CURRENT.sync_scope(context, || spawn(future))
 }
 
 /// Executes the real blocking closure, retaining ownership after caller drop.
