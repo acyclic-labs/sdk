@@ -126,21 +126,28 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
         let mut scope = accounting
             .allocation_scope()
             .map_err(crate::async_storage::object_error)?;
+        let count = u64::try_from(requests.len()).map_err(|_| WorkError::Overflow)?;
+        scope
+            .admit(WorkCounters {
+                items_returned: count,
+                ..WorkCounters::UNCHARGED
+            })
+            .map_err(crate::async_storage::object_error)?;
         let (reads, allocation, retained) = self
             .fetch_batch::<STORED>(requests, &mut scope)
             .await
             .map_err(crate::async_storage::object_error)?;
+        let reads = crate::kernel::Owned::new(reads, allocation, retained);
+        scope
+            .charge(WorkCounters {
+                items_returned: count,
+                ..WorkCounters::UNCHARGED
+            })
+            .map_err(crate::async_storage::object_error)?;
         scope
             .keep_bytes(retained)
             .map_err(crate::async_storage::object_error)?;
-        match allocation {
-            KernelOwnedAllocation::Standalone => Ok((reads, None)),
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelOwnedAllocation::NativeOriginal(allocation) => {
-                Ok::<_, crate::ObjectStoreError>((reads, allocation))
-                    .map(|(reads, allocation)| (reads, Some(allocation)))
-            }
-        }
+        Ok(crate::async_storage::authority_parts(reads))
     }
 }
 impl<P: Blobs + ?Sized, S: ObjectSealer> AsyncObjectStore for LogicalObjectStore<P, S> {
