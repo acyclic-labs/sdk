@@ -59,3 +59,10 @@ python3 rust/crates/harness-fuzz/graphcoder-args-control.py native_stdin_binary
 This named integration test uses the Cargo-built binary in its original source
 snapshot. Relocated artifact selection, installed host loops, other lifecycle
 branches and platform acceptance require their own evidence.
+
+At source `acce6c4d25`, the four selected production mutations failed their
+unchanged assertions. Exact-restored Linux source replayed 389 retained inputs
+(116,884 bytes) in two seconds and passed the named binary test in 0.009 seconds.
+All 388 prior input hashes remain unchanged; `action-36` is the original
+65,698-byte completion emitted by the existing production serializer oracle.
+The corpus manifest retains the precise source and component qualification.
