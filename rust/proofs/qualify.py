@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation"])
 claim = parser.parse_args().claim
 if claim == "retained-credit":
     source = "rust/crates/filesystem/src/kernel/allocation.rs"
@@ -52,6 +52,12 @@ elif claim in ("work-arithmetic", "work-mixed"):
     test = "performance::tests::full_width_work_arithmetic_preserves_exact_sums_and_refusals"
     diagnostic = "full-width work sum disagreed with wider arithmetic"
     features = []
+elif claim == "ready-source-allocation":
+    source = "rust/crates/stream/src/runtime/sources.rs"
+    crate = "acyclic-stream"
+    test = "runtime::sources::tests::ready_records_reuse_the_registered_source_node"
+    diagnostic = "ready record scheduling allocated physical heap storage"
+    features = ["--no-default-features"]
 elif claim == "budget-errors":
     source = "rust/crates/filesystem/src/performance.rs"
     crate = "acyclic-fs"

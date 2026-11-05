@@ -110,8 +110,8 @@ fn ready_records_reuse_the_registered_source_node() {
             .await
             .unwrap();
         // Capture actual committed provider output before measuring scheduling.
-        // Both schedulers transfer the same immutable records, without measuring
-        // provider reads or setup allocations as scheduler work.
+        // Measure only transfer of the immutable records, excluding provider
+        // reads and registration allocations from scheduler work.
         let records: Vec<_> = provider
             .read(ReadRequest {
                 path,
@@ -134,41 +134,23 @@ fn ready_records_reuse_the_registered_source_node() {
             },
             futures::stream::iter(records.clone()),
         );
-        let mut recreated = futures::stream::SelectAll::new();
-        recreated.push(futures::stream::iter(records));
         let mut cx = Context::from_waker(std::task::Waker::noop());
-        // Warm allocator measurement before either arm.
+        // Warm allocator measurement before observing the production scheduler.
         acyclic_test_support::measure(|| {});
-        let mut before = 0;
-        let mut after = 0;
-        for sequence in 0..32 {
-            let mut old = Poll::Pending;
-            let allocation = acyclic_test_support::measure(|| {
-                old = Pin::new(&mut recreated).poll_next(&mut cx);
-            });
-            before += allocation.count_total;
+        for (sequence, expected) in (0_u64..).zip(records) {
             let mut current = Poll::Pending;
             let allocation = acyclic_test_support::measure(|| {
                 current = shared.poll_next(&mut cx);
             });
-            after += allocation.count_total;
-            let Poll::Ready(Some(old)) = old else {
-                panic!("committed record must be ready");
-            };
             let Poll::Ready(Ok(Some(current))) = current else {
                 panic!("committed record must be ready");
             };
-            assert_eq!(current, old);
+            assert_eq!(current, expected);
             assert_eq!(current.sequence, sequence);
-            assert_eq!(allocation.count_total, 0);
+            assert_eq!(
+                allocation.count_total, 0,
+                "ready record scheduling allocated physical heap storage"
+            );
         }
-        assert_eq!(
-            before, 32,
-            "recreated task must fail the zero-allocation bound"
-        );
-        assert_eq!(after, 0);
-        eprintln!(
-            "ready_source records=32 task_allocations_before={before} task_allocations_after={after}"
-        );
     });
 }

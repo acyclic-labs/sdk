@@ -21,6 +21,11 @@ an oracle that rejects a population-dependent implementation.
 
 ## Current closure work
 
+The [ready-source allocation control](ready-source-allocation/README.md) retains
+actual committed records and physical heap measurements while replacing a former
+scheduler comparison with a production mutation. It qualifies ready-record
+allocation only; source-index comparison and wake-drain complexity remain open.
+
 The [exact budget-refusal control](budget-errors/README.md) extends the existing
 generated verifier oracle with an isolated refusal for every declared counter.
 It retains full-width mixed inputs and first-error priority; a production
