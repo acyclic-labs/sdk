@@ -235,7 +235,10 @@ impl QuiescentHostProcess {
 
     /// Refuses applying one task's physical proof to another view or claim.
     pub fn verify(&self, task: &AgentPath, view: &Path) -> Result<()> {
-        if self.0.task != *task || self.0.view != view {
+        if self.0.task != *task
+            || acyclic_host_platform::paths::strip_native_prefix(view, &self.0.view)
+                != Some(Path::new(""))
+        {
             return Err(Error::Conflict(
                 "step=verify native quiescence: task or view differs; recovery: reopen the original task through acyclic host".into(),
             ));
@@ -289,7 +292,11 @@ impl HostSessionProcess {
         let lease = self.lease.as_ref().ok_or_else(|| Error::Conflict(
             "step=spawn native session: process already released; recovery: reopen the task through acyclic host".into()
         ))?;
-        if command.get_current_dir() != Some(lease.view.as_path()) {
+        if command
+            .get_current_dir()
+            .and_then(|cwd| acyclic_host_platform::paths::strip_native_prefix(cwd, &lease.view))
+            != Some(Path::new(""))
+        {
             return Err(Error::Unauthorized(
                 "step=spawn native session: cwd differs from admitted view; recovery: reopen the task through acyclic host".into(),
             ));
@@ -517,8 +524,15 @@ mod tests {
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let mut process = HostProcessLease::acquire(&view, &task, &view)?.process(&work)?;
         let mut command = ProcessCommand::new(view.join("absent-native-program"));
-        command.current_dir(&view);
-        assert!(process.spawn(&mut command, OperationId::new()).is_err());
+        let host_view = acyclic_host_platform::paths::strip_verbatim(&view);
+        command.current_dir(host_view.as_ref());
+        let error = process
+            .spawn(&mut command, OperationId::new())
+            .expect_err("missing program started");
+        assert!(
+            matches!(error, Error::Storage(_)),
+            "equivalent native cwd was refused before process creation: {error}"
+        );
         assert!(HostProcessLease::acquire(&view, &task, &view).is_err());
         process.release()?;
         assert!(
@@ -527,7 +541,7 @@ mod tests {
         );
         HostProcessLease::acquire(&view, &task, &view)?
             .quiescent()
-            .verify(&task, &view)?;
+            .verify(&task, host_view.as_ref())?;
         Ok(())
     }
 
@@ -551,6 +565,9 @@ mod tests {
             .expect_err("foreign cwd admitted");
         assert!(error.to_string().contains("cwd differs from admitted view"));
         process.release()?;
+        let quiet = HostProcessLease::acquire(&view, &task, &view)?.quiescent();
+        assert!(quiet.verify(&task, outside.path()).is_err());
+        quiet.verify(&task, &view)?;
         Ok(())
     }
 }
