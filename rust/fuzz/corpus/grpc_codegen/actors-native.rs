@@ -6,10 +6,10 @@ pub mod actors_service_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value,
+        clippy::let_unit_value
     )]
-    use tonic::codegen::*;
     use tonic::codegen::http::Uri;
+    use tonic::codegen::*;
     #[derive(Debug, Clone)]
     pub struct ActorsServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -37,14 +37,13 @@ pub mod actors_service_client {
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
             T: tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-                Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                    http::Request<tonic::body::Body>,
+                    Response = http::Response<
+                        <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                    >,
                 >,
-            >,
-            <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<http::Request<tonic::body::Body>>>::Error:
+                Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             ActorsServiceClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -82,183 +81,134 @@ pub mod actors_service_client {
         pub async fn delete_worker(
             &mut self,
             request: impl tonic::IntoRequest<crate::wire::DeleteWorkerRequest>,
-        ) -> std::result::Result<
-            tonic::Response<crate::wire::DeleteWorkerResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<crate::wire::DeleteWorkerResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/acyclic.actors.v1.ActorsService/DeleteWorker",
             );
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("acyclic.actors.v1.ActorsService", "DeleteWorker"),
-                );
+            req.extensions_mut().insert(GrpcMethod::new(
+                "acyclic.actors.v1.ActorsService",
+                "DeleteWorker",
+            ));
             self.inner.unary(req, path, codec).await
         }
         pub async fn invoke_worker(
             &mut self,
             request: impl tonic::IntoRequest<crate::wire::InvokeWorkerRequest>,
-        ) -> std::result::Result<
-            tonic::Response<crate::wire::InvokeActorResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<crate::wire::InvokeActorResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/acyclic.actors.v1.ActorsService/InvokeWorker",
             );
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("acyclic.actors.v1.ActorsService", "InvokeWorker"),
-                );
+            req.extensions_mut().insert(GrpcMethod::new(
+                "acyclic.actors.v1.ActorsService",
+                "InvokeWorker",
+            ));
             self.inner.unary(req, path, codec).await
         }
         pub async fn deploy_namespace(
             &mut self,
             request: impl tonic::IntoRequest<crate::wire::DeploymentRequest>,
-        ) -> std::result::Result<
-            tonic::Response<crate::wire::DeploymentResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<crate::wire::DeploymentResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/acyclic.actors.v1.ActorsService/DeployNamespace",
             );
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("acyclic.actors.v1.ActorsService", "DeployNamespace"),
-                );
+            req.extensions_mut().insert(GrpcMethod::new(
+                "acyclic.actors.v1.ActorsService",
+                "DeployNamespace",
+            ));
             self.inner.unary(req, path, codec).await
         }
         pub async fn deploy_worker(
             &mut self,
             request: impl tonic::IntoRequest<crate::wire::DeploymentRequest>,
-        ) -> std::result::Result<
-            tonic::Response<crate::wire::DeploymentResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<crate::wire::DeploymentResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/acyclic.actors.v1.ActorsService/DeployWorker",
             );
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("acyclic.actors.v1.ActorsService", "DeployWorker"),
-                );
+            req.extensions_mut().insert(GrpcMethod::new(
+                "acyclic.actors.v1.ActorsService",
+                "DeployWorker",
+            ));
             self.inner.unary(req, path, codec).await
         }
         pub async fn update_namespace(
             &mut self,
             request: impl tonic::IntoRequest<crate::wire::UpdateNamespaceRequest>,
-        ) -> std::result::Result<
-            tonic::Response<crate::wire::UpdateNamespaceResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<crate::wire::UpdateNamespaceResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/acyclic.actors.v1.ActorsService/UpdateNamespace",
             );
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("acyclic.actors.v1.ActorsService", "UpdateNamespace"),
-                );
+            req.extensions_mut().insert(GrpcMethod::new(
+                "acyclic.actors.v1.ActorsService",
+                "UpdateNamespace",
+            ));
             self.inner.unary(req, path, codec).await
         }
         pub async fn inspect_actor(
             &mut self,
             request: impl tonic::IntoRequest<crate::wire::InspectActorRequest>,
-        ) -> std::result::Result<
-            tonic::Response<crate::wire::InspectActorResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<crate::wire::InspectActorResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/acyclic.actors.v1.ActorsService/InspectActor",
             );
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("acyclic.actors.v1.ActorsService", "InspectActor"),
-                );
+            req.extensions_mut().insert(GrpcMethod::new(
+                "acyclic.actors.v1.ActorsService",
+                "InspectActor",
+            ));
             self.inner.unary(req, path, codec).await
         }
         pub async fn add_subscription(
             &mut self,
             request: impl tonic::IntoRequest<crate::wire::AddSubscriptionRequest>,
-        ) -> std::result::Result<
-            tonic::Response<crate::wire::AddSubscriptionResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<crate::wire::AddSubscriptionResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/acyclic.actors.v1.ActorsService/AddSubscription",
             );
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("acyclic.actors.v1.ActorsService", "AddSubscription"),
-                );
+            req.extensions_mut().insert(GrpcMethod::new(
+                "acyclic.actors.v1.ActorsService",
+                "AddSubscription",
+            ));
             self.inner.unary(req, path, codec).await
         }
         pub async fn remove_subscription(
@@ -268,26 +218,18 @@ pub mod actors_service_client {
             tonic::Response<crate::wire::RemoveSubscriptionResponse>,
             tonic::Status,
         > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/acyclic.actors.v1.ActorsService/RemoveSubscription",
             );
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "acyclic.actors.v1.ActorsService",
-                        "RemoveSubscription",
-                    ),
-                );
+            req.extensions_mut().insert(GrpcMethod::new(
+                "acyclic.actors.v1.ActorsService",
+                "RemoveSubscription",
+            ));
             self.inner.unary(req, path, codec).await
         }
         pub async fn resume_subscription(
@@ -297,126 +239,92 @@ pub mod actors_service_client {
             tonic::Response<crate::wire::ResumeSubscriptionResponse>,
             tonic::Status,
         > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/acyclic.actors.v1.ActorsService/ResumeSubscription",
             );
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "acyclic.actors.v1.ActorsService",
-                        "ResumeSubscription",
-                    ),
-                );
+            req.extensions_mut().insert(GrpcMethod::new(
+                "acyclic.actors.v1.ActorsService",
+                "ResumeSubscription",
+            ));
             self.inner.unary(req, path, codec).await
         }
         pub async fn checkpoint_actor(
             &mut self,
             request: impl tonic::IntoRequest<crate::wire::CheckpointActorRequest>,
-        ) -> std::result::Result<
-            tonic::Response<crate::wire::CheckpointActorResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<crate::wire::CheckpointActorResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/acyclic.actors.v1.ActorsService/CheckpointActor",
             );
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("acyclic.actors.v1.ActorsService", "CheckpointActor"),
-                );
+            req.extensions_mut().insert(GrpcMethod::new(
+                "acyclic.actors.v1.ActorsService",
+                "CheckpointActor",
+            ));
             self.inner.unary(req, path, codec).await
         }
         pub async fn fork_actor(
             &mut self,
             request: impl tonic::IntoRequest<crate::wire::ForkActorRequest>,
-        ) -> std::result::Result<
-            tonic::Response<crate::wire::ForkActorResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<crate::wire::ForkActorResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/acyclic.actors.v1.ActorsService/ForkActor",
-            );
+            let path =
+                http::uri::PathAndQuery::from_static("/acyclic.actors.v1.ActorsService/ForkActor");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("acyclic.actors.v1.ActorsService", "ForkActor"));
+            req.extensions_mut().insert(GrpcMethod::new(
+                "acyclic.actors.v1.ActorsService",
+                "ForkActor",
+            ));
             self.inner.unary(req, path, codec).await
         }
         pub async fn invoke_actor(
             &mut self,
             request: impl tonic::IntoRequest<crate::wire::InvokeActorRequest>,
-        ) -> std::result::Result<
-            tonic::Response<crate::wire::InvokeActorResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<crate::wire::InvokeActorResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/acyclic.actors.v1.ActorsService/InvokeActor",
             );
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("acyclic.actors.v1.ActorsService", "InvokeActor"),
-                );
+            req.extensions_mut().insert(GrpcMethod::new(
+                "acyclic.actors.v1.ActorsService",
+                "InvokeActor",
+            ));
             self.inner.unary(req, path, codec).await
         }
         pub async fn delete_all(
             &mut self,
             request: impl tonic::IntoRequest<crate::wire::DeleteAllRequest>,
-        ) -> std::result::Result<
-            tonic::Response<crate::wire::DeleteAllResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<crate::wire::DeleteAllResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/acyclic.actors.v1.ActorsService/DeleteAll",
-            );
+            let path =
+                http::uri::PathAndQuery::from_static("/acyclic.actors.v1.ActorsService/DeleteAll");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("acyclic.actors.v1.ActorsService", "DeleteAll"));
+            req.extensions_mut().insert(GrpcMethod::new(
+                "acyclic.actors.v1.ActorsService",
+                "DeleteAll",
+            ));
             self.inner.unary(req, path, codec).await
         }
     }
@@ -429,7 +337,7 @@ pub mod actors_service_server {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value,
+        clippy::let_unit_value
     )]
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with ActorsServiceServer.
@@ -438,52 +346,31 @@ pub mod actors_service_server {
         async fn delete_worker(
             &self,
             request: tonic::Request<crate::wire::DeleteWorkerRequest>,
-        ) -> std::result::Result<
-            tonic::Response<crate::wire::DeleteWorkerResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<crate::wire::DeleteWorkerResponse>, tonic::Status>;
         async fn invoke_worker(
             &self,
             request: tonic::Request<crate::wire::InvokeWorkerRequest>,
-        ) -> std::result::Result<
-            tonic::Response<crate::wire::InvokeActorResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<crate::wire::InvokeActorResponse>, tonic::Status>;
         async fn deploy_namespace(
             &self,
             request: tonic::Request<crate::wire::DeploymentRequest>,
-        ) -> std::result::Result<
-            tonic::Response<crate::wire::DeploymentResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<crate::wire::DeploymentResponse>, tonic::Status>;
         async fn deploy_worker(
             &self,
             request: tonic::Request<crate::wire::DeploymentRequest>,
-        ) -> std::result::Result<
-            tonic::Response<crate::wire::DeploymentResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<crate::wire::DeploymentResponse>, tonic::Status>;
         async fn update_namespace(
             &self,
             request: tonic::Request<crate::wire::UpdateNamespaceRequest>,
-        ) -> std::result::Result<
-            tonic::Response<crate::wire::UpdateNamespaceResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<crate::wire::UpdateNamespaceResponse>, tonic::Status>;
         async fn inspect_actor(
             &self,
             request: tonic::Request<crate::wire::InspectActorRequest>,
-        ) -> std::result::Result<
-            tonic::Response<crate::wire::InspectActorResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<crate::wire::InspectActorResponse>, tonic::Status>;
         async fn add_subscription(
             &self,
             request: tonic::Request<crate::wire::AddSubscriptionRequest>,
-        ) -> std::result::Result<
-            tonic::Response<crate::wire::AddSubscriptionResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<crate::wire::AddSubscriptionResponse>, tonic::Status>;
         async fn remove_subscription(
             &self,
             request: tonic::Request<crate::wire::RemoveSubscriptionRequest>,
@@ -501,31 +388,19 @@ pub mod actors_service_server {
         async fn checkpoint_actor(
             &self,
             request: tonic::Request<crate::wire::CheckpointActorRequest>,
-        ) -> std::result::Result<
-            tonic::Response<crate::wire::CheckpointActorResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<crate::wire::CheckpointActorResponse>, tonic::Status>;
         async fn fork_actor(
             &self,
             request: tonic::Request<crate::wire::ForkActorRequest>,
-        ) -> std::result::Result<
-            tonic::Response<crate::wire::ForkActorResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<crate::wire::ForkActorResponse>, tonic::Status>;
         async fn invoke_actor(
             &self,
             request: tonic::Request<crate::wire::InvokeActorRequest>,
-        ) -> std::result::Result<
-            tonic::Response<crate::wire::InvokeActorResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<crate::wire::InvokeActorResponse>, tonic::Status>;
         async fn delete_all(
             &self,
             request: tonic::Request<crate::wire::DeleteAllRequest>,
-        ) -> std::result::Result<
-            tonic::Response<crate::wire::DeleteAllResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<crate::wire::DeleteAllResponse>, tonic::Status>;
     }
     #[derive(Debug)]
     pub struct ActorsServiceServer<T> {
@@ -548,10 +423,7 @@ pub mod actors_service_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -606,15 +478,12 @@ pub mod actors_service_server {
                 "/acyclic.actors.v1.ActorsService/DeleteWorker" => {
                     #[allow(non_camel_case_types)]
                     struct DeleteWorkerSvc<T: ActorsService>(pub Arc<T>);
-                    impl<
-                        T: ActorsService,
-                    > tonic::server::UnaryService<crate::wire::DeleteWorkerRequest>
-                    for DeleteWorkerSvc<T> {
+                    impl<T: ActorsService>
+                        tonic::server::UnaryService<crate::wire::DeleteWorkerRequest>
+                        for DeleteWorkerSvc<T>
+                    {
                         type Response = crate::wire::DeleteWorkerResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<crate::wire::DeleteWorkerRequest>,
@@ -651,15 +520,12 @@ pub mod actors_service_server {
                 "/acyclic.actors.v1.ActorsService/InvokeWorker" => {
                     #[allow(non_camel_case_types)]
                     struct InvokeWorkerSvc<T: ActorsService>(pub Arc<T>);
-                    impl<
-                        T: ActorsService,
-                    > tonic::server::UnaryService<crate::wire::InvokeWorkerRequest>
-                    for InvokeWorkerSvc<T> {
+                    impl<T: ActorsService>
+                        tonic::server::UnaryService<crate::wire::InvokeWorkerRequest>
+                        for InvokeWorkerSvc<T>
+                    {
                         type Response = crate::wire::InvokeActorResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<crate::wire::InvokeWorkerRequest>,
@@ -696,23 +562,19 @@ pub mod actors_service_server {
                 "/acyclic.actors.v1.ActorsService/DeployNamespace" => {
                     #[allow(non_camel_case_types)]
                     struct DeployNamespaceSvc<T: ActorsService>(pub Arc<T>);
-                    impl<
-                        T: ActorsService,
-                    > tonic::server::UnaryService<crate::wire::DeploymentRequest>
-                    for DeployNamespaceSvc<T> {
+                    impl<T: ActorsService>
+                        tonic::server::UnaryService<crate::wire::DeploymentRequest>
+                        for DeployNamespaceSvc<T>
+                    {
                         type Response = crate::wire::DeploymentResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<crate::wire::DeploymentRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ActorsService>::deploy_namespace(&inner, request)
-                                    .await
+                                <T as ActorsService>::deploy_namespace(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -742,15 +604,12 @@ pub mod actors_service_server {
                 "/acyclic.actors.v1.ActorsService/DeployWorker" => {
                     #[allow(non_camel_case_types)]
                     struct DeployWorkerSvc<T: ActorsService>(pub Arc<T>);
-                    impl<
-                        T: ActorsService,
-                    > tonic::server::UnaryService<crate::wire::DeploymentRequest>
-                    for DeployWorkerSvc<T> {
+                    impl<T: ActorsService>
+                        tonic::server::UnaryService<crate::wire::DeploymentRequest>
+                        for DeployWorkerSvc<T>
+                    {
                         type Response = crate::wire::DeploymentResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<crate::wire::DeploymentRequest>,
@@ -787,23 +646,19 @@ pub mod actors_service_server {
                 "/acyclic.actors.v1.ActorsService/UpdateNamespace" => {
                     #[allow(non_camel_case_types)]
                     struct UpdateNamespaceSvc<T: ActorsService>(pub Arc<T>);
-                    impl<
-                        T: ActorsService,
-                    > tonic::server::UnaryService<crate::wire::UpdateNamespaceRequest>
-                    for UpdateNamespaceSvc<T> {
+                    impl<T: ActorsService>
+                        tonic::server::UnaryService<crate::wire::UpdateNamespaceRequest>
+                        for UpdateNamespaceSvc<T>
+                    {
                         type Response = crate::wire::UpdateNamespaceResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<crate::wire::UpdateNamespaceRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ActorsService>::update_namespace(&inner, request)
-                                    .await
+                                <T as ActorsService>::update_namespace(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -833,15 +688,12 @@ pub mod actors_service_server {
                 "/acyclic.actors.v1.ActorsService/InspectActor" => {
                     #[allow(non_camel_case_types)]
                     struct InspectActorSvc<T: ActorsService>(pub Arc<T>);
-                    impl<
-                        T: ActorsService,
-                    > tonic::server::UnaryService<crate::wire::InspectActorRequest>
-                    for InspectActorSvc<T> {
+                    impl<T: ActorsService>
+                        tonic::server::UnaryService<crate::wire::InspectActorRequest>
+                        for InspectActorSvc<T>
+                    {
                         type Response = crate::wire::InspectActorResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<crate::wire::InspectActorRequest>,
@@ -878,23 +730,19 @@ pub mod actors_service_server {
                 "/acyclic.actors.v1.ActorsService/AddSubscription" => {
                     #[allow(non_camel_case_types)]
                     struct AddSubscriptionSvc<T: ActorsService>(pub Arc<T>);
-                    impl<
-                        T: ActorsService,
-                    > tonic::server::UnaryService<crate::wire::AddSubscriptionRequest>
-                    for AddSubscriptionSvc<T> {
+                    impl<T: ActorsService>
+                        tonic::server::UnaryService<crate::wire::AddSubscriptionRequest>
+                        for AddSubscriptionSvc<T>
+                    {
                         type Response = crate::wire::AddSubscriptionResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<crate::wire::AddSubscriptionRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ActorsService>::add_subscription(&inner, request)
-                                    .await
+                                <T as ActorsService>::add_subscription(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -924,25 +772,19 @@ pub mod actors_service_server {
                 "/acyclic.actors.v1.ActorsService/RemoveSubscription" => {
                     #[allow(non_camel_case_types)]
                     struct RemoveSubscriptionSvc<T: ActorsService>(pub Arc<T>);
-                    impl<
-                        T: ActorsService,
-                    > tonic::server::UnaryService<crate::wire::RemoveSubscriptionRequest>
-                    for RemoveSubscriptionSvc<T> {
+                    impl<T: ActorsService>
+                        tonic::server::UnaryService<crate::wire::RemoveSubscriptionRequest>
+                        for RemoveSubscriptionSvc<T>
+                    {
                         type Response = crate::wire::RemoveSubscriptionResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
-                            request: tonic::Request<
-                                crate::wire::RemoveSubscriptionRequest,
-                            >,
+                            request: tonic::Request<crate::wire::RemoveSubscriptionRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ActorsService>::remove_subscription(&inner, request)
-                                    .await
+                                <T as ActorsService>::remove_subscription(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -972,25 +814,19 @@ pub mod actors_service_server {
                 "/acyclic.actors.v1.ActorsService/ResumeSubscription" => {
                     #[allow(non_camel_case_types)]
                     struct ResumeSubscriptionSvc<T: ActorsService>(pub Arc<T>);
-                    impl<
-                        T: ActorsService,
-                    > tonic::server::UnaryService<crate::wire::ResumeSubscriptionRequest>
-                    for ResumeSubscriptionSvc<T> {
+                    impl<T: ActorsService>
+                        tonic::server::UnaryService<crate::wire::ResumeSubscriptionRequest>
+                        for ResumeSubscriptionSvc<T>
+                    {
                         type Response = crate::wire::ResumeSubscriptionResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
-                            request: tonic::Request<
-                                crate::wire::ResumeSubscriptionRequest,
-                            >,
+                            request: tonic::Request<crate::wire::ResumeSubscriptionRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ActorsService>::resume_subscription(&inner, request)
-                                    .await
+                                <T as ActorsService>::resume_subscription(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -1020,23 +856,19 @@ pub mod actors_service_server {
                 "/acyclic.actors.v1.ActorsService/CheckpointActor" => {
                     #[allow(non_camel_case_types)]
                     struct CheckpointActorSvc<T: ActorsService>(pub Arc<T>);
-                    impl<
-                        T: ActorsService,
-                    > tonic::server::UnaryService<crate::wire::CheckpointActorRequest>
-                    for CheckpointActorSvc<T> {
+                    impl<T: ActorsService>
+                        tonic::server::UnaryService<crate::wire::CheckpointActorRequest>
+                        for CheckpointActorSvc<T>
+                    {
                         type Response = crate::wire::CheckpointActorResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<crate::wire::CheckpointActorRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ActorsService>::checkpoint_actor(&inner, request)
-                                    .await
+                                <T as ActorsService>::checkpoint_actor(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -1066,15 +898,12 @@ pub mod actors_service_server {
                 "/acyclic.actors.v1.ActorsService/ForkActor" => {
                     #[allow(non_camel_case_types)]
                     struct ForkActorSvc<T: ActorsService>(pub Arc<T>);
-                    impl<
-                        T: ActorsService,
-                    > tonic::server::UnaryService<crate::wire::ForkActorRequest>
-                    for ForkActorSvc<T> {
+                    impl<T: ActorsService>
+                        tonic::server::UnaryService<crate::wire::ForkActorRequest>
+                        for ForkActorSvc<T>
+                    {
                         type Response = crate::wire::ForkActorResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<crate::wire::ForkActorRequest>,
@@ -1111,15 +940,12 @@ pub mod actors_service_server {
                 "/acyclic.actors.v1.ActorsService/InvokeActor" => {
                     #[allow(non_camel_case_types)]
                     struct InvokeActorSvc<T: ActorsService>(pub Arc<T>);
-                    impl<
-                        T: ActorsService,
-                    > tonic::server::UnaryService<crate::wire::InvokeActorRequest>
-                    for InvokeActorSvc<T> {
+                    impl<T: ActorsService>
+                        tonic::server::UnaryService<crate::wire::InvokeActorRequest>
+                        for InvokeActorSvc<T>
+                    {
                         type Response = crate::wire::InvokeActorResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<crate::wire::InvokeActorRequest>,
@@ -1156,15 +982,12 @@ pub mod actors_service_server {
                 "/acyclic.actors.v1.ActorsService/DeleteAll" => {
                     #[allow(non_camel_case_types)]
                     struct DeleteAllSvc<T: ActorsService>(pub Arc<T>);
-                    impl<
-                        T: ActorsService,
-                    > tonic::server::UnaryService<crate::wire::DeleteAllRequest>
-                    for DeleteAllSvc<T> {
+                    impl<T: ActorsService>
+                        tonic::server::UnaryService<crate::wire::DeleteAllRequest>
+                        for DeleteAllSvc<T>
+                    {
                         type Response = crate::wire::DeleteAllResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<crate::wire::DeleteAllRequest>,
@@ -1198,25 +1021,19 @@ pub mod actors_service_server {
                     };
                     Box::pin(fut)
                 }
-                _ => {
-                    Box::pin(async move {
-                        let mut response = http::Response::new(
-                            tonic::body::Body::default(),
-                        );
-                        let headers = response.headers_mut();
-                        headers
-                            .insert(
-                                tonic::Status::GRPC_STATUS,
-                                (tonic::Code::Unimplemented as i32).into(),
-                            );
-                        headers
-                            .insert(
-                                http::header::CONTENT_TYPE,
-                                tonic::metadata::GRPC_CONTENT_TYPE,
-                            );
-                        Ok(response)
-                    })
-                }
+                _ => Box::pin(async move {
+                    let mut response = http::Response::new(tonic::body::Body::default());
+                    let headers = response.headers_mut();
+                    headers.insert(
+                        tonic::Status::GRPC_STATUS,
+                        (tonic::Code::Unimplemented as i32).into(),
+                    );
+                    headers.insert(
+                        http::header::CONTENT_TYPE,
+                        tonic::metadata::GRPC_CONTENT_TYPE,
+                    );
+                    Ok(response)
+                }),
             }
         }
     }
