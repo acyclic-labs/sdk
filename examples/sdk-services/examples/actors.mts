@@ -5,4 +5,5 @@ const actors = new ActorsClient({
 });
 console.log(await actors.inspectActor({
   actorId: await ActorId(process.env.ACTOR_ID!),
+  accountId: new Uint8Array(),
 }));
