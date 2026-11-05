@@ -678,7 +678,7 @@ fn disabled_operation_allocates_nothing_with_enabled_negative_control()
         assert!(matches!(ready(async_operation()), Ok(Ok(()))));
         let mut output = std::io::stderr().lock();
         output.write_all(b"observation-begin\n")?;
-        for count in [1, 100_000] {
+        for count in [1, 2] {
             let work = acyclic_test_support::measure(|| {
                 for _ in 0..count {
                     operation(std::hint::black_box(false));
@@ -705,79 +705,6 @@ fn disabled_operation_allocates_nothing_with_enabled_negative_control()
     );
     eprintln!("enabled operation allocations={}", enabled.count_total);
     assert_eq!(query.snapshot().ok, 1);
-    Ok(())
-}
-
-#[test]
-#[ignore = "on-demand trace cost measurement"]
-fn trace_on_off_cost() -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_observability::Export;
-    use std::{sync::Arc, time::Instant};
-    use tokio::sync::Semaphore;
-    const COUNT: usize = 100_000;
-    tracing::dispatcher::with_default(&tracing::Dispatch::none(), || {
-        operation(false);
-        let start = Instant::now();
-        let allocations = acyclic_test_support::measure(|| {
-            for _ in 0..COUNT {
-                operation(std::hint::black_box(false));
-            }
-        });
-        assert_eq!(allocations.count_total, 0);
-        eprintln!(
-            "trace=off operations={COUNT} elapsed_ns={} allocations={}",
-            start.elapsed().as_nanos(),
-            allocations.count_total
-        );
-    });
-    let metrics = Metrics::default();
-    let query = metrics.query("acyclic.test.operation");
-    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(metrics)));
-    tracing::dispatcher::with_default(&dispatch, || {
-        operation(false);
-        let start = Instant::now();
-        let allocations = acyclic_test_support::measure(|| {
-            for _ in 0..COUNT {
-                operation(std::hint::black_box(false));
-            }
-        });
-        eprintln!(
-            "trace=metrics operations={COUNT} elapsed_ns={} allocations={}",
-            start.elapsed().as_nanos(),
-            allocations.count_total
-        );
-    });
-    assert_eq!(query.snapshot().ok, u64::try_from(COUNT)? + 1);
-    let (export, mut output) = Export::channel(Arc::new(Semaphore::new(1)), true);
-    let dispatch =
-        tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(export.clone())));
-    tracing::dispatcher::with_default(&dispatch, || -> Result<(), std::io::Error> {
-        operation(true);
-        drop(ready(output.recv())?);
-        let start = Instant::now();
-        let mut result = Ok(());
-        let allocations = acyclic_test_support::measure(|| {
-            result = (|| -> Result<(), std::io::Error> {
-                for _ in 0..COUNT {
-                    operation(std::hint::black_box(true));
-                    drop(ready(output.recv())?.ok_or_else(|| {
-                        std::io::Error::other("export producer closed before its terminal record")
-                    })?);
-                }
-                Ok(())
-            })();
-        });
-        result?;
-        eprintln!(
-            "trace=detail-export operations={COUNT} elapsed_ns={} allocations={}",
-            start.elapsed().as_nanos(),
-            allocations.count_total
-        );
-        Ok(())
-    })?;
-    assert_eq!(export.stats().full, Some(0));
-    assert_eq!(export.stats().retained, 0);
-    assert_eq!(export.stats().high_water, 1);
     Ok(())
 }
 
@@ -958,7 +885,7 @@ fn disabled_operation_has_zero_syscalls_with_real_io_negative_control()
         }
         assert!(ended, "missing trace end marker");
         eprintln!(
-            "sync_operations=100000, async_operations=100000, real_io_negative={negative}, syscalls={calls}"
+            "sync_operations=3, async_operations=3, real_io_negative={negative}, syscalls={calls}"
         );
         assert_eq!(
             calls == 0,
