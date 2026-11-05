@@ -4,6 +4,39 @@ use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export function holdFirstOpfsLookup(directory) {
+    const original = directory.getFileHandle;
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    let calls = 0;
+    directory.getFileHandle = function(...args) {
+        const result = original.apply(this, args);
+        calls += 1;
+        return calls === 1 ? held.then(() => result) : result;
+    };
+    return {
+        calls: () => calls,
+        release: () => {
+            directory.getFileHandle = original;
+            release();
+        },
+    };
+}
+"#)]
+extern "C" {
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = holdFirstOpfsLookup)]
+    fn hold_first_opfs_lookup(directory: &FileSystemDirectoryHandle) -> LookupHold;
+
+    type LookupHold;
+
+    #[wasm_bindgen::prelude::wasm_bindgen(method)]
+    fn calls(this: &LookupHold) -> u32;
+
+    #[wasm_bindgen::prelude::wasm_bindgen(method)]
+    fn release(this: &LookupHold);
+}
+
 fn object(bytes: &'static [u8]) -> (ObjectId, OwnedBytes) {
     let bytes = OwnedBytes::from(bytes.to_vec());
     (
@@ -121,10 +154,21 @@ async fn opfs_batches_preserve_order() {
     let reads = {
         let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancellation);
         let mut __object_work = acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
-        let __object_result =
-            AsyncObjectStore::read_many(&store, __object_args.0, &mut __object_work)
-                .await
-                .map(|(values, _allocation)| values);
+        // Hold the actual first browser lookup, without replacing the OPFS
+        // result. Independent members must enter their complete read pipeline.
+        let (__object_result, started) = {
+            let hold = hold_first_opfs_lookup(&store.directory);
+            let read = AsyncObjectStore::read_many(&store, __object_args.0, &mut __object_work);
+            let mut read = std::pin::pin!(read);
+            assert!(futures::poll!(read.as_mut()).is_pending());
+            let started = hold.calls();
+            hold.release();
+            (read.await.map(|(values, _allocation)| values), started)
+        };
+        assert_eq!(
+            started, 3,
+            "a held metadata lookup must not serialize siblings"
+        );
         __object_work.receipt(__object_result)
     }
     .unwrap_or_else(|failure| unreachable!("OPFS batch read failed: {}", failure.error));
