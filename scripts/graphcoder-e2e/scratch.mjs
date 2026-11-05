@@ -30,6 +30,12 @@ export function scratchDirectory(prefix, env = process.env, platform = process.p
   return mkdtempSync(join(canonical, prefix));
 }
 
+// Credential-free fixtures retain the OS launcher and its original process owner.
+export function nativeEnvironment(inherited = process.env) {
+  return Object.fromEntries(Object.entries(inherited)
+    .filter(([key]) => /^(PATH|SystemRoot|WINDIR|ComSpec|PATHEXT|E2E_PROCESS_HOST)$/i.test(key)));
+}
+
 // This same profile reaches the shipping program, PTY transport, host-test
 // supervisor, mock, Git and helper workers. Temporary files share its lease.
 export function environment(settings, inherited = process.env) {
