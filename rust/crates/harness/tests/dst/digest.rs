@@ -121,6 +121,27 @@ pub(super) fn pair(trace: &Trace) -> [blake3::Hash; 2] {
     pair_into(trace, std::io::sink())
 }
 
+// Save every original replay world, including seeds and timestamp inputs that
+// the two cross-process digest witnesses do not print. Process identity names
+// the evidence file only; it never enters the canonical bytes.
+pub(super) fn record_replay(trace: &Trace, seed: u64, erase_source: bool, directory_time: i64) {
+    let Some(directory) = std::env::var_os("DST_TRACE_DIR") else {
+        return;
+    };
+    let path = Path::new(&directory).join(format!(
+        "replay-{}-seed-{seed}-entropy-{erase_source}-time-{directory_time}.trace",
+        std::process::id(),
+    ));
+    let [digest, _] = pair_into(
+        trace,
+        std::fs::File::create(&path).expect("replay trace file"),
+    );
+    println!(
+        "\nDST_REPLAY_INPUT_TRACE={} digest={digest}",
+        path.display()
+    );
+}
+
 /// Prints both digests. Under qualification (DST_TRACE_DIR), the same pass also
 /// saves the canonical trace so a cross-process mismatch reports its first
 /// differing poll, boundary, write or byte chunk.
