@@ -247,38 +247,6 @@ async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()>
         .await?;
     assert_eq!(selected, published);
     assert_eq!(bytes.as_ref(), b"private bytes");
-    let (auxiliary, _) = publisher
-        .stage_once(
-            OperationId::new(),
-            ".volumes/home/note",
-            b"original",
-            "text/plain",
-            "note",
-            crate::conversation::ContentAccess::default(),
-        )?
-        .await?;
-    let mounts = &publisher.tools.workspace.mounts;
-    crate::local::workspace::volumes::native_scope(mounts, async |claims| {
-        let path = directory.path().join(".volumes/home/note");
-        assert_eq!(std::fs::read(&path).map_err(storage)?, b"original");
-        publisher
-            .stage_at(
-                OperationId::new(),
-                &auxiliary,
-                b"live replacement",
-                None,
-                None,
-            )?
-            .await?;
-        assert_eq!(
-            std::fs::read(path).map_err(storage)?,
-            b"live replacement",
-            "logical replacement did not refresh the active projection"
-        );
-        Ok(((), claims))
-    })
-    .await?;
-    assert!(!directory.path().join(".volumes/home").exists());
     Ok(())
 }
 
@@ -532,10 +500,6 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
             .0,
         file
     );
-    let (edited, _) = publisher
-        .stage_at(OperationId::new(), &changed, b"edited", None, None)?
-        .await?;
-    assert_eq!(edited.volume(), harness.scratch());
     // Auxiliary volumes exist physically only while a native command owns its
     // projection. Publication must persist their bytes without leaving a mount.
     let mounts = &harness
@@ -544,6 +508,22 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         .ok_or_else(|| Error::NotFound("checkout".into()))?
         .mounts;
     assert!(!directory.path().join(".volumes/home").exists());
+    let mut replacement =
+        Box::pin(publisher.stage_at(OperationId::new(), &changed, b"edited", None, None)?);
+    crate::local::workspace::volumes::native_scope(mounts, async |claims| {
+        let path = directory.path().join(".volumes/home/note");
+        assert_eq!(std::fs::read(&path).map_err(storage)?, b"second");
+        assert!(futures::poll!(&mut replacement).is_pending());
+        assert_eq!(
+            std::fs::read(path).map_err(storage)?,
+            b"second",
+            "publication changed an active command's projection"
+        );
+        Ok(((), claims))
+    })
+    .await?;
+    let (edited, _) = replacement.await?;
+    assert_eq!(edited.volume(), harness.scratch());
     crate::local::workspace::volumes::native_scope(mounts, async |claims| {
         assert_eq!(
             std::fs::read(directory.path().join(".volumes/home/note")).map_err(storage)?,

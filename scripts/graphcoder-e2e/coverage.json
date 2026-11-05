@@ -28,7 +28,9 @@
         "child-fork-message-merge",
         "child-result",
         "child-discard",
-        "nested-children"
+        "nested-children",
+        "topology-blackboard",
+        "topology-hierarchy"
       ]
     },
     "A4": {

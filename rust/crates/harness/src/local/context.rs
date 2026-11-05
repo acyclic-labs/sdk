@@ -157,7 +157,7 @@ impl LocalHarness {
                 _ => "policy-controlled approvals",
             };
             manifest.conventions.push(format!(
-                "Approval mode: {mode}. Shell commands have no OS sandbox. A refusal returns a tool failure; adapt or report the block, never assume the action ran. .volumes/home is your private retained home volume and is never merged into the project."
+                "Approval mode: {mode}. Shell commands have no OS sandbox. A refusal returns a tool failure; adapt or report the block, never assume the action ran. .volumes/home is your private retained home volume and is never merged into the project. .volumes/shared is retained by this session and shared with its descendants; condition edits on the exact version you read."
             ));
             // The agent tools bind per turn, outside the registry; the model
             // sees them through the manifest like every other tool. A turn

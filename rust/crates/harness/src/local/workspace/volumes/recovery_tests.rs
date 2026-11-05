@@ -9,7 +9,10 @@ const OWNER_TEST: &str = "local::workspace::volumes::recovery_tests::scratch_mou
 
 /// Recovers scratch in the root held at `root`, as checkout open does.
 fn recover(root: &Path) -> Result<()> {
-    recover_after_crash(&acyclic_fs::hold_root(root).map_err(storage)?)
+    recover_after_crash(
+        &acyclic_fs::hold_root(root).map_err(storage)?,
+        Path::new(HOME_PATH),
+    )
 }
 
 mod fixture_access {
