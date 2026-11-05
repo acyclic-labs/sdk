@@ -47,6 +47,8 @@ for (const group of ["serial", "decoder", "frames"]) test(`${group} fuzz oracles
       'Array.from(this.#handled).some(text => text.slice(text.indexOf(" failed: ")) === failure.text.slice(failure.text.indexOf(" failed: ")))', "frames"],
     ["frames.mjs", "failure.reason.startsWith(condition[failure.kind])", "true", "frames"],
     ["frames.mjs", 'visible.slice(visible.lastIndexOf("\\n") + 1)', 'visible.split("\\n")[0]', "frames"],
+    ["frames.mjs", '.replace(/^✗ /, "")', "", "frames"],
+    ["frames.mjs", 'if (notice && failure.index >= status) continue;', "", "frames"],
     ["process-report.mjs", "this.#controlFailure ??= cause;", "void cause;", "report"],
     ["process-report.mjs", "    const request = this.#request;",
       "    if (this.#terminal) return;\n    const request = this.#request;", "report"],
