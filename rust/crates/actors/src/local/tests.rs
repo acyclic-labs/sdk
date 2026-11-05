@@ -701,6 +701,7 @@ fn key(value: &str) -> Result<IdempotencyKey, StreamError> {
 
 fn transition(value: u8, alarm: AlarmChange) -> Transition {
     Transition {
+        reads: Vec::new(),
         response: None,
         participant: None,
         checkpoint: Checkpoint {
@@ -1253,5 +1254,72 @@ async fn state_transaction_flush_is_one_durable_fenced_journal_commit() -> TestR
     );
     assert!(binding.read_journal(2, 1).await?.is_empty());
     assert!(binding.read_journal(3, 1).await.is_err());
+    Ok(())
+}
+
+/// A transition registers and removes reads with its checkpoint: a later
+/// delivery consumes the registered stream, and a refused change commits
+/// nothing.
+#[tokio::test]
+async fn transition_read_changes_commit_with_the_checkpoint() -> TestResult {
+    let store = Store::new(Arc::new(MemoryStream::default()), state_root()?);
+    let address = actor("reads")?;
+    place(&store, &address).await?;
+    let channel = StreamPath::new("scope/channels/c")?;
+    let add = |id: &str, path: &StreamPath| ReadChange::Add {
+        id: id.into(),
+        path: path.clone(),
+        from: 0,
+    };
+    let mut registering = transition(1, AlarmChange::Keep);
+    registering.reads = vec![add("channel", &channel)];
+    let before = store.load(&address).await?;
+    store
+        .publish(&before, 1, &record(0), None, registering, key("add")?)
+        .await?;
+    let added = store.load(&address).await?;
+    let state = added.state().ok_or("missing state")?;
+    assert_eq!(
+        (state.cursor("inbox"), state.cursor("channel")),
+        (Some(1), Some(0))
+    );
+    // Registered ids, unregistered removals and the actor's own state refuse
+    // the whole transition: its cursor does not move.
+    let own = store.path(&address)?;
+    for (name, change) in [
+        ("duplicate", add("channel", &channel)),
+        ("absent", ReadChange::Remove { id: "gone".into() }),
+        ("own", add("self", &own)),
+    ] {
+        let mut refused = transition(2, AlarmChange::Keep);
+        refused.reads = vec![change];
+        assert!(
+            store
+                .publish(&added, 1, &record(1), None, refused, key(name)?)
+                .await
+                .is_err(),
+            "{name} read change must refuse"
+        );
+    }
+    let unchanged = store.load(&address).await?;
+    assert_eq!(unchanged.state().and_then(|state| state.cursor("inbox")), Some(1));
+    // Consume the channel's first record, then stop reading it.
+    let mut removing = transition(3, AlarmChange::Keep);
+    removing.reads = vec![ReadChange::Remove {
+        id: "channel".into(),
+    }];
+    let channel_record = Trigger::Record {
+        subscription: "channel".into(),
+        sequence: 0,
+    };
+    store
+        .publish(&unchanged, 1, &channel_record, None, removing, key("remove")?)
+        .await?;
+    let removed = store.load(&address).await?;
+    let state = removed.state().ok_or("missing state")?;
+    assert_eq!(
+        (state.cursor("inbox"), state.cursor("channel")),
+        (Some(1), None)
+    );
     Ok(())
 }

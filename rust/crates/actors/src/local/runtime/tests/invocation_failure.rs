@@ -318,6 +318,7 @@ impl Handler for HidesFailure {
             match self.0.on_record(delivery, checkpoint, cancellation).await {
                 Ok(transition) => Ok(transition),
                 Err(error) => Ok(Transition {
+                    reads: Vec::new(),
                     response: Some(Bytes::from(error.to_string())),
                     checkpoint: checkpoint
                         .ok_or_else(|| {

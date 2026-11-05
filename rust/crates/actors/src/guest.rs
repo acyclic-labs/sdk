@@ -27,7 +27,7 @@ pub use state_transaction::{
 mod handler;
 pub use handler::{
     AlarmChange, Composer, Composition, Delivery, Effect, Handler, Interrupt, Manifest,
-    Participant, Subscription, SubscriptionCuts, Transition, Trigger,
+    Participant, ReadChange, Subscription, SubscriptionCuts, Transition, Trigger,
 };
 /// Cooperative delivery interruption; handler cleanup and publication remain
 /// subject to the original timeout and checkpoint fence.

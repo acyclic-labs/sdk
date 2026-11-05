@@ -8,7 +8,7 @@
 use crate::addressing::ActorReference;
 use crate::guest::{
     AlarmChange, Checkpoint, CodecIdentity, Delivery, Effect, GuestError, GuestFuture, Handler,
-    Manifest, Transition, Trigger,
+    Manifest, ReadChange, Transition, Trigger,
 };
 use crate::local::{AppliedCut, Clock, Error, PreparedPublish, Store, Subscription};
 use acyclic_stream::StreamProviderExt as _;
@@ -168,6 +168,7 @@ impl Handler for Package {
                     .is_some()
             {
                 return Ok(Transition {
+                    reads: Vec::new(),
                     response: None,
                     checkpoint: checkpoint.clone(),
                     alarm: AlarmChange::Keep,
@@ -179,6 +180,7 @@ impl Handler for Package {
                 book.validate()?;
                 let step = book.step(&delivery)?;
                 return Ok(Transition {
+                    reads: Vec::new(),
                     response: step.response,
                     participant: None,
                     checkpoint: Checkpoint {
@@ -189,6 +191,7 @@ impl Handler for Package {
                     effects: Vec::new(),
                 });
             }
+            let mut reads = Vec::new();
             let (alarm, output) = match (&delivery.trigger, &delivery.record) {
                 (Trigger::Alarm { generation, .. }, _) => {
                     (AlarmChange::Keep, Some(format!("a{generation}")))
@@ -206,6 +209,20 @@ impl Handler for Package {
                         }
                         None if command == "clear" => (AlarmChange::Clear, None),
                         None if command == "cancel" => (AlarmChange::Keep, None),
+                        None if command == "unread" => {
+                            reads.push(ReadChange::Remove {
+                                id: "mirror".into(),
+                            });
+                            (AlarmChange::Keep, None)
+                        }
+                        Some(("read", path)) => {
+                            reads.push(ReadChange::Add {
+                                id: "mirror".into(),
+                                path: StreamPath::new(path.to_owned()).map_err(guest)?,
+                                from: 0,
+                            });
+                            (AlarmChange::Keep, None)
+                        }
                         None if command == "wait" => {
                             cancellation.cancelled().await;
                             (AlarmChange::Keep, Some(format!("c{sequence}")))
@@ -253,6 +270,7 @@ impl Handler for Package {
                 ledger.published += 1;
             }
             Ok(Transition {
+                reads,
                 response: invocation.map(|call| call.request().clone()),
                 participant: None,
                 checkpoint: Checkpoint {
@@ -506,7 +524,61 @@ pub async fn verify<T: Backend + ?Sized>(target: &T) -> Result<(), Failure> {
     paused(target, run).await?;
     interrupted(target, run).await?;
     forked(target, run).await?;
+    registered_reads(target, run).await?;
     restarted(target, run).await
+}
+
+/// A read registered inside a transition commits with its checkpoint and
+/// delivers the next producer's records; a removed read delivers nothing
+/// more, even when its producer still wakes the actor.
+async fn registered_reads<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+    let mut reader = Fixture::create(target, run, "registered-reads").await?;
+    let side =
+        StreamPath::new(format!("conformance/{run}/registered-reads/side")).map_err(Error::from)?;
+    let store = target.store();
+    let actor = reader.actor.clone();
+    let produce = |sequence: u64| {
+        let side = side.clone();
+        let actor = &actor;
+        async move {
+            let mut prepared =
+                PreparedPublish::foreign(idempotency(&format!("{side}/produce/{sequence}"))?);
+            prepared.join(store.activation(actor))?;
+            prepared.join(Effect {
+                conditions: vec![if sequence == 0 {
+                    CommitCondition::Absent { path: side.clone() }
+                } else {
+                    CommitCondition::Tail {
+                        path: side.clone(),
+                        expected: sequence,
+                    }
+                }],
+                mutation: CommitMutation::Append {
+                    path: side,
+                    records: vec![Bytes::from_static(b"emit").into()],
+                },
+            })?;
+            store.submit(prepared).await?;
+            Ok::<_, Failure>(())
+        }
+    };
+    reader.send(&format!("read {side}")).await?;
+    produce(0).await?;
+    reader.expect(&["r0"]).await?;
+    let mirror =
+        |state: &crate::local::Snapshot| state.state().and_then(|state| state.cursor("mirror"));
+    if mirror(&store.load(&reader.actor).await?) != Some(1) {
+        return reader.violation("a registered read did not advance its cursor".into());
+    }
+    reader.send("unread").await?;
+    // Negative control: the producer still wakes the actor, but the
+    // removed read is never delivered.
+    produce(1).await?;
+    reader.expect(&["r0"]).await?;
+    if mirror(&store.load(&reader.actor).await?).is_some() {
+        return reader.violation("a removed read kept its cursor".into());
+    }
+    Ok(())
 }
 
 /// Create and fork share the same claim and publication fences. A fork retains

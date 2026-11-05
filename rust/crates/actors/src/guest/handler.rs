@@ -184,6 +184,32 @@ pub struct Transition {
     /// One participant to join to the publication, as a request the host's
     /// [`Composer`] validates and composes; never guest-held custody.
     pub participant: Option<Participant>,
+    /// Read registrations committed with the checkpoint, after the trigger's
+    /// consumption and in order: a later delivery reads exactly the result.
+    pub reads: Vec<ReadChange>,
+}
+
+/// One change to the actor's registered reads, the subscriptions its
+/// deliveries consume. Wakes stay the producer's same-commit activation, so a
+/// registered read costs nothing until a producer writes it and wakes the
+/// actor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReadChange {
+    /// Consume `path` from sequence `from` under the new subscription `id`.
+    Add {
+        /// Subscription id, distinct from every registered one.
+        id: String,
+        /// Stream to consume; never the actor's own state.
+        path: StreamPath,
+        /// First sequence to deliver.
+        from: u64,
+    },
+    /// Stop consuming the registered subscription `id`; its records past the
+    /// cursor are never delivered.
+    Remove {
+        /// Registered subscription id.
+        id: String,
+    },
 }
 
 /// A request to join one host participant (for example spawned volumes) to

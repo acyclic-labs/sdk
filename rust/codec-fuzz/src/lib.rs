@@ -612,6 +612,7 @@ pub fn actor_seeds()
     );
     seeds.push(("delivery", bytes, "guest::wire::encode_delivery"));
     let mut transition = guest::Transition {
+        reads: Vec::new(),
         response: None,
         checkpoint,
         alarm: guest::AlarmChange::Keep,
@@ -1150,6 +1151,7 @@ async fn actor_alarm_seeds()
                 &trigger,
                 delivered,
                 Transition {
+                    reads: Vec::new(),
                     response: None,
                     checkpoint: checkpoint.clone(),
                     alarm,

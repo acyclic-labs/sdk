@@ -208,6 +208,7 @@ impl Handler for SocketPackage {
             };
             journal.published += 1;
             Ok(Transition {
+                reads: Vec::new(),
                 response,
                 participant: None,
                 checkpoint: Checkpoint {

@@ -64,6 +64,7 @@ impl Handler for Package {
             book.validate()?;
             let step = book.step(&delivery)?;
             Ok(Transition {
+                reads: Vec::new(),
                 response: step.response,
                 checkpoint: Checkpoint {
                     codec: codec(),

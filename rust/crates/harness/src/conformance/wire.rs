@@ -130,6 +130,7 @@ fn strict(manifest: &Manifest) -> Result {
         return Err("delivery codec accepted an unknown field".into());
     }
     let transition = Transition {
+        reads: Vec::new(),
         response: None,
         checkpoint: Checkpoint {
             codec: manifest.codec.clone(),

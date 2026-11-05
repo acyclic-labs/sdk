@@ -381,6 +381,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         }
         let alarm = step.alarm;
         Ok(Transition {
+            reads: Vec::new(),
             response: None,
             participant,
             checkpoint: prepared.into_checkpoint(),

@@ -10,8 +10,8 @@
 
 use super::{
     AlarmChange, CancellationToken, Checkpoint, CodecIdentity, Delivery, Effect, GuestError,
-    GuestFuture, Handler, Interrupt, Manifest, Participant, Subscription, SubscriptionCuts,
-    Transition, Trigger,
+    GuestFuture, Handler, Interrupt, Manifest, Participant, ReadChange, Subscription,
+    SubscriptionCuts, Transition, Trigger,
 };
 use crate::{addressing::ActorReference, domain};
 use acyclic_stream::{CommitId, CommitRequest, IdempotencyKey, StreamPath, wire, wire_codec};
@@ -130,6 +130,20 @@ struct TransitionWire {
     participant: Option<ParticipantWire>,
     #[prost(bytes = "bytes", optional, tag = "9")]
     response: Option<Bytes>,
+    /// Read changes, in order.
+    #[prost(message, repeated, tag = "10")]
+    reads: Vec<ReadWire>,
+}
+
+/// One read change: with `path` and `from` an addition, with neither a removal.
+#[derive(Clone, PartialEq, prost::Message)]
+struct ReadWire {
+    #[prost(string, tag = "1")]
+    id: String,
+    #[prost(string, optional, tag = "2")]
+    path: Option<String>,
+    #[prost(uint64, optional, tag = "3")]
+    from: Option<u64>,
 }
 
 #[derive(Clone, PartialEq, prost::Oneof)]
@@ -394,6 +408,22 @@ pub fn encode_transition(transition: &Transition) -> Result<Vec<u8>, GuestError>
                     kind: participant.kind.clone(),
                     plan: participant.plan.clone(),
                 }),
+            reads: transition
+                .reads
+                .iter()
+                .map(|change| match change {
+                    ReadChange::Add { id, path, from } => ReadWire {
+                        id: id.clone(),
+                        path: Some(path.as_str().to_owned()),
+                        from: Some(*from),
+                    },
+                    ReadChange::Remove { id } => ReadWire {
+                        id: id.clone(),
+                        path: None,
+                        from: None,
+                    },
+                })
+                .collect(),
         },
         TRANSITION_DOMAIN,
     ))
@@ -436,6 +466,19 @@ pub fn decode_transition(bytes: &[u8]) -> Result<Transition, GuestError> {
             kind: participant.kind,
             plan: participant.plan,
         }),
+        reads: wire
+            .reads
+            .into_iter()
+            .map(|read| match (read.path, read.from) {
+                (Some(path), Some(from)) => Ok(ReadChange::Add {
+                    id: read.id,
+                    path: StreamPath::new(path).map_err(|_| invalid("read path"))?,
+                    from,
+                }),
+                (None, None) => Ok(ReadChange::Remove { id: read.id }),
+                _ => Err(invalid("read")),
+            })
+            .collect::<Result<_, _>>()?,
     })
 }
 
@@ -487,6 +530,14 @@ mod tests {
     fn transition() -> Result<Transition, Box<dyn std::error::Error>> {
         let path = StreamPath::new("agents/a/inbox")?;
         Ok(Transition {
+            reads: vec![
+                ReadChange::Add {
+                    id: "channel".into(),
+                    path: StreamPath::new("scope/channels/c")?,
+                    from: 2,
+                },
+                ReadChange::Remove { id: "old".into() },
+            ],
             response: Some(Bytes::new()),
             checkpoint: Checkpoint {
                 codec: CodecIdentity {
@@ -534,6 +585,14 @@ mod tests {
                 Err(GuestError::Decode(_))
             ));
         }
+        // A read change is an addition with both path and start, or a
+        // removal with neither.
+        let mut partial = admitted.clone();
+        partial.reads[0].from = None;
+        assert!(matches!(
+            decode_transition(&encode(&partial, TRANSITION_DOMAIN)),
+            Err(GuestError::Decode(_))
+        ));
         let mut orphaned = admitted;
         orphaned
             .effects

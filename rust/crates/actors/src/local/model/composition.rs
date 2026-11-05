@@ -560,6 +560,7 @@ async fn composer_cannot_fork_over_the_original_invocation_reply() -> Result<(),
 
 fn transition(remove_actor_fence: bool) -> Result<Transition, StreamError> {
     Ok(Transition {
+        reads: Vec::new(),
         response: None,
         checkpoint: checkpoint(1),
         alarm: AlarmChange::Keep,

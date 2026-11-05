@@ -21,7 +21,8 @@ pub use sockets::codec_fuzz as socket_ledger_codec;
 
 use crate::addressing::ActorReference;
 use crate::guest::{
-    AlarmChange, Checkpoint, Composer, Composition, Effect, GuestError, Transition, Trigger,
+    AlarmChange, Checkpoint, Composer, Composition, Effect, GuestError, ReadChange, Transition,
+    Trigger,
 };
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
@@ -979,7 +980,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             None
         };
         let previous_checkpoint = state.checkpoint.take();
-        let state = next(state, original_alarm, trigger, &transition)?;
+        let state = next(state, &previous.path, original_alarm, trigger, &transition)?;
         // The participant is a request from a possibly untrusted handler:
         // the host composer validates it before any custody exists.
         let composition = match &transition.participant {
@@ -1248,17 +1249,55 @@ fn owned(previous: &Snapshot, epoch: u64) -> Result<&State, Error> {
 }
 
 /// The pure durable transition: consume exactly the trigger, then apply the
-/// alarm change. Checkpoint, cursor and alarm move together or not at all.
+/// read changes and the alarm change. Checkpoint, cursors, reads and alarm
+/// move together or not at all.
 fn next(
     mut state: State,
+    own: &StreamPath,
     original_alarm: &Alarm,
     trigger: &Trigger,
     transition: &Transition,
 ) -> Result<State, Error> {
     consume(&mut state, original_alarm, trigger)?;
+    for change in &transition.reads {
+        change_read(&mut state.subscriptions, own, change)?;
+    }
     change_alarm(&mut state.alarm, transition.alarm)?;
     state.checkpoint = Some(transition.checkpoint.clone());
     Ok(state)
+}
+
+/// Registers or removes one read. Ids are never reused within one change
+/// list's view: adding a registered id or removing an absent one refuses the
+/// whole transition, so a retried delivery cannot double-register.
+fn change_read(
+    reads: &mut BTreeMap<String, Subscription>,
+    own: &StreamPath,
+    change: &ReadChange,
+) -> Result<(), Error> {
+    match change {
+        ReadChange::Add { id, path, from } => {
+            if path == own {
+                return Err(Error::Invalid("actor subscribes to its own state"));
+            }
+            if id.is_empty() || reads.contains_key(id) {
+                return Err(Error::Invalid("read id is empty or already registered"));
+            }
+            reads.insert(
+                id.clone(),
+                Subscription {
+                    path: path.clone(),
+                    cursor: *from,
+                },
+            );
+        }
+        ReadChange::Remove { id } => {
+            reads
+                .remove(id)
+                .ok_or(Error::Invalid("read is not registered"))?;
+        }
+    }
+    Ok(())
 }
 
 fn consume(state: &mut State, original_alarm: &Alarm, trigger: &Trigger) -> Result<(), Error> {

@@ -135,6 +135,7 @@ fn script(state: &State) -> Result<Option<(Trigger, Transition)>, Failure> {
         0 => Some((
             record(0),
             Transition {
+                reads: Vec::new(),
                 response: None,
                 participant: None,
                 checkpoint: checkpoint(1),
@@ -150,6 +151,7 @@ fn script(state: &State) -> Result<Option<(Trigger, Transition)>, Failure> {
                 now_unix_ms: 10,
             },
             Transition {
+                reads: Vec::new(),
                 response: None,
                 participant: None,
                 checkpoint: checkpoint(2),
@@ -160,6 +162,7 @@ fn script(state: &State) -> Result<Option<(Trigger, Transition)>, Failure> {
         2 => Some((
             record(1),
             Transition {
+                reads: Vec::new(),
                 response: None,
                 participant: None,
                 checkpoint: checkpoint(3),
