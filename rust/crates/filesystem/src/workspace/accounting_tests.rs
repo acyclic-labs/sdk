@@ -659,11 +659,18 @@ pub(super) struct Observation {
     pub(super) completion: Option<tokio::sync::oneshot::Receiver<()>>,
 }
 
+pub(super) enum ReplayCustody {
+    Standalone(Arc<Prefunded>),
+    #[cfg(not(target_arch = "wasm32"))]
+    Native(crate::NativeMaterializationWork),
+}
+
 #[derive(Default)]
 pub(super) struct ObservedAuthority {
     inner: crate::MemoryAuthorityStore,
     pub(super) observation: Mutex<Option<Observation>>,
     pub(super) replay_minimum: Mutex<Option<u64>>,
+    pub(super) replay_custody: Mutex<Option<ReplayCustody>>,
 }
 
 impl AsyncAuthorityStore for ObservedAuthority {
@@ -765,6 +772,26 @@ impl AsyncAuthorityStore for ObservedAuthority {
         limit: crate::ReplayLimit,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(Vec<crate::DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
+        if let Some(expected) = self.replay_custody.lock().unwrap().take() {
+            let shares = match expected {
+                ReplayCustody::Standalone(original) => {
+                    let held = original.held.lock().unwrap();
+                    let ledger = held
+                        .as_ref()
+                        .unwrap()
+                        .0
+                        .allocation
+                        .standalone_ledger()
+                        .unwrap();
+                    work.allocations.shares_retained_ledger(Arc::as_ptr(ledger))
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                ReplayCustody::Native(original) => work
+                    .original
+                    .is_some_and(|work| work.shares_ledger(&original)),
+            };
+            assert!(shares, "fork replaced the original accounting ledger");
+        }
         let minimum = self.replay_minimum.lock().unwrap().take();
         if let Some(minimum) = minimum {
             let live = work

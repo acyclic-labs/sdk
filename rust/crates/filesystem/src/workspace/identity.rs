@@ -88,10 +88,6 @@ impl WorkspaceName {
     pub fn as_str(&self) -> &str {
         &self.0.0
     }
-
-    pub(crate) fn retained_bytes(&self) -> u64 {
-        self.as_str().len() as u64
-    }
 }
 
 impl PartialEq for WorkspaceName {
