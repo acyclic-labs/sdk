@@ -13,6 +13,20 @@ const fixtures = [
   "typescript/packages/inference/test/idle-kv.test.ts",
 ];
 
+test("Cargo executable consumers use the runtime-aware locator", t => {
+  const path = "rust/crates/harness-mock-model/tests/http.rs";
+  const source = readFileSync(join(root, path), "utf8");
+  const files = { [path]: source,
+    "rust/crates/test-support/src/fixtures.rs": readFileSync(join(root, "rust/crates/test-support/src/fixtures.rs"), "utf8") };
+  assert.equal(scan(t, files).status, 0);
+  const restored = source.replace('acyclic_test_support::cargo_binary!("harness-mock-model")',
+    'env!("CARGO_BIN_EXE_harness-mock-model")');
+  assert.notEqual(restored, source);
+  const result = scan(t, { ...files, [path]: restored });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /use acyclic_test_support::cargo_binary!/);
+});
+
 function scan(t, files, untracked = {}) {
   mkdirSync(join(root, ".tools"), { recursive: true });
   const directory = mkdtempSync(join(root, ".tools/boundary-test-"));

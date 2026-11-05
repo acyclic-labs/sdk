@@ -37,6 +37,9 @@ function hasCredentialLiteral(content) {
 
 function inspect(path, content) {
   const relativePath = relative(root, path).replaceAll("\\", "/");
+  if (relativePath.endsWith(".rs") && /\b(?:option_)?env\s*!\s*\(\s*"CARGO_BIN_EXE_/.test(content)) {
+    failures.push(`${relativePath}: executable lookup: use acyclic_test_support::cargo_binary!; verify with node scripts/check-boundaries.mjs`);
+  }
   if (forbiddenPath.test(relativePath)) failures.push(`${relativePath}: forbidden private path`);
   for (const pattern of forbiddenContent) if (pattern.test(content)) failures.push(`${relativePath}: ${pattern}`);
   const hasCredential = /\.(?:[cm]?[jt]sx?)$/.test(relativePath)

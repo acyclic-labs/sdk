@@ -1,3 +1,4 @@
+use super::super::check_wait;
 use super::ERROR_NOT_FOUND;
 use super::{
     CancelIoEx, DemandError, DemandWork, ERROR_NOTIFY_ENUM_DIR, ERROR_OPERATION_ABORTED,

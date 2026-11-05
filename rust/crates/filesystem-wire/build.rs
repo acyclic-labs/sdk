@@ -7,5 +7,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &["proto/filesystem/v2/filesystem.proto"],
         "acyclic-filesystem-v2.bin",
     )?;
-    Ok(())
+    let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").ok_or("OUT_DIR is unset")?);
+    acyclic_proto_build::write_authorization(
+        &std::fs::read(output.join("acyclic-filesystem-v2.bin"))?,
+        "acyclic.filesystem.v2.FilesystemService",
+        "FsMethod",
+        &output,
+    )
 }

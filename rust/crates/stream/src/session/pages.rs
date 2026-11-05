@@ -45,9 +45,14 @@ impl Visibility {
         for mut child in page.children {
             if !self.permits(
                 &*capability,
-                "streams/list",
+                crate::StreamMethod::ChildrenPage
+                    .authorization()
+                    .admitted
+                    .first()
+                    .ok_or(StreamError::InvalidResponse)?
+                    .as_str(),
                 child.path.as_str(),
-                acyclic_auth::authority::Scope::Children,
+                crate::StreamMethod::ChildrenPage.authorization().scope,
             )? {
                 continue;
             }
@@ -56,9 +61,9 @@ impl Visibility {
                 StreamPath::validate(&target)?;
                 if self.permits(
                     &*capability,
-                    "streams/follow",
+                    crate::authorization::FOLLOW_ACTION.as_str(),
                     &target,
-                    acyclic_auth::authority::Scope::Follow,
+                    crate::StreamMethod::Follow.authorization().scope,
                 )? {
                     if let Some(record) = child.tail_record.take() {
                         child.tail_record =

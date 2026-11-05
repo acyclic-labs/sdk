@@ -1,7 +1,43 @@
 //! Reproducible streaming-prefix and corpus invariants.
 #[path = "support/streaming_input.rs"]
 mod input;
+#[path = "support/syntax_data.rs"]
+mod syntax_data;
 use proptest::prelude::*;
+
+#[test]
+fn syntax_data_preserves_bundled_grammars_and_rejects_invalid_envelopes() {
+    use syntect::{easy::HighlightLines, highlighting::ThemeSet, parsing::SyntaxSet};
+
+    let corpus = acyclic_test_support::crate_path!("fuzz/corpus/syntax_data");
+    for (name, expected) in [
+        ("default.themedump", (false, true)),
+        ("default_newlines.packdump", (true, false)),
+        ("default_nonewlines.packdump", (true, false)),
+    ] {
+        assert_eq!(
+            syntax_data::check(&std::fs::read(corpus.join(name)).unwrap()),
+            expected,
+            "expected seed {name} no longer decodes"
+        );
+    }
+    let themes = ThemeSet::load_defaults();
+    let theme = themes.themes.values().next().unwrap();
+    for syntaxes in [
+        SyntaxSet::load_defaults_newlines(),
+        SyntaxSet::load_defaults_nonewlines(),
+    ] {
+        for syntax in syntaxes.syntaxes() {
+            let mut highlighter = HighlightLines::new(syntax, theme);
+            let source = "let answer = 42; // syntax data\n";
+            let spans = highlighter.highlight_line(source, &syntaxes).unwrap();
+            assert_eq!(
+                spans.into_iter().map(|(_, text)| text).collect::<String>(),
+                source
+            );
+        }
+    }
+}
 
 #[test]
 fn streaming_seed_corpus() {

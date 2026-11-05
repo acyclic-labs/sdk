@@ -658,68 +658,61 @@ mod tests {
     }
 
     #[test]
-    fn service_error_preserves_raw_status_and_detail_codes() {
-        for (status_code, detail_code) in [
-            (tonic::Code::PermissionDenied, 0),
-            (tonic::Code::Unknown, 99),
-        ] {
+    fn service_metadata_preserves_status_message_and_lossless_detail_bytes() {
+        use tonic::Code::{PermissionDenied, Unknown};
+
+        let encoded = |code, message: &str| {
             let detail = wire::Error {
-                code: detail_code,
-                message: format!("detail-{detail_code}"),
+                code,
+                message: message.to_owned(),
             };
+            (detail.encode_to_vec(), Some(detail))
+        };
+        for (status_code, name, (bytes, detail)) in [
+            (
+                PermissionDenied,
+                "permission_denied",
+                encoded(0, "detail-0"),
+            ),
+            (Unknown, "unknown", encoded(99, "detail-99")),
+            (
+                PermissionDenied,
+                "permission_denied",
+                encoded(99, "future service detail"),
+            ),
+            (PermissionDenied, "permission_denied", (Vec::new(), None)),
+            (PermissionDenied, "permission_denied", (vec![255, 0], None)),
+        ] {
             let status = tonic::Status::with_details(
                 status_code,
-                "service rejected request",
-                detail.encode_to_vec().into(),
-            );
-
-            match service_error(status) {
-                Error::Service {
-                    grpc_code,
-                    detail: Some(actual),
-                    message,
-                    raw_details,
-                } => {
-                    assert_eq!(message, "service rejected request");
-                    assert_eq!(raw_details, detail.encode_to_vec());
-                    assert_eq!(grpc_code, status_code as i32);
-                    assert_eq!(actual.code, detail_code);
-                    assert_eq!(actual.message, format!("detail-{detail_code}"));
-                }
-                other => panic!("expected structured service error, got {other:?}"),
-            }
-        }
-    }
-
-    #[test]
-    fn service_metadata_preserves_status_message_and_lossless_detail_bytes() {
-        let decoded = wire::Error {
-            code: 99,
-            message: String::from("future service detail"),
-        }
-        .encode_to_vec();
-        for bytes in [decoded, Vec::new(), vec![255, 0]] {
-            let status = tonic::Status::with_details(
-                tonic::Code::PermissionDenied,
                 "original grpc diagnostic",
                 bytes.clone().into(),
             );
             let error = service_error(status);
+            let Error::Service {
+                grpc_code,
+                detail: actual,
+                message,
+                raw_details,
+            } = &error
+            else {
+                panic!("expected structured service error, got {error:?}");
+            };
+            assert_eq!(message, "original grpc diagnostic");
+            assert_eq!(raw_details, &bytes);
+            assert_eq!(*grpc_code, status_code as i32);
+            assert_eq!(actual, &detail);
             let metadata = error.metadata();
-            assert_eq!(metadata.code, "permission_denied");
+            assert_eq!(metadata.code, name);
             assert_eq!(metadata.message, "original grpc diagnostic");
-            assert_eq!(metadata.grpc_code, Some(7));
-            assert_eq!(metadata.raw_details, Some(bytes.clone()));
-            if bytes.first() == Some(&8) {
-                assert_eq!(metadata.service_code, Some(99));
-                assert_eq!(
-                    metadata.service_message.as_deref(),
-                    Some("future service detail")
-                );
-            } else {
-                assert!(metadata.service_code.is_none());
-                assert!(metadata.service_message.is_none());
-            }
+            assert_eq!(metadata.grpc_name.as_deref(), Some(name));
+            assert_eq!(metadata.grpc_code, Some(status_code as i32));
+            assert_eq!(metadata.raw_details, Some(bytes));
+            assert_eq!(
+                metadata.service_code,
+                detail.as_ref().map(|value| value.code)
+            );
+            assert_eq!(metadata.service_message, detail.map(|value| value.message));
         }
     }
 
