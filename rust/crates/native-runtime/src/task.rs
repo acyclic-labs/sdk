@@ -15,6 +15,28 @@ pub use custody::{OwnedTask, TaskCompletion, spawn_owned};
 #[cfg(feature = "test-support")]
 pub(crate) use custody::{cancelled_error, panic_error};
 
+/// Completes a ready owned operation inline, transferring pending work to the
+/// same task owner as [`spawn`]. A ready operation needs no task allocation.
+pub fn spawn_eager<F>(mut future: F)
+where
+    F: std::future::Future<Output = ()> + Send + Unpin + 'static,
+{
+    let future_poll = || {
+        std::pin::Pin::new(&mut future)
+            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+    };
+    #[cfg(feature = "test-support")]
+    let result = crate::testing::enter_task_poll(future_poll);
+    #[cfg(not(feature = "test-support"))]
+    let result = {
+        let mut future_poll = future_poll;
+        future_poll()
+    };
+    if result.is_pending() {
+        drop(spawn(future));
+    }
+}
+
 /// Runtime for a single coordination owner. Durable storage uses its own shared,
 /// fixed service through [`spawn_persistence`]. Its one blocking slot runs only
 /// work that completes on its own, in submission order; an open stdin, whose
