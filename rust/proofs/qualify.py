@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "auth-generation", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost", "guest-refusal", "trust-catchup"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "objects-close-result", "auth-producer-loss", "auth-generation", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost", "guest-refusal", "trust-catchup"])
 claim = parser.parse_args().claim
 target = ["--lib"]
 if claim == "retained-credit":
@@ -40,6 +40,12 @@ elif claim == "objects-empty-dispatch":
     crate = "acyclic-objects"
     test = "local::outcome_tests::empty_ranges_preserve_native_presence_without_dispatch"
     diagnostic = "empty range dispatched a physical job for key"
+    features = ["--no-default-features", "--features", "local,test-support"]
+elif claim == "objects-close-result":
+    source = "rust/crates/objects/src/local.rs"
+    crate = "acyclic-objects"
+    test = "local::outcome_tests::owned_close_reports_physical_completion_and_failure"
+    diagnostic = "close hid"
     features = ["--no-default-features", "--features", "local,test-support"]
 elif claim == "auth-producer-loss":
     source = "rust/crates/auth/src/trust/follower.rs"

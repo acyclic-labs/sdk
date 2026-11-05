@@ -75,6 +75,12 @@ terminal cause and refuse reopening. The same test holds account storage during
 withdrawal; this establishes absence of that traversal, while notification work
 still depends on actual waiters.
 
+The [Objects close-result control](objects-close-result/README.md) discards only
+the original worker's inner storage result after physical completion. The
+existing real-log test must reject the false success, then pass after exact
+source restoration. Its original barrier faults and cancelled-waiter schedule
+retain actual lock and anchor retirement; no parallel close model is added.
+
 The [Objects empty-range dispatch control](objects-empty-dispatch/README.md)
 retains a production mutation that disables the index-only presence path. The
 existing real-log oracle must reject the resulting extra native submission;
