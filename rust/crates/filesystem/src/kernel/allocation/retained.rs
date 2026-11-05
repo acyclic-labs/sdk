@@ -285,11 +285,9 @@ impl Drop for StandaloneLease {
 }
 
 impl RetainedAllocation {
-    pub(crate) fn standalone_ledger(
-        &self,
-    ) -> Option<std::sync::Weak<Mutex<SharedAllocationBytes>>> {
+    pub(crate) fn standalone_ledger(&self) -> Option<&Arc<Mutex<SharedAllocationBytes>>> {
         match self {
-            Self::Standalone { _lease } => Some(Arc::downgrade(&_lease.ledger)),
+            Self::Standalone { _lease } => Some(&_lease.ledger),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { .. } => None,
         }
@@ -297,7 +295,7 @@ impl RetainedAllocation {
 
     #[cfg(test)]
     pub(crate) fn standalone_live_bytes(&self) -> Option<u64> {
-        let ledger = self.standalone_ledger()?.upgrade()?;
+        let ledger = self.standalone_ledger()?;
         let state = ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -810,7 +808,7 @@ mod tests {
             // Promote through the production admission path before selecting
             // arbitrary amounts within the remaining representable capacity.
             let anchor = RetainedAllocation::claim(0, 0, &mut accounting).unwrap();
-            let ledger = anchor.standalone_ledger().unwrap().upgrade().unwrap();
+            let ledger = Arc::clone(anchor.standalone_ledger().unwrap());
             let live = || ledger.lock().unwrap().allocations.live_bytes;
             let control = live();
             let retained = retained % (u64::MAX - control + 1);

@@ -125,6 +125,107 @@ struct Archive {
     authority: AuthorityId,
     digest: Digest,
     evidence: HistoricalGenerationEvidence,
+    decode_hash_start: std::sync::atomic::AtomicU64,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn decoder_custody(
+    evidence: &HistoricalGenerationEvidence,
+    authority: AuthorityId,
+    record: &DurableCommit,
+) -> Result<(), Box<dyn Error>> {
+    for native in [false, true] {
+        let mut required_peak = 0;
+        for refusal in 0..4 {
+            let mut budget = BUDGET;
+            match refusal {
+                1 => budget.bytes_hashed = 0,
+                2 => budget.bytes_copied = 0,
+                3 => budget.peak_allocation_bytes = required_peak - 1,
+                _ => {}
+            }
+            let cancel = CancellationToken::new();
+            let original = if native {
+                Some(
+                    crate::NativeMaterializationWork::new(budget, &cancel)
+                        .map_err(|(error, _)| error)?,
+                )
+            } else {
+                None
+            };
+            let mut work = if let Some(original) = &original {
+                AuthorityWork::native(original, &cancel)
+            } else {
+                AuthorityWork::new(budget, &cancel)
+            };
+            let mut independent =
+                crate::kernel::Owned::<Vec<u8>>::allocate(73, &mut work.accounting())?;
+            independent.value.resize(73, 0xa5);
+            let live = |work: &AuthorityWork<'_>| {
+                if let Some(original) = &original {
+                    original.live_allocation_bytes()
+                } else {
+                    work.allocations.live_bytes()
+                }
+            };
+            let baseline = live(&work);
+            let mut accounting = work.accounting();
+            let mut observed = crate::kernel::OriginalReadAccounting::new(&mut accounting)?;
+            let decoded = crate::kernel::decode_historical_generation_evidence_observed(
+                evidence,
+                authority,
+                record,
+                evidence.bytes.len() as u64,
+                u64::MAX,
+                &mut |step| observed.observe(step).map_err(AccountingError::from),
+            );
+            if refusal == 0 {
+                let decoded = decoded?;
+                let minimum = (decoded.manifest.objects.capacity() * size_of::<ObjectId>()
+                    + decoded.root.parents.capacity() * size_of::<crate::GenerationId>()
+                    + decoded.append.commit.payload.len()) as u64;
+                assert!(minimum > 0);
+                let (mut allocation, owned_bytes) = observed.into_parts();
+                drop(accounting);
+                assert!(
+                    owned_bytes >= minimum,
+                    "historical decoder omitted actual backing"
+                );
+                assert_eq!(
+                    live(&work),
+                    baseline + owned_bytes,
+                    "decoded backing retired before projection"
+                );
+                required_peak = baseline + owned_bytes;
+                drop(decoded);
+                work.accounting()
+                    .release_owned(&mut allocation, owned_bytes)?;
+            } else {
+                assert!(
+                    matches!(
+                        decoded,
+                        Err(AccountingError::Work(
+                            crate::WorkError::BudgetExceeded { .. }
+                        ))
+                    ),
+                    "original decoder allowance was bypassed"
+                );
+                drop(decoded);
+                observed.retire()?;
+                drop(accounting);
+            }
+            assert_eq!(
+                live(&work),
+                baseline,
+                "decoder retirement changed independent backing"
+            );
+            assert!(independent.value.iter().all(|byte| *byte == 0xa5));
+            let independent_bytes = independent.value.capacity() as u64;
+            independent.retire(&mut work.accounting())?;
+            assert_eq!(live(&work), baseline - independent_bytes);
+        }
+    }
+    Ok(())
 }
 
 impl AsyncObjectStore for Archive {
@@ -177,6 +278,12 @@ impl AsyncObjectStore for Archive {
         }
         let value =
             (id == self.authority && record.digest == self.digest).then(|| self.evidence.clone());
+        if value.is_some() {
+            self.decode_hash_start.store(
+                work.spent().bytes_hashed,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
         work.accept(Ok(crate::OperationReceipt {
             work: crate::WorkCounters {
                 items_examined: 1,
@@ -233,11 +340,14 @@ async fn archives_bind_original_publication_creation_and_retention_and_reject_fo
     ] {
         let empty = acyclic_objects::MemoryObjects::memory();
         let genuine = evidence(&objects, authority_id, record, original_root, config).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        decoder_custody(&genuine, authority_id, record)?;
         let mut archive = Archive {
             empty: crate::LogicalObjectStore::new(Arc::new(empty)),
             authority: authority_id,
             digest: record.digest,
             evidence: genuine.clone(),
+            decode_hash_start: std::sync::atomic::AtomicU64::new(0),
         };
         assert!(
             !archive
@@ -250,6 +360,13 @@ async fn archives_bind_original_publication_creation_and_retention_and_reject_fo
                 .await?
         );
         let actual = page(&authority, &archive, authority_id, position, 1).await?;
+        let before_decode = archive
+            .decode_hash_start
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            actual.work.bytes_hashed >= before_decode + genuine.bytes.len() as u64,
+            "historical decoder omitted original evidence hashing"
+        );
         assert_eq!(actual.facts().len(), 1);
         assert_eq!(actual.facts()[0].operation_id, record.operation_id);
         assert_eq!(

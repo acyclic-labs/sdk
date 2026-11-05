@@ -19,8 +19,6 @@ pub(super) fn workspace_join_context_bytes(
 }
 
 pub(crate) enum WorkspaceJoinOutcome {
-    Applied(GenerationId),
-    AlreadyApplied(GenerationId),
     Joined(GenerationId, Digest),
     AlreadyJoined(GenerationId, Digest),
     NoChanges(GenerationId),

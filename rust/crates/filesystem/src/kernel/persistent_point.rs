@@ -169,7 +169,7 @@ impl Owned<Vec<u8>> {
                 Ok(Self::new(value, allocation, bytes))
             }
             Err(error) => {
-                owned.release_failed()?;
+                owned.retire()?;
                 Err(error)
             }
         }

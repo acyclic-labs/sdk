@@ -111,12 +111,10 @@ async fn generation_diff_keeps_original_backing_on_success_refusal_and_withdrawa
         if reads == 0 {
             assert!(matches!(
                 result,
-                Err(WorkspaceError::Filesystem(FsError::Work(
-                    crate::WorkError::BudgetExceeded {
-                        counter: "backend_read_operations",
-                        ..
-                    }
-                )))
+                Err(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
+                    counter: "backend_read_operations",
+                    ..
+                }))
             ));
             assert_eq!(spent.items_examined, 1);
             assert_eq!(spent.backend_read_operations, 0);
@@ -287,6 +285,79 @@ async fn generation_parents_keep_original_work_and_result_custody()
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
     assert_eq!(failure.work.backend_read_operations, 0);
 
+    // A parent digest is scalar: both decoded roots and its encoding must
+    // retire before the public operation returns, preserving earlier backing.
+    let mut completed = None;
+    for reads in [2, 1, 0] {
+        let source = Prefunded {
+            budget: WorkBudget {
+                backend_read_operations: reads,
+                ..budget
+            },
+            held: Mutex::new(None),
+        };
+        let (result, spent, live, baseline) = selected
+            .normalized_join_parent_for(&selected, &source, &cancellation)
+            .await;
+        if reads == 2 {
+            assert_eq!(result?, selected.id().object_id().digest);
+            assert!(spent.peak_allocation_bytes > baseline);
+            completed = Some(spent);
+        } else {
+            assert!(matches!(
+                result,
+                Err(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
+                    counter: "backend_read_operations",
+                    ..
+                }))
+            ));
+        }
+        assert_eq!(spent.backend_read_operations, reads);
+        assert_eq!(spent.backend_write_operations, 0);
+        assert_eq!(live, baseline, "parent digest retained temporary backing");
+    }
+    let source = Prefunded {
+        budget,
+        held: Mutex::new(None),
+    };
+    let (result, spent, live, baseline) = foreign
+        .normalized_join_parent_for(&selected, &source, &cancellation)
+        .await;
+    assert!(matches!(result, Err(WorkspaceError::IncompatibleWorkspace)));
+    assert_eq!(spent.backend_read_operations, 2);
+    assert_eq!(
+        live, baseline,
+        "incompatible parent retained decoded backing"
+    );
+    let source = Prefunded {
+        budget: WorkBudget {
+            bytes_hashed: completed
+                .ok_or("missing completed digest work")?
+                .bytes_hashed
+                - 1,
+            ..budget
+        },
+        held: Mutex::new(None),
+    };
+    let (result, spent, live, baseline) = selected
+        .normalized_join_parent_for(&selected, &source, &cancellation)
+        .await;
+    assert!(matches!(
+        result,
+        Err(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
+            counter: "bytes_hashed",
+            ..
+        }))
+    ));
+    assert_eq!(spent.backend_read_operations, 2);
+    assert_eq!(live, baseline, "denied digest retained temporary backing");
+    let failure = selected
+        .normalized_join_parent_for(&selected, budget, &cancelled)
+        .await
+        .unwrap_err();
+    assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
+    assert_eq!(*failure.work, WorkCounters::UNCHARGED);
+
     #[cfg(not(target_arch = "wasm32"))]
     {
         let original = crate::NativeMaterializationWork::new(budget, &cancellation)
@@ -305,6 +376,31 @@ async fn generation_parents_keep_original_work_and_result_custody()
             foreign.parents(&original, &cancellation).await,
             Err(WorkspaceError::ForeignGeneration)
         ));
+        assert_eq!(original.live_allocation_bytes(), baseline);
+
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let held = Retained::<Vec<u8>>::allocate(4096, &mut accounting)?;
+        let held_baseline = original.live_allocation_bytes();
+        let prior = original.receipt();
+        assert_eq!(
+            selected
+                .normalized_join_parent_for(&selected, &original, &cancellation)
+                .await?,
+            selected.id().object_id().digest
+        );
+        assert_eq!(original.live_allocation_bytes(), held_baseline);
+        assert_eq!(original.receipt().object_probes, prior.object_probes + 2);
+        assert!(original.receipt().backend_read_operations > prior.backend_read_operations);
+        let prior = original.receipt();
+        assert!(matches!(
+            selected
+                .normalized_join_parent_for(&selected, &original, &cancelled)
+                .await,
+            Err(WorkspaceError::Cancelled(_))
+        ));
+        assert_eq!(original.receipt(), prior);
+        assert_eq!(original.live_allocation_bytes(), held_baseline);
+        drop(held);
         assert_eq!(original.live_allocation_bytes(), baseline);
     }
     Ok(())

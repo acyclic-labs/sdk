@@ -185,6 +185,8 @@ and paged leaf admission share this distinction; residency is never inferred
 from the leaf's total live bytes. One weak ledger identity and one byte total
 describe the operation cache without retaining additional funding or scanning
 entries. A different original source cannot be attached to the same proof owner.
+Identity checks borrow the retained source; only the initial binding creates a
+weak reference, which retires with the last original cache allocation.
 
 `mutations/operation_cache_duplicate_charge.patch` removes that exclusion from
 the production observer. The exact-peak relation must reject the duplicate
@@ -192,3 +194,23 @@ charge; restore the patch before requiring the relation to pass. The existing
 `decoder_work` target and its recorded canonical corpus continue to exercise
 the unchanged page decoders; the local-provider relation covers cache funding
 around those decoders.
+
+Historical archive projection uses that same original decoder observer for
+manifest and parent capacities, payload copies, evidence/root/record hashes and
+retention identity hashing. The projection drops before its original backing
+retires, on success and refusal. The archive byte bound comes from the admitted
+format configuration; a source-length multiplier cannot substitute for actual
+allocation admission. Retention labels borrow the original payload, and strict
+decoding replaces temporary canonical re-encodings.
+
+`archives_bind_original_publication_creation_and_retention_and_reject_forgery`
+uses actual creation, publication and retention writer output. It checks
+ordinary/native original backing while the projection lives, exact retirement
+with an independent buffer alive, and finite hash, copy and capacity refusal.
+Apply `mutations/historical_original_effects.patch` to omit the production
+archive observer; the existing public-page assertion must reject missing
+original evidence hashing. Restore it before requiring the positive relation.
+The `filesystem_pages` fuzz target shares the production parser and checks
+accepted original bytes against their writer, exact caller binding and immediate
+propagation of selected observer refusals. Its retained historical corpus comes
+from the same SDK writers, with provenance in `codec-fuzz/corpus/SOURCES.tsv`.
