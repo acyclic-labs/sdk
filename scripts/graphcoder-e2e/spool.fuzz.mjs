@@ -237,7 +237,7 @@ async function persisted(bytes, path) {
   assert.equal(terminal.kind, "eof");
   await written;
   const ranges = [[event.id, 0, original.length], [event.id + "\0", original.length, distinct.length]];
-  for (const mutation of [bytes, Buffer.concat([bytes, baseline])]) {
+  for (const mutation of [Buffer.alloc(0), bytes, Buffer.concat([bytes, baseline])]) {
     writeFileSync(path, mutation);
     for (const [id, at, length] of ranges) {
       if (mutation.length < at + length) {
@@ -251,15 +251,15 @@ async function persisted(bytes, path) {
         else assert.deepEqual(await spool.keyed(id), value);
       }
     }
-    if (mutation.length < baseline.length) {
+    const lines = mutation.subarray(0, baseline.length).toString("utf8").split("\n");
+    const tail = lines.pop();
+    let values, invalid;
+    try { values = lines.filter(Boolean).map(line => JSON.parse(line)); }
+    catch (error) { invalid = error; }
+    if (invalid) await assert.rejects(spool.history(), error => error.kind === "spool" && error.cause instanceof SyntaxError);
+    else if (mutation.length < baseline.length || tail.length) {
       await assert.rejects(spool.history(), error => error.kind === "spool" && error.detail.completed === baseline.length);
-    } else {
-      let values, invalid;
-      try { values = mutation.subarray(0, baseline.length).toString("utf8").split("\n").filter(Boolean).map(JSON.parse); }
-      catch (error) { invalid = error; }
-      if (invalid) await assert.rejects(spool.history(), SyntaxError);
-      else assert.deepEqual(await spool.history(), values);
-    }
+    } else assert.deepEqual(await spool.history(), values);
     assert.equal(spool.ended, terminal, "a historical read cannot replace the original process terminal");
   }
 }

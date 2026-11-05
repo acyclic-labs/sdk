@@ -308,8 +308,8 @@ test("a transcript write that fails or is lost ends history and waits with the s
     const events = new Spool(source, new Promise(() => {}), { transcript: stream("failed.jsonl", (_length, done) => done(new Error("injected EIO"))) });
     const waiting = events.next(() => false);
     source.write('{"n":1}\n');
-    await assert.rejects(waiting, error => error.kind === "spool" && /injected EIO/.test(error.message));
-    await assert.rejects(events.history(), error => error.kind === "spool" && /injected EIO/.test(error.message));
+    await assert.rejects(waiting, error => error.kind === "spool" && /injected EIO/.test(error.detail.message));
+    await assert.rejects(events.history(), error => error.kind === "spool" && /injected EIO/.test(error.detail.message));
     await assert.rejects(events.next(() => true), error => error.kind === "spool");
   });
   await t.test("negative control: an ignored error leaves a short file, read as a typed short read", async () => {
@@ -334,7 +334,7 @@ test("a write that fails with a chunk queued rejects the pending waiter; the que
   const second = events.next(event => event.n === 2);
   source.write('{"n":1}\n');
   source.write('{"n":2}\n');
-  await assert.rejects(second, error => error.kind === "spool" && /injected EIO/.test(error.message));
+  await assert.rejects(second, error => error.kind === "spool" && /injected EIO/.test(error.detail.message));
   assert.equal(events.sequence, 1, "the queued chunk was dropped after the transcript failed");
   assert.equal(transcript.listenerCount("drain"), 0, "the terminal spool releases its obsolete drain observer");
 });
