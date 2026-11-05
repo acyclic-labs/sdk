@@ -43,7 +43,9 @@ async fn selected<P: StreamProvider + ?Sized>(
     }
 }
 
-pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), StreamError> {
+/// Checks keyed ordering, page continuations, finite bounds and live tree selection.
+/// The supplied provider owns every record and the producer for each follow event.
+pub async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), StreamError> {
     let source = path("selectors/source")?;
     let record = |keys: &[&'static [u8]]| -> Result<crate::AppendRecord, StreamError> {
         Ok(crate::AppendRecord {
@@ -208,46 +210,4 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         return Err(StreamError::Unavailable);
     }
     Ok(())
-}
-
-#[cfg(all(test, target_arch = "wasm32", feature = "wasm"))]
-mod injected {
-    use wasm_bindgen::prelude::*;
-
-    // Only the host port's method names and result envelope are adapted.
-    // The shipping WASM provider produces every frame and owns cancellation.
-    #[wasm_bindgen(inline_js = r#"
-export function selectorPort(stream) {
-  return {
-    async dispatch(operation, input) {
-      return {value: await stream.dispatch(operation, input)};
-    },
-    async open(operation, input, preceding) {
-      const cursor = await stream.openProviderCursor(operation, input, preceding);
-      return {value: {
-        async next() { return {value: await cursor.next()}; },
-        close() { cursor.close(); }
-      }};
-    }
-  };
-}
-"#)]
-    extern "C" {
-        #[wasm_bindgen(js_name = selectorPort)]
-        fn port(stream: JsValue) -> JsValue;
-    }
-
-    #[wasm_bindgen_test::wasm_bindgen_test]
-    async fn selectors_survive_the_paired_injected_provider() {
-        super::verify(&crate::MemoryStream::default())
-            .await
-            .expect("memory selector contract");
-        let provider = crate::wasm::provider_rpc::InjectedStream::new(port(
-            crate::wasm::WasmStream::new().into(),
-        ))
-        .unwrap();
-        super::verify(&provider)
-            .await
-            .expect("paired injected selector contract");
-    }
 }

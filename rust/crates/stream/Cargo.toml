@@ -24,6 +24,11 @@ consumer-features = [
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[[test]]
+name = "read-selectors"
+path = "tests/read_selectors.rs"
+required-features = ["wasm", "conformance"]
+
 [[example]]
 name = "wave1-conformance"
 required-features = ["http"]

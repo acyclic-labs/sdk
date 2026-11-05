@@ -6,6 +6,7 @@ mod backend;
 pub(crate) mod key_seek;
 pub(crate) mod selected;
 mod selectors;
+pub use selectors::verify as verify_read_selectors;
 mod soft;
 mod views;
 #[path = "conformance"]
