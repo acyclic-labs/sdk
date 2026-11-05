@@ -31,7 +31,11 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         None
     }
     /// That capability's call for `invocation`, when this is a native declaration.
-    fn canonical(&self, _invocation: &ToolInvocation) -> Result<Option<ToolInvocation>> {
+    fn canonical(
+        &self,
+        _invocation: &ToolInvocation,
+        _work: crate::NativeWork<'_>,
+    ) -> Result<Option<CanonicalInvocation>> {
         Ok(None)
     }
     /// Resolves an already validated content path in this exact workspace.
@@ -133,6 +137,7 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         &'a self,
         _context: Option<&'a crate::runtime::ToolContext>,
         _invocation: &'a ToolInvocation,
+        _work: crate::NativeWork<'a>,
     ) -> Option<BoxFuture<'a, Result<()>>> {
         None
     }
@@ -145,6 +150,7 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         &self,
         _invocation: &ToolInvocation,
         _context: Option<&crate::runtime::ToolContext>,
+        _work: crate::NativeWork<'_>,
     ) -> Result<Option<Dispatch>> {
         Ok(None)
     }
@@ -170,6 +176,7 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         &self,
         _invocation: &ToolInvocation,
         _context: Option<&crate::runtime::ToolContext>,
+        _work: crate::NativeWork<'_>,
     ) -> Result<Option<BoxFuture<'static, Result<()>>>> {
         Ok(None)
     }

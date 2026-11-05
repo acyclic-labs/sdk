@@ -86,13 +86,16 @@ pub(super) fn normalized(
     let judged = rewritten.or(input.tool_input()).unwrap_or(&Value::Null);
     let canonical = match (tool, input) {
         (Some(tool), HookInput::Tool { invocation, .. }) => match rewritten {
-            None => tool.executor.canonical(invocation)?,
-            Some(arguments) => tool.executor.canonical(&crate::tool::ToolInvocation {
-                operation_id: invocation.operation_id,
-                call_id: invocation.call_id.clone(),
-                name: invocation.name.clone(),
-                arguments: arguments.clone(),
-            })?,
+            None => tool.executor.canonical(invocation, None)?,
+            Some(arguments) => tool.executor.canonical(
+                &crate::tool::ToolInvocation {
+                    operation_id: invocation.operation_id,
+                    call_id: invocation.call_id.clone(),
+                    name: invocation.name.clone(),
+                    arguments: arguments.clone(),
+                },
+                None,
+            )?,
         },
         (Some(tool), HookInput::Fields(_)) if tool.executor.capability().is_some() => {
             return Err(Error::Invalid(

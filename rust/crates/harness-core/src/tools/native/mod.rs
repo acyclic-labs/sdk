@@ -13,7 +13,13 @@ use serde_json::Value;
 use std::sync::Arc;
 
 mod adapter;
+#[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+mod allocation;
 mod arguments;
+/// Exercises production native declarations with hostile argument values.
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+#[doc(hidden)]
+pub use allocation::check as check_native_arguments;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod arguments_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]

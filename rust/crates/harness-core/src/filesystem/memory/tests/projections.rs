@@ -46,19 +46,43 @@ async fn native_notebook_insert_ids_follow_operations_through_publication_and_re
                 name: "NotebookEdit".into(),
                 arguments,
             };
-            let canonical = tool.executor.canonical(&invocation)?.unwrap();
+            let canonical = tool.executor.canonical(&invocation, None)?.unwrap();
             assert_eq!(canonical.operation_id, operation_id);
             assert_eq!(canonical.call_id, invocation.call_id);
             assert_eq!(canonical.arguments["notebook"]["id"], id);
             assert_eq!(
-                tool.executor.canonical(&invocation)?,
-                Some(canonical.clone())
+                tool.executor.canonical(&invocation, None)?.as_deref(),
+                Some(&*canonical)
             );
             let context = ToolContext::new(task.clone(), operation_id, &invocation.call_id)?;
             let result = tool
                 .executor
                 .execute(invocation.clone(), Some(context.clone()))
                 .await?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if ordinal == 1 {
+                let cancellation = acyclic_fs::CancellationToken::new();
+                let work = acyclic_fs::NativeMaterializationWork::new(
+                    FINITE_CONTENT_BUDGET,
+                    &cancellation,
+                )
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+                let baseline = work.live_allocation_bytes();
+                let (native, custody) = tool
+                    .executor
+                    .execute_with_native_context(&context, &invocation, &work)?
+                    .await?;
+                assert_eq!(native.value, result.value);
+                drop(native);
+                drop(custody);
+                assert_eq!(work.live_allocation_bytes(), baseline);
+                cancellation.cancel();
+                assert!(
+                    tool.executor
+                        .execute_with_native_context(&context, &invocation, &work)
+                        .is_err()
+                );
+            }
             let published: crate::tool::files::FileResult =
                 serde_json::from_value(result.value.clone()).unwrap();
             let bytes = task.read_file(&published.file, None).await?;
@@ -78,7 +102,7 @@ async fn native_notebook_insert_ids_follow_operations_through_publication_and_re
                 expected,
             );
             if original.is_none() {
-                original = Some((invocation, canonical, context, result));
+                original = Some((invocation, (*canonical).clone(), context, result));
             }
         }
         // The original receipt survives later insertions. Reconciliation must

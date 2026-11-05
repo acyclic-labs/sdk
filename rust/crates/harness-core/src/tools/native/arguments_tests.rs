@@ -14,12 +14,17 @@ fn adapt(profile: NativeToolProfile, variant: &str, call: Value) -> Result<Value
     let template = revision
         .arguments
         .ok_or_else(|| Error::Invalid(format!("{variant} is not mapped")))?;
-    Arguments::new(template, revision.refuse)?.adapt(&crate::tool::ToolInvocation {
-        operation_id: crate::OperationId::from_bytes([7; 16]),
-        call_id: "toolu_2".into(),
-        name: variant.into(),
-        arguments: call,
-    })
+    Arguments::new(template, revision.refuse)?
+        .adapt(
+            &crate::tool::ToolInvocation {
+                operation_id: crate::OperationId::from_bytes([7; 16]),
+                call_id: "toolu_2".into(),
+                name: variant.into(),
+                arguments: call,
+            },
+            None,
+        )
+        .map(|(value, _)| value)
 }
 
 fn decodes<T: serde::de::DeserializeOwned>(value: &Value) -> T {

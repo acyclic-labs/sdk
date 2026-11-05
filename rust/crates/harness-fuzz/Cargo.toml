@@ -87,6 +87,7 @@ default = ["runtime"]
 core = ["dep:acyclic-harness-core", "dep:futures"]
 native-answer = ["core", "dep:acyclic-native-runtime"]
 code-mode = ["core", "acyclic-harness-core/filesystem", "dep:tokio"]
+native-arguments = ["core", "acyclic-harness-core/filesystem"]
 native-skill-records = ["core", "acyclic-harness-core/filesystem-local", "acyclic-harness-core/native-execution"]
 runtime = ["core", "filesystem-local", "native-execution", "dep:acyclic-harness", "dep:acyclic-native-runtime", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:tempfile", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
 # Harness sources included by `#[path]` gate native helpers on these features;
@@ -124,6 +125,14 @@ which = { version = "=8.0.6", optional = true }
 name = "code_mode"
 path = "fuzz_targets/code_mode.rs"
 required-features = ["code-mode"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "native_arguments"
+path = "fuzz_targets/native_arguments.rs"
+required-features = ["native-arguments"]
 test = false
 doc = false
 bench = false

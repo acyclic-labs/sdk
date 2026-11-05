@@ -12,6 +12,7 @@
 //! literal. An absent argument leaves its member out, and an object whose
 //! references are all absent is itself absent.
 use crate::{Error, Result, tool::ToolInvocation};
+use serde::{Serialize, Serializer, ser::SerializeMap};
 use serde_json::{Map, Value};
 
 /// One declaration's checked template and refused arguments.
@@ -27,25 +28,70 @@ impl Arguments {
         Ok(Self { template, refuse })
     }
 
-    /// The canonical arguments for one native call.
-    pub(crate) fn adapt(&self, invocation: &ToolInvocation) -> Result<Value> {
-        let fields = invocation
-            .arguments
-            .as_object()
-            .ok_or_else(|| Error::Invalid("native tool arguments are not an object".into()))?;
-        if let Some(name) = self
-            .refuse
-            .iter()
-            .find(|name| fields.get(name.as_str()).is_some_and(set))
-        {
-            return Err(Error::Invalid(format!("{name} is not supported here")));
+    /// The canonical arguments, funded before any payload is copied.
+    pub(crate) fn adapt(
+        &self,
+        invocation: &ToolInvocation,
+        work: crate::NativeWork<'_>,
+    ) -> Result<(Value, crate::NativeCustody)> {
+        examine(work)?;
+        let fields = invocation.arguments.as_object().ok_or_else(|| {
+            invalid(
+                work,
+                "native tool arguments are not an object",
+                format_args!("native tool arguments are not an object"),
+            )
+        })?;
+        for name in &self.refuse {
+            examine(work)?;
+            if fields.get(name.as_str()).is_some_and(set) {
+                return Err(invalid(
+                    work,
+                    "native argument is not supported here",
+                    format_args!("{name} is not supported here"),
+                ));
+            }
         }
-        Ok(resolve(&self.template, &(fields, invocation))?
-            .unwrap_or_else(|| Value::Object(Map::new())))
+        let empty = Value::Object(Map::new());
+        let resolved = resolve(&self.template, &(fields, invocation, work))?
+            .unwrap_or(Resolved::Value(&empty));
+        crate::tool::value(&resolved, u64::MAX, work)
     }
 }
 
-type Call<'a> = (&'a Map<String, Value>, &'a ToolInvocation);
+type Call<'a> = (
+    &'a Map<String, Value>,
+    &'a ToolInvocation,
+    crate::NativeWork<'a>,
+);
+
+fn examine(work: crate::NativeWork<'_>) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = work {
+        work.charge(acyclic_fs::WorkCounters {
+            items_examined: 1,
+            ..Default::default()
+        })?;
+    }
+    let _ = work;
+    Ok(())
+}
+
+fn invalid(
+    work: crate::NativeWork<'_>,
+    reason: &'static str,
+    message: std::fmt::Arguments<'_>,
+) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if work.is_some() {
+        return Error::ToolRejected {
+            code: crate::wire::ErrorCode::Invalid,
+            reason,
+        };
+    }
+    let _ = (work, reason);
+    Error::Invalid(message.to_string())
+}
 
 /// Present and meaningful: not null, false, zero or empty.
 fn set(value: &Value) -> bool {
@@ -54,20 +100,83 @@ fn set(value: &Value) -> bool {
         && value.as_str() != Some("")
 }
 
-fn field<'a>((fields, invocation): &Call<'a>, name: &str) -> Option<Value> {
+#[derive(Clone, Copy)]
+enum Resolved<'a> {
+    Value(&'a Value),
+    Text(&'a str),
+    Operation(&'a crate::OperationId),
+    Number(u64),
+    Object(&'a Map<String, Value>, Call<'a>),
+}
+
+impl<'a> Resolved<'a> {
+    fn as_str(self) -> Option<&'a str> {
+        match self {
+            Self::Value(value) => value.as_str(),
+            Self::Text(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn set(self) -> bool {
+        match self {
+            Self::Value(value) => set(value),
+            Self::Text(value) => !value.is_empty(),
+            _ => true,
+        }
+    }
+}
+
+impl Serialize for Resolved<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            Self::Value(value) => value.serialize(serializer),
+            Self::Text(value) => value.serialize(serializer),
+            Self::Operation(value) => value.serialize(serializer),
+            Self::Number(value) => value.serialize(serializer),
+            Self::Object(members, call) => {
+                let mut map = serializer.serialize_map(None)?;
+                // The original resolve already validated and charged this
+                // template. Serialization charges the actual graph copy.
+                let call = (call.0, call.1, None);
+                for (key, template) in *members {
+                    if let Some(value) =
+                        resolve(template, &call).map_err(serde::ser::Error::custom)?
+                    {
+                        map.serialize_entry(key, &value)?;
+                    }
+                }
+                map.end()
+            }
+        }
+    }
+}
+
+fn field<'a>((fields, invocation, _): &Call<'a>, name: &str) -> Option<Resolved<'a>> {
     match name {
-        "@call_id" => Some(Value::String(invocation.call_id.clone())),
-        "@operation_id" => Some(Value::String(invocation.operation_id.to_string())),
-        _ => fields.get(name).filter(|value| !value.is_null()).cloned(),
+        "@call_id" => Some(Resolved::Text(&invocation.call_id)),
+        "@operation_id" => Some(Resolved::Operation(&invocation.operation_id)),
+        _ => fields
+            .get(name)
+            .filter(|value| !value.is_null())
+            .map(Resolved::Value),
     }
 }
 
 fn line(call: &Call<'_>, name: &str) -> Result<Option<u64>> {
     field(call, name)
         .map(|value| {
-            value
-                .as_u64()
-                .ok_or_else(|| Error::Invalid(format!("{name} is not a line number")))
+            match value {
+                Resolved::Value(value) => value.as_u64(),
+                _ => None,
+            }
+            .ok_or_else(|| {
+                invalid(
+                    call.2,
+                    "native argument is not a line number",
+                    format_args!("{name} is not a line number"),
+                )
+            })
         })
         .transpose()
 }
@@ -91,18 +200,19 @@ fn references(template: &Value) -> bool {
     }
 }
 
-fn resolve(template: &Value, call: &Call<'_>) -> Result<Option<Value>> {
+fn resolve<'a>(template: &'a Value, call: &Call<'a>) -> Result<Option<Resolved<'a>>> {
+    examine(call.2)?;
     if let Some(name) = reference(template) {
         return Ok(field(call, name));
     }
     let Value::Object(members) = template else {
-        return Ok(Some(template.clone()));
+        return Ok(Some(Resolved::Value(template)));
     };
     let name = |key: &str| members.get(key).and_then(Value::as_str).unwrap_or_default();
     match operator(members) {
-        Some("one_based") => {
-            Ok(line(call, name("$one_based"))?.map(|line| Value::from(line.saturating_sub(1))))
-        }
+        Some("one_based") => Ok(
+            line(call, name("$one_based"))?.map(|line| Resolved::Number(line.saturating_sub(1)))
+        ),
         Some("through") => {
             let span = &members["$through"];
             let bound = |index: usize| span[index].as_str().unwrap_or_default();
@@ -112,28 +222,44 @@ fn resolve(template: &Value, call: &Call<'_>) -> Result<Option<Value>> {
             let first = line(call, bound(0))?.unwrap_or(1);
             last.checked_sub(first)
                 .and_then(|span| span.checked_add(1))
-                .map(|count| Some(Value::from(count)))
+                .map(|count| Some(Resolved::Number(count)))
                 .ok_or_else(|| {
-                    Error::Invalid(format!(
-                        "{}..{} is not a representable inclusive line span",
-                        bound(0),
-                        bound(1)
-                    ))
+                    invalid(
+                        call.2,
+                        "native argument is not a representable inclusive line span",
+                        format_args!(
+                            "{}..{} is not a representable inclusive line span",
+                            bound(0),
+                            bound(1)
+                        ),
+                    )
                 })
         }
         Some("case") => {
             let selector = name("$case");
             let value = field(call, selector)
-                .or_else(|| members.get("$default").cloned())
-                .ok_or_else(|| Error::Invalid(format!("{selector} is required")))?;
+                .or_else(|| members.get("$default").map(Resolved::Value))
+                .ok_or_else(|| {
+                    invalid(
+                        call.2,
+                        "native selector is required",
+                        format_args!("{selector} is required"),
+                    )
+                })?;
             let case = value
                 .as_str()
                 .filter(|case| !case.starts_with('$'))
                 .and_then(|case| members.get(case))
-                .ok_or_else(|| Error::Invalid(format!("{selector} {value} is not supported")))?;
+                .ok_or_else(|| {
+                    invalid(
+                        call.2,
+                        "native selector is not supported",
+                        format_args!("{selector} is not supported"),
+                    )
+                })?;
             resolve(case, call)
         }
-        Some(_) => match members.get(if field(call, name("$if")).is_some_and(|v| set(&v)) {
+        Some(_) => match members.get(if field(call, name("$if")).is_some_and(Resolved::set) {
             "then"
         } else {
             "else"
@@ -142,18 +268,15 @@ fn resolve(template: &Value, call: &Call<'_>) -> Result<Option<Value>> {
             None => Ok(None),
         },
         None => {
-            let (mut resolved, mut dynamic, mut found) = (Map::new(), false, false);
-            for (key, member) in members {
+            let (mut dynamic, mut found) = (false, false);
+            for member in members.values() {
                 let value = resolve(member, call)?;
                 if references(member) {
                     dynamic = true;
                     found |= value.is_some();
                 }
-                if let Some(value) = value {
-                    resolved.insert(key.clone(), value);
-                }
             }
-            Ok((found || !dynamic).then_some(Value::Object(resolved)))
+            Ok((found || !dynamic).then_some(Resolved::Object(members, *call)))
         }
     }
 }
