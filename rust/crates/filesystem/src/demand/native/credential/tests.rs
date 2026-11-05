@@ -263,7 +263,6 @@ async fn bind(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PublicationControl {
     Current,
-    RetiredOriginal,
     Altered,
     Rebound,
     AlteredThenRebound,
@@ -272,8 +271,7 @@ enum PublicationControl {
     ForeignRevision,
 }
 
-async fn publication_control(control: PublicationControl) -> TestResult {
-    eprintln!("native publication {control:?}: starting original publisher control");
+async fn publication_control(control: PublicationControl, retire_original: bool) -> TestResult {
     use acyclic_native_runtime::{RenameMode, private_file::StagedFile};
     use std::io::Write;
     let directory = tempfile::tempdir()?;
@@ -320,23 +318,15 @@ async fn publication_control(control: PublicationControl) -> TestResult {
                         .as_file_mut()
                         .write_all(token.as_bytes())
                         .map_err(error)?;
-                    if control == PublicationControl::RetiredOriginal {
+                    if retire_original {
                         // A selected-name departure precedes the original
                         // publisher's arrival. Both native notifications must
                         // retain their order through publication admission.
                         std::fs::remove_file(&path).map_err(error)?;
                     }
-                    eprintln!(
-                        "original publisher before rename: {:?}",
-                        staged.as_file().metadata()
-                    );
                     let file = staged
                         .publish_retained(&path, RenameMode::Replace)
                         .map_err(error)?;
-                    eprintln!(
-                        "original publisher after rename: {:?}",
-                        file.as_file().metadata()
-                    );
                     match control {
                         PublicationControl::Altered => {
                             std::fs::write(&path, "foreign-in-place-value").map_err(error)?
@@ -383,10 +373,7 @@ async fn publication_control(control: PublicationControl) -> TestResult {
     let first = source.resolve().await?;
     assert!(first.reject().await?);
     let (replacement, follower) = tokio::join!(source.resolve(), source.resolve());
-    if matches!(
-        control,
-        PublicationControl::Current | PublicationControl::RetiredOriginal
-    ) {
+    if control == PublicationControl::Current {
         let replacement = replacement?;
         assert_eq!(replacement.as_str(), follower?.as_str());
         assert_eq!(publications.load(Ordering::Relaxed), 1);
@@ -565,19 +552,25 @@ async fn native_source_fences_rotation_and_owner_loss_without_warm_reads() -> Te
     assert!(independent_request.check().await.is_err());
     other.0.watch.physical.stop_accepted_cleanup()?;
     assert!(other.0.watch.physical.is_stopped());
-    for control in [
-        PublicationControl::Current,
-        PublicationControl::RetiredOriginal,
-        PublicationControl::Altered,
-        PublicationControl::Rebound,
-        PublicationControl::AlteredThenRebound,
-        PublicationControl::Replaced,
-        PublicationControl::Observed,
-        PublicationControl::ForeignRevision,
-    ] {
-        publication_control(control)
-            .await
-            .map_err(|error| format!("native publication {control:?}: {error:?}"))?;
+    // Retirement precedes the same publisher and every subsequent mutation.
+    // Accepting its first arrival must never admit a later write or rebound,
+    // whether publication replaces the old binding or installs its vacant name.
+    for retire_original in [false, true] {
+        for control in [
+            PublicationControl::Current,
+            PublicationControl::Altered,
+            PublicationControl::Rebound,
+            PublicationControl::AlteredThenRebound,
+            PublicationControl::Replaced,
+            PublicationControl::Observed,
+            PublicationControl::ForeignRevision,
+        ] {
+            publication_control(control, retire_original)
+                .await
+                .map_err(|error| {
+                    format!("native publication {control:?}, retired={retire_original}: {error:?}")
+                })?;
+        }
     }
     eprintln!(
         "protected source reads: cold=1 warm=0 rotation=1 independent=1; original cleanup joined"
