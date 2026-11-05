@@ -63,6 +63,9 @@ test('deserialized request members never exist only under test-support', () => {
     '#[cfg_attr(not(feature = "test-support"), serde(skip))]'])
     assert.throws(() => checkDeserializedTestSupport([request([attribute, '    Probe { agents: u64 },'])]),
       /request\.rs:6: Request has a test-support-only member/);
+  // A field of a struct variant is a member too.
+  assert.throws(() => checkDeserializedTestSupport([request(['    Probe {', '        #[cfg(feature = "test-support")]',
+    '        agents: u64,', '    },'])]), /request\.rs:7: Request has a test-support-only member/);
   // Serialize-only types and items outside a deserialized body are not requests.
   const output = ['#[derive(Serialize)]', 'pub struct Reply {', '    #[cfg(feature = "test-support")]',
     '    probe: u64,', '}'].join('\n');

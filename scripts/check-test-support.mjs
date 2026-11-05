@@ -63,7 +63,7 @@ export function checkDeserializedTestSupport(sources) {
         if (count('[') > count(']')) return;
         const complete = attribute;
         attribute = '';
-        if (body !== null && depth === 1 && /^#\[cfg(?:_attr)?\(.*test-support/.test(complete))
+        if (body !== null && depth >= 1 && /^#\[cfg(?:_attr)?\(.*test-support/.test(complete))
           failures.push(`${file}:${index + 1}: ${body} has a test-support-only member`);
         if (body === null && /^#\[derive\(.*\bDeserialize\b/.test(complete)) derived = true;
         return;

@@ -191,7 +191,11 @@ impl HostWorkspaceOwner {
 
     async fn dispatch_action(&self, operation: OperationId, action: HostAction) -> Result<Value> {
         match action {
-            HostAction::Resources { task } => self.resources(&task).await,
+            HostAction::Resources { task } => {
+                self.attach(&task).await?;
+                let resources = self.resources();
+                self.release_idle([task], resources).await
+            }
             HostAction::Sessions { parent } => {
                 self.attach(&parent).await?;
                 let sessions = self.sessions(&parent).await;
@@ -311,8 +315,7 @@ impl HostWorkspaceOwner {
         Ok(())
     }
 
-    async fn resources(&self, task: &AgentPath) -> Result<Value> {
-        self.attach(task).await?;
+    fn resources(&self) -> Result<Value> {
         let process =
             acyclic_native_runtime::resources::sample_process_resources().map_err(storage)?;
         let views = self.views()?.len();
