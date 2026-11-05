@@ -103,7 +103,6 @@ fuzz_target!(|data: &[u8]| {
 
         // Authenticated arbitrary claims must reach the claims decoder, rather
         // than stopping every mutation at the signature boundary.
-        use ed25519_dalek::Signer as _;
         let signing = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
         let ed_keys = serde_json::to_vec(&json!({"keys":[{
             "kty":"OKP", "crv":"Ed25519", "alg":"EdDSA", "kid":"ed",

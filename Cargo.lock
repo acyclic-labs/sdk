@@ -711,6 +711,7 @@ dependencies = [
  "acyclic-native-runtime",
  "acyclic-stream",
  "acyclic-test-support",
+ "base64 0.22.1",
  "blake3",
  "bytes",
  "diffy",
