@@ -1,0 +1,10 @@
+diff --git a/rust/crates/filesystem/src/staged_objects/read.rs b/rust/crates/filesystem/src/staged_objects/read.rs
+--- a/rust/crates/filesystem/src/staged_objects/read.rs
++++ b/rust/crates/filesystem/src/staged_objects/read.rs
+@@ -166,5 +166,1 @@
+-        let spill_file = work
+-            .accounting()
+-            .wait_for(self.spill_io.read())
+-            .await
+-            .map_err(crate::async_storage::object_error)?;
++        let spill_file = self.spill_io.read().await;
