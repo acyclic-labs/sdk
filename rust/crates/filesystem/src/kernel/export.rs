@@ -91,7 +91,9 @@ pub(crate) fn decode_generation_export_manifest_observed<E>(
 where
     E: From<CanonicalDecodeError> + From<GenerationExportManifestError>,
 {
-    let maximum_bytes = maximum_bytes.into().unwrap_or_else(|| usize_to_u64(bytes.len()));
+    let maximum_bytes = maximum_bytes
+        .into()
+        .unwrap_or_else(|| usize_to_u64(bytes.len()));
     let maximum_objects = maximum_objects.into();
     let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, maximum_bytes, observe)?;
     let volume_id = VolumeId::from_bytes(decoder.fixed(observe)?);
