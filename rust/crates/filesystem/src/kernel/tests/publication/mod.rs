@@ -155,7 +155,6 @@ async fn generation(
             objects,
             None,
             std::slice::from_ref(&mutation),
-            1,
             limits().decode,
             &mut accounting,
             &cancellation,

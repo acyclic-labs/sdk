@@ -47,8 +47,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let path = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{}", reference.path()), work)
         })?;
-        let metadata =
-            read_generation_if_present(selected, &metadata_path, MAXIMUM_METADATA, io).await?;
+        let metadata = read_generation_if_present(
+            selected,
+            &metadata_path,
+            io.remaining()?.source_bytes_read,
+            io,
+        )
+        .await?;
         let original = if let Some(metadata) = metadata {
             let (staged, _staged_hold) = decode_content_metadata(&metadata, io)?;
             if staged.volume() != reference.volume()

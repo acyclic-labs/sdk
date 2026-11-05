@@ -830,7 +830,7 @@ async fn read_content_metadata<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
         generation,
         &metadata_path.0,
         io.remaining()?.source_bytes_read,
-        Some(io),
+        io,
     )
     .await?;
     let staged = match metadata {

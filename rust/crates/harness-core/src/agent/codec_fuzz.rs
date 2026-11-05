@@ -217,7 +217,6 @@ fn history(bytes: &[u8]) {
             .checkpoint
             .is_none_or(|cut| cut < value.context.tail)
     );
-    assert!(value.volumes.len() <= records::MAX_VOLUMES);
     let mut names = std::collections::BTreeSet::new();
     for saved in &value.volumes {
         assert_eq!(
@@ -264,8 +263,7 @@ fn history(bytes: &[u8]) {
         invalid = value.clone();
         invalid.volumes.push(saved.clone());
         assert!(HistoryCheckpoint::decode(&encode(&invalid)).is_err());
-        let overlong = "x".repeat(records::MAX_INTENT_BYTES + 1);
-        for name in ["", "invalid\nname", &overlong] {
+        for name in ["", "invalid\nname"] {
             invalid = value.clone();
             invalid.volumes[0].binding.name = name.into();
             assert!(HistoryCheckpoint::decode(&encode(&invalid)).is_err());
@@ -280,7 +278,7 @@ fn history(bytes: &[u8]) {
 }
 
 /// Seed bytes come from the same writers used by committed actor transitions.
-pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
+pub async fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
     fn written<T: AgentRecord + PartialEq + std::fmt::Debug>(
         value: &T,
     ) -> Result<Vec<u8>, super::Error> {
@@ -518,17 +516,12 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
     state.conversation_tail = 23;
     state.status_tail = 29;
     for n in 0..9 {
-        state
-            .open_children
-            .insert(state.path.child(&AgentId::from_bytes([n; 16]))?);
+        let child = state.path.child(&AgentId::from_bytes([n; 16]))?;
+        state.open_children.insert(child.clone()).await?;
+        if matches!(n, 0 | 7 | 8) {
+            state.awaiting.insert(child).await?;
+        }
     }
-    state.awaiting = state
-        .open_children
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| matches!(index, 0 | 7 | 8))
-        .map(|(_, child)| child.clone())
-        .collect();
     state.need = 2;
     state.turn = Some(Progress {
         inbox: 17,
@@ -554,7 +547,12 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
     ] {
         if archived {
             state.closed = true;
-            state.archive_pending = state.open_children.iter().skip(7).cloned().collect();
+            for n in 7..9 {
+                state
+                    .archive_pending
+                    .insert(state.path.child(&AgentId::from_bytes([n; 16]))?)
+                    .await?;
+            }
             state.awaiting.clear();
             state.need = 0;
             state.turn = None;
@@ -600,7 +598,7 @@ pub fn history_seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::erro
     checkpoint.checkpoint = Some(u64::MAX - 1);
     checkpoint.context.tail = u64::MAX;
     checkpoint.context.checkpoint = Some(u64::MAX - 1);
-    for index in 0..records::MAX_VOLUMES {
+    for index in 0..17 {
         checkpoint.volumes.push(SavedVolume {
             binding: VolumeBinding {
                 name: format!("project-{index}"),
@@ -627,15 +625,15 @@ pub fn history_seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::erro
             seeds.push(("history-project", serde_json::to_vec(&checkpoint)?));
         }
     }
-    seeds.push(("history-max-bindings", serde_json::to_vec(&checkpoint)?));
+    seeds.push(("history-projects", serde_json::to_vec(&checkpoint)?));
     Ok(seeds)
 }
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn writer_corpus_satisfies_the_shared_agent_oracle() {
-        for (_, bytes) in super::seeds().expect("production agent writers") {
+    #[tokio::test]
+    async fn writer_corpus_satisfies_the_shared_agent_oracle() {
+        for (_, bytes) in super::seeds().await.expect("production agent writers") {
             super::check(&bytes);
         }
     }

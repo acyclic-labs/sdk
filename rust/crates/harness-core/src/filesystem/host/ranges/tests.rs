@@ -456,7 +456,7 @@ async fn ordinary_range_authentication_uses_bounded_live_memory() -> Result<()> 
 async fn upload_receipt_recovery_uses_bounded_live_memory() -> Result<()> {
     let body = vec![b'x'; 4 * 1024 * 1024 + 17];
     let (host, file) = published(&body).await?;
-    let write = grant(file.volume(), VolumeOperation::Write)?;
+    let (_issuer, write) = grant(file.volume(), VolumeOperation::Write)?;
     let stop = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::WorkBudget {

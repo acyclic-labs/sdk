@@ -138,7 +138,7 @@ impl PreparedModelRequest {
                 acyclic_differential::record(("input prefix rebuilds", 1u64));
                 crate::executor::json::canonical_json_digest(
                     &Envelope::new(&self.request, messages),
-                    u64::MAX,
+                    None,
                     &mut None,
                 )? == anchor.digest
             };

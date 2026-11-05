@@ -65,7 +65,8 @@ pub(crate) fn validate_projected_context(
         Ok(())
     })?;
     let mut remaining = limits.render_bytes;
-    crate::model::reserve_instruction_bodies(&context.messages, &mut remaining, io)
+    crate::model::reserve_instruction_bodies(&context.messages, &mut remaining, io)?;
+    Ok(())
 }
 
 /// Message and instruction bounds were established by this immutable request's

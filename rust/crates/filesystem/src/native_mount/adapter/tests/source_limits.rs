@@ -653,7 +653,7 @@ fn source_cleanup_waits_on_completion_or_its_registered_cancellation()
             .gate
             .lock()
             .unwrap()
-            .physical_cleanup_wait_observed = Some(waiting);
+            .cleanup_wait_observed = Some(waiting);
         let wait = CancellationToken::new();
         let selected = wait.clone();
         let mounted = source.clone();
@@ -894,7 +894,7 @@ fn physical_source_quiescence_includes_accepted_owner_destruction()
         .gate
         .lock()
         .unwrap()
-        .physical_cleanup_wait_observed = Some(waiting);
+        .cleanup_wait_observed = Some(waiting);
     let mounted = source.clone();
     let cleanup = std::thread::spawn(move || mounted.shutdown_physical_cleanup());
     observed.recv()?;

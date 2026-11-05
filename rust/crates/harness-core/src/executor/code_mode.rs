@@ -57,7 +57,7 @@ fn encode_reply(
     let reply = Reply { ok, value };
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        return io.encode(&reply, u64::MAX, false);
+        return io.encode(&reply, None, false);
     }
     serde_json::to_vec(&reply).map(Into::into).map_err(|_| {
         stock_boundary(

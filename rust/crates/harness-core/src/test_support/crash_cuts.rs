@@ -50,8 +50,6 @@ struct Cutter {
     landed: AtomicUsize,
     crashed: AtomicBool,
     unfaithful: Mutex<Option<CutSimulationError>>,
-    #[cfg(test)]
-    lose_unflushed_ack: bool,
 }
 
 impl Cutter {
@@ -143,8 +141,6 @@ where
         landed: AtomicUsize::new(0),
         crashed: AtomicBool::new(false),
         unfaithful: Mutex::new(None),
-        #[cfg(test)]
-        lose_unflushed_ack: LOSE_UNFLUSHED_ACK.with(std::cell::Cell::get),
     });
     stream.cut_persistence(cutter.clone());
     let result = run(stream.clone()).await;

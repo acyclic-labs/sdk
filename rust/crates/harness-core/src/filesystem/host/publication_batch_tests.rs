@@ -708,7 +708,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                 assert_eq!(host.resolve(&workspace, None).await?, before);
             }
             let denied = host
-                .observe_changes(&volume, &write, &key, 64_000, delete_access)?
+                .observe_changes(&volume, &write, &key, Some(64_000), delete_access)?
                 .await
                 .expect_err("a delete ceiling cannot recover a creation receipt");
             assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
@@ -744,7 +744,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                 .await?;
             assert_eq!(replay, removed);
             let observed = host
-                .observe_changes(&volume, &write, &delete_key, 64_000, delete_access)?
+                .observe_changes(&volume, &write, &delete_key, Some(64_000), delete_access)?
                 .await?
                 .expect("the delete ceiling can recover its deletion receipt");
             assert_eq!(observed.generation, removed.generation);

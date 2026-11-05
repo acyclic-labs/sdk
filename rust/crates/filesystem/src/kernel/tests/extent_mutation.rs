@@ -827,7 +827,6 @@ async fn truncate_to_zero_stops_at_first_child_independent_of_root_width()
         &store,
         (wide, 1_024),
         &[ExtentMutation::Resize { logical_bytes: 1 }],
-        1,
         DecodeLimits::default(),
         budget,
         &CancellationToken::new(),

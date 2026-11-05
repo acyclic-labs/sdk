@@ -5,9 +5,6 @@ use crate::storage::{ObjectRead, ObjectReadRequest, ObjectStoreError};
 pub(super) fn limits(config: crate::model::VolumeConfig) -> crate::kernel::ClosureLimits {
     crate::kernel::ClosureLimits {
         decode: crate::kernel::DecodeLimits::default(),
-        maximum_objects: 4096,
-        maximum_files: 4096,
-        maximum_object_bytes: 16 * 1024 * 1024,
         profile: config.profile,
         symbolic_links: config.symbolic_links,
         hard_links: config.hard_links,

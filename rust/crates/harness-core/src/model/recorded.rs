@@ -58,8 +58,8 @@ impl RecordedToolOutcome {
                 let value = json_value_copy_bounded(
                     &result.value,
                     JsonBounds {
-                        maximum_bytes: u64::MAX,
-                        maximum_items: io.remaining()?.items_examined,
+                        maximum_bytes: None,
+                        maximum_items: Some(io.remaining()?.items_examined),
                         maximum_depth: RECORD_MAXIMUM_DEPTH,
                     },
                     Some(crate::wire::ErrorCode::Storage),

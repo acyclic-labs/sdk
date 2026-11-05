@@ -390,7 +390,7 @@ mod tests {
             _ => {
                 let binding = |parent: u8, name: String| bindings::Binding {
                     parent: FileId::from_bytes([parent; 16]),
-                    name: LogicalName::new(NameEncoding::Utf8, name.into_bytes(), 256).unwrap(),
+                    name: LogicalName::new(NameEncoding::Utf8, name.into_bytes()).unwrap(),
                 };
                 let first = binding(2, format!("n{number:016x}"));
                 let leaf = [first.clone(), binding(3, format!("p{}", payload.len()))];

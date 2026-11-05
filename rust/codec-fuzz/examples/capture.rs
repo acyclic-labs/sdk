@@ -860,7 +860,9 @@ fn full_capture_retains_original_actor_inputs_once() {
 }
 
 fn capture_agents(manifest: &mut String) -> Result<(), Box<dyn Error>> {
-    for (name, bytes) in acyclic_harness_core::agent::codec_fuzz::seeds()? {
+    for (name, bytes) in
+        futures::executor::block_on(acyclic_harness_core::agent::codec_fuzz::seeds())?
+    {
         save(
             "harness_codecs",
             &format!(

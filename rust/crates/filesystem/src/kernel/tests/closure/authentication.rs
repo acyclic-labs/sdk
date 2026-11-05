@@ -131,7 +131,7 @@ async fn original_single_read_custody<S: crate::AsyncObjectStore>(
     let (read, bytes) = crate::kernel::read_object_with_accounting(
         store,
         generation,
-        limits().maximum_object_bytes,
+        limits().decode.maximum_object_bytes,
         &mut work.accounting(),
         cancellation,
     )
@@ -169,7 +169,7 @@ async fn original_closure_custody<S: crate::AsyncObjectStore>(
     original_single_read_custody(store, generation, work, require_owned).await?;
     let requests = [crate::storage::ObjectReadRequest {
         object_id: generation,
-        maximum_bytes: limits().maximum_object_bytes,
+        maximum_bytes: limits().decode.maximum_object_bytes,
     }];
     let batch_baseline = original_live(work);
     let batch = crate::kernel::read_objects_with_accounting(
