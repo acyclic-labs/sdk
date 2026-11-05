@@ -318,7 +318,7 @@ pub(crate) fn get_batch<'a, M: Medium>(
         let _custody = custody;
         let (mut values, allocation) = results(requests.len(), &future_meter)?;
         crate::batch::drive(
-            requests,
+            requests.into_iter(),
             crate::BATCH_WINDOW,
             |bytes| ReadAllocation::new(&future_meter, bytes),
             |(digest, range, maximum)| account.get_inner(digest, range, maximum),
@@ -367,7 +367,7 @@ pub(crate) fn put_window<'a, M: Medium>(
         let _custody = custody;
         let (mut values, allocation) = results(requests.len(), &future_meter)?;
         crate::batch::drive(
-            requests,
+            requests.into_iter(),
             window,
             |bytes| ReadAllocation::new(&future_meter, bytes),
             |(body, references)| account.put_inner(body, references),

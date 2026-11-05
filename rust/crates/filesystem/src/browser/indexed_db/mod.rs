@@ -17,7 +17,6 @@ use std::mem::size_of;
 use std::task::Poll;
 use thiserror::Error;
 use wasm_bindgen::{JsCast, JsValue};
-use wasm_bindgen_futures::JsFuture;
 use web_sys::Blob;
 
 const DATABASE_VERSION: u32 = 2;
@@ -178,12 +177,12 @@ impl IndexedDbObjectStore {
             .transpose()
     }
     async fn read_blob(
-        io: &crate::AuthorityWork<'_>,
+        io: &mut crate::AuthorityWork<'_>,
         id: ObjectId,
         blob: &Blob,
         length: u64,
     ) -> Result<ObjectRead, ObjectStoreError> {
-        let bytes = OwnedBytes::from(io.blob_bytes(blob, length).await.map_err(object_error)?);
+        let bytes = io.blob_bytes(blob, length).await?;
         if object_digest(&bytes) != id.digest {
             return Err(ObjectStoreError::Corrupt);
         }

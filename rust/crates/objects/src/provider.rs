@@ -380,7 +380,7 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
     ) -> Vec<Result<Put, Error>> {
         let mut results = Vec::with_capacity(requests.len());
         let driven = crate::batch::drive(
-            requests,
+            requests.into_iter(),
             BATCH_WINDOW,
             |_| Ok::<_, std::convert::Infallible>(()),
             |(body, references)| self.put_sealed(body, references),
@@ -398,7 +398,7 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
     ) -> Vec<Result<Object, Error>> {
         let mut results = Vec::with_capacity(requests.len());
         let driven = crate::batch::drive(
-            requests,
+            requests.into_iter(),
             BATCH_WINDOW,
             |_| Ok::<_, std::convert::Infallible>(()),
             |(digest, range, maximum)| self.get(digest, range, maximum),

@@ -4,6 +4,7 @@ pub use acyclic_auth::addressing;
 pub mod authorization;
 pub use authorization::{AUTHORIZATION, StreamMethod};
 pub mod body;
+pub mod completion;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 acyclic_test_support::counting_allocator!();
 
