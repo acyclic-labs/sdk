@@ -9,14 +9,35 @@ export function holdFirstOpfsLookup(directory) {
     const original = directory.getFileHandle;
     let release;
     const held = new Promise(resolve => { release = resolve; });
-    let calls = 0;
+    const lookups = [];
+    const files = [];
+    let bodies = 0;
     directory.getFileHandle = function(...args) {
-        const result = original.apply(this, args);
-        calls += 1;
-        return calls === 1 ? held.then(() => result) : result;
+        const result = original.apply(this, args).then(handle => {
+            const getFile = handle.getFile;
+            handle.getFile = function(...args) {
+                const result = getFile.apply(this, args).then(file => {
+                    const arrayBuffer = file.arrayBuffer;
+                    file.arrayBuffer = function(...args) {
+                        bodies += 1;
+                        return arrayBuffer.apply(this, args);
+                    };
+                    return file;
+                });
+                files.push(result);
+                return result;
+            };
+            return handle;
+        });
+        lookups.push(result);
+        return lookups.length === 1 ? held.then(() => result) : result;
     };
     return {
-        calls: () => calls,
+        calls: () => lookups.length,
+        lookups: () => Promise.all(lookups.slice(1)),
+        fileCalls: () => files.length,
+        files: () => Promise.all(files),
+        bodyCalls: () => bodies,
         release: () => {
             directory.getFileHandle = original;
             release();
@@ -32,6 +53,18 @@ extern "C" {
 
     #[wasm_bindgen::prelude::wasm_bindgen(method)]
     fn calls(this: &LookupHold) -> u32;
+
+    #[wasm_bindgen::prelude::wasm_bindgen(method)]
+    fn lookups(this: &LookupHold) -> js_sys::Promise;
+
+    #[wasm_bindgen::prelude::wasm_bindgen(method, js_name = fileCalls)]
+    fn file_calls(this: &LookupHold) -> u32;
+
+    #[wasm_bindgen::prelude::wasm_bindgen(method)]
+    fn files(this: &LookupHold) -> js_sys::Promise;
+
+    #[wasm_bindgen::prelude::wasm_bindgen(method, js_name = bodyCalls)]
+    fn body_calls(this: &LookupHold) -> u32;
 
     #[wasm_bindgen::prelude::wasm_bindgen(method)]
     fn release(this: &LookupHold);
@@ -156,19 +189,46 @@ async fn opfs_batches_preserve_order() {
         let mut __object_work = acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
         // Hold the actual first browser lookup, without replacing the OPFS
         // result. Independent members must enter their complete read pipeline.
-        let (__object_result, started) = {
+        let (__object_result, progress) = {
             let hold = hold_first_opfs_lookup(&store.directory);
             let read = AsyncObjectStore::read_many(&store, __object_args.0, &mut __object_work);
             let mut read = std::pin::pin!(read);
-            assert!(futures::poll!(read.as_mut()).is_pending());
-            let started = hold.calls();
+            let mut completion = futures::poll!(read.as_mut());
+            let progress = async {
+                if completion.is_ready() {
+                    return Err("the held lookup must keep the read pending");
+                }
+                if hold.calls() != 3 {
+                    return Err("a held metadata lookup must not serialize siblings");
+                }
+                // Await only browser operations already dispatched above.
+                // Each fixed poll advances one settled producer; no readiness
+                // loop can hide a missing producer or a stage barrier.
+                JsFuture::from(hold.lookups())
+                    .await
+                    .map_err(|_| "a dispatched OPFS lookup failed")?;
+                completion = futures::poll!(read.as_mut());
+                if completion.is_ready() || hold.file_calls() != 2 {
+                    return Err("siblings must reach file metadata before the first lookup");
+                }
+                JsFuture::from(hold.files())
+                    .await
+                    .map_err(|_| "dispatched OPFS file metadata failed")?;
+                completion = futures::poll!(read.as_mut());
+                if completion.is_ready() || hold.body_calls() != 2 {
+                    return Err("siblings must reach body reads before the first lookup");
+                }
+                Ok(())
+            }
+            .await;
             hold.release();
-            (read.await.map(|(values, _allocation)| values), started)
+            let result = match completion {
+                std::task::Poll::Ready(result) => result,
+                std::task::Poll::Pending => read.await,
+            };
+            (result.map(|(values, _allocation)| values), progress)
         };
-        assert_eq!(
-            started, 3,
-            "a held metadata lookup must not serialize siblings"
-        );
+        assert_eq!(progress, Ok(()));
         __object_work.receipt(__object_result)
     }
     .unwrap_or_else(|failure| unreachable!("OPFS batch read failed: {}", failure.error));
