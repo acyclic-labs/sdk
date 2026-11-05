@@ -41,6 +41,8 @@ mod content;
 mod diff;
 mod errors;
 mod extents;
+#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+mod fork_accounting_tests;
 mod fork_options;
 mod generation;
 mod handle;

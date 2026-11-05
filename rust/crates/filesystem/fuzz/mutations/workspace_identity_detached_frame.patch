@@ -19,7 +19,7 @@
 +        };
 +        merge_creation_backend_work(accounting, spent)?;
 +        let name = named.map_err(|failure| failure.error)?.value;
-+        accounting.claim_owned(name.retained_bytes(), 0)?;
++        accounting.claim_owned(name.as_str().len() as u64, 0)?;
          let id = self.workspace_id_for_name(&name, accounting)?;
          Ok((name, id))
      }
