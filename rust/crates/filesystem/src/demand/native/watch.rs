@@ -291,21 +291,9 @@ impl NativeChanges {
                 let node = if observed.is_some() {
                     observed
                 } else {
-                    let metadata = {
-                        #[cfg(unix)]
-                        {
-                            inner
-                                .root
-                                .held(work)
-                                .and_then(|root| root.stat(relative, work))
-                        }
-                        #[cfg(windows)]
-                        {
-                            crate::native_host::with_wide_path(relative, work, |path, work| {
-                                inner.root.held(work).and_then(|root| root.stat(path, work))
-                            })
-                        }
-                    };
+                    let metadata = crate::native_host::host_path(relative, work, |path, work| {
+                        inner.root.held(work).and_then(|root| root.stat(path, work))
+                    });
                     match metadata {
                         Ok(metadata) => Some(file_identity(&metadata)),
                         Err(DemandError::Io(error))

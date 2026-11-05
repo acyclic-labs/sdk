@@ -73,10 +73,7 @@ pub(crate) fn create_directories<W: NativeHostWork>(
         path.strip_prefix(base).map_err(|_| W::invalid_request())?
     };
     let relative = relative.strip_prefix(".").unwrap_or(relative);
-    #[cfg(unix)]
-    let directory = directory_path(&directory, relative, true, work)?;
-    #[cfg(windows)]
-    let directory = with_wide_path(relative, work, |path, work| {
+    let directory = host_path(relative, work, |path, work| {
         directory_path(&directory, path, true, work)
     })?;
     // Creation already owns the validated leaf. Return that capability rather

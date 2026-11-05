@@ -170,7 +170,7 @@ impl HostRoot {
             stable_object_ids(unique)
         };
         #[cfg(windows)]
-        let generation = stable_object_ids(reports_every_change(&self.directory_handle(), work)?);
+        let generation = stable_object_ids(reports_every_change(self.directory_handle(), work)?);
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         let generation = stable_object_ids(false);
         #[cfg(target_os = "linux")]
@@ -580,16 +580,17 @@ pub(super) fn wide_parent_leaf(path: &[u16]) -> Result<(&[u16], &[u16]), DemandE
 
 #[cfg(windows)]
 pub(crate) fn reports_every_change<W: NativeHostWork<Error = DemandError>>(
-    file: &impl std::os::windows::io::AsRawHandle,
+    directory: std::os::windows::io::BorrowedHandle<'_>,
     work: &mut W,
 ) -> Result<bool, DemandError> {
+    use std::os::windows::io::AsRawHandle as _;
     use windows::Win32::{Foundation::HANDLE, Storage::FileSystem::GetVolumeInformationByHandleW};
     let mut name = [0u16; 64];
     work.started_io(READ)?;
     // SAFETY: the held handle and output buffer remain live for the query.
     unsafe {
         GetVolumeInformationByHandleW(
-            HANDLE(file.as_raw_handle()),
+            HANDLE(directory.as_raw_handle()),
             None,
             None,
             None,

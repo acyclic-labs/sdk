@@ -154,10 +154,7 @@ impl HostRoot {
         relative: &Path,
         work: &mut W,
     ) -> Result<Self, W::Error> {
-        #[cfg(unix)]
-        let directory = directory_path(&self.directory(), relative, false, work)?;
-        #[cfg(windows)]
-        let directory = with_wide_path(relative, work, |relative, work| {
+        let directory = host_path(relative, work, |relative, work| {
             directory_path(&self.directory(), relative, false, work)
         })?;
         let identity = directory_identity(&directory, work)?;
@@ -403,11 +400,8 @@ fn rename_no_replace<W: NativeHostWork>(
     #[cfg(all(test, target_os = "linux", loom))]
     let mut atomic_rename = kernel.as_ref().map(|kernel| kernel.state.lock().unwrap());
     let mode = acyclic_native_runtime::RenameMode::NoReplace;
-    #[cfg(unix)]
-    let result = rename_held(directory, from, directory, to, mode, None, work);
-    #[cfg(windows)]
-    let result = with_wide_path(from, work, |from, work| {
-        with_wide_path(to, work, |to, work| {
+    let result = host_path(from, work, |from, work| {
+        host_path(to, work, |to, work| {
             rename_held(directory, from, directory, to, mode, None, work)
         })
     });

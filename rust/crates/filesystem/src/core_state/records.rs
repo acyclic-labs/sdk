@@ -83,19 +83,8 @@ impl RecordPaths<'_> {
                 "journal destination has no leaf",
             )
         })?;
-        #[cfg(unix)]
-        crate::native_host::rename_held(
-            parent.get(),
-            Path::new(source),
-            parent.get(),
-            Path::new(target),
-            acyclic_native_runtime::RenameMode::NoReplace,
-            None,
-            &mut &*work,
-        )?;
-        #[cfg(windows)]
-        crate::native_host::with_wide_path(Path::new(source), &mut &*work, |source, work| {
-            crate::native_host::with_wide_path(Path::new(target), work, |target, work| {
+        crate::native_host::host_path(Path::new(source), &mut &*work, |source, work| {
+            crate::native_host::host_path(Path::new(target), work, |target, work| {
                 crate::native_host::rename_held(
                     parent.get(),
                     source,

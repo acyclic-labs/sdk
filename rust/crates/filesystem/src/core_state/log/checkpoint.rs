@@ -37,11 +37,7 @@ impl CheckpointFamily {
                 work,
             )?;
             let leaf = Path::new(directory.file_name().ok_or_else(W::invalid_request)?);
-            #[cfg(unix)]
-            let directory =
-                crate::native_host::directory_path(&parent.directory(), leaf, true, work)?;
-            #[cfg(windows)]
-            let directory = crate::native_host::with_wide_path(leaf, work, |leaf, work| {
+            let directory = crate::native_host::host_path(leaf, work, |leaf, work| {
                 crate::native_host::directory_path(&parent.directory(), leaf, true, work)
             })?;
             let identity = crate::native_host::directory_identity(&directory, work)?;
