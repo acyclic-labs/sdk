@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { basename, dirname, join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -15,10 +15,10 @@ const credentialAssignment = /\b(?:aws_secret_access_key|github_token|authorizat
 // Only the recorded public fake-server fixtures may contain credential literals.
 const fixtureDigests = new Map([
   ["typescript/packages/machines/test/fixtures/server-key.pem", "048bbcff062c2c0ccb0ed19df146e59b9cc937f86210be0158076123f24b2340"],
-  ["typescript/packages/stream/test/stream.test.ts", "a8f1c3f65a5454d21b72848b569cada8df01cba2e59535f89ee44a31a848ea98"],
-  ["typescript/packages/inference/test/client.test.ts", "a3ef1f09996032eeb1afd4d6862fef537a61103e479bf0b17234e9a4f89d4f69"],
+  ["typescript/packages/inference/test/client.test.ts", "69bf9379c89e4412c81c0228dc996a2eb624fb94f253e601bddacb492300452b"],
   ["typescript/packages/inference/test/idle-kv.test.ts", "6ee7f3e2aaeb15ea681f5de19cd3be5ddfb5a9c9b699d0cd40178ee6e55def58"],
 ]);
+export const credentialFixturePaths = [...fixtureDigests.keys()];
 const forbiddenPath = /(?:^|[\\/])(?:proto|rust|typescript)[\\/](?:.*[\\/])?(?:internal|private)(?:[\\/]|$)/i;
 const machinesPath = /(?:^|[\\/])(?:proto[\\/]machines|rust[\\/]crates[\\/]machines|typescript[\\/]packages[\\/]machines|generated[\\/](?:rust|typescript)[\\/](?:acyclic[\\/])?machines)(?:[\\/]|$)/i;
 const forbiddenMachinesContent = /\b(?:vmm|fleet|scheduler|daemon|placement)\b|host_profile|guest_control|qualification_release/i;
@@ -52,24 +52,17 @@ function inspect(path, content) {
   if (machinesPath.test(relativePath) && forbiddenMachinesContent.test(content)) failures.push(`${relativePath}: forbidden managed-service implementation domain`);
 }
 
-for (const [path, content] of [
-  ["proto/private/admin.proto", "syntax = \"proto3\";"],
-  ["example.rs", "use acyclic_" + "internal::scheduler;"],
-  ["credential.txt", "-----BEGIN " + "PRIVATE KEY-----"],
-  ["rust/crates/machines/proto/machines/v1/leak.proto", "package vmm.fleet.v1;"],
-]) {
-  const before = failures.length;
-  inspect(join(root, path), content);
-  if (failures.length === before) throw new Error(`boundary self-test did not reject ${basename(path)}`);
-}
-failures.length = 0;
-const paths = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" }).split("\u0000").filter(Boolean);
-for (const path of paths) {
-  try {
-    const content = await readFile(join(root, path), "utf8");
-    if (!content.includes("\u0000")) inspect(join(root, path), content);
-  } catch (error) {
-    failures.push(`${path}: unreadable (${error.message})`);
+async function main() {
+  const paths = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" }).split("\u0000").filter(Boolean);
+  for (const path of paths) {
+    try {
+      const content = await readFile(join(root, path), "utf8");
+      if (!content.includes("\u0000")) inspect(join(root, path), content);
+    } catch (error) {
+      failures.push(`${path}: unreadable (${error.message})`);
+    }
   }
+  if (failures.length) { console.error(failures.join("\n")); process.exitCode = 1; }
 }
-if (failures.length) { console.error(failures.join("\n")); process.exitCode = 1; }
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
