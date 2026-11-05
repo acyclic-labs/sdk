@@ -149,18 +149,22 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
     #[test]
-    fn radix_index_round_trips_updates_and_consumption(keys in prop::collection::vec(any::<[u8;32]>(),0..24)) {
-        let mut index=super::instruction_index::Index::default();
+    fn shared_instruction_indexes_round_trip_updates_and_consumption(keys in prop::collection::vec(any::<[u8;32]>(),0..24)) {
+        let mut work = None;
+        let original = crate::wire_codec::BorrowedIndexWork::new(&mut work);
+        let mut indexes: [_; 2] = std::array::from_fn(|_| acyclic_collections::FixedIndex::<(usize, usize), _, 32>::default());
+        let [sources, calls] = &mut indexes;
         for (position,key) in keys.iter().enumerate() {
-            index.reserve_key(None).unwrap();
-            index.set(0,*key,Some((position,0)),None).unwrap();
+            *sources.get_or_try_insert_with(*key, &mut &original, |_| Ok((position,0))).unwrap() = (position,0);
         }
         for (position,key) in keys.iter().enumerate() {
+            *sources.get_or_try_insert_with(*key, &mut &original, |_| panic!("existing key constructed twice")).unwrap() = (position,1);
+        }
+        for key in &keys {
             let expected=keys.iter().rposition(|candidate|candidate==key).unwrap();
-            prop_assert_eq!(index.get(0,key,None).unwrap(),Some((expected,0)));
-            prop_assert_eq!(index.get(1,key,None).unwrap(),None);
-            let _=position;
+            prop_assert_eq!(sources.get(*key,&mut &original).unwrap().copied(),Some((expected,1)));
+            prop_assert_eq!(calls.get(*key,&mut &original).unwrap().copied(),None);
         }
-        for key in keys { index.set(0,key,None,None).unwrap(); prop_assert_eq!(index.get(0,&key,None).unwrap(),None); }
+        for key in keys { sources.remove(key,&mut &original).unwrap(); prop_assert_eq!(sources.get(key,&mut &original).unwrap(),None); }
     }
 }
