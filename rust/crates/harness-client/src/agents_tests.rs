@@ -2,7 +2,7 @@ use super::*;
 use crate::{AgentId, Phase};
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
-    AppendRecord, AppendRequest, BoxProviderFuture, MemoryStream, StreamError, StreamProvider,
+    AppendRecord, AppendRequest, BoxProviderFuture, MemoryStream, StreamError,
     runtime::PlatformExecutor,
     session::{self, transport},
 };
@@ -14,15 +14,20 @@ impl transport::Transport for Endpoint {
     fn session(
         &self,
         source: transport::Requests,
-    ) -> BoxProviderFuture<'_, std::result::Result<transport::Responses, StreamError>> {
+    ) -> BoxProviderFuture<
+        '_,
+        std::result::Result<transport::Responses<transport::Failure>, transport::Failure>,
+    > {
         Box::pin(async move {
-            session::serve(
+            let response = session::serve(
                 self.0.clone(),
                 session::testing::authority(),
                 "node".into(),
                 session::Limits::default(),
                 source.map(Ok).boxed(),
-            )
+            )?;
+            Ok(Box::pin(response.map(|frame| frame.map_err(Into::into)))
+                as transport::Responses<transport::Failure>)
         })
     }
 }
