@@ -31,7 +31,7 @@ async fn native_capability_authenticates_before_body_or_script_consumption() {
     // a placeholder bypassing the native SDK's authentication requirement.
     let capability = "1234567890abcdef".repeat(4);
     let mut server = Server(
-        Command::new(env!("CARGO_BIN_EXE_harness-mock-model"))
+        Command::new(acyclic_test_support::cargo_binary!("harness-mock-model"))
             .args([
                 "--script",
                 script.to_str().unwrap(),
