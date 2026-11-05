@@ -191,18 +191,6 @@ for (const wrapper of ["", "sccache"]) for (const failure of [undefined, "stream
   });
 }
 
-test("Windows retains all check commands after grouped WASM builds with the wrapper disabled", () => {
-  const script = readFileSync("scripts/qualify-ci.ps1", "utf8");
-  const block = script.slice(script.indexOf("$rustcWrapper = $env:RUSTC_WRAPPER", script.indexOf("$wasmBindgenRoot")), script.indexOf("$StreamNativeRoot"));
-  const commands = ["Remove-Item Env:RUSTC_WRAPPER", "node scripts/build-wasm-groups.mjs", "bun x tsc -b --force --pretty false", "bun x tsc -p scripts --pretty false", "bun run check:docs", "} finally {"];
-  let previous = -1;
-  for (const command of commands) {
-    const index = block.indexOf(command);
-    assert.ok(index > previous, command); previous = index;
-  }
-  assert.ok(block.includes("$env:RUSTC_WRAPPER = $rustcWrapper"));
-});
-
 test("Linux warms isolated WASM targets within its worker budget before the complete test command", () => {
   const script = readFileSync("scripts/qualify-ci.sh", "utf8");
   const block = script.slice(script.indexOf("  linux)"), script.indexOf("  linux-musl|linux-arm64-musl)"));

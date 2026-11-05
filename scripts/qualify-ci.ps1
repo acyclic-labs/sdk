@@ -162,22 +162,10 @@ if ((& $wasmBindgenBin --version) -ne "wasm-bindgen $wasmBindgenVersion") {
     throw "The WASM build requires wasm-bindgen $wasmBindgenVersion."
 }
 $env:PATH = "$(Split-Path -Parent $wasmBindgenBin);$env:PATH"
-# web-sys's large feature set exceeds sccache's Windows rustc spawn path.
-# Keep native build caching, but invoke the WASM check directly through rustc.
-$rustcWrapper = $env:RUSTC_WRAPPER
-Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
-try {
-    node scripts/build-wasm-groups.mjs
-    bun x tsc -b --force --pretty false
-    bun x tsc -p scripts --pretty false
-    bun run check:docs
-} finally {
-    if ($null -eq $rustcWrapper) {
-        Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
-    } else {
-        $env:RUSTC_WRAPPER = $rustcWrapper
-    }
-}
+node scripts/build-wasm-groups.mjs
+bun x tsc -b --force --pretty false
+bun x tsc -p scripts --pretty false
+bun run check:docs
 $StreamNativeRoot = Join-Path $env:SDK_ARTIFACT_DIR 'stream-native-bundle'
 $StreamNativeBundle = Join-Path $StreamNativeRoot 'bundle'
 $StreamNativeTargetDir = "$CargoTargetDir-stream-native"

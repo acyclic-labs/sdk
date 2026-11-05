@@ -75,8 +75,8 @@ const capture = (executable, args) => {
   const result = spawnSync(executable, args, { cwd: root, encoding: "utf8", windowsHide: true });
   return result.error || result.status !== 0 ? undefined : result.stdout.trim();
 };
-const run = (executable, args) => {
-  const result = spawnSync(executable, args, { cwd: root, stdio: "inherit", windowsHide: true });
+const run = (executable, args, env = process.env) => {
+  const result = spawnSync(executable, args, { cwd: root, stdio: "inherit", windowsHide: true, env });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`${executable} exited with ${result.status ?? "unknown"}`);
 };
@@ -144,7 +144,10 @@ for (const name of targets) {
   const cachedReceipt = resolve(target, "wasm-bindgen", `${name}.producer-receipt.json`);
   const rustcCapture = producer ? await producer.createRustcInvocationCapture(artifact) : undefined;
   try {
-    run(cargo, buildArgs);
+    // web-sys exceeds the Windows cache wrapper's command-line capacity.
+    // Override Cargo's wrapper only for this WASM compile; retain the original
+    // workspace capture wrapper and native generator caching.
+    run(cargo, buildArgs, process.platform === "win32" ? { ...process.env, RUSTC_WRAPPER: "" } : process.env);
     if (rustcCapture) {
       try { compilerInvocation = await rustcCapture.read("wasm32-unknown-unknown"); }
       catch (error) {
