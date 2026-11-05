@@ -241,10 +241,9 @@ async fn sequential_batch_retains_original_prefix_on_withdrawal_and_producer_los
         };
         let mut batch = Box::pin(async {
             if stored {
-                crate::async_storage::read_many_stored_sequential(&store, &requests, &mut work)
-                    .await
+                store.read_many_stored(&requests, &mut work).await
             } else {
-                crate::async_storage::read_many_sequential(&store, &requests, &mut work).await
+                store.read_many(&requests, &mut work).await
             }
         });
         assert!(futures::poll!(batch.as_mut()).is_pending());
@@ -259,7 +258,11 @@ async fn sequential_batch_retains_original_prefix_on_withdrawal_and_producer_los
                 let (values, allocation) = batch.await?;
                 assert_eq!(values[0].bytes.as_ref(), b"first");
                 assert_eq!(values[1].bytes.as_ref(), b"second");
-                let retained = (values.capacity() * size_of::<ObjectRead>()) as u64;
+                let retained = (values.capacity() * size_of::<ObjectRead>()) as u64
+                    + values
+                        .iter()
+                        .map(|read| read.retention.owned_bytes())
+                        .sum::<u64>();
                 assert_eq!(work.allocations.live_bytes(), live + retained);
                 assert!(allocation.is_none());
                 drop(values);

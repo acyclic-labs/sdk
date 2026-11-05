@@ -28,6 +28,10 @@ export function webSocketSession(endpoint: string, token: string | CredentialPro
       socket.binaryType = "arraybuffer";
       const incoming = new SessionQueue<Uint8Array>(StreamLimit.MAX_ITEMS);
       let closed = false;
+      let terminal: unknown;
+      let established = false;
+      const interruption = (message: string): StreamError & { transient: boolean } =>
+        Object.assign(new StreamError("unavailable", message), { transient: established });
       let resolve!: () => void;
       let reject!: (error: unknown) => void;
       const ready = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
@@ -39,6 +43,7 @@ export function webSocketSession(endpoint: string, token: string | CredentialPro
       const close = (error?: unknown): void => {
         if (closed) return;
         closed = true;
+        terminal = error;
         cleanup();
         reject(error ?? new StreamError("unavailable", "session cancelled"));
         incoming.end(error);
@@ -65,6 +70,7 @@ export function webSocketSession(endpoint: string, token: string | CredentialPro
           check();
           if (closed) return;
           if (socket.protocol !== "acyclic.session.v1") throw new StreamError("invalid_response", "Streams session subprotocol was not selected");
+          established = true;
           resolve();
         } catch (error) { close(error); }
       };
@@ -76,8 +82,8 @@ export function webSocketSession(endpoint: string, token: string | CredentialPro
           incoming.push(new Uint8Array(event.data));
         } catch (error) { close(error instanceof StreamError ? error : new StreamError("invalid_response", "invalid session message framing")); }
       };
-      socket.onerror = () => close(new StreamError("transport", "Streams session transport failed"));
-      socket.onclose = () => close(new StreamError("unavailable", "Streams session transport closed"));
+      socket.onerror = () => close(interruption("Streams session transport failed"));
+      socket.onclose = () => close(interruption("Streams session transport closed"));
       if (signal.aborted) abort();
       else if (watch?.changed.aborted) changed();
       await ready;
@@ -89,9 +95,15 @@ export function webSocketSession(endpoint: string, token: string | CredentialPro
         async send(bytes, writeSignal) {
           writeSignal?.throwIfAborted();
           check();
-          if (closed || socket.readyState !== WebSocket.OPEN) throw new StreamError("unavailable", "Streams session is closed");
+          if (closed) throw terminal ?? new StreamError("unavailable", "session cancelled");
+          if (socket.readyState !== WebSocket.OPEN) throw interruption("Streams session is closed");
           if (bytes.byteLength > StreamLimit.MAX_COMMAND_BYTES || socket.bufferedAmount + bytes.byteLength > StreamLimit.MAX_COMMAND_BYTES) throw new StreamError("capacity", "Streams session output capacity exceeded");
-          socket.send(bytes);
+          try { socket.send(bytes); }
+          catch (cause) {
+            const error = Object.assign(interruption("Streams session write failed"), { cause });
+            close(error);
+            throw error;
+          }
         },
         close() { close(); },
       };

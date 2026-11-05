@@ -47,9 +47,8 @@ pub use policy::{PolicyCut, PolicyOwner};
 mod objects;
 pub use objects::{AsyncObjectStore, PublicationScope};
 mod read_batch;
-pub(crate) use read_batch::object_error;
 pub use read_batch::read_many_sequential;
-pub(crate) use read_batch::read_many_stored_sequential;
+pub(crate) use read_batch::{Decoded, ReadRepresentation, Stored, admit_read_batch, object_error};
 
 #[cfg(test)]
 #[path = "../tests/async_storage.rs"]

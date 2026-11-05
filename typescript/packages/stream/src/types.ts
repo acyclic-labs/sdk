@@ -21,6 +21,8 @@ import type {
 } from "../generated/proto/stream/v1/stream_pb.js";
 import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import type { TokenOperation } from "./token-operations.js";
+import type { Refusal as StreamRefusal } from "@acyclic-labs/auth/refusal";
+export type { Refusal as StreamRefusal } from "@acyclic-labs/auth/refusal";
 import type { StreamErrorCode as RustStreamErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 export type { TokenOperation } from "./token-operations.js";
 
@@ -172,13 +174,6 @@ export type StreamFailureCode = RustStreamErrorCode
   | "stream_not_found" | "commit_not_found" | "destination_exists" | "capacity_exhausted"
   | "configuration" | "invalid_cursor" | "invalid_page" | "invalid_response"
   | "provider_mismatch" | "response_too_large" | "transport";
-/** A member's original status behind an `unavailable` failure, verbatim. A diagnostic only; recovery follows `code`. */
-export interface StreamRefusal {
-  readonly status: number;
-  readonly message: string;
-  readonly details: Uint8Array;
-  readonly metadata: ReadonlyArray<readonly [string, Uint8Array]>;
-}
 
 export class StreamError extends Error {
   constructor(

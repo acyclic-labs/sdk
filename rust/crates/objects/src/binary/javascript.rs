@@ -52,6 +52,25 @@ fn unavailable() -> Error {
 }
 
 fn original_error(value: JsValue) -> Error {
+    if let Ok(refusal) = Reflect::get(&value, &"refusal".into())
+        && !refusal.is_undefined()
+    {
+        return acyclic_auth::refusal::javascript::parts(&refusal, |view| {
+            acyclic_stream::javascript_bytes::snapshot(view, |_| Ok(())).map(|(bytes, ())| bytes)
+        })
+        .map_or_else(|_| unavailable(), Error::from_status_parts);
+    }
+    if let Ok(detail) = Reflect::get(&value, &"detailBytes".into())
+        && !detail.is_undefined()
+        && let Some(error) = detail
+            .dyn_into::<Uint8Array>()
+            .ok()
+            .and_then(|view| acyclic_stream::javascript_bytes::snapshot(&view, |_| Ok(())).ok())
+            .and_then(|(bytes, ())| wire::ErrorDetail::decode(bytes.as_slice()).ok())
+            .and_then(Error::from_detail)
+    {
+        return error;
+    }
     error_code(&value)
         .ok()
         .and_then(|code| wire::ErrorCode::try_from(code).ok())
@@ -66,6 +85,11 @@ pub fn js_error(value: Error) -> JsValue {
     result.set_name("ObjectsV1Error");
     // The fresh error is extensible and has no caller-defined properties.
     let _ = Reflect::set(&result, &"code".into(), &JsValue::from(value.code as i32));
+    let _ = Reflect::set(
+        &result,
+        &"refusal".into(),
+        &acyclic_auth::refusal::javascript::value(&value.status_parts()),
+    );
     result.into()
 }
 

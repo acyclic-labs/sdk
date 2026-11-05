@@ -13,6 +13,21 @@ use tokio_util::sync::CancellationToken;
 
 const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Thin N-API projection of the canonical producer Cause. No classification
+/// or attribution is reconstructed at this boundary.
+#[napi(object)]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeActorsCause {
+    /// Original producer component.
+    pub component: String,
+    /// Original producer reason, including future tokens.
+    pub reason: String,
+    /// Original request identity.
+    #[napi(js_name = "requestId")]
+    pub request_id: String,
+}
+
 /// Structured Rust-owned error metadata.
 #[napi(object)]
 #[derive(Default, Serialize)]
@@ -41,6 +56,9 @@ pub struct NativeActorsErrorMetadata {
     #[serde(rename = "serviceMessage", skip_serializing_if = "Option::is_none")]
     /// Service detail message.
     pub service_message: Option<String>,
+    /// Original producer attribution.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cause: Option<NativeActorsCause>,
     #[napi(js_name = "contractCode")]
     #[serde(rename = "contractCode", skip_serializing_if = "Option::is_none")]
     /// Contract category.
@@ -185,6 +203,11 @@ fn client_error(error: client::Error) -> NativeActorsErrorMetadata {
         credential_rejected: metadata.credential_rejected,
         service_code: metadata.service_code,
         service_message: metadata.service_message,
+        cause: metadata.cause.map(|cause| NativeActorsCause {
+            component: cause.component,
+            reason: cause.reason,
+            request_id: cause.request_id,
+        }),
         contract_code: metadata.contract_code,
         raw_details: metadata.raw_details.map(Buffer::from),
     }
@@ -209,24 +232,51 @@ mod tests {
 
     #[test]
     fn service_metadata_preserves_original_message_unknown_code_and_bytes() {
+        let detail = wire::Error {
+            code: 99,
+            message: String::from("future detail"),
+            component: String::from("actors.authority"),
+            reason: String::from("future_refusal"),
+            request_id: String::from("original-request"),
+        };
+        let allocations = [
+            detail.component.as_ptr(),
+            detail.reason.as_ptr(),
+            detail.request_id.as_ptr(),
+        ];
         let metadata = client_error(client::Error::Service {
             grpc_code: 7,
             message: String::from("original grpc diagnostic"),
             raw_details: vec![255, 0],
-            detail: Some(wire::Error {
-                code: 99,
-                message: String::from("future detail"),
-            }),
+            detail: Some(detail),
         });
         assert_eq!(metadata.message, "original grpc diagnostic");
         assert_eq!(metadata.service_code, Some(99));
         assert_eq!(metadata.service_message.as_deref(), Some("future detail"));
+        assert_eq!(
+            metadata.cause.as_ref().map(|cause| [
+                cause.component.as_ptr(),
+                cause.reason.as_ptr(),
+                cause.request_id.as_ptr(),
+            ]),
+            Some(allocations),
+            "native bridge moves the original attribution allocations",
+        );
         assert_eq!(
             metadata.raw_details.as_ref().map(AsRef::as_ref),
             Some([255, 0].as_slice())
         );
         let json = serde_json::to_value(&metadata).expect("metadata must serialize");
         assert_eq!(json.get("rawDetails"), Some(&serde_json::json!([255, 0])));
+        assert_eq!(
+            json.get("cause"),
+            Some(&serde_json::json!({
+                "component": "actors.authority",
+                "reason": "future_refusal",
+                "requestId": "original-request",
+            })),
+            "native bridge retains the canonical producer cause",
+        );
         assert_eq!(
             json.get("credentialRejected"),
             Some(&serde_json::json!(false))
