@@ -2,6 +2,9 @@
 use js_sys::Uint8Array;
 use wasm_bindgen::prelude::*;
 
+#[cfg(test)]
+mod tests;
+
 #[wasm_bindgen(inline_js = "
 const U8 = Uint8Array;
 const prototype = Object.getPrototypeOf(U8.prototype);

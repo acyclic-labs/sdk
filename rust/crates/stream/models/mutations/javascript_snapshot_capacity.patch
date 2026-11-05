@@ -1,0 +1,13 @@
+diff --git a/rust/crates/stream/src/owned_bytes/javascript.rs b/rust/crates/stream/src/owned_bytes/javascript.rs
+--- a/rust/crates/stream/src/owned_bytes/javascript.rs
++++ b/rust/crates/stream/src/owned_bytes/javascript.rs
+@@ -75,9 +75,6 @@ pub fn snapshot_with<R>(
+         bytes,
+         custody: reservation,
+     };
+-    if snapshot.bytes.capacity() < count as usize {
+-        return Err(JsValue::from_str("byte snapshot allocation is undersized"));
+-    }
+     snapshot.bytes.resize(count as usize, 0);
+     copy(view, &mut snapshot.bytes, count)?;
+     Ok((snapshot.bytes, snapshot.custody))
