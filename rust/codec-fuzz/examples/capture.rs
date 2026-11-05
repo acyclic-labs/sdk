@@ -874,6 +874,8 @@ fn capture_agents(manifest: &mut String) -> Result<(), Box<dyn Error>> {
             &bytes,
             if name == "roster" {
                 "harness-core Roster::new -> Roster::canonical, retaining original target and owner order"
+            } else if name == "roster-positional" {
+                "harness-core Roster::new -> serde_json tuple writer over original home and targets, retaining original target and owner order"
             } else if name.starts_with("history-") {
                 "harness-core agent::codec_fuzz::history_seeds via HistoryCheckpoint typed serde_json writer (descriptor syntax only)"
             } else {
