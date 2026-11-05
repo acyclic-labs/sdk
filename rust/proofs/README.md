@@ -88,6 +88,12 @@ The unchanged panic test must reject the remaining report entry after receiving
 its typed error. This qualifies ownership retirement after completion, without
 claiming that a diagnostic report proves operation progress or scheduler cost.
 
+The [accepted persistence dependency control](persistence-reentry/README.md)
+removes the guard against polling accepted work from its own service. The
+unchanged real-worker test must reject `Pending`, then require typed refusal
+and retained physical custody after restoration. Original channel producer
+loss ends the held work on either path; no readiness retry is introduced.
+
 The [Objects close-result control](objects-close-result/README.md) discards only
 the original worker's inner storage result after physical completion. The
 existing real-log test must reject the false success, then pass after exact
