@@ -419,14 +419,23 @@ test("run recovery rejects substituted or malformed streams and observes an incl
   }))).rejects.toThrow();
   expect(admitted).toBeFalse();
 
-  const substitutedEvaluation = new InferenceClient({
-    ...transport,
-    async createEvaluation(request) { return evaluationView(request.identity!.requestId, revision(31)); },
-  });
-  await expect(substitutedEvaluation.createEvaluation(create(CreateEvaluationRequestSchema, {
-    identity: { clientInstance: runIdentity(6), requestId: runIdentity(5) },
-    spec: evaluationSpec(),
-  }))).rejects.toThrow();
+  for (const mutateRequest of [false, true]) {
+    for (const returnedDigest of [30, 31]) {
+      const substitutedEvaluation = new InferenceClient({
+        ...transport,
+        async createEvaluation(request) {
+          if (mutateRequest) request.spec!.specDigest = revision(31);
+          return evaluationView(request.identity!.requestId, revision(returnedDigest));
+        },
+      });
+      const response = substitutedEvaluation.createEvaluation(create(CreateEvaluationRequestSchema, {
+        identity: { clientInstance: runIdentity(6), requestId: runIdentity(5) },
+        spec: evaluationSpec(),
+      }));
+      if (returnedDigest === 30) await expect(response).resolves.toMatchObject({ spec: { specDigest: revision(30) } });
+      else await expect(response).rejects.toThrow(InferenceProtocolError);
+    }
+  }
 
   const completedWithoutResult = new InferenceClient({
     ...transport,
