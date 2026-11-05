@@ -111,7 +111,12 @@ impl FuseSessionState {
             // failed. The same owner must still retire its source and fence.
         }
         if let Some(retirement) = self.retirement.as_mut() {
-            retirement.retire(None, join)?;
+            if let Err(error) = retirement.retire(None, join) {
+                if !retirement.is_retired() {
+                    return Err(error);
+                }
+                self.failure.cleanup = Some(error);
+            }
         }
         Ok(())
     }
